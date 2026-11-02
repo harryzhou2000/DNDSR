@@ -1,6 +1,8 @@
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
 #include "Cauchy/Physics/FlowProfile.hpp"
+#include "Cauchy/Physics/ReconstructionPositivity.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
+#include "CFV/Math/TaylorBasis.hpp"
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include "DNDS/Algebra/DofAlgebra.hpp"
@@ -39,6 +41,11 @@ namespace DNDS::Cauchy
         CFV::FVField primitive;
         CFV::FVField lowResidual;
         R::Array<real> positivityValues;
+        // Only the optional progressive-order policy needs a second sampled
+        // polynomial. Buffers are allocated once, never during a PP iteration.
+        std::optional<CFV::FVField> positivityReference;
+        R::Array<real> positivityReferenceValues;
+        R::Array<int> positivityReferenceDegree;
         real betaMin = 1;
         index betaLimited = 0;
         index characteristicFallbacks = 0;
@@ -66,6 +73,12 @@ namespace DNDS::Cauchy
         {
             Algebra::Fill(reconstruction.coefficients, 0.);
             Algebra::Fill(reconstruction.temporary, 0.);
+            if (data.settings.numerics.positivity && !data.settings.numerics.positivityCompressToMean)
+            {
+                positivityReference.emplace(data.metrics.BuildField(5 * data.reconstruction.NRecDOF()));
+                positivityReferenceValues = R::Array<real>(R::RowLayout::Dense(positivityValues.RowCount(), 5));
+                positivityReferenceDegree = R::Array<int>(R::RowLayout::Dense(data.metrics.NumCell(), 1));
+            }
             const bool wave = data.settings.numerics.riemann.useStencil && data.flux.UsesTransverseSignal();
             const bool pressure = data.settings.numerics.riemann.useStencil && data.flux.UsesPressureStencil();
             int stencilFlags[4]{int(wave), -int(wave), int(pressure), -int(pressure)};
@@ -77,6 +90,8 @@ namespace DNDS::Cauchy
     };
     FiniteVolume::FiniteVolume(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const EquationSystem &equation)
     {
+        MPI::LocalStage(mesh->getMPI(), [&]
+                        { settings.numerics.ValidatePositivity(); });
         auto data = std::make_shared<Data>(std::move(mesh), ResolveSweepOrdering(settings), equation);
         auto meshRead = data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto topology = meshRead.HostView();
@@ -169,7 +184,7 @@ namespace DNDS::Cauchy
             data->positivityOffsets.resize(size_t(data->metrics.NumCell()) + 1, 0);
             for (index iCell = 0; iCell < data->metrics.NumCell(); ++iCell)
                 data->positivityOffsets[iCell + 1] = data->positivityOffsets[iCell] + data->offsets[iCell + 1] - data->offsets[iCell] +
-                    Geom::Elem::Quadrature(topology.GetCellElement(iCell), Geom::Elem::INT_ORDER_MAX).GetNumPoints();
+                    (settings.numerics.positivityVolumePoints ? Geom::Elem::Quadrature(topology.GetCellElement(iCell), Geom::Elem::INT_ORDER_MAX).GetNumPoints() : 0);
             const auto count = data->positivityOffsets.back();
             R::Array<index> cells(R::RowLayout::Dense(count, 1));
             R::Array<real> points(R::RowLayout::Dense(count, 3));
@@ -183,11 +198,14 @@ namespace DNDS::Cauchy
                     const auto append = [&](const Geom::tPoint &point)
                     { c(iPoint, 0) = iCell; for (int d = 0; d < 3; ++d) p(iPoint, d) = point[d]; ++iPoint; };
                     for (index entry = data->offsets[iCell]; entry < data->offsets[iCell + 1]; ++entry) append(data->samples[entry].ownPoint);
-                    topology.GetCoordsOnCell(iCell, coords);
-                    const auto element = topology.GetCellElement(iCell);
-                    const Geom::Elem::Quadrature quadrature(element, Geom::Elem::INT_ORDER_MAX);
-                    for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
-                        append(Geom::Elem::PPhysicsCoordD01Nj(coords, Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(Geom::Elem::INT_ORDER_MAX).at(iQ)));
+                    if (settings.numerics.positivityVolumePoints)
+                    {
+                        topology.GetCoordsOnCell(iCell, coords);
+                        const auto element = topology.GetCellElement(iCell);
+                        const Geom::Elem::Quadrature quadrature(element, Geom::Elem::INT_ORDER_MAX);
+                        for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
+                            append(Geom::Elem::PPhysicsCoordD01Nj(coords, Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(Geom::Elem::INT_ORDER_MAX).at(iQ)));
+                    }
                 }
             }
             data->positivitySamples.emplace(data->reconstruction, cells, points, false);
@@ -494,47 +512,7 @@ namespace DNDS::Cauchy
             }
         }
         if (_data->settings.numerics.positivity)
-        {
-            _data->positivitySamples->Evaluate(state, work.reconstruction.coefficients, work.positivityValues);
-            MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                            {
-                auto mean = state.Owned().Read(), points = work.positivityValues.Read();
-                auto coefficients = work.reconstruction.coefficients.Owned().Write();
-                const auto u = mean.View<R::UniformTableRows>(), p = points.View<R::UniformTableRows>();
-                const auto rec = coefficients.View<R::UniformTableRows>();
-                for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
-                {
-                    const auto base = Load(u, iCell);
-                    real beta = 1;
-                    for (index iPoint = _data->positivityOffsets[iCell]; iPoint < _data->positivityOffsets[iCell + 1]; ++iPoint)
-                    {
-                        const auto target = Load(p, iPoint);
-                        for (auto value : target) DNDS_check_throw_info(std::isfinite(value), "nonfinite reconstruction in positivity input");
-                        beta = std::min(beta, AdmissibleFraction(base, target, _data->thermalBounds));
-                    }
-                    if (beta < _data->settings.numerics.positivityBetaCutoff) beta = 0;
-                    if (beta < 1)
-                    {
-                        ++work.betaLimited; work.betaMin = std::min(work.betaMin, beta);
-                        for (index j = 0; j < rec.RowSize(iCell); ++j) rec(iCell, j) *= beta;
-                    }
-                    for (index iPoint = _data->positivityOffsets[iCell]; iPoint < _data->positivityOffsets[iCell + 1]; ++iPoint)
-                    {
-                        auto value = base; const auto target = Load(p, iPoint);
-                        for (int j = 0; j < 5; ++j) value[j] = (1 - beta) * base[j] + beta * target[j];
-                        DNDS_check_throw_info(ThermallyAdmissible(value, _data->thermalBounds), "reconstruction positivity verification failed");
-                    }
-                } });
-            // Re-evaluate the scaled coefficients themselves. Algebraically
-            // blending sampled states alone would miss cancellation/indexing
-            // mistakes in the stored polynomial and its cache layout.
-            _data->positivitySamples->Evaluate(state, work.reconstruction.coefficients, work.positivityValues);
-            MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                            {
-                auto points = work.positivityValues.Read(); const auto p = points.View<R::UniformTableRows>();
-                for (index iPoint = 0; iPoint < p.RowCount(); ++iPoint)
-                    DNDS_check_throw_info(ThermallyAdmissible(Load(p, iPoint), _data->thermalBounds), "scaled reconstruction violates temperature/internal-energy bound"); });
-        }
+            LimitReconstructionPP(state, work);
         if (_data->equation.Viscous())
         {
             // Viscous gradients are gradients of rho,u,v,w,T, not a facewise
@@ -724,6 +702,142 @@ namespace DNDS::Cauchy
         return work.auxiliary;
     }
     const ThermalBounds &FiniteVolume::ThermalConstraints() const { return _data->thermalBounds; }
+    void FiniteVolume::LimitReconstructionPP(const CFV::FVField &state, Workspace &work) const
+    {
+        const auto &controls = _data->settings.numerics;
+        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                        {
+            DNDS_check_throw_info(work.owner == _data.get() && controls.positivity && _data->positivitySamples &&
+                                  work.ownedStorage == state.Owned().SharedStorage() && work.ghostStorage == state.Ghost().SharedStorage(),
+                                  "reconstruction PP requires this plan's bound state and enabled workspace");
+            // All samples belong to owned cells. No state/coefficient ghost
+            // lease is acquired, including during progressive order selection.
+            _data->positivitySamples->Evaluate(state, work.reconstruction.coefficients, work.positivityValues);
+            auto mean = state.Owned().Read();
+            const auto u = mean.View<R::UniformTableRows>();
+            const auto validatePoints = [&](const R::Array<real> &values, bool admissible)
+            {
+                auto read = values.Read(); const auto p = read.View<R::UniformTableRows>();
+                for (index iPoint = 0; iPoint < p.RowCount(); ++iPoint)
+                {
+                    const auto value = Load(p, iPoint);
+                    for (auto component : value) DNDS_check_throw_info(std::isfinite(component), "nonfinite reconstruction in positivity input");
+                    if (admissible) DNDS_check_throw_info(ThermallyAdmissible(value, _data->thermalBounds), "reconstruction violates temperature/internal-energy bound");
+                }
+            };
+            validatePoints(work.positivityValues, false);
+            for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
+                DNDS_check_throw_info(ThermallyAdmissible(Load(u, iCell), _data->thermalBounds), "reconstruction PP requires admissible means");
+            const auto copyOwned = [&](const CFV::FVField &from, CFV::FVField &to)
+            {
+                auto input = from.Owned().Read(); auto output = to.Owned().Write();
+                const auto a = input.View<R::UniformTableRows>(); const auto b = output.View<R::UniformTableRows>();
+                for (index iCell = 0; iCell < a.RowCount(); ++iCell)
+                    for (index j = 0; j < a.RowSize(iCell); ++j) b(iCell, j) = a(iCell, j);
+            };
+            copyOwned(work.reconstruction.coefficients, work.reconstruction.temporary);
+            if (work.positivityReference)
+            {
+                copyOwned(work.reconstruction.coefficients, *work.positivityReference);
+                {
+                    auto points = work.positivityValues.Read(); auto degree = work.positivityReferenceDegree.Write();
+                    const auto p = points.View<R::UniformTableRows>(); const auto d = degree.View<R::FixedRows<1>>();
+                    for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
+                    {
+                        bool good = true;
+                        for (index q = _data->positivityOffsets[iCell]; q < _data->positivityOffsets[iCell + 1]; ++q)
+                            good = good && ThermallyAdmissible(Load(p, q), _data->thermalBounds);
+                        d(iCell, 0) = good ? controls.cfv.maxOrder : -1;
+                    }
+                }
+                const int modes = _data->reconstruction.NRecDOF();
+                // The central Taylor ordering is ascending total degree. If a
+                // reference is still bad, discard that high order before trying
+                // the next lower reference, exactly as Euler DownCastURecOrder.
+                // These iterations are local: ranks may resolve different cells
+                // without changing the surrounding collective schedule.
+                for (int degree = controls.cfv.maxOrder - 1; degree >= 0; --degree)
+                {
+                    const int keep = degree ? CFV::Math::PolynomialSize(Metrics().Dimension(), degree) - 1 : 0;
+                    {
+                        auto status = work.positivityReferenceDegree.Read(); auto reference = work.positivityReference->Owned().Write();
+                        const auto d = status.View<R::FixedRows<1>>(); const auto r = reference.View<R::UniformTableRows>();
+                        for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
+                            if (d(iCell, 0) < 0)
+                                for (int j = 0; j < 5; ++j)
+                                    for (int mode = keep; mode < modes; ++mode) r(iCell, j * modes + mode) = 0;
+                    }
+                    _data->positivitySamples->Evaluate(state, *work.positivityReference, work.positivityReferenceValues);
+                    auto points = work.positivityReferenceValues.Read(), reference = work.positivityReference->Owned().Read();
+                    auto status = work.positivityReferenceDegree.Write(); auto candidate = work.reconstruction.temporary.Owned().Write();
+                    const auto p = points.View<R::UniformTableRows>(), r = reference.View<R::UniformTableRows>(); const auto c = candidate.View<R::UniformTableRows>();
+                    const auto d = status.View<R::FixedRows<1>>();
+                    for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
+                        if (d(iCell, 0) < 0)
+                        {
+                            bool good = true;
+                            for (index q = _data->positivityOffsets[iCell]; q < _data->positivityOffsets[iCell + 1]; ++q)
+                                good = good && ThermallyAdmissible(Load(p, q), _data->thermalBounds);
+                            if (good) d(iCell, 0) = degree;
+                            else for (index j = 0; j < c.RowSize(iCell); ++j) c(iCell, j) = r(iCell, j);
+                        }
+                }
+                validatePoints(work.positivityReferenceValues, true);
+                _data->positivitySamples->Evaluate(state, work.reconstruction.temporary, work.positivityValues);
+                validatePoints(work.positivityValues, false);
+            }
+            work.betaLimited = 0; work.betaMin = 1;
+            auto points = work.positivityValues.Read(); auto coefficients = work.reconstruction.temporary.Owned().Write();
+            const auto p = points.View<R::UniformTableRows>(); const auto rec = coefficients.View<R::UniformTableRows>();
+            std::optional<R::Array<real>::ReadLease> reference, referenceValues;
+            if (work.positivityReference)
+            {
+                reference.emplace(work.positivityReference->Owned().Read());
+                referenceValues.emplace(work.positivityReferenceValues.Read());
+            }
+            for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
+            {
+                const auto base = Load(u, iCell);
+                const index begin = _data->positivityOffsets[iCell], end = _data->positivityOffsets[iCell + 1];
+                struct MeanValues
+                {
+                    FlowState value;
+                    real operator()(index, int j) const { return value[j]; }
+                };
+                real beta = 1;
+                if (controls.positivityReconstruction == "Segment")
+                {
+                    for (index q = begin; q < end; ++q) beta = std::min(beta, AdmissibleFraction(base, Load(p, q), _data->thermalBounds));
+                    if (beta < controls.positivityBetaCutoff) beta = 0;
+                }
+                else if (referenceValues)
+                    beta = ReconstructionFraction(base, referenceValues->View<R::UniformTableRows>(), p, begin, end, _data->thermalBounds, controls.positivityBetaPower, controls.positivityBetaCutoff);
+                else
+                    beta = ReconstructionFraction(base, MeanValues{base}, p, begin, end, _data->thermalBounds, controls.positivityBetaPower, controls.positivityBetaCutoff);
+                DNDS_check_throw_info(std::isfinite(beta) && beta >= 0 && beta <= 1, "invalid reconstruction positivity beta");
+                if (beta < 1)
+                {
+                    ++work.betaLimited; work.betaMin = std::min(work.betaMin, beta);
+                    if (reference)
+                    {
+                        const auto r = reference->View<R::UniformTableRows>();
+                        for (index j = 0; j < rec.RowSize(iCell); ++j)
+                            rec(iCell, j) = r(iCell, j) + beta * (rec(iCell, j) - r(iCell, j));
+                    }
+                    else
+                        for (index j = 0; j < rec.RowSize(iCell); ++j) rec(iCell, j) *= beta;
+                }
+            } });
+        _data->reconstruction.CommitReconstruction(work.reconstruction);
+        // Check the published polynomial itself, not just algebraically blended
+        // samples: this also detects indexing/cancellation mistakes in storage.
+        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                        {
+            _data->positivitySamples->Evaluate(state, work.reconstruction.coefficients, work.positivityValues);
+            auto points = work.positivityValues.Read(); const auto p = points.View<R::UniformTableRows>();
+            for (index q = 0; q < p.RowCount(); ++q)
+                DNDS_check_throw_info(ThermallyAdmissible(Load(p, q), _data->thermalBounds), "scaled reconstruction violates temperature/internal-energy bound"); });
+    }
     index FiniteVolume::LastCharacteristicFallbacks(const Workspace &work) const
     {
         auto count = work.characteristicFallbacks;

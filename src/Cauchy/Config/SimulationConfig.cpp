@@ -111,10 +111,8 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(settings.mesh.dimension == 2 || settings.mesh.dimension == 3, "Cauchy geometric dimension must be 2 or 3");
             DNDS_check_throw_info(settings.execution.hostThreads >= 0 && settings.execution.hostThreads <= 1024, "invalid CPU worker count");
             const auto &numerics = settings.numerics;
-            DNDS_check_throw_info(std::isfinite(numerics.temperatureFloor) && numerics.temperatureFloor > 0, "positive finite temperatureFloor required");
-            DNDS_check_throw_info(std::isfinite(numerics.positivityBetaCutoff) && numerics.positivityBetaCutoff >= 0 && numerics.positivityBetaCutoff < 1, "invalid positivity beta cutoff");
-            DNDS_check_throw_info(std::isfinite(numerics.densityFloor) && numerics.densityFloor > 0 && std::isfinite(numerics.pressureFloor) && numerics.pressureFloor > 0 &&
-                                      numerics.reconstructionIterations > 0 && std::isfinite(numerics.reconstructionTolerance) && numerics.reconstructionTolerance >= 0,
+            numerics.ValidatePositivity();
+            DNDS_check_throw_info(numerics.reconstructionIterations > 0 && std::isfinite(numerics.reconstructionTolerance) && numerics.reconstructionTolerance >= 0,
                                   "invalid Cauchy numerical controls");
             numerics.cfv.Validate();
             const auto &riemann = numerics.riemann;
@@ -160,6 +158,15 @@ namespace DNDS::Cauchy
                                       "wall thermal/velocity parameters supplied to a non-wall condition");
             }
         }
+    }
+    void NumericsSettings::ValidatePositivity() const
+    {
+        DNDS_check_throw_info(std::isfinite(temperatureFloor) && temperatureFloor > 0 && std::isfinite(densityFloor) && densityFloor > 0 &&
+                                  std::isfinite(pressureFloor) && pressureFloor > 0 && std::isfinite(positivityBetaCutoff) && positivityBetaCutoff >= 0 && positivityBetaCutoff < 1 &&
+                                  (positivityReconstruction == "Euler" || positivityReconstruction == "Segment") && positivityBetaPower >= 0 && positivityBetaPower < INT_MAX,
+                              "invalid reconstruction positivity controls");
+        DNDS_check_throw_info(!positivity || positivityReconstruction != "Segment" || (positivityCompressToMean && positivityBetaPower == 1),
+                              "Segment compatibility does not implement Euler order-reference or beta-power controls");
     }
     void DITRTimeSettings::Validate() const
     {

@@ -173,6 +173,12 @@ namespace DNDS::Cauchy
         /// refreshed from owners using the field's canonical mapping.
         const AuxiliaryValues &PreparedAuxValues(const Workspace &workspace) const;
         const ThermalBounds &ThermalConstraints() const;
+        /// Collective checked projection of workspace coefficients. Reads only
+        /// owned means and cached owned-cell points; a mean ghost write may be
+        /// active. Coefficient transfers must be complete before publication.
+        /// Explicit outputs are limited coefficients and per-call beta stats.
+        /// Does not reconstruct, exchange, advance time or change cell means.
+        void LimitReconstructionPP(const CFV::FVField &state, Workspace &workspace) const;
         index LastCharacteristicFallbacks(const Workspace &workspace) const;
         std::pair<index, real> PositivityReconstructionStats(const Workspace &workspace) const;
         Vector3 LastBoundaryForce(const Workspace &workspace, const std::vector<int> &zones) const;

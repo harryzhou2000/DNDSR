@@ -14,6 +14,91 @@ namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
 namespace A = DNDS::Algebra;
 static DNDS::MPIInfo mpi;
+TEST_CASE("Euler reconstruction PP selects a mean or progressively truncated reference across layouts during halo exchange")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    for (bool compressToMean : {true, false})
+        for (bool volumePoints : {true, false})
+            for (int layout = 0; layout < 3; ++layout)
+            {
+                C::DomainSettings settings;
+                settings.numerics.positivity = true;
+                settings.numerics.positivityCompressToMean = compressToMean;
+                settings.numerics.positivityVolumePoints = volumePoints;
+                settings.numerics.positivityBetaCutoff = 0;
+                settings.numerics.cfv.maxOrder = 3;
+                C::FiniteVolume fv(mesh, settings, C::EquationSystem::Resolve(settings.equation));
+                const auto shape = layout == 0 ? R::RowLayout::Dense(0, 5) : layout == 1 ? R::RowLayout::ColMajor(0, 5)
+                                                                                         : R::RowLayout::TiledColMajor(0, 5, 4);
+                auto state = fv.Metrics().BuildField(shape);
+                const C::FlowState mean{1, 0, 0, 0, 2.5};
+                {
+                    auto write = state.Owned().Write();
+                    for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                        for (int j = 0; j < 5; ++j)
+                            write.View<R::UniformTableRows>()(iCell, j) = mean[j];
+                }
+                auto work = fv.BuildWorkspace(state);
+                const auto &rec = fv.ReconstructionGuess(*work);
+                const DNDS::index modes = rec.Width() / 5;
+                REQUIRE(modes == 9);
+                R::Array<DNDS::real> input(R::RowLayout::Dense(state.Owned().RowCount(), rec.Width()));
+                const auto fill = [&](DNDS::real density, DNDS::real cubicEnergy)
+                {
+                    auto write = input.Write();
+                    for (DNDS::index iCell = 0; iCell < input.RowCount(); ++iCell)
+                    {
+                        for (DNDS::index j = 0; j < rec.Width(); ++j)
+                            write.View()(iCell, j) = 0;
+                        write.View()(iCell, 0) = density;
+                        write.View()(iCell, 4 * modes + 5) = cubicEnergy;
+                    }
+                };
+                // A good polynomial must remain exactly unchanged, even while
+                // the state ghost buffer is held by a real MPI transfer.
+                fill(1e-3, -1e-3);
+                fv.RestoreReconstructionGuess(*work, input);
+                auto halo = fv.Metrics().BindHalo(state);
+                auto operation = halo.Begin();
+                const auto meanVersion = state.Owned().Version();
+                fv.LimitReconstructionPP(state, *work);
+                operation.Wait();
+                CHECK(state.Owned().Version() == meanVersion);
+                CHECK(fv.PositivityReconstructionStats(*work) == std::pair<DNDS::index, DNDS::real>{0, 1});
+                {
+                    auto expected = input.Read(), actual = rec.Owned().Read();
+                    for (DNDS::index iCell = 0; iCell < input.RowCount(); ++iCell)
+                        for (DNDS::index j = 0; j < rec.Width(); ++j)
+                            CHECK(actual.View<R::UniformTableRows>()(iCell, j) == expected.View()(iCell, j));
+                }
+                // P3 and P1 are both inadmissible. Progressive reduction must
+                // discard P3 before scaling P1 toward the mean; mean-reference
+                // compression must retain a nonzero, uniformly scaled P3 mode.
+                fill(4, -1000);
+                fv.RestoreReconstructionGuess(*work, input);
+                auto active = halo.Begin();
+                fv.LimitReconstructionPP(state, *work);
+                active.Wait();
+                const auto [limited, beta] = fv.PositivityReconstructionStats(*work);
+                CHECK(limited == 16);
+                CHECK(beta > 0);
+                CHECK(beta < 1);
+                CHECK(state.Owned().Version() == meanVersion);
+                auto coefficients = rec.Owned().Read(), means = state.Owned().Read();
+                for (DNDS::index iCell = 0; iCell < input.RowCount(); ++iCell)
+                {
+                    CHECK(coefficients.View<R::UniformTableRows>()(iCell, 0) > 0);
+                    CHECK(coefficients.View<R::UniformTableRows>()(iCell, 0) < 4);
+                    const auto cubic = coefficients.View<R::UniformTableRows>()(iCell, 4 * modes + 5);
+                    if (compressToMean)
+                        CHECK(cubic / -1000 == doctest::Approx(coefficients.View<R::UniformTableRows>()(iCell, 0) / 4));
+                    else
+                        CHECK(cubic == 0);
+                    for (int j = 0; j < 5; ++j)
+                        CHECK(means.View<R::UniformTableRows>()(iCell, j) == mean[j]);
+                }
+            }
+}
 TEST_CASE("Auxiliary provenance and persistent workspaces reject a different row view of the same allocation")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
@@ -1196,6 +1281,49 @@ TEST_CASE("A checkpoint predating spatial Riemann options retains explicit manua
     C::Domain different("fluid", mesh, automatic.Domains()[0].settings);
     CHECK_THROWS(different.ReadCheckpoint(path, automatic.Root()));
     CHECK(different.Epoch().acceptedStep == 0);
+    MPI_Barrier(mpi.comm);
+    if (mpi.rank == 0)
+        CHECK(std::filesystem::remove(path));
+    MPI_Barrier(mpi.comm);
+}
+TEST_CASE("Checkpoint PP policy preserves pre-Euler archives without silently changing active reconstruction limiting")
+{
+    int pid = int(getpid());
+    MPI_Bcast(&pid, 1, MPI_INT, 0, mpi.comm);
+    const auto path = (std::filesystem::temp_directory_path() / ("cauchy-pre-euler-pp-" + std::to_string(pid) + ".h5")).string();
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    for (bool positivity : {false, true})
+    {
+        CAPTURE(positivity);
+        C::Json input{{"defaults", {{"numerics", {{"positivity", positivity}, {"positivityReconstruction", "Segment"}}}}}};
+        const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
+        C::Domain source("fluid", mesh, config.Domains()[0].settings), restored("fluid", mesh, config.Domains()[0].settings);
+        source.Advance(.001);
+        auto oldConfig = config.Root();
+        auto &oldNumerics = oldConfig["domains"][0]["settings"]["numerics"];
+        for (const auto *name : {"positivityReconstruction", "positivityVolumePoints", "positivityCompressToMean", "positivityBetaPower"})
+            oldNumerics.erase(name);
+        source.WriteCheckpoint(path, oldConfig);
+        CHECK_NOTHROW(restored.ReadCheckpoint(path, config.Root()));
+        CHECK(restored.Epoch().acceptedStep == 1);
+        input["defaults"]["numerics"]["positivityReconstruction"] = "Euler";
+        const auto euler = C::SimulationConfig::ResolveCollective(input, mpi.comm);
+        C::Domain changed("fluid", mesh, euler.Domains()[0].settings);
+        if (positivity)
+        {
+            CHECK_THROWS(changed.ReadCheckpoint(path, euler.Root()));
+            CHECK(changed.Epoch().acceptedStep == 0);
+        }
+        else
+        {
+            CHECK_NOTHROW(changed.ReadCheckpoint(path, euler.Root()));
+            CHECK(changed.Epoch().acceptedStep == 1);
+        }
+        auto expected = source.Flow().Owned().Read(), actual = restored.Flow().Owned().Read();
+        for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+                CHECK(actual.View()(iCell, j) == expected.View()(iCell, j));
+    }
     MPI_Barrier(mpi.comm);
     if (mpi.rank == 0)
         CHECK(std::filesystem::remove(path));

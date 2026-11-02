@@ -32,8 +32,11 @@ namespace DNDS::Cauchy
             }
             return {{"family", schema.family}, {"energy_convention", schema.energyConvention}, {"physical_accumulation", schema.physicalAccumulation}, {"blocks", blocks}, {"eos", "perfectGas"}, {"gamma", equation.Gas().gamma}, {"gas_constant", equation.Gas().gasConstant}};
         }
-        Json CompatibleConfig(Json config)
+        nlohmann::json CompatibleConfig(Json config)
         {
+            // Display/config JSON preserves insertion order. Semantic restart
+            // equality must not: filling old defaults appends keys at another
+            // position. Return ordinary object JSON for order-independent keys.
             // Time/output/placement/execution choices and polynomial setup do
             // not change stored means. Keep other physical/numerical choices
             // explicit: e.g. an old manual Roe stencil must not silently become
@@ -56,6 +59,32 @@ namespace DNDS::Cauchy
                 {
                     auto &numerics = settings["numerics"];
                     numerics.erase("cfv");
+                    // Earlier Cauchy archives used pointwise segment limiting.
+                    // Missing controls must not silently select Euler's newer
+                    // common-beta policy. Inactive PP choices do not affect a
+                    // non-PP continuation and need not invalidate old archives.
+                    if (numerics.value("positivity", false))
+                    {
+                        if (!numerics.contains("positivityReconstruction"))
+                            numerics["positivityReconstruction"] = "Segment";
+                        if (!numerics.contains("positivityVolumePoints"))
+                            numerics["positivityVolumePoints"] = true;
+                        if (numerics["positivityReconstruction"] == "Segment")
+                        {
+                            numerics.erase("positivityCompressToMean");
+                            numerics.erase("positivityBetaPower");
+                        }
+                        else
+                        {
+                            if (!numerics.contains("positivityCompressToMean"))
+                                numerics["positivityCompressToMean"] = true;
+                            if (!numerics.contains("positivityBetaPower"))
+                                numerics["positivityBetaPower"] = 1;
+                        }
+                    }
+                    else
+                        for (const auto *name : {"positivityReconstruction", "positivityVolumePoints", "positivityCompressToMean", "positivityBetaPower"})
+                            numerics.erase(name);
                     if (numerics.contains("riemann") && numerics["riemann"].is_object() && !numerics["riemann"].contains("useStencil"))
                         numerics["riemann"]["useStencil"] = false;
                 }
@@ -334,7 +363,11 @@ namespace DNDS::Cauchy
                     flow.RowCount() == ids.RowCount() && flow.Layout().Width() == 5;
         valid = valid && (version < 4 || (metadata.is_object() && metadata.value("schema_version", 0) == 1 && metadata.value("flow", Json()) == FlowSchema(_equation)));
         MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
-        DNDS_check_throw_info(valid, "Cauchy restart config/equation schema mismatch");
+        if (!valid)
+        {
+            const auto differences = storedConfig.is_discarded() ? nlohmann::json() : nlohmann::json::diff(CompatibleConfig(storedConfig), CompatibleConfig(resolved));
+            DNDS_check_throw_info(false, "Cauchy restart config/equation schema mismatch; normalized config differences: " + differences.dump());
+        }
         const int meshEnvelope = version == 4 ? metadata.value("mesh_envelope", 1) : 1;
         DNDS_check_throw_info(meshEnvelope == 1 || meshEnvelope == 2, "unsupported Cauchy mesh envelope");
         auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);

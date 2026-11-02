@@ -51,6 +51,29 @@ copies share handles. Ghost values are refreshed by the caller after owned state
 updates, including a rollback or deep clone. Rebinding blocks must preserve
 space/shape and non-aliasing requirements, validated at algebra boundaries.
 
+The extension contract is a bundle of logical equation blocks, not one mandatory
+physical array. Keep flow5 together; RANS and species may occupy separate arrays
+with their own uniform layouts. Kernel wrappers resolve block/schema choices
+once and pass stride-aware row views; numerical loops must not infer a species
+pointer from the end of a flow row. Coupled equations remain coupled regardless
+of physical block separation. A future coupled matrix/vector adapter must map
+the equation's component ordering across blocks without requiring a persistent
+flattened state. Current Cauchy kernels, implicit matrices, stage callbacks and
+checkpoint sections implement **flow5 only**; the existing bundle container is
+not evidence that multi-block implicit stepping is already implemented.
+
+Checkpoint writing calls native `Runtime::WriteArray` on the owned field;
+there is no normalization buffer to AoS. Contiguous-row arrays use format3
+row-ordered values. Column/tiled arrays use format4 component datasets and
+physical-layout descriptors, omitting unused padding. Runtime reads may restore
+matching-rank placement or select another physical layout through direct HDF5
+memory/file selections. Cauchy explicitly reads file row shards and transfers
+by persistent cell ID into the configured target arrays, so writer layout/rank
+count is not a restart requirement. This may involve shard allocations and the
+redistribution transfer, not an application payload copy to normalize writing.
+The present HDF5 backend accepts host buffers only; device-resident direct I/O
+still rejects. See `RuntimeArrayIO` and `Cauchy/Checkpoint` distributed tests.
+
 The foundation tests run at np1/2/4/8. They use an independent two-variable
 recurrence to compare shared and disjoint execution, reversed rank namespaces,
 rank-local rejection and retry epochs, empty local ownership, mixed physical

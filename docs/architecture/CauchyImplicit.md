@@ -261,10 +261,31 @@ as a pure view-based rule. It accepts an admissible lower-order reference and
 finite high-order point values, with the same two affine thermal constraints.
 Its matrix-style test oracle calls active Euler Gas compression and covers
 unequal reference points, shifted energy, beta cutoff, good-polynomial identity
-and an exact thermal-bound mean. This is a building block: the current FV
-quadrature orchestration still uses the earlier segment limiter until reference
-order selection/storage and the complete field policy are connected. Do not
-claim that the entire Euler PP suite is already migrated.
+and an exact thermal-bound mean. `FiniteVolume::LimitReconstructionPP` connects
+it to owned-cell face/volume samples. Default `positivityReconstruction="Euler"`
+uses a common beta and the cell mean reference. Setting
+`positivityCompressToMean=false` progressively truncates the central Taylor
+basis to find an admissible reference, discarding failed higher orders as in
+Euler. `positivityBetaPower=1` gives beta squared; the safety/cutoff apply only
+when limiting is necessary. A good polynomial remains bitwise unchanged.
+`positivityVolumePoints` defaults true. The resulting stored coefficients are
+sampled again and checked against the strict density/thermal constraints.
+
+These synchronous CPU projections allocate their scratch once in the FV
+workspace. They use explicit input/output coefficients and owned means only,
+so a mean halo transfer can be active. Callers must complete coefficient
+transfers and conflicting accesses before projection; use the exact state
+storage bound by `BuildWorkspace`. No time advancement, reconstruction solve,
+halo communication or mean mutation is hidden in this method. Diagnostics
+report this call's count and minimum *applied* beta (zero after cutoff).
+
+`positivityReconstruction="Segment"` explicitly reproduces the earlier Cauchy
+pointwise rule, with the original default order/power controls. A pre-control
+checkpoint is interpreted as Segment when PP was enabled, so reading it with
+Euler PP rejects the numerical-policy mismatch. Inactive PP controls do not
+invalidate an older non-PP restart. This reconstruction migration is separate
+from the remaining global alpha variants and physical-dt PP field policy; do
+not claim the entire Euler PP suite is already migrated.
 
 `Solver/FieldTimeStepper.hpp` owns native-field time scratch and accepted BDF
 history. BDF1/2, Trapz and ESDIRK2/3/4 retain Euler's coefficients; DITR uses
@@ -293,8 +314,9 @@ prevents rank-dependent iteration/PP branches from mismatching MPI calls.
 For `numerics.positivity`, the implicit path uses Euler's RHS compression or
 dTau compression, relaxed delta compression and final flow5 increment repair.
 Convergence always uses the uncompressed defect. Reconstruction quadrature PP
-still uses the earlier Cauchy rule; full Euler reconstruction/physical-dt PP and
-its global alpha variants remain phase work. This is not yet the full PP suite.
+now uses the Euler rule by default (explicit Segment compatibility remains).
+Physical-dt PP and global alpha variants remain phase work. This is not yet the
+full PP suite.
 
 Corrections are computed into separate candidate storage, then admissibility
 is agreed before any trial-state write. This required safety agreement remains

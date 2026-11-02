@@ -3,6 +3,28 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("Reconstruction PP controls are explicit and reject unsupported compatibility combinations")
+{
+    C::NumericsSettings settings;
+    CHECK(settings.positivityReconstruction == "Euler");
+    CHECK_NOTHROW(settings.ValidatePositivity());
+    settings.positivity = true;
+    settings.positivityCompressToMean = false;
+    CHECK_NOTHROW(settings.ValidatePositivity());
+    settings.positivityReconstruction = "Segment";
+    CHECK_THROWS(settings.ValidatePositivity());
+    settings.positivityCompressToMean = true;
+    CHECK_NOTHROW(settings.ValidatePositivity());
+    settings.positivityBetaPower = -1;
+    CHECK_THROWS(settings.ValidatePositivity());
+    settings.positivityBetaPower = 2;
+    CHECK_THROWS(settings.ValidatePositivity());
+    settings.positivityReconstruction = "Euler";
+    CHECK_NOTHROW(settings.ValidatePositivity());
+    settings.positivityReconstruction = "unknown";
+    CHECK_THROWS(settings.ValidatePositivity());
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"numerics", {{"positivityReconstruction", "unknown"}}}}}}, 2));
+}
 TEST_CASE("Cauchy implicit controls resolve through the root and reject contradictory paths")
 {
     for (const std::string method : {"ssprk3", "bdf1", "bdf2", "trapz", "esdirk2", "esdirk3", "esdirk4", "ditr"})

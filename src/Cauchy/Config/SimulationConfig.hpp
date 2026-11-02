@@ -81,9 +81,13 @@ namespace DNDS::Cauchy
         bool positivity = false;
         real temperatureFloor = 1e-12;
         real positivityBetaCutoff = 1e-3;
+        std::string positivityReconstruction = "Euler";
+        bool positivityCompressToMean = true, positivityVolumePoints = true;
+        int positivityBetaPower = 1;
         real densityFloor = 1e-12, pressureFloor = 1e-12;
         CFV::ReconstructionSettings cfv;
         RiemannSettings riemann;
+        void ValidatePositivity() const;
         DNDS_DECLARE_CONFIG(NumericsSettings)
         {
             DNDS_FIELD(reconstruction, "constant, gradient, or variational reconstruction");
@@ -98,6 +102,10 @@ namespace DNDS::Cauchy
             DNDS_FIELD(positivity, "Mean-preserving reconstruction and conservative SSPRK flux-blend PP");
             DNDS_FIELD(temperatureFloor, "Minimum temperature enforced through the equation's internal-energy bound");
             DNDS_FIELD(positivityBetaCutoff, "Set numerically tiny reconstruction beta to zero; matches legacy's mean fallback");
+            DNDS_FIELD(positivityReconstruction, "Euler common quadrature beta or Segment for reproducing earlier Cauchy archives");
+            DNDS_FIELD(positivityCompressToMean, "Euler reference is the mean; false uses legacy progressive order reduction");
+            DNDS_FIELD(positivityVolumePoints, "Check volume as well as face quadrature points; future source models may require volume points");
+            DNDS_FIELD(positivityBetaPower, "Euler extra beta exponent, so the total exponent is 1+power");
             DNDS_FIELD(densityFloor, "Positive inclusive density admissibility floor");
             DNDS_FIELD(pressureFloor, "Positive inclusive pressure admissibility floor for the initial perfect-gas equation");
             config.field_section(&T::cfv, "cfv", "Independent mathematical CFV configuration");
