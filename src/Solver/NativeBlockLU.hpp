@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Solver/Direct.hpp"
+#include "Solver/BlockInverse.hpp"
 #include "DNDS/Algebra/BlockMatrixStorage.hpp"
 #include "DNDS/Algebra/DofAlgebra.hpp"
 #include "DNDS/Math/HardEigen.hpp"
@@ -29,21 +30,10 @@ namespace DNDS::Direct
             {
                 // Same diagonal scaling and guarded partial-pivot LU/SVD policy
                 // as the active Euler local block inverse, without its storage.
-                DNDS_check_throw_info(matrix.allFinite() && matrix.diagonal().array().abs().minCoeff() > 0,
-                                      "invalid or zero diagonal in native block factorization");
-                const Eigen::VectorXd scale = matrix.diagonal().array().inverse();
-                Eigen::MatrixXd normalized = scale.asDiagonal() * matrix, inverse;
-                Eigen::PartialPivLU<Eigen::MatrixXd> lu(normalized);
-                if (std::isfinite(lu.rcond()) && lu.rcond() >= 1e-7)
-                    inverse = lu.solve(Eigen::MatrixXd::Identity(matrix.rows(), matrix.cols()));
-                if (!inverse.size() || !inverse.allFinite())
-                {
-                    if (fallbacks)
-                        fallbacks->fetch_add(1, std::memory_order_relaxed);
-                    HardEigen::EigenLeastSquareInverse_Filtered(normalized, inverse, 0, 0);
-                }
-                DNDS_check_throw_info(inverse.allFinite(), "native block inverse is nonfinite");
-                return inverse * scale.asDiagonal();
+                auto result = InvertDiagonalBlock(matrix);
+                if (result.usedSVD && fallbacks)
+                    fallbacks->fetch_add(1, std::memory_order_relaxed);
+                return std::move(result.value);
             }
         };
     }

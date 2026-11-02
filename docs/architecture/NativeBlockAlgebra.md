@@ -13,7 +13,9 @@ it does not include EulerJacobian.hpp or legacy ArrayDOF. Sparse rows store
 diagonal, lower, then upper blocks. Matrix and factors use separate allocations.
 Fill matrix values before factoring. Diagonal inversion follows the active Euler
 policy: row-diagonal scaling, partial-pivot LU with a1e-7 reciprocal-condition
-guard, then filtered-SVD fallback. Fallback counts are safe across local parts.
+guard, then filtered-SVD fallback. The storage-independent implementation is
+`Solver/BlockInverse.hpp`; native LU and Cauchy diagonal preparation share it.
+Fallback counts are safe across local parts.
 
 The caller serializes mutation and execution. A new symbolic generation needs a
 new native storage owner. Matrix writes invalidate factors. Solve pins matrix

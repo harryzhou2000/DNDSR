@@ -389,3 +389,29 @@ switching decisions are not implied. It is separate from the Riemann flux and
 from viscous wall-temperature treatment. Centered-difference tests use the
 physical `Exterior` function as an independent oracle, away from switch points,
 with oblique normals, two gases and four inward/outward speed regimes.
+
+## Native linear problem foundation
+
+`Cauchy/Implicit/LinearProblemContext` owns the numerical matrix for one fixed
+native DOF space. Its immutable sparse columns use the same owned-plus-ghost
+local numbering as the input field. It stores rank-owned rows only, separate
+diagonal-entry or full diagonal blocks, and full off-diagonal blocks. Blocks use
+`DNDS::Algebra::BlockMatrixStorage`; diagonal values and inverses are native
+Arrays. No legacy ArrayDOF or EulerJacobian adapter is involved.
+
+The constructor checks the core set against actual matrix columns. Its logical
+scan visits `[core][noncore]`, without permuting physical arrays or communication
+mappings. `Apply(Core)` acquires only owned input; All and HaloDependent require
+completed ghost input. Output buffers must be distinct from inputs and matrix
+storage. Array allocation or shape replacement invalidates the fixed stencil.
+Fill finite coefficients before use; the low-level action does not rescan every
+coefficient or input value on each matrix-vector multiplication.
+
+`InvertDiagonal` explicitly prepares scalar reciprocals or robust block inverses
+using the shared active-Euler LU/SVD policy. Changed or actively written diagonal
+values reject SGS until inversion is repeated. `ApplySGS` currently exposes the
+unsplit local symmetric-GS pair: RHS, old iterate, forward scratch and result are
+separate buffers. Remote old values stay frozen through both scans. No MPI or
+middle exchange is hidden in the numerical operator. Staged SGS, the optional
+exposed inter-scan exchange, ILU composition, Krylov/nonlinear drivers and the
+physical approximate-Jacobian producer remain separate phase items.
