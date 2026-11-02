@@ -695,6 +695,31 @@ TEST_CASE("Native block LU solves strided DOFs and rejects stale matrices and al
             CHECK((dense * x - b).norm() < .2 * b.norm());
             if (fill == -1)
                 CHECK((x - dense.partialPivLu().solve(b)).norm() < 2e-13);
+            R::Array<DNDS::real> stagedForward(shape), stagedOutput(shape);
+            {
+                auto solve = native.BeginSolve(rhs, stagedForward, stagedOutput);
+                CHECK_THROWS(solve.Upper(0, NCells));
+                CHECK_THROWS(solve.Finish());
+                CHECK_THROWS(solve.Lower(4, NCells));
+                solve.Lower(0, 4);
+                CHECK_THROWS(stagedForward.Read());
+                CHECK_THROWS(stagedOutput.Read());
+                CHECK_THROWS(solve.Lower(0, 4));
+                CHECK_THROWS(solve.Upper(0, 4));
+                solve.Lower(4, NCells);
+                CHECK_THROWS(solve.Upper(0, 4));
+                solve.Upper(4, NCells);
+                solve.Upper(0, 4);
+                CHECK_THROWS(stagedOutput.Read());
+                solve.Finish();
+                CHECK_THROWS(solve.Finish());
+            }
+            {
+                auto read = stagedOutput.Read();
+                for (DNDS::index i = 0; i < NCells; ++i)
+                    for (DNDS::index j = 0; j < BS; ++j)
+                        CHECK(read.View<R::UniformTableRows>()(i, j) == x(i * BS + j));
+            }
             CHECK_THROWS(native.Solve(rhs, rhs, output));
             CHECK_THROWS(native.Solve(rhs, forward, forward));
             {
@@ -705,7 +730,16 @@ TEST_CASE("Native block LU solves strided DOFs and rejects stale matrices and al
             CHECK_FALSE(native.FactorsCurrent());
             native.Factorize();
         }
-        symbolic->ObtainSymmetricSymbolicFactorization(build2DPeriodicAdj(), {0, NCells}, fill);
+        R::Array<DNDS::real> oldRhs(R::RowLayout::Dense(NCells, BS)), oldForward(oldRhs.Layout()), oldOutput(oldRhs.Layout());
+        {
+            auto solve = native.BeginSolve(oldRhs, oldForward, oldOutput);
+            solve.Lower(0, 4);
+            symbolic->ObtainSymmetricSymbolicFactorization(build2DPeriodicAdj(), {0, NCells}, fill);
+            CHECK_THROWS(solve.Lower(4, NCells));
+            CHECK_THROWS(solve.Finish());
+        }
+        CHECK_FALSE(oldForward.IsValid());
+        CHECK_FALSE(oldOutput.IsValid());
         CHECK_FALSE(native.FactorsCurrent());
         CHECK_THROWS(native.Factorize());
     }
@@ -752,6 +786,44 @@ TEST_CASE("Native block LU supports empty owners and counts guarded inverse fall
         CHECK(read.View()(i, 0) == doctest::Approx(2 / (2 - 1e-9)).epsilon(1e-6));
         CHECK(read.View()(i, 1) == doctest::Approx(2 / (2 - 1e-9)).epsilon(1e-6));
     }
+}
+TEST_CASE("Native triangular phases retain owners and advance independent local parts")
+{
+    namespace R = DNDS::Runtime;
+    auto symbolic = std::make_shared<Direct::SerialSymLUStructure>(g_mpi, 2);
+    std::vector<std::vector<DNDS::index>> rows(2);
+    symbolic->ObtainSymmetricSymbolicFactorization(rows, {0, 1, 2}, 0);
+    R::Array<DNDS::real> output(R::RowLayout::Dense(2, 2));
+    std::optional<Direct::NativeBlockLU::TriangularSolve> retained;
+    {
+        auto owner = std::make_unique<Direct::NativeBlockLU>(symbolic, 2);
+        {
+            auto write = owner->Matrix().Write();
+            for (DNDS::index i = 0; i < 2; ++i)
+                write.View()(i, 0) = Eigen::Matrix2d::Identity() * 2;
+        }
+        owner->Factorize();
+        R::Array<DNDS::real> rhs(output.Layout()), forward(output.Layout());
+        {
+            auto write = rhs.Write();
+            for (DNDS::index i = 0; i < 2; ++i)
+                for (DNDS::index j = 0; j < 2; ++j)
+                    write.View()(i, j) = i + j + 1;
+        }
+        retained.emplace(owner->BeginSolve(rhs, forward, output));
+    }
+    // Each local part is independent, so its complete solve can precede the
+    // other part's forward scan. No per-row readiness bitmap is needed.
+    retained->Lower(1, 2);
+    retained->Upper(1, 2);
+    CHECK_THROWS(retained->Finish());
+    retained->Lower(0, 1);
+    retained->Upper(0, 1);
+    retained->Finish();
+    const auto read = output.Read();
+    for (DNDS::index i = 0; i < 2; ++i)
+        for (DNDS::index j = 0; j < 2; ++j)
+            CHECK(read.View()(i, j) == .5 * (i + j + 1));
 }
 
 int main(int argc, char **argv)

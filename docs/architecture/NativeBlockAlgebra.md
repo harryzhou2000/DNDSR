@@ -38,8 +38,28 @@ predecessors and own phase/readiness validation. Native full Solve runs both
 scans without MPI. An exposed middle transfer is a separate SGS orchestration
 option. Legacy full-factor/full-solve entry points preserve their arithmetic.
 
+`NativeBlockLU::BeginSolve(rhs, forward, result)` adds a guarded native
+`TriangularSolve` scope. `Lower(begin,end)` advances factor-position ranges
+within each independent symbolic local part; `Upper(begin,end)` reverses them
+after that part's forward scan is complete. Progress uses two counters per part,
+not a row bitmap. Independent local parts may advance in a different order.
+These entry points require a fully host-visible RHS; they do not promise
+concurrent writes to its other owned rows. Symbolic readiness metadata and kernel
+ranges remain available for a future independently proven partial-input adapter.
+
+The scope retains matrix/factor/RHS reads and exclusive forward/result writes.
+No forward or final result is published before `Finish`, which requires both
+complete scans. Bad/repeated ranges, premature publication and changed symbolic
+generations throw before arithmetic. Abandoning started work invalidates its
+partial outputs; an unused scope cancels unused writes. Numeric allocations and
+symbolic metadata survive destruction of original native owners. Callers must
+serialize symbolic mutation; direct edits to public generic symbolic vectors
+without its generation protocol are unsupported. The full Solve wrapper uses
+this same guarded numerical path and retains exact staged/full agreement.
+
 Focused Solver tests cover independent dense solves, incomplete/full factors,
 full/ranged agreement, core permutations/local parts, readiness counterexamples,
 all three DOF layouts, empty ownership, inverse fallback, retained lifetimes,
-aliases and stale/active-writer rejection. Cauchy's Jacobian/nonlinear/physical
+aliases and stale/active-writer rejection, staged publication, generation changes,
+independent local parts and owner expiration. Cauchy's nonlinear/physical
 integration remains a separate consumer and needs its own distributed gates.
