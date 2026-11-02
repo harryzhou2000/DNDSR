@@ -56,6 +56,9 @@ namespace DNDS::Cauchy
         std::vector<index> boundaryEntries;
         std::vector<index> stencilFaces;
         std::vector<index> faceEntries;
+        std::vector<index> auxiliaryCoreFaces, auxiliaryDependentFaces;
+        std::vector<index> auxiliaryCellOffsets, auxiliaryCellFaces;
+        std::vector<real> auxiliaryFaceArea;
         std::optional<CFV::PolynomialSamplingPlan> positivitySamples;
         std::vector<index> positivityOffsets;
         ThermalBounds thermalBounds;

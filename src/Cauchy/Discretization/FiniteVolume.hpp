@@ -62,6 +62,9 @@ namespace DNDS::Cauchy
             std::array<uint64_t, 7> versions{}, shapes{};
         };
         std::optional<Origin> _origin;
+        // Only needed when a cell reduction is requested without its matching
+        // public face output. Columns: spectral sum, wave jump, pressure min.
+        std::optional<Runtime::Array<real>> _faceScratch;
     };
     using RHSFieldView = Runtime::PairReadView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
     using RHSScalarView = Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
@@ -148,16 +151,54 @@ namespace DNDS::Cauchy
         /// Check allocation capability before the first Evaluate. This does not
         /// certify prepared values or input provenance; PreparedAuxValues does.
         void RequireWorkspaceChannels(const Workspace &workspace, AuxiliaryRequest required) const;
-        /// Allocate precisely the requested members once. Callers may instead
-        /// supply compatible buffers themselves, including strided tables.
+        /// Allocate the requested members once. Cell reductions without matching
+        /// face outputs also need private face scratch. Callers may instead
+        /// supply compatible buffers themselves, including strided tables;
+        /// BeginAuxValues lazily allocates their missing private scratch once.
         AuxiliaryValues BuildAuxiliaryValues(AuxiliaryRequest request) const;
         const std::vector<index> &AuxiliaryFaces() const;
+        /// Move-only CPU preparation transaction. Core reads owned means only;
+        /// finish the mean halo before HaloDependent. All runs both phases.
+        /// Face values are evaluated once, cell reductions preserve sorted-face
+        /// order, and no output validates until Finish. The scope retains all
+        /// allocations and leases; do not invoke its phases concurrently.
+        /// This is a synchronous CPU phase API. If a caller submits a phase to
+        /// an engine, retain the transaction through the stream join. Host-side
+        /// Finish follows that join; a queued continuation may Finish directly
+        /// after its synchronous dependent phase. Evaluate owns these joins.
+        class AuxiliaryPreparation
+        {
+            struct State;
+            std::unique_ptr<State> _state;
+            explicit AuxiliaryPreparation(std::unique_ptr<State> state);
+            friend class FiniteVolume;
+
+        public:
+            AuxiliaryPreparation(const AuxiliaryPreparation &) = delete;
+            AuxiliaryPreparation &operator=(const AuxiliaryPreparation &) = delete;
+            AuxiliaryPreparation(AuxiliaryPreparation &&) noexcept;
+            AuxiliaryPreparation &operator=(AuxiliaryPreparation &&) noexcept;
+            ~AuxiliaryPreparation();
+            void Apply(CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All);
+            /// Publish to the same output buffers (or an exact sharing copy).
+            /// Reject incomplete work or replaced outputs. Releases all leases;
+            /// abandoning a scope leaves the result without valid provenance.
+            void Finish(AuxiliaryValues &output);
+        };
+        /// Begin without acquiring the input ghost lease. The caller must order
+        /// its halo completion before the dependent phase. The input relation
+        /// is Adj::Cell2CellFace, using the conservative cell-node-cell core.
+        /// Requested outputs remain reserved until Finish/destruction. Unwinding
+        /// after partial writes follows Runtime failure semantics: replace failed
+        /// output buffers/workspace before retrying. No communication is posted.
+        AuxiliaryPreparation BeginAuxValues(const CFV::FVField &state, AuxiliaryValues &output, real time = 0) const;
         /// Stateless fused CPU operator. Input halos must already be current and
         /// host-visible. Writes only the explicit optional outputs, performs no
         /// communication/global reduction, and never mutates state or FV caches.
+        /// Private face scratch belongs to output, not the immutable FV plan.
         void PrepareAuxValues(const CFV::FVField &state, AuxiliaryValues &output, real time = 0) const;
-        /// Reject changed inputs, geometry, boundary time, output selection or
-        /// overwritten owned output buffers before a prepared result is reused.
+        /// Reject changed inputs, geometry, boundary time, output selection,
+        /// cell row identity or overwritten buffers before a result is reused.
         void ValidateAuxValues(const CFV::FVField &state, const AuxiliaryValues &values, real time = 0) const;
         real StableStep(const CFV::FVField &state, const AuxiliaryValues &values, real cfl, real time = 0) const;
         /// Clear the polynomial initial guess at a synchronous workspace boundary.
@@ -181,6 +222,9 @@ namespace DNDS::Cauchy
         /// explicit inside this domain-level routine; numerical kernels use
         /// owned-only core inputs while ghost transfers are active. The caller
         /// serializes residuals on this workspace and coordinates domain errors.
+        /// Synchronous collective: invoke on an MPI-authorized controller thread.
+        /// Queued work is observed on success and before borrowed scopes unwind
+        /// on exceptions; failed scratch allocations require replacement.
         void Evaluate(CFV::FVField &state, CFV::FVField &residual, Workspace &workspace,
                       Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
         /// Euler physical-dt trial: configured convective flux/BC/auxiliary

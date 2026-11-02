@@ -14,6 +14,7 @@
 #include <atomic>
 #include <fstream>
 #include <iomanip>
+#include <exception>
 
 namespace DNDS::Cauchy
 {
@@ -25,6 +26,32 @@ namespace DNDS::Cauchy
         using FiniteVolumeDetail::Load;
         using FiniteVolumeDetail::RotateState;
         using FiniteVolumeDetail::Sample;
+        /// These CPU convenience wrappers return with their submitted work
+        /// observed, including when a later controller operation throws. Declare
+        /// the guard after borrowed resources so it joins before they unwind.
+        class JoinStreamOnException
+        {
+            const R::ExecutionStream &_stream;
+            int _exceptions = std::uncaught_exceptions();
+
+        public:
+            explicit JoinStreamOnException(const R::ExecutionStream &stream) : _stream(stream) {}
+            JoinStreamOnException(const JoinStreamOnException &) = delete;
+            JoinStreamOnException &operator=(const JoinStreamOnException &) = delete;
+            ~JoinStreamOnException()
+            {
+                if (std::uncaught_exceptions() > _exceptions)
+                    try
+                    {
+                        _stream.Record().WaitHost();
+                    }
+                    catch (...)
+                    {
+                        // A failed prefix must not replace the original
+                        // controller exception with its completion error.
+                    }
+            }
+        };
         R::RowLayout FieldLayout(const R::RowLayout &prototype, index rows, index width)
         {
             if (prototype.Kind() == R::RowLayoutKind::ColMajorTable)
@@ -167,6 +194,7 @@ namespace DNDS::Cauchy
                 const auto iFace = faces[slot];
                 const int side = topology.CellIsFaceBack(iCell, iFace, slot) ? 0 : 1;
                 const index other = topology.CellFaceOther(iCell, iFace, slot);
+                DNDS_check_throw_info(other == UnInitIndex || (other >= 0 && other < data->metrics.NumCellProc()), "flux stencil has an unavailable neighbor cell");
                 const index auxiliaryFace = index(std::lower_bound(data->stencilFaces.begin(), data->stencilFaces.end(), iFace) - data->stencilFaces.begin());
                 BoundaryCondition condition;
                 if (other == UnInitIndex)
@@ -226,8 +254,41 @@ namespace DNDS::Cauchy
             index entry = data->offsets[iCell];
             while (entry < data->offsets[iCell + 1] && data->samples[entry].point != metric.FaceQuadratureBegin(iFace)) ++entry;
             DNDS_check_throw_info(entry < data->offsets[iCell + 1], "auxiliary face missing its quadrature incidence");
+            const index iAux = index(data->faceEntries.size());
+            const auto other = data->samples[entry].other;
+            (other == UnInitIndex || other < data->metrics.NumCell() ? data->auxiliaryCoreFaces : data->auxiliaryDependentFaces).push_back(iAux);
+            real area = 0;
+            for (index q = metric.FaceQuadratureBegin(iFace); q < metric.FaceQuadratureEnd(iFace); ++q)
+                area += metric.GetFaceWeight(q);
+            data->auxiliaryFaceArea.push_back(area);
             data->faceEntries.push_back(entry);
         }
+        // Derived work lists retain the canonical face order of the original
+        // face-centric reductions. Keep repeated incidences (e.g. a periodic
+        // face whose two parents are the same cell); they contribute twice.
+        data->auxiliaryCellOffsets.resize(size_t(data->metrics.NumCell()) + 1, 0);
+        for (index iCell = 0; iCell < data->metrics.NumCell(); ++iCell)
+            data->auxiliaryCellOffsets[iCell + 1] = data->auxiliaryCellOffsets[iCell] + index(topology.CellFaces(iCell).size());
+        data->auxiliaryCellFaces.resize(size_t(data->auxiliaryCellOffsets.back()));
+        for (index iCell = 0; iCell < data->metrics.NumCell(); ++iCell)
+        {
+            index cursor = data->auxiliaryCellOffsets[iCell];
+            for (index entry = data->offsets[iCell]; entry < data->offsets[iCell + 1];)
+            {
+                const auto iAux = data->samples[entry].auxiliaryFace;
+                data->auxiliaryCellFaces[cursor++] = iAux;
+                const auto iFace = data->stencilFaces[iAux];
+                entry += metric.FaceQuadratureEnd(iFace) - metric.FaceQuadratureBegin(iFace);
+            }
+            DNDS_check_throw_info(cursor == data->auxiliaryCellOffsets[iCell + 1], "auxiliary cell incidence count differs");
+            std::sort(data->auxiliaryCellFaces.begin() + data->auxiliaryCellOffsets[iCell], data->auxiliaryCellFaces.begin() + cursor);
+        }
+        for (const auto iCell : data->partition.Core())
+            for (index entry = data->auxiliaryCellOffsets[iCell]; entry < data->auxiliaryCellOffsets[iCell + 1]; ++entry)
+            {
+                const auto other = data->samples[data->faceEntries[data->auxiliaryCellFaces[entry]]].other;
+                DNDS_check_throw_info(other == UnInitIndex || other < data->metrics.NumCell(), "auxiliary core depends on an input ghost");
+            }
         data->boundaryEntries.resize(size_t(data->reconstruction.NumBoundaryQuadrature()));
         for (index iPoint = 0; iPoint < data->reconstruction.NumBoundaryQuadrature(); ++iPoint)
         {
@@ -410,6 +471,7 @@ namespace DNDS::Cauchy
     void FiniteVolume::EvaluateImpl(CFV::FVField &state, CFV::FVField &residual, Workspace &work,
                                     R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
+        std::optional<AuxiliaryPreparation> auxiliaryPreparation;
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
                         {
         Metrics().ValidateField(state, 5);
@@ -424,7 +486,10 @@ namespace DNDS::Cauchy
         // debug-visible output before any rank starts halo communication; no
         // row-loop check or extra mutation generation is introduced.
         auto unused = residual.Owned().Write();
-        unused.CancelUnmodified(); });
+        unused.CancelUnmodified();
+        if (_data->settings.execution.overlap)
+            auxiliaryPreparation.emplace(BeginAuxValues(state, work.auxiliary, time)); });
+        JoinStreamOnException auxiliaryJoin(stream);
         work.auxiliary._origin.reset();
         work.fluxReady = false;
         DNDS_check_throw_info(Admissible(state), "inadmissible Cauchy mean state");
@@ -450,7 +515,9 @@ namespace DNDS::Cauchy
         };
         std::optional<R::TransferOperation> meanOperation;
         if (overlap)
+        {
             meanOperation.emplace(engine.ChecksAccess() ? work.meanHalo.BeginChecked(stream) : work.meanHalo.BeginScheduled(stream.Context()));
+        }
         // Explicit quadrature values keep BC policy out of CFV kernels. All
         // stages refresh these values from their own current mean state. They
         // read owned means only, so the mean ghost write can remain active.
@@ -503,17 +570,38 @@ namespace DNDS::Cauchy
             if (_data->settings.numerics.reconstructionBoundaryFromPolynomial)
                 updateReconstructionBoundary();
             firstCoefficientOperation.emplace(engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream.Context()));
+        }
+        if (overlap)
+        {
+            // Post both required transfers before queueing CPU work: the checked
+            // MPI bridge observes a stream prefix for producer readiness. Queueing
+            // auxiliary work before that bridge would join it prematurely.
+            auto *preparation = &*auxiliaryPreparation;
+            engine.Submit(stream, [preparation](auto)
+                          { preparation->Apply(CFV::ReconstructionRegion::Core); });
             // The first VR core consumes only owned means and coefficients.
             // It is independent of both active ghost writes and of auxiliary
-            // preparation, which remains a separate mean-state operator.
-            _data->reconstruction.DoReconstructionIterTo(state, work.reconstruction.coefficients, work.reconstruction, work.boundary, CFV::ReconstructionRegion::Core);
+            // preparation, which may run concurrently on a CPU worker.
+            if (firstCoefficientOperation)
+                _data->reconstruction.DoReconstructionIterTo(state, work.reconstruction.coefficients, work.reconstruction, work.boundary, CFV::ReconstructionRegion::Core);
         }
         if (meanOperation)
             meanOperation->Wait();
         else
             exchange(work.meanHalo);
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        { PrepareAuxValues(state, work.auxiliary, time); });
+                        {
+            if (auxiliaryPreparation)
+            {
+                auto *preparation = &*auxiliaryPreparation;
+                engine.Submit(stream, [preparation, output = &work.auxiliary](auto)
+                              {
+                    preparation->Apply(CFV::ReconstructionRegion::HaloDependent);
+                    preparation->Finish(*output); });
+                stream.Record().WaitHost();
+            }
+            else
+                PrepareAuxValues(state, work.auxiliary, time); });
         if (work.waveHalo)
             exchange(*work.waveHalo);
         if (work.pressureHalo)
@@ -726,6 +814,7 @@ namespace DNDS::Cauchy
             coreAuxiliary.cellWaveJump->ghost = {};
         if (coreAuxiliary.cellPressureMinimum)
             coreAuxiliary.cellPressureMinimum->ghost = {};
+        JoinStreamOnException residualJoin(stream);
         if (overlap)
             R::SubmitArrays(engine, stream, [kernel, gradientInput = FieldView{gradients.owned, {}}, coreAuxiliary, viscousCoefficients](auto, auto mean, auto rec, auto result)
                             { kernel(CFV::ReconstructionRegion::Core, FieldView{mean, {}}, FieldView{rec, {}}, gradientInput, coreAuxiliary, viscousCoefficients, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::WriteAs<R::UniformTableRows>(residual.Owned()));

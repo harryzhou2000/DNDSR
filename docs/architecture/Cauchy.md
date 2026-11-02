@@ -337,16 +337,62 @@ locally, including physical boundary states at the supplied stage time and
 periodic transformations into its incidence frame. Thermodynamics/transport
 remain equation-owned, BC values boundary-owned, and fluxes gas-agnostic.
 
-The caller allocates outputs once, completes the mean halo, then calls this
-operator. It writes only supplied outputs and performs no MPI, global timestep
-selection, input mutation or hidden cache update. Cell outputs write owned
-rows only: the caller exchanges wave/pressure reductions from their owners
-before a ghost-dependent flux consumes them. A local face subset is not a
-complete stencil for a ghost cell. The Domain/residual wrappers own these
-communication steps; preparation itself has no execution-engine policy.
+The unsplit convenience completes preparation with current host-visible mean
+halos. For overlap, `BeginAuxValues` returns a move-only `AuxiliaryPreparation`:
+
+```text
+begin mean exchange -> Apply(Core): owned thermodynamics + local faces + core cells
+join mean exchange  -> Apply(HaloDependent): ghost thermodynamics + other faces/cells
+                    -> Finish(output): release leases, publish full provenance
+```
+
+The input relation is `Adj::Cell2CellFace`; the cell split remains the conservative
+cell-node-cell split used elsewhere. Setup derives face work lists and sorted
+cell-to-auxiliary-face rows from the canonical incidences. Repeated self-periodic
+incidences are retained. Every face is evaluated once; each cell reduces in the
+same sorted face order under split and unsplit execution. No row membership check
+or lease lookup enters numerical element access.
+
+The transaction retains copied input/output array handles, an owned input read
+lease and output writers. It acquires the ghost input read lease only in the
+dependent phase. Duplicate/out-of-order phases, unfinished publication and
+replaced output buffers fail. An abandoned result has no complete provenance.
+Requested cell reductions without their corresponding public face outputs use
+private three-column face scratch retained by `AuxiliaryValues`; the factory
+allocates it once. Caller-supplied outputs create missing scratch lazily at the
+first begin. Unused retained scratch is neither leased nor written. Absent public
+outputs stay absent, including when buffers are strided AoS/SoA/AoSoA tables.
+
+The operator posts no MPI, global timestep selection or input mutation. Cell
+outputs write owned rows only: the caller exchanges wave/pressure reductions
+from their owners before a ghost-dependent flux consumes them. A local face
+subset is not a complete stencil for a ghost cell. The Domain/residual wrappers
+own communication and engine scheduling; phase kernels have no such policy.
+
+The CPU wrapper posts mean and first-coefficient exchanges before queueing the
+auxiliary core. This order matters: checked MPI observes a producer stream prefix
+and would prematurely join a core task queued before the coefficient bridge.
+A worker can execute auxiliary core while the controller executes the independent
+VR core and progresses MPI. The dependent task follows on the same CPU lane after
+the mean wait and publishes when that CPU phase finishes. The wrapper observes
+the prefix before consuming or returning the packet.
+Inline CPU uses the same ordering and phase APIs. These are CPU wrappers; CUDA
+auxiliary kernels and stream-ordered device leases are not implied.
+
+Direct callers serialize phase calls and retain a queued transaction through its
+stream join. Host-side `Finish` follows the join; a queued CPU continuation may
+finish directly after its dependent phase. Synchronous `Evaluate` also joins outstanding borrowed auxiliary/RHS
+work before an exceptional controller unwind. Runtime deliberately marks partial
+write allocations as failed during unwinding; replace failed outputs/workspace
+before retrying, and preserve the accepted input. Do not clear failure state or
+treat a failed partial packet as a valid cache. A controlled worker/rejection test
+checks joining, explicit failed-buffer reuse rejection and recovery with fresh
+scratch, without intentionally executing a dangling reference.
 
 `ValidateAuxValues` checks source allocation/value/shape generations, the
 prepared geometry plan, boundary time, and output presence/owned generations.
+Cell outputs must also retain the plan's DOF row identity, even when their owned
+and ghost buffers are unchanged. Identity checks are O(1) at publication/reuse.
 Active writers also reject reuse before their generation is published. An
 output's ghost exchange does not invalidate its owned preparation; the caller
 is responsible for that exchange's completeness. Validation is synchronous
@@ -411,14 +457,14 @@ true. Mean exchange can run while local physical boundary values are built;
 each VR or descending WBAP sweep and the final RHS can compute owned-only core
 rows while its coefficient halo is active. With false, the wrapper waits for
 the same exchange, skips Core and invokes All once. It retains identical transfer
-and publication contracts. Auxiliary preparation and viscous-gradient preparation
-still require completed means; overlapping their own core work is a separate
+and publication contracts. Primitive viscous-gradient preparation
+still requires completed means; overlapping its own core work is a separate
 phase item.
 
 The first VR core sweep starts before waiting for the mean halo, with its
 coefficient halo active too. It consumes owned means/coefficients and ready local
-boundary values, so it does not need the auxiliary preparation that follows the
-mean join. Its dependent sweep runs after both required halos are complete.
+boundary values, so it does not depend on the auxiliary preparation running
+concurrently. Its dependent sweep runs after both required halos are complete.
 Later VR sweeps retain the same coefficient/core overlap. The disabled-overlap
 path still runs one All call per sweep, with the same selected logical ordering.
 

@@ -13,7 +13,7 @@ namespace CauchyTest
         namespace G = DNDS::Geom;
         namespace R = DNDS::Runtime;
         using I = DNDS::index;
-        DNDS_check_throw_info(width >= 2 && width <= 128, "test torus width outside bounds");
+        DNDS_check_throw_info(width >= 1 && width <= 128, "test torus width outside bounds");
         const auto range = DNDS::EvenSplitRange(mpi.rank, mpi.size, width * width);
         auto nodes = G::EntitySpace::CreateOwned(G::EntityKind::Node, mpi, range.second - range.first);
         auto cells = nodes.CreateSibling(G::EntityKind::Cell, range.second - range.first);

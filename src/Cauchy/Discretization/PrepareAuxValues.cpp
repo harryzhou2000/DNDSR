@@ -41,16 +41,245 @@ namespace DNDS::Cauchy
             values.cellWaveJump.emplace(Metrics().BuildField(1));
         if (request.cellPressureMinimum)
             values.cellPressureMinimum.emplace(Metrics().BuildField(1));
+        if ((request.cellSpectralSum && !request.faceSpectralRadius) || (request.cellWaveJump && !request.faceWaveJump) ||
+            (request.cellPressureMinimum && !request.facePressureMinimum))
+            values._faceScratch.emplace(R::RowLayout::Dense(faces, 3));
         return values;
     }
     const std::vector<index> &FiniteVolume::AuxiliaryFaces() const { return _data->stencilFaces; }
-    void FiniteVolume::PrepareAuxValues(const CFV::FVField &state, AuxiliaryValues &output, real time) const
+    struct FiniteVolume::AuxiliaryPreparation::State
+    {
+        std::shared_ptr<const FiniteVolume::Data> data;
+        CFV::FVField source;
+        AuxiliaryValues buffers;
+        CFV::FiniteVolumeRead geometry;
+        std::optional<R::Array<real>::ReadLease> owned, ghost;
+        std::array<std::optional<R::Array<real>::WriteLease>, 7> writes;
+        std::array<R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows>, 7> values;
+        std::optional<R::Array<real>::WriteLease> scratchWrite;
+        R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows> scratch;
+        real time;
+        int phase = 0;
+        bool started = false;
+
+        State(std::shared_ptr<const FiniteVolume::Data> owner, const CFV::FVField &input, const AuxiliaryValues &output, real atTime)
+            : data(std::move(owner)), source(input), buffers(output), geometry(data->metrics.AcquireRead()), time(atTime)
+        {
+            data->partition.Validate();
+            owned.emplace(source.Owned().Read());
+            const auto arrays = AuxiliaryArrays(buffers);
+            try
+            {
+                for (int k = 0; k < 7; ++k)
+                    if (arrays[k])
+                    {
+                        writes[k].emplace(arrays[k]->Write());
+                        values[k] = writes[k]->View<R::UniformTableRows>();
+                    }
+                const bool needScratch = (arrays[4] && !arrays[1]) || (arrays[5] && !arrays[2]) || (arrays[6] && !arrays[3]);
+                if (needScratch)
+                {
+                    scratchWrite.emplace(buffers._faceScratch->Write());
+                    scratch = scratchWrite->View<R::UniformTableRows>();
+                }
+            }
+            catch (...)
+            {
+                for (auto &write : writes)
+                    if (write)
+                        write->CancelUnmodified();
+                if (scratchWrite)
+                    scratchWrite->CancelUnmodified();
+                throw;
+            }
+        }
+        ~State()
+        {
+            if (!started)
+            {
+                for (auto &write : writes)
+                    if (write)
+                        write->CancelUnmodified();
+                if (scratchWrite)
+                    scratchWrite->CancelUnmodified();
+            }
+        }
+        void Means(const FieldView &mean, index first, index last)
+        {
+            if (!writes[0])
+                return;
+            for (index iCell = first; iCell < last; ++iCell)
+            {
+                const auto u = Load(mean, iCell);
+                DNDS_check_throw_info(data->equation.Gas().Admissible(u), "invalid mean in auxiliary preparation");
+                const auto acoustic = data->equation.PrepareFluxState(u);
+                values[0](iCell, 0) = acoustic.flow.pressure;
+                values[0](iCell, 1) = acoustic.soundSpeed;
+                values[0](iCell, 2) = data->equation.DiffusionScale(u);
+            }
+        }
+        void Faces(const FieldView &mean, const std::vector<index> &faces)
+        {
+            const bool spectral = writes[1] || writes[4], wave = writes[2] || writes[5], pressure = writes[3] || writes[6];
+            if (!spectral && !wave && !pressure)
+                return;
+            const auto &equation = data->equation;
+            const auto &gas = equation.Gas();
+            const auto metric = geometry.HostView();
+            const auto prepared = [&](index iCell, const FlowState &u)
+            {
+                if (writes[0])
+                    return Riemann::AcousticState{{u, values[0](iCell, 0)}, values[0](iCell, 1)};
+                DNDS_check_throw_info(gas.Admissible(u), "invalid mean in auxiliary preparation");
+                return equation.PrepareFluxState(u);
+            };
+            for (const auto iAux : faces)
+            {
+                const auto iFace = data->stencilFaces[iAux], first = data->faceEntries[iAux];
+                const auto &anchor = data->samples[first];
+                const auto left = Load(mean, anchor.cell);
+                const auto leftData = prepared(anchor.cell, left);
+                const real area = data->auxiliaryFaceArea[iAux];
+                real convection = 0, diffusion = 0, jump = 0, minimum = leftData.flow.pressure;
+                const index count = metric.FaceQuadratureEnd(iFace) - metric.FaceQuadratureBegin(iFace);
+                for (index q = 0; q < count; ++q)
+                {
+                    const auto &sample = data->samples[first + q];
+                    const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
+                    const auto right = sample.other == UnInitIndex ? sample.boundary.Exterior(gas, left, normal, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time)
+                                                                   : RotateState(Load(mean, sample.other), sample.rotation);
+                    const auto rightData = sample.other == UnInitIndex ? equation.PrepareFluxState(right) : prepared(sample.other, right);
+                    DNDS_check_throw_info(rightData.flow.pressure > 0 && std::isfinite(rightData.soundSpeed), "invalid boundary mean in auxiliary preparation");
+                    if (spectral)
+                    {
+                        convection = std::max({convection, Riemann::SignalSpeed(leftData, normal), Riemann::SignalSpeed(rightData, normal)});
+                        const real scaleL = writes[0] ? values[0](sample.cell, 2) : equation.DiffusionScale(left);
+                        const real scaleR = sample.other != UnInitIndex && writes[0] ? values[0](sample.other, 2) : equation.DiffusionScale(right);
+                        diffusion = std::max(diffusion, std::max(scaleL, scaleR) * area *
+                                                            (1 / metric.GetCellVol(sample.cell) + 1 / metric.GetCellVol(sample.other == UnInitIndex ? sample.cell : sample.other)));
+                    }
+                    if (wave)
+                        jump = std::max(jump, Riemann::TransverseSignalJump(leftData, rightData, normal));
+                    if (pressure)
+                        minimum = std::min(minimum, rightData.flow.pressure);
+                }
+                if (writes[1])
+                {
+                    values[1](iAux, 0) = convection;
+                    values[1](iAux, 1) = diffusion;
+                }
+                if (writes[2])
+                    values[2](iAux, 0) = jump;
+                if (writes[3])
+                    values[3](iAux, 0) = minimum;
+                if (scratchWrite)
+                {
+                    scratch(iAux, 0) = convection + diffusion;
+                    scratch(iAux, 1) = jump;
+                    scratch(iAux, 2) = minimum;
+                }
+            }
+        }
+        void Cells(const std::vector<index> &cells)
+        {
+            if (!writes[4] && !writes[5] && !writes[6])
+                return;
+            for (const auto iCell : cells)
+            {
+                real sum = 0, wave = 0, pressure = std::numeric_limits<real>::max();
+                for (index entry = data->auxiliaryCellOffsets[iCell]; entry < data->auxiliaryCellOffsets[iCell + 1]; ++entry)
+                {
+                    const auto iAux = data->auxiliaryCellFaces[entry];
+                    if (writes[4])
+                        sum += data->auxiliaryFaceArea[iAux] * (writes[1] ? values[1](iAux, 0) + values[1](iAux, 1) : scratch(iAux, 0));
+                    if (writes[5])
+                        wave = std::max(wave, writes[2] ? values[2](iAux, 0) : scratch(iAux, 1));
+                    if (writes[6])
+                        pressure = std::min(pressure, writes[3] ? values[3](iAux, 0) : scratch(iAux, 2));
+                }
+                if (writes[4])
+                    values[4](iCell, 0) = sum;
+                if (writes[5])
+                    values[5](iCell, 0) = wave;
+                if (writes[6])
+                    values[6](iCell, 0) = pressure;
+            }
+        }
+        void Core()
+        {
+            DNDS_check_throw_info(phase == 0, "auxiliary core phase already executed");
+            started = true;
+            const FieldView mean{owned->View<R::UniformTableRows>(), {}};
+            Means(mean, 0, data->metrics.NumCell());
+            Faces(mean, data->auxiliaryCoreFaces);
+            Cells(data->partition.Core());
+            phase = 1;
+        }
+        void Dependent()
+        {
+            DNDS_check_throw_info(phase == 1, "auxiliary dependent phase requires completed core work");
+            // Failure here (an active halo writer) has not started dependent
+            // work. The caller may wait for that transfer and retry this phase.
+            ghost.emplace(source.Ghost().Read());
+            const FieldView mean{owned->View<R::UniformTableRows>(), ghost->View<R::UniformTableRows>()};
+            Means(mean, data->metrics.NumCell(), data->metrics.NumCellProc());
+            Faces(mean, data->auxiliaryDependentFaces);
+            Cells(data->partition.HaloDependent());
+            phase = 2;
+        }
+    };
+    FiniteVolume::AuxiliaryPreparation::AuxiliaryPreparation(std::unique_ptr<State> state) : _state(std::move(state)) {}
+    FiniteVolume::AuxiliaryPreparation::AuxiliaryPreparation(AuxiliaryPreparation &&) noexcept = default;
+    FiniteVolume::AuxiliaryPreparation &FiniteVolume::AuxiliaryPreparation::operator=(AuxiliaryPreparation &&) noexcept = default;
+    FiniteVolume::AuxiliaryPreparation::~AuxiliaryPreparation() = default;
+    void FiniteVolume::AuxiliaryPreparation::Apply(CFV::ReconstructionRegion region)
+    {
+        DNDS_check_throw_info(_state, "auxiliary preparation is finished or moved");
+        DNDS_check_throw_info(region == CFV::ReconstructionRegion::All || region == CFV::ReconstructionRegion::Core || region == CFV::ReconstructionRegion::HaloDependent,
+                              "invalid auxiliary preparation region");
+        if (region == CFV::ReconstructionRegion::All || region == CFV::ReconstructionRegion::Core)
+            _state->Core();
+        if (region == CFV::ReconstructionRegion::All || region == CFV::ReconstructionRegion::HaloDependent)
+            _state->Dependent();
+    }
+    void FiniteVolume::AuxiliaryPreparation::Finish(AuxiliaryValues &output)
+    {
+        DNDS_check_throw_info(_state && _state->phase == 2, "cannot publish incomplete auxiliary preparation");
+        const auto expected = AuxiliaryArrays(_state->buffers), actual = AuxiliaryArrays(output);
+        for (int k = 0; k < 7; ++k)
+            DNDS_check_throw_info(bool(expected[k]) == bool(actual[k]) && (!expected[k] || expected[k]->SharedStorage() == actual[k]->SharedStorage()),
+                                  "auxiliary preparation output buffers were replaced");
+        const std::optional<CFV::FVField> *a[]{&output.cellSpectralSum, &output.cellWaveJump, &output.cellPressureMinimum};
+        const std::optional<CFV::FVField> *b[]{&_state->buffers.cellSpectralSum, &_state->buffers.cellWaveJump, &_state->buffers.cellPressureMinimum};
+        for (int k = 0; k < 3; ++k)
+        {
+            DNDS_check_throw_info(!*a[k] || (*a[k])->Space().Same((*b[k])->Space()), "auxiliary preparation cell row space was replaced");
+            DNDS_check_throw_info(!*a[k] || (*a[k])->Ghost().SharedStorage() == (*b[k])->Ghost().SharedStorage(), "auxiliary preparation ghost buffer was replaced");
+        }
+        for (auto &write : _state->writes)
+            write.reset();
+        _state->scratchWrite.reset();
+        const auto &source = _state->source;
+        AuxiliaryValues::Origin origin{_state->data, source.Owned().SharedStorage(), source.Ghost().SharedStorage(), source.Owned().Version(), source.Ghost().Version(),
+                                       source.Owned().ShapeVersion(), source.Ghost().ShapeVersion(), _state->time};
+        for (int k = 0; k < 7; ++k)
+            if (actual[k])
+            {
+                origin.present[k] = true;
+                origin.storage[k] = actual[k]->SharedStorage();
+                origin.versions[k] = actual[k]->Version();
+                origin.shapes[k] = actual[k]->ShapeVersion();
+            }
+        for (int k = 0; k < 3; ++k)
+            origin.ghosts[k] = *a[k] ? (*a[k])->Ghost().SharedStorage() : nullptr;
+        output._origin = std::move(origin);
+        _state.reset();
+    }
+    FiniteVolume::AuxiliaryPreparation FiniteVolume::BeginAuxValues(const CFV::FVField &state, AuxiliaryValues &output, real time) const
     {
         output._origin.reset();
         Metrics().ValidateField(state, 5);
         DNDS_check_throw_info(std::isfinite(time) && state.Device() == R::Device::Host(), "auxiliary preparation requires finite boundary time and available CPU inputs");
-        auto geometry = Metrics().AcquireRead();
-        const auto metric = geometry.HostView();
         const auto arrays = AuxiliaryArrays(output);
         const index faces = index(_data->stencilFaces.size());
         const index rows[7]{Metrics().NumCellProc(), faces, faces, faces, Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCell()};
@@ -71,123 +300,16 @@ namespace DNDS::Cauchy
         for (const auto *field : {&output.cellSpectralSum, &output.cellWaveJump, &output.cellPressureMinimum})
             if (*field)
                 Metrics().ValidateField(**field, 1);
-        const auto ownedRead = state.Owned().Read(), ghostRead = state.Ghost().Read();
-        const FieldView mean{ownedRead.View<R::UniformTableRows>(), ghostRead.View<R::UniformTableRows>()};
-        std::array<std::optional<R::Array<real>::WriteLease>, 7> writes;
-        std::array<R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows>, 7> values;
-        try
-        {
-            for (int k = 0; k < 7; ++k)
-                if (arrays[k])
-                {
-                    writes[k].emplace(arrays[k]->Write());
-                    values[k] = writes[k]->View<R::UniformTableRows>();
-                }
-        }
-        catch (...)
-        {
-            for (auto &write : writes)
-                if (write)
-                    write->CancelUnmodified();
-            throw;
-        }
-        const auto &equation = _data->equation;
-        const auto &gas = equation.Gas();
-        if (arrays[0])
-            for (index iCell = 0; iCell < Metrics().NumCellProc(); ++iCell)
-            {
-                const auto u = Load(mean, iCell);
-                DNDS_check_throw_info(gas.Admissible(u), "invalid mean in auxiliary preparation");
-                const auto data = equation.PrepareFluxState(u);
-                values[0](iCell, 0) = data.flow.pressure;
-                values[0](iCell, 1) = data.soundSpeed;
-                values[0](iCell, 2) = equation.DiffusionScale(u);
-            }
-        for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
-        {
-            if (arrays[4])
-                values[4](iCell, 0) = 0;
-            if (arrays[5])
-                values[5](iCell, 0) = 0;
-            if (arrays[6])
-                values[6](iCell, 0) = std::numeric_limits<real>::max();
-        }
-        const bool spectral = arrays[1] || arrays[4], wave = arrays[2] || arrays[5], pressure = arrays[3] || arrays[6];
-        const auto prepared = [&](index iCell, const FlowState &u)
-        {
-            if (arrays[0])
-                return Riemann::AcousticState{{u, values[0](iCell, 0)}, values[0](iCell, 1)};
-            DNDS_check_throw_info(gas.Admissible(u), "invalid mean in auxiliary preparation");
-            return equation.PrepareFluxState(u);
-        };
-        if (spectral || wave || pressure)
-            for (index iAux = 0; iAux < faces; ++iAux)
-            {
-                const auto iFace = _data->stencilFaces[iAux], first = _data->faceEntries[iAux];
-                const auto &anchor = _data->samples[first];
-                const auto left = Load(mean, anchor.cell);
-                const auto leftData = prepared(anchor.cell, left);
-                real area = 0, convection = 0, diffusion = 0, jump = 0, minimum = leftData.flow.pressure;
-                const index count = metric.FaceQuadratureEnd(iFace) - metric.FaceQuadratureBegin(iFace);
-                for (index q = 0; q < count; ++q)
-                    area += metric.GetFaceWeight(_data->samples[first + q].point);
-                for (index q = 0; q < count; ++q)
-                {
-                    const auto &sample = _data->samples[first + q];
-                    const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
-                    const auto right = sample.other == UnInitIndex ? sample.boundary.Exterior(gas, left, normal, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time)
-                                                                   : RotateState(Load(mean, sample.other), sample.rotation);
-                    const auto rightData = sample.other == UnInitIndex ? equation.PrepareFluxState(right) : prepared(sample.other, right);
-                    DNDS_check_throw_info(rightData.flow.pressure > 0 && std::isfinite(rightData.soundSpeed), "invalid boundary mean in auxiliary preparation");
-                    if (spectral)
-                    {
-                        convection = std::max({convection, Riemann::SignalSpeed(leftData, normal), Riemann::SignalSpeed(rightData, normal)});
-                        const real scaleL = arrays[0] ? values[0](sample.cell, 2) : equation.DiffusionScale(left);
-                        const real scaleR = sample.other != UnInitIndex && arrays[0] ? values[0](sample.other, 2) : equation.DiffusionScale(right);
-                        diffusion = std::max(diffusion, std::max(scaleL, scaleR) * area *
-                                                            (1 / metric.GetCellVol(sample.cell) + 1 / metric.GetCellVol(sample.other == UnInitIndex ? sample.cell : sample.other)));
-                    }
-                    if (wave)
-                        jump = std::max(jump, Riemann::TransverseSignalJump(leftData, rightData, normal));
-                    if (pressure)
-                        minimum = std::min(minimum, rightData.flow.pressure);
-                }
-                if (arrays[1])
-                {
-                    values[1](iAux, 0) = convection;
-                    values[1](iAux, 1) = diffusion;
-                }
-                if (arrays[2])
-                    values[2](iAux, 0) = jump;
-                if (arrays[3])
-                    values[3](iAux, 0) = minimum;
-                for (index iCell : {anchor.cell, anchor.other})
-                    if (iCell >= 0 && iCell < Metrics().NumCell())
-                    {
-                        if (arrays[4])
-                            values[4](iCell, 0) += area * (convection + diffusion);
-                        if (arrays[5])
-                            values[5](iCell, 0) = std::max(values[5](iCell, 0), jump);
-                        if (arrays[6])
-                            values[6](iCell, 0) = std::min(values[6](iCell, 0), minimum);
-                    }
-            }
-        for (auto &write : writes)
-            write.reset();
-        AuxiliaryValues::Origin origin{_data, state.Owned().SharedStorage(), state.Ghost().SharedStorage(), state.Owned().Version(), state.Ghost().Version(),
-                                       state.Owned().ShapeVersion(), state.Ghost().ShapeVersion(), time};
-        for (int k = 0; k < 7; ++k)
-            if (arrays[k])
-            {
-                origin.present[k] = true;
-                origin.storage[k] = arrays[k]->SharedStorage();
-                origin.versions[k] = arrays[k]->Version();
-                origin.shapes[k] = arrays[k]->ShapeVersion();
-            }
-        int iGhost = 0;
-        for (const auto *field : {&output.cellSpectralSum, &output.cellWaveJump, &output.cellPressureMinimum})
-            origin.ghosts[iGhost++] = *field ? (*field)->Ghost().SharedStorage() : nullptr;
-        output._origin = std::move(origin);
+        const bool needScratch = (arrays[4] && !arrays[1]) || (arrays[5] && !arrays[2]) || (arrays[6] && !arrays[3]);
+        if (needScratch && (!output._faceScratch || output._faceScratch->RowCount() != faces))
+            output._faceScratch.emplace(R::RowLayout::Dense(faces, 3));
+        return AuxiliaryPreparation(std::make_unique<AuxiliaryPreparation::State>(_data, state, output, time));
+    }
+    void FiniteVolume::PrepareAuxValues(const CFV::FVField &state, AuxiliaryValues &output, real time) const
+    {
+        auto preparation = BeginAuxValues(state, output, time);
+        preparation.Apply();
+        preparation.Finish(output);
     }
     void FiniteVolume::ValidateAuxValues(const CFV::FVField &state, const AuxiliaryValues &values, real time) const
     {
@@ -216,7 +338,10 @@ namespace DNDS::Cauchy
         }
         int iGhost = 0;
         for (const auto *field : {&values.cellSpectralSum, &values.cellWaveJump, &values.cellPressureMinimum})
+        {
+            DNDS_check_throw_info(!*field || (*field)->Space().Same(state.Space()), "auxiliary cell row space changed");
             DNDS_check_throw_info(origin.ghosts[iGhost++] == (*field ? (*field)->Ghost().SharedStorage() : nullptr), "auxiliary ghost storage was rebound");
+        }
     }
     real FiniteVolume::StableStep(const CFV::FVField &state, const AuxiliaryValues &values, real cfl, real time) const
     {
