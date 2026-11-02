@@ -1,5 +1,6 @@
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
+#include "Cauchy/Implicit/PositivityReduction.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include <tuple>
 
@@ -18,6 +19,8 @@ namespace DNDS::Cauchy
         R::ArrayStorage::Shared stateOwned, stateGhost;
         CFV::FVField spatial, defect, candidate;
         R::Array<real> inversePseudoTime;
+        AlphaReduction rhsReduction = AlphaReduction::Cell;
+        std::optional<R::Array<real>> cellRHSAlpha;
         std::shared_ptr<LinearProblemContext> problem;
         std::unique_ptr<LinearSolver> linear;
         Data(const FiniteVolume &fv, CFV::FVField &state, std::shared_ptr<FiniteVolume::Workspace> work,
@@ -28,6 +31,10 @@ namespace DNDS::Cauchy
               inversePseudoTime(R::RowLayout::Dense(fv.Metrics().NumCell(), 1)),
               problem(fv.BuildLinearProblem(state, settings.diagonal == "block" ? DiagonalStorage::Block : DiagonalStorage::Entries))
         {
+            rhsReduction = settings.positivity.rhsReduction == "cell" ? AlphaReduction::Cell : settings.positivity.rhsReduction == "minimumLimited" ? AlphaReduction::MinimumLimited
+                                                                                                                                                    : AlphaReduction::MinimumAll;
+            if (positivity && settings.positivity.rhsMode != "none" && rhsReduction != AlphaReduction::Cell)
+                cellRHSAlpha.emplace(R::RowLayout::Dense(fv.Metrics().NumCell(), 1));
         }
         void PrepareLinear(const CFV::FVField &state, bool overlap)
         {
@@ -149,6 +156,9 @@ namespace DNDS::Cauchy
                        {
                 const auto signals = auxiliary.cellSpectralSum->Owned().Read(), meanRead = state.Owned().Read();
                 auto inverse = data.inversePseudoTime.Write(), residualWrite = data.defect.Owned().Write();
+                std::optional<R::Array<real>::WriteLease> alphaWrite;
+                if (data.cellRHSAlpha) alphaWrite.emplace(data.cellRHSAlpha->Write());
+                const auto alphas = alphaWrite ? alphaWrite->View<R::UniformTableRows>() : R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows>{};
                 const auto spectral = signals.View<R::UniformTableRows>(), mean = meanRead.View<R::UniformTableRows>();
                 const auto invTau = inverse.View<R::UniformTableRows>(), defect = residualWrite.View<R::UniformTableRows>();
                 for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
@@ -163,12 +173,33 @@ namespace DNDS::Cauchy
                         const real alpha = FlowIncrementFraction(u, delta, data.discrete.ThermalConstraints(), data.settings.positivity.rhsRelax, 2, data.settings.positivity.compressionPower);
                         DNDS_check_throw_info(std::isfinite(alpha) && alpha >= 0 && alpha <= 1, "invalid implicit RHS PP fraction");
                         if (alpha < 1) { ++rhsLimited; rhsAlpha = std::min(rhsAlpha, alpha); }
-                        if (data.settings.positivity.rhsMode == "rhs")
+                        if (alphaWrite)
+                            alphas(iCell, 0) = alpha;
+                        else if (data.settings.positivity.rhsMode == "rhs")
                             for (int j = 0; j < 5; ++j) defect(iCell, j) *= alpha;
                         else value /= std::max(alpha, smallReal);
                     }
                     invTau(iCell, 0) = value;
                 } });
+            if (data.positivity && data.settings.positivity.rhsMode != "none")
+            {
+                const auto global = AgreeAlphaStatistics(rhsLimited, rhsAlpha, data.rhsReduction, data.mpi.comm);
+                rhsLimited = global.limited;
+                rhsAlpha = global.minimum;
+                if (data.cellRHSAlpha && rhsAlpha < 1)
+                    data.Stage([&]
+                               {
+                    auto read = data.cellRHSAlpha->Read(); auto inverse = data.inversePseudoTime.Write(), residual = data.defect.Owned().Write();
+                    const auto local = read.View<R::UniformTableRows>();
+                    const auto invTau = inverse.View<R::UniformTableRows>(), defect = residual.View<R::UniformTableRows>();
+                    for (index iCell = 0; iCell < local.RowCount(); ++iCell)
+                    {
+                        const real alpha = SelectAlpha(local(iCell, 0), rhsAlpha, data.rhsReduction);
+                        if (data.settings.positivity.rhsMode == "rhs")
+                            for (int j = 0; j < 5; ++j) defect(iCell, j) *= alpha;
+                        else invTau(iCell, 0) /= std::max(alpha, smallReal);
+                    } });
+            }
             data.Stage([&]
                        { data.discrete.PrepareJacobian(state, auxiliary, data.inversePseudoTime, *data.problem, {mass, rhsScale, data.settings.roeDissipation}, time); });
             report.lastLinear = data.linear->Solve(data.defect);
@@ -177,8 +208,6 @@ namespace DNDS::Cauchy
             const auto [incrementLimited, incrementAlpha] = ApplyCorrection(state, data.linear->Solution(), data.settings.relaxation);
             if (data.positivity)
             {
-                MPI_Allreduce(MPI_IN_PLACE, &rhsLimited, 1, MPI_INT64_T, MPI_SUM, data.mpi.comm);
-                MPI_Allreduce(MPI_IN_PLACE, &rhsAlpha, 1, MPI_DOUBLE, MPI_MIN, data.mpi.comm);
                 report.rhsLimited += rhsLimited;
                 report.incrementLimited += incrementLimited;
                 report.minimumRHSAlpha = std::min(report.minimumRHSAlpha, rhsAlpha);

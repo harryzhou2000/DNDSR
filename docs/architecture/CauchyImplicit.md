@@ -315,8 +315,19 @@ For `numerics.positivity`, the implicit path uses Euler's RHS compression or
 dTau compression, relaxed delta compression and final flow5 increment repair.
 Convergence always uses the uncompressed defect. Reconstruction quadrature PP
 now uses the Euler rule by default (explicit Segment compatibility remains).
-Physical-dt PP and global alpha variants remain phase work. This is not yet the
-full PP suite.
+Physical-dt PP remains phase work. This is not yet the full PP suite.
+
+`implicit.positivity.rhsReduction` selects Euler's `cell` (default),
+`minimumLimited` (`MIN_IF_NOT_ONE`) or `minimumAll` (`MIN_ALL`) policy. Select
+the global fraction before applying either RHS compression or dTau compression.
+The limited-cell counter counts the original alpha<1 triggers, even when every
+row is subsequently scaled. Default cell mode retains its fused local apply;
+only global modes allocate one reusable owned scalar alpha array and perform
+a second application pass. The two existing count/min statistics reductions
+also validate statistics and scope agreement, without an extra collective.
+No RHS statistics reduction is needed when PP/RHS compression is disabled.
+This scope applies to RHS/dTau only, not an invented global increment limiter.
+Physical-dt PP remains separate phase work.
 
 Corrections are computed into separate candidate storage, then admissibility
 is agreed before any trial-state write. This required safety agreement remains

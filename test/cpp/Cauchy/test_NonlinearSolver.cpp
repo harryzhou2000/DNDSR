@@ -1,12 +1,90 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
+#include "Cauchy/Implicit/PositivityReduction.hpp"
 #include "CartesianFixture.hpp"
+#include <limits>
 
 namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
 namespace A = DNDS::Algebra;
 static DNDS::MPIInfo mpi;
+TEST_CASE("Euler alpha reductions agree sparse triggers and reject mismatched policies or statistics")
+{
+    for (const auto scope : {C::AlphaReduction::Cell, C::AlphaReduction::MinimumLimited, C::AlphaReduction::MinimumAll})
+    {
+        const auto stats = C::AgreeAlphaStatistics(mpi.rank == 0 ? 2 : 0, mpi.rank == 0 ? .25 : 1, scope, mpi.comm);
+        CHECK(stats.limited == 2);
+        CHECK(stats.minimum == .25);
+        CHECK(C::SelectAlpha(.75, stats.minimum, scope) == (scope == C::AlphaReduction::Cell ? .75 : .25));
+        CHECK(C::SelectAlpha(1, stats.minimum, scope) == (scope == C::AlphaReduction::MinimumAll ? .25 : 1));
+        const auto inactive = C::AgreeAlphaStatistics(0, 1, scope, mpi.comm);
+        CHECK(inactive.limited == 0);
+        CHECK(inactive.minimum == 1);
+    }
+    CHECK_THROWS(C::AgreeAlphaStatistics(mpi.rank == 0 ? -1 : 0, 1, C::AlphaReduction::Cell, mpi.comm));
+    CHECK_THROWS(C::AgreeAlphaStatistics(0, mpi.rank == 0 ? .5 : 1, C::AlphaReduction::Cell, mpi.comm));
+    CHECK_THROWS(C::AgreeAlphaStatistics(mpi.rank == 0 ? 1 : 0, mpi.rank == 0 ? std::numeric_limits<DNDS::real>::quiet_NaN() : 1, C::AlphaReduction::Cell, mpi.comm));
+    if (mpi.size > 1)
+        CHECK_THROWS(C::AgreeAlphaStatistics(0, 1, mpi.rank == 0 ? C::AlphaReduction::Cell : C::AlphaReduction::MinimumAll, mpi.comm));
+}
+TEST_CASE("Global Euler RHS alpha policies affect unmarked rows only for minimumAll in RHS and dTau styles")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    for (const auto *mode : {"rhs", "dTau"})
+        for (const auto *scope : {"cell", "minimumLimited", "minimumAll"})
+        {
+            C::DomainSettings settings;
+            settings.numerics.reconstruction = "constant";
+            settings.numerics.positivity = true;
+            settings.implicit.iterations = 1;
+            settings.implicit.minIterations = 0;
+            settings.implicit.relativeTolerance = settings.implicit.absoluteTolerance = 0;
+            settings.implicit.positivity.rhsMode = mode;
+            settings.implicit.positivity.rhsReduction = scope;
+            const auto equation = C::EquationSystem::Resolve(settings.equation);
+            C::FiniteVolume fv(mesh, settings, equation);
+            const auto layout = std::string(scope) == "cell" ? R::RowLayout::Dense(0, 5) : std::string(scope) == "minimumLimited" ? R::RowLayout::ColMajor(0, 5)
+                                                                                                                                  : R::RowLayout::TiledColMajor(0, 5, 8);
+            auto state = fv.Metrics().BuildField(layout), source = fv.Metrics().BuildField(layout);
+            fv.Initialize(state, {}, {1, 0, 0, 0, 1});
+            {
+                auto write = source.Owned().Write();
+                for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                {
+                    const bool bad = mpi.rank == 0 && iCell < 2;
+                    write.View<R::UniformTableRows>()(iCell, 0) = 20 + (bad ? (iCell ? -1e6 : -1e8) : 1);
+                    for (int j = 1; j < 5; ++j)
+                        write.View<R::UniformTableRows>()(iCell, j) = j == 4 ? 50 : 0;
+                }
+            }
+            R::EagerEngine engine;
+            const auto stream = engine.CreateCPUStream();
+            C::AuxiliaryRequest request;
+            request.faceSpectralRadius = request.cellSpectralSum = true;
+            C::NonlinearSolver solver(fv, state, fv.BuildWorkspace(state, request), engine, stream, settings);
+            const auto report = solver.Solve(state, source, 20, 1, .1);
+            CAPTURE(mode);
+            CAPTURE(scope);
+            CHECK(report.rhsLimited == 2); // Original triggers, not all scaled rows.
+            CHECK(report.minimumRHSAlpha > 0);
+            CHECK(report.minimumRHSAlpha < 1);
+            CHECK(report.iterations == 1);
+            CHECK(fv.Admissible(state));
+            DNDS::real maximumGoodChange = 0;
+            {
+                auto read = state.Owned().Read();
+                for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                    if (mpi.rank != 0 || iCell >= 2)
+                        maximumGoodChange = std::max(maximumGoodChange, std::abs(read.View<R::UniformTableRows>()(iCell, 0) - 1));
+            }
+            MPI_Allreduce(MPI_IN_PLACE, &maximumGoodChange, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+            if (std::string(scope) == "minimumAll")
+                CHECK(maximumGoodChange < 1e-5);
+            else
+                CHECK(maximumGoodChange > 1e-3);
+        }
+}
 TEST_CASE("Native implicit stage recovers a constant manufactured solution from distributed nonconstant means")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);

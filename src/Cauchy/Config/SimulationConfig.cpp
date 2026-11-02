@@ -191,6 +191,7 @@ namespace DNDS::Cauchy
                                   !(linear.method == "gmres" && linear.preconditioner == "ilu" && sgs.exchangeBetweenSweeps),
                               "invalid implicit linear/SGS/ILU controls");
         DNDS_check_throw_info((positivity.rhsMode == "none" || positivity.rhsMode == "rhs" || positivity.rhsMode == "dTau") &&
+                                  (positivity.rhsReduction == "cell" || positivity.rhsReduction == "minimumLimited" || positivity.rhsReduction == "minimumAll") &&
                                   nonnegative(positivity.rhsScale) && std::isfinite(positivity.rhsRelax) && positivity.rhsRelax > 0 && positivity.rhsRelax <= 1 &&
                                   std::isfinite(positivity.incrementRelax) && positivity.incrementRelax > 0 && positivity.incrementRelax <= 1 &&
                                   positivity.compressionPower > 0 && positivity.compressionPower <= INT_MAX / 2,

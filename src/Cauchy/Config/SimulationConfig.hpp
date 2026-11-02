@@ -183,11 +183,13 @@ namespace DNDS::Cauchy
     struct ImplicitPositivitySettings
     {
         std::string rhsMode = "rhs";
+        std::string rhsReduction = "cell";
         real rhsScale = 1, rhsRelax = .5, incrementRelax = 1;
         int compressionPower = 1;
         DNDS_DECLARE_CONFIG(ImplicitPositivitySettings)
         {
             DNDS_FIELD(rhsMode, "none, rhs compression, or dTau compression; active only with numerics.positivity");
+            DNDS_FIELD(rhsReduction, "cell, minimumLimited or minimumAll; Euler global alpha flags, before RHS/dTau application");
             DNDS_FIELD(rhsScale, "Euler RHS-PP trial increment multiplier");
             DNDS_FIELD(rhsRelax, "Euler RHS/dTau density and energy relaxation in (0,1]");
             DNDS_FIELD(incrementRelax, "Euler accepted-correction relaxation in (0,1]");

@@ -42,6 +42,7 @@ TEST_CASE("Cauchy implicit controls resolve through the root and reject contradi
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"iterations", 0}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"linear", {{"preconditioner", "ilu"}}}, {"sgs", {{"exchangeBetweenSweeps", true}}}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"positivity", {{"rhsRelax", 0}}}}}}}}, 2));
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"positivity", {{"rhsReduction", "unknown"}}}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"multigrid", {{"levels", 3}}}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"multigrid", {{"levels", 1}}}}}}}}, 2));
     CHECK_NOTHROW(C::SimulationConfig::Resolve({{"time", {{"method", "bdf1"}}}, {"defaults", {{"numerics", {{"reconstruction", "variational"}, {"cfv", {{"maxOrder", 3}}}}}, {"implicit", {{"multigrid", {{"levels", 2}}}}}}}}, 2));
