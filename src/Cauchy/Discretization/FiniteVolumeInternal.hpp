@@ -16,6 +16,7 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         Geom::tPoint normal, ownPoint, otherPoint;
         Geom::tGPoint rotation;
         BoundaryCondition boundary;
+        index auxiliaryFace = UnInitIndex;
     };
     template <class View>
     FlowState Load(const View &input, index iCell)

@@ -111,6 +111,7 @@ namespace DNDS::Cauchy
                 const auto iFace = faces[slot];
                 const int side = topology.CellIsFaceBack(iCell, iFace, slot) ? 0 : 1;
                 const index other = topology.CellFaceOther(iCell, iFace, slot);
+                const index auxiliaryFace = index(std::lower_bound(data->stencilFaces.begin(), data->stencilFaces.end(), iFace) - data->stencilFaces.begin());
                 BoundaryCondition condition;
                 if (other == UnInitIndex)
                 {
@@ -124,6 +125,7 @@ namespace DNDS::Cauchy
                     Sample sample{iCell, other, q, side, topology.GetFaceZone(iFace), (side ? -1 : 1) * metric.GetFaceNorm(q), CFV::Detail::FacePointInCell(topology, iFace, side, metric.GetFacePoint(q)),
                                   CFV::Detail::OtherPointInCell(topology, iFace, side, metric.GetCellCent(other == UnInitIndex ? iCell : other)),
                                   CFV::Detail::OtherFrameInCell(topology, iFace, side), condition};
+                    sample.auxiliaryFace = auxiliaryFace;
                     const index entry = index(data->samples.size());
                     // Cached basis derivatives live in each parent's frame.
                     // Flux and neighbor state are mapped into this cell's frame.

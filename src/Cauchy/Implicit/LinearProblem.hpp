@@ -18,6 +18,14 @@ namespace DNDS::Cauchy
         Entries,
         Block
     };
+    /// Integrated residual convention: A=M/dTau+physicalMass*M-residualScale*J_R.
+    /// Roe dissipation requires a full diagonal block; scalar dissipation keeps
+    /// the active Euler diagonal spectral approximation, including in block mode.
+    struct JacobianPreparation
+    {
+        real physicalMass = 0, residualScale = 1;
+        bool roeDissipation = false;
+    };
 
     /// Frozen rank-owned block rows, including off-rank operator columns. The
     /// row space and stencil are immutable; numerical values are filled through
@@ -61,6 +69,7 @@ namespace DNDS::Cauchy
         const std::vector<index> &Order() const { return _order; }
         const std::vector<index> &Core() const { return _core; }
         const std::vector<index> &HaloDependent() const { return _dependent; }
+        void Validate() const { ValidateMatrix(); }
         Runtime::Array<real> &Diagonal() { return _diagonal; }
         const Runtime::Array<real> &Diagonal() const { return _diagonal; }
         Algebra::BlockMatrixStorage &OffDiagonal() { return _offDiagonal; }

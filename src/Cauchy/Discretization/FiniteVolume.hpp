@@ -3,6 +3,7 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/Boundary/BoundarySystem.hpp"
+#include "Cauchy/Implicit/LinearProblem.hpp"
 #include "CFV/Plans/GradientPlan.hpp"
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
 #include "Geom/Access/EntityWorkPartition.hpp"
@@ -101,6 +102,16 @@ namespace DNDS::Cauchy
                        CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0) const;
         };
         RHSOperator AcquireRHSOperator() const;
+        /// Allocate a fixed cell-face-cell matrix stencil using the prototype's
+        /// native row space. No payload is copied from the prototype.
+        std::shared_ptr<LinearProblemContext> BuildLinearProblem(const CFV::FVField &prototype, DiagonalStorage diagonal) const;
+        /// Fill explicit integrated approximate-Jacobian coefficients from
+        /// frozen means and prepared face signals. No input mutation, MPI or
+        /// inverse/factor preparation occurs here. inversePseudoTime is an
+        /// owned-cell scalar table. Caller completes all halos before entry.
+        void PrepareJacobian(const CFV::FVField &state, const AuxiliaryValues &auxiliary,
+                             const Runtime::Array<real> &inversePseudoTime, LinearProblemContext &output,
+                             JacobianPreparation controls = {}, real time = 0) const;
         FiniteVolume(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const EquationSystem &equation);
         const CFV::FiniteVolumePlan &Metrics() const;
         const Geom::UnstructuredMesh &Mesh() const;

@@ -413,5 +413,40 @@ values reject SGS until inversion is repeated. `ApplySGS` currently exposes the
 unsplit local symmetric-GS pair: RHS, old iterate, forward scratch and result are
 separate buffers. Remote old values stay frozen through both scans. No MPI or
 middle exchange is hidden in the numerical operator. Staged SGS, the optional
-exposed inter-scan exchange, ILU composition, Krylov/nonlinear drivers and the
-physical approximate-Jacobian producer remain separate phase items.
+exposed inter-scan exchange, ILU composition and Krylov/nonlinear drivers remain
+separate phase items.
+
+`FiniteVolume::BuildLinearProblem` allocates the cell-face-cell stencil on the
+prototype's existing row space. `PrepareJacobian` fills its explicit numerical
+arrays from frozen means, prepared face spectral radii and an owned scalar
+inverse-pseudo-time array. For integrated residual `R=d(VU)/dt`, its convention
+is `A = V/dTau + physicalMass*V - residualScale*J_R_approx`. No division by cell
+volume is hidden in the action. Diagonal inversion/factorization is a later
+explicit operation.
+
+Scalar dissipation uses the Euler spectral diagonal and off-diagonal
+`0.5*residualScale*weight*(A_normal(U_other)-lambda*I)`. Its boundary contribution
+is the same scalar spectral diagonal, without a BC derivative. Full-block Roe
+mode forms equation-owned characteristic dissipation from mean-state numerical
+wave magnitudes and adds the physical exterior-state Jacobian on boundaries.
+Viscosity enters the approximate spectral dissipation; this does not differentiate
+the complete gradient reconstruction or viscous flux. Source Jacobians are not
+part of the initial source-free profile. Off-rank columns remain in the operator.
+
+Periodic neighbor states and increment columns are transformed into the current
+cell's frame. Multiple incidences accumulate into one sparse block. A periodic
+self-neighbor contributes to the diagonal block; diagonal-entry storage retains
+only that block's diagonal entries. Core classification stays conservative with
+the mesh's node-star halo. The producer performs no MPI, input/reconstruction
+mutation or hidden inverse update. It rejects stale auxiliary provenance,
+missing required signals, incompatible spaces and input/output aliases before
+filling. Its caller coordinates rank-local errors before later MPI operations.
+
+Distributed tests compare assembled action against independent centered
+differences of a frozen-spectral first-order flux residual on a periodic torus
+and a cube with physical slip boundaries. They include integrated time/pseudo-time
+scaling, both diagonal representations where applicable, and stale-input errors.
+These validate the approximate operator; convergence of the eventual nonlinear
+solver and equivalence to a full high-order residual derivative are separate
+questions. Staged SGS, local ILU composition, linear/nonlinear drivers and pMG
+remain under implementation.
