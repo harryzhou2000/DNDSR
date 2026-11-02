@@ -58,6 +58,11 @@ namespace DNDS::Direct
         std::vector<index> localFillOrderingNew2Old;
 
         std::vector<index> localPartStarts;
+        /// End of the core prefix in each local part, in factor positions.
+        /// Empty unless an explicit core-first permutation was prepared.
+        std::vector<index> localPartCoreEnds;
+        uint64_t generation = 0;
+        bool hasSymbolicPattern = false;
 
         SerialSymLUStructure(const MPIInfo &nMpi, index nN) : mpi(nMpi), N(nN){};
 
@@ -70,6 +75,84 @@ namespace DNDS::Direct
         index FillingReorderNew2Old(index v)
         {
             return localFillOrderingNew2Old.size() ? localFillOrderingNew2Old[v] : v;
+        }
+
+        /// Stable partition the requested local ordering before symbolic fill.
+        /// Preserve each local part and its relative ordering within both sets.
+        /// This changes the factorization permutation, not mesh/DOF storage.
+        void SetCoreFirstOrdering(const std::vector<index> &core, std::vector<index> parts = {})
+        {
+            DNDS_check_throw_info(!hasSymbolicPattern && N >= 0, "core ordering must precede symbolic factorization");
+            if (parts.empty())
+                parts = {0, N};
+            DNDS_check_throw_info(parts.size() >= 2 && parts.front() == 0 && parts.back() == N &&
+                                      std::is_sorted(parts.begin(), parts.end()),
+                                  "invalid local parts for core ordering");
+            DNDS_check_throw_info(localFillOrderingNew2Old.empty() || index(localFillOrderingNew2Old.size()) == N,
+                                  "invalid existing factor permutation size");
+            std::vector<unsigned char> selected(N, 0), seen(N, 0);
+            for (auto iCell : core)
+            {
+                DNDS_check_throw_info(iCell >= 0 && iCell < N && !selected[iCell], "invalid or duplicate core cell");
+                selected[iCell] = 1;
+            }
+            std::vector<index> order, ends;
+            order.reserve(N);
+            for (index part = 0; part + 1 < index(parts.size()); ++part)
+            {
+                for (int group = 1; group >= 0; --group)
+                {
+                    for (index pos = parts[part]; pos < parts[part + 1]; ++pos)
+                    {
+                        const index iCell = FillingReorderNew2Old(pos);
+                        DNDS_check_throw_info(iCell >= parts[part] && iCell < parts[part + 1], "permutation crosses local part");
+                        if (selected[iCell] == group)
+                        {
+                            DNDS_check_throw_info(!seen[iCell], "duplicate cell in factor permutation");
+                            seen[iCell] = 1;
+                            order.push_back(iCell);
+                        }
+                    }
+                    if (group == 1)
+                        ends.push_back(index(order.size()));
+                }
+            }
+            std::vector<index> inverse(N);
+            for (index pos = 0; pos < N; ++pos)
+                inverse[order[pos]] = pos;
+            localFillOrderingNew2Old = std::move(order);
+            localFillOrderingOld2New = std::move(inverse);
+            localPartStarts = std::move(parts);
+            localPartCoreEnds = std::move(ends);
+            ++generation;
+        }
+
+        /// Rows whose triangular result is ready from the supplied RHS rows.
+        /// Factor support is not a bound on transitive solve dependencies.
+        /// Returns old cell indices in forward or reverse factor order.
+        std::vector<index> ReadySolveRows(const std::vector<index> &readyRhs, bool forward) const
+        {
+            DNDS_check_throw_info(hasSymbolicPattern, "triangular readiness needs a symbolic pattern");
+            std::vector<unsigned char> rhs(N, 0), ready(N, 0);
+            for (auto iCell : readyRhs)
+            {
+                DNDS_check_throw_info(iCell >= 0 && iCell < N && !rhs[iCell], "invalid or duplicate ready RHS row");
+                rhs[iCell] = 1;
+            }
+            std::vector<index> result;
+            for (index scan = 0; scan < N; ++scan)
+            {
+                const index pos = forward ? scan : N - 1 - scan;
+                const index iCell = localFillOrderingNew2Old.empty() ? pos : localFillOrderingNew2Old[pos];
+                bool available = rhs[iCell];
+                const auto &dependencies = forward ? lowerTriStructureNew[pos] : upperTriStructureNew[pos];
+                for (auto other : dependencies)
+                    available = available && ready[other];
+                ready[pos] = available;
+                if (available)
+                    result.push_back(iCell);
+            }
+            return result;
         }
 
         /**
@@ -85,6 +168,7 @@ namespace DNDS::Direct
             const std::vector<index> localPartStarts_in,
             int iluCode)
         {
+            hasSymbolicPattern = false;
             localPartStarts = localPartStarts_in;
             { // assert on partition
                 int nParts = localPartStarts.size() - 1;
@@ -291,6 +375,8 @@ namespace DNDS::Direct
                     }
                 }
             }
+            hasSymbolicPattern = true;
+            ++generation;
         }
     };
 
@@ -299,6 +385,7 @@ namespace DNDS::Direct
     {
         ssp<Direct::SerialSymLUStructure> symLU;
         bool isDecomposed = false;
+        index nextNumericPivot = 0;
 
         LocalLUBase(ssp<Direct::SerialSymLUStructure> _symLU) : symLU(_symLU)
         {
@@ -318,7 +405,6 @@ namespace DNDS::Direct
 
         void InPlaceDecomposeV1()
         {
-            auto dThis = static_cast<Derived *>(this);
             const auto &localPartStarts = symLU->localPartStarts;
             int nParts = localPartStarts.size() - 1;
 #if defined(DNDS_DIST_MT_USE_OMP)
@@ -326,89 +412,114 @@ namespace DNDS::Direct
 #endif
             for (int iPart = 0; iPart < nParts; iPart++)
                 for (index iP = localPartStarts.at(iPart); iP < localPartStarts.at(iPart + 1); iP++)
-                {
-                    index i = symLU->FillingReorderNew2Old(iP);
-
-                    auto &&lowerRow = symLU->lowerTriStructureNew[iP];
-                    /*********************/
-                    // lower part
-                    for (int ijP = 0; ijP < lowerRow.size(); ijP++) //! for(int jP = 0; jP < iP; jP++)
-                    {
-                        auto jP = lowerRow[ijP];
-                        DNDS_assert(jP < iP);
-                        auto j = symLU->FillingReorderNew2Old(jP);
-                        // handle last j's job
-                        if (ijP > 0) //! if(jP > 0)
-                        {
-                            auto &&lowerRowJP = symLU->lowerTriStructureNew[jP];
-                            iterateIdentical( //! for(int kP = 0; kP < jP; kP++)
-                                lowerRow.begin(), lowerRow.end(), lowerRowJP.begin(), lowerRowJP.end(),
-                                [&](index kP, auto pos1, auto pos2)
-                                {
-                                    if (kP > jP - 1)
-                                        return true;                // early end
-                                    DNDS_assert(kP < symLU->Num()); // a safe guarantee
-                                    auto k = symLU->FillingReorderNew2Old(kP);
-                                    int jPInUpperPos = symLU->lowerTriStructureNewInUpper[jP][pos2];
-                                    if (jPInUpperPos != -1) // in case not symbolically symmetric
-                                        dThis->GetLower(i, ijP) -=
-                                            dThis->GetLower(i, pos1) * dThis->GetUpper(k, jPInUpperPos);
-                                    //! LU(iP, jP) -= LU(iP, kP) * LU(kP, jP);
-                                    // if (iP < 3)
-                                    // log() << fmt::format("Lower Add at {},{},{} === {}", iP, jP - 1, kP, (dThis->GetLower(i, pos1) * dThis->GetUpper(k, jPInUpperPos))(0)) << std::endl;
-                                    return false;
-                                });
-                        }
-
-                        // auto luDiag = dThis->GetDiag(j).fullPivLu();
-                        // tComponent Aij = luDiag.solve(dThis->GetLower(i, ijP));
-                        dThis->GetLower(i, ijP) *= dThis->GetDiag(j); //! LU(iP, jP) *= LU(jP, jP);
-                    }
-                    /*********************/
-                    // diag part
-                    for (int ikP = 0; ikP < lowerRow.size(); ikP++) //! for(int kP = 0; kP < iP; kP++)
-                    {
-                        auto kP = lowerRow[ikP];
-                        auto k = symLU->FillingReorderNew2Old(kP);
-                        int iPInUpperPos = symLU->lowerTriStructureNewInUpper[iP][ikP];
-                        if (iPInUpperPos != -1)
-                            dThis->GetDiag(i) -= dThis->GetLower(i, ikP) * dThis->GetUpper(k, iPInUpperPos);
-                        //! LU(iP, iP) -= LU(iP, kP) * LU(kP, iP);
-                    }
-
-                    dThis->GetDiag(i) = dThis->InvertDiag(dThis->GetDiag(i)); // * note here only stores
-                    //! LU(iP, iP) = inv(LU(iP, iP));
-                    /*********************/
-                    // upper part
-                    auto &&upperRow = symLU->upperTriStructureNew[iP];
-                    for (int ijP = 0; ijP < upperRow.size(); ijP++) //! for(int jP = iP+1; jP < N; jP++)
-                    {
-                        auto jP = upperRow[ijP];
-                        DNDS_assert(jP > iP);
-                        auto j = symLU->FillingReorderNew2Old(jP);
-                        auto &&lowerRowJP = symLU->lowerTriStructureNew[jP];
-
-                        iterateIdentical( //! for(int kP = 0; kP < iP; kP++)
-                            lowerRow.begin(), lowerRow.end(), lowerRowJP.begin(), lowerRowJP.end(),
-                            [&](index kP, auto pos1, auto pos2)
-                            {
-                                if (kP >= iP)
-                                    return true;
-                                DNDS_assert(kP < symLU->Num());
-                                auto k = symLU->FillingReorderNew2Old(kP);
-                                int jPInUpperPos = symLU->lowerTriStructureNewInUpper[jP][pos2];
-                                if (jPInUpperPos != -1)
-                                    dThis->GetUpper(i, ijP) -= dThis->GetLower(i, pos1) * dThis->GetUpper(k, jPInUpperPos);
-                                //! LU(iP, jP) -= LU(iP, kP) * LU(kP, jP);
-                                // if (iP < 3)
-                                // log() << fmt::format("Upper Add at {},{},{} === {}", iP, jP, kP,
-                                //                      (this->GetLower(i, pos1) * this->GetUpper(k, jPInUpperPos))(0))
-                                // << std::endl;
-                                return false;
-                            });
-                    }
-                }
+                    DecomposePivotV1(iP);
             isDecomposed = true;
+        }
+
+        /// Restart numeric progress after the caller has refilled matrix values.
+        /// Existing factors must never be passed here as unfactored values.
+        void BeginNumericFactorization()
+        {
+            isDecomposed = false;
+            nextNumericPivot = 0;
+        }
+
+        /// Consecutive pivot ranges reuse the same arithmetic as full V1.
+        /// Later rows may be updated by a pivot; range does not describe a
+        /// disjoint writable row lease. Caller serializes numeric fill/factor.
+        void DecomposeRange(index begin, index end)
+        {
+            DNDS_check_throw_info(!isDecomposed && begin == nextNumericPivot && begin >= 0 && end >= begin && end <= symLU->Num(),
+                                  "out-of-order or invalid numeric factor range");
+            for (index iP = begin; iP < end; ++iP)
+                DecomposePivotV1(iP);
+            nextNumericPivot = end;
+            isDecomposed = end == symLU->Num();
+        }
+
+        void DecomposePivotV1(index iP)
+        {
+            auto dThis = static_cast<Derived *>(this);
+            index i = symLU->FillingReorderNew2Old(iP);
+
+            auto &&lowerRow = symLU->lowerTriStructureNew[iP];
+            /*********************/
+            // lower part
+            for (int ijP = 0; ijP < lowerRow.size(); ijP++) //! for(int jP = 0; jP < iP; jP++)
+            {
+                auto jP = lowerRow[ijP];
+                DNDS_assert(jP < iP);
+                auto j = symLU->FillingReorderNew2Old(jP);
+                // handle last j's job
+                if (ijP > 0) //! if(jP > 0)
+                {
+                    auto &&lowerRowJP = symLU->lowerTriStructureNew[jP];
+                    iterateIdentical( //! for(int kP = 0; kP < jP; kP++)
+                        lowerRow.begin(), lowerRow.end(), lowerRowJP.begin(), lowerRowJP.end(),
+                        [&](index kP, auto pos1, auto pos2)
+                        {
+                            if (kP > jP - 1)
+                                return true;                // early end
+                            DNDS_assert(kP < symLU->Num()); // a safe guarantee
+                            auto k = symLU->FillingReorderNew2Old(kP);
+                            int jPInUpperPos = symLU->lowerTriStructureNewInUpper[jP][pos2];
+                            if (jPInUpperPos != -1) // in case not symbolically symmetric
+                                dThis->GetLower(i, ijP) -=
+                                    dThis->GetLower(i, pos1) * dThis->GetUpper(k, jPInUpperPos);
+                            //! LU(iP, jP) -= LU(iP, kP) * LU(kP, jP);
+                            // if (iP < 3)
+                            // log() << fmt::format("Lower Add at {},{},{} === {}", iP, jP - 1, kP, (dThis->GetLower(i, pos1) * dThis->GetUpper(k, jPInUpperPos))(0)) << std::endl;
+                            return false;
+                        });
+                }
+
+                // auto luDiag = dThis->GetDiag(j).fullPivLu();
+                // tComponent Aij = luDiag.solve(dThis->GetLower(i, ijP));
+                dThis->GetLower(i, ijP) *= dThis->GetDiag(j); //! LU(iP, jP) *= LU(jP, jP);
+            }
+            /*********************/
+            // diag part
+            for (int ikP = 0; ikP < lowerRow.size(); ikP++) //! for(int kP = 0; kP < iP; kP++)
+            {
+                auto kP = lowerRow[ikP];
+                auto k = symLU->FillingReorderNew2Old(kP);
+                int iPInUpperPos = symLU->lowerTriStructureNewInUpper[iP][ikP];
+                if (iPInUpperPos != -1)
+                    dThis->GetDiag(i) -= dThis->GetLower(i, ikP) * dThis->GetUpper(k, iPInUpperPos);
+                //! LU(iP, iP) -= LU(iP, kP) * LU(kP, iP);
+            }
+
+            dThis->GetDiag(i) = dThis->InvertDiag(dThis->GetDiag(i)); // * note here only stores
+            //! LU(iP, iP) = inv(LU(iP, iP));
+            /*********************/
+            // upper part
+            auto &&upperRow = symLU->upperTriStructureNew[iP];
+            for (int ijP = 0; ijP < upperRow.size(); ijP++) //! for(int jP = iP+1; jP < N; jP++)
+            {
+                auto jP = upperRow[ijP];
+                DNDS_assert(jP > iP);
+                auto j = symLU->FillingReorderNew2Old(jP);
+                auto &&lowerRowJP = symLU->lowerTriStructureNew[jP];
+
+                iterateIdentical( //! for(int kP = 0; kP < iP; kP++)
+                    lowerRow.begin(), lowerRow.end(), lowerRowJP.begin(), lowerRowJP.end(),
+                    [&](index kP, auto pos1, auto pos2)
+                    {
+                        if (kP >= iP)
+                            return true;
+                        DNDS_assert(kP < symLU->Num());
+                        auto k = symLU->FillingReorderNew2Old(kP);
+                        int jPInUpperPos = symLU->lowerTriStructureNewInUpper[jP][pos2];
+                        if (jPInUpperPos != -1)
+                            dThis->GetUpper(i, ijP) -= dThis->GetLower(i, pos1) * dThis->GetUpper(k, jPInUpperPos);
+                        //! LU(iP, jP) -= LU(iP, kP) * LU(kP, jP);
+                        // if (iP < 3)
+                        // log() << fmt::format("Upper Add at {},{},{} === {}", iP, jP, kP,
+                        //                      (this->GetLower(i, pos1) * this->GetUpper(k, jPInUpperPos))(0))
+                        // << std::endl;
+                        return false;
+                    });
+            }
         }
 
         void InPlaceDecomposeV2()
@@ -488,6 +599,41 @@ namespace DNDS::Direct
                     result[iCell] += dThis->GetLower(iCell, ij) * x[symLU->lowerTriStructure[iCell][ij]];
                 for (int ij = 0; ij < symLU->upperTriStructure[iCell].size(); ij++)
                     result[iCell] += dThis->GetUpper(iCell, ij) * x[symLU->upperTriStructure[iCell][ij]];
+            }
+        }
+
+        /// Partial forward solve. Result predecessors must already be produced
+        /// in this factor order; the wrapper owns phase/alias/readiness checks.
+        template <class TRhs, class TResult>
+        void SolveLowerRange(const TRhs &b, TResult &result, index begin, index end)
+        {
+            DNDS_check_throw_info(isDecomposed && begin >= 0 && end >= begin && end <= symLU->Num(), "invalid lower solve range or missing factors");
+            auto dThis = static_cast<Derived *>(this);
+            for (index iP = begin; iP < end; ++iP)
+            {
+                const index i = symLU->FillingReorderNew2Old(iP);
+                result[i] = b[i];
+                const auto &row = symLU->lowerTriStructure[i];
+                for (index j = 0; j < index(row.size()); ++j)
+                    result[i] -= dThis->GetLower(i, j) * result[row[j]];
+            }
+        }
+
+        /// Partial backward solve using separate forward RHS and output.
+        /// Visit contiguous ranges from high to low factor positions.
+        template <class TRhs, class TResult>
+        void SolveUpperRange(const TRhs &forward, TResult &result, index begin, index end)
+        {
+            DNDS_check_throw_info(isDecomposed && begin >= 0 && end >= begin && end <= symLU->Num(), "invalid upper solve range or missing factors");
+            auto dThis = static_cast<Derived *>(this);
+            for (index pos = end; pos > begin; --pos)
+            {
+                const index i = symLU->FillingReorderNew2Old(pos - 1);
+                result[i] = forward[i];
+                const auto &row = symLU->upperTriStructure[i];
+                for (index j = 0; j < index(row.size()); ++j)
+                    result[i] -= dThis->GetUpper(i, j) * result[row[j]];
+                result[i] = dThis->GetDiag(i) * result[i];
             }
         }
 

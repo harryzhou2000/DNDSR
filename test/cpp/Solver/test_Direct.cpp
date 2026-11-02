@@ -22,12 +22,15 @@
 #include "DNDS/Core/Defines.hpp"
 #include "DNDS/MPI/MPI.hpp"
 #include "Solver/Direct.hpp"
+#include "DNDS/Algebra/BlockMatrixStorage.hpp"
+#include "Solver/NativeBlockLU.hpp"
 #include <Eigen/Dense>
 #include <iostream>
 #include <iomanip>
 #include <vector>
 #include <memory>
 #include <cmath>
+#include <optional>
 
 using namespace DNDS;
 
@@ -530,8 +533,221 @@ TEST_CASE("Direct 2D periodic LDLT: complete decompose + solve is exact")
 }
 
 // ===================================================================
-// main with MPI (needed for SerialSymLUStructure internals)
+// Native storage and staged symbolic/numeric work
 // ===================================================================
+TEST_CASE("Direct core ordering is stable within local parts and precedes symbolic fill")
+{
+    auto symbolic = std::make_shared<Direct::SerialSymLUStructure>(g_mpi, 6);
+    symbolic->SetCoreFirstOrdering({2, 0, 5}, {0, 3, 6});
+    CHECK(symbolic->localFillOrderingNew2Old == std::vector<DNDS::index>{0, 2, 1, 5, 3, 4});
+    CHECK(symbolic->localPartCoreEnds == std::vector<DNDS::index>{2, 4});
+    std::vector<std::vector<DNDS::index>> adjacency{{1}, {0, 2}, {1}, {4}, {3, 5}, {4}};
+    symbolic->ObtainSymmetricSymbolicFactorization(adjacency, {0, 3, 6}, 0);
+    CHECK(symbolic->ReadySolveRows({0, 2, 5}, true) == std::vector<DNDS::index>{0, 2, 5});
+    CHECK_THROWS(symbolic->SetCoreFirstOrdering({0}));
+    auto invalid = std::make_shared<Direct::SerialSymLUStructure>(g_mpi, 3);
+    CHECK_THROWS(invalid->SetCoreFirstOrdering({1, 1}));
+    CHECK_THROWS(invalid->SetCoreFirstOrdering({3}));
+    CHECK(invalid->localFillOrderingNew2Old.empty());
+    CHECK_THROWS(invalid->ReadySolveRows({0}, true));
+}
+
+TEST_CASE("ILU zero-fill support does not bound upper triangular readiness")
+{
+    auto symbolic = std::make_shared<Direct::SerialSymLUStructure>(g_mpi, 4);
+    std::vector<std::vector<DNDS::index>> adjacency{{1}, {0, 2}, {1, 3}, {2}};
+    symbolic->ObtainSymmetricSymbolicFactorization(adjacency, {0, 4}, 0);
+    CHECK(symbolic->ReadySolveRows({0, 1, 2}, true) == std::vector<DNDS::index>{0, 1, 2});
+    CHECK(symbolic->ReadySolveRows({0, 1, 2}, false).empty());
+    CHECK(symbolic->ReadySolveRows({0, 1, 2, 3}, false) == std::vector<DNDS::index>{3, 2, 1, 0});
+}
+
+TEST_CASE("Generic ranged factors and separate triangular outputs preserve the full solve")
+{
+    for (int fill : {0, 1, -1})
+    {
+        auto symbolic = std::make_shared<Direct::SerialSymLUStructure>(g_mpi, NCells);
+        symbolic->SetCoreFirstOrdering({0, 3, 7, 12});
+        symbolic->ObtainSymmetricSymbolicFactorization(build2DPeriodicAdj(), {0, NCells}, fill);
+        TestBlockLU full(symbolic, NCells), staged(symbolic, NCells);
+        fill2DLaplacian(full);
+        fill2DLaplacian(staged);
+        full.InPlaceDecompose();
+        staged.BeginNumericFactorization();
+        CHECK_THROWS(staged.DecomposeRange(1, 4));
+        staged.DecomposeRange(0, 4);
+        CHECK_FALSE(staged.isDecomposed);
+        staged.DecomposeRange(4, NCells);
+        CHECK(staged.isDecomposed);
+        CHECK_THROWS(staged.DecomposeRange(0, NCells));
+        tVec rhs(NCells), reference(NCells), forward(NCells), output(NCells);
+        for (int i = 0; i < NCells; ++i)
+            rhs[i] = BVec{std::sin(.37 * i), std::cos(.51 * i)};
+        full.Solve(rhs, reference);
+        staged.SolveLowerRange(rhs, forward, 0, 4);
+        staged.SolveLowerRange(rhs, forward, 4, NCells);
+        staged.SolveUpperRange(forward, output, 4, NCells);
+        staged.SolveUpperRange(forward, output, 0, 4);
+        for (int i = 0; i < NCells; ++i)
+            CHECK((output[i] - reference[i]).norm() < 1e-14);
+        CHECK_THROWS(staged.SolveLowerRange(rhs, forward, -1, 4));
+    }
+}
+
+TEST_CASE("Native block matrix shares immutable row metadata and retains access lifetime")
+{
+    using Storage = DNDS::Algebra::BlockMatrixStorage;
+    std::optional<Storage::ReadAccess> retained;
+    {
+        Storage storage({2, 0, 1}, 2);
+        CHECK(storage.RowNumber() == 3);
+        CHECK(storage.Offsets() == std::vector<DNDS::index>{0, 2, 2, 3});
+        auto alias = storage;
+        {
+            auto write = storage.Write();
+            const auto values = write.View();
+            values(0, 0) << 1, 2, 3, 4;
+            values(0, 1).setConstant(7);
+            values(2, 0).setIdentity();
+            CHECK_THROWS(alias.Read());
+        }
+        retained.emplace(alias.Read());
+        CHECK_THROWS(storage.Write());
+    }
+    const auto values = retained->View();
+    CHECK(values.BlockNumber(1) == 0);
+    CHECK(values(0, 0)(0, 1) == 2);
+    CHECK(values(0, 1).sum() == 28);
+    CHECK(values(2, 0).trace() == 2);
+    CHECK_THROWS(Storage({1}, 0));
+    CHECK_THROWS(Storage({-1}, 2));
+    Storage empty({}, 5);
+    CHECK(empty.RowNumber() == 0);
+}
+
+TEST_CASE("Native block LU solves strided DOFs and rejects stale matrices and aliases")
+{
+    namespace R = DNDS::Runtime;
+    for (int fill : {0, 1, -1})
+    {
+        auto symbolic = std::make_shared<Direct::SerialSymLUStructure>(g_mpi, NCells);
+        symbolic->SetCoreFirstOrdering({0, 3, 7, 12});
+        symbolic->ObtainSymmetricSymbolicFactorization(build2DPeriodicAdj(), {0, NCells}, fill);
+        Direct::NativeBlockLU native(symbolic, BS);
+        Eigen::MatrixXd dense = Eigen::MatrixXd::Zero(NCells * BS, NCells * BS);
+        {
+            auto access = native.Matrix().Write();
+            const auto values = access.View();
+            for (DNDS::index i = 0; i < NCells; ++i)
+            {
+                Block diagonal;
+                diagonal << 6 + .03 * i, .04, -.02, 7 + .01 * i;
+                values(i, 0) = diagonal;
+                dense.block<BS, BS>(i * BS, i * BS) = diagonal;
+                auto fillBlocks = [&](const auto &neighbors, DNDS::index first)
+                {
+                    for (DNDS::index slot = 0; slot < DNDS::index(neighbors.size()); ++slot)
+                    {
+                        const auto other = neighbors[slot];
+                        const auto adjacent = build2DPeriodicAdj()[i];
+                        const bool original = std::find(adjacent.begin(), adjacent.end(), other) != adjacent.end();
+                        Block coupling = Block::Zero();
+                        if (original)
+                            coupling << -.7, .01, -.015, -.8;
+                        values(i, first + slot) = coupling;
+                        dense.block<BS, BS>(i * BS, other * BS) = coupling;
+                    }
+                };
+                fillBlocks(symbolic->lowerTriStructure[i], 1);
+                fillBlocks(symbolic->upperTriStructure[i], 1 + DNDS::index(symbolic->lowerTriStructure[i].size()));
+            }
+        }
+        native.Factorize({4, NCells});
+        CHECK(native.FactorsCurrent());
+        CHECK(native.LastInverseFallbacks() == 0);
+        for (const auto &shape : {R::RowLayout::Dense(NCells, BS, BS + 3), R::RowLayout::ColMajor(NCells, BS, {8, 1}),
+                                  R::RowLayout::TiledColMajor(NCells, BS, 32)})
+        {
+            R::Array<DNDS::real> rhs(shape), forward(shape), output(shape);
+            Eigen::VectorXd b(NCells * BS);
+            {
+                auto write = rhs.Write();
+                const auto view = write.View<R::UniformTableRows>();
+                for (DNDS::index i = 0; i < NCells; ++i)
+                    for (DNDS::index j = 0; j < BS; ++j)
+                        view(i, j) = b(i * BS + j) = std::sin(.31 * i + .2 * j) + .4;
+            }
+            const auto forwardVersion = forward.Version();
+            {
+                auto retained = output.Read();
+                CHECK_THROWS(native.Solve(rhs, forward, output));
+                CHECK(forward.Version() == forwardVersion);
+            }
+            native.Solve(rhs, forward, output);
+            Eigen::VectorXd x(NCells * BS);
+            {
+                auto read = output.Read();
+                const auto view = read.View<R::UniformTableRows>();
+                for (DNDS::index i = 0; i < NCells; ++i)
+                    for (DNDS::index j = 0; j < BS; ++j)
+                        x(i * BS + j) = view(i, j);
+            }
+            CHECK((dense * x - b).norm() < .2 * b.norm());
+            if (fill == -1)
+                CHECK((x - dense.partialPivLu().solve(b)).norm() < 2e-13);
+            CHECK_THROWS(native.Solve(rhs, rhs, output));
+            CHECK_THROWS(native.Solve(rhs, forward, forward));
+            {
+                auto writer = native.Matrix().Write();
+                CHECK_FALSE(native.FactorsCurrent());
+                CHECK_THROWS(native.Solve(rhs, forward, output));
+            }
+            CHECK_FALSE(native.FactorsCurrent());
+            native.Factorize();
+        }
+        symbolic->ObtainSymmetricSymbolicFactorization(build2DPeriodicAdj(), {0, NCells}, fill);
+        CHECK_FALSE(native.FactorsCurrent());
+        CHECK_THROWS(native.Factorize());
+    }
+}
+
+TEST_CASE("Native block LU supports empty owners and counts guarded inverse fallback")
+{
+    namespace R = DNDS::Runtime;
+    auto empty = std::make_shared<Direct::SerialSymLUStructure>(g_mpi, 0);
+    std::vector<std::vector<DNDS::index>> noRows;
+    empty->ObtainSymmetricSymbolicFactorization(noRows, {0, 0}, 0);
+    Direct::NativeBlockLU zero(empty, 5);
+    zero.Factorize();
+    R::Array<DNDS::real> rhs0(R::RowLayout::Dense(0, 5)), middle0(R::RowLayout::Dense(0, 5)), output0(R::RowLayout::Dense(0, 5));
+    CHECK_NOTHROW(zero.Solve(rhs0, middle0, output0));
+
+    auto symbolic = std::make_shared<Direct::SerialSymLUStructure>(g_mpi, 2);
+    std::vector<std::vector<DNDS::index>> twoRows(2);
+    symbolic->ObtainSymmetricSymbolicFactorization(twoRows, {0, 1, 2}, 0);
+    Direct::NativeBlockLU nearSingular(symbolic, 2);
+    {
+        auto write = nearSingular.Matrix().Write();
+        for (DNDS::index i = 0; i < 2; ++i)
+            write.View()(i, 0) << 1, 1 - 1e-9, 1 - 1e-9, 1;
+    }
+    nearSingular.Factorize();
+    CHECK(nearSingular.LastInverseFallbacks() == 2);
+    R::Array<DNDS::real> rhs(R::RowLayout::Dense(2, 2)), middle(R::RowLayout::Dense(2, 2)), output(R::RowLayout::Dense(2, 2));
+    {
+        auto write = rhs.Write();
+        for (DNDS::index i = 0; i < 2; ++i)
+            write.View()(i, 0) = write.View()(i, 1) = 2;
+    }
+    nearSingular.Solve(rhs, middle, output);
+    auto read = output.Read();
+    for (DNDS::index i = 0; i < 2; ++i)
+    {
+        CHECK(read.View()(i, 0) == doctest::Approx(2 / (2 - 1e-9)).epsilon(1e-6));
+        CHECK(read.View()(i, 1) == doctest::Approx(2 / (2 - 1e-9)).epsilon(1e-6));
+    }
+}
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);
