@@ -1,5 +1,18 @@
 # Cauchy native implicit operator contracts
 
+Optional CPU profiling uses caller-owned `NonlinearProfile` through
+`NonlinearSolveControl::profile`. A null output performs no clock queries or
+additional MPI operations. A provided output resets for each synchronous solve
+and retains partial timings when it throws; retain it until return/unwinding
+and do not share it between simultaneous solves. Timers surround operator and
+controller phases, outside numerical row loops. Per-rank Total encloses Entry,
+Residual, Convergence, PseudoTimePP, Jacobian, LinearSolve and Correction.
+Residual includes reconstruction/auxiliary/communication; LinearSolve includes
+required preconditioner work and exchanges. These are wall times, including
+waits, rather than pure arithmetic costs. Calculate the unsectioned controller
+remainder per rank before reduction: sums of independently maximized phases
+are not the same as maximum-rank total. No timer output certifies convergence.
+
 The coupled DITR method, its independent intermediate-stage workspace and
 accepted/trial history contracts are documented in [DITR.md](DITR.md).
 

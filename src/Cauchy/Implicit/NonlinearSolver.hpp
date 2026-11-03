@@ -5,10 +5,34 @@
 
 namespace DNDS::Cauchy
 {
+    /// Optional synchronous CPU profile. Values are local wall seconds, not
+    /// reduced across ranks. Total encloses the disjoint named sections;
+    /// its remainder includes controller work and timer overhead. The caller
+    /// owns this output through Solve, including unwinding, and serializes it.
+    struct NonlinearProfile
+    {
+        enum Phase
+        {
+            Entry,
+            Residual,
+            Convergence,
+            PseudoTimePP,
+            Jacobian,
+            LinearSolve,
+            Correction,
+            Total,
+            PhaseNumber
+        };
+        std::array<real, PhaseNumber> seconds{};
+        index residualEvaluations = 0;
+    };
     struct NonlinearSolveControl
     {
         index correctionLimit = -1; // -1 uses the configured stage cap
         real initialPseudoCFL = 0;  // 0 starts at the configured stage CFL
+        /// Null means no clock queries or extra communication. A provided
+        /// output resets per call and retains partial timings on exceptions.
+        NonlinearProfile *profile = nullptr;
     };
     struct NonlinearIterationReport
     {

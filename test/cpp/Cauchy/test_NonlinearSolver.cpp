@@ -317,6 +317,67 @@ TEST_CASE("Implicit bad corrections reject without poisoning state and nonlinear
     }
     CHECK(solver.Solve(state, source, 20, 1, .1).converged);
 }
+TEST_CASE("Optional nonlinear phase output preserves exact corrections and records early failures without extra collectives")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    C::DomainSettings settings;
+    settings.numerics.reconstruction = "constant";
+    settings.numerics.positivity = true;
+    settings.implicit.linear.method = "sgs";
+    settings.implicit.linear.iterations = 2;
+    settings.implicit.linear.relativeTolerance = settings.implicit.linear.absoluteTolerance = 0;
+    const auto equation = C::EquationSystem::Resolve(settings.equation);
+    C::FiniteVolume fv(mesh, settings, equation);
+    auto plain = fv.Metrics().BuildField(5), profiled = fv.Metrics().BuildField(5), source = fv.Metrics().BuildField(5);
+    fv.Initialize(plain, {}, {1, 0, 0, 0, 1});
+    A::Copy(profiled, plain);
+    {
+        const auto read = plain.Owned().Read();
+        auto write = source.Owned().Write();
+        const auto u = read.View<R::UniformTableRows>();
+        const auto b = write.View<R::UniformTableRows>();
+        for (DNDS::index iCell = 0; iCell < u.RowCount(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+                b(iCell, j) = 20 * u(iCell, j) + (j == 4 ? .1 * (fv.Metrics().Cells().LocalToGlobal(iCell) + 1) : 0);
+    }
+    R::EagerEngine engine;
+    const auto stream = engine.CreateCPUStream();
+    C::AuxiliaryRequest request;
+    request.faceSpectralRadius = request.cellSpectralSum = true;
+    C::NonlinearSolver plainSolver(fv, plain, fv.BuildWorkspace(plain, request), engine, stream, settings);
+    C::NonlinearSolver profiledSolver(fv, profiled, fv.BuildWorkspace(profiled, request), engine, stream, settings);
+    const auto a = plainSolver.Solve(plain, source, 20, 1, 0, 0, {1});
+    C::NonlinearProfile profile;
+    profile.seconds.fill(-1);
+    profile.residualEvaluations = 777;
+    const auto b = profiledSolver.Solve(profiled, source, 20, 1, 0, 0, {1, 0, &profile});
+    CHECK(a.iterations == 1);
+    CHECK(b.iterations == a.iterations);
+    CHECK(b.linearIterations == a.linearIterations);
+    CHECK(b.residual == a.residual);
+    CHECK(b.residualTargetRatio == a.residualTargetRatio);
+    CHECK(b.converged == a.converged);
+    CHECK(profile.residualEvaluations == 2);
+    DNDS::real sections = 0;
+    for (int phase = 0; phase < C::NonlinearProfile::Total; ++phase)
+    {
+        CHECK(profile.seconds[phase] > 0);
+        sections += profile.seconds[phase];
+    }
+    CHECK(profile.seconds[C::NonlinearProfile::Total] >= sections);
+    {
+        const auto x = plain.Owned().Read(), y = profiled.Owned().Read();
+        for (DNDS::index iCell = 0; iCell < plain.Owned().RowCount(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+                CHECK(x.View<R::UniformTableRows>()(iCell, j) == y.View<R::UniformTableRows>()(iCell, j));
+    }
+    CHECK_THROWS(profiledSolver.Solve(profiled, source, std::numeric_limits<double>::quiet_NaN(), 1, 0, 0, {1, 0, &profile}));
+    CHECK(profile.residualEvaluations == 0);
+    CHECK(profile.seconds[C::NonlinearProfile::Entry] > 0);
+    CHECK(profile.seconds[C::NonlinearProfile::Total] >= profile.seconds[C::NonlinearProfile::Entry]);
+    for (int phase = C::NonlinearProfile::Residual; phase < C::NonlinearProfile::Total; ++phase)
+        CHECK(profile.seconds[phase] == 0);
+}
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);

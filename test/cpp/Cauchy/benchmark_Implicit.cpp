@@ -5,6 +5,7 @@
 #include "Cauchy/Implicit/LinearSolver.hpp"
 #include "Geom/IO/NativeMeshCGNS.hpp"
 #include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
+#include "ControllerPhaseBenchmark.hpp"
 #include <iostream>
 
 namespace C = DNDS::Cauchy;
@@ -20,9 +21,10 @@ int main(int argc, char **argv)
     const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
     try
     {
-        DNDS_check_throw_info(argc == 7, "arguments: unit-square-mesh repetitions trials check-access overlap semi-matrix-free");
+        DNDS_check_throw_info(argc == 7 || argc == 8, "arguments: unit-square-mesh repetitions trials check-access overlap semi-matrix-free [extra-controller-phases]");
         const int repetitions = std::stoi(argv[2]), trials = std::stoi(argv[3]);
         const bool checked = std::stoi(argv[4]), overlap = std::stoi(argv[5]), evaluated = std::stoi(argv[6]);
+        const bool extra = argc == 8 && std::stoi(argv[7]);
         DNDS_check_throw_info(repetitions > 0 && trials > 0, "positive benchmark repetitions/trials required");
         const auto measure = [&](auto &&action, int count = 1)
         {
@@ -48,6 +50,8 @@ int main(int argc, char **argv)
         const double topology = measure([&]
                                         { mesh->PrepareNativeTopology(); });
         C::Json input{{"defaults", {{"mesh", {{"dimension", 2}}}, {"equation", {{"transport", "NewtonianFourier"}, {"viscosity", .001}}}, {"numerics", {{"reconstruction", "variational"}, {"flux", "Roe"}, {"limiter", "none"}, {"faceFallback", false}, {"positivity", false}, {"viscousGradient", "polynomial"}, {"reconstructionIterations", 5}, {"reconstructionTolerance", 0}, {"cfv", {{"maxOrder", 3}, {"intOrder", 5}, {"SORInstead", false}, {"jacobiRelax", 1}, {"HQMWeights", true}}}}}, {"execution", {{"checkAccess", checked}, {"overlap", overlap}}}}}};
+        if (extra)
+            input["defaults"]["numerics"]["positivity"] = true;
         // Uniform-square fixtures can have physical rather than periodic
         // labels. Declare every actual physical zone, identically on all ranks;
         // this metadata agreement is outside the measured numerical batches.
@@ -187,11 +191,17 @@ int main(int argc, char **argv)
             DNDS_check_throw_info(linearIterations == I(5) * repetitions, "unexpected standalone SGS work count");
             const double transfer = measure([&]
                                             { halo.Begin().Wait(); }, repetitions);
+            C::Json controllers;
+            if (extra)
+                controllers = CauchyBenchmark::ControllerPhases(fv, state, *workspace, engine, stream, settings, checked, repetitions, measure);
             DNDS_check_throw_info(state.Owned().Version() == ownedVersion, "benchmark changed its frozen means");
             DNDS_check_throw_info(std::isfinite(A::NormGlobal(update)), "nonfinite local factor solve");
             if (mpi.rank == 0)
             {
                 C::Json report{{"cells", global}, {"np", mpi.size}, {"degree", 3}, {"trial", trial}, {"repetitions", repetitions}, {"checked", checked}, {"overlap", overlap}, {"semi_matrix_free", evaluated}, {"import", import}, {"topology", topology}, {"fv_prepare", preparation}, {"evaluate", evaluate}, {"auxiliary", auxiliaryTime}, {"raw_rhs", rawRHS}, {"jacobian", jacobian}, {"inverse", inverse}, {"ilu_symbolic", symbolic}, {"ilu_factor", factor}, {"matrix_action", matvec}, {"sgs_pair", sgs}, {"ilu_solve", ilu}, {"sgs5_orchestration", solve}, {"mean_halo", transfer}, {"rhs_max_difference", difference}, {"linear_iterations_per_call", 5}, {"owned_generation_preserved", true}};
+                report["extra_controller_phases"] = extra;
+                if (extra)
+                    report["controllers"] = std::move(controllers);
                 std::cout << "CAUCHY_PHASE_BENCH " << report.dump() << std::endl;
             }
         }

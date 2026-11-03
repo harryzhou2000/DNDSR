@@ -5,10 +5,35 @@
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include <tuple>
 #include <iostream>
+#include <chrono>
 
 namespace DNDS::Cauchy
 {
     namespace R = Runtime;
+    namespace
+    {
+        class NonlinearPhaseTimer
+        {
+            using Clock = std::chrono::steady_clock;
+            real *_seconds = nullptr;
+            Clock::time_point _start{};
+
+        public:
+            NonlinearPhaseTimer(NonlinearProfile *profile, NonlinearProfile::Phase phase)
+                : _seconds(profile ? &profile->seconds[phase] : nullptr)
+            {
+                if (_seconds)
+                    _start = Clock::now();
+            }
+            NonlinearPhaseTimer(const NonlinearPhaseTimer &) = delete;
+            NonlinearPhaseTimer &operator=(const NonlinearPhaseTimer &) = delete;
+            ~NonlinearPhaseTimer()
+            {
+                if (_seconds)
+                    *_seconds += std::chrono::duration<real>(Clock::now() - _start).count();
+            }
+        };
+    }
     struct NonlinearSolver::Data
     {
         FiniteVolume discrete;
@@ -96,8 +121,13 @@ namespace DNDS::Cauchy
     NonlinearIterationReport NonlinearSolver::Solve(CFV::FVField &state, const CFV::FVField &source, real mass, real rhsScale, real time, int stage, NonlinearSolveControl control)
     {
         auto &data = *_data;
-        MPI::LocalStage(data.mpi, [&]
-                        {
+        if (control.profile)
+            *control.profile = {};
+        const NonlinearPhaseTimer totalTimer(control.profile, NonlinearProfile::Total);
+        {
+            const NonlinearPhaseTimer entryTimer(control.profile, NonlinearProfile::Entry);
+            MPI::LocalStage(data.mpi, [&]
+                            {
             data.discrete.Metrics().ValidateField(state, 5); data.discrete.Metrics().ValidateField(source, 5);
             DNDS_check_throw_info(state.Owned().SharedStorage() == data.stateOwned && state.Ghost().SharedStorage() == data.stateGhost &&
                                       !Algebra::Detail::Overlaps(state.Owned().Storage(), source.Owned().Storage()) &&
@@ -106,14 +136,15 @@ namespace DNDS::Cauchy
                                       control.correctionLimit >= -1 && control.correctionLimit <= data.settings.iterations &&
                                       (control.initialPseudoCFL == 0 || (std::isfinite(control.initialPseudoCFL) && control.initialPseudoCFL >= data.settings.pseudoCFL && control.initialPseudoCFL <= data.settings.maxPseudoCFL)),
                                   "invalid implicit stage state/source/coefficients"); });
-        const std::array<real, 4> coefficients{mass, rhsScale, time, control.initialPseudoCFL};
-        auto minimum = coefficients, maximum = coefficients;
-        MPI_Allreduce(MPI_IN_PLACE, minimum.data(), 4, MPI_DOUBLE, MPI_MIN, data.mpi.comm);
-        MPI_Allreduce(MPI_IN_PLACE, maximum.data(), 4, MPI_DOUBLE, MPI_MAX, data.mpi.comm);
-        index minLimit = control.correctionLimit, maxLimit = minLimit;
-        MPI_Allreduce(MPI_IN_PLACE, &minLimit, 1, MPI_INT64_T, MPI_MIN, data.mpi.comm);
-        MPI_Allreduce(MPI_IN_PLACE, &maxLimit, 1, MPI_INT64_T, MPI_MAX, data.mpi.comm);
-        DNDS_check_throw_info(minimum == maximum && minLimit == maxLimit, "implicit stage coefficients differ between ranks");
+            const std::array<real, 4> coefficients{mass, rhsScale, time, control.initialPseudoCFL};
+            auto minimum = coefficients, maximum = coefficients;
+            MPI_Allreduce(MPI_IN_PLACE, minimum.data(), 4, MPI_DOUBLE, MPI_MIN, data.mpi.comm);
+            MPI_Allreduce(MPI_IN_PLACE, maximum.data(), 4, MPI_DOUBLE, MPI_MAX, data.mpi.comm);
+            index minLimit = control.correctionLimit, maxLimit = minLimit;
+            MPI_Allreduce(MPI_IN_PLACE, &minLimit, 1, MPI_INT64_T, MPI_MIN, data.mpi.comm);
+            MPI_Allreduce(MPI_IN_PLACE, &maxLimit, 1, MPI_INT64_T, MPI_MAX, data.mpi.comm);
+            DNDS_check_throw_info(minimum == maximum && minLimit == maxLimit, "implicit stage coefficients differ between ranks");
+        }
         NonlinearIterationReport report;
         ResidualConvergence convergence(data.settings);
         report.pseudoCFL = control.initialPseudoCFL == 0 ? data.settings.pseudoCFL : control.initialPseudoCFL;
@@ -122,11 +153,18 @@ namespace DNDS::Cauchy
         const auto metric = geometry.HostView();
         for (index iteration = 0; iteration <= limit; ++iteration)
         {
-            data.discrete.Evaluate(state, data.spatial, *data.workspace, *data.engine, data.stream, time);
+            {
+                const NonlinearPhaseTimer residualTimer(control.profile, NonlinearProfile::Residual);
+                data.discrete.Evaluate(state, data.spatial, *data.workspace, *data.engine, data.stream, time);
+                if (control.profile)
+                    ++control.profile->residualEvaluations;
+            }
             std::tie(report.reconstructionIterations, report.reconstructionRelativeUpdate) = ReconstructionStats();
-            std::array<real, 6> norm{};
-            data.Stage([&]
-                       {
+            {
+                const NonlinearPhaseTimer convergenceTimer(control.profile, NonlinearProfile::Convergence);
+                std::array<real, 6> norm{};
+                data.Stage([&]
+                           {
                 const auto u = state.Owned().Read(), r = data.spatial.Owned().Read(), b = source.Owned().Read();
                 auto write = data.defect.Owned().Write();
                 const auto mean = u.View<R::UniformTableRows>(), residual = r.View<R::UniformTableRows>(), constant = b.View<R::UniformTableRows>();
@@ -142,32 +180,35 @@ namespace DNDS::Cauchy
                         norm[j] += data.settings.normOrder == 1 ? std::abs(value) : value * value / volume;
                     }
                 } });
-            MPI_Allreduce(MPI_IN_PLACE, norm.data(), 6, MPI_DOUBLE, MPI_SUM, data.mpi.comm);
-            DNDS_check_throw_info(std::isfinite(norm[5]) && norm[5] > 0, "invalid global stage volume");
-            for (int j = 0; j < 5; ++j)
-            {
-                report.residual[j] = data.settings.normOrder == 1 ? norm[j] / norm[5] : std::sqrt(norm[j] / norm[5]);
-                DNDS_check_throw_info(std::isfinite(report.residual[j]), "nonfinite global stage norm");
-            }
-            convergence.Observe(report.residual);
-            report.initialResidual = convergence.Initial();
-            report.referenceResidual = convergence.Reference();
-            report.residualTargetRatio = convergence.TargetRatio();
-            const bool converged = iteration >= std::min(data.settings.minIterations, limit) && ReconstructionConverged() && convergence.Accepted();
-            report.iterations = iteration;
-            if (control.correctionLimit < 0 && data.settings.consoleInterval > 0 && data.mpi.rank == 0 && (iteration % data.settings.consoleInterval == 0 || converged || iteration == limit))
-                std::cout << "Cauchy nonlinear stage " << stage << " iteration " << iteration << " residual " << Json(report.residual).dump()
-                          << " CFL " << report.pseudoCFL << " VR " << report.reconstructionIterations << ':' << report.reconstructionRelativeUpdate << std::endl;
-            if (converged || iteration == limit)
-            {
-                report.converged = converged;
-                return report;
+                MPI_Allreduce(MPI_IN_PLACE, norm.data(), 6, MPI_DOUBLE, MPI_SUM, data.mpi.comm);
+                DNDS_check_throw_info(std::isfinite(norm[5]) && norm[5] > 0, "invalid global stage volume");
+                for (int j = 0; j < 5; ++j)
+                {
+                    report.residual[j] = data.settings.normOrder == 1 ? norm[j] / norm[5] : std::sqrt(norm[j] / norm[5]);
+                    DNDS_check_throw_info(std::isfinite(report.residual[j]), "nonfinite global stage norm");
+                }
+                convergence.Observe(report.residual);
+                report.initialResidual = convergence.Initial();
+                report.referenceResidual = convergence.Reference();
+                report.residualTargetRatio = convergence.TargetRatio();
+                const bool converged = iteration >= std::min(data.settings.minIterations, limit) && ReconstructionConverged() && convergence.Accepted();
+                report.iterations = iteration;
+                if (control.correctionLimit < 0 && data.settings.consoleInterval > 0 && data.mpi.rank == 0 && (iteration % data.settings.consoleInterval == 0 || converged || iteration == limit))
+                    std::cout << "Cauchy nonlinear stage " << stage << " iteration " << iteration << " residual " << Json(report.residual).dump()
+                              << " CFL " << report.pseudoCFL << " VR " << report.reconstructionIterations << ':' << report.reconstructionRelativeUpdate << std::endl;
+                if (converged || iteration == limit)
+                {
+                    report.converged = converged;
+                    return report;
+                }
             }
             const auto &auxiliary = data.discrete.PreparedAuxValues(*data.workspace);
             index rhsLimited = 0;
             real rhsAlpha = 1;
-            data.Stage([&]
-                       {
+            {
+                const NonlinearPhaseTimer pseudoTimer(control.profile, NonlinearProfile::PseudoTimePP);
+                data.Stage([&]
+                           {
                 const auto signals = auxiliary.cellSpectralSum->Owned().Read(), meanRead = state.Owned().Read();
                 auto inverse = data.inversePseudoTime.Write(), residualWrite = data.defect.Owned().Write();
                 std::optional<R::Array<real>::WriteLease> alphaWrite;
@@ -195,14 +236,14 @@ namespace DNDS::Cauchy
                     }
                     invTau(iCell, 0) = value;
                 } });
-            if (data.positivity && data.settings.positivity.rhsMode != "none")
-            {
-                const auto global = AgreeAlphaStatistics(rhsLimited, rhsAlpha, data.rhsReduction, data.mpi.comm);
-                rhsLimited = global.limited;
-                rhsAlpha = global.minimum;
-                if (data.cellRHSAlpha && rhsAlpha < 1)
-                    data.Stage([&]
-                               {
+                if (data.positivity && data.settings.positivity.rhsMode != "none")
+                {
+                    const auto global = AgreeAlphaStatistics(rhsLimited, rhsAlpha, data.rhsReduction, data.mpi.comm);
+                    rhsLimited = global.limited;
+                    rhsAlpha = global.minimum;
+                    if (data.cellRHSAlpha && rhsAlpha < 1)
+                        data.Stage([&]
+                                   {
                     auto read = data.cellRHSAlpha->Read(); auto inverse = data.inversePseudoTime.Write(), residual = data.defect.Owned().Write();
                     const auto local = read.View<R::UniformTableRows>();
                     const auto invTau = inverse.View<R::UniformTableRows>(), defect = residual.View<R::UniformTableRows>();
@@ -213,13 +254,24 @@ namespace DNDS::Cauchy
                             for (int j = 0; j < 5; ++j) defect(iCell, j) *= alpha;
                         else invTau(iCell, 0) /= std::max(alpha, smallReal);
                     } });
+                }
             }
-            data.Stage([&]
-                       { data.discrete.PrepareJacobian(state, auxiliary, data.inversePseudoTime, *data.problem, {mass, rhsScale, data.settings.roeDissipation}, time); });
-            report.lastLinear = data.linear->Solve(data.defect);
-            report.linearIterations += report.lastLinear.iterations;
-            DNDS_check_throw_info(report.lastLinear.usable, "implicit linear correction is unusable");
-            const auto [incrementLimited, incrementAlpha] = ApplyCorrection(state, data.linear->Solution(), data.settings.relaxation);
+            {
+                const NonlinearPhaseTimer jacobianTimer(control.profile, NonlinearProfile::Jacobian);
+                data.Stage([&]
+                           { data.discrete.PrepareJacobian(state, auxiliary, data.inversePseudoTime, *data.problem, {mass, rhsScale, data.settings.roeDissipation}, time); });
+            }
+            {
+                const NonlinearPhaseTimer linearTimer(control.profile, NonlinearProfile::LinearSolve);
+                report.lastLinear = data.linear->Solve(data.defect);
+                report.linearIterations += report.lastLinear.iterations;
+                DNDS_check_throw_info(report.lastLinear.usable, "implicit linear correction is unusable");
+            }
+            const auto [incrementLimited, incrementAlpha] = [&]
+            {
+                const NonlinearPhaseTimer correctionTimer(control.profile, NonlinearProfile::Correction);
+                return ApplyCorrection(state, data.linear->Solution(), data.settings.relaxation);
+            }();
             if (data.positivity)
             {
                 report.rhsLimited += rhsLimited;
