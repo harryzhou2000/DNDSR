@@ -268,6 +268,13 @@ set(DNDS_BUNDLED_LIBS
     )
 if(DNDS_USE_CANTERA)
     list(APPEND DNDS_EXTERNAL_LIBS ${DNDS_EXTERNAL_LIB_CANTERA})
+    # Physics is now a shared Python dependency too. Preserve the SONAME links
+    # alongside its sibling libraries, rather than relying on a build-tree path.
+    list(APPEND DNDS_BUNDLED_LIBS ${DNDS_EXTERNAL_LIB_CANTERA})
+    # Some installs link .so directly to .so.X.Y, skipping the .so.X SONAME
+    # symlink in that chain. Include those versioned siblings explicitly.
+    file(GLOB DNDS_CANTERA_VERSIONED_LIBS "${DNDS_EXTERNAL_LIB_CANTERA}.*")
+    list(APPEND DNDS_BUNDLED_LIBS ${DNDS_CANTERA_VERSIONED_LIBS})
     add_compile_definitions(DNDS_USE_CANTERA)
 endif()
 

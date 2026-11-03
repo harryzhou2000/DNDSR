@@ -134,8 +134,10 @@ output value changes.
 
 `FiniteVolume::BuildWorkspace(EquationDofs&, ...)` and `Evaluate(EquationDofs&,
 ...)` validate exact semantic schema, native row/storage identity and backend
-outside cell loops. `EquationSystem::ResolveKernelProfile()` currently selects
-only `CompressiblePerfectGasCPU`; requesting another device fails explicitly,
+outside cell loops. `EquationSystem::ResolveKernelProfile()` distinguishes
+perfect-gas and ideal-mixture CPU models; this key alone does not promise every
+spatial/time operator exists for that model. The production FV adapter currently
+accepts only perfect-gas flow5. Requesting another device fails explicitly,
 without host fallback. In checked execution a rank-local schema mismatch is
 coordinated before communication. With `implicit.collectiveChecks=false`, the
 caller must coordinate failures before other ranks enter dependent collectives.
@@ -150,6 +152,55 @@ bindings; those tests are not RANS, species or incompressible implementations.
 Future models must supply their flux/transport, physical accumulation (including
 zero pressure mass where applicable), pseudo-mass and admissibility actions.
 The current identity-accumulation stage adapter is not a general DAE operator.
+
+## Mixture point properties and derived refresh
+
+`EquationSystem::FromIdealGasMixture(material, viscous)` constructs an explicit
+CPU property model with full thermochemical total energy and named independent
+species. Its immutable material comes from [shared Physics](Physics.md).
+`EquationPointEvaluator` takes a private worker once per loop/tile, gathers
+strided rhoY through `SpeciesInput()`, and evaluates actual EOS pressure,
+temperature, acoustics, caloric properties and requested molecular transport.
+It owns its worker and shared material lifetime; returned species result views
+last until its next point evaluation. `FluxState(flow, properties)` passes those
+actual pressure/acoustic values into the common numerical Riemann interface.
+It does no equivalent-gamma substitution.
+
+The mixture factory is a property/schema interface. The production JSON/domain
+capability plan remains flow5-only until its extended RHS, BC, Jacobian,
+stage/linear/PP/checkpoint adapters are connected. Perfect-gas-only methods such
+as `Gas()` and the old flow-only Jacobian/characteristic producer reject a
+mixture explicitly. They cannot evaluate missing species through default gamma.
+
+For an explicit mixture refresh, pass a worker lease:
+
+```cpp
+RefreshDerivedFields(state, equation, derived, workers.Acquire(), true);
+```
+
+The final flag asks for a no-op when already current. Actual mixture evaluation
+requires the worker; disabled/current bundles need no point computation.
+Selection of molecular transport/diffusivity occurs before the loop, so a
+temperature-only bundle does not ask Cantera for unused diffusion coefficients.
+The Newtonian/Fourier diffusion bound includes molecular momentum/heat and all
+species diffusion coefficients when requested. Unrequested mixture point
+transport outputs are NaN; perfect gas computes its cheap scalar coefficients
+directly, and inviscid transport/bounds are explicitly zero.
+
+Publication keys include the loaded material identity, all four reference scales
+and the viscous choice (or the perfect-gas coefficients), as well as source
+storage/shape/value generations and row-space identity. Row association follows
+`DofSpace`; remapping requires the corresponding new space or explicit transfer.
+An incompatible model/units publication is never a usable temperature guess.
+
+Refresh reads prior compatible temperatures through its exclusive output write
+view before overwriting each row, without holding a conflicting output reader or
+allocating a payload snapshot. They seed the existing UV inversion; current
+temperature is always solved from new energy and composition. The input fields
+remain read-leased and unchanged. A failure invalidates publication even if some
+output rows were filled. Owned refresh acquires no ghost input lease and can
+run while separate ghost storage is being written. Public stale-temperature
+read scopes remain guess-only and do not expose stale pressure/transport fields.
 
 Focused MPI tests cover all three layouts, tile crossings, empty owners,
 direct halo overlap, exact field/segment oracles, rejected bindings and failed

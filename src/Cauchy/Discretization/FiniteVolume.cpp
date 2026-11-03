@@ -379,6 +379,8 @@ namespace DNDS::Cauchy
         {
         case EquationKernelProfile::CompressiblePerfectGasCPU:
             return state.CoupledField();
+        case EquationKernelProfile::CompressibleIdealMixtureCPU:
+            break; // Point properties exist; this coupled spatial adapter is still flow5-only.
         }
         DNDS_check_throw_info(false, "unavailable Cauchy finite-volume kernel profile");
         return state.CoupledField();

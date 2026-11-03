@@ -19,6 +19,35 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(viscous || settings.viscosity == 0, "unused inviscid viscosity");
         return EquationSystem({settings.gamma, settings.gasConstant, settings.viscosity, settings.prandtl}, viscous);
     }
+    EquationSystem EquationSystem::FromIdealGasMixture(Physics::Thermodynamics::IdealGasMixture material, bool viscous)
+    {
+        EquationSystem equation({}, viscous);
+        equation._mixture = std::move(material);
+        equation._schema.energyConvention = "thermochemical-total-energy";
+        const auto &species = equation.Mixture().SpeciesNames();
+        if (species.size() > 1)
+        {
+            EquationBlockSchema block{"species", {}, {}};
+            for (index k = 0; k < index(species.size()) - 1; ++k)
+                block.components.push_back({"rhoY:" + species[k], "mass/volume", "species"});
+            equation._schema.blocks.push_back(std::move(block));
+        }
+        return equation;
+    }
+    const Physics::Thermodynamics::IdealGasMixture &EquationSystem::Mixture() const
+    {
+        DNDS_check_throw_info(_mixture, "equation has no ideal-mixture material");
+        return *_mixture;
+    }
+    EquationPropertyKey EquationSystem::PropertyKey() const
+    {
+        if (_mixture)
+        {
+            const auto &scales = _mixture->Scales();
+            return {_mixture->ModelIdentity(), {scales.rho0, scales.U0, scales.L0, scales.T0, _viscous ? 1. : 0.}};
+        }
+        return {{}, {_gas.gamma, _gas.gasConstant, _gas.viscosity, _gas.prandtl, _viscous ? 1. : 0.}};
+    }
     void EquationSystem::ValidateStateSchema(const Algebra::DofBundle &state) const
     {
         state.Validate();
@@ -33,10 +62,11 @@ namespace DNDS::Cauchy
     EquationKernelProfile EquationSystem::ResolveKernelProfile(Runtime::Device device) const
     {
         DNDS_check_throw_info(device == Runtime::Device::Host(), "Cauchy equation kernels are unavailable on the requested device; no implicit host fallback");
-        return EquationKernelProfile::CompressiblePerfectGasCPU;
+        return _mixture ? EquationKernelProfile::CompressibleIdealMixtureCPU : EquationKernelProfile::CompressiblePerfectGasCPU;
     }
     FlowCharacteristics EquationSystem::PrepareCharacteristics(const FlowState &left, const FlowState &right, const Vector3 &faceNormal) const
     {
+        Gas(); // This signature has no species inputs; never reinterpret a mixture as perfect gas.
         const real rl = std::sqrt(left[0]), rr = std::sqrt(right[0]);
         Eigen::Vector3d velocity;
         for (int d = 0; d < 3; ++d)
@@ -84,6 +114,7 @@ namespace DNDS::Cauchy
                                                        const Riemann::AcousticState &leftMeanData, const Riemann::AcousticState &rightMeanData,
                                                        const Vector3 &normal, const Vector3 &gridVelocity) const
     {
+        Gas(); // General-EOS Roe/shock/AUSM data need a distinct physical producer.
         PreparedRiemannData data{};
         data.required = flux.RequiredInputs();
         if (!data.required.meanStates)

@@ -3,6 +3,8 @@
 #include "Cauchy/State/DerivedFields.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
+#include "Cauchy/Physics/EquationProperties.hpp"
+#include <cstdlib>
 
 namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
@@ -87,3 +89,119 @@ TEST_CASE("Derived point refresh fills selected properties with lazy provenance 
             CHECK(disabled.Values().RowCount() == 0);
         }
 }
+
+#ifdef DNDS_USE_CANTERA
+TEST_CASE("Mixture derived refresh consumes compatible stale temperatures across coupled and separate layouts")
+{
+    namespace P = DNDS::Physics;
+    const char *path = std::getenv("DNDS_MECH_PATH");
+    P::Chemistry::ChemicalSource prototype(path ? std::string(path) + "/h2o2.yaml" : "h2o2.yaml", "", 340, 1.225);
+    const P::ReferenceScales scales{1.225, 340, 2, 288.15};
+    P::Thermodynamics::IdealGasMixture material(prototype, scales);
+    const auto equation = C::EquationSystem::FromIdealGasMixture(material, true);
+    P::Chemistry::ChemicalWorkerPool workers(prototype, 1);
+    const int speciesNumber = material.SpeciesNumber();
+    REQUIRE(speciesNumber == 10);
+    A::DofSpace space(35, 2, "mixture means and separate ghost publication");
+    for (bool separate : {false, true})
+    {
+        INFO("separate=" << separate);
+        auto state = [&]
+        {
+            if (!separate)
+                return C::EquationDofs::Coupled(equation.Schema(),
+                                                A::DofField<double>(space, R::RowLayout::TiledColMajor(0, 5 + speciesNumber - 1, 32)));
+            A::DofBundle fields(space);
+            fields.Add("flow", A::DofField<double>(space, R::RowLayout::Dense(0, 5, 7)));
+            fields.Add("species", A::DofField<double>(space, R::RowLayout::ColMajor(0, speciesNumber - 1, {16, 1})));
+            return C::EquationDofs::Separate(equation.Schema(), std::move(fields));
+        }();
+        std::vector<C::DerivedPointValues> expected(space.OwnedRows());
+        const auto fill = [&](double temperatureIncrement)
+        {
+            auto writer = state.WriteOwned();
+            const auto flow = writer.Block("flow"), species = writer.Block("species");
+            std::vector<double> Y(speciesNumber), diffusion(speciesNumber);
+            for (DNDS::index iCell = 0; iCell < DNDS::index(space.OwnedRows()); ++iCell)
+            {
+                const double rho = .8 + .01 * iCell, temperature = 900 + 3 * iCell + temperatureIncrement;
+                std::fill(Y.begin(), Y.end(), 0);
+                Y[0] = .026 + .0001 * iCell + .00001 * temperatureIncrement;
+                Y[3] = .224 - .00005 * iCell - .000005 * temperatureIncrement;
+                Y[5] = .02 + .00007 * iCell;
+                Y.back() = 1 - Y[0] - Y[3] - Y[5];
+                P::Chemistry::ConstSpeciesBufferView fractions{Y.data(), speciesNumber};
+                const double Rmix = prototype.mixtureR(fractions);
+                const double pressure = rho * scales.rho0 * Rmix * temperature;
+                const double internalEnergy = prototype.mixtureIntEnergy(temperature, fractions, pressure) / scales.SpecificEnergy();
+                flow(iCell, 0) = rho;
+                flow(iCell, 1) = .2 * rho;
+                flow(iCell, 2) = -.04 * rho;
+                flow(iCell, 3) = .03 * rho;
+                flow(iCell, 4) = rho * (internalEnergy + .5 * (.04 + .0016 + .0009));
+                for (int k = 0; k < speciesNumber - 1; ++k)
+                    species(iCell, k) = rho * Y[k];
+                const double cv = prototype.mixtureCv(temperature, fractions, pressure) / scales.HeatCapacity();
+                const double mu = prototype.viscosity(temperature, pressure, fractions) / scales.Viscosity();
+                const double conductivity = prototype.thermalConductivity(temperature, pressure, fractions) / scales.Conductivity();
+                prototype.speciesDiffusivity(temperature, pressure, fractions, {diffusion.data(), speciesNumber});
+                double bound = std::max((4. / 3) * mu / rho, conductivity / (rho * cv));
+                for (double value : diffusion)
+                    bound = std::max(bound, value / scales.Diffusivity());
+                expected[iCell] = {temperature / scales.T0, pressure / scales.Pressure(),
+                                   prototype.speedOfSound(temperature, fractions, pressure) / scales.U0, mu, conductivity,
+                                   prototype.mixtureCp(temperature, fractions, pressure) / scales.HeatCapacity(), cv,
+                                   Rmix / scales.HeatCapacity(), bound};
+            }
+        };
+        const auto check = [&](const C::DerivedFields &fields)
+        {
+            const auto read = fields.ReadCurrent(state, equation);
+            for (int quantity = 0; quantity < C::DerivedQuantityNumber; ++quantity)
+            {
+                const auto field = read.Field(Q(quantity));
+                for (DNDS::index iCell = 0; iCell < DNDS::index(space.OwnedRows()); ++iCell)
+                    CHECK(field(iCell, 0) == doctest::Approx(expected[iCell][quantity]).epsilon(3e-11));
+            }
+        };
+        fill(0);
+        C::DerivedRequest request;
+        request.enabled.fill(true);
+        C::DerivedFields fields(space, request);
+        std::vector<uint64_t> versions;
+        for (DNDS::index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+            versions.push_back(state.PhysicalField(iField).Owned().Version());
+        {
+            auto activeGhost = state.PhysicalField(0).Ghost().Write();
+            CHECK(C::RefreshDerivedFields(state, equation, fields, workers.Acquire()));
+            activeGhost.CancelUnmodified();
+        }
+        check(fields);
+        for (DNDS::index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+            CHECK(state.PhysicalField(iField).Owned().Version() == versions[iField]);
+        CHECK_FALSE(C::RefreshDerivedFields(state, equation, fields, workers.Acquire(), true));
+        fill(75);
+        CHECK_FALSE(fields.Current(state, equation));
+        {
+            const auto stale = fields.ReadTemperatureGuess(state, equation);
+            const auto temperature = stale.Field(Q::Temperature);
+            CHECK(temperature(17, 0) == doctest::Approx((900 + 3 * 17) / scales.T0).epsilon(3e-11));
+        }
+        CHECK(C::RefreshDerivedFields(state, equation, fields, workers.Acquire(), true));
+        check(fields);
+        C::DerivedFields temperatureOnly(space, {Q::Temperature});
+        CHECK(C::RefreshDerivedFields(state, equation, temperatureOnly, workers.Acquire()));
+        CHECK(temperatureOnly.Values().Layout().Width() == 1);
+        {
+            const auto read = temperatureOnly.ReadCurrent(state, equation);
+            CHECK(read.Field(Q::Temperature)(17, 0) == doctest::Approx(expected[17][int(Q::Temperature)]).epsilon(3e-11));
+        }
+        auto otherScales = scales;
+        otherScales.T0 *= 2;
+        const auto other = C::EquationSystem::FromIdealGasMixture(P::Thermodynamics::IdealGasMixture(prototype, otherScales), true);
+        CHECK_FALSE(fields.Current(state, other));
+        CHECK_THROWS(fields.ReadTemperatureGuess(state, other)); // Same loaded mechanism, incompatible code-temperature units.
+        CHECK_THROWS(equation.Gas());                            // No silent perfect-gas fallback for a mixture.
+    }
+}
+#endif

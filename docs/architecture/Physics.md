@@ -5,6 +5,9 @@ It has no mesh, CFV, time-stepping, communicator or solver owner. Its compiled
 `physics`/`physics_shared` targets depend on DNDS, fmt and the existing optional
 Cantera dependency. Cantera headers remain private to `ChemicalSource.cpp`.
 This extraction introduces no new external library or chemistry algorithm.
+When Cantera is enabled, its shared library and SONAME links accompany the
+Python package's external libraries. The Cauchy loader preloads Physics in
+dependency order; it does not rely on the external build tree's library path.
 
 ```mermaid
 flowchart TD
@@ -115,9 +118,12 @@ The optional temperature guess is passed to the actual UV inversion. It can be
 stale; the returned temperature is solved for current energy/composition. An
 invalid or missing guess uses the backend's existing initialization. These
 point methods can serve explicit derived-field refresh and fused quadrature
-work. Connecting them to Cauchy's extended profiles/publication keys is a
-separate integration step; merely adding this module does not implement a
-RANS/species solver or change current flow5 dispatch.
+work. Cauchy's `EquationPointEvaluator` and explicit mixture derived refresh
+now use them, including material/scale publication keys and actual stale
+temperature warm starts; see [Cauchy state](CauchyState.md). Production extended
+RHS/stage/linear/BC/PP/checkpoint integration is separate. These point facilities
+do not by themselves implement a RANS/species solver or change current flow5
+frontend dispatch.
 
 ## Focused validation
 

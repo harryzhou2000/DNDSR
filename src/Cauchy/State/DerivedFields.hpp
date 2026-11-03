@@ -2,12 +2,14 @@
 
 #include "Cauchy/State/EquationDofs.hpp"
 #include "Cauchy/Physics/FlowState.hpp"
+#include "Physics/Chemistry/ChemicalWorker.hpp"
 #include <initializer_list>
 #include <optional>
 
 namespace DNDS::Cauchy
 {
     class EquationSystem;
+    class EquationPointEvaluator;
     enum class DerivedQuantity
     {
         Temperature,
@@ -42,12 +44,14 @@ namespace DNDS::Cauchy
     /// query, not access permission; ReadCurrent retains source and output read
     /// leases. Refresh is synchronous CPU work, also callable on a CPU worker.
     /// Point providers must perform no MPI or stencil work; prepared local
-    /// inputs and an exclusive worker context are required by future providers.
+    /// inputs and an exclusive worker context are required by mixture providers.
     class DerivedFields
     {
         struct Data;
         std::shared_ptr<Data> _data;
         friend bool RefreshDerivedFields(const EquationDofs &, const EquationSystem &, DerivedFields &, bool);
+        friend bool RefreshDerivedFields(const EquationDofs &, const EquationSystem &, DerivedFields &,
+                                         Physics::Chemistry::ChemicalWorkerPool::Lease, bool);
 
     public:
         DerivedFields(Algebra::DofSpace space, DerivedRequest request, bool ghost = false);
@@ -89,6 +93,10 @@ namespace DNDS::Cauchy
     /// Pure local perfect-gas profile. The caller supplies an admissible state;
     /// coarse backend/schema validation belongs outside the point loop.
     DerivedPointValues EvaluateDerivedPoint(const EquationSystem &equation, const FlowState &state);
+    /// Same point core for a reserved mixture/perfect-gas worker. Species are
+    /// explicit logical inputs, not inferred from the tail of a physical Array.
+    DerivedPointValues EvaluateDerivedPoint(EquationPointEvaluator &evaluator, const FlowState &state,
+                                            Physics::Chemistry::ConstSpeciesBufferView rhoY = {}, real temperatureGuess = 0);
 
     /// Refresh every enabled property at every row of the selected part. State
     /// is immutable; no MPI, stencil, reduction, clock or hidden getter update.
@@ -96,4 +104,11 @@ namespace DNDS::Cauchy
     /// onlyIfStale=true. Missing/stale ghost input is a caller readiness error.
     bool RefreshDerivedFields(const EquationDofs &state, const EquationSystem &equation,
                               DerivedFields &output, bool onlyIfStale = false);
+    /// Explicit mixture context; consumed for this synchronous loop. Source is
+    /// immutable. Compatible prior temperatures seed the new UV solve in place
+    /// under the output writer, before each row is overwritten. On failure the
+    /// bundle remains unpublished. Retain/move the lease with CPU worker work.
+    bool RefreshDerivedFields(const EquationDofs &state, const EquationSystem &equation,
+                              DerivedFields &output, Physics::Chemistry::ChemicalWorkerPool::Lease worker,
+                              bool onlyIfStale = false);
 }

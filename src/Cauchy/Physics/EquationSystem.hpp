@@ -5,17 +5,31 @@
 #include "Cauchy/Riemann/RiemannFlux.hpp"
 #include "Cauchy/Physics/EquationSchema.hpp"
 #include "DNDS/Algebra/DofBundle.hpp"
+#include "Physics/Thermodynamics/IdealGasMixture.hpp"
 #include <algorithm>
+#include <optional>
 
 namespace DNDS::Cauchy
 {
     struct EquationSettings;
     class EquationDofs;
+    class EquationPointEvaluator;
     /// Coarse dispatch key. CPU branching and specialized device kernels may
     /// share this interface; a missing backend never falls back implicitly.
     enum class EquationKernelProfile
     {
-        CompressiblePerfectGasCPU
+        CompressiblePerfectGasCPU,
+        CompressibleIdealMixtureCPU
+    };
+    /// Exact local property provenance. Perfect-gas parameters compare by value;
+    /// a loaded mixture also carries its immutable in-process material identity.
+    /// This is not a persistent restart fingerprint or permission to read data.
+    struct EquationPropertyKey
+    {
+        std::shared_ptr<const void> material;
+        std::array<real, 5> parameters{};
+        bool operator==(const EquationPropertyKey &other) const { return material == other.material && parameters == other.parameters; }
+        bool operator!=(const EquationPropertyKey &other) const { return !(*this == other); }
     };
     /// Value owner for optional model-prepared data. Input() creates borrowed
     /// pointers after this owner reaches its final location; copies/moves never
@@ -50,37 +64,56 @@ namespace DNDS::Cauchy
     {
         EquationSchema _schema;
         PerfectGas _gas;
+        std::optional<Physics::Thermodynamics::IdealGasMixture> _mixture;
         bool _viscous;
         explicit EquationSystem(PerfectGas gas, bool viscous);
 
     public:
         static EquationSystem Resolve(const EquationSettings &settings);
+        /// Explicit point-property/model construction. The production frontend
+        /// still rejects missing spatial/time profiles until they are connected.
+        /// Material metadata is shared; mutable chemistry workers are external.
+        static EquationSystem FromIdealGasMixture(Physics::Thermodynamics::IdealGasMixture material, bool viscous);
         const EquationSchema &Schema() const { return _schema; }
-        const PerfectGas &Gas() const { return _gas; }
+        const PerfectGas &Gas() const
+        {
+            DNDS_check_throw_info(!_mixture, "perfect-gas-only operation needs the mixture property/profile adapter");
+            return _gas;
+        }
+        bool HasMixture() const { return _mixture.has_value(); }
+        const Physics::Thermodynamics::IdealGasMixture &Mixture() const;
+        EquationPropertyKey PropertyKey() const;
+        /// Reserve/validate one private worker outside a loop. Perfect gas
+        /// requires no chemistry context. A mixture never falls back to gamma.
+        /// Include EquationProperties.hpp to retain/use the returned evaluator.
+        EquationPointEvaluator MakePointEvaluator(Physics::Chemistry::ChemicalWorkerPool::Lease worker = {},
+                                                  Physics::Thermodynamics::MixturePropertyRequest request = {true, true, false}) const;
         bool Viscous() const { return _viscous; }
         EquationKernelProfile ResolveKernelProfile(Runtime::Device device) const;
         /// Model-owned thermodynamic chain rule. Numerical face penalties stay
         /// in Discretization; no EOS or energy calculation enters Riemann.
         FlowGradient PreparePrimitiveGradient(const FlowState &state, const FlowGradient &gradient) const
         {
-            return _gas.PrimitiveGradient(state, gradient);
+            return Gas().PrimitiveGradient(state, gradient);
         }
         ThermalBounds PrepareThermalBounds(real densityFloor, real temperatureFloor, real pressureFloor) const
         {
-            return {densityFloor, _gas.gasConstant * temperatureFloor / (_gas.gamma - 1), pressureFloor / (_gas.gamma - 1)};
+            const auto &gas = Gas();
+            return {densityFloor, gas.gasConstant * temperatureFloor / (gas.gamma - 1), pressureFloor / (gas.gamma - 1)};
         }
         /// Thermodynamic producer for the initial acoustic flux profile. EOS
         /// dispatch belongs here, never inside the numerical Riemann method.
         Riemann::AcousticState PrepareFluxState(const FlowState &state) const
         {
-            const real pressure = _gas.Pressure(state);
-            return {{state, pressure}, std::sqrt(_gas.gamma * pressure / state[0])};
+            const auto &gas = Gas();
+            const real pressure = gas.Pressure(state);
+            return {{state, pressure}, std::sqrt(gas.gamma * pressure / state[0])};
         }
         /// Model-owned physical flux derivative for approximate implicit
         /// operators. Numerical dissipation and time/mass scaling are separate.
         std::array<real, 25> PrepareFluxJacobian(const FlowState &state, const Vector3 &normal, const Vector3 &gridVelocity = {}) const
         {
-            auto jacobian = _gas.FluxJacobian(state, normal);
+            auto jacobian = Gas().FluxJacobian(state, normal);
             real normalSpeed = 0;
             for (int d = 0; d < 3; ++d)
                 normalSpeed += gridVelocity[d] * normal[d];
@@ -92,7 +125,8 @@ namespace DNDS::Cauchy
         /// Newtonian/Fourier profile. Other transport models supply this bound.
         real DiffusionScale(const FlowState &state) const
         {
-            return _viscous ? _gas.viscosity / state[0] * std::max(real(4. / 3), _gas.gamma / _gas.prandtl) : 0;
+            const auto &gas = Gas();
+            return _viscous ? gas.viscosity / state[0] * std::max(real(4. / 3), gas.gamma / gas.prandtl) : 0;
         }
         /// Perfect-gas initial provider. General EOS must supply its own valid
         /// linearization, shock bounds and AUSM scale; gamma substitution inside
