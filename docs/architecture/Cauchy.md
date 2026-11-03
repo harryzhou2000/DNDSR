@@ -5,7 +5,8 @@ single-domain CPU flow solver include native implicit linear/nonlinear solves,
 BDF/Trapz/ESDIRK/DITR, polynomial FAS and persistent-ID restart in focused tests.
 Euler-derived PP and native LVR have focused distributed coverage; qualified
 physical studies and performance limits are recorded in the plan repo. The
-Mach20 steady target and full DMR qualification remain open. See [implicit contracts](CauchyImplicit.md) and
+Mach20+3WBAP nonconvergence is expected and is not pursued as a solver defect;
+full DMR qualification remains separate. See [implicit contracts](CauchyImplicit.md) and
 [coupled DITR](DITR.md) for the current boundaries.
 Do not treat mocks, flux parity or short smooth-flow tests as broad
 production acceptance. The independent plan repo's document37 defines the full
