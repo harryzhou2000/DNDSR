@@ -4,6 +4,6 @@ from DNDSR._loader import preload
 
 preload("cauchy")
 
-from ._ext.cauchy_pybind11 import Domain, Simulation, NonlinearIterationReport, PhysicalStepLimit, DerivedFields, DerivedQuantity
+from ._ext.cauchy_pybind11 import Domain, Simulation, InterfaceDiagnostics, NonlinearIterationReport, PhysicalStepLimit, DerivedFields, DerivedQuantity
 
-__all__ = ["Domain", "Simulation", "NonlinearIterationReport", "PhysicalStepLimit", "DerivedFields", "DerivedQuantity"]
+__all__ = ["Domain", "Simulation", "InterfaceDiagnostics", "NonlinearIterationReport", "PhysicalStepLimit", "DerivedFields", "DerivedQuantity"]

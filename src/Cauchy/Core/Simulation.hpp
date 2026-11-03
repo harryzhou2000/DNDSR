@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cauchy/Core/Domain.hpp"
+#include "Cauchy/Interface/InterfaceDiagnostics.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -29,6 +30,8 @@ namespace DNDS::Cauchy
         const Domain &GetDomain(index domain) const;
         real Time() const { return _time; }
         uint64_t Step() const { return _step; }
+        /// Collective coupling counters and projection gap; no state refresh.
+        InterfaceDiagnostics GetInterfaceDiagnostics() const;
         /// Prepare all stage inputs, refresh frozen traces, then solve local
         /// domains. All accepted destinations are reserved before any domain
         /// publishes. Process failure recovery is unsupported. DITR currently

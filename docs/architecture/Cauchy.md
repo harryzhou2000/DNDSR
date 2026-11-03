@@ -155,6 +155,18 @@ reader blocking one domain rejects the entire publication. The caller must
 serialize stepping and external mutation; this is not process-failure recovery.
 Point interpolation imposes no conservative flux, so short IV error/drift checks
 must not be interpreted as global conservation or fourth-order interface proof.
+`GetInterfaceDiagnostics` (Python `interface_diagnostics()`) collectively reports
+global query rows, donor-key change events, directed map builds and the maximum
+physical projection gap. Counters include attempted/rejected work; a query may
+change donor multiple times across non-monotone stage visits. Initial maps do
+not count as donor changes. Counter updates occur during map construction, not
+inside FV kernels, and diagnostics never refresh fields or alter trajectories.
+
+The excluded `cauchy_experiment_multidomain_iv` target provides a bounded
+deterministic sliding-IV evidence driver. It emits controls/history as JSON lines
+and final owned CSV fields keyed by domain and persistent cell ID into its CWD.
+Those keys permit comparison across decompositions; local row order does not.
+It is a research fixture, not the general production output/restart frontend.
 
 ```text
 Python Simulation handle ----owns----> C++ Simulation

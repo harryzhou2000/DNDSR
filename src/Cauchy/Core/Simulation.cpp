@@ -111,6 +111,10 @@ namespace DNDS::Cauchy
         }
     }
     Simulation::~Simulation() = default;
+    InterfaceDiagnostics Simulation::GetInterfaceDiagnostics() const
+    {
+        return _interfaces ? _interfaces->Diagnostics() : InterfaceDiagnostics{};
+    }
     bool Simulation::Local(index iDomain) const
     {
         DNDS_check_throw_info(iDomain >= 0 && iDomain < index(_domains.size()), "invalid Cauchy domain index");

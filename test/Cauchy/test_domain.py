@@ -68,6 +68,7 @@ def test_coordinated_simulation_python_owners_and_reversed_subgroups(split):
     simulation.advance(.001)
     simulation.advance(.001)
     assert simulation.step == 2
+    assert simulation.interface_diagnostics().query_points == 0
     local = world.rank % 2 if split else 1
     assert simulation.local(local)
     domain = simulation.domain(local)

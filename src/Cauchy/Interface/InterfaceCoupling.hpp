@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "Cauchy/Interface/InterfaceDiagnostics.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -33,6 +34,9 @@ namespace DNDS::Cauchy
         /// receiver packet is published, preserving block-Jacobi semantics.
         void Refresh(const std::vector<InterfaceDomainInput> &domains, real time, StateEpoch epoch);
         const BoundaryInputs *Inputs(index domain) const;
+        /// Collective diagnostic reduction on the coupling communicator.
+        /// Does not refresh traces, synchronize kernels or mutate trajectories.
+        InterfaceDiagnostics Diagnostics() const;
         /// Retain the currently published packets as accepted traces. The next
         /// round uses separate scratch allocations; rejected trials can restore
         /// accepted packets without copying their payload or changing its epoch.

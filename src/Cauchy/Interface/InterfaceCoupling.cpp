@@ -19,6 +19,7 @@ namespace DNDS::Cauchy
             std::optional<CFV::DistributedSamplingWorkspace> workspace;
             R::Array<real> values;
             std::optional<R::TransferBinding> result;
+            std::vector<index> lastDonors;
         };
         MPIInfo mpi;
         std::vector<std::optional<FiniteVolume>> discrete;
@@ -27,6 +28,9 @@ namespace DNDS::Cauchy
         std::vector<std::optional<BoundaryInputs>> accepted;
         bool useAccepted = false;
         std::vector<Connection> connections;
+        index changedDonors = 0;
+        uint64_t mapBuilds = 0;
+        real maximumGap = 0;
         explicit Data(MPI_Comm comm) : mpi(comm) {}
     };
     InterfaceCoupling::InterfaceCoupling(const SimulationConfig &config, MPI_Comm coupling,
@@ -102,6 +106,21 @@ namespace DNDS::Cauchy
         _data->useAccepted = true;
     }
     void InterfaceCoupling::Discard() noexcept { _data->useAccepted = true; }
+    InterfaceDiagnostics InterfaceCoupling::Diagnostics() const
+    {
+        InterfaceDiagnostics result;
+        for (const auto &connection : _data->connections)
+            result.queryPoints += index(connection.receiverRows.size());
+        result.changedDonors = _data->changedDonors;
+        index counts[2]{result.queryPoints, result.changedDonors};
+        MPI_Allreduce(MPI_IN_PLACE, counts, 2, MPI_INT64_T, MPI_SUM, _data->mpi.comm);
+        result.queryPoints = counts[0];
+        result.changedDonors = counts[1];
+        result.maximumGap = _data->maximumGap;
+        MPI_Allreduce(MPI_IN_PLACE, &result.maximumGap, 1, MPI_DOUBLE, MPI_MAX, _data->mpi.comm);
+        result.mapBuilds = _data->mapBuilds;
+        return result;
+    }
     void InterfaceCoupling::Refresh(const std::vector<InterfaceDomainInput> &domains, real time, StateEpoch epoch)
     {
         auto &data = *_data;
@@ -162,6 +181,18 @@ namespace DNDS::Cauchy
                 search.coarseBoxesPerRank = connection.settings.coarseBoxesPerRank;
                 auto map = Geom::DistributedInterfacePointMap::Match(connection.context, std::move(patch), points, ids,
                                                                      connection.settings.routing == "coarseBoxes" ? Geom::InterfaceRoutingMode::CoarseBoxes : Geom::InterfaceRoutingMode::AllGatherBoundary, search);
+                MPI::LocalStage(data.mpi, [&]
+                                {
+                    std::vector<index> donors(map.Size());
+                    for(index iPoint=0;iPoint<map.Size();++iPoint)
+                    {
+                        const auto match=map.Get(iPoint).geometry;
+                        donors[iPoint]=match.donorOriginalId;
+                        data.maximumGap=std::max(data.maximumGap,match.distance);
+                        if(!connection.lastDonors.empty()&&connection.lastDonors[iPoint]!=donors[iPoint]) ++data.changedDonors;
+                    }
+                    connection.lastDonors=std::move(donors);
+                    ++data.mapBuilds; });
                 connection.result.reset();
                 connection.sampling.emplace(std::move(reconstruction), std::move(map));
                 MPI::LocalStage(data.mpi, [&]

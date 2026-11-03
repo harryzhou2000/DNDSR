@@ -130,6 +130,10 @@ TEST_CASE("P3 flow5 crosses a posed disk interface with dense and sparse distrib
             for (int step = 0; step < 3; ++step)
                 sparse.Advance(.001);
             const auto final = Integrals(sparse);
+            const auto diagnostics = sparse.GetInterfaceDiagnostics();
+            CHECK(diagnostics.queryPoints > 0);
+            CHECK(diagnostics.maximumGap <= .02);
+            CHECK(diagnostics.mapBuilds == (omega == 0 ? 2 : 20));
             double error = 0;
             for (I iDomain = 0; iDomain < 2; ++iDomain)
                 if (sparse.Local(iDomain))

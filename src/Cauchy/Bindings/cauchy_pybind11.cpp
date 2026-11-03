@@ -11,6 +11,11 @@ PYBIND11_MODULE(cauchy_pybind11, m)
     namespace C = DNDS::Cauchy;
     namespace R = DNDS::Runtime;
     py::module_::import("DNDSR.CFV");
+    py::class_<C::InterfaceDiagnostics>(m, "InterfaceDiagnostics", "Global coupling work counters; donor changes include nonmonotone stage revisits and rejected trials.")
+        .def_readonly("query_points", &C::InterfaceDiagnostics::queryPoints)
+        .def_readonly("changed_donors", &C::InterfaceDiagnostics::changedDonors)
+        .def_readonly("map_builds", &C::InterfaceDiagnostics::mapBuilds)
+        .def_readonly("maximum_gap", &C::InterfaceDiagnostics::maximumGap);
     py::enum_<C::DerivedQuantity>(m, "DerivedQuantity")
         .value("Temperature", C::DerivedQuantity::Temperature)
         .value("Pressure", C::DerivedQuantity::Pressure)
@@ -147,6 +152,7 @@ PYBIND11_MODULE(cauchy_pybind11, m)
         .def("domain", static_cast<C::Domain &(C::Simulation::*)(DNDS::index)>(&C::Simulation::GetDomain), py::arg("domain"), py::return_value_policy::reference_internal,
              "Borrow a local domain, retaining Simulation. Advance through Simulation to keep clocks and interface snapshots coordinated.")
         .def("advance", &C::Simulation::Advance, py::arg("dt"), py::call_guard<py::gil_scoped_release>())
+        .def("interface_diagnostics", &C::Simulation::GetInterfaceDiagnostics, py::call_guard<py::gil_scoped_release>(), "Collective query/rematch/map counts and maximum physical projection gap. Does not change the solution or traces.")
         .def_property_readonly("resolved_json", [](const C::Simulation &simulation)
                                { return simulation.Config().Root().dump(); });
 }
