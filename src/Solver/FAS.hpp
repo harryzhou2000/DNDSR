@@ -1,7 +1,9 @@
 #pragma once
 
 #include "DNDS/Algebra/DofAlgebra.hpp"
+#include "DNDS/Algebra/ComponentSelection.hpp"
 #include <functional>
+#include <cstring>
 
 namespace DNDS::Multigrid
 {
@@ -19,6 +21,11 @@ namespace DNDS::Multigrid
         std::function<index(Field &, const Field &, index)> smooth;
         /// Optional physical update policy (e.g. flow PP). Default is U+=delta.
         std::function<void(Field &, const Field &)> update;
+        /// Required for a proper subset cycle. Solve only the selected
+        /// equations with all remaining owned components frozen. Selection is
+        /// normalized, nonempty and identical across levels. This is a
+        /// principal-system smoother, not a full solve followed by masking.
+        std::function<index(Field &, const Field &, index, const std::vector<index> &)> smoothSelected;
     };
     struct FASTransfer
     {
@@ -29,6 +36,10 @@ namespace DNDS::Multigrid
     struct FASCycleSettings
     {
         index preSmooth = 1, postSmooth = 1, coarseSmooth = 8;
+        /// Empty selects the full state. Otherwise select distinct component
+        /// indices, common to all levels; restriction still transfers the full
+        /// background state and residual for nonlinear tau construction.
+        std::vector<index> updateComponents;
     };
     struct FASCycleReport
     {
@@ -57,6 +68,7 @@ namespace DNDS::Multigrid
         {
             FASLevel operation;
             Field source, value, residual, reference, correction;
+            std::optional<Field> frozen;
             Runtime::ArrayStorage::Shared ownedStorage, ghostStorage;
             static Field NewVector(const Field &prototype)
             {
@@ -74,6 +86,39 @@ namespace DNDS::Multigrid
         FASCycleSettings _settings;
         LocalStage _local;
         bool _failed = false;
+        bool Selected() const { return !_settings.updateComponents.empty(); }
+        bool Includes(index component) const
+        {
+            return !Selected() || std::binary_search(_settings.updateComponents.begin(), _settings.updateComponents.end(), component);
+        }
+        void SaveFrozen(Level &level)
+        {
+            if (Selected())
+                Algebra::Copy(*level.frozen, level.operation.state);
+        }
+        void CheckFrozen(const Level &level) const
+        {
+            if (!Selected())
+                return;
+            const auto state = level.operation.state.Owned().Read(), reference = level.frozen->Owned().Read();
+            const auto u = state.View<Runtime::UniformTableRows>(), saved = reference.View<Runtime::UniformTableRows>();
+            for (index iRow = 0; iRow < u.RowCount(); ++iRow)
+                for (index j = 0; j < index(level.operation.state.Width()); ++j)
+                    if (!Includes(j))
+                        DNDS_check_throw_info(std::memcmp(&u(iRow, j), &saved(iRow, j), sizeof(real)) == 0,
+                                              "FAS callback changed a frozen component");
+        }
+        void ProjectCorrection(Field &correction) const
+        {
+            if (!Selected())
+                return;
+            auto write = correction.Owned().Write();
+            const auto values = write.View<Runtime::UniformTableRows>();
+            for (index iRow = 0; iRow < values.RowCount(); ++iRow)
+                for (index j = 0; j < index(correction.Width()); ++j)
+                    if (!Includes(j))
+                        values(iRow, j) = 0;
+        }
         template <class F>
         void RunLocal(F &&run) const
         {
@@ -87,11 +132,15 @@ namespace DNDS::Multigrid
             if (!corrections)
                 return;
             auto &data = *_levels[level];
-            const index actual = data.operation.smooth(data.operation.state, data.source, corrections);
+            if (Selected())
+                RunLocal([&]
+                         { SaveFrozen(data); });
+            const index actual = Selected() ? data.operation.smoothSelected(data.operation.state, data.source, corrections, _settings.updateComponents)
+                                            : data.operation.smooth(data.operation.state, data.source, corrections);
             RunLocal([&]
                      {
                 DNDS_check_throw_info(actual >= 0 && actual <= corrections, "FAS smoother correction count is invalid");
-                CheckBinding(data); });
+                CheckBinding(data); CheckFrozen(data); });
             report.corrections[level] += actual;
         }
         static void CheckBinding(const Level &level)
@@ -155,14 +204,20 @@ namespace DNDS::Multigrid
                      {
                 fine.correction.Validate();
                 DNDS_check_throw_info(fine.correction.Owned().SharedStorage() == correctionStorage && fine.correction.Ghost().SharedStorage() == correctionGhost,
-                                      "FAS prolongation rebound its output"); });
+                                      "FAS prolongation rebound its output");
+                ProjectCorrection(fine.correction); SaveFrozen(fine); });
             if (fine.operation.update)
                 fine.operation.update(fine.operation.state, fine.correction);
             else
                 RunLocal([&]
-                         { Algebra::Axpy(fine.operation.state, real(1), fine.correction); });
+                         {
+                    if (!Selected()) { Algebra::Axpy(fine.operation.state, real(1), fine.correction); return; }
+                    const auto read = fine.correction.Owned().Read(); auto write = fine.operation.state.Owned().Write();
+                    const auto delta = read.View<Runtime::UniformTableRows>(); const auto state = write.View<Runtime::UniformTableRows>();
+                    for (index iRow = 0; iRow < state.RowCount(); ++iRow)
+                        for (auto j : _settings.updateComponents) state(iRow, j) += delta(iRow, j); });
             RunLocal([&]
-                     { CheckBinding(fine); });
+                     { CheckBinding(fine); CheckFrozen(fine); });
             Relax(level, _settings.postSmooth, report);
         }
 
@@ -174,15 +229,21 @@ namespace DNDS::Multigrid
                      {
                 DNDS_check_throw_info(!levels.empty() && _transfers.size() + 1 == levels.size() && settings.preSmooth >= 0 && settings.postSmooth >= 0 && settings.coarseSmooth > 0,
                                       "invalid FAS hierarchy or sweep controls");
+                const index width = levels.front().state.Width();
+                _settings.updateComponents = Algebra::ComponentSelection(width, settings.updateComponents).Indices();
                 _levels.reserve(levels.size());
                 for (auto &level : levels)
                 {
                     DNDS_check_throw_info(level.apply && level.smooth, "FAS level is missing an operator or smoother");
+                    DNDS_check_throw_info(!Selected() || (index(level.state.Width()) == width && level.smoothSelected),
+                                          "selected FAS needs equal level widths and principal-system smoothers");
                     for (const auto &existing : _levels)
                         for (const auto *source : {&level.state.Owned(), &level.state.Ghost()})
                             for (const auto *target : {&existing->operation.state.Owned(), &existing->operation.state.Ghost()})
                                 DNDS_check_throw_info(!Algebra::Detail::Overlaps(source->Storage(), target->Storage()), "FAS levels share mutable state storage");
                     _levels.push_back(std::make_unique<Level>(std::move(level)));
+                    if (Selected())
+                        _levels.back()->frozen.emplace(Level::NewVector(_levels.back()->operation.state));
                 }
                 for (const auto &transfer : _transfers)
                     DNDS_check_throw_info(transfer.restrictState && transfer.restrictResidual && transfer.prolongCorrection, "FAS edge is missing a transfer"); });

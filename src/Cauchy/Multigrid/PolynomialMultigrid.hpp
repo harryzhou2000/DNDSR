@@ -9,8 +9,9 @@ namespace DNDS::Cauchy
     /// order convection. All levels retain viscous gradients/physical BCs.
     /// Normalized state, residual and correction maps are identity on means.
     /// Different meshes/coarsening belong to a different transfer adapter.
-    /// This CPU flow5 profile updates the complete coupled block. Fine state
-    /// and workspace must remain bound; caller owns physical trial rollback.
+    /// CPU flow5 supports full or selected-component principal-system cycles.
+    /// Unselected means remain frozen; all finest residuals stay observable.
+    /// Fine state/workspace remain bound; caller owns physical trial rollback.
     class PolynomialMultigrid
     {
         struct Data;

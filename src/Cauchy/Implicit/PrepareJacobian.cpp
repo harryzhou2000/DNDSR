@@ -35,9 +35,15 @@ namespace DNDS::Cauchy
         std::vector<std::array<real, 3>> magnitudes;
         real scale;
         bool roe;
+        bool selected = false;
+        std::array<bool, 5> active{};
         MatrixFreeJacobian(const FiniteVolume &fv, const LinearProblemContext &output, JacobianPreparation controls)
             : equation(fv._data->equation), scale(controls.residualScale), roe(controls.roeDissipation)
         {
+            const Algebra::ComponentSelection selection(5, controls.updateComponents);
+            selected = !selection.All();
+            for (int j = 0; j < 5; ++j)
+                active[j] = selection.Includes(j);
             auto old = std::dynamic_pointer_cast<const MatrixFreeJacobian>(output.PreparedOffDiagonalEvaluator());
             if (old && old->geometry->owner.lock() == fv._data)
                 geometry = old->geometry;
@@ -95,6 +101,13 @@ namespace DNDS::Cauchy
                 rotation.block<3, 3>(1, 1) = point.rotation;
                 output.noalias() += other * rotation;
             }
+            // Project after the periodic rotation: selected components refer
+            // to the stored, mesh-bound equation frame on both endpoints.
+            if (selected)
+                for (int j = 0; j < 5; ++j)
+                    for (int k = 0; k < 5; ++k)
+                        if (!active[j] || !active[k])
+                            output(j, k) = 0;
         }
     };
 
@@ -122,6 +135,10 @@ namespace DNDS::Cauchy
                                        JacobianPreparation controls, real time) const
     {
         ValidateAuxValues(state, auxiliary, time);
+        const Algebra::ComponentSelection selection(5, controls.updateComponents);
+        std::array<bool, 5> active{};
+        for (int j = 0; j < 5; ++j)
+            active[j] = selection.Includes(j);
         output.Validate();
         DNDS_check_throw_info(output.Space().Same(state.Space()) && output.Components() == 5 &&
                                   (!controls.roeDissipation || output.DiagonalMode() == DiagonalStorage::Block),
@@ -294,6 +311,19 @@ namespace DNDS::Cauchy
                 }
             }
             DNDS_check_throw_info(own.allFinite(), "nonfinite approximate diagonal block");
+            if (!selection.All())
+            {
+                for (int j = 0; j < 5; ++j)
+                    for (int k = 0; k < 5; ++k)
+                        if (!active[j] || !active[k])
+                            own(j, k) = j == k ? 1 : 0;
+                if (blocks)
+                    for (index entry = 0; entry < blocks->BlockNumber(iCell); ++entry)
+                        for (int j = 0; j < 5; ++j)
+                            for (int k = 0; k < 5; ++k)
+                                if (!active[j] || !active[k])
+                                    (*blocks)(iCell, entry)(j, k) = 0;
+            }
             if (output.DiagonalMode() == DiagonalStorage::Block)
                 for (int j = 0; j < 25; ++j)
                     d(iCell, j) = own.data()[j];

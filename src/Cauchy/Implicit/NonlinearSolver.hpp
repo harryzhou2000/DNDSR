@@ -33,6 +33,10 @@ namespace DNDS::Cauchy
         /// Null means no clock queries or extra communication. A provided
         /// output resets per call and retains partial timings on exceptions.
         NonlinearProfile *profile = nullptr;
+        /// Empty updates all flow5 components. A subset solves the principal
+        /// linear system with all other means frozen, including through PP.
+        /// This never changes the separately configured convergence selection.
+        std::vector<index> updateComponents;
     };
     struct NonlinearIterationReport
     {
@@ -91,6 +95,9 @@ namespace DNDS::Cauchy
         /// Apply a separate increment using the same Euler flow5 PP policy as
         /// the smoother. Returns global (limited cells, minimum fraction).
         /// Candidate admissibility is agreed before any state values change.
-        std::pair<index, real> ApplyCorrection(CFV::FVField &state, const CFV::FVField &correction, real scale = 1);
+        /// Optional updateComponents masks before PP; frozen means remain
+        /// bit-identical. Ranks must agree selection and scale before entering.
+        std::pair<index, real> ApplyCorrection(CFV::FVField &state, const CFV::FVField &correction, real scale = 1,
+                                               const std::vector<index> &updateComponents = {});
     };
 }

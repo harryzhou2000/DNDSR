@@ -2,6 +2,7 @@
 
 #include "DNDS/Algebra/BlockMatrixStorage.hpp"
 #include "DNDS/Algebra/DofAlgebra.hpp"
+#include "DNDS/Algebra/ComponentSelection.hpp"
 #include <memory>
 #include <optional>
 #include <vector>
@@ -44,6 +45,10 @@ namespace DNDS::Cauchy
     {
         real physicalMass = 0, residualScale = 1;
         bool roeDissipation = false;
+        /// Empty means full flow5. A subset embeds its principal matrix in
+        /// flow5 storage: unselected rows/columns are zero, diagonal is one.
+        /// The matching RHS must be zero in those unselected equations.
+        std::vector<index> updateComponents;
     };
 
     /// Frozen rank-owned block rows, including off-rank operator columns. The

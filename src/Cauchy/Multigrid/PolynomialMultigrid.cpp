@@ -53,27 +53,30 @@ namespace DNDS::Cauchy
         Multigrid::FASLevel Level(CFV::FVField input, NonlinearSolver &solver, index level)
         {
             auto *relax = &solver;
+            const auto smooth = [this, relax, level](auto &u, const auto &source, index count, const std::vector<index> &components)
+            {
+                const auto step = relax->Solve(u, source, mass, rhsScale, time, stage, {count, smootherCFL[level], nullptr, components});
+                smootherCFL[level] = step.pseudoCFL;
+                Accumulate(step);
+                return step.iterations;
+            };
             return {std::move(input),
                     [this, relax](auto &u, auto &out)
                     { relax->EvaluateEquation(u, out, mass, rhsScale, time); },
-                    [this, relax, level](auto &u, const auto &source, index count)
-                    {
-                        const auto step = relax->Solve(u, source, mass, rhsScale, time, stage, {count, smootherCFL[level]});
-                        smootherCFL[level] = step.pseudoCFL;
-                        Accumulate(step);
-                        return step.iterations;
-                    },
+                    [smooth](auto &u, const auto &source, index count)
+                    { return smooth(u, source, count, {}); },
                     [this, relax](auto &u, const auto &delta)
                     {
-                        const auto [limited, alpha] = relax->ApplyCorrection(u, delta, settings.multigrid.damping);
+                        const auto [limited, alpha] = relax->ApplyCorrection(u, delta, settings.multigrid.damping, settings.multigrid.updateComponents);
                         report->incrementLimited += limited;
                         report->minimumIncrementAlpha = std::min(report->minimumIncrementAlpha, alpha);
-                    }};
+                    },
+                    smooth};
         }
         void BuildCycle()
         {
             const auto &control = settings.multigrid;
-            cycle = std::make_unique<Multigrid::FASCycle>(levelDefinitions, transferDefinitions, Multigrid::FASCycleSettings{control.preSmooth, control.postSmooth, control.coarseSmooth},
+            cycle = std::make_unique<Multigrid::FASCycle>(levelDefinitions, transferDefinitions, Multigrid::FASCycleSettings{control.preSmooth, control.postSmooth, control.coarseSmooth, control.updateComponents},
                                                           [this](const auto &run)
                                                           { MPI::LocalStage(mpi, run); });
         }

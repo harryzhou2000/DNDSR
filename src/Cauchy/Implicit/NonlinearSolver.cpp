@@ -124,10 +124,14 @@ namespace DNDS::Cauchy
         if (control.profile)
             *control.profile = {};
         const NonlinearPhaseTimer totalTimer(control.profile, NonlinearProfile::Total);
+        Algebra::ComponentSelection selection(5);
+        std::array<bool, 5> active{};
         {
             const NonlinearPhaseTimer entryTimer(control.profile, NonlinearProfile::Entry);
             MPI::LocalStage(data.mpi, [&]
                             {
+            selection = Algebra::ComponentSelection(5, control.updateComponents);
+            for (int j = 0; j < 5; ++j) active[j] = selection.Includes(j);
             data.discrete.Metrics().ValidateField(state, 5); data.discrete.Metrics().ValidateField(source, 5);
             DNDS_check_throw_info(state.Owned().SharedStorage() == data.stateOwned && state.Ghost().SharedStorage() == data.stateGhost &&
                                       !Algebra::Detail::Overlaps(state.Owned().Storage(), source.Owned().Storage()) &&
@@ -136,10 +140,14 @@ namespace DNDS::Cauchy
                                       control.correctionLimit >= -1 && control.correctionLimit <= data.settings.iterations &&
                                       (control.initialPseudoCFL == 0 || (std::isfinite(control.initialPseudoCFL) && control.initialPseudoCFL >= data.settings.pseudoCFL && control.initialPseudoCFL <= data.settings.maxPseudoCFL)),
                                   "invalid implicit stage state/source/coefficients"); });
-            const std::array<real, 4> coefficients{mass, rhsScale, time, control.initialPseudoCFL};
+            int componentMask = 0;
+            for (int j = 0; j < 5; ++j)
+                if (active[j])
+                    componentMask |= 1 << j;
+            const std::array<real, 5> coefficients{mass, rhsScale, time, control.initialPseudoCFL, real(componentMask)};
             auto minimum = coefficients, maximum = coefficients;
-            MPI_Allreduce(MPI_IN_PLACE, minimum.data(), 4, MPI_DOUBLE, MPI_MIN, data.mpi.comm);
-            MPI_Allreduce(MPI_IN_PLACE, maximum.data(), 4, MPI_DOUBLE, MPI_MAX, data.mpi.comm);
+            MPI_Allreduce(MPI_IN_PLACE, minimum.data(), 5, MPI_DOUBLE, MPI_MIN, data.mpi.comm);
+            MPI_Allreduce(MPI_IN_PLACE, maximum.data(), 5, MPI_DOUBLE, MPI_MAX, data.mpi.comm);
             index minLimit = control.correctionLimit, maxLimit = minLimit;
             MPI_Allreduce(MPI_IN_PLACE, &minLimit, 1, MPI_INT64_T, MPI_MIN, data.mpi.comm);
             MPI_Allreduce(MPI_IN_PLACE, &maxLimit, 1, MPI_INT64_T, MPI_MAX, data.mpi.comm);
@@ -176,7 +184,7 @@ namespace DNDS::Cauchy
                     {
                         const real value = rhsScale * residual(iCell, j) + volume * (constant(iCell, j) - mass * mean(iCell, j));
                         DNDS_check_throw_info(std::isfinite(value), "nonfinite implicit stage defect");
-                        output(iCell, j) = value;
+                        output(iCell, j) = active[j] ? value : 0;
                         norm[j] += data.settings.normOrder == 1 ? std::abs(value) : value * value / volume;
                     }
                 } });
@@ -259,7 +267,7 @@ namespace DNDS::Cauchy
             {
                 const NonlinearPhaseTimer jacobianTimer(control.profile, NonlinearProfile::Jacobian);
                 data.Stage([&]
-                           { data.discrete.PrepareJacobian(state, auxiliary, data.inversePseudoTime, *data.problem, {mass, rhsScale, data.settings.roeDissipation}, time); });
+                           { data.discrete.PrepareJacobian(state, auxiliary, data.inversePseudoTime, *data.problem, {mass, rhsScale, data.settings.roeDissipation, selection.Indices()}, time); });
             }
             {
                 const NonlinearPhaseTimer linearTimer(control.profile, NonlinearProfile::LinearSolve);
@@ -270,7 +278,7 @@ namespace DNDS::Cauchy
             const auto [incrementLimited, incrementAlpha] = [&]
             {
                 const NonlinearPhaseTimer correctionTimer(control.profile, NonlinearProfile::Correction);
-                return ApplyCorrection(state, data.linear->Solution(), data.settings.relaxation);
+                return ApplyCorrection(state, data.linear->Solution(), data.settings.relaxation, selection.Indices());
             }();
             if (data.positivity)
             {
@@ -310,11 +318,15 @@ namespace DNDS::Cauchy
     {
         return _data->reconstructionTolerance <= 0 || ReconstructionStats().second <= _data->reconstructionTolerance;
     }
-    std::pair<index, real> NonlinearSolver::ApplyCorrection(CFV::FVField &state, const CFV::FVField &increment, real scale)
+    std::pair<index, real> NonlinearSolver::ApplyCorrection(CFV::FVField &state, const CFV::FVField &increment, real scale,
+                                                            const std::vector<index> &updateComponents)
     {
         auto &data = *_data;
+        std::array<bool, 5> active{};
         data.Stage([&]
                    {
+            const Algebra::ComponentSelection selection(5, updateComponents);
+            for (int j = 0; j < 5; ++j) active[j] = selection.Includes(j);
             data.discrete.Metrics().ValidateField(state, 5); data.discrete.Metrics().ValidateField(increment, 5);
             DNDS_check_throw_info(state.Owned().SharedStorage() == data.stateOwned && state.Ghost().SharedStorage() == data.stateGhost &&
                                       std::isfinite(scale) && scale > 0 && scale <= 1, "invalid bound correction state or scale");
@@ -329,7 +341,7 @@ namespace DNDS::Cauchy
             for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
             {
                 FlowState u, delta;
-                for (int j = 0; j < 5; ++j) { u[j] = mean(iCell, j); delta[j] = scale * correction(iCell, j); }
+                for (int j = 0; j < 5; ++j) { u[j] = mean(iCell, j); delta[j] = active[j] ? scale * correction(iCell, j) : 0; }
                 if (data.positivity)
                 {
                     const real alpha = FlowIncrementFraction(u, delta, data.discrete.ThermalConstraints(), data.settings.positivity.incrementRelax, 2, data.settings.positivity.compressionPower);
@@ -338,7 +350,9 @@ namespace DNDS::Cauchy
                     for (auto &component : delta) component *= alpha;
                     delta = FixFlowIncrement(u, delta, data.discrete.ThermalConstraints());
                 }
-                for (int j = 0; j < 5; ++j) u[j] += delta[j];
+                for (int j = 0; j < 5; ++j)
+                    if (active[j]) u[j] += delta[j];
+                    else admissible = admissible && delta[j] == 0;
                 admissible = admissible && ThermallyAdmissible(u, data.discrete.ThermalConstraints());
                 for (int j = 0; j < 5; ++j) candidate(iCell, j) = u[j];
             } });

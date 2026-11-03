@@ -297,6 +297,85 @@ TEST_CASE("Frozen physical semi-matrix-free blocks agree with assembled action, 
         }
     }
 }
+TEST_CASE("Selected physical Jacobians are principal matrices after periodic frame transformation")
+{
+    for (bool rotated : {false, true})
+    {
+        const auto mesh = rotated ? CFVTest::Sector(mpi) : CauchyTest::PeriodicQuads(mpi, 1);
+        C::DomainSettings settings;
+        settings.numerics.reconstruction = "constant";
+        settings.numerics.cfv.maxOrder = 1;
+        if (rotated)
+            settings.boundaries["12"].kind = settings.boundaries["13"].kind = "slipWall";
+        C::FiniteVolume fv(mesh, settings, C::EquationSystem::Resolve(settings.equation));
+        auto state = fv.Metrics().BuildField(5), direction = fv.Metrics().BuildField(5), projected = fv.Metrics().BuildField(5);
+        auto expected = fv.Metrics().BuildField(5), actual = fv.Metrics().BuildField(5);
+        fv.Initialize(state, {}, {1.1, .4, -.2, .1, 1});
+        {
+            auto x = direction.Owned().Write(), p = projected.Owned().Write();
+            for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                for (int j = 0; j < 5; ++j)
+                {
+                    const double value = .03 * (j + 1) * std::cos(fv.Metrics().Cells().LocalToGlobal(iCell) + j);
+                    x.View()(iCell, j) = value;
+                    p.View()(iCell, j) = j == 1 || j == 4 ? value : 0;
+                }
+        }
+        fv.Metrics().BindHalo(state).Begin().Wait();
+        fv.Metrics().BindHalo(direction).Begin().Wait();
+        fv.Metrics().BindHalo(projected).Begin().Wait();
+        C::AuxiliaryRequest request;
+        request.faceSpectralRadius = true;
+        auto auxiliary = fv.BuildAuxiliaryValues(request);
+        fv.PrepareAuxValues(state, auxiliary);
+        R::Array<double> inverseTau(R::RowLayout::Dense(fv.Metrics().NumCell(), 1));
+        {
+            auto write = inverseTau.Write();
+            for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                write.View()(iCell, 0) = 3;
+        }
+        for (auto diagonal : {C::DiagonalStorage::Entries, C::DiagonalStorage::Block})
+            for (auto storage : {C::OffDiagonalStorage::Assembled, C::OffDiagonalStorage::SemiMatrixFree})
+            {
+                auto full = fv.BuildLinearProblem(state, diagonal, storage), subset = fv.BuildLinearProblem(state, diagonal, storage);
+                C::JacobianPreparation controls{2, .7, diagonal == C::DiagonalStorage::Block};
+                fv.PrepareJacobian(state, auxiliary, inverseTau, *full, controls);
+                controls.updateComponents = {4, 1};
+                fv.PrepareJacobian(state, auxiliary, inverseTau, *subset, controls);
+                full->Apply(projected, expected);
+                subset->Apply(direction, actual);
+                const auto x = direction.Owned().Read(), a = actual.Owned().Read(), b = expected.Owned().Read();
+                for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                    for (int j = 0; j < 5; ++j)
+                        CHECK(a.View()(iCell, j) == doctest::Approx(j == 1 || j == 4 ? b.View()(iCell, j) : x.View()(iCell, j)).epsilon(1e-13).scale(1));
+                // Every stored/evaluated entry is compared to the original
+                // matrix, independent of the action implementation above.
+                const auto fd = full->Diagonal().Read(), sd = subset->Diagonal().Read();
+                for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                    for (int j = 0; j < 5; ++j)
+                        for (int k = 0; k < 5; ++k)
+                        {
+                            if (diagonal == C::DiagonalStorage::Entries && j != k)
+                                continue;
+                            const auto slot = diagonal == C::DiagonalStorage::Block ? 5 * k + j : j;
+                            const bool selected = (j == 1 || j == 4) && (k == 1 || k == 4);
+                            CHECK(sd.View()(iCell, slot) == (selected ? fd.View()(iCell, slot) : double(j == k)));
+                        }
+                auto fRead = full->ReadOffDiagonal(), sRead = subset->ReadOffDiagonal();
+                fRead.WithBlocks([&](const auto &f)
+                                 { sRead.WithBlocks([&](const auto &s)
+                                                    {
+                    for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                        for (DNDS::index entry = 0; entry < DNDS::index(full->Columns()[iCell].size()); ++entry)
+                        {
+                            const auto fb = f(iCell, entry); const auto sb = s(iCell, entry);
+                            for (int j = 0; j < 5; ++j)
+                                for (int k = 0; k < 5; ++k)
+                                    CHECK(sb(j, k) == ((j == 1 || j == 4) && (k == 1 || k == 4) ? fb(j, k) : 0));
+                        } }); });
+            }
+    }
+}
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);

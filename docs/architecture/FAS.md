@@ -34,8 +34,32 @@ original finest equation. A failed cycle can leave partial level updates, marks
 the instance failed, and requires state restoration and hierarchy reconstruction
 before retry. It is an in-place primitive, not an accepted-state transaction.
 
+`FASCycleSettings::updateComponents` is an optional set of component indices;
+empty means all. A complete explicit set is normalized to the same full-state
+path. A proper subset requires equal component widths on all levels and each
+level's `smoothSelected` callback. That callback receives the normalized set and
+must solve its principal equations while holding the remaining owned components
+fixed. Solving a full coupled system then discarding some entries is a different
+method and violates the contract. Distributed callers agree the selection and
+hierarchy before entering; the generic cycle performs no hidden MPI agreement.
+
+Restriction still transfers the complete background state and residual for tau
+construction. Each coarse level freezes its own restricted background, rather
+than zeroing components excluded from updates. Prolongated corrections are
+projected onto the selected components before the physical update. Optional
+physical update callbacks must preserve the other means, including through PP.
+Subset mode allocates one retained snapshot per level and checks frozen owned
+values bit for bit after smooth/update callbacks, outside numerical kernels.
+A violation fails the cycle; it does not silently restore an invalid update.
+Full-state mode has no snapshot allocation or additional validation collective.
+The outer controller still measures its original complete finest residual;
+update selection and convergence selection are independent decisions.
+
 Tests use independent two- and three-level numeric forcing/correction oracles,
 a nonlinear fixed point, differing state/residual restrictions and mixed native
 layouts. Negative tests exercise aliases, callback mutation, output rebinding
 and same-allocation/different-view replacement. These are building-block tests;
 they do not qualify Cauchy's pMG convergence or performance.
+Subset tests additionally use an independent coupled 3-component/2-component
+principal inverse, incompatible frozen equations, strided and empty fields,
+prolongation projection, signed-zero preservation and rejected callback writes.

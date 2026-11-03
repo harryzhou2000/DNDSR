@@ -2,7 +2,9 @@
 #include "doctest.h"
 #include "Cauchy/Multigrid/PolynomialMultigrid.hpp"
 #include "Cauchy/Core/Domain.hpp"
+#include "Cauchy/Implicit/ResidualConvergence.hpp"
 #include "CartesianFixture.hpp"
+#include <cstring>
 
 namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
@@ -158,6 +160,130 @@ TEST_CASE("Polynomial FAS fixed points and preflight errors preserve fine means"
     Fill(fine, equation, state, .01);
     fine.ResetReconstruction(*workspace);
     CHECK(solver.Solve(source, 10, .5, 0).converged);
+}
+TEST_CASE("Selected pMG recovers nonconstant principal equations while preserving frozen means and full residual reporting")
+{
+    for (int scenario = 0; scenario < 4; ++scenario)
+    {
+        const auto mesh = CauchyTest::PeriodicQuads(mpi, scenario == 3 ? 1 : 4);
+        auto settings = Controls();
+        settings.implicit.multigrid.updateComponents = {4, 0};
+        settings.numerics.positivity = scenario == 2;
+        settings.execution.overlap = scenario != 1;
+        settings.implicit.collectiveChecks = scenario != 1;
+        settings.implicit.diagonal = scenario == 0 ? "entries" : "block";
+        settings.implicit.roeDissipation = scenario != 0;
+        settings.implicit.jacobianAction = scenario == 2 ? "semiMatrixFree" : "assembled";
+        settings.implicit.residualComponents = scenario == 3 ? std::vector<int>{0, 1, 2, 3, 4} : std::vector<int>{0, 4};
+        if (scenario == 1)
+        {
+            settings.implicit.linear.method = "gmres";
+            settings.implicit.linear.preconditioner = "ilu";
+        }
+        if (scenario == 3)
+            settings.implicit.multigrid.cycles = 8;
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fine(mesh, settings, equation);
+        const auto layout = scenario == 0 ? R::RowLayout::Dense(0, 5, 8) : scenario == 1 ? R::RowLayout::ColMajor(0, 5, {8, 1})
+                                                                                         : R::RowLayout::TiledColMajor(0, 5, 8);
+        auto state = fine.Metrics().BuildField(layout), exact = fine.Metrics().BuildField(layout), source = fine.Metrics().BuildField(layout);
+        auto value = fine.Metrics().BuildField(layout);
+        C::AuxiliaryRequest channels;
+        channels.faceSpectralRadius = channels.cellSpectralSum = true;
+        auto workspace = fine.BuildWorkspace(state, channels);
+        R::EagerEngine engine(scenario == 2 ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateCPUStream();
+        C::NonlinearSolver smoother(fine, state, workspace, engine, stream, settings);
+        Fill(fine, equation, state, 0);
+        A::Copy(exact, state);
+        smoother.EvaluateEquation(state, source, 30, .5, .1);
+        {
+            auto write = state.Owned().Write();
+            const auto u = write.View<R::UniformTableRows>();
+            for (DNDS::index iCell = 0; iCell < u.RowCount(); ++iCell)
+                for (int j : {0, 4})
+                    u(iCell, j) *= 1 + .01 * std::cos(fine.Metrics().Cells().LocalToGlobal(iCell) + j);
+        }
+        if (scenario == 3)
+        {
+            // This frozen momentum equation is deliberately incompatible.
+            // A subset solve may reduce its own equations, but must not claim
+            // convergence of the configured full finest equation.
+            auto write = source.Owned().Write();
+            for (DNDS::index iCell = 0; iCell < DNDS::index(source.Space().OwnedRows()); ++iCell)
+                write.View<R::UniformTableRows>()(iCell, 2) += .1;
+        }
+        const auto sourceVersion = source.Owned().Version();
+        const auto measure = [&]
+        {
+            smoother.EvaluateEquation(state, value, 30, .5, .1);
+            std::array<double, 6> norms{};
+            {
+                const auto read = value.Owned().Read(), bRead = source.Owned().Read();
+                for (DNDS::index iCell = 0; iCell < DNDS::index(state.Space().OwnedRows()); ++iCell)
+                {
+                    const auto volume = fine.Metrics().GetCellVol(iCell);
+                    norms[5] += volume;
+                    for (int j = 0; j < 5; ++j)
+                    {
+                        const auto error = bRead.View<R::UniformTableRows>()(iCell, j) - read.View<R::UniformTableRows>()(iCell, j);
+                        norms[j] += volume * error * error;
+                    }
+                }
+            }
+            MPI_Allreduce(MPI_IN_PLACE, norms.data(), 6, MPI_DOUBLE, MPI_SUM, mpi.comm);
+            C::FlowState result{};
+            for (int j = 0; j < 5; ++j)
+                result[j] = std::sqrt(norms[j] / norms[5]);
+            return result;
+        };
+        // Compare the initial equation with the same cold VR guess on both
+        // evaluations; otherwise finite VR stopping changes the operator by
+        // a few tolerance units before any mean correction has occurred.
+        fine.ResetReconstruction(*workspace);
+        const auto initialNorm = measure();
+        fine.ResetReconstruction(*workspace);
+        C::PolynomialMultigrid solver(mesh, fine, state, smoother, engine, stream, settings);
+        const auto report = solver.Solve(source, 30, .5, .1);
+        CAPTURE(scenario);
+        CAPTURE(report.multigridCycles);
+        CAPTURE(report.residual);
+        CHECK(report.multigridCycles > 0);
+        CHECK(report.converged == (scenario != 3));
+        CHECK(source.Owned().Version() == sourceVersion);
+        for (int j = 0; j < 5; ++j)
+            CHECK(std::abs(report.initialResidual[j] - initialNorm[j]) < 1e-12);
+        if (scenario == 3)
+        {
+            CHECK(report.residual[2] == doctest::Approx(.1).epsilon(1e-10));
+            auto subsetControls = settings.implicit;
+            subsetControls.residualComponents = {0, 4};
+            C::ResidualConvergence subset(subsetControls);
+            subset.Observe(report.initialResidual);
+            subset.Observe(report.residual);
+            CHECK(subset.Accepted());
+        }
+        {
+            const auto read = state.Owned().Read(), reference = exact.Owned().Read();
+            const auto u = read.View<R::UniformTableRows>(), expected = reference.View<R::UniformTableRows>();
+            for (DNDS::index iCell = 0; iCell < u.RowCount(); ++iCell)
+                for (int j = 0; j < 5; ++j)
+                    if (j == 0 || j == 4)
+                    {
+                        if (scenario != 3)
+                            CHECK(u(iCell, j) == doctest::Approx(expected(iCell, j)).epsilon(1e-8));
+                    }
+                    else
+                        CHECK(std::memcmp(&u(iCell, j), &expected(iCell, j), sizeof(double)) == 0);
+        }
+        const auto finalNorm = measure();
+        // Re-evaluation advances an already converged VR warm guess. Do not
+        // demand relative precision below its absolute roundoff/tolerance
+        // floor; the independent initial norms above are nontrivial, and the
+        // incompatible frozen momentum equation below remains O(0.1).
+        for (int j = 0; j < 5; ++j)
+            CHECK(std::abs(report.residual[j] - finalNorm[j]) < 1e-12);
+    }
 }
 TEST_CASE("Cauchy pMG physical discard and commit retry retain the fine reconstruction transaction")
 {

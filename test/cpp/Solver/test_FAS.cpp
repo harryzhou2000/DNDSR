@@ -184,3 +184,121 @@ TEST_CASE("FAS rejects ambiguous ownership controls aliases and stateful operato
                              {}, {0, 0, 1});
     CHECK_THROWS(rangeRebound.Apply(rhs));
 }
+TEST_CASE("Selected FAS solves principal equations and freezes other components across strided levels")
+{
+    for (I rows : {I(0), I(3)})
+    {
+        const A::DofSpace fineSpace(rows), coarseSpace(rows);
+        Field fine(fineSpace, R::RowLayout::ColMajor(0, 3, {8, 1})), rhs(fineSpace, 3);
+        Field coarse(coarseSpace, R::RowLayout::TiledColMajor(0, 3, 8));
+        {
+            auto u = fine.Owned().Write(), b = rhs.Owned().Write();
+            for (I iRow = 0; iRow < rows; ++iRow)
+                for (I j = 0; j < 3; ++j)
+                {
+                    u.View<R::UniformTableRows>()(iRow, j) = j == 1 ? -0. : .1 * (iRow + j);
+                    // The deliberately incompatible frozen equation must not
+                    // enter the principal solve through a full block inverse.
+                    b.View<R::UniformTableRows>()(iRow, j) = j == 1 ? 1000 : 1 + iRow + j;
+                }
+        }
+        const auto apply = [](double shift)
+        {
+            return [shift](Field &input, Field &output)
+            {
+                const auto read = input.Owned().Read();
+                auto write = output.Owned().Write();
+                const auto u = read.View<R::UniformTableRows>();
+                const auto v = write.View<R::UniformTableRows>();
+                for (I iRow = 0; iRow < u.RowCount(); ++iRow)
+                {
+                    v(iRow, 0) = (4 + shift) * u(iRow, 0) + 2 * u(iRow, 1) + u(iRow, 2);
+                    v(iRow, 1) = 2 * u(iRow, 0) + 3 * u(iRow, 1) + 2 * u(iRow, 2);
+                    v(iRow, 2) = u(iRow, 0) + 2 * u(iRow, 1) + (5 + shift) * u(iRow, 2);
+                }
+            };
+        };
+        const auto full = [](Field &, const Field &, I) -> I
+        { throw std::runtime_error("full smoother called for subset"); };
+        I selectedCalls = 0;
+        const auto selected = [&](Field &input, const Field &source, I count, const std::vector<I> &components)
+        {
+            CHECK(components == std::vector<I>{0, 2});
+            ++selectedCalls;
+            const auto read = source.Owned().Read();
+            auto write = input.Owned().Write();
+            const auto b = read.View<R::UniformTableRows>();
+            const auto u = write.View<R::UniformTableRows>();
+            for (I iRow = 0; iRow < u.RowCount(); ++iRow)
+            {
+                const double b0 = b(iRow, 0) - 2 * u(iRow, 1), b2 = b(iRow, 2) - 2 * u(iRow, 1);
+                // Independent inverse of [[5,1],[1,6]], not full 3x3.
+                u(iRow, 0) = (6 * b0 - b2) / 29;
+                u(iRow, 2) = (5 * b2 - b0) / 29;
+            }
+            return count;
+        };
+        const auto identity = [](const Field &a, Field &b)
+        {
+            const auto read = a.Owned().Read();
+            auto write = b.Owned().Write();
+            for (I iRow = 0; iRow < I(a.Space().OwnedRows()); ++iRow)
+                for (I j = 0; j < 3; ++j)
+                    write.View<R::UniformTableRows>()(iRow, j) = read.View<R::UniformTableRows>()(iRow, j);
+        };
+        const auto prolong = [identity](const Field &a, Field &b)
+        {
+            identity(a, b);
+            auto write = b.Owned().Write();
+            for (I iRow = 0; iRow < I(b.Space().OwnedRows()); ++iRow)
+                write.View<R::UniformTableRows>()(iRow, 1) = 1234;
+        };
+        M::FASCycle cycle({{fine, apply(0), full, {}, selected}, {coarse, apply(1), full, {}, selected}},
+                          {{identity, identity, prolong}}, {0, 0, 1, {2, 0}});
+        const auto work = cycle.Apply(rhs);
+        CHECK(work.cycles == 1);
+        CHECK(selectedCalls == 1);
+        const auto read = fine.Owned().Read();
+        const auto u = read.View<R::UniformTableRows>();
+        for (I iRow = 0; iRow < rows; ++iRow)
+        {
+            const double old0 = .1 * iRow, old2 = .1 * (iRow + 2);
+            const double r0 = 1 + iRow - 4 * old0 - old2, r2 = 3 + iRow - old0 - 5 * old2;
+            CHECK(u(iRow, 0) == doctest::Approx(old0 + (6 * r0 - r2) / 29).epsilon(1e-14));
+            CHECK(u(iRow, 2) == doctest::Approx(old2 + (5 * r2 - r0) / 29).epsilon(1e-14));
+            CHECK(std::signbit(u(iRow, 1)));
+        }
+    }
+}
+TEST_CASE("Selected FAS rejects invalid selections and callbacks that write frozen means")
+{
+    const A::DofSpace space(2), coarseSpace(1);
+    Field state(space, 2), rhs(space, 2), coarse(coarseSpace, 2);
+    A::Fill(state, 1.);
+    A::Fill(rhs, 2.);
+    auto level = M::FASLevel{state, Multiply(2), NoSmooth(), {}};
+    CHECK_THROWS(M::FASCycle({level}, {}, {0, 0, 1, {0}}));
+    level.smoothSelected = [](Field &u, const Field &, I, const auto &)
+    { A::Scale(u, 2.); return I(1); };
+    CHECK_THROWS(M::FASCycle({level}, {}, {0, 0, 1, {0, 0}}));
+    CHECK_THROWS(M::FASCycle({level}, {}, {0, 0, 1, {-1}}));
+    CHECK_THROWS(M::FASCycle({level}, {}, {0, 0, 1, {2}}));
+    M::FASCycle badSmoother({level}, {}, {0, 0, 1, {0}});
+    CHECK_THROWS(badSmoother.Apply(rhs));
+    CHECK_THROWS(badSmoother.Apply(rhs));
+    level.smoothSelected = [](Field &, const Field &, I, const auto &)
+    { return I(0); };
+    level.update = [](Field &u, const Field &)
+    { A::Scale(u, 2.); };
+    auto other = level;
+    other.state = coarse;
+    const auto transfer = [](const Field &, Field &output)
+    { A::Fill(output, 0.); };
+    M::FASCycle badUpdate({level, other}, {{transfer, transfer, transfer}}, {0, 0, 1, {0}});
+    CHECK_THROWS(badUpdate.Apply(rhs));
+    // Explicit full selection takes the original full-state callback path.
+    level.update = {};
+    level.smooth = NoSmooth();
+    M::FASCycle full({level}, {}, {0, 0, 1, {1, 0}});
+    CHECK_NOTHROW(full.Apply(rhs));
+}

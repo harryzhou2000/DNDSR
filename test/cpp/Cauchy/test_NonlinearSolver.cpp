@@ -5,6 +5,8 @@
 #include "Cauchy/Implicit/ResidualConvergence.hpp"
 #include "CartesianFixture.hpp"
 #include <limits>
+#include <cstring>
+#include "Cauchy/Physics/ImplicitPositivity.hpp"
 
 namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
@@ -316,6 +318,70 @@ TEST_CASE("Implicit bad corrections reject without poisoning state and nonlinear
                 write.View()(iCell, j) = 20 * target[j];
     }
     CHECK(solver.Solve(state, source, 20, 1, .1).converged);
+}
+TEST_CASE("Subset correction masks before Euler PP and preserves frozen means exactly")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 1);
+    C::DomainSettings settings;
+    settings.numerics.reconstruction = "constant";
+    settings.numerics.positivity = true;
+    const auto equation = C::EquationSystem::Resolve(settings.equation);
+    C::FiniteVolume fv(mesh, settings, equation);
+    auto state = fv.Metrics().BuildField(5), increment = fv.Metrics().BuildField(5), source = fv.Metrics().BuildField(5);
+    const auto initial = equation.Gas().Conservative({1, .3, -.1, .05, 1});
+    fv.Initialize(state, {}, {1, .3, -.1, .05, 1});
+    C::FlowState delta{};
+    delta[4] = -2 * C::PositivityDetail::InternalEnergy(initial);
+    {
+        auto write = increment.Owned().Write();
+        for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+                write.View()(iCell, j) = j == 4 ? delta[4] : std::numeric_limits<double>::quiet_NaN();
+    }
+    C::AuxiliaryRequest channels;
+    channels.faceSpectralRadius = channels.cellSpectralSum = true;
+    R::EagerEngine engine;
+    const auto stream = engine.CreateCPUStream();
+    C::NonlinearSolver solver(fv, state, fv.BuildWorkspace(state, channels), engine, stream, settings);
+    const auto alpha = C::FlowIncrementFraction(initial, delta, fv.ThermalConstraints(), settings.implicit.positivity.incrementRelax, 2, settings.implicit.positivity.compressionPower);
+    CHECK(alpha > 0);
+    CHECK(alpha < 1);
+    auto limitedDelta = delta;
+    for (auto &value : limitedDelta)
+        value *= alpha;
+    limitedDelta = C::FixFlowIncrement(initial, limitedDelta, fv.ThermalConstraints());
+    const auto result = solver.ApplyCorrection(state, increment, 1, {4});
+    CHECK(result.first == 1);
+    CHECK(result.second == alpha);
+    CHECK(fv.Admissible(state));
+    {
+        const auto read = state.Owned().Read();
+        for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+                if (j == 4)
+                    CHECK(read.View()(iCell, j) == initial[j] + limitedDelta[j]);
+                else
+                    CHECK(std::memcmp(&read.View()(iCell, j), &initial[j], sizeof(double)) == 0);
+    }
+    const auto generation = state.Owned().Version();
+    for (const std::vector<DNDS::index> bad : {std::vector<DNDS::index>{-1}, {0, 0}, {5}})
+    {
+        C::NonlinearSolveControl control;
+        control.updateComponents = bad;
+        CHECK_THROWS(solver.Solve(state, source, 1, 1, 0, 0, control));
+        CHECK_THROWS(solver.ApplyCorrection(state, increment, 1, bad));
+        CHECK(state.Owned().Version() == generation);
+        auto invalid = settings.implicit;
+        invalid.multigrid.updateComponents = bad;
+        CHECK_THROWS(invalid.Validate());
+    }
+    if (mpi.size > 1)
+    {
+        C::NonlinearSolveControl mismatch;
+        mismatch.updateComponents = mpi.rank == 0 ? std::vector<DNDS::index>{0} : std::vector<DNDS::index>{4};
+        CHECK_THROWS(solver.Solve(state, source, 1, 1, 0, 0, mismatch));
+        CHECK(state.Owned().Version() == generation);
+    }
 }
 TEST_CASE("Optional nonlinear phase output preserves exact corrections and records early failures without extra collectives")
 {

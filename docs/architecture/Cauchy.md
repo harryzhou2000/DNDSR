@@ -2,7 +2,7 @@
 
 Status2026-11-03: foundation, optional checked eager execution and the
 single-domain CPU flow solver include native implicit linear/nonlinear solves,
-BDF/Trapz/ESDIRK/DITR, polynomial FAS and persistent-ID restart in focused tests.
+BDF/Trapz/ESDIRK/DITR, full/subset polynomial FAS and persistent-ID restart in focused tests.
 Euler-derived PP and native LVR have focused distributed coverage; qualified
 physical studies and performance limits are recorded in the plan repo. The
 Mach20+3WBAP nonconvergence is expected and is not pursued as a solver defect;
@@ -294,20 +294,22 @@ collective rejection/retry, and exact inactive-PP trajectories. These are
 current-flow and policy tests; species/RANS/source-term constraints still
 require equation-specific implementation before those profiles are advertised.
 
-Checkpoint format3 stores the resolved config, domain name, accepted time/step,
-persistent cell IDs, exact per-cell primary geometry/connectivity/boundary-zone
-metadata, periodic transforms, owned flow and the owned reconstruction initial
-guess. A fixed VR sweep cap makes that guess part of the numerical continuation
-state, even though it remains separate from physical cell averages. Ghosts and
-Jacobi output scratch are regenerated on the next evaluation. Flow and guess
-I/O use retained native Array storage directly, including SoA/AoSoA; only
-mesh-validation metadata is assembled.
-Loading validates all metadata before replacing accepted state and preserves the
-existing field allocations/bindings. Same partition/order/config is required;
-changed-rank remapping and broader observation/visualization/statistics are C6.
-Format2 remains readable with a cold reconstruction guess; its physical means
-are preserved but finite-sweep continuation cannot be promised bitwise identical.
-Format3 has a nonconstant P3 exact-continuation test across all three layouts.
+Checkpoint format4 records structured numerical/physical metadata, canonical
+`cell_ids`, owned means and physical time history. Reconstruction coefficients
+are omitted by default; an explicit option saves a compatible warm guess.
+Missing or incompatible polynomial caches cold-start at zero. A cold restart
+does not promise bit-identical finite-sweep continuation. Formats2/3 remain
+readable under their documented compatibility checks. Ghosts and iteration
+scratch are regenerated.
+
+Native I/O writes retained Array storage directly, including SoA/AoSoA, without
+an AoS normalization buffer. Reading uses parallel file shards and canonical
+row transfers keyed by persistent cell IDs, supporting changed rank counts,
+ownership, local order and physical layout on the same physical mesh/schema.
+Validation precedes accepted-state replacement and preserves existing field
+allocations/bindings. See [the checkpoint contract](CauchyImplicit.md) for cache,
+history, geometry and legacy-format details. Broader visualization/statistics
+and user-defined outputs remain later composition work.
 
 Caller responsibilities: invoke domain collectives in matching order on its
 communicator; serialize each Domain/Workspace, mesh publication and debug edits;
@@ -318,7 +320,7 @@ fields, alias residual output to an input, or use escaped raw pointers. Keep MPI
 contexts and solver objects alive until operations finish and destroy them before
 MPI finalization on an MPI-permitted thread. This is coordinated error handling,
 not process-failure recovery. GPU flow kernels, real-gas adapters, species/RANS,
-motion, implicit stepping, p-FAS and physical multi-domain coupling remain later
+motion and physical multi-domain coupling remain later
 capability packages and fail explicitly when requested now.
 
 See [checked execution](CheckedExecution.md) for the shared optional submission

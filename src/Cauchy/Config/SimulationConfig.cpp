@@ -207,6 +207,12 @@ namespace DNDS::Cauchy
         }
         const auto nonnegative = [](real value)
         { return std::isfinite(value) && value >= 0; };
+        std::array<bool, 5> updated{};
+        for (const auto component : multigrid.updateComponents)
+        {
+            DNDS_check_throw_info(component >= 0 && component < 5 && !updated[component], "pMG update components must be distinct flow5 indices");
+            updated[component] = true;
+        }
         DNDS_check_throw_info((diagonal == "entries" || diagonal == "block") && (!roeDissipation || diagonal == "block") &&
                                   (jacobianAction == "assembled" || jacobianAction == "semiMatrixFree") &&
                                   iterations > 0 && minIterations >= 0 && minIterations <= iterations && consoleInterval >= 0 &&

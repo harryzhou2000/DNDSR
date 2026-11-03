@@ -172,9 +172,29 @@ Every operator uses `mass*U-rhsScale*R(U)/V`. Consequently all three same-cell
 maps are identity in this normalized convention; an integrated-residual or
 different-mesh hierarchy must supply its own transfer. Cell identity/order is
 checked during setup. Means, fine/coarse matrices and mutable auxiliary/gradient
-buffers are distinct. The current Cauchy profile smooths the whole coupled
-flow5 block; generic FAS accepts independent fields of arbitrary component
-width, permitting future selected-block adapters without erasing other fields.
+buffers are distinct. Cauchy defaults to the whole coupled flow5 block.
+`implicit.multigrid.updateComponents` optionally selects distinct flow5 indices
+for every level's smoothing and correction; empty selects all. Other means stay
+bit-identical. Generic FAS supports the same contract for arbitrary component
+widths through explicit principal-system smoother callbacks.
+
+The selected approximate Jacobian is `P*A*P + (I-P)`, with a zero RHS in
+unselected equations. Both assembled and frozen evaluated blocks project after
+periodic frame transforms. This solves the principal system; it is not a full
+Newton solve followed by masking. The full residual is formed and measured
+before its solve RHS is projected. Euler RHS/dTau PP uses that projected RHS,
+and increment/final PP receives a projected increment. A physical repair that
+would change a frozen component is rejected before publishing means.
+The original finest equation and all five norm components remain observable.
+`implicit.residualComponents` remains the independent convergence selection:
+with its default full-state setting, a nonzero frozen-equation residual prevents
+acceptance even if all updated equations have converged.
+
+Direct nonlinear users can select the same behavior with
+`NonlinearSolveControl::updateComponents`. Selection is validated and agreed in
+the existing stage-entry reductions, including in caller-ordered eager mode.
+Standalone `ApplyCorrection` callers must agree its optional selection and
+scale before entering. All public defaults retain full-state behavior.
 
 `preSmooth`, `postSmooth` and `coarseSmooth` bound nonlinear corrections, and
 `cycles` caps V-cycles. Each level carries its pseudo-CFL between smooth calls;
@@ -190,8 +210,9 @@ Physical discard/retry still restores the fine reconstruction guess. Coarse
 levels have no persistent VR polynomial guesses and restriction overwrites
 their state each cycle. A failed cycle drops its scratch hierarchy; the next
 attempt constructs fresh scratch before reuse. The physical caller still owns
-restoring any changed fine trial. Failed/capped stages never publish accepted
-state or time history. Same-cell pMG tests cover manufactured nonconstant P3
+restoring any changed fine trial. Failed or explicitly rejected attempts never
+publish accepted state/time history. Finite capped solves follow the configured
+Euler-style advance/rejection policy. Same-cell pMG tests cover manufactured nonconstant P3
 equations, mixed DOF layouts, active distributed halos, constant fixed points,
 physical discard/retry and commit rejection by a retained debug reader.
 
