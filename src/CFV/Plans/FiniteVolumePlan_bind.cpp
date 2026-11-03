@@ -52,6 +52,7 @@ namespace DNDS::CFV
             .def_readwrite("coreFirst", &ReconstructionSettings::coreFirst)
             .def_readwrite("HQMWeights", &ReconstructionSettings::HQMWeights)
             .def_readwrite("cacheDiffBase", &ReconstructionSettings::cacheDiffBase)
+            .def_readwrite("cacheDiffBaseOrder", &ReconstructionSettings::cacheDiffBaseOrder)
             .def_readwrite("functional", &ReconstructionSettings::functional)
             .def_readwrite("bcWeight", &ReconstructionSettings::bcWeight)
             .def_readwrite("boundaryDerivativeWeights", &ReconstructionSettings::boundaryDerivativeWeights)

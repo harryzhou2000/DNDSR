@@ -162,7 +162,7 @@ namespace DNDS::CFV
         {
             DNDS_check_throw_info(source.Settings().cacheDiffBase, "device basis publication requires prepared cacheDiffBase");
             const auto basis = result->Add("faceBasis", host.faceBasis, context);
-            result->basisView = {R::Detail::ProjectView<const real, false, R::TableRows>(basis, host.faceBasis.Layout()), result->metricView.faceOffsets, host.n};
+            result->basisView = {R::Detail::ProjectView<const real, false, R::TableRows>(basis, host.faceBasis.Layout()), result->metricView.faceOffsets, host.n, host.cachedDerivatives};
         }
         if (options.mesh)
         {

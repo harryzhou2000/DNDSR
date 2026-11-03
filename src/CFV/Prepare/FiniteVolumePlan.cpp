@@ -12,6 +12,7 @@ namespace DNDS::CFV
     {
         functional.Validate();
         DNDS_check_throw_info(maxOrder >= 1 && maxOrder <= 3 && intOrder >= maxOrder + 1 && intOrder <= INT_ORDER_MAX &&
+                                  cacheDiffBaseOrder >= 0 && cacheDiffBaseOrder <= 3 &&
                                   std::isfinite(jacobiRelax) && jacobiRelax > 0 && jacobiRelax < 2 &&
                                   std::isfinite(bcWeight) && bcWeight >= 0 &&
                                   std::isfinite(svdTolerance) && svdTolerance >= 0 && svdTolerance <= 1 &&

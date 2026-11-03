@@ -436,6 +436,13 @@ spatial residual calculation. It has no workspace, communication, reconstruction
 update, auxiliary publication or implicit diagnostic storage. The `Evaluate`
 convenience wrapper retains the orchestration of those operations.
 
+Basis values are borrowed from CFV's canonical face cache through a retained
+`ReconstructionBasisRead`, with only an incidence-to-face mapping in Cauchy.
+There is no solver-owned duplicate basis table. `cacheDiffBaseOrder=1` retains
+values/first derivatives by default; cache-off and requests beyond retained
+coverage evaluate the same zero-mean polynomial in bounded per-call scratch.
+Boundary-polynomial refresh and surface output use this same read facility.
+
 `RHSReadViews` groups the mean, reconstruction coefficients, optional viscous
 primitive gradients or a distinct optional `viscousCoefficients` field, and one
 `RHSAuxiliaryViews` bundle. An absent viscous coefficient view uses the convective

@@ -1518,6 +1518,59 @@ TEST_CASE("A rank-local Riemann stencil setting rejects collectively before opti
     CHECK_THROWS_WITH_AS(fv.BuildWorkspace(state, requested), doctest::Contains("Riemann stencil capability differs"), std::exception);
     CHECK_THROWS_WITH_AS(fv.BuildMeanWorkspace(state), doctest::Contains("Riemann stencil capability differs"), std::exception);
 }
+TEST_CASE("Cauchy P3 viscous WBAP agrees with shared first-order, full and uncached basis")
+{
+    const auto mesh = CFVTest::CartesianHexes(mpi, 8);
+    std::vector<DNDS::real> expected;
+    for (int cacheOrder : {3, 1, 0, -1})
+    {
+        INFO("cache order=" << cacheOrder);
+        C::DomainSettings settings;
+        settings.mesh.dimension = 3;
+        settings.equation.transport = "NewtonianFourier";
+        settings.equation.viscosity = .01;
+        settings.boundaries["7"].kind = "extrapolate";
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.reconstructionIterations = 2;
+        settings.numerics.limiter = "WBAP";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.cfv.cacheDiffBase = cacheOrder >= 0;
+        settings.numerics.cfv.cacheDiffBaseOrder = std::max(0, cacheOrder);
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto state = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
+        {
+            auto write = state.Owned().Write();
+            const auto values = write.View<R::UniformTableRows>();
+            for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            {
+                const auto p = fv.Metrics().GetCellCent(iCell);
+                const auto u = equation.Gas().Conservative({1 + .03 * std::sin(4 * p[0]), .2 + .02 * p[1], -.1, .05, 1 + .02 * std::cos(3 * p[2])});
+                for (int j = 0; j < 5; ++j)
+                    values(iCell, j) = u[j];
+            }
+        }
+        auto work = fv.BuildWorkspace(state);
+        R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateCPUStream();
+        fv.Evaluate(state, residual, *work, engine, stream);
+        auto read = residual.Owned().Read();
+        const auto values = read.View<R::UniformTableRows>();
+        std::vector<DNDS::real> actual;
+        for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+                actual.push_back(values(iCell, j));
+        if (cacheOrder == 3)
+            expected = actual;
+        else
+        {
+            REQUIRE(actual.size() == expected.size());
+            for (DNDS::index i = 0; i < DNDS::index(actual.size()); ++i)
+                CHECK(actual[i] == doctest::Approx(expected[i]).epsilon(1e-12).scale(1));
+        }
+    }
+}
+
 TEST_CASE("Cauchy overlap and unsplit orchestration agree across CPU launchers")
 {
     const auto mesh = CFVTest::CartesianHexes(mpi, 8);

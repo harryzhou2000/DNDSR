@@ -481,17 +481,34 @@ namespace DNDS::CFV
         DNDS_check_throw_info(iQuadrature >= 0 && iQuadrature < end - begin, "basis cache quadrature outside face");
         auto read = _data->faceBasis.Read();
         const auto view = read.View<R::TableRows>();
-        return ConstMap(view[2 * (begin + iQuadrature) + side].data(), NRecDOF() + 1, NRecDOF());
+        return ConstMap(view[2 * (begin + iQuadrature) + side].data(), _data->cachedDerivatives, NRecDOF());
     }
     ReconstructionBasisRead::ReconstructionBasisRead(std::shared_ptr<const Detail::ReconstructionData> data)
-        : _data(std::move(data)), _geometry(_data->metrics.AcquireRead())
+        : _data(std::move(data)), _geometry(_data->metrics.AcquireRead()), _moments(_data->moments.Read()),
+          _meshRead(std::make_shared<Geom::MeshReadAccess>(_data->metrics._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux())))
     {
-        DNDS_check_throw_info(_data->settings.cacheDiffBase, "face basis caching was disabled");
-        _basis.emplace(_data->faceBasis.Read());
+        if (_data->settings.cacheDiffBase)
+            _basis.emplace(_data->faceBasis.Read());
     }
     ReconstructionBasisHostView ReconstructionBasisRead::HostView() const
     {
-        return {_basis->View<R::TableRows>(), _geometry.HostView().faceOffsets, _data->n};
+        DNDS_check_throw_info(bool(_basis), "face basis caching was disabled");
+        return {_basis->View<R::TableRows>(), _geometry.HostView().faceOffsets, _data->n, _data->cachedDerivatives};
+    }
+    Math::ReconstructionBasisView ReconstructionBasisRead::FaceBasis(index face, int side, index point,
+                                                                     int derivativeOrder, Math::SmallMatrix &scratch) const
+    {
+        const Math::TaylorBasis polynomial(_data->metrics.Dimension(), _data->settings.maxOrder);
+        const int rows = polynomial.DerivativeNumber(derivativeOrder);
+        if (_basis && rows <= _data->cachedDerivatives)
+            return {_basis->View<R::TableRows>()[2 * point + side].data(), rows, _data->n, _data->cachedDerivatives};
+        const auto mesh = _meshRead->HostView();
+        const index cell = mesh.FaceCells(face)[side];
+        const auto geometry = _geometry.HostView();
+        const auto position = Detail::FacePointInCell(mesh, face, side, geometry.GetFacePoint(point));
+        polynomial.Reconstruction(scratch, position, geometry.GetCellCent(cell), geometry.cells(cell, 7),
+                                  _moments.View<R::TableRows>()[cell], derivativeOrder);
+        return {scratch.data(), int(scratch.rows()), _data->n, int(scratch.rows())};
     }
     ReconstructionBasisRead VariationalReconstructionPlan::AcquireBasisRead() const
     {

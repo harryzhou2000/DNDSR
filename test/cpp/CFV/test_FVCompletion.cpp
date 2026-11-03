@@ -225,79 +225,103 @@ TEST_CASE("Raw reconstruction operators preserve symmetry and agree with a preco
     }
 }
 
-TEST_CASE("Point caches snapshot IDs and coordinates and sample first and second derivatives")
+TEST_CASE("Shared basis policies snapshot points and sample cubic values and derivatives")
 {
-    auto mesh = G::OverlapTest::BuildNativeFixture(mpi, true).mesh;
-    auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh);
-    auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics);
-    auto mean = metrics.BuildField(1), coefficients = metrics.BuildField(plan.NRecDOF());
-    R::Array<I> cells(R::RowLayout::Dense(metrics.NumCell(), 1));
-    R::Array<double> points(R::RowLayout::Dense(metrics.NumCell(), 3)), result(R::RowLayout::Dense(metrics.NumCell(), 1));
-    // f=x^2+2*y, using square-cell moments h^2/12 as an independent oracle.
+    for (int cacheOrder : {-1, 0, 1, 3})
     {
-        auto geometry = metrics.AcquireRead();
-        auto u = mean.Owned().Write(), r = coefficients.Owned().Write(), p = points.Write();
-        auto c = cells.Write();
-        for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+        INFO("cache order=" << cacheOrder);
+        auto mesh = G::OverlapTest::BuildNativeFixture(mpi, true).mesh;
+        auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh);
+        C::ReconstructionSettings settings;
+        settings.maxOrder = 3;
+        settings.cacheDiffBase = cacheOrder >= 0;
+        settings.cacheDiffBaseOrder = std::max(0, cacheOrder);
+        auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+        auto mean = metrics.BuildField(1), coefficients = metrics.BuildField(plan.NRecDOF());
+        R::Array<I> cells(R::RowLayout::Dense(metrics.NumCell(), 1));
+        R::Array<double> points(R::RowLayout::Dense(metrics.NumCell(), 3)), result(R::RowLayout::Dense(metrics.NumCell(), 1));
+        // f=x^3+2*y; the exact square-cell mean is cx^3+cx*h^2/4+2*cy.
         {
-            const auto center = geometry.HostView().GetCellCent(iCell);
-            const auto scale = geometry.HostView().cells(iCell, 7);
-            u.View()(iCell, 0) = center[0] * center[0] + .01 / 12 + 2 * center[1];
-            r.View()(iCell, 0) = 2 * center[0] * scale;
-            r.View()(iCell, 1) = 2 * scale;
-            r.View()(iCell, 2) = scale * scale;
-            c.View()(iCell, 0) = iCell;
-            for (int d = 0; d < 3; ++d)
-                p.View()(iCell, d) = center[d];
+            auto geometry = metrics.AcquireRead();
+            auto u = mean.Owned().Write(), r = coefficients.Owned().Write(), p = points.Write();
+            auto c = cells.Write();
+            for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+            {
+                const auto center = geometry.HostView().GetCellCent(iCell);
+                const auto scale = geometry.HostView().cells(iCell, 7);
+                u.View()(iCell, 0) = center[0] * center[0] * center[0] + center[0] * .01 / 4 + 2 * center[1];
+                for (int mode = 0; mode < plan.NRecDOF(); ++mode)
+                    r.View()(iCell, mode) = 0;
+                r.View()(iCell, 0) = 3 * center[0] * center[0] * scale;
+                r.View()(iCell, 1) = 2 * scale;
+                r.View()(iCell, 2) = 3 * center[0] * scale * scale;
+                r.View()(iCell, 5) = scale * scale * scale;
+                c.View()(iCell, 0) = iCell;
+                for (int d = 0; d < 3; ++d)
+                    p.View()(iCell, d) = center[d];
+            }
         }
-    }
-    C::PolynomialSamplingPlan sampler(plan, cells, points);
-    if (metrics.NumCell())
-    {
-        auto geometry = metrics.AcquireRead();
-        auto read = mesh->AcquireRead(G::MeshReadRequirements::CellFlux());
-        const auto view = read.HostView();
-        const auto iFace = view.CellFaces(0)[0];
-        const int side = view.CellIsFaceBack(0, iFace, 0) ? 0 : 1;
-        const auto basis = plan.GetCachedFaceBasis(iFace, side, 0);
-        auto scope = plan.AcquireBasisRead();
-        const auto cache = scope.HostView();
-        const auto iPoint = cache.faceOffsets(iFace, 0);
-        const double scale = geometry.HostView().cells(0, 7);
-        CHECK(basis(1, 0) == doctest::Approx(1 / scale));
-        CHECK(basis(2, 0) == 0);
-        CHECK(basis(3, 2) == doctest::Approx(2 / (scale * scale)));
-        for (int derivative = 0; derivative <= plan.NRecDOF(); ++derivative)
-            for (int mode = 0; mode < plan.NRecDOF(); ++mode)
-                CHECK(cache.FaceDerivative(iPoint, side, derivative, mode) == basis(derivative, mode));
-    }
-    {
-        auto c = cells.Write();
-        auto p = points.Write();
-        for (I iRow = 0; iRow < cells.RowCount(); ++iRow)
+        C::PolynomialSamplingPlan sampler(plan, cells, points);
+        const int expectedRows = cacheOrder < 0 ? 0 : cacheOrder == 0 ? 1
+                                                  : cacheOrder == 1   ? 3
+                                                                      : 10;
+        CHECK(sampler.CachedDerivativeNumber() == expectedRows);
+        if (metrics.NumCell() && settings.cacheDiffBase)
         {
-            c.View()(iRow, 0) = -1;
-            p.View()(iRow, 0) = 1e20;
+            auto geometry = metrics.AcquireRead();
+            auto read = mesh->AcquireRead(G::MeshReadRequirements::CellFlux());
+            const auto view = read.HostView();
+            const auto iFace = view.CellFaces(0)[0];
+            const int side = view.CellIsFaceBack(0, iFace, 0) ? 0 : 1;
+            const auto basis = plan.GetCachedFaceBasis(iFace, side, 0);
+            auto scope = plan.AcquireBasisRead();
+            const auto cache = scope.HostView();
+            const auto iPoint = cache.faceOffsets(iFace, 0);
+            const double scale = geometry.HostView().cells(0, 7);
+            CHECK(basis.rows() == expectedRows);
+            if (expectedRows >= 3)
+            {
+                CHECK(basis(1, 0) == doctest::Approx(1 / scale));
+                CHECK(basis(2, 0) == 0);
+            }
+            if (expectedRows > 3)
+                CHECK(basis(3, 2) == doctest::Approx(2 / (scale * scale)));
+            for (int derivative = 0; derivative < expectedRows; ++derivative)
+                for (int mode = 0; mode < plan.NRecDOF(); ++mode)
+                    CHECK(cache.FaceDerivative(iPoint, side, derivative, mode) == basis(derivative, mode));
         }
-    }
-    for (int derivative : {0, 1, 2, 3})
-    {
-        sampler.Evaluate(mean, coefficients, result, derivative);
-        auto read = result.Read();
-        auto geometry = metrics.AcquireRead();
-        for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
         {
-            const auto p = geometry.HostView().GetCellCent(iCell);
-            CHECK(read.View()(iCell, 0) == doctest::Approx(derivative == 0 ? p[0] * p[0] + 2 * p[1] : derivative == 1 ? 2 * p[0]
-                                                                                                                      : 2)
-                                               .epsilon(1e-11));
+            auto c = cells.Write();
+            auto p = points.Write();
+            for (I iRow = 0; iRow < cells.RowCount(); ++iRow)
+            {
+                c.View()(iRow, 0) = -1;
+                p.View()(iRow, 0) = 1e20;
+            }
         }
+        for (int derivative : {0, 1, 2, 3, 6})
+        {
+            sampler.Evaluate(mean, coefficients, result, derivative);
+            auto read = result.Read();
+            auto geometry = metrics.AcquireRead();
+            for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+            {
+                const auto p = geometry.HostView().GetCellCent(iCell);
+                const double expected = derivative == 0   ? p[0] * p[0] * p[0] + 2 * p[1]
+                                        : derivative == 1 ? 3 * p[0] * p[0]
+                                        : derivative == 2 ? 2
+                                        : derivative == 3 ? 6 * p[0]
+                                                          : 6;
+                CHECK(read.View()(iCell, 0) == doctest::Approx(expected)
+                                                   .epsilon(1e-11));
+            }
+        }
+        {
+            auto mutation = mesh->versions.BeginMutation(R::Change::Geometry);
+            mutation.Commit();
+        }
+        CHECK_THROWS(sampler.Evaluate(mean, coefficients, result));
     }
-    {
-        auto mutation = mesh->versions.BeginMutation(R::Change::Geometry);
-        mutation.Commit();
-    }
-    CHECK_THROWS(sampler.Evaluate(mean, coefficients, result));
 }
 
 // Test-only adapter for the historical Krylov vector concept. Runtime handles

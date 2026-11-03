@@ -9,6 +9,7 @@
 #include "Geom/Unstructured/UnstructuredMeshFwd.hpp"
 #include "DNDS/Math/HardEigen.hpp"
 #include "CFV/Math/ReconstructionFunctional.hpp"
+#include "CFV/Math/TaylorBasis.hpp"
 #include <map>
 
 namespace DNDS::Geom
@@ -34,6 +35,7 @@ namespace DNDS::CFV
         bool SORInstead = false, HQMWeights = false;
         bool coreFirst = false;
         bool cacheDiffBase = true;
+        int cacheDiffBaseOrder = 1;
         ReconstructionFunctionalSettings functional;
         real bcWeight = 1., svdTolerance = 1e-13, svdAbsoluteTolerance = 0;
         std::array<real, 4> boundaryDerivativeWeights{1, 1, 1, 1};
@@ -50,6 +52,7 @@ namespace DNDS::CFV
             DNDS_FIELD(HQMWeights, "Legacy HQM_OPT derivative and HQM_SD geometry weights");
             config.field_section(&T::functional, "functional", "Independent isotropic functional weights and length policy");
             DNDS_FIELD(cacheDiffBase, "Retain basis values and derivatives on face quadrature points");
+            DNDS_FIELD(cacheDiffBaseOrder, "Highest cached derivative order, 0..3; default value and first derivatives; capped by polynomial degree");
             DNDS_FIELD(bcWeight, "Dirichlet boundary value weight");
             DNDS_FIELD(boundaryDerivativeWeights, "Boundary weights by derivative order; nonzero derivatives impose homogeneous derivative targets");
             // Integer-key maps use nlohmann's pair-array wire representation,
@@ -140,6 +143,7 @@ namespace DNDS::CFV
         explicit FiniteVolumePlan(std::shared_ptr<const Detail::FiniteVolumeData> data) : _data(std::move(data)) {}
         friend class VariationalReconstructionPlan;
         friend class LimitedVRPlan;
+        friend class ReconstructionBasisRead;
 
     public:
         /// axisymmetric uses radius=y>=0 and measures r*dA/r*ds, without 2*pi.
@@ -217,12 +221,14 @@ namespace DNDS::CFV
     {
         Runtime::ArrayView<const real, false, Runtime::TableRows> face;
         Runtime::ArrayView<const index, false, Runtime::FixedRows<1>> faceOffsets;
-        int modes;
+        int modes, derivatives;
         DNDS_DEVICE_CALLABLE const real *FaceMatrix(index iPoint, int side) const { return face[2 * iPoint + side].data(); }
-        /// Column-major (modes+1)-by-modes matrix; derivative includes order0.
+        /// Column-major derivatives-by-modes matrix; derivative includes order0.
         DNDS_DEVICE_CALLABLE real FaceDerivative(index iPoint, int side, int derivative, int mode) const
         {
-            return FaceMatrix(iPoint, side)[mode * (modes + 1) + derivative];
+            if constexpr (Runtime::AccessBoundsChecks)
+                DNDS_HD_assert(derivative >= 0 && derivative < derivatives && mode >= 0 && mode < modes);
+            return FaceMatrix(iPoint, side)[mode * derivatives + derivative];
         }
     };
     /// Pins the geometry generation and Runtime cache allocations once outside
@@ -233,11 +239,17 @@ namespace DNDS::CFV
         std::shared_ptr<const Detail::ReconstructionData> _data;
         FiniteVolumeRead _geometry;
         std::optional<Runtime::Array<real>::ReadLease> _basis;
+        Runtime::Array<real>::ReadLease _moments;
+        std::shared_ptr<Geom::MeshReadAccess> _meshRead;
         explicit ReconstructionBasisRead(std::shared_ptr<const Detail::ReconstructionData> data);
         friend class VariationalReconstructionPlan;
 
     public:
         ReconstructionBasisHostView HostView() const;
+        /// Global quadrature ordinal, real parent in an owned-cell stencil.
+        /// Uses cached rows when available; otherwise evaluates into scratch.
+        Math::ReconstructionBasisView FaceBasis(index face, int side, index point,
+                                                int derivativeOrder, Math::SmallMatrix &scratch) const;
     };
 
     /// Composition of metrics, basis/moments and factored VR systems on Runtime
@@ -323,7 +335,7 @@ namespace DNDS::CFV
         void EvaluateDerivative(const FVField &mean, const FVField &coefficients,
                                 const Runtime::Array<index> &cells, const Runtime::Array<real> &points,
                                 Runtime::Array<real> &values, int derivative) const;
-        /// Diagnostic copy of one cached basis matrix, rows=derivative modes,
+        /// Diagnostic copy of one cached basis matrix, rows=retained derivative modes,
         /// columns=nonconstant polynomial modes, in that parent's own frame.
         /// Throws when caching was disabled, the parent is exterior, or the
         /// face lies outside every owned cell stencil.

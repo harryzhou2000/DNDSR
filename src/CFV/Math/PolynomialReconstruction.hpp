@@ -15,15 +15,18 @@ namespace DNDS::CFV::Math
         return dim == 2 ? Geom::Base::ndiffSizC2D[degree] : Geom::Base::ndiffSizC[degree];
     }
     inline void PolynomialDerivatives(SmallMatrix &out, int dim, int degree,
-                                      const Geom::tPoint &point, const Geom::tPoint &center, real scale)
+                                      const Geom::tPoint &point, const Geom::tPoint &center, real scale,
+                                      int derivativeOrder = -1)
     {
         const int n = PolynomialSize(dim, degree);
-        out.resize(n, n);
+        const int rows = derivativeOrder < 0 ? n : derivativeOrder == 0 ? 1
+                                                                        : PolynomialSize(dim, std::min(derivativeOrder, degree));
+        out.resize(rows, n);
         const Geom::tPoint x = (point - center) / scale;
         if (dim == 2)
-            Geom::Base::FPolynomialFill2D(out, x[0], x[1], 0., scale, scale, 1., n, n);
+            Geom::Base::FPolynomialFill2D(out, x[0], x[1], 0., scale, scale, 1., rows, n);
         else
-            Geom::Base::FPolynomialFill3D(out, x[0], x[1], x[2], scale, scale, scale, n, n);
+            Geom::Base::FPolynomialFill3D(out, x[0], x[1], x[2], scale, scale, scale, rows, n);
     }
     /// Diagonal weights of the isotropic variational functional, including
     /// symmetric-tensor multiplicities. Inputs are unsquared per-order weights.

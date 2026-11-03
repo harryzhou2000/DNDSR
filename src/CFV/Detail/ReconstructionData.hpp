@@ -46,7 +46,7 @@ namespace DNDS::CFV::Detail
         std::optional<Geom::EntityWorkPartition> workPartition;
         // Inverse logical order for split SOR. Independent of physical row order.
         std::vector<index> coreFirstPosition;
-        int n;
+        int n, cachedDerivatives;
         Runtime::Array<real> moments;
         Runtime::Array<real> faceBasis;
         // One row per owned cell-face incidence, preallocated from cell2face.
@@ -62,7 +62,8 @@ namespace DNDS::CFV::Detail
         Runtime::Array<real> boundaryInjection;
         Runtime::Array<index> boundaryPoints;
         ReconstructionData(FiniteVolumePlan m, ReconstructionSettings s)
-            : metrics(std::move(m)), settings(s), n(Math::PolynomialSize(metrics.Dimension(), s.maxOrder) - 1) {}
+            : metrics(std::move(m)), settings(s), n(Math::PolynomialSize(metrics.Dimension(), s.maxOrder) - 1),
+              cachedDerivatives(s.cacheDiffBase ? Math::TaylorBasis(metrics.Dimension(), s.maxOrder).DerivativeNumber(s.cacheDiffBaseOrder) : 0) {}
     };
     inline void Zero(FVField &field)
     {

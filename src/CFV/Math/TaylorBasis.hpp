@@ -32,6 +32,25 @@ namespace DNDS::CFV::Math
         {
             PolynomialDerivatives(values, _dimension, _degree, point, center, scale);
         }
+        int DerivativeNumber(int order) const
+        {
+            DNDS_check_throw_info(order >= 0 && order <= 3, "invalid cached derivative order");
+            return order == 0 ? 1 : PolynomialSize(_dimension, std::min(order, _degree));
+        }
+        /// Shared zero-mean reconstruction basis for face and arbitrary-point
+        /// sampling. Scratch is bounded; no persistent cache or allocation here.
+        template <class MomentRow>
+        void Reconstruction(SmallMatrix &values, const Geom::tPoint &point,
+                            const Geom::tPoint &center, real scale,
+                            const MomentRow &moments, int order) const
+        {
+            SmallMatrix full;
+            (void)DerivativeNumber(order);
+            PolynomialDerivatives(full, _dimension, _degree, point, center, scale, order);
+            values = full.rightCols(Size() - 1);
+            for (int mode = 0; mode < Size() - 1; ++mode)
+                values(0, mode) -= moments[mode + 1];
+        }
         /// Pull derivatives of f(y), y=J*x+b, into the x frame. Each row is
         /// one unique symmetric derivative; expansion supplies multiplicities
         /// in the chain rule. All derivative orders are transformed together.
@@ -73,6 +92,18 @@ namespace DNDS::CFV::Math
                     transform(row, col) = coefficients[col];
             }
             values = (transform * values).eval();
+        }
+    };
+
+    /// Borrowed local matrix, including subsets of a larger derivative cache.
+    /// Retain its read scope or caller-owned scratch through use.
+    struct ReconstructionBasisView
+    {
+        const real *values = nullptr;
+        int derivatives = 0, modes = 0, columnStride = 0;
+        DNDS_DEVICE_CALLABLE real operator()(int derivative, int mode) const
+        {
+            return values[mode * columnStride + derivative];
         }
     };
 }

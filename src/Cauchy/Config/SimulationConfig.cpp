@@ -263,7 +263,6 @@ namespace DNDS::Cauchy
         require(s.numerics.limiter == "none" || s.numerics.limiter == "WBAP" || s.numerics.limiter == "LVR", "limiter " + s.numerics.limiter);
         require(s.numerics.limiter != "WBAP" || s.numerics.reconstruction != "constant", "WBAP needs polynomial reconstruction");
         require(s.numerics.limiter != "LVR" || (s.numerics.reconstruction == "variational" && s.numerics.cfv.maxOrder >= 2), "LVR needs degree2/3 variational reconstruction");
-        require(s.numerics.cfv.cacheDiffBase, "Cauchy residual requires cached face basis derivatives");
         require(!s.implicit.multigrid.levels || (s.numerics.reconstruction == "variational" && s.numerics.cfv.maxOrder >= 2), "polynomial FAS requires high-order variational reconstruction");
         for (const auto &[zone, condition] : s.boundaries)
         {

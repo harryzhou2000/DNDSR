@@ -197,10 +197,6 @@ namespace DNDS::Cauchy
         std::sort(data->stencilFaces.begin(), data->stencilFaces.end());
         data->stencilFaces.erase(std::unique(data->stencilFaces.begin(), data->stencilFaces.end()), data->stencilFaces.end());
         data->samples.reserve(size_t(count));
-        const int n = data->reconstruction.NRecDOF();
-        data->basis = R::Array<real>(R::RowLayout::Dense(count, 2 * 4 * n));
-        auto basisWrite = data->basis.Write();
-        const auto basisOut = basisWrite.View<R::TableRows>();
         for (index iCell = 0; iCell < data->metrics.NumCell(); ++iCell)
         {
             const auto faces = topology.CellFaces(iCell);
@@ -233,11 +229,11 @@ namespace DNDS::Cauchy
                 const real distanceScale = 2 * std::min(metric.GetCellVol(iCell), metric.GetCellVol(other == UnInitIndex ? iCell : other)) / faceArea;
                 for (index q = metric.FaceQuadratureBegin(iFace); q < metric.FaceQuadratureEnd(iFace); ++q)
                 {
-                    const int localQ = int(q - metric.FaceQuadratureBegin(iFace));
                     Sample sample{iCell, other, q, side, topology.GetFaceZone(iFace), (side ? -1 : 1) * metric.GetFaceNorm(q), CFV::Detail::FacePointInCell(topology, iFace, side, metric.GetFacePoint(q)),
                                   CFV::Detail::OtherPointInCell(topology, iFace, side, metric.GetCellCent(other == UnInitIndex ? iCell : other)),
                                   CFV::Detail::OtherFrameInCell(topology, iFace, side), condition};
                     sample.auxiliaryFace = auxiliaryFace;
+                    sample.face = iFace;
                     const index entry = index(data->samples.size());
                     // Cached basis derivatives live in each parent's frame.
                     // Flux and neighbor state are mapped into this cell's frame.
@@ -247,14 +243,6 @@ namespace DNDS::Cauchy
                     // evaluate once, not during every residual/linear iteration.
                     sample.viscousDistance = std::max(.25 * distanceScale, std::min(2 * distanceScale, std::abs(viscousDisplacement.dot(sample.normal))));
                     DNDS_check_throw_info(std::isfinite(sample.viscousDistance) && sample.viscousDistance > 0, "invalid polynomial viscous distance");
-                    for (int parent = 0; parent < 2; ++parent)
-                    {
-                        if (parent == 1 && other == UnInitIndex) continue;
-                        const int faceSide = parent == 0 ? side : 1 - side;
-                        const auto matrix = data->reconstruction.GetCachedFaceBasis(iFace, faceSide, localQ);
-                        for (int derivative = 0; derivative <= data->metrics.Dimension(); ++derivative)
-                            for (int mode = 0; mode < n; ++mode) basisOut(entry, (parent * 4 + derivative) * n + mode) = matrix(derivative, mode);
-                    }
                     data->samples.push_back(std::move(sample));
                 }
             }
@@ -736,20 +724,22 @@ namespace DNDS::Cauchy
         }
         const auto updateReconstructionBoundary = [&]
         {
-            auto mean = state.Owned().Read(), coefficients = work.reconstruction.coefficients.Owned().Read(), basis = _data->basis.Read();
+            auto mean = state.Owned().Read(), coefficients = work.reconstruction.coefficients.Owned().Read();
+            auto basis = _data->reconstruction.AcquireBasisRead();
+            CFV::Math::SmallMatrix basisScratch;
             auto boundary = work.boundary.values.Write();
             const auto u = mean.View<R::UniformTableRows>(), rec = coefficients.View<R::UniformTableRows>();
-            const auto b = basis.View<R::TableRows>();
             const auto values = boundary.View<R::TableRows>();
             const int modes = _data->reconstruction.NRecDOF();
             for (index iPoint = 0; iPoint < index(_data->boundaryEntries.size()); ++iPoint)
             {
                 const auto entry = _data->boundaryEntries[iPoint];
                 const auto &sample = _data->samples[entry];
+                const auto b = basis.FaceBasis(sample.face, sample.side, sample.point, 0, basisScratch);
                 auto inside = Load(u, sample.cell);
                 for (int j = 0; j < 5; ++j)
                     for (int mode = 0; mode < modes; ++mode)
-                        inside[j] += rec(sample.cell, j * modes + mode) * b(entry, mode);
+                        inside[j] += rec(sample.cell, j * modes + mode) * b(0, mode);
                 if (!gas.Admissible(inside))
                     inside = Load(u, sample.cell);
                 const auto face = sample.boundary.FaceValue(gas, inside, {sample.normal[0], sample.normal[1], sample.normal[2]},
@@ -1344,18 +1334,20 @@ namespace DNDS::Cauchy
             std::ofstream surface(prefix + "_surface_rank" + std::to_string(_data->mesh->mpi.rank) + ".csv");
             DNDS_check_throw_info(bool(surface), "cannot open Cauchy surface output");
             surface << "cell_id,zone,x,y,z,nx,ny,nz,weight,rho,p,u,v,w\n" << std::setprecision(17);
-            auto rec = FluxReconstruction(work).Owned().Read(), basis = _data->basis.Read();
+            auto rec = FluxReconstruction(work).Owned().Read();
+            auto basis = _data->reconstruction.AcquireBasisRead();
+            CFV::Math::SmallMatrix basisScratch;
             const auto coefficient = rec.View<R::UniformTableRows>();
-            const auto b = basis.View<R::TableRows>();
             auto geometry = Metrics().AcquireRead(); const auto metric = geometry.HostView();
             const int modes = _data->reconstruction.NRecDOF();
             for (index entry = 0; entry < index(_data->samples.size()); ++entry)
             {
                 const auto &sample = _data->samples[entry];
                 if (sample.other != UnInitIndex) continue;
+                const auto b = basis.FaceBasis(sample.face, sample.side, sample.point, 0, basisScratch);
                 auto value = Load(u, sample.cell);
                 for (int j = 0; j < 5; ++j) for (int mode = 0; mode < modes; ++mode)
-                    value[j] += coefficient(sample.cell, j * modes + mode) * b(entry, mode);
+                    value[j] += coefficient(sample.cell, j * modes + mode) * b(0, mode);
                 if (!gas.Admissible(value)) value = Load(u, sample.cell);
                 const auto physical = gas.Primitive(sample.boundary.FaceValue(gas, value, {sample.normal[0], sample.normal[1], sample.normal[2]},
                     {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time));

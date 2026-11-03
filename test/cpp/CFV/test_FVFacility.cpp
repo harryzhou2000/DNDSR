@@ -283,7 +283,7 @@ TEST_CASE("Independent functional weights and all-order boundary penalties match
             if (settings.cacheDiffBase)
             {
                 const auto basis = plan.GetCachedFaceBasis(iFace, side, 0);
-                CHECK(basis.rows() == plan.NRecDOF() + 1);
+                CHECK(basis.rows() == plan.Metrics().Dimension() + 1);
                 CHECK(basis.cols() == plan.NRecDOF());
                 CHECK(basis.allFinite());
             }

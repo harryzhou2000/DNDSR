@@ -27,9 +27,9 @@ namespace DNDS::Cauchy
     {
         std::shared_ptr<const FiniteVolume::Data> data;
         CFV::FiniteVolumeRead geometry;
-        R::Array<real>::ReadLease basis;
+        CFV::ReconstructionBasisRead basis;
         explicit ReadData(std::shared_ptr<const FiniteVolume::Data> owner)
-            : data(std::move(owner)), geometry(data->metrics.AcquireRead()), basis(data->basis.Read())
+            : data(std::move(owner)), geometry(data->metrics.AcquireRead()), basis(data->reconstruction.AcquireBasisRead())
         {
             data->partition.Validate();
         }
@@ -46,7 +46,6 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(_read && std::isfinite(time), "invalid RHS operator or time");
         const auto &data = _read->data;
         const auto metric = _read->geometry.HostView();
-        const auto basis = _read->basis.View<R::TableRows>();
         const int modes = data->reconstruction.NRecDOF(), dim = data->metrics.Dimension();
         const auto &gas = data->equation.Gas();
         const bool viscous = data->equation.Viscous() && input.includeViscosity;
@@ -104,6 +103,9 @@ namespace DNDS::Cauchy
                 const auto &sample = data->samples[entry];
                 auto reconstruct = [&](index cell, int parent)
                 {
+                    CFV::Math::SmallMatrix basisScratch;
+                    const auto basis = _read->basis.FaceBasis(sample.face, parent == 0 ? sample.side : 1 - sample.side,
+                                                              sample.point, polynomialViscosity ? 1 : 0, basisScratch);
                     auto state = Load(mean, cell);
                     auto viscousState = state;
                     FlowGradient gradient{};
@@ -111,14 +113,14 @@ namespace DNDS::Cauchy
                         for (int mode = 0; mode < modes; ++mode)
                         {
                             const real value = coefficient(cell, component * modes + mode);
-                            state[component] += value * basis(entry, parent * 4 * modes + mode);
+                            state[component] += value * basis(0, mode);
                             if (polynomialViscosity)
                             {
                                 const real viscousValue = input.viscousCoefficients ? viscousCoefficient(cell, component * modes + mode) : value;
                                 if (input.viscousCoefficients)
-                                    viscousState[component] += viscousValue * basis(entry, parent * 4 * modes + mode);
+                                    viscousState[component] += viscousValue * basis(0, mode);
                                 for (int d = 0; d < dim; ++d)
-                                    gradient[component][d] += viscousValue * basis(entry, (parent * 4 + 1 + d) * modes + mode);
+                                    gradient[component][d] += viscousValue * basis(1 + d, mode);
                             }
                         }
                     if (!input.viscousCoefficients)

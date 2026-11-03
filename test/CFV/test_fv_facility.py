@@ -25,10 +25,13 @@ def function(point):
 
 
 @pytest.mark.mpi
-def test_reconstruction_shared_buffers_explicit_halo_and_point_sampling():
+@pytest.mark.parametrize("cache_enabled", [True, False])
+def test_reconstruction_shared_buffers_explicit_halo_and_point_sampling(cache_enabled):
     grid = mesh()
     metrics = CFV.FiniteVolumePlan.ConstructMetrics(grid)
     settings = CFV.ReconstructionSettings()
+    assert settings.cacheDiffBaseOrder == 1
+    settings.cacheDiffBase = cache_enabled
     settings.maxOrder = 1
     settings.boundaryDerivativeWeights = [1, 0, 0, 0]
     plan = CFV.VariationalReconstructionPlan.ConstructRecCoeff(metrics, settings)

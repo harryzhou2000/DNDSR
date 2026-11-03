@@ -18,6 +18,7 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         BoundaryCondition boundary;
         index auxiliaryFace = UnInitIndex;
         real viscousDistance = 0;
+        index face = UnInitIndex;
     };
     template <class View>
     FlowState Load(const View &input, index iCell)
@@ -63,9 +64,6 @@ namespace DNDS::Cauchy
         std::shared_ptr<const LimitedVRGeometry> limitedVRGeometry;
         std::vector<index> positivityOffsets;
         ThermalBounds thermalBounds;
-        // For each incidence quadrature, each side: [value,dx,dy,dz]*n modes.
-        // Allocate once then fill from CFV's canonical basis/moments cache.
-        Runtime::Array<real> basis;
         Data(ssp<Geom::UnstructuredMesh> source, DomainSettings controls, EquationSystem physics)
             : mesh(std::move(source)), settings(std::move(controls)), equation(std::move(physics)), flux(Riemann::RiemannFlux::Resolve(settings.numerics.flux)),
               boundary(settings.boundaries, equation.Gas()), metrics(CFV::FiniteVolumePlan::ConstructMetrics(mesh, settings.numerics.cfv.intOrder)),

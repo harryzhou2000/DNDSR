@@ -140,15 +140,25 @@ does not import the old inertia-oriented/asymmetric parent-slot formula.
 TEST_OPT reuses the geometry-only face-span helper. No anisotropic basis or LVR
 penalty is implied by these options.
 
-`cacheDiffBase` retains values and all derivatives on the face quadrature
-points used by owned stencils. `GetCachedFaceBasis` provides a diagnostic copy;
+`cacheDiffBase` enables optional face-quadrature basis storage for owned
+stencils. `cacheDiffBaseOrder=1` retains values and first derivatives by default;
+orders 0..3 select other coverage, capped by polynomial degree. Setup uses
+higher derivatives transiently without retaining them. `cacheDiffBase=false`
+keeps no basis cache; shared point evaluation uses bounded local scratch.
+`GetCachedFaceBasis` copies only retained derivative rows;
 unprepared exterior or ghost-only face stencils fail explicitly. The cache is
 in Runtime buffers, with basis/config/metric identity retained by the immutable
 plan. `AcquireBasisRead().HostView()` exposes borrowed pointer/shape views for
 hot loops; retain the scope and use only real parents in owned-cell stencils.
+Its `derivatives` count is the matrix leading dimension. The read scope's
+`FaceBasis(face,side,globalPoint,order,scratch)` borrows covered cached rows or
+evaluates missing rows in caller-owned bounded scratch; it works with caching
+disabled. Cauchy's RHS, polynomial BC refresh and surface output use this same
+scope and keep no separate per-incidence basis-value allocation.
 `PolynomialSamplingPlan(plan,cells,points)` snapshots arbitrary query
-cell IDs and caches the basis/derivatives there. Both interface samplers use
-this cache. Query-array edits do not silently change its meaning; construct a
+cell IDs and coordinates, and follows the same optional derivative-cache policy.
+Uncached/higher-order requests use the common zero-mean Taylor evaluator.
+Both interface samplers use this facility. Query-array edits do not silently change its meaning; construct a
 new cache for new locations. Geometry/order mutations invalidate it through
 the metric stamp. `Evaluate(...,derivative)` samples the central derivative-mode
 ordinal (0=value, 1..dimension=gradient, higher modes include Hessians). Its

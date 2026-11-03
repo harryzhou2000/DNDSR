@@ -80,7 +80,7 @@ namespace DNDS::CFV
             data->boundaryInjection = R::Array<real>(R::RowLayout::Dense(boundaryCount, n));
             data->boundaryPoints = R::Array<index>(R::RowLayout::Dense(boundaryCount, 4));
             if (settings.cacheDiffBase)
-                data->faceBasis = R::Array<real>(R::RowLayout::Dense(2 * point.RowCount(), (n + 1) * n));
+                data->faceBasis = R::Array<real>(R::RowLayout::Dense(2 * point.RowCount(), data->cachedDerivatives * n));
             std::optional<R::Array<real>::WriteLease> cacheWrite;
             R::ArrayView<real, false, R::TableRows> cache;
             if (settings.cacheDiffBase)
@@ -122,9 +122,7 @@ namespace DNDS::CFV
             const auto system = systemWrite.View<R::TableRows>();
             auto basis = [&](index iCell, const tPoint &p, SmallMatrix &out)
             {
-                polynomial.Derivatives(full, p, {cell(iCell, 1), cell(iCell, 2), cell(iCell, 3)}, cell(iCell, 7));
-                out = full.rightCols(n);
-                for (int j = 0; j < n; ++j) out(0, j) -= moment(iCell, j + 1);
+                polynomial.Reconstruction(out, p, {cell(iCell, 1), cell(iCell, 2), cell(iCell, 3)}, cell(iCell, 7), moment[iCell], degree);
             };
             for (index iFace = 0; iFace < nFace; ++iFace)
             {
@@ -203,7 +201,7 @@ namespace DNDS::CFV
                     const tPoint p{point(iQ, 0), point(iQ, 1), point(iQ, 2)};
                     basis(iL, p, left);
                     if (settings.cacheDiffBase)
-                        Eigen::Map<Matrix>(cache[2 * iQ].data(), n + 1, n) = left;
+                        Eigen::Map<Matrix>(cache[2 * iQ].data(), data->cachedDerivatives, n) = left.topRows(data->cachedDerivatives);
                     weighted = left;
                     for (int j = 0; j <= n; ++j) weighted.row(j) *= diagonal[j] * point(iQ, 6);
                     aL.noalias() += left.transpose() * weighted;
@@ -212,7 +210,7 @@ namespace DNDS::CFV
                     {
                         basis(iR, Detail::FacePointInCell(mesh, iFace, 1, p), right);
                         if (settings.cacheDiffBase)
-                            Eigen::Map<Matrix>(cache[2 * iQ + 1].data(), n + 1, n) = right;
+                            Eigen::Map<Matrix>(cache[2 * iQ + 1].data(), data->cachedDerivatives, n) = right.topRows(data->cachedDerivatives);
                         if (rotated) polynomial.Pullback(right, rightToLeft.transpose());
                         bLR.noalias() += weighted.transpose() * right;
                         weighted = right;
