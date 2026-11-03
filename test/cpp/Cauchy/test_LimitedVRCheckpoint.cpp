@@ -272,6 +272,35 @@ TEST_CASE("LVR warm restart redistributes nonzero history from fewer writers int
     Same(expected, ReadWarm(rewritten));
     Remove({warm, rewritten});
 }
+TEST_CASE("LVR fine reconstruction connects to limited-gradient and constant polynomial FAS levels")
+{
+    const auto mesh = G::OverlapTest::BuildNativeFixture(mpi, mpi.size > 2, 12).mesh;
+    auto settings = Settings("v3", "soa");
+    settings.implicit.multigrid.levels = 2;
+    settings.implicit.multigrid.cycles = 1;
+    settings.implicit.multigrid.preSmooth = 1;
+    settings.implicit.multigrid.postSmooth = 1;
+    settings.implicit.multigrid.coarseSmooth = 1;
+    C::TimeSettings time;
+    time.method = "bdf1";
+    C::Domain domain("fluid", mesh, settings, time);
+    Initialize(domain);
+    domain.Advance(1e-6);
+    CHECK(domain.Epoch().acceptedStep == 1);
+    CHECK(domain.Discretization().Admissible(domain.Flow()));
+    REQUIRE(domain.LastImplicitStages().size() == 1);
+    const auto &report = domain.LastImplicitStages()[0];
+    CHECK(report.multigridCycles == 1);
+    REQUIRE(report.levelCorrections.size() == 3);
+    for (const auto corrections : report.levelCorrections)
+        CHECK(corrections > 0);
+    const auto warm = Path("fas-levels-");
+    domain.WriteCheckpoint(warm, Root(settings, time), true);
+    double historyNorm = ReadWarm(warm).historyNorm;
+    MPI_Allreduce(MPI_IN_PLACE, &historyNorm, 1, MPI_DOUBLE, MPI_SUM, mpi.comm);
+    CHECK(historyNorm > .1); // Prove the fine LVR path remained active.
+    Remove({warm});
+}
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);
