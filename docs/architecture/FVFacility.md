@@ -412,7 +412,20 @@ finish producers, release conflicting Python views, retain all handles through
 completion and arrange halo readiness under the polynomial evaluator's contract.
 Drain/rebuild result bindings after changing output storage or query/donor order.
 Field halos and interface sample routes are separate mappings. There is still
-no fluid-domain orchestrator, conservative flux or moving-mesh flow solver.
+no physical interface-domain orchestrator or conservative flux coupling here.
+Cauchy's separate rigid-frame operators do not change this numerical sampler's
+reference-frame contract.
+
+The coupling-context overload accepts an optional local donor patch. Donor-domain
+nonmembers pass no patch and hold no dummy volume mesh. Domain-communicator cell
+owners are translated explicitly into coupling ranks, including noncontiguous
+or reversed groups. `HasLocalDonor` distinguishes absent domain membership from
+an empty local boundary selection. The optional-reconstruction sampling constructor
+uses the same participation contract; its pointer-form `EvaluateDonors` and
+`EvaluateCoupled` take null inputs on nonmembers. All ranks still participate in
+setup/return transfers. Python exposes `MatchCoupled` and `EvaluateCoupled`, using
+`None` for the same absence. Shared contexts require distinct explicit tags for
+concurrent persistent result bindings. No solution gather is introduced.
 
 ## Validation and reproducible performance
 
@@ -420,6 +433,14 @@ no fluid-domain orchestrator, conservative flux or moving-mesh flow solver.
 polynomials from quadrature cell means, compares six-component characteristic
 WBAP, exercises periodic triangles/quads and SOR/Jacobi, empty ranks, stale
 plans, invalid shapes and SVD minimum-norm solutions for deficient systems.
+The coupling sampling fixture additionally checks a reversed donor subgroup,
+query-only nonmembers, distinct geometry/cell owners, sparse/dense matching and
+both transient and persistent returns. `dnds_test_cauchy_multidomain_mesh`
+constructs complementary P1 Delaunay disk/periodic box-hole meshes on one reader,
+then uses native distribution/partition/assembly. Polygon area and moving-circle
+matching are independent geometry gates, not a physical Cauchy coupling test.
+Fixture generation selects CGAL's header-only Boost exact-predicate backend;
+it adds no GMP/MPFR requirement to the solver.
 `geom_test_boundary_interface` checks geometric positions, seams, gap failures,
 3D triangles/quads, relative sliding, ambiguous interiors, immutable old maps
 and explicit DSL stencil publication. `geom_test_distributed_boundary_interface`

@@ -205,6 +205,108 @@ TEST_CASE("Warped quad interface projects offset queries before distributed poly
     }
 }
 
+TEST_CASE("Coupling participants without a donor mesh sample a reversed donor subgroup in query order")
+{
+    const bool member = mpi.size == 1 || mpi.rank > 0;
+    const int members = mpi.size == 1 ? 1 : mpi.size - 1;
+    MPI_Comm donorComm = MPI_COMM_NULL;
+    MPI_Comm_split(mpi.comm, member ? 0 : MPI_UNDEFINED, mpi.size - 1 - mpi.rank, &donorComm);
+    {
+        auto coupling = std::make_shared<R::CommunicationContext>(mpi.comm);
+        std::optional<G::BoundaryPatch> patch;
+        std::optional<C::FiniteVolumePlan> metrics;
+        std::optional<C::VariationalReconstructionPlan> reconstruction;
+        std::optional<C::FVField> mean, coefficients;
+        G::RigidPose pose;
+        pose.rotation = Eigen::AngleAxisd(.21, G::tPoint::UnitZ()).toRotationMatrix();
+        pose.translation = {.2, -.1, .03};
+        if (member)
+        {
+            const DNDS::MPIInfo donorMPI(donorComm);
+            auto mesh = G::OverlapTest::BuildNativeFixture(donorMPI, false).mesh;
+            metrics.emplace(C::FiniteVolumePlan::ConstructMetrics(mesh));
+            C::ReconstructionSettings settings;
+            settings.maxOrder = 1;
+            reconstruction.emplace(C::VariationalReconstructionPlan::ConstructRecCoeff(*metrics, settings));
+            mean.emplace(metrics->BuildField(1));
+            coefficients.emplace(metrics->BuildField(reconstruction->NRecDOF()));
+            {
+                auto geometry = metrics->AcquireRead();
+                const auto view = geometry.HostView();
+                auto u = mean->Owned().Write(), r = coefficients->Owned().Write();
+                for (I iCell = 0; iCell < metrics->NumCell(); ++iCell)
+                {
+                    const auto p = view.GetCellCent(iCell);
+                    u.View()(iCell, 0) = 1 + 2 * p[0] - .5 * p[1] + 10 * donorMPI.rank;
+                    r.View()(iCell, 0) = 2 * view.cells(iCell, 7);
+                    r.View()(iCell, 1) = -.5 * view.cells(iCell, 7);
+                }
+            }
+            metrics->BindHalo(*mean).Begin().Wait();
+            metrics->BindHalo(*coefficients).Begin().Wait();
+            std::vector<I> boundaries(size_t(mesh->NumBnd()));
+            std::iota(boundaries.begin(), boundaries.end(), I(0));
+            patch.emplace(G::BoundaryPatch::Create(mesh, boundaries, pose));
+        }
+        R::Array<double> points(R::RowLayout::Dense(2, 3)), values(R::RowLayout::Dense(2, 1));
+        R::Array<I> ids(R::RowLayout::Dense(2, 1));
+        {
+            auto p = points.Write();
+            auto key = ids.Write();
+            for (I iQuery = 0; iQuery < 2; ++iQuery)
+            {
+                const I row = (3 * mpi.rank + 2 * iQuery) % 10;
+                const auto location = pose.Apply({0, (double(row) + .31) * .1, 0});
+                for (int d = 0; d < 3; ++d)
+                    p.View()(iQuery, d) = location[d];
+                key.View()(iQuery, 0) = 19 - 7 * iQuery;
+            }
+        }
+        for (auto mode : {G::InterfaceRoutingMode::CoarseBoxes, G::InterfaceRoutingMode::AllGatherBoundary})
+        {
+            const auto map = G::DistributedInterfacePointMap::Match(coupling, patch, points, ids, mode);
+            CHECK(map.HasLocalDonor() == member);
+            C::DistributedInterfaceSamplingPlan sampler(reconstruction, map);
+            auto workspace = sampler.BuildWorkspace(1);
+            auto binding = sampler.BindResult(workspace, values, R::TransferMode::Persistent, 1);
+            for (int repetition = 0; repetition < 2; ++repetition)
+            {
+                if (repetition == 0)
+                    sampler.EvaluateCoupled(mean ? &*mean : nullptr, coefficients ? &*coefficients : nullptr, workspace, values);
+                else
+                {
+                    sampler.EvaluateDonors(mean ? &*mean : nullptr, coefficients ? &*coefficients : nullptr, workspace);
+                    binding.Begin().Wait();
+                }
+                const auto read = values.Read();
+                for (I iQuery = 0; iQuery < 2; ++iQuery)
+                {
+                    const I row = (3 * mpi.rank + 2 * iQuery) % 10;
+                    int owner = -1, geometryOwner = -1;
+                    for (int rank = 0; rank < members; ++rank)
+                    {
+                        const auto cells = DNDS::EvenSplitRange(rank, members, I(10));
+                        const auto boundaries = DNDS::EvenSplitRange(rank, members, I(40));
+                        if (row >= cells.first && row < cells.second)
+                            owner = rank;
+                        if (39 - row >= boundaries.first && 39 - row < boundaries.second)
+                            geometryOwner = rank;
+                    }
+                    const auto translate = [&](int rank)
+                    { return mpi.size == 1 ? 0 : mpi.size - 1 - rank; };
+                    const auto match = map.Get(iQuery);
+                    CHECK(match.donorRank == translate(owner));
+                    CHECK(match.geometryRank == translate(geometryOwner));
+                    CHECK(match.geometry.queryId == 19 - 7 * iQuery);
+                    CHECK(match.geometry.donorOriginalId == 39 - row);
+                    CHECK(read.View()(iQuery, 0) == doctest::Approx(1 - .5 * (double(row) + .31) * .1 + 10 * owner).epsilon(1e-12));
+                }
+            }
+        }
+    }
+    if (donorComm != MPI_COMM_NULL)
+        MPI_Comm_free(&donorComm);
+}
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);

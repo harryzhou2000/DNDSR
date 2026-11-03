@@ -241,10 +241,14 @@ namespace DNDS::CFV
             .def("ConvertToCoefficients", &GradientPlan::ConvertToCoefficients);
         py::class_<DistributedInterfaceSamplingPlan>(m, "DistributedInterfaceSamplingPlan")
             .def(py::init<VariationalReconstructionPlan, Geom::DistributedInterfacePointMap>())
+            .def(py::init<std::optional<VariationalReconstructionPlan>, Geom::DistributedInterfacePointMap>(),
+                 "Coupling ranks outside the donor domain pass None; they retain query/transfer state only.")
             .def("Size", &DistributedInterfaceSamplingPlan::Size)
             .def("Validate", &DistributedInterfaceSamplingPlan::Validate)
             .def("BuildWorkspace", &DistributedInterfaceSamplingPlan::BuildWorkspace)
             .def("Evaluate", &DistributedInterfaceSamplingPlan::Evaluate,
-                 "Collective owner evaluation and direct return transfer. Release views and finish all producers first.");
+                 "Collective owner evaluation and direct return transfer. Release views and finish all producers first.")
+            .def("EvaluateCoupled", &DistributedInterfaceSamplingPlan::EvaluateCoupled, py::arg("mean"), py::arg("coefficients"), py::arg("workspace"), py::arg("values"),
+                 "Collective coupling evaluation. Both inputs must be None outside the donor domain; all ranks participate and retain buffers through completion.");
     }
 }

@@ -25,9 +25,11 @@ namespace DNDS::Geom
         };
         struct DistributedInterfaceMapData
         {
-            BoundaryPatch donor;
+            std::optional<BoundaryPatch> donor;
+            std::shared_ptr<R::CommunicationContext> context;
             std::vector<DistributedInterfaceMatch> matches;
-            explicit DistributedInterfaceMapData(BoundaryPatch patch) : donor(std::move(patch)) {}
+            DistributedInterfaceMapData(std::shared_ptr<R::CommunicationContext> coupling, std::optional<BoundaryPatch> patch)
+                : donor(std::move(patch)), context(std::move(coupling)) {}
         };
     }
     BoundaryStencilPlan BoundaryStencilPlan::Prepare(UnstructuredMesh &mesh, const GhostSpec &spec, MeshReadRequirements requirements)
@@ -164,14 +166,42 @@ namespace DNDS::Geom
     DistributedInterfacePointMap DistributedInterfacePointMap::Match(BoundaryPatch donor, const R::Array<real> &points,
                                                                      const R::Array<index> &queryIds, InterfaceRoutingMode mode, InterfaceSearchSettings settings)
     {
-        const auto mpi = donor._data->mesh->getMPI();
+        auto context = std::make_shared<R::CommunicationContext>(donor._data->mesh->getMPI().comm);
+        return Match(std::move(context), std::move(donor), points, queryIds, mode, settings);
+    }
+    DistributedInterfacePointMap DistributedInterfacePointMap::Match(std::shared_ptr<R::CommunicationContext> coupling,
+                                                                     std::optional<BoundaryPatch> donor, const R::Array<real> &points,
+                                                                     const R::Array<index> &queryIds, InterfaceRoutingMode mode, InterfaceSearchSettings settings)
+    {
+        DNDS_check_throw_info(coupling, "distributed interface needs a coupling context");
+        const MPIInfo mpi(coupling->Communicator());
         std::optional<MeshReadAccess> meshRead;
+        std::optional<SurfacePatch> surface;
+        std::vector<int> ownerRanks;
         MPI::LocalStage(mpi, [&]
                         {
-            donor.Validate();
-            meshRead.emplace(donor._data->mesh->AcquireRead(MeshReadRequirements::CellFlux()));
+            if(donor)
+            {
+                donor->Validate();
+                const auto donorMPI=donor->_data->mesh->getMPI();
+                meshRead.emplace(donor->_data->mesh->AcquireRead(MeshReadRequirements::CellFlux()));
+                surface.emplace(donor->SurfaceGeometry());
+                std::vector<int> ranks(donorMPI.size);
+                for(int rank=0;rank<donorMPI.size;++rank) ranks[rank]=rank;
+                ownerRanks.resize(donorMPI.size);
+                MPI_Group domainGroup=MPI_GROUP_NULL,couplingGroup=MPI_GROUP_NULL;
+                MPI_Comm_group(donorMPI.comm,&domainGroup);
+                MPI_Comm_group(mpi.comm,&couplingGroup);
+                const int status=MPI_Group_translate_ranks(domainGroup,donorMPI.size,ranks.data(),couplingGroup,ownerRanks.data());
+                MPI_Group_free(&domainGroup);
+                MPI_Group_free(&couplingGroup);
+                DNDS_check_throw_info(status==MPI_SUCCESS&&std::none_of(ownerRanks.begin(),ownerRanks.end(),[](int rank){return rank==MPI_UNDEFINED;}),
+                                      "donor domain is not a subgroup of the coupling communicator");
+            }
+            else
+                surface.emplace(SurfacePatch::Create({},R::Array<real>(R::RowLayout::Dense(0,6))));
             DNDS_check_throw_info(mode == InterfaceRoutingMode::CoarseBoxes || mode == InterfaceRoutingMode::AllGatherBoundary,"unknown interface routing mode"); });
-        const auto map = DistributedSurfacePointMap::Match(mpi, donor.SurfaceGeometry(), points, queryIds,
+        const auto map = DistributedSurfacePointMap::Match(mpi, *surface, points, queryIds,
                                                            mode == InterfaceRoutingMode::CoarseBoxes ? SurfaceRoutingMode::CoarseBoxes : SurfaceRoutingMode::AllGatherSurface, settings);
         // Attach mesh semantics only AFTER generic geometric location. The
         // locator's selected-element route is also reusable for other clients'
@@ -179,14 +209,14 @@ namespace DNDS::Geom
         R::Array<index> links, received;
         MPI::LocalStage(mpi, [&]
                         {
-            links = R::Array<index>(R::RowLayout::Dense(donor.Size(), 5));
+            links = R::Array<index>(R::RowLayout::Dense(donor ? donor->Size() : 0, 5));
             received = R::Array<index>(R::RowLayout::Dense(map.Size(), 5));
             auto write = links.Write();
-            for (index iElement = 0; iElement < donor.Size(); ++iElement)
+            for (index iElement = 0; donor && iElement < donor->Size(); ++iElement)
             {
-                const auto record = donor.Element(iElement);
-                const auto global = donor.Cells().LocalToGlobal(record.cell);
-                const index row[]{record.boundary,record.cell,record.originalId,donor.Cells().Owner(global),donor.Cells().OwnerLocalRow(global)};
+                const auto record = donor->Element(iElement);
+                const auto global = donor->Cells().LocalToGlobal(record.cell);
+                const index row[]{record.boundary,record.cell,record.originalId,ownerRanks[donor->Cells().Owner(global)],donor->Cells().OwnerLocalRow(global)};
                 std::copy_n(row,5,write.View()[iElement].data());
             } });
         const auto route = map.BuildElementDataRoute();
@@ -195,7 +225,7 @@ namespace DNDS::Geom
         std::shared_ptr<Detail::DistributedInterfaceMapData> data;
         MPI::LocalStage(mpi, [&]
                         {
-            data = std::make_shared<Detail::DistributedInterfaceMapData>(donor);
+            data = std::make_shared<Detail::DistributedInterfaceMapData>(coupling,donor);
             data->matches.reserve(size_t(map.Size()));
             auto read = received.Read();
             const auto rows = read.View<R::FixedRows<5>>();
@@ -211,16 +241,27 @@ namespace DNDS::Geom
     void DistributedInterfacePointMap::Validate() const
     {
         DNDS_check_throw_info(_data, "unprepared distributed interface map");
-        _data->donor.Validate();
+        if (_data->donor)
+            _data->donor->Validate();
     }
     void DistributedInterfacePointMap::ValidateFor(const BoundaryPatch &active) const
     {
         Validate();
         active.Validate();
-        DNDS_check_throw_info(active._data == _data->donor._data, "active interface patch or pose differs from map");
+        DNDS_check_throw_info(_data->donor && active._data == _data->donor->_data, "active interface patch or pose differs from map");
     }
     index DistributedInterfacePointMap::Size() const { return index(_data->matches.size()); }
-    const BoundaryPatch &DistributedInterfacePointMap::Donor() const { return _data->donor; }
+    const BoundaryPatch &DistributedInterfacePointMap::Donor() const
+    {
+        DNDS_check_throw_info(_data && _data->donor, "no local donor mesh belongs to this coupling rank");
+        return *_data->donor;
+    }
+    bool DistributedInterfacePointMap::HasLocalDonor() const { return _data && bool(_data->donor); }
+    std::shared_ptr<R::CommunicationContext> DistributedInterfacePointMap::Context() const
+    {
+        DNDS_check_throw_info(_data, "unprepared distributed interface map");
+        return _data->context;
+    }
     DistributedInterfaceMatch DistributedInterfacePointMap::Get(index iQuery) const
     {
         Validate();

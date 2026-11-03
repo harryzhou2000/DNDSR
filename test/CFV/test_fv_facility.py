@@ -156,13 +156,17 @@ def test_distributed_interface_owner_sampling_and_query_order():
     keys = R.Array(R.RowLayout.dense(len(query), 1), np.int64)
     points.assign(np.asarray(query).reshape(-1, 3))
     keys.assign((100 - 7 * np.arange(len(query), dtype=np.int64)).reshape(-1, 1))
-    maps = [Geom.DistributedInterfacePointMap.Match(patch, points, keys, mode)
-            for mode in (Geom.InterfaceRoutingMode.CoarseBoxes, Geom.InterfaceRoutingMode.AllGatherBoundary)]
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    coupling = R.CommunicationContext(mpi)
+    maps = [Geom.DistributedInterfacePointMap.MatchCoupled(coupling, patch, points, keys, Geom.InterfaceRoutingMode.CoarseBoxes),
+            Geom.DistributedInterfacePointMap.Match(patch, points, keys, Geom.InterfaceRoutingMode.AllGatherBoundary)]
     for mapping in maps:
         sampler = CFV.DistributedInterfaceSamplingPlan(plan, mapping)
         scratch = sampler.BuildWorkspace(1)
         output = R.Array(R.RowLayout.dense(len(query), 1))
-        sampler.Evaluate(mean, work.coefficients, scratch, output)
+        assert mapping.HasLocalDonor()
+        sampler.EvaluateCoupled(mean, work.coefficients, scratch, output)
         expected = np.array([mapping.Get(i).donorRank + 1.0 for i in range(len(query))]).reshape(-1, 1)
         np.testing.assert_array_equal(output.numpy(), expected)
     assert [maps[0].Get(i).geometry.donorOriginalId for i in range(len(query))] == [

@@ -112,9 +112,14 @@ namespace DNDS::Geom
             .def_readonly("donorRank", &DistributedInterfaceMatch::donorRank)
             .def_readonly("donorOwnedCell", &DistributedInterfaceMatch::donorOwnedCell);
         py::class_<DistributedInterfacePointMap>(m, "DistributedInterfacePointMap")
-            .def_static("Match", &DistributedInterfacePointMap::Match, py::arg("donor"), py::arg("points"), py::arg("queryIds"),
+            .def_static("Match", py::overload_cast<BoundaryPatch, const Runtime::Array<real> &, const Runtime::Array<index> &, InterfaceRoutingMode, InterfaceSearchSettings>(&DistributedInterfacePointMap::Match), py::arg("donor"), py::arg("points"), py::arg("queryIds"),
                         py::arg("mode") = InterfaceRoutingMode::CoarseBoxes, py::arg("settings") = InterfaceSearchSettings{},
                         "Collective fixed-record candidate/proposal matching; all ranks participate, including empty owners.")
+            .def_static("MatchCoupled", py::overload_cast<std::shared_ptr<Runtime::CommunicationContext>, std::optional<BoundaryPatch>, const Runtime::Array<real> &, const Runtime::Array<index> &, InterfaceRoutingMode, InterfaceSearchSettings>(&DistributedInterfacePointMap::Match),
+                        py::arg("coupling"), py::arg("donor"), py::arg("points"), py::arg("queryIds"),
+                        py::arg("mode") = InterfaceRoutingMode::CoarseBoxes, py::arg("settings") = InterfaceSearchSettings{},
+                        "Collective coupling context; donor-domain nonmembers pass None instead of a dummy mesh. Owner ranks are translated into the coupling communicator.")
+            .def("HasLocalDonor", &DistributedInterfacePointMap::HasLocalDonor)
             .def("Size", &DistributedInterfacePointMap::Size)
             .def("Get", &DistributedInterfacePointMap::Get)
             .def("Validate", &DistributedInterfacePointMap::Validate)

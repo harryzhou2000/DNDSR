@@ -24,27 +24,32 @@ namespace DNDS::CFV
     {
         struct Data
         {
-            VariationalReconstructionPlan reconstruction;
+            std::optional<VariationalReconstructionPlan> reconstruction;
             Geom::DistributedInterfacePointMap map;
             Runtime::Array<index> cells;
             Runtime::Array<real> points;
             Runtime::RowTransferPlan returnRoute;
-            PolynomialSamplingPlan sampling;
-            Data(VariationalReconstructionPlan rec, Geom::DistributedInterfacePointMap correspondence,
+            std::optional<PolynomialSamplingPlan> sampling;
+            Data(std::optional<VariationalReconstructionPlan> rec, Geom::DistributedInterfacePointMap correspondence,
                  Runtime::Array<index> rows, Runtime::Array<real> locations, Runtime::RowTransferPlan route)
                 : reconstruction(std::move(rec)), map(std::move(correspondence)), cells(std::move(rows)),
-                  points(std::move(locations)), returnRoute(std::move(route)), sampling(reconstruction, cells, points) {}
+                  points(std::move(locations)), returnRoute(std::move(route))
+            {
+                if (reconstruction)
+                    sampling.emplace(*reconstruction, cells, points);
+            }
         };
         std::shared_ptr<const Data> _data;
 
     public:
         DistributedInterfaceSamplingPlan(VariationalReconstructionPlan reconstruction, Geom::DistributedInterfacePointMap map)
+            : DistributedInterfaceSamplingPlan(std::make_optional(std::move(reconstruction)), std::move(map)) {}
+        /// Optional donor-domain profile on a larger coupling communicator.
+        /// Nonmembers carry routes/queries only, never a dummy mesh or field.
+        DistributedInterfaceSamplingPlan(std::optional<VariationalReconstructionPlan> reconstruction, Geom::DistributedInterfacePointMap map)
         {
-            MPIInfo mpi;
-            mpi.comm = reconstruction.Metrics().Communicator();
-            MPI_Comm_rank(mpi.comm, &mpi.rank);
-            MPI_Comm_size(mpi.comm, &mpi.size);
-            auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
+            const auto context = map.Context();
+            const MPIInfo mpi(context->Communicator());
             std::vector<std::vector<index>> destinations;
             Runtime::Array<index> cells;
             Runtime::Array<real> points;
@@ -52,10 +57,14 @@ namespace DNDS::CFV
             MPI::LocalStage(mpi, [&]
                             {
                 map.Validate();
-                reconstruction.Validate();
-                geometryPin.emplace(reconstruction.Metrics().AcquireRead());
-                DNDS_check_throw_info(map.Donor().Cells().SameOrder(reconstruction.Metrics().Cells()),
-                                      "distributed interface and reconstruction mesh/order differ");
+                DNDS_check_throw_info(bool(reconstruction)==map.HasLocalDonor(),"sampling donor-domain participation differs from the geometric map");
+                if(reconstruction)
+                {
+                    reconstruction->Validate();
+                    geometryPin.emplace(reconstruction->Metrics().AcquireRead());
+                    DNDS_check_throw_info(map.Donor().Cells().SameOrder(reconstruction->Metrics().Cells()),
+                                          "distributed interface and reconstruction mesh/order differ");
+                }
                 destinations.resize(size_t(mpi.size));
                 cells = Runtime::Array<index>(Runtime::RowLayout::Dense(map.Size(), 1));
                 points = Runtime::Array<real>(Runtime::RowLayout::Dense(map.Size(), 3));
@@ -77,7 +86,7 @@ namespace DNDS::CFV
                             {
                 auto read = cells.Read();
                 for (index iQuery = 0; iQuery < cells.RowCount(); ++iQuery)
-                    DNDS_check_throw_info(read.View()(iQuery, 0) >= 0 && read.View()(iQuery, 0) < reconstruction.Metrics().NumCell(),
+                    DNDS_check_throw_info(reconstruction && read.View()(iQuery, 0) >= 0 && read.View()(iQuery, 0) < reconstruction->Metrics().NumCell(),
                                           "selected donor row is not owned by its destination");
                 _data = std::make_shared<Data>(std::move(reconstruction), std::move(map), std::move(cells), std::move(points), route.Route().Reverse()); });
         }
@@ -85,7 +94,8 @@ namespace DNDS::CFV
         void Validate() const
         {
             _data->map.Validate();
-            _data->reconstruction.Validate();
+            if (_data->reconstruction)
+                _data->reconstruction->Validate();
         }
         DistributedSamplingWorkspace BuildWorkspace(index components) const
         {
@@ -99,9 +109,17 @@ namespace DNDS::CFV
         /// lease contract. Every rank validates local geometry before transfer.
         void EvaluateDonors(const FVField &mean, const FVField &coefficients, DistributedSamplingWorkspace &workspace) const
         {
+            EvaluateDonors(&mean, &coefficients, workspace);
+        }
+        /// Null input pointers are required on nonmembers of the donor domain.
+        /// Pointer values are resolved at this wrapper boundary, not in kernels.
+        void EvaluateDonors(const FVField *mean, const FVField *coefficients, DistributedSamplingWorkspace &workspace) const
+        {
             Validate();
             DNDS_check_throw_info(workspace.plan == _data, "sampling workspace belongs to another plan");
-            _data->sampling.Evaluate(mean, coefficients, workspace.donorValues);
+            DNDS_check_throw_info(bool(mean) == bool(_data->sampling) && bool(coefficients) == bool(_data->sampling), "sampling inputs differ from donor-domain participation");
+            if (_data->sampling)
+                _data->sampling->Evaluate(*mean, *coefficients, workspace.donorValues);
         }
         /// Collective setup. Reuse this binding for repeated fixed-buffer
         /// sampling; wait for donors before Begin and before reading receivers.
@@ -128,6 +146,13 @@ namespace DNDS::CFV
         /// arranges new maps/plans after motion, deformation or redistribution.
         void Evaluate(const FVField &mean, const FVField &coefficients, DistributedSamplingWorkspace &workspace,
                       Runtime::Array<real> &values) const
+        {
+            EvaluateCoupled(&mean, &coefficients, workspace, values);
+        }
+        /// Coupling-participant convenience. Pass null inputs when this rank
+        /// has no donor-domain reconstruction; every rank still enters MPI.
+        void EvaluateCoupled(const FVField *mean, const FVField *coefficients, DistributedSamplingWorkspace &workspace,
+                             Runtime::Array<real> &values) const
         {
             MPIInfo mpi;
             mpi.comm = _data->returnRoute.Communicator();

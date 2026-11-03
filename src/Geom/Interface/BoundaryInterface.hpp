@@ -109,6 +109,15 @@ namespace DNDS::Geom
         static DistributedInterfacePointMap Match(BoundaryPatch donor, const Runtime::Array<real> &points,
                                                   const Runtime::Array<index> &queryIds, InterfaceRoutingMode mode = InterfaceRoutingMode::CoarseBoxes,
                                                   InterfaceSearchSettings settings = {});
+        /// Coupling-communicator variant: only donor-domain members provide a
+        /// patch; other participants supply nullopt, never a dummy volume mesh.
+        /// Mesh-communicator owner ranks are translated into coupling ranks.
+        /// All donor-domain members must belong to this context; empty patch
+        /// and query ranks still participate in every collective phase.
+        static DistributedInterfacePointMap Match(std::shared_ptr<Runtime::CommunicationContext> coupling,
+                                                  std::optional<BoundaryPatch> donor, const Runtime::Array<real> &points,
+                                                  const Runtime::Array<index> &queryIds, InterfaceRoutingMode mode = InterfaceRoutingMode::CoarseBoxes,
+                                                  InterfaceSearchSettings settings = {});
         void Validate() const;
         index Size() const;
         DistributedInterfaceMatch Get(index iQuery) const;
@@ -117,5 +126,7 @@ namespace DNDS::Geom
         /// the old patch, which can still be internally valid.
         void ValidateFor(const BoundaryPatch &active) const;
         const BoundaryPatch &Donor() const;
+        bool HasLocalDonor() const;
+        std::shared_ptr<Runtime::CommunicationContext> Context() const;
     };
 }
