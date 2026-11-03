@@ -10,7 +10,7 @@ ${DNDS_EXTERNAL_LIBS}
 )
 
 # Chemical source library (model-independent, shared by all variants)
-dnds_add_lib(euler_library_chemical "Chemistry/ChemicalSource.cpp" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
+dnds_add_lib(euler_library_chemical "Chemistry/ChemicalSource.cpp" "physics" "${DNDS_PCH_TARGETS_FAST}"
     OFF ON ON) # SHARED,FAST,EXCLUDE
 target_compile_definitions(euler_library_chemical PUBLIC CT_USE_SYSTEM_FMT=1)
 list(APPEND LINKS euler_library_chemical)

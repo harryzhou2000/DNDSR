@@ -719,11 +719,12 @@ euler_add_unit_test(rans "Euler/test_RANS.cpp" "cfv;geom;dnds")
 euler_add_unit_test(rotating_frame "Euler/test_RotatingFrame.cpp" "cfv;geom;dnds")
 euler_add_unit_test(limited_vr "Euler/test_LimitedVR.cpp" "cfv;geom;dnds")
 if(DNDS_USE_CANTERA)
-    euler_add_unit_test(source_chemical "Euler/test_SourceChemical.cpp" "euler_library_NS_EX;euler_library_fast_NS_EX;cfv;geom;dnds")
+    euler_add_unit_test(shared_physics "Physics/test_Properties.cpp" "physics;cfv;geom;dnds")
+    euler_add_unit_test(source_chemical "Euler/test_SourceChemical.cpp" "euler_library_chemical;cfv;geom;dnds")
     euler_add_unit_test(reactive_split_indicator "Euler/test_ReactiveSplitIndicator.cpp" "euler_library_NS_EX;euler_library_fast_NS_EX;cfv;geom;dnds")
-    euler_add_unit_test(uv "Euler/test_UV.cpp" "euler_library_NS_EX;euler_library_fast_NS_EX;cfv;geom;dnds")
-    euler_add_unit_test(physics_properties "Euler/test_PhysicsProperties.cpp" "euler_library_NS_EX;euler_library_fast_NS_EX;cfv;geom;dnds")
-    euler_add_unit_test(chem_ode "Euler/test_ChemODE.cpp" "euler_library_NS_EX;euler_library_fast_NS_EX;cfv;geom;dnds")
+    euler_add_unit_test(uv "Euler/test_UV.cpp" "euler_library_chemical;cfv;geom;dnds")
+    euler_add_unit_test(physics_properties "Euler/test_PhysicsProperties.cpp" "euler_library_chemical;cfv;geom;dnds")
+    euler_add_unit_test(chem_ode "Euler/test_ChemODE.cpp" "euler_library_chemical;cfv;geom;dnds")
     target_compile_definitions(euler_test_chem_ode PRIVATE CT_USE_SYSTEM_FMT=1)
     euler_add_mpi_test(evaluator_reactive "Euler/test_EulerEvaluatorReactive.cpp"
         "euler_library_NS_EX;euler_library_fast_NS_EX;cfv;geom;dnds")
@@ -756,6 +757,7 @@ set(EULER_TEST_TARGETS
 )
 if(DNDS_USE_CANTERA)
     list(APPEND EULER_TEST_TARGETS
+        euler_test_shared_physics
         euler_test_source_chemical
         euler_test_reactive_split_indicator
         euler_test_uv

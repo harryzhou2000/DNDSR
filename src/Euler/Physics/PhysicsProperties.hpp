@@ -33,6 +33,9 @@
 
 #include "Euler/EulerEvaluatorSettings.hpp"
 #include "Euler/Chemistry/ChemicalSource.hpp"
+#include "Physics/ReferenceScales.hpp"
+#include "Physics/Thermodynamics/IdealMixtureGradient.hpp"
+#include "Physics/Transport/MixtureAveragedDiffusion.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -149,6 +152,11 @@ namespace DNDS::Euler
 
         // ---- scale helpers --------------------------------------------------
 
+        Physics::ReferenceScales referenceScales() const
+        {
+            return {igProp_->rho0, igProp_->U0, igProp_->L0, igProp_->T0};
+        }
+
         /// Reference density scale
         [[nodiscard]] real rho0() const { return igProp_->rho0; }
         /// Reference speed scale
@@ -157,28 +165,28 @@ namespace DNDS::Euler
         [[nodiscard]] real T0() const { return igProp_->T0; }
 
         /// Reference pressure p0 = rho0 · U0².
-        [[nodiscard]] real p0() const { return igProp_->rho0 * igProp_->U0 * igProp_->U0; }
+        [[nodiscard]] real p0() const { return referenceScales().Pressure(); }
 
         /// Reference time t0 = L0 / U0.
-        [[nodiscard]] real t0() const { return igProp_->L0 / igProp_->U0; }
+        [[nodiscard]] real t0() const { return referenceScales().Time(); }
 
         /// Conversion factor R0 = U0² / T0.  R_code = R_phys / R0.
-        [[nodiscard]] real R0() const { return igProp_->U0 * igProp_->U0 / igProp_->T0; }
+        [[nodiscard]] real R0() const { return referenceScales().HeatCapacity(); }
 
         /// Reference dynamic viscosity mu0 = rho0 · U0 · L0.
-        [[nodiscard]] real mu0() const { return igProp_->rho0 * igProp_->U0 * igProp_->L0; }
+        [[nodiscard]] real mu0() const { return referenceScales().Viscosity(); }
 
         /// Reference thermal conductivity k0 = rho0 · U0³ · L0 / T0.
-        [[nodiscard]] real k0() const { return igProp_->rho0 * igProp_->U0 * igProp_->U0 * igProp_->U0 * igProp_->L0 / igProp_->T0; }
+        [[nodiscard]] real k0() const { return referenceScales().Conductivity(); }
 
         /// Reference diffusivity D0 = U0 · L0.
-        [[nodiscard]] real D0() const { return igProp_->U0 * igProp_->L0; }
+        [[nodiscard]] real D0() const { return referenceScales().Diffusivity(); }
 
         /// Reference volumetric source rate S0 = rho0 · U0 / L0.
-        [[nodiscard]] real S0() const { return igProp_->rho0 * igProp_->U0 / igProp_->L0; }
+        [[nodiscard]] real S0() const { return referenceScales().SourceRate(); }
 
         /// Reference momentum density (mass flux per unit face area) rhoU0 = rho0 · U0.
-        [[nodiscard]] real rhoU0() const { return igProp_->rho0 * igProp_->U0; }
+        [[nodiscard]] real rhoU0() const { return referenceScales().Momentum(); }
 
         /// Reference total energy density rhoE0 = rho0 · U0².
         [[nodiscard]] real rhoE0() const { return p0(); }
@@ -1113,17 +1121,10 @@ namespace DNDS::Euler
                     gradU(direction, I4) -
                     velocity.dot(gradU(direction, Seq123)) +
                     0.5 * velocity.squaredNorm() * gradRho;
-                real compositionTerm = 0;
-                for (int species = 0; species < nTransported; ++species)
-                {
-                    real rhoGradY = gradU(direction, speciesOffset + species) -
-                                    massFractions[species] * gradRho;
-                    compositionTerm +=
-                        (internalEnergy[species] - internalEnergy[nSpecies - 1]) * rhoGradY;
-                }
-                gradT(direction) =
-                    (gradRhoInternalEnergy - mixtureInternalEnergy * gradRho - compositionTerm) /
-                    (rho * mixtureCv);
+                const auto speciesGradient = gradU.row(direction).segment(speciesOffset, nTransported);
+                gradT(direction) = Physics::Thermodynamics::IdealMixtureTemperatureDerivative(
+                    rho, mixtureInternalEnergy, mixtureCv, gradRho, gradRhoInternalEnergy,
+                    massFractions, internalEnergy, speciesGradient, nSpecies);
             }
             return gradT;
         }
@@ -1228,7 +1229,6 @@ namespace DNDS::Euler
             std::fill(buffers.JRawN.begin(), buffers.JRawN.end(), real(0));
             real sumY = 0.0;
             real sumGradYDotN = 0.0;
-            real sumJRawN = 0.0;
             real gradRDotN = 0.0;
             real RLast = speciesGasConstantK(Ns - 1);
 
@@ -1240,7 +1240,6 @@ namespace DNDS::Euler
                 gradRDotN += (speciesGasConstantK(kk) - RLast) * gradYkDotN;
                 buffers.JRawN[kk] = -rhoFace * (buffers.D[kk] + turbulentSpeciesDiffusivity) * gradYkDotN;
                 sumGradYDotN += gradYkDotN;
-                sumJRawN += buffers.JRawN[kk];
             }
 
             // Conductive heat flux sign: VisFlux stores +k∇T·n and total flux subtracts VisFlux.
@@ -1250,19 +1249,11 @@ namespace DNDS::Euler
 
             buffers.Y[Ns - 1] = real(1) - sumY;
             buffers.JRawN[Ns - 1] = rhoFace * (buffers.D[Ns - 1] + turbulentSpeciesDiffusivity) * sumGradYDotN;
-            sumJRawN += buffers.JRawN[Ns - 1];
-
-            real vcN = -sumJRawN * rhoInvFace;
             if (!impermeableWall)
             {
-                for (int kk = 0; kk < Ns; ++kk)
-                {
-                    real JkN = buffers.JRawN[kk] + rhoFace * buffers.Y[kk] * vcN;
-                    real FvSpeciesN = -JkN;
-                    if (kk < Ns1)
-                        visFlux(Isp + kk) += FvSpeciesN;
-                    visFlux(I4) += buffers.h[kk] * FvSpeciesN;
-                }
+                auto speciesFlux = visFlux.segment(Isp, Ns1);
+                Physics::Transport::AddCorrectedMixtureAveragedNormalFlux(rhoFace, rhoInvFace,
+                                                                          buffers.Y, buffers.JRawN, buffers.h, Ns, speciesFlux, visFlux(I4));
             }
         }
 

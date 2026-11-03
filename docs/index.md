@@ -34,6 +34,7 @@ gates. The placement foundation mock alone is not a fluid validation.
 
 | Topic | Guide |
 | --- | --- |
+| Shared thermodynamics, chemistry workers, transport and RANS | [Shared Physics](architecture/Physics.md) |
 | Mesh ownership, relation semantics, construction closure and ghost assembly | [Mesh connectivity and construction](architecture/MeshConnectivity.md) |
 | Owned construction API and mesh access examples | [Native mesh construction](architecture/NativeMesh.md) |
 | Shared Runtime arrays, placement, access and transfers | [Runtime Array](architecture/ArrayRuntime.md) |
@@ -90,6 +91,8 @@ replacements for retired containers.
 | **DNDS**   | `src/DNDS`  | MPI arrays, serialization (JSON, HDF5), profiling, CUDA  |
 | **Geom**   | `src/Geom`  | Unstructured mesh, CGNS I/O, partitioning (Metis/ParMetis) |
 | **CFV**    | `src/CFV`   | Compact Finite Volume, variational reconstruction        |
+| **Physics** | `src/Physics` | Shared thermodynamics, transport, chemistry and RANS kernels |
+| **Cauchy** | `src/Cauchy` | Native FV solver, domain orchestration and implicit operators |
 | **Euler**  | `src/Euler` | Compressible Navier-Stokes solvers (2D/3D, SA, k-omega)  |
 | **EulerP** | `src/EulerP`| Alternative evaluator with CUDA GPU support              |
 | **Solver** | `src/Solver`| ODE integrators and Krylov solvers (GMRES, PCG)          |

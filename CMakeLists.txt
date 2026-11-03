@@ -103,6 +103,7 @@ set(DNDS_Euler_Models_List
 )
 
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/DNDS)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/Physics)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/Geom)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/CFV)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/Cauchy)

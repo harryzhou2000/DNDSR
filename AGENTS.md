@@ -57,6 +57,9 @@ directory; edit the shared source, not separate harness-specific copies.
     - `Elements/` — Per-element-type shape functions
     - `Quadratures/` — Numerical integration rules
   - `CFV/` — Compact Finite Volume, variational reconstruction
+  - `Physics/` — Shared thermodynamics, transport, chemistry workers and RANS kernels
+    - See `docs/architecture/Physics.md` for units, energy conventions and ownership
+  - `Cauchy/` — Native FV solver, equation state, domain scheduling and implicit solves
   - `Euler/` — Compressible N-S solvers (2D/3D, SA, k-omega RANS)
   - `EulerP/` — Alternative evaluator with CUDA GPU support
 - `app/` — C++ application entry points (solver executables)

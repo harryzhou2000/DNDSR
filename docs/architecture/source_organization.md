@@ -116,6 +116,16 @@ The native-only compile smoke checks that direct canonical Access/State includes
 do not define legacy `DNDS::Array`; it does not claim that the entire Geom facade
 or serializer is independent of all legacy plumbing.
 
+## Shared Physics extraction
+
+`src/Physics` is a solver-independent module. Chemistry implementation and RANS
+math now live under `Physics/Chemistry` and `Physics/RANS`; old Euler include
+paths forward and namespace aliases preserve source names. Euler-specific
+configuration/model-trait conversions remain in its existing adapter. Shared
+thermodynamic/transport helpers have no mesh/CFV dependency. See the
+[Physics ownership and units contract](Physics.md), including the distinction
+between source compatibility and rebuilding compiled namespace symbols.
+
 ## Compatibility and validation
 
 Forwarding headers introduce no second class definition or storage authority.

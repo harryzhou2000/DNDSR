@@ -1,0 +1,432 @@
+/**
+ * @file ChemicalSource.hpp
+ * @brief PIMPL-wrapped Cantera chemical kinetics, mixture properties, and transport.
+ *
+ * Public header — zero Cantera includes. The implementation (.cpp) owns the
+ * Cantera Solution and fills user-supplied buffers. Buffer views are plain
+ * pointer+size structs for zero-overhead interop with Eigen::Map.
+ */
+
+#pragma once
+
+#include "DNDS/Core/Errors.hpp"
+#include "Physics/Thermodynamics/Properties.hpp"
+#include "Physics/Transport/Properties.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <memory>
+#include <vector>
+#include <string>
+#include <ostream>
+#include <fmt/format.h>
+
+namespace DNDS::Physics::Chemistry
+{
+
+    struct ConstSpeciesBufferView;
+
+    /**
+     * @brief Thin read-only view over a species-indexed buffer (mass fractions,
+     *        production rates, diffusivities, etc.). Caller owns the storage.
+     */
+    struct SpeciesBufferView
+    {
+        double *data = nullptr;
+        int nSpecies = 0;
+
+        double &operator[](int i) { return data[i]; }
+        double operator[](int i) const { return data[i]; }
+        operator ConstSpeciesBufferView() const;
+    };
+
+    /// Const version for input arrays.
+    struct ConstSpeciesBufferView
+    {
+        const double *data = nullptr;
+        int nSpecies = 0;
+
+        double operator[](int i) const { return data[i]; }
+    };
+
+} // namespace Chemistry
+
+template <>
+struct fmt::formatter<DNDS::Physics::Chemistry::ConstSpeciesBufferView>
+{
+    char type = 'g';
+    int precision = 6;
+    std::string fmtSpec = "{:.6g}";
+
+    auto parse(fmt::format_parse_context &ctx)
+    {
+        auto it = ctx.begin(), end = ctx.end();
+        while (it != end && *it != '}')
+        {
+            switch (*it)
+            {
+            case 'e':
+            case 'E':
+            case 'f':
+            case 'F':
+            case 'g':
+            case 'G':
+                type = *it++;
+                break;
+            case '.':
+            {
+                it++;
+                std::string v;
+                while (it != end && *it >= '0' && *it <= '9')
+                    v.push_back(*it++);
+                if (!v.empty())
+                    precision = std::stoi(v);
+                break;
+            }
+            default:
+                ++it;
+            }
+        }
+        fmtSpec = fmt::format(FMT_STRING("{{:.{}{}}}"), precision, type);
+        return it;
+    }
+
+    auto format(const DNDS::Physics::Chemistry::ConstSpeciesBufferView &Y,
+                fmt::format_context &ctx) const
+    {
+        auto out = ctx.out();
+        fmt::format_to(out, "[");
+        for (int k = 0; k < Y.nSpecies; ++k)
+        {
+            if (k)
+                fmt::format_to(out, ", ");
+            fmt::format_to(out, fmtSpec, Y[k]);
+        }
+        return fmt::format_to(out, "]");
+    }
+};
+
+namespace DNDS::Physics::Chemistry
+{
+
+    inline SpeciesBufferView::operator ConstSpeciesBufferView() const
+    {
+        return {data, nSpecies};
+    }
+
+    /**
+     * @brief Clamp/renormalize transported independent species into a full
+     *        Cantera-safe mass-fraction vector.
+     *
+     * This is intentionally tolerant for reconstructed/limited CFD states.
+     * Low-level chemistry APIs should call ChemicalSource::massFractions(),
+     * which hard-fails on invalid species instead of repairing them.
+     */
+    inline void RepairMassFractions(double rho, ConstSpeciesBufferView rhoYTransported,
+                                    SpeciesBufferView Y)
+    {
+        int Ns = Y.nSpecies;
+        int Ns1 = Ns - 1;
+        DNDS_check_throw_info(rhoYTransported.data != nullptr, "RepairMassFractions(): input buffer is null");
+        DNDS_check_throw_info(Y.data != nullptr, "RepairMassFractions(): output buffer is null");
+        DNDS_check_throw_info(Ns > 0 && rhoYTransported.nSpecies == Ns1,
+                              "RepairMassFractions(): transported species count mismatch");
+        DNDS_check_throw_info(std::isfinite(rho) && rho > 0, "RepairMassFractions(): rho must be finite and positive");
+        double rhoInv = 1.0 / rho;
+        double sum = 0.0;
+        for (int k = 0; k < Ns1; ++k)
+        {
+            DNDS_check_throw_info(std::isfinite(rhoYTransported[k]),
+                                  fmt::format("RepairMassFractions(): transported species density [{}] is not finite", k));
+            Y[k] = std::max(0.0, rhoYTransported[k] * rhoInv);
+            sum += Y[k];
+        }
+        Y[Ns1] = std::max(0.0, 1.0 - sum);
+        double ySum = 0.0;
+        for (int k = 0; k < Ns; ++k)
+            ySum += Y[k];
+        DNDS_check_throw_info(std::isfinite(ySum) && ySum > 0, "RepairMassFractions(): repaired species mass is invalid");
+        for (int k = 0; k < Ns; ++k)
+        {
+            Y[k] /= ySum;
+            DNDS_check_throw_info(std::isfinite(Y[k]), fmt::format("RepairMassFractions(): repaired Y[{}] is not finite", k));
+        }
+    }
+
+    /**
+     * @brief Dense Jacobian view: Ns rows x nCols cols, column-major.
+     *        Caller owns the storage.
+     */
+    struct JacobianBufferView
+    {
+        double *data = nullptr;
+        int rows = 0; // Ns
+        int cols = 0; // nVars
+        int ld = 0;   // leading dimension (== rows for dense ColMajor)
+
+        double &operator()(int i, int j) { return data[i + j * ld]; }
+        double operator()(int i, int j) const { return data[i + j * ld]; }
+    };
+
+    /**
+     * @brief PIMPL wrapper around Cantera (thermo + kinetics + transport).
+     *
+     * Construction loads a YAML mechanism. All evaluation methods take
+     * temperature, pressure, and species mass fractions as input and write
+     * results into caller-owned buffers. No Cantera headers are exposed.
+     */
+    class ChemicalSource
+    {
+    public:
+        ChemicalSource();
+        /**
+         * @param mechanismFile  Path to Cantera YAML mechanism.
+         * @param phaseName      Phase name (empty = default).
+         * @param U0             Reference velocity scale [m/s]; used internally for
+         *                       code-unit conversion in productionRatesAndJacobian
+         *                       and mixture base internal energy.
+         * @param rho0           Reference density scale [kg/m³]; used internally for
+         *                       code-unit conversion in productionRatesAndJacobian.
+         * @param TBase          Base/reference temperature [K] for per-species
+         *                       internal-energy offsets. If <= 0, the minimum
+         *                       per-species Cantera temperature is used.
+         * @param transportModel Requested transport model. Only mixture-averaged
+         *                       transport is currently implemented.
+         */
+        explicit ChemicalSource(const std::string &mechanismFile,
+                                const std::string &phaseName,
+                                double U0, double rho0,
+                                double TBase = 0.0,
+                                std::string transportModel = "MixtureAveraged");
+        ~ChemicalSource();
+
+        // Non-copyable, movable
+        ChemicalSource(const ChemicalSource &) = delete;
+        ChemicalSource &operator=(const ChemicalSource &) = delete;
+        ChemicalSource(ChemicalSource &&) noexcept;
+        ChemicalSource &operator=(ChemicalSource &&) noexcept;
+
+        /// Deep-clone for thread-safety: creates independent Cantera Solution objects
+        /// from the same mechanism file (no shared state between instances).
+        std::unique_ptr<ChemicalSource> clone() const;
+
+        /// Immutable in-process material identity, shared by deep clones only.
+        /// Equal filenames/species counts do not prove equal loaded mechanisms.
+        /// This token carries no mutable Cantera state and is not a restart ID.
+        std::shared_ptr<const void> ModelIdentity() const { return modelIdentity_; }
+
+        const std::string &mechanismFile() const { return mechanismFile_; }
+        const std::string &phaseName() const { return phaseName_; }
+
+        int nSpecies() const;
+        int nReactions() const;
+        const std::vector<std::string> &speciesNames() const;
+        const std::vector<double> &molecularWeights() const;
+        const std::vector<double> &speciesGasConstants() const;
+
+        /** Reference velocity scale [m/s] used for code-unit conversion. */
+        double velScale() const;
+        /** Reference density scale [kg/m³] used for code-unit conversion. */
+        double rhoScale() const;
+        /** Configured transport model name. Only mixture-averaged is implemented. */
+        const std::string &transportModel() const;
+        bool isMixtureAveragedTransport() const;
+
+        /// Fused SI property query: set normalized full Y and (T,p) once, then
+        /// fill actual EOS thermo and optional molecular transport/diffusion or
+        /// full species enthalpies. No equivalent-gamma pressure substitution.
+        /// Optional species buffers have Ns entries and disjoint output storage.
+        /// No allocations occur in this wrapper; the caller exclusively owns
+        /// this mutable backend context, e.g. through ChemicalWorkerPool::Lease.
+        void EvaluateProperties(double T, double p, ConstSpeciesBufferView Y,
+                                Thermodynamics::Properties &thermo,
+                                Transport::Properties *transport = nullptr,
+                                SpeciesBufferView diffusion = {}, SpeciesBufferView enthalpies = {}) const;
+
+        // ---- Mixture thermodynamic properties (via Cantera EOS) ----
+
+        double mixtureR(ConstSpeciesBufferView Y) const;
+        double mixtureCp(double T, ConstSpeciesBufferView Y, double p = 101325) const;
+        double mixtureCv(double T, ConstSpeciesBufferView Y, double p = 101325) const;
+        double mixtureGamma(double T, ConstSpeciesBufferView Y, double p = 101325) const;
+        double speedOfSound(double T, ConstSpeciesBufferView Y, double p = 101325) const;
+
+        /** Specific internal energy [J/kg] at (T, p, Y). */
+        double mixtureIntEnergy(double T, ConstSpeciesBufferView Y, double p = 101325) const;
+
+        /** Specific enthalpy [J/kg] at (T, p, Y). */
+        double mixtureEnthalpy(double T, ConstSpeciesBufferView Y, double p = 101325) const;
+
+        /** Specific entropy [J/(kg*K)] at (T, p, Y). */
+        double mixtureEntropy(double T, ConstSpeciesBufferView Y, double p = 101325) const;
+
+        /** Lower valid thermodynamic temperature bound [K] reported by Cantera. */
+        double minTemperature() const;
+
+        /** Temperature [K] used for base internal-energy offsets. */
+        double baseTemperature() const;
+
+        /** Print detailed mechanism info (species, reactions, base temperature, etc.) to stream. */
+        void printInfo(std::ostream &os) const;
+
+        /**
+         * Solve T from specific internal energy u [J/kg] and specific volume v [m³/kg].
+         * Uses Cantera setState_UV (Newton). Optional T_guess [K] as warm-start.
+         * rtol is forwarded to Cantera's internal UV solve.
+         */
+        double temperatureFromUV(double u, double v,
+                                 ConstSpeciesBufferView Y,
+                                 double T_guess = 0,
+                                 double rtol = 1e-12) const;
+
+        // ---- Kinetics ----
+
+        enum JacobianFlags : int
+        {
+            JAC_DEFAULT = 0,
+            JAC_SKIP_FLUID = 1 << 0,      // zero out ρ, ρu_j, ρE columns
+            JAC_SKIP_ABSORPTION = 1 << 1, // don't absorb last-species into independent rows;
+                                          // N2 row is filled, absorption terms omitted.
+        };
+
+        /** Net production rates ω_i [kmol/m³/s]. omega must have nSpecies elements. */
+        void productionRates(double T, double p,
+                             ConstSpeciesBufferView Y,
+                             SpeciesBufferView omega) const;
+
+        /**
+         * Largest-magnitude diagonal rate of the homogeneous chemical source
+         * Jacobian, max_k |∂Ẏ_k/∂Y_k| [1/s] at fixed density and temperature.
+         * With Ẏ_i=ω_i W_i/ρ and C_j=ρY_j/W_j, the conversion is
+         * ∂Ẏ_i/∂Y_j=(W_i/W_j)∂ω_i/∂C_j, so the molecular-weight factor cancels
+         * on the diagonal returned here. Uses Cantera's
+         * netProductionRates_ddCi as a cheap stiffness estimate, not a full
+         * spectral radius. Returns 0 when Cantera is unavailable.
+         */
+        double maxChemicalStiffnessRate(double T, double p,
+                                        ConstSpeciesBufferView Y) const;
+
+        /**
+         * Norms of J_s s and J_s d [1/s^2] in q=(Y_1,...,Y_N,ln(T/T_ref)).
+         * J_s is the fixed-density ideal-gas chemical derivative; s includes
+         * chemistryScale, and d is supplied as full species rates [1/s] and
+         * logarithmic temperature rate [1/s]. Y must be normalized and
+         * speciesDiffusionRate must conserve total mass. No chi state is read.
+         * chemistryScale scales chemistry only: the two norms scale quadratically
+         * and linearly, respectively, when the supplied transport is unchanged.
+         */
+        void constantVolumeSourceResponseNorms(double temperature, double pressure,
+                                               ConstSpeciesBufferView fractions,
+                                               ConstSpeciesBufferView speciesDiffusionRate,
+                                               double logTemperatureDiffusionRate, double chemistryScale,
+                                               double &autonomousNorm, double &forcedNorm) const;
+
+        /**
+         * Production rates AND Jacobian ∂ω/∂U.
+         *   U = [ρ, ρu, ρv, {ρw,} ρE, ρY_0..ρY_{Ns-2}]
+         * dOmegadU: Ns × nVars, column-major.
+         * iEnergy = index of ρE in U (dim+1); species columns are inferred as
+         * the last Ns-1 columns of dOmegadU, allowing RANS/passive variables
+         * between ρE and species.
+         * T, p, Y are physical SI units.
+         * rho, rhoE, rhoU, rhoV, rhoW are code-scaled (÷ρ0, ÷ρ0·U0², etc.).
+         * Scale factors U0 and ρ0 are stored at construction and used internally
+         * for the ideal-gas dT/dU and dP/dU chain rules.
+         * jacFlags = bitmask of JacobianFlags.
+         */
+        void productionRatesAndJacobian(double T, double p, double rho,
+                                        double rhoE, double rhoU, double rhoV, double rhoW,
+                                        int iEnergy,
+                                        ConstSpeciesBufferView Y,
+                                        SpeciesBufferView omega,
+                                        JacobianBufferView dOmegadU,
+                                        int jacFlags = 0) const;
+
+        /**
+         * Advance a constant-volume ideal-gas reactor with an affine species RHS:
+         * dY/dtau = chemistryScale * chemistryYdot(Y) - Y / linearTime + constantTerm.
+         * Inputs and outputs are physical SI units. @p Y and @p constantTerm are full
+         * nSpecies vectors. The reactor uses Cantera's ReactorNet/CVODE internally.
+         */
+        void advanceAffineConstVolume(double &T, double rho,
+                                      SpeciesBufferView Y,
+                                      double chemistryScale,
+                                      double linearTime,
+                                      ConstSpeciesBufferView constantTerm,
+                                      double advanceTime,
+                                      double rtol = 1e-10,
+                                      double atol = 1e-18,
+                                      int maxOrder = 1,
+                                      int maxSteps = 10000000) const;
+
+        /**
+         * Advance a constant-volume ideal-gas reactor with chemistry only.
+         * Inputs and outputs are physical SI units. @p Y is a full nSpecies vector.
+         */
+        void advanceConstVolume(double &T, double rho,
+                                SpeciesBufferView Y,
+                                double chemistryScale,
+                                double advanceTime,
+                                double rtol = 1e-10,
+                                double atol = 1e-18,
+                                int maxOrder = 0,
+                                int maxSteps = 10000000) const;
+
+        // ---- Transport ----
+
+        double viscosity(double T, double p, ConstSpeciesBufferView Y) const;
+        double thermalConductivity(double T, double p, ConstSpeciesBufferView Y) const;
+
+        /** Mixture-averaged mass-gradient species diffusivities [m²/s].
+         *  These coefficients multiply gradients of species mass fractions.
+         *  D must have nSpecies elements.
+         */
+        void speciesDiffusivity(double T, double p,
+                                ConstSpeciesBufferView Y,
+                                SpeciesBufferView D) const;
+
+        /** Per-species specific enthalpies [J/kg]. h must have nSpecies elements. */
+        void speciesEnthalpies(double T, double p,
+                               ConstSpeciesBufferView Y,
+                               SpeciesBufferView h) const;
+
+        /** Per-species base internal energies [J/kg] at T_base (constant, pre-cached). */
+        void speciesBaseInternalEnergies(SpeciesBufferView eBase) const;
+
+        /** Specific base internal energy per mass Σ Y_k·e_base,k [J/kg] (physical units). */
+        double mixtureBaseInternalEnergy(ConstSpeciesBufferView Y) const;
+
+        /** Whether the Cantera thermo phase uses an ideal-gas EOS. */
+        bool isIdealGas() const;
+
+        // ---- Caller-owned buffer helpers ----------------------------------------
+
+        /** Compute mass fractions from conservative species densities into caller-owned storage. */
+        void massFractions(double rho, ConstSpeciesBufferView rhoYTransported, SpeciesBufferView Y) const;
+        void massFractions(double rho, const double *rhoYK, int nTransported, SpeciesBufferView Y) const
+        {
+            massFractions(rho, {rhoYK, nTransported}, Y);
+        }
+
+        /** Return read-only per-species base internal energies in code units (e_base,k/U0²). */
+        ConstSpeciesBufferView mixtureBaseInternalRhoESpecies() const;
+
+        /** Code-scaled volumetric base internal energy: rho · Σ Y_k · e_base,k / U0².
+         *  Uses internal velScale() for code-unit conversion. */
+        double mixtureBaseInternalRhoE(double rho, ConstSpeciesBufferView Y) const;
+
+        /** Linearized increment of code-scaled base internal energy from a d(ρY_k) increment.
+         *  dRhoYK[0..nTransported-1] are d(ρY_k)_code, rhoInc = d(ρ)_code.
+         *  The dependent species (N2) contribution is absorbed automatically. */
+        double mixtureBaseInternalRhoEIncrement(double rhoInc, const double *dRhoYK, int nTransported) const;
+
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+        std::shared_ptr<const void> modelIdentity_;
+
+        std::string mechanismFile_;
+        std::string phaseName_;
+    };
+
+} // namespace DNDS::Physics::Chemistry

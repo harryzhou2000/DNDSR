@@ -744,3 +744,24 @@ TEST_CASE("GetSource_SA: DES modes and ft2 switch agree with analytic sources in
     checkSADESAndFt2<2>();
     checkSADESAndFt2<3>();
 }
+
+TEST_CASE("shared SA: explicit frame vorticity matches corrected velocity gradients")
+{
+    auto state = buildState(g_rho, g_u, 0, 0, g_p, 10, 1000);
+    state[I4 + 1] = state[0] * 100; // nuTilde=1e-3 with muRef=1e-5.
+    auto gradient = buildShearGrad(state, 1.7);
+    Eigen::Matrix<real, dim, dim> correction = Eigen::Matrix<real, dim, dim>::Zero();
+    correction(0, 1) = 0.3;
+    correction(1, 0) = -0.3;
+    auto correctedGradient = gradient;
+    correctedGradient.block<dim, dim>(0, 1) -= state[0] * correction;
+    Eigen::Vector<real, nVars> explicitFrame = Eigen::Vector<real, nVars>::Zero(), fromGradient = explicitFrame, uncorrected = explicitFrame;
+    DNDS::Physics::RANS::GetSource_SAWithVorticity<dim>(state, gradient, 1e-5, g_mu, g_gamma,
+                                                        0.1, 1e10, 0.1, 0, explicitFrame, 0, 0, g_saConfig, 0, &correction);
+    GetSource_SA<dim>(state, correctedGradient, 1e-5, g_mu, g_gamma,
+                      0.1, 1e10, 0.1, 0, fromGradient, 0, 0, g_saConfig);
+    GetSource_SA<dim>(state, gradient, 1e-5, g_mu, g_gamma,
+                      0.1, 1e10, 0.1, 0, uncorrected, 0, 0, g_saConfig);
+    CHECK(explicitFrame.isApprox(fromGradient, 1e-12));
+    CHECK(std::abs(explicitFrame[I4 + 1] - uncorrected[I4 + 1]) > 1e-3);
+}
