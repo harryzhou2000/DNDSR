@@ -7,6 +7,7 @@ namespace DNDS::CFV
     namespace R = Runtime;
     using namespace Geom;
     using namespace Geom::Elem;
+    const Algebra::DofSpace &FiniteVolumePlan::Space() const { return _data->dofs; }
 
     void ReconstructionSettings::Validate() const
     {

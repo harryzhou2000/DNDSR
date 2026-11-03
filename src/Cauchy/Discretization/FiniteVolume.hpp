@@ -3,6 +3,7 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/State/EquationDofs.hpp"
+#include "Cauchy/State/DerivedFields.hpp"
 #include "Cauchy/Boundary/BoundarySystem.hpp"
 #include "Cauchy/Implicit/LinearProblem.hpp"
 #include "CFV/Plans/GradientPlan.hpp"
@@ -33,6 +34,7 @@ namespace DNDS::Cauchy
         bool cellSpectralSum = false;
         bool cellWaveJump = false;
         bool cellPressureMinimum = false;
+        DerivedRequest derived;
     };
     /// Explicit, extensible output buffers. Every member is optional; absent
     /// outputs are neither allocated nor written. Face rows follow AuxiliaryFaces().
@@ -46,9 +48,11 @@ namespace DNDS::Cauchy
         std::optional<CFV::FVField> cellSpectralSum; // sum A*(lambda_c+lambda_v)
         std::optional<CFV::FVField> cellWaveJump;
         std::optional<CFV::FVField> cellPressureMinimum;
+        std::optional<DerivedFields> derivedOwned, derivedGhost;
 
     private:
         friend class FiniteVolume;
+        bool _derivedThermodynamics = false;
         struct Origin
         {
             std::shared_ptr<const void> owner;
@@ -60,6 +64,7 @@ namespace DNDS::Cauchy
             std::array<bool, 7> present{};
             std::array<Runtime::ArrayStorage::Shared, 7> storage{};
             std::array<Runtime::ArrayStorage::Shared, 3> ghosts{};
+            std::array<Runtime::ArrayStorage::Shared, 2> derived{};
             std::array<uint64_t, 7> versions{}, shapes{};
         };
         std::optional<Origin> _origin;
@@ -70,13 +75,34 @@ namespace DNDS::Cauchy
     using RHSFieldView = Runtime::PairReadView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
     using RHSScalarView = Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
     using RHSOutputView = Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
+    /// Borrowed [p,a,diffusivity] projection, possibly in a wider derived table.
+    /// Preserve parent layout and retain the producer's read scopes.
+    struct MeanThermodynamicView
+    {
+        RHSFieldView values;
+        std::array<int, 3> columns{0, 1, 2};
+        index width = 3;
+        MeanThermodynamicView() = default;
+        MeanThermodynamicView(RHSScalarView combined) : values{combined, {}}, width(combined.Width()) {}
+        MeanThermodynamicView(RHSFieldView paired, std::array<int, 3> selected) : values(paired), columns(selected) {}
+        static MeanThermodynamicView Derived(const DerivedFields::ReadScope &owned, const DerivedFields::ReadScope *ghost = nullptr)
+        {
+            const std::array<int, 3> selected{owned.Column(DerivedQuantity::Pressure), owned.Column(DerivedQuantity::SoundSpeed), owned.Column(DerivedQuantity::DiffusionBound)};
+            if (ghost)
+                DNDS_check_throw_info((selected == std::array<int, 3>{ghost->Column(DerivedQuantity::Pressure), ghost->Column(DerivedQuantity::SoundSpeed), ghost->Column(DerivedQuantity::DiffusionBound)}), "derived owned/ghost property columns differ");
+            return {{owned.View(), ghost ? ghost->View() : RHSScalarView{}}, selected};
+        }
+        index RowCount() const { return values.RowCount(); }
+        index Width() const { return width; }
+        real operator()(index iRow, int column) const { return values(iRow, columns[column]); }
+    };
     /// Packed read-only auxiliary inputs, independent of their producer. Current
     /// fields are mean [p,a,diffusivity], wave jumps and pressure minima. Extend
     /// this bundle for cached temperature/masks rather than adding positional
     /// arguments to every kernel. Optional absence is explicit even on empty ranks.
     struct RHSAuxiliaryViews
     {
-        std::optional<RHSScalarView> meanThermodynamics;
+        std::optional<MeanThermodynamicView> meanThermodynamics;
         std::optional<RHSFieldView> cellWaveJump, cellPressureMinimum;
     };
     struct RHSReadViews

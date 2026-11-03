@@ -10,6 +10,30 @@ PYBIND11_MODULE(cauchy_pybind11, m)
     namespace C = DNDS::Cauchy;
     namespace R = DNDS::Runtime;
     py::module_::import("DNDSR.CFV");
+    py::enum_<C::DerivedQuantity>(m, "DerivedQuantity")
+        .value("Temperature", C::DerivedQuantity::Temperature)
+        .value("Pressure", C::DerivedQuantity::Pressure)
+        .value("SoundSpeed", C::DerivedQuantity::SoundSpeed)
+        .value("MolecularViscosity", C::DerivedQuantity::MolecularViscosity)
+        .value("ThermalConductivity", C::DerivedQuantity::ThermalConductivity)
+        .value("HeatCapacityP", C::DerivedQuantity::HeatCapacityP)
+        .value("HeatCapacityV", C::DerivedQuantity::HeatCapacityV)
+        .value("GasConstant", C::DerivedQuantity::GasConstant)
+        .value("DiffusionBound", C::DerivedQuantity::DiffusionBound);
+    py::class_<C::DerivedFields>(m, "DerivedFields", "Optional point properties; no equation components or automatic exchange. Shared arrays retain storage. Raw debug access does not establish freshness.")
+        .def_property_readonly("values", [](const C::DerivedFields &fields)
+                               { return R::PythonArray::Share(fields.Values()); }, "Shared property table, with columns in quantities order. External writes invalidate publication.")
+        .def_property_readonly("quantities", [](const C::DerivedFields &fields)
+                               {
+            std::vector<C::DerivedQuantity> quantities;
+            for(int q=0;q<C::DerivedQuantityNumber;++q)
+                if(fields.Request().Has(C::DerivedQuantity(q))) quantities.push_back(C::DerivedQuantity(q));
+            return quantities; })
+        .def_property_readonly("ghost_part", &C::DerivedFields::GhostPart)
+        .def("current", [](const C::DerivedFields &fields, const C::Domain &domain)
+             { return fields.Current(domain.Dofs(), domain.Equation()); }, "Provenance snapshot; does not reserve access or refresh.")
+        .def("refresh", [](C::DerivedFields &fields, const C::Domain &domain, bool onlyIfStale)
+             { return C::RefreshDerivedFields(domain.Dofs(), domain.Equation(), fields, onlyIfStale); }, py::arg("domain"), py::arg("only_if_stale") = false, py::call_guard<py::gil_scoped_release>(), "Synchronous local pointwise refresh of all enabled properties. No MPI; ghost state must already be ready. Release conflicting views first.");
     py::class_<C::PhysicalStepLimit>(m, "PhysicalStepLimit", "Explicit physical-step PP result; caller advances with dt. Counts/alpha precede growth capping and retries.")
         .def_readonly("dt", &C::PhysicalStepLimit::dt)
         .def_readonly("limited_cells", &C::PhysicalStepLimit::limitedCells)
@@ -44,6 +68,16 @@ PYBIND11_MODULE(cauchy_pybind11, m)
              py::arg("mesh"), py::arg("config_json") = "{}", py::arg("name") = "fluid", py::call_guard<py::gil_scoped_release>())
         .def_property_readonly("flow", [](C::Domain &domain)
                                { return R::PythonArray::Share(domain.Flow().Owned()); }, "Shared owned flow Array; follows normal retained-view/access contracts.")
+        .def("make_derived_fields", [](const C::Domain &domain, const std::vector<C::DerivedQuantity> &quantities, bool ghost)
+             {
+            C::DerivedRequest request;
+            for(auto quantity:quantities)
+            {
+                const int q=int(quantity);
+                DNDS_check_throw_info(q>=0&&q<C::DerivedQuantityNumber,"unknown derived quantity");
+                request.enabled[q]=true;
+            }
+            return C::DerivedFields(domain.Dofs().Space(),request,ghost); }, py::arg("quantities"), py::arg("ghost") = false, "Allocate independent property storage for this domain's rows; call refresh explicitly. This does not alter the domain's solved state or workspace selection.")
         .def_property_readonly("time", &C::Domain::Time)
         .def_property_readonly("previous_dt", &C::Domain::PreviousTimeStep, "Last actual committed physical dt; zero for steady/fresh or unknown old restart history.")
         .def_property_readonly("steady", &C::Domain::Steady)

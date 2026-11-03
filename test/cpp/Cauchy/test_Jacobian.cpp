@@ -45,6 +45,10 @@ TEST_CASE("Integrated approximate Jacobian matches frozen-spectral flux differen
         directionBinding.Begin().Wait();
         C::AuxiliaryRequest request;
         request.faceSpectralRadius = request.meanThermodynamics = true;
+        // Exercise the same independent flux-difference oracle through the
+        // optional shared property table, including a non-thermo column.
+        if (periodic)
+            request.derived = {C::DerivedQuantity::Temperature, C::DerivedQuantity::MolecularViscosity};
         auto auxiliary = fv.BuildAuxiliaryValues(request);
         fv.PrepareAuxValues(state, auxiliary);
         const auto stateVersion = state.Owned().Version();

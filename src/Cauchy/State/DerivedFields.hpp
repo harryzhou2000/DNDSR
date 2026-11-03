@@ -1,0 +1,99 @@
+#pragma once
+
+#include "Cauchy/State/EquationDofs.hpp"
+#include "Cauchy/Physics/FlowState.hpp"
+#include <initializer_list>
+#include <optional>
+
+namespace DNDS::Cauchy
+{
+    class EquationSystem;
+    enum class DerivedQuantity
+    {
+        Temperature,
+        Pressure,
+        SoundSpeed,
+        MolecularViscosity,
+        ThermalConductivity,
+        HeatCapacityP,
+        HeatCapacityV,
+        GasConstant,
+        DiffusionBound,
+        Count
+    };
+    constexpr int DerivedQuantityNumber = int(DerivedQuantity::Count);
+    using DerivedPointValues = std::array<real, DerivedQuantityNumber>;
+
+    /// Internal physics/scheme selection; these are properties, not equations.
+    struct DerivedRequest
+    {
+        std::array<bool, DerivedQuantityNumber> enabled{};
+        DerivedRequest() = default;
+        DerivedRequest(std::initializer_list<DerivedQuantity> quantities);
+        bool Has(DerivedQuantity quantity) const;
+        int ComponentNumber() const;
+    };
+
+    /// Optional accompanying point properties. Copies share one allocation and
+    /// its publication metadata; they never add components to EquationDofs.
+    /// No halo plan is created. One instance covers owned OR ghost rows.
+    ///
+    /// Serialize controller publication/refresh calls. Current() is a snapshot
+    /// query, not access permission; ReadCurrent retains source and output read
+    /// leases. Refresh is synchronous CPU work, also callable on a CPU worker.
+    /// Point providers must perform no MPI or stencil work; prepared local
+    /// inputs and an exclusive worker context are required by future providers.
+    class DerivedFields
+    {
+        struct Data;
+        std::shared_ptr<Data> _data;
+        friend bool RefreshDerivedFields(const EquationDofs &, const EquationSystem &, DerivedFields &, bool);
+
+    public:
+        DerivedFields(Algebra::DofSpace space, DerivedRequest request, bool ghost = false);
+        bool Enabled() const;
+        bool GhostPart() const;
+        index RowNumber() const;
+        const DerivedRequest &Request() const;
+        /// Debug/export owner. Writes through an exported shallow handle
+        /// invalidate publication by generation; prefer checked read scopes.
+        const Runtime::Array<real> &Values() const;
+        /// Validate/reserve a future refresh destination without changing its
+        /// generation. Use before posting surrounding communications.
+        void PreflightRefresh() const;
+        bool Current(const EquationDofs &state, const EquationSystem &equation) const;
+
+        class ReadScope
+        {
+            friend class DerivedFields;
+            std::shared_ptr<const Data> _data;
+            Runtime::Array<real>::ReadLease _read;
+            std::optional<EquationDofs::ReadScope> _source;
+            bool _guessOnly;
+            ReadScope(std::shared_ptr<const Data> data, bool guessOnly);
+
+        public:
+            ReadScope(ReadScope &&) noexcept = default;
+            ReadScope(const ReadScope &) = delete;
+            EquationBlockArrayView<const real> Field(DerivedQuantity quantity) const;
+            Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows> View() const;
+            int Column(DerivedQuantity quantity) const;
+        };
+        ReadScope ReadCurrent(const EquationDofs &state, const EquationSystem &equation) const;
+        /// Stale solution values are allowed only as temperature guesses.
+        /// Row space, model/units and prior successful publication must match.
+        /// The EOS consumer must still validate its guess and solve its state.
+        ReadScope ReadTemperatureGuess(const EquationDofs &state, const EquationSystem &equation) const;
+    };
+
+    /// Pure local perfect-gas profile. The caller supplies an admissible state;
+    /// coarse backend/schema validation belongs outside the point loop.
+    DerivedPointValues EvaluateDerivedPoint(const EquationSystem &equation, const FlowState &state);
+
+    /// Refresh every enabled property at every row of the selected part. State
+    /// is immutable; no MPI, stencil, reduction, clock or hidden getter update.
+    /// Publish only after success. False means disabled or already current when
+    /// onlyIfStale=true. Missing/stale ghost input is a caller readiness error.
+    bool RefreshDerivedFields(const EquationDofs &state, const EquationSystem &equation,
+                              DerivedFields &output, bool onlyIfStale = false);
+}

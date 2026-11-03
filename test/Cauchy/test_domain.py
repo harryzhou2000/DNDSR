@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 from DNDSR import DNDS, Geom
-from DNDSR.Cauchy import Domain, PhysicalStepLimit
+from DNDSR.Cauchy import Domain, PhysicalStepLimit, DerivedQuantity
 
 
 def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=False, time_pp=False, lvr_variant=None):
@@ -112,6 +112,29 @@ def test_rank_local_invalid_config_is_collectively_rejected():
     mesh = Geom.with_native_topology(Geom.read_native_cgns(mpi, str(path), 2))
     with pytest.raises(RuntimeError):
         Domain(mesh, "{" if MPI.COMM_WORLD.rank == 0 else "{}")
+
+
+@pytest.mark.mpi
+def test_explicit_derived_refresh_shared_storage_and_freshness():
+    domain, primitive = build_domain(layout="soa")
+    fields = domain.make_derived_fields([DerivedQuantity.Pressure, DerivedQuantity.Temperature])
+    assert fields.quantities == [DerivedQuantity.Temperature, DerivedQuantity.Pressure]
+    assert not fields.current(domain)
+    assert fields.refresh(domain)
+    rho, _, _, _, p = primitive
+    np.testing.assert_allclose(fields.values.numpy(), np.tile([p/rho, p], (domain.flow.shape[0], 1)))
+    assert fields.current(domain)
+    assert not fields.refresh(domain, only_if_stale=True)
+    retained = fields.values
+    before = domain.flow.numpy().copy()
+    if before.shape[0]:
+        domain.flow[0, 4] = before[0, 4] + .1
+        assert not fields.current(domain)
+    fields.refresh(domain)
+    assert retained.identity == fields.values.identity
+    saved = retained.numpy().copy()
+    del fields, domain
+    np.testing.assert_array_equal(retained.numpy(), saved)
 
 
 @pytest.mark.mpi

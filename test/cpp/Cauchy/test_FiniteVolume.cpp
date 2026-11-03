@@ -1518,6 +1518,70 @@ TEST_CASE("A rank-local Riemann stencil setting rejects collectively before opti
     CHECK_THROWS_WITH_AS(fv.BuildWorkspace(state, requested), doctest::Contains("Riemann stencil capability differs"), std::exception);
     CHECK_THROWS_WITH_AS(fv.BuildMeanWorkspace(state), doctest::Contains("Riemann stencil capability differs"), std::exception);
 }
+TEST_CASE("Optional derived auxiliaries refresh owned rows during halo exchange and feed the stateless RHS")
+{
+    const auto mesh = CFVTest::CartesianHexes(mpi, 8);
+    C::DomainSettings settings;
+    settings.mesh.dimension = 3;
+    settings.boundaries["7"].kind = "extrapolate";
+    settings.numerics.reconstruction = "constant";
+    const auto equation = C::EquationSystem::Resolve(settings.equation);
+    C::FiniteVolume fv(mesh, settings, equation);
+    auto state = fv.Metrics().BuildField(5), baseline = fv.Metrics().BuildField(5), result = fv.Metrics().BuildField(5);
+    {
+        auto write = state.Owned().Write();
+        const auto u = write.View<R::UniformTableRows>();
+        for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+        {
+            const auto p = fv.Metrics().GetCellCent(iCell);
+            const auto value = equation.Gas().Conservative({1 + .02 * p[0], .2, -.1, .05, 1 + .01 * p[1]});
+            for (int j = 0; j < 5; ++j)
+                u(iCell, j) = value[j];
+        }
+    }
+    auto work = fv.BuildWorkspace(state);
+    R::EagerEngine engine;
+    const auto stream = engine.CreateCPUStream();
+    fv.Evaluate(state, baseline, *work, engine, stream);
+    C::AuxiliaryRequest request;
+    request.meanThermodynamics = true;
+    request.faceSpectralRadius = true;
+    request.derived = {C::DerivedQuantity::Temperature, C::DerivedQuantity::MolecularViscosity};
+    auto aux = fv.BuildAuxiliaryValues(request);
+    CHECK_FALSE(aux.meanThermodynamics); // One authority for p/a/diffusivity.
+    REQUIRE(aux.derivedOwned);
+    REQUIRE(aux.derivedGhost);
+    auto preparation = fv.BeginAuxValues(state, aux);
+    auto halo = fv.Metrics().BindHalo(state).Begin();
+    preparation.Apply(DNDS::CFV::ReconstructionRegion::Core);
+    const auto typed = C::EquationDofs::Coupled(equation.Schema(), state);
+    CHECK(aux.derivedOwned->Current(typed, equation));
+    if (fv.Metrics().NumCellProc() > fv.Metrics().NumCell())
+        CHECK_THROWS(preparation.Apply(DNDS::CFV::ReconstructionRegion::HaloDependent));
+    halo.Wait();
+    preparation.Apply(DNDS::CFV::ReconstructionRegion::HaloDependent);
+    preparation.Finish(aux);
+    CHECK_NOTHROW(fv.ValidateAuxValues(state, aux));
+    auto owned = aux.derivedOwned->ReadCurrent(typed, equation), ghost = aux.derivedGhost->ReadCurrent(typed, equation);
+    auto meanRead = state.Owned().Read(), meanGhost = state.Ghost().Read();
+    const auto &coefficients = fv.FluxReconstruction(*work);
+    auto recRead = coefficients.Owned().Read(), recGhost = coefficients.Ghost().Read();
+    C::RHSReadViews input;
+    input.mean = {meanRead.View<R::UniformTableRows>(), meanGhost.View<R::UniformTableRows>()};
+    input.coefficients = {recRead.View<R::UniformTableRows>(), recGhost.View<R::UniformTableRows>()};
+    input.auxiliary.meanThermodynamics = C::MeanThermodynamicView::Derived(owned, &ghost);
+    std::atomic<DNDS::index> fallbacks{0};
+    {
+        auto write = result.Owned().Write();
+        fv.AcquireRHSOperator().Apply(input, {write.View<R::UniformTableRows>(), std::nullopt, &fallbacks});
+    }
+    auto actual = result.Owned().Read(), expected = baseline.Owned().Read();
+    const auto a = actual.View<R::UniformTableRows>(), b = expected.View<R::UniformTableRows>();
+    for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+        for (int j = 0; j < 5; ++j)
+            CHECK(a(iCell, j) == b(iCell, j));
+}
+
 TEST_CASE("Cauchy P3 viscous WBAP agrees with shared first-order, full and uncached basis")
 {
     const auto mesh = CFVTest::CartesianHexes(mpi, 8);

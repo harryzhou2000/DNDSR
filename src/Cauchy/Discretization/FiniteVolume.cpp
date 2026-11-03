@@ -980,8 +980,22 @@ namespace DNDS::Cauchy
             }
         }
         ValidateAuxValues(state, work.auxiliary, time);
-        const auto thermoRead = work.auxiliary.meanThermodynamics->Read();
-        const auto thermo = thermoRead.View<R::UniformTableRows>();
+        std::optional<R::Array<real>::ReadLease> thermoRead;
+        std::optional<DerivedFields::ReadScope> derivedOwned, derivedGhost;
+        MeanThermodynamicView thermo;
+        if (work.auxiliary.meanThermodynamics)
+        {
+            thermoRead.emplace(work.auxiliary.meanThermodynamics->Read());
+            thermo = thermoRead->View<R::UniformTableRows>();
+        }
+        else
+        {
+            DNDS_check_throw_info(work.auxiliary.derivedOwned && work.auxiliary.derivedGhost, "required mean thermodynamics are absent");
+            const auto typed = EquationDofs::Coupled(_data->equation.Schema(), state);
+            derivedOwned.emplace(work.auxiliary.derivedOwned->ReadCurrent(typed, _data->equation));
+            derivedGhost.emplace(work.auxiliary.derivedGhost->ReadCurrent(typed, _data->equation));
+            thermo = MeanThermodynamicView::Derived(*derivedOwned, &*derivedGhost);
+        }
         std::array<std::optional<R::Array<real>::ReadLease>, 4> auxiliaryReads;
         FieldView wave, pressure;
         const auto readAuxiliary = [&](const auto &field, int slot, FieldView &view)

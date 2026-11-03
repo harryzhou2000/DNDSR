@@ -27,7 +27,16 @@ namespace DNDS::Cauchy
     {
         AuxiliaryValues values;
         const index faces = index(_data->stencilFaces.size());
-        if (request.meanThermodynamics)
+        if (request.derived.ComponentNumber())
+        {
+            values._derivedThermodynamics = request.meanThermodynamics;
+            if (request.meanThermodynamics)
+                for (auto quantity : {DerivedQuantity::Pressure, DerivedQuantity::SoundSpeed, DerivedQuantity::DiffusionBound})
+                    request.derived.enabled[int(quantity)] = true;
+            values.derivedOwned.emplace(Metrics().Space(), request.derived);
+            values.derivedGhost.emplace(Metrics().Space(), request.derived, true);
+        }
+        if (request.meanThermodynamics && !values._derivedThermodynamics)
             values.meanThermodynamics.emplace(R::RowLayout::Dense(Metrics().NumCellProc(), 3));
         if (request.faceSpectralRadius)
             values.faceSpectralRadius.emplace(R::RowLayout::Dense(faces, 2));
@@ -54,6 +63,8 @@ namespace DNDS::Cauchy
         AuxiliaryValues buffers;
         CFV::FiniteVolumeRead geometry;
         std::optional<R::Array<real>::ReadLease> owned, ghost;
+        std::optional<EquationDofs> derivedSource;
+        std::optional<DerivedFields::ReadScope> derivedOwned, derivedGhost;
         std::array<std::optional<R::Array<real>::WriteLease>, 7> writes;
         std::array<R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows>, 7> values;
         std::optional<R::Array<real>::WriteLease> scratchWrite;
@@ -67,9 +78,26 @@ namespace DNDS::Cauchy
         {
             data->partition.Validate();
             owned.emplace(source.Owned().Read());
+            if (buffers.derivedOwned || buffers.derivedGhost)
+                derivedSource.emplace(EquationDofs::Coupled(data->equation.Schema(), source));
             const auto arrays = AuxiliaryArrays(buffers);
             try
             {
+                const std::optional<DerivedFields> *derived[]{&buffers.derivedOwned, &buffers.derivedGhost};
+                for (int part = 0; part < 2; ++part)
+                    if (*derived[part])
+                    {
+                        DNDS_check_throw_info((*derived[part])->GhostPart() == (part == 1), "derived auxiliary row part is incorrect");
+                        (void)(*derived[part])->Current(*derivedSource, data->equation);
+                        (*derived[part])->PreflightRefresh();
+                    }
+                if (buffers._derivedThermodynamics)
+                {
+                    DNDS_check_throw_info(buffers.derivedOwned && buffers.derivedGhost, "derived thermodynamics needs both row parts");
+                    for (const auto *part : {&*buffers.derivedOwned, &*buffers.derivedGhost})
+                        for (auto q : {DerivedQuantity::Pressure, DerivedQuantity::SoundSpeed, DerivedQuantity::DiffusionBound})
+                            DNDS_check_throw_info(part->Request().Has(q), "derived thermodynamic quantity is missing");
+                }
                 for (int k = 0; k < 7; ++k)
                     if (arrays[k])
                     {
@@ -126,8 +154,13 @@ namespace DNDS::Cauchy
             const auto &equation = data->equation;
             const auto &gas = equation.Gas();
             const auto metric = geometry.HostView();
+            std::optional<MeanThermodynamicView> derived;
+            if (buffers._derivedThermodynamics)
+                derived.emplace(MeanThermodynamicView::Derived(*derivedOwned, derivedGhost ? &*derivedGhost : nullptr));
             const auto prepared = [&](index iCell, const FlowState &u)
             {
+                if (derived)
+                    return Riemann::AcousticState{{u, (*derived)(iCell, 0)}, (*derived)(iCell, 1)};
                 if (writes[0])
                     return Riemann::AcousticState{{u, values[0](iCell, 0)}, values[0](iCell, 1)};
                 DNDS_check_throw_info(gas.Admissible(u), "invalid mean in auxiliary preparation");
@@ -153,8 +186,10 @@ namespace DNDS::Cauchy
                     if (spectral)
                     {
                         convection = std::max({convection, Riemann::SignalSpeed(leftData, normal), Riemann::SignalSpeed(rightData, normal)});
-                        const real scaleL = writes[0] ? values[0](sample.cell, 2) : equation.DiffusionScale(left);
-                        const real scaleR = sample.other != UnInitIndex && writes[0] ? values[0](sample.other, 2) : equation.DiffusionScale(right);
+                        const real scaleL = derived ? (*derived)(sample.cell, 2) : writes[0] ? values[0](sample.cell, 2)
+                                                                                             : equation.DiffusionScale(left);
+                        const real scaleR = sample.other != UnInitIndex && derived ? (*derived)(sample.other, 2) : sample.other != UnInitIndex && writes[0] ? values[0](sample.other, 2)
+                                                                                                                                                            : equation.DiffusionScale(right);
                         diffusion = std::max(diffusion, std::max(scaleL, scaleR) * area *
                                                             (1 / metric.GetCellVol(sample.cell) + 1 / metric.GetCellVol(sample.other == UnInitIndex ? sample.cell : sample.other)));
                     }
@@ -210,6 +245,11 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(phase == 0, "auxiliary core phase already executed");
             started = true;
             const FieldView mean{owned->View<R::UniformTableRows>(), {}};
+            if (buffers.derivedOwned)
+            {
+                RefreshDerivedFields(*derivedSource, data->equation, *buffers.derivedOwned, true);
+                derivedOwned.emplace(buffers.derivedOwned->ReadCurrent(*derivedSource, data->equation));
+            }
             Means(mean, 0, data->metrics.NumCell());
             Faces(mean, data->auxiliaryCoreFaces);
             Cells(data->partition.Core());
@@ -221,6 +261,11 @@ namespace DNDS::Cauchy
             // Failure here (an active halo writer) has not started dependent
             // work. The caller may wait for that transfer and retry this phase.
             ghost.emplace(source.Ghost().Read());
+            if (buffers.derivedGhost)
+            {
+                RefreshDerivedFields(*derivedSource, data->equation, *buffers.derivedGhost, true);
+                derivedGhost.emplace(buffers.derivedGhost->ReadCurrent(*derivedSource, data->equation));
+            }
             const FieldView mean{owned->View<R::UniformTableRows>(), ghost->View<R::UniformTableRows>()};
             Means(mean, data->metrics.NumCell(), data->metrics.NumCellProc());
             Faces(mean, data->auxiliaryDependentFaces);
@@ -272,6 +317,17 @@ namespace DNDS::Cauchy
             }
         for (int k = 0; k < 3; ++k)
             origin.ghosts[k] = *a[k] ? (*a[k])->Ghost().SharedStorage() : nullptr;
+        const std::optional<DerivedFields> *derived[]{&output.derivedOwned, &output.derivedGhost};
+        const std::optional<DerivedFields> *preparedDerived[]{&_state->buffers.derivedOwned, &_state->buffers.derivedGhost};
+        for (int part = 0; part < 2; ++part)
+        {
+            DNDS_check_throw_info(bool(*derived[part]) == bool(*preparedDerived[part]), "derived auxiliary selection changed");
+            if (*derived[part])
+            {
+                origin.derived[part] = (*derived[part])->Values().SharedStorage();
+                DNDS_check_throw_info(origin.derived[part] == (*preparedDerived[part])->Values().SharedStorage(), "derived auxiliary buffer replaced");
+            }
+        }
         output._origin = std::move(origin);
         _state.reset();
     }
@@ -341,6 +397,21 @@ namespace DNDS::Cauchy
         {
             DNDS_check_throw_info(!*field || (*field)->Space().Same(state.Space()), "auxiliary cell row space changed");
             DNDS_check_throw_info(origin.ghosts[iGhost++] == (*field ? (*field)->Ghost().SharedStorage() : nullptr), "auxiliary ghost storage was rebound");
+        }
+        if (values.derivedOwned || values.derivedGhost || origin.derived[0] || origin.derived[1])
+        {
+            const auto typed = EquationDofs::Coupled(_data->equation.Schema(), state);
+            const std::optional<DerivedFields> *derived[]{&values.derivedOwned, &values.derivedGhost};
+            for (int part = 0; part < 2; ++part)
+            {
+                DNDS_check_throw_info(bool(origin.derived[part]) == bool(*derived[part]), "derived auxiliary selection changed");
+                if (*derived[part])
+                {
+                    DNDS_check_throw_info((*derived[part])->GhostPart() == (part == 1), "derived auxiliary row part changed");
+                    DNDS_check_throw_info(origin.derived[part] == (*derived[part])->Values().SharedStorage(), "derived auxiliary allocation changed");
+                    const auto read = (*derived[part])->ReadCurrent(typed, _data->equation);
+                }
+            }
         }
     }
     real FiniteVolume::StableStep(const CFV::FVField &state, const AuxiliaryValues &values, real cfl, real time) const

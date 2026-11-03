@@ -158,6 +158,7 @@ namespace DNDS::CFV
         int Dimension() const;
         bool Axisymmetric() const;
         const Geom::EntitySpace &Cells() const;
+        const Algebra::DofSpace &Space() const;
         /// Lazily cached conservative cell-node-cell split, shared by copies
         /// and gradient/reconstruction consumers. Purely rank-local; no halo
         /// fetch or MPI is posted. Complete published node-star adjacency is

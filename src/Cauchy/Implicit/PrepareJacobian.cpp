@@ -163,6 +163,9 @@ namespace DNDS::Cauchy
         checkAlias(inversePseudoTime);
         if (auxiliary.meanThermodynamics)
             checkAlias(*auxiliary.meanThermodynamics);
+        for (const auto *derived : {&auxiliary.derivedOwned, &auxiliary.derivedGhost})
+            if (*derived)
+                checkAlias((*derived)->Values());
         for (const auto *field : {&auxiliary.cellWaveJump, &auxiliary.cellPressureMinimum})
             if (*field)
             {
@@ -175,10 +178,21 @@ namespace DNDS::Cauchy
         const RHSFieldView mean{owned.View<R::UniformTableRows>(), ghost.View<R::UniformTableRows>()};
         RHSAuxiliaryViews packet;
         std::array<std::optional<R::Array<real>::ReadLease>, 5> retained;
+        std::optional<DerivedFields::ReadScope> derivedOwned, derivedGhost;
         if (auxiliary.meanThermodynamics)
         {
             retained[0].emplace(auxiliary.meanThermodynamics->Read());
             packet.meanThermodynamics = retained[0]->View<R::UniformTableRows>();
+        }
+        else if (auxiliary.derivedOwned && auxiliary.derivedGhost &&
+                 auxiliary.derivedOwned->Request().Has(DerivedQuantity::Pressure) &&
+                 auxiliary.derivedOwned->Request().Has(DerivedQuantity::SoundSpeed) &&
+                 auxiliary.derivedOwned->Request().Has(DerivedQuantity::DiffusionBound))
+        {
+            const auto typed = EquationDofs::Coupled(_data->equation.Schema(), state);
+            derivedOwned.emplace(auxiliary.derivedOwned->ReadCurrent(typed, _data->equation));
+            derivedGhost.emplace(auxiliary.derivedGhost->ReadCurrent(typed, _data->equation));
+            packet.meanThermodynamics = MeanThermodynamicView::Derived(*derivedOwned, &*derivedGhost);
         }
         const auto bind = [&](const auto &field, int slot, auto &view)
         {

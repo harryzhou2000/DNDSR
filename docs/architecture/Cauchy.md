@@ -357,6 +357,39 @@ locally, including physical boundary states at the supplied stage time and
 periodic transformations into its incidence frame. Thermodynamics/transport
 remain equation-owned, BC values boundary-owned, and fluxes gas-agnostic.
 
+`AuxiliaryRequest::derived` selects an optional accompanying property bundle.
+`DerivedFields` stores only enabled scalar properties in a shared table, with
+separate owned/ghost instances. It is independent of the solved equation
+components and has no automatic transfer. The initial provider is perfect gas;
+future mixture providers must extend its model/units provenance and worker
+context before dispatch is enabled. A cheap perfect-gas workspace keeps its
+existing combined thermodynamic table by default. When derived storage is
+requested together with mean thermodynamics, pressure, sound speed and diffusion
+bounds join that table instead: `MeanThermodynamicView` projects columns for
+the stateless RHS and Jacobian without a second property copy.
+
+`EvaluateDerivedPoint` evaluates the enabled profile's local physics;
+`RefreshDerivedFields` refreshes every enabled field in one complete owned or
+ghost row part. It performs no MPI, stencil, reduction or conservative update.
+The auxiliary core refreshes owned properties while the separate input ghost
+writer may be active; the dependent phase refreshes ghosts after their input
+exchange. `onlyIfStale` reuses published values without acquiring a writer.
+Publication records source storage/generations, shape, equation row space and
+model parameters. Current reads retain source/property leases. External writes
+through a shared debug handle invalidate publication by generation. Controller
+refresh/publication calls must be serialized; a freshness query alone is not
+an access reservation.
+
+`ReadTemperatureGuess` permits a previously published temperature from an older
+solution generation, while preserving row/model compatibility. It exposes only
+temperature, never stale pressure or transport as current physics. Temperature
+means `T(U_mean)`, not average temperature. The perfect-gas provider does not need
+an iterative inversion; using this guess in a mixture inversion belongs to the
+shared-physics integration. Ordinary restart excludes these derived values.
+Python `Domain.make_derived_fields`, `DerivedFields.refresh/current/values`
+provide explicit local debugging access with shared allocation lifetime; raw
+`values` access does not certify freshness or refresh automatically.
+
 The unsplit convenience completes preparation with current host-visible mean
 halos. For overlap, `BeginAuxValues` returns a move-only `AuxiliaryPreparation`:
 
