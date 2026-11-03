@@ -582,9 +582,16 @@ to the caller; it is not an MPI exception-recovery mechanism.
 Discarded/rejected attempts restore it before retry. Accepted state and clock
 are published before committing BDF history. An external debug reader can reject
 publication collectively without advancing history; releasing it allows the
-same prepared candidate to commit. A stage correction cap rejects the physical
-candidate, never labels the capped inner solve converged. CSV output records
-stage count, nonlinear/linear iterations and residual-to-target ratio.
+same prepared candidate to commit. By default, an inner/FAS or DITR outer cap
+advances the last finite admissible iterate, following Euler's iteration-control
+policy. It does **not** label the capped solve converged. Set
+`implicit.rejectUnconvergedStages=true` to reject the whole physical attempt at
+any of these caps; caller-controlled retries then start from accepted state and
+the saved reconstruction/LVR history. Nonfinite corrections and inadmissible
+states still fail regardless of this option. CSV output records stage count,
+nonlinear/linear iterations and residual-to-target ratio, including ratios above
+one for accepted capped stages. A steady cap can therefore publish an iterate
+at unchanged physical time without proving steady convergence.
 
 Distributed tests recover a manufactured constant solution from nonconstant
 means, check unusable/bad correction handling, and exercise the connected

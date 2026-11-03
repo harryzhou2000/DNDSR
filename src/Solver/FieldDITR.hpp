@@ -11,6 +11,9 @@ namespace DNDS::ODE
     {
         real fraction = .55, theta = .9146;
         index iterations = 100;
+        /// Policy for a finite outer iterate at the cap. Stage solve callbacks
+        /// independently choose acceptance of their own bounded solves.
+        bool rejectUnconverged = true;
         void Validate() const
         {
             DNDS_check_throw_info(std::isfinite(fraction) && fraction > 0 && fraction < 1 &&
@@ -49,7 +52,10 @@ namespace DNDS::ODE
     /// a collective convergence decision for BOTH original H and I equations.
     /// Callbacks complete synchronously, keep provided storage, leave owned
     /// operator inputs and solve sources unchanged, and may refresh ghosts.
-    /// False is a rejected/capped trial and is reusable. A callback exception
+    /// False is a rejected/capped trial and is reusable. With cap rejection
+    /// disabled, true can also mean an accepted final unconverged iterate;
+    /// LastReport().converged retains the actual convergence result.
+    /// A callback exception
     /// may leave partial scratch; rebuild this object before retry. This class
     /// owns no accepted-state publication or time/history commit.
     class FieldDITR
@@ -189,7 +195,7 @@ namespace DNDS::ODE
                         return true;
                     }
                     if (iteration == _settings.iterations)
-                        return false;
+                        return !_settings.rejectUnconverged;
                     RunLocal([&]
                              {
                         // Midpoint residual H+theta*I, followed by endpoint I.

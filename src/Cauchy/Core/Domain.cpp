@@ -201,7 +201,7 @@ namespace DNDS::Cauchy
             _timeStepper->Commit();
         _lastAcceptedDt = _trialDt;
     }
-    void Domain::PublishTrial(real time, StateEpoch epoch, const R::Array<real> *reconstructionGuess)
+    void Domain::PublishTrial(real time, StateEpoch epoch, const R::Array<real> *reconstructionGuess, const R::Array<real> *limitedVRHistory)
     {
         // Agree local immediate-access availability before any accepted values
         // change. A retained debug/Python view must not allow a partial commit
@@ -218,7 +218,7 @@ namespace DNDS::Cauchy
             // available. A retained debug reader must not change the future
             // polynomial guess when it rejects the accompanying state load.
             if (reconstructionGuess)
-                _fv.RestoreReconstructionGuess(*_workspace, *reconstructionGuess);
+                _fv.RestoreReconstructionGuess(*_workspace, *reconstructionGuess, limitedVRHistory);
         }
         catch (...)
         {
@@ -319,7 +319,8 @@ namespace DNDS::Cauchy
         // A pending/rejected trial owns a different polynomial; its backup is
         // the accepted guess until publication, just as for checkpoint writing.
         const auto &guess = _restoreReconstruction ? *_reconstructionBackup : _fv.ReconstructionGuess(*_workspace).Owned();
-        _fv.RestoreReconstructionGuess(*_observationWorkspace, guess);
+        const auto *history = _restoreReconstruction ? (_limitedVRBackup ? &*_limitedVRBackup : nullptr) : _fv.LimitedVRHistory(*_workspace);
+        _fv.RestoreReconstructionGuess(*_observationWorkspace, guess, history);
         _fv.Evaluate(Flow(), *_observationResidual, *_observationWorkspace, _engine, _stream, _time);
     }
 }

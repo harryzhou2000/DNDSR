@@ -105,6 +105,8 @@ namespace DNDS::Cauchy
     class FiniteVolume
     {
         struct Data;
+        struct LimitedVRGeometry;
+        struct LimitedVRWorkspace;
         struct MatrixFreeJacobian;
         std::shared_ptr<const Data> _data;
 
@@ -208,7 +210,10 @@ namespace DNDS::Cauchy
         /// cell row identity or overwritten buffers before a result is reused.
         void ValidateAuxValues(const CFV::FVField &state, const AuxiliaryValues &values, real time = 0) const;
         real StableStep(const CFV::FVField &state, const AuxiliaryValues &values, real cfl, real time = 0) const;
-        /// Clear the polynomial initial guess at a synchronous workspace boundary.
+        /// Clear owned polynomial and retained LVR gates at a synchronous
+        /// workspace boundary. Local only; reserve all local destinations before
+        /// writing, and let the caller coordinate rank-local errors. Evaluate
+        /// refreshes coefficient ghosts before they are subsequently consumed.
         void ResetReconstruction(Workspace &workspace) const;
         /// Fixed-sweep VR carries a numerical initial guess between stages.
         /// Retain it in a restart for exact continuation; only owned values are
@@ -224,7 +229,20 @@ namespace DNDS::Cauchy
         Json ReconstructionMetadata() const;
         /// Validate shape/finite values collectively, then replace the owned
         /// initial guess. Caller serializes workspace and publication accesses.
-        void RestoreReconstructionGuess(Workspace &workspace, const Runtime::Array<real> &coefficients) const;
+        /// Optional LVR history is restored in the same write transaction.
+        /// Omitting it explicitly cold-starts that history when LVR is active.
+        void RestoreReconstructionGuess(Workspace &workspace, const Runtime::Array<real> &coefficients,
+                                        const Runtime::Array<real> *limitedVRHistory = nullptr) const;
+        /// Optional owned [shock,contact] retained LVR history. The returned
+        /// pointer borrows the workspace; a copied Array retains its allocation.
+        /// Release views before Evaluate.
+        /// Domain rollback/observations/warm restart preserve this with the VR
+        /// guess. RestoreReconstructionGuess restores both or cold-starts history.
+        const Runtime::Array<real> *LimitedVRHistory(const Workspace &workspace) const;
+        /// Most recent RHS's frozen alpha, not persistent restart state. It is
+        /// overwritten by Evaluate and cleared by ResetReconstruction; a warm
+        /// history restore does not prepare a new alpha. Same borrowing rules.
+        const Runtime::Array<real> *LimitedVRAlpha(const Workspace &workspace) const;
         /// Integrated d(V*U)/dt, owned rows only. Mean/rec/gradient exchanges are
         /// explicit inside this domain-level routine; numerical kernels use
         /// owned-only core inputs while ghost transfers are active. The caller
@@ -279,6 +297,7 @@ namespace DNDS::Cauchy
         void WriteVisualization(const CFV::FVField &state, const Workspace &workspace, const std::string &prefix, real time, int hdfDeflateLevel = 0) const;
 
     private:
+        index PrepareFaceCharacteristics(const CFV::FVField &state, CFV::FaceCharacteristicTransform &transform) const;
         std::shared_ptr<Workspace> BuildWorkspaceImpl(CFV::FVField &state, AuxiliaryRequest request, bool meanOnly) const;
         void EvaluateImpl(CFV::FVField &state, CFV::FVField &residual, Workspace &workspace,
                           Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time) const;

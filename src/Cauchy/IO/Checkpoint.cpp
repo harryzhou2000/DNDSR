@@ -59,6 +59,11 @@ namespace DNDS::Cauchy
                 if (settings.contains("numerics") && settings["numerics"].is_object())
                 {
                     auto &numerics = settings["numerics"];
+                    // Adding inactive limiter controls must not invalidate
+                    // older non-LVR checkpoints. Active LVR controls remain a
+                    // numerical compatibility requirement.
+                    if (numerics.value("limiter", "none") != "LVR")
+                        numerics.erase("limitedVR");
                     numerics.erase("cfv");
                     // Retuning a reconstruction solve changes neither stored
                     // means nor the compatible polynomial coefficient schema.
@@ -315,10 +320,11 @@ namespace DNDS::Cauchy
     {
         const MPIInfo mpi(_fv.Metrics().Communicator());
         const bool history = _timeStepper && _timeStepper->Method() == "bdf2" && _timeStepper->HasHistory();
-        int flags[]{int(includeReconstruction), -int(includeReconstruction), int(history), -int(history)};
-        MPI_Allreduce(MPI_IN_PLACE, flags, 4, MPI_INT, MPI_MIN, mpi.comm);
-        DNDS_check_throw_info(flags[0] == -flags[1] && flags[2] == -flags[3], "checkpoint optional sections differ between ranks");
-        const Json metadata{{"schema_version", 1}, {"mesh_envelope", 2}, {"flow", FlowSchema(_equation)}, {"reconstruction", _fv.ReconstructionMetadata()}, {"time_method", _timeStepper ? _timeStepper->Method() : "ssprk3"}, {"history", history}};
+        const bool limitedVRHistory = includeReconstruction && _fv.LimitedVRHistory(*_workspace);
+        int flags[]{int(includeReconstruction), -int(includeReconstruction), int(history), -int(history), int(limitedVRHistory), -int(limitedVRHistory)};
+        MPI_Allreduce(MPI_IN_PLACE, flags, 6, MPI_INT, MPI_MIN, mpi.comm);
+        DNDS_check_throw_info(flags[0] == -flags[1] && flags[2] == -flags[3] && flags[4] == -flags[5], "checkpoint optional sections differ between ranks");
+        const Json metadata{{"schema_version", 1}, {"mesh_envelope", 2}, {"flow", FlowSchema(_equation)}, {"reconstruction", _fv.ReconstructionMetadata()}, {"time_method", _timeStepper ? _timeStepper->Method() : "ssprk3"}, {"history", history}, {"limited_vr_history", limitedVRHistory}, {"limited_vr_history_schema", 1}};
         auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
         serializer->OpenFile(path, false);
         serializer->WriteInt("cauchy_format", 4);
@@ -338,6 +344,8 @@ namespace DNDS::Cauchy
         Runtime::WriteArray(Flow().Owned(), serializer, "flow", mpi);
         if (includeReconstruction)
             Runtime::WriteArray(_restoreReconstruction ? *_reconstructionBackup : _fv.ReconstructionGuess(*_workspace).Owned(), serializer, "reconstruction_guess", mpi);
+        if (limitedVRHistory)
+            Runtime::WriteArray(_restoreReconstruction ? *_limitedVRBackup : *_fv.LimitedVRHistory(*_workspace), serializer, "limited_vr_history", mpi);
         if (history)
         {
             serializer->WriteReal("history_dt", _timeStepper->PreviousDt());
@@ -381,6 +389,9 @@ namespace DNDS::Cauchy
             serializer->ReadReal("last_accepted_dt", lastDt);
         if (entries.count("reconstruction_guess"))
             reconstruction.emplace(Runtime::ReadArray<real>(serializer, "reconstruction_guess", mpi, shard));
+        std::optional<Runtime::Array<real>> limitedVRHistory;
+        if (entries.count("limited_vr_history"))
+            limitedVRHistory.emplace(Runtime::ReadArray<real>(serializer, "limited_vr_history", mpi, shard));
         std::optional<Runtime::Array<real>> history;
         real historyDt = 0;
         if (version == 4 && metadata.is_object() && metadata.value("history", false))
@@ -404,6 +415,10 @@ namespace DNDS::Cauchy
         int valid = name == _name && !storedConfig.is_discarded() && CompatibleConfig(storedConfig) == CompatibleConfig(resolved) && std::isfinite(time) && time >= 0 && step >= 0 &&
                     flow.RowCount() == ids.RowCount() && flow.Layout().Width() == 5;
         valid = valid && (version < 4 || (metadata.is_object() && metadata.value("schema_version", 0) == 1 && metadata.value("flow", Json()) == FlowSchema(_equation)));
+        valid = valid && (!limitedVRHistory || (reconstruction && limitedVRHistory->RowCount() == ids.RowCount() &&
+                                                !limitedVRHistory->Layout().IsVariable() && limitedVRHistory->Layout().Width() == 2));
+        valid = valid && (version < 4 || (metadata.is_object() && metadata.value("limited_vr_history", false) == bool(limitedVRHistory) &&
+                                          (!limitedVRHistory || metadata.value("limited_vr_history_schema", 0) == 1)));
         MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
         if (!valid)
         {
@@ -451,12 +466,23 @@ namespace DNDS::Cauchy
         MPI::LocalStage(mpi, [&]
                         { guess = Runtime::Array<real>(_fv.ReconstructionGuess(*_workspace).Owned().Layout()); });
         int compatibleReconstruction = bool(reconstruction) && (version < 4 || metadata.value("reconstruction", Json()) == _fv.ReconstructionMetadata());
+        const bool needsLimitedVRHistory = _fv.LimitedVRHistory(*_workspace) != nullptr;
+        compatibleReconstruction = compatibleReconstruction && (!needsLimitedVRHistory || limitedVRHistory);
         if (reconstruction)
             for (index iRow = 0; iRow < reconstruction->RowCount(); ++iRow)
                 compatibleReconstruction = compatibleReconstruction && reconstruction->RowSize(iRow) == guess.Layout().Width();
         MPI_Allreduce(MPI_IN_PLACE, &compatibleReconstruction, 1, MPI_INT, MPI_MIN, mpi.comm);
+        std::optional<Runtime::Array<real>> mappedLimitedVRHistory;
         if (compatibleReconstruction)
+        {
             transfer(*reconstruction, guess);
+            if (needsLimitedVRHistory)
+            {
+                MPI::LocalStage(mpi, [&]
+                                { mappedLimitedVRHistory.emplace(Runtime::RowLayout::Dense(_fv.Metrics().NumCell(), 2)); });
+                transfer(*limitedVRHistory, *mappedLimitedVRHistory);
+            }
+        }
         else
         {
             auto write = guess.Write();
@@ -485,7 +511,7 @@ namespace DNDS::Cauchy
                                 { restoredStepper->RestoreHistory(*restoredHistory, historyDt); });
             }
         }
-        PublishTrial(time, epoch, &guess);
+        PublishTrial(time, epoch, &guess, mappedLimitedVRHistory ? &*mappedLimitedVRHistory : nullptr);
         if (restoredStepper)
             _timeStepper.swap(restoredStepper);
         _lastAcceptedDt = lastDt;

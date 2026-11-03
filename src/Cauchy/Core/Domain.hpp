@@ -35,6 +35,7 @@ namespace DNDS::Cauchy
         real _lastCoupledTargetRatio = 0;
         DITRTimeSettings _ditrControl;
         std::optional<Runtime::Array<real>> _reconstructionBackup;
+        std::optional<Runtime::Array<real>> _limitedVRBackup;
         bool _restoreReconstruction = false;
         mutable std::optional<AuxiliaryValues> _timeAuxiliary;
         mutable std::optional<Runtime::TransferBinding> _timeMeanHalo;
@@ -48,12 +49,13 @@ namespace DNDS::Cauchy
         real _time = 0, _trialTime = 0, _trialDt = 0, _lastAcceptedDt = 0;
         bool _trialReady = false;
         index _lastFallbacks = 0;
-        bool _positivity = false, _steady = false;
+        bool _positivity = false, _steady = false, _rejectUnconvergedStages = false;
         real _lastAlpha = 1, _lastBeta = 1;
         index _lastAlphaCells = 0, _lastBetaCells = 0;
         index _lastCharacteristicFallbacks = 0;
         void UpdateStage(real dt, real historyWeight, real stageWeight, real stageTime);
-        void PublishTrial(real time, StateEpoch epoch, const Runtime::Array<real> *reconstructionGuess = nullptr);
+        void PublishTrial(real time, StateEpoch epoch, const Runtime::Array<real> *reconstructionGuess = nullptr,
+                          const Runtime::Array<real> *limitedVRHistory = nullptr);
         void EvaluateObservation();
         void InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh);
         void ConfigureTimeStep(const TimeSettings &time, int compressionPower);
@@ -95,7 +97,10 @@ namespace DNDS::Cauchy
         /// together. Inadmissible stages fail collectively without changing the
         /// accepted field/clock. dt may be rejected by the caller and retried.
         /// time.steady instead uses BDF1's infinite-dt limit: finite dt is ignored,
-        /// physical time is frozen, and the steady stage must converge to commit.
+        /// and physical time is frozen. By default an iteration cap advances
+        /// the final admissible iterate like Euler; LastImplicitStages retains
+        /// its actual convergence result. implicit.rejectUnconvergedStages
+        /// enables rejection on inner/FAS/DITR outer caps for steady or transient.
         void PrepareStep(real dt);
         void CommitStep();
         void DiscardStep() noexcept
@@ -124,7 +129,9 @@ namespace DNDS::Cauchy
         /// fixed-sweep continuation. BDF history is stored when applicable.
         /// Reads may change rank distribution/order or polynomial degree. Means
         /// and compatible history are remapped by exact canonical cell IDs;
-        /// missing/incompatible polynomial guesses cold-start at zero.
+        /// missing/incompatible polynomial guesses cold-start at zero. Active
+        /// LVR stores its retained shock/contact history with an opted-in warm
+        /// guess; both restore together or cold-start together.
         void WriteCheckpoint(const std::string &path, const Json &resolved, bool includeReconstruction = false) const;
         void ReadCheckpoint(const std::string &path, const Json &resolved);
     };

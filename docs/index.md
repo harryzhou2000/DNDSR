@@ -22,6 +22,8 @@ distributed gates and the measured gains and regressions by shape.
 ## Architecture entry points
 
 Cauchy development starts at the [solver contracts and ledger](architecture/Cauchy.md).
+The [native LVR guide](architecture/CauchyLimitedVR.md) documents penalty
+ownership, sensor ordering, halo phases and warm-state restart semantics.
 Native linear operators, Jacobian assembly, staged SGS and local ILU are described
 in [Cauchy implicit operator contracts](architecture/CauchyImplicit.md).
 The initial CPU single-domain flow solver uses native CFV P3/WBAP; numerical

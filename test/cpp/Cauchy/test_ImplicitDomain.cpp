@@ -155,39 +155,55 @@ TEST_CASE("Steady BDF1 infinite-dt mode removes a nonconstant residual without a
         CHECK(after[4] < before[4] * 1e-6);
     }
 }
-TEST_CASE("A capped steady solve cannot publish means, time or a prepared candidate")
+TEST_CASE("Capped steady stages advance by default and reject only with explicit control")
 {
-    C::DomainSettings settings;
-    settings.numerics.reconstruction = "variational";
-    settings.numerics.cfv.maxOrder = 3;
-    settings.numerics.reconstructionIterations = 3;
-    settings.implicit.iterations = 1;
-    settings.implicit.relativeTolerance = 0;
-    settings.implicit.absoluteTolerance = 1e-14;
-    SUBCASE("Single-level PTC") {}
-    SUBCASE("Polynomial FAS")
-    {
-        settings.implicit.multigrid.levels = 2;
-        settings.implicit.multigrid.cycles = 1;
-        settings.implicit.multigrid.coarseSmooth = 1;
-    }
-    C::TimeSettings time;
-    time.steady = true;
-    time.method = "esdirk4"; // Domain construction also applies the steady override.
-    C::Domain domain("capped-steady", CauchyTest::PeriodicQuads(mpi, 4), settings, time);
-    DensityWave(domain);
-    auto initial = domain.Discretization().Metrics().BuildField(domain.Flow().Owned().Layout());
-    DNDS::Algebra::Copy(initial, domain.Flow());
-    CHECK_THROWS(domain.Advance(.01));
-    CHECK(domain.Time() == 0);
-    CHECK(domain.Epoch().acceptedStep == 0);
-    REQUIRE(domain.LastImplicitStages().size() == 1);
-    CHECK_FALSE(domain.LastImplicitStages()[0].converged);
-    CHECK_THROWS(domain.CommitStep());
-    const auto expected = initial.Owned().Read(), actual = domain.Flow().Owned().Read();
-    for (DNDS::index iCell = 0; iCell < actual.View().RowCount(); ++iCell)
-        for (int j = 0; j < 5; ++j)
-            CHECK(actual.View()(iCell, j) == expected.View()(iCell, j));
+    for (bool fas : {false, true})
+        for (bool reject : {false, true})
+        {
+            C::DomainSettings settings;
+            settings.numerics.reconstruction = "variational";
+            settings.numerics.cfv.maxOrder = 3;
+            settings.numerics.reconstructionIterations = 3;
+            settings.implicit.iterations = 1;
+            settings.implicit.relativeTolerance = 0;
+            settings.implicit.absoluteTolerance = 1e-14;
+            if (fas)
+            {
+                settings.implicit.multigrid.levels = 2;
+                settings.implicit.multigrid.cycles = 1;
+                settings.implicit.multigrid.coarseSmooth = 1;
+            }
+            settings.implicit.rejectUnconvergedStages = reject;
+            C::TimeSettings time;
+            time.steady = true;
+            time.method = "esdirk4"; // Domain construction also applies the steady override.
+            C::Domain domain("capped-steady", CauchyTest::PeriodicQuads(mpi, 4), settings, time);
+            DensityWave(domain);
+            auto initial = domain.Discretization().Metrics().BuildField(domain.Flow().Owned().Layout());
+            DNDS::Algebra::Copy(initial, domain.Flow());
+            if (reject)
+                CHECK_THROWS(domain.Advance(.01));
+            else
+                CHECK_NOTHROW(domain.Advance(.01));
+            CHECK(domain.Time() == 0);
+            CHECK(domain.Epoch().acceptedStep == (reject ? 0 : 1));
+            REQUIRE(domain.LastImplicitStages().size() == 1);
+            CHECK_FALSE(domain.LastImplicitStages()[0].converged);
+            CHECK_THROWS(domain.CommitStep());
+            CHECK(domain.Discretization().Admissible(domain.Flow()));
+            const auto expected = initial.Owned().Read(), actual = domain.Flow().Owned().Read();
+            bool changed = false;
+            for (DNDS::index iCell = 0; iCell < actual.View().RowCount(); ++iCell)
+                for (int j = 0; j < 5; ++j)
+                {
+                    changed = changed || actual.View()(iCell, j) != expected.View()(iCell, j);
+                    if (reject)
+                        CHECK(actual.View()(iCell, j) == expected.View()(iCell, j));
+                }
+            int anyChanged = changed;
+            MPI_Allreduce(MPI_IN_PLACE, &anyChanged, 1, MPI_INT, MPI_MAX, mpi.comm);
+            CHECK(bool(anyChanged) == !reject);
+        }
 }
 TEST_CASE("Strict implicit acceptance requires settled VR in addition to a loose mean target")
 {
@@ -200,6 +216,7 @@ TEST_CASE("Strict implicit acceptance requires settled VR in addition to a loose
             settings.numerics.reconstructionIterations = 1;
             settings.numerics.reconstructionTolerance = 1e-30;
             settings.implicit.requireConvergedReconstruction = strict;
+            settings.implicit.rejectUnconvergedStages = true;
             settings.implicit.minIterations = 0;
             settings.implicit.iterations = 1;
             // Isolate VR acceptance: every finite mean residual meets this.
@@ -230,7 +247,7 @@ TEST_CASE("Strict implicit acceptance requires settled VR in addition to a loose
             CHECK(domain.LastImplicitStages()[0].reconstructionRelativeUpdate > settings.numerics.reconstructionTolerance);
         }
 }
-TEST_CASE("DITR coupled cap rejects the physical trial even when frozen stage solves converge")
+TEST_CASE("DITR coupled cap advances by default and rejects only with explicit control")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
     C::DomainSettings settings;
@@ -238,6 +255,10 @@ TEST_CASE("DITR coupled cap rejects the physical trial even when frozen stage so
     settings.implicit.minIterations = 0;
     settings.implicit.relativeTolerance = 1e-10;
     settings.implicit.absoluteTolerance = 1e-12;
+    bool reject = false;
+    SUBCASE("Euler cap policy") {}
+    SUBCASE("Explicit rejection") { reject = true; }
+    settings.implicit.rejectUnconvergedStages = reject;
     C::TimeSettings time;
     time.method = "ditr";
     time.ditr.iterations = 1;
@@ -247,7 +268,10 @@ TEST_CASE("DITR coupled cap rejects the physical trial even when frozen stage so
     DensityWave(domain);
     const auto before = Integral(domain);
     const auto version = domain.Flow().Owned().Version();
-    CHECK_THROWS_WITH_AS(domain.PrepareStep(.01), doctest::Contains("last_residual"), std::exception);
+    if (reject)
+        CHECK_THROWS_WITH_AS(domain.PrepareStep(.01), doctest::Contains("last_residual"), std::exception);
+    else
+        CHECK_NOTHROW(domain.PrepareStep(.01));
     CHECK(domain.Time() == 0);
     CHECK(domain.Epoch().acceptedStep == 0);
     CHECK(domain.Flow().Owned().Version() == version);
@@ -257,7 +281,15 @@ TEST_CASE("DITR coupled cap rejects the physical trial even when frozen stage so
     REQUIRE(domain.LastImplicitStages().size() == 2);
     for (const auto &inner : domain.LastImplicitStages())
         CHECK(inner.converged);
-    CHECK_THROWS(domain.CommitStep());
+    if (reject)
+        CHECK_THROWS(domain.CommitStep());
+    else
+    {
+        domain.CommitStep();
+        CHECK(domain.Time() == doctest::Approx(.01));
+        CHECK(domain.Epoch().acceptedStep == 1);
+        CHECK(domain.Discretization().Admissible(domain.Flow()));
+    }
 }
 int main(int argc, char **argv)
 {

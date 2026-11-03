@@ -60,6 +60,7 @@ namespace DNDS::Cauchy
         std::vector<index> auxiliaryCellOffsets, auxiliaryCellFaces;
         std::vector<real> auxiliaryFaceArea;
         std::optional<CFV::PolynomialSamplingPlan> positivitySamples;
+        std::shared_ptr<const LimitedVRGeometry> limitedVRGeometry;
         std::vector<index> positivityOffsets;
         ThermalBounds thermalBounds;
         // For each incidence quadrature, each side: [value,dx,dy,dz]*n modes.

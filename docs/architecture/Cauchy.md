@@ -74,6 +74,17 @@ redistribution transfer, not an application payload copy to normalize writing.
 The present HDF5 backend accepts host buffers only; device-resident direct I/O
 still rejects. See `RuntimeArrayIO` and `Cauchy/Checkpoint` distributed tests.
 
+For explicit in-memory conversion, `Runtime::ConvertLayout(array, layout)`
+allocates a destination and copies logical entries between AoS, SoA and AoSoA;
+CPU and CUDA placements are supported. The generic CUDA conversion is a
+setup/interop path, not a tuned bulk transpose. `Algebra::Copy(engine, stream,
+output, input)` instead fills a preallocated compatible DOF field using
+stride-aware CPU/CUDA kernels; only owned rows are copied, and callers refresh
+ghosts separately. Neither operation permutes an allocation in place.
+`array = ConvertLayout(array, layout)` rebinds the handle; retained views keep
+the former allocation alive. Ordinary `Array::CopyFrom` requires matching
+physical layouts.
+
 The foundation tests run at np1/2/4/8. They use an independent two-variable
 recurrence to compare shared and disjoint execution, reversed rank namespaces,
 rank-local rejection and retry epochs, empty local ownership, mixed physical

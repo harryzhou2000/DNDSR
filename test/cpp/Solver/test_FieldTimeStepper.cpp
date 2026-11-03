@@ -269,6 +269,15 @@ TEST_CASE("Native DITR nonautonomous convergence and capped retry distinguish ph
     CHECK_FALSE(capped.LastReport().converged);
     CHECK(capped.LastReport().iterations == 5);
     CHECK(Value(state) == 1);
+    const double cappedValue = Value(trial);
+    settings.rejectUnconverged = false;
+    O::FieldDITR acceptedCap(state, settings, [](Field &)
+                             { return O::FieldDITR::StageOperator{Evaluate(), Solve(), {}}; });
+    CHECK(acceptedCap.Prepare(state, trial, 0, .2, Evaluate(), Solve(), check));
+    CHECK_FALSE(acceptedCap.LastReport().converged);
+    CHECK(acceptedCap.LastReport().iterations == 5);
+    CHECK(Value(trial) == cappedValue);
+    CHECK(Value(state) == 1);
     CHECK(capped.Prepare(state, trial, 0, .001, Evaluate(), Solve(), check));
     CHECK(Value(trial) == doctest::Approx(std::cos(.001)).epsilon(2e-10));
     CHECK_THROWS(capped.Prepare(state, state, 0, .01, Evaluate(), Solve(), check));

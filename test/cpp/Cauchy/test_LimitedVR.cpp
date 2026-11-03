@@ -1,0 +1,362 @@
+#define DOCTEST_CONFIG_IMPLEMENT
+#include "doctest.h"
+#include "Cauchy/Core/Domain.hpp"
+#include "../Geom/NativeMeshOverlapFixture.hpp"
+#include "CartesianFixture.hpp"
+#include <limits>
+
+namespace C = DNDS::Cauchy;
+namespace R = DNDS::Runtime;
+namespace G = DNDS::Geom;
+using I = DNDS::index;
+static DNDS::MPIInfo mpi;
+
+static C::DomainSettings Settings(const std::string &variant, int layout = 0)
+{
+    C::DomainSettings settings;
+    settings.boundaries[std::to_string(G::BC_ID_DEFAULT_WALL)].kind = "extrapolate";
+    settings.execution.layout = layout == 0 ? "aos" : layout == 1 ? "soa"
+                                                                  : "aosoa32";
+    settings.numerics.reconstruction = "variational";
+    settings.numerics.cfv.maxOrder = 3;
+    settings.numerics.cfv.boundaryDerivativeWeights = {1, 0, 0, 0};
+    settings.numerics.reconstructionIterations = 2;
+    settings.numerics.flux = "Roe_M9";
+    settings.numerics.limiter = "LVR";
+    settings.numerics.limitedVR = DNDS::CFV::LimitedVRSettings::ForVariant(variant);
+    settings.numerics.positivity = true;
+    settings.numerics.faceFallback = false;
+    return settings;
+}
+static void Initialize(const C::FiniteVolume &fv, DNDS::CFV::FVField &mean, const C::PerfectGas &gas, bool expansion = false, bool constant = false)
+{
+    auto write = mean.Owned().Write();
+    const auto u = write.View<R::UniformTableRows>();
+    for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+    {
+        const bool left = fv.Metrics().GetCellCent(iCell)[0] < .5;
+        const auto value = constant ? gas.Conservative({1, .1, .2, 0, 1}) : expansion ? gas.Conservative({1, left ? 0. : 1., 0, 0, left ? 1. : 2.})
+                                                                                      : gas.Conservative({left ? 8. : 1.4, left ? 7. : 0., 0, 0, left ? 116.5 : 1.});
+        for (int j = 0; j < 5; ++j)
+            u(iCell, j) = value[j];
+    }
+}
+static void Append(std::vector<double> &values, const R::Array<double> &array)
+{
+    auto read = array.Read();
+    const auto view = read.View<R::UniformTableRows>();
+    for (I iCell = 0; iCell < view.RowCount(); ++iCell)
+        for (I j = 0; j < view.RowSize(iCell); ++j)
+        {
+            CHECK(std::isfinite(view(iCell, j)));
+            values.push_back(view(iCell, j));
+        }
+}
+static R::Array<double> Snapshot(const R::Array<double> &array)
+{
+    R::Array<double> result(array.Layout());
+    auto read = array.Read();
+    auto write = result.Write();
+    const auto input = read.View<R::UniformTableRows>();
+    const auto output = write.View<R::UniformTableRows>();
+    for (I iCell = 0; iCell < input.RowCount(); ++iCell)
+        for (I j = 0; j < input.RowSize(iCell); ++j)
+            output(iCell, j) = input(iCell, j);
+    return result;
+}
+TEST_CASE("LVR variants expand defaults per input layer with explicit overrides and strict validation")
+{
+    C::Json input{{"defaults", Settings("v3")}};
+    input["defaults"]["numerics"]["limitedVR"] = {{"variant", "v2"}, {"alphaMax", .75}};
+    input["domains"] = C::Json::array({C::Json{{"name", "fluid"}}});
+    input["domains"][0]["overrides"]["numerics"]["limitedVR"] = {{"neighborLayers", 2}, {"compression", {.1, .3}}};
+    const auto v2 = C::SimulationConfig::Resolve(input, mpi.size);
+    const auto &settings = v2.Domains()[0].settings.numerics.limitedVR;
+    CHECK(settings.variant == "v2");
+    CHECK(settings.alphaMax == .75);
+    CHECK(settings.contactAlphaMax == 0);
+    CHECK(settings.densityJump[0] == .2);
+    CHECK(settings.neighborLayers == 2);
+    CHECK((settings.compression == std::array<double, 2>{.1, .3}));
+    input["domains"][0]["overrides"]["numerics"]["limitedVR"]["variant"] = "v3";
+    const auto v3 = C::SimulationConfig::Resolve(input, mpi.size);
+    CHECK(v3.Domains()[0].settings.numerics.limitedVR.alphaMax == 1);
+    CHECK(v3.Domains()[0].settings.numerics.limitedVR.contactAlphaMax == 1);
+    CHECK(v3.Domains()[0].settings.numerics.limitedVR.neighborLayers == 2);
+    input["domains"][0]["overrides"]["numerics"]["limitedVR"]["variant"] = "v4";
+    CHECK_THROWS_AS(C::SimulationConfig::Resolve(input, mpi.size), std::exception);
+    input["domains"][0]["overrides"]["numerics"]["limitedVR"] = {{"pressureJump", {.1, .1}}};
+    CHECK_THROWS_AS(C::SimulationConfig::Resolve(input, mpi.size), std::exception);
+}
+TEST_CASE("Native Cauchy LVR prepares active v2/v3 targets identically across layouts and CPU schedules")
+{
+    const auto mesh = G::OverlapTest::BuildNativeFixture(mpi, mpi.size > 2, 24).mesh;
+    for (const std::string variant : {"v2", "v3"})
+        for (int layout = 0; layout < 3; ++layout)
+            for (bool sor : {false, true})
+            {
+                std::vector<double> expected;
+                for (bool overlap : {false, true})
+                    for (int workers : {0, 2})
+                    {
+                        auto settings = Settings(variant, layout);
+                        settings.execution.overlap = overlap;
+                        settings.numerics.cfv.SORInstead = sor;
+                        const auto equation = C::EquationSystem::Resolve(settings.equation);
+                        C::FiniteVolume fv(mesh, settings, equation);
+                        const auto shape = layout == 0 ? R::RowLayout::Dense(0, 5, 7) : layout == 1 ? R::RowLayout::ColMajor(0, 5, {16, 1})
+                                                                                                    : R::RowLayout::TiledColMajor(0, 5, 32);
+                        auto mean = fv.Metrics().BuildField(shape), residual = fv.Metrics().BuildField(shape);
+                        Initialize(fv, mean, equation.Gas());
+                        const auto version = mean.Owned().Version();
+                        auto work = fv.BuildWorkspace(mean);
+                        R::EagerEngine engine(workers, std::make_shared<R::AccessTrackingContext>());
+                        const auto stream = engine.CreateCPUStream();
+                        for (int iteration = 0; iteration < 2; ++iteration)
+                            fv.Evaluate(mean, residual, *work, engine, stream);
+                        CHECK(mean.Owned().Version() == version);
+                        CHECK(fv.LastFaceFallbacks(*work) == 0);
+                        REQUIRE(fv.LimitedVRAlpha(*work));
+                        REQUIRE(fv.LimitedVRHistory(*work));
+                        double maximum = 0;
+                        {
+                            auto read = fv.LimitedVRAlpha(*work)->Read();
+                            for (I iCell = 0; iCell < read.View().RowCount(); ++iCell)
+                                maximum = std::max(maximum, read.View()(iCell, 0));
+                        }
+                        MPI_Allreduce(MPI_IN_PLACE, &maximum, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+                        CHECK(maximum == doctest::Approx(std::max(settings.numerics.limitedVR.alphaMax, settings.numerics.limitedVR.contactAlphaMax)));
+                        std::vector<double> values;
+                        Append(values, residual.Owned());
+                        Append(values, fv.ReconstructionGuess(*work).Owned());
+                        Append(values, fv.FluxReconstruction(*work).Owned());
+                        Append(values, *fv.LimitedVRAlpha(*work));
+                        Append(values, *fv.LimitedVRHistory(*work));
+                        if (!overlap && workers == 0)
+                            expected = std::move(values);
+                        else
+                            CHECK(values == expected);
+                    }
+            }
+}
+TEST_CASE("Native Cauchy LVR expansion admission changes the shock gate while constant fields stay unlimited")
+{
+    const auto mesh = G::OverlapTest::BuildNativeFixture(mpi, mpi.size > 2, 24).mesh;
+    for (bool constant : {false, true})
+        for (bool expansion : {false, true})
+        {
+            auto settings = Settings("v2");
+            settings.numerics.limitedVR.detectExpansion = expansion;
+            const auto equation = C::EquationSystem::Resolve(settings.equation);
+            C::FiniteVolume fv(mesh, settings, equation);
+            auto mean = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
+            Initialize(fv, mean, equation.Gas(), true, constant);
+            auto work = fv.BuildWorkspace(mean);
+            R::EagerEngine engine(2);
+            const auto stream = engine.CreateCPUStream();
+            fv.Evaluate(mean, residual, *work, engine, stream);
+            double maximum = 0, norm = 0;
+            {
+                const auto alpha = fv.LimitedVRAlpha(*work)->Read(), rhs = residual.Owned().Read();
+                const auto a = alpha.View<R::FixedRows<1>>();
+                const auto r = rhs.View<R::UniformTableRows>();
+                for (I iCell = 0; iCell < a.RowCount(); ++iCell)
+                {
+                    maximum = std::max(maximum, a(iCell, 0));
+                    for (int j = 0; j < 5; ++j)
+                        norm = std::max(norm, std::abs(r(iCell, j)));
+                }
+            }
+            MPI_Allreduce(MPI_IN_PLACE, &maximum, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+            MPI_Allreduce(MPI_IN_PLACE, &norm, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+            if (constant || !expansion)
+                CHECK(maximum == 0);
+            else
+                CHECK(maximum > .1);
+            if (constant)
+                CHECK(norm < 1e-12);
+        }
+}
+TEST_CASE("LVR layer or capability differences reject before building divergent transfer bindings")
+{
+    if (mpi.size < 2)
+        return;
+    const auto mesh = G::OverlapTest::BuildNativeFixture(mpi, mpi.size > 2, 24).mesh;
+    for (bool inactive : {false, true})
+    {
+        auto settings = Settings("v3");
+        if (inactive && mpi.rank == 0)
+            settings.numerics.limitedVR.alphaMax = settings.numerics.limitedVR.contactAlphaMax = 0;
+        else
+            settings.numerics.limitedVR.neighborLayers = mpi.rank == 0 ? 1 : 0;
+        C::FiniteVolume fv(mesh, settings, C::EquationSystem::Resolve(settings.equation));
+        auto mean = fv.Metrics().BuildField(5);
+        CHECK_THROWS_WITH_AS(fv.BuildWorkspace(mean), doctest::Contains(inactive ? "LVR capability differs" : "LVR configuration differs"), std::exception);
+    }
+}
+TEST_CASE("Zero LVR caps recover the unlimited operator and omit unnecessary gate work")
+{
+    const auto mesh = G::OverlapTest::BuildNativeFixture(mpi, mpi.size > 2, 24).mesh;
+    std::vector<double> expected;
+    for (bool disabled : {false, true})
+    {
+        auto settings = Settings("v3");
+        settings.numerics.limitedVR.alphaMax = settings.numerics.limitedVR.contactAlphaMax = 0;
+        if (disabled)
+            settings.numerics.limiter = "none";
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto mean = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
+        Initialize(fv, mean, equation.Gas());
+        auto work = fv.BuildWorkspace(mean);
+        R::EagerEngine engine;
+        const auto stream = engine.CreateCPUStream();
+        for (int iteration = 0; iteration < 2; ++iteration)
+            fv.Evaluate(mean, residual, *work, engine, stream);
+        CHECK_FALSE(fv.LimitedVRHistory(*work));
+        CHECK_FALSE(fv.LimitedVRAlpha(*work));
+        std::vector<double> values;
+        Append(values, residual.Owned());
+        Append(values, fv.ReconstructionGuess(*work).Owned());
+        Append(values, fv.FluxReconstruction(*work).Owned());
+        if (!disabled)
+            expected = std::move(values);
+        else
+            CHECK(values == expected);
+    }
+}
+TEST_CASE("LVR history errors reject before publication and full warm-state restoration is atomic")
+{
+    const auto mesh = G::OverlapTest::BuildNativeFixture(mpi, mpi.size > 2, 24).mesh;
+    const auto settings = Settings("v3");
+    const auto equation = C::EquationSystem::Resolve(settings.equation);
+    C::FiniteVolume fv(mesh, settings, equation);
+    auto mean = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
+    Initialize(fv, mean, equation.Gas());
+    auto work = fv.BuildWorkspace(mean);
+    R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
+    const auto stream = engine.CreateCPUStream();
+    fv.Evaluate(mean, residual, *work, engine, stream);
+    auto guess = Snapshot(fv.ReconstructionGuess(*work).Owned()), history = Snapshot(*fv.LimitedVRHistory(*work));
+    const auto meanVersion = mean.Owned().Version(), residualVersion = residual.Owned().Version();
+    std::optional<R::Array<double>::ReadLease> held;
+    if (mpi.rank == 0)
+        held.emplace(fv.LimitedVRHistory(*work)->Read());
+    CHECK_THROWS_AS(fv.Evaluate(mean, residual, *work, engine, stream), std::exception);
+    held.reset();
+    CHECK(mean.Owned().Version() == meanVersion);
+    CHECK(residual.Owned().Version() == residualVersion);
+    std::vector<double> before, after;
+    Append(before, guess);
+    Append(before, history);
+    Append(after, fv.ReconstructionGuess(*work).Owned());
+    Append(after, *fv.LimitedVRHistory(*work));
+    CHECK(before == after);
+    // Failed execution outputs are replaced. Accepted means and both warm
+    // inputs remain available, including on ranks that observed a peer error.
+    auto recovered = fv.BuildWorkspace(mean), reference = fv.BuildWorkspace(mean);
+    fv.RestoreReconstructionGuess(*recovered, guess, &history);
+    fv.RestoreReconstructionGuess(*reference, guess, &history);
+    auto referenceResidual = fv.Metrics().BuildField(5);
+    fv.Evaluate(mean, residual, *recovered, engine, stream);
+    fv.Evaluate(mean, referenceResidual, *reference, engine, stream);
+    before.clear();
+    after.clear();
+    Append(before, residual.Owned());
+    Append(after, referenceResidual.Owned());
+    CHECK(before == after);
+    auto badHistory = Snapshot(history);
+    if (mpi.rank == 0)
+    {
+        auto write = badHistory.Write();
+        write.View()(0, 0) = std::numeric_limits<double>::quiet_NaN();
+    }
+    before.clear();
+    Append(before, fv.ReconstructionGuess(*reference).Owned());
+    Append(before, *fv.LimitedVRHistory(*reference));
+    CHECK_THROWS_AS(fv.RestoreReconstructionGuess(*reference, guess, &badHistory), std::exception);
+    after.clear();
+    Append(after, fv.ReconstructionGuess(*reference).Owned());
+    Append(after, *fv.LimitedVRHistory(*reference));
+    CHECK(before == after);
+    // A conflicting history destination cannot first overwrite coefficients.
+    held.emplace(fv.LimitedVRHistory(*reference)->Read());
+    CHECK_THROWS_AS(fv.RestoreReconstructionGuess(*reference, guess, &history), std::exception);
+    held.reset();
+    after.clear();
+    Append(after, fv.ReconstructionGuess(*reference).Owned());
+    Append(after, *fv.LimitedVRHistory(*reference));
+    CHECK(before == after);
+    CHECK_NOTHROW(fv.RestoreReconstructionGuess(*reference, guess, &history));
+    before.clear();
+    Append(before, fv.ReconstructionGuess(*reference).Owned());
+    Append(before, *fv.LimitedVRHistory(*reference));
+    held.emplace(fv.LimitedVRHistory(*reference)->Read());
+    CHECK_THROWS_AS(fv.ResetReconstruction(*reference), std::exception);
+    held.reset();
+    after.clear();
+    Append(after, fv.ReconstructionGuess(*reference).Owned());
+    Append(after, *fv.LimitedVRHistory(*reference));
+    CHECK(before == after); // A local reset conflict must not erase the polynomial first.
+    fv.ResetReconstruction(*reference);
+    after.clear();
+    Append(after, fv.ReconstructionGuess(*reference).Owned());
+    Append(after, *fv.LimitedVRHistory(*reference));
+    Append(after, *fv.LimitedVRAlpha(*reference));
+    for (const auto value : after)
+        CHECK(value == 0);
+}
+TEST_CASE("LVR periodic mean and target halos agree across split and unsplit CPU execution")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 8);
+    for (const std::string variant : {"v2", "v3"})
+    {
+        std::vector<double> expected;
+        for (bool overlap : {false, true})
+        {
+            auto settings = Settings(variant, 1);
+            settings.boundaries.clear(); // Fully periodic fixture has no physical wall zone.
+            settings.execution.overlap = overlap;
+            const auto equation = C::EquationSystem::Resolve(settings.equation);
+            C::FiniteVolume fv(mesh, settings, equation);
+            auto mean = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
+            Initialize(fv, mean, equation.Gas());
+            const auto workspace = fv.BuildWorkspace(mean);
+            R::EagerEngine engine(overlap ? 2 : 0);
+            const auto stream = engine.CreateCPUStream();
+            for (int evaluation = 0; evaluation < 2; ++evaluation)
+                fv.Evaluate(mean, residual, *workspace, engine, stream, 0);
+            std::vector<double> actual;
+            Append(actual, residual.Owned());
+            Append(actual, fv.ReconstructionGuess(*workspace).Owned());
+            Append(actual, *fv.LimitedVRHistory(*workspace));
+            Append(actual, *fv.LimitedVRAlpha(*workspace));
+            if (!overlap)
+                expected = actual;
+            else
+                CHECK(actual == expected);
+            double maximum = 0;
+            {
+                const auto read = fv.LimitedVRAlpha(*workspace)->Read();
+                const auto alpha = read.View<R::FixedRows<1>>();
+                for (I iCell = 0; iCell < alpha.RowCount(); ++iCell)
+                    maximum = std::max(maximum, alpha(iCell, 0));
+            }
+            MPI_Allreduce(MPI_IN_PLACE, &maximum, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+            CHECK(maximum > .25); // Exercise active periodic target coefficients.
+        }
+    }
+}
+int main(int argc, char **argv)
+{
+    int provided = 0;
+    MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &provided);
+    mpi.setWorld();
+    int result;
+    {
+        doctest::Context context(argc, argv);
+        result = context.run();
+    }
+    MPI_Finalize();
+    return result;
+}

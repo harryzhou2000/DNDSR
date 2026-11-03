@@ -140,6 +140,10 @@ namespace DNDS::Cauchy
             controls.implicit.multigrid.levels = 0;
             controls.numerics.reconstruction = level == 0 ? "gradient" : "constant";
             controls.numerics.cfv.maxOrder = 1;
+            // LVR's fine penalty targets this explicit limited O2 fidelity.
+            // A coarse gradient operator has no high-order VR row to penalize.
+            if (controls.numerics.limiter == "LVR")
+                controls.numerics.limiter = "WBAP";
             if (level)
                 controls.numerics.limiter = "none";
             data.coarse.push_back(std::make_unique<Data::Coarse>(mesh, controls, EquationSystem::Resolve(settings.equation), state.Owned().Layout(), engine, stream));

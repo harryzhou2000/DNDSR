@@ -41,7 +41,9 @@ namespace DNDS::Cauchy
                         Runtime::EagerEngine &engine, Runtime::ExecutionStream stream, const DomainSettings &settings);
         /// Solve mass*U-rhsScale*(R(U)/V)=source. Source is owned and immutable;
         /// all domain ranks enter with identical controls. Returns unconverged
-        /// on a correction cap; the caller must reject that physical trial.
+        /// on a correction cap; the caller chooses whether to advance that
+        /// finite iterate or reject the physical trial. The report never labels
+        /// a capped, unconverged solve as converged.
         /// Nonfinite/unusable linear corrections and inadmissible states throw.
         /// PP uses Euler alpha compression/flow5 repair only when requested.
         /// Strict reconstruction acceptance, when requested, additionally checks

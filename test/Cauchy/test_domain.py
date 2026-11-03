@@ -14,7 +14,7 @@ from DNDSR import DNDS, Geom
 from DNDSR.Cauchy import Domain, PhysicalStepLimit
 
 
-def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=False, time_pp=False):
+def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=False, time_pp=False, lvr_variant=None):
     mpi = DNDS.MPIInfo()
     mpi.setWorld()
     path = Path(__file__).resolve().parents[2] / "data/mesh/Uniform_3x3_wall.cgns"
@@ -32,6 +32,12 @@ def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=Fa
     }, "time": {"method": method, "steady": steady, "positivity": {"enabled": time_pp}}}
     if method == "ditr":
         config["time"]["ditr"] = {"minIterations": 1}
+    if lvr_variant is not None:
+        config["defaults"]["numerics"].update({
+            "reconstruction": "variational", "cfv": {"maxOrder": 3},
+            "limiter": "LVR", "limitedVR": {"variant": lvr_variant},
+            "positivity": True, "faceFallback": False,
+        })
     return Domain(mesh, json.dumps(config)), primitive
 
 
@@ -147,4 +153,23 @@ def test_physical_step_selection_retains_state_and_restores_growth_history(tmp_p
     domain.read_checkpoint(path, '{"test":"physical-step-python"}')
     assert domain.previous_dt == .001
     assert domain.limit_physical_step(.1).dt == .002
+    np.testing.assert_allclose(flow.numpy(), before, atol=3e-14)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("variant,layout", [("v2", "soa"), ("v3", "aosoa32")])
+def test_native_lvr_config_and_warm_restart_through_shared_python_arrays(tmp_path, variant, layout):
+    domain, _ = build_domain(layout=layout, method="bdf1", lvr_variant=variant)
+    flow = domain.flow
+    before = flow.numpy().copy()
+    domain.advance(.001)
+    assert domain.step == 1 and domain.time == .001
+    assert domain.implicit_stages[0].converged
+    np.testing.assert_allclose(flow.numpy(), before, atol=3e-14)
+    path = MPI.COMM_WORLD.bcast(str(tmp_path / "lvr.h5") if MPI.COMM_WORLD.rank == 0 else None, root=0)
+    domain.write_checkpoint(path, '{"test":"lvr-python"}', include_reconstruction=True)
+    domain.advance(.001)
+    domain.read_checkpoint(path, '{"test":"lvr-python"}')
+    assert domain.flow.identity == flow.identity
+    assert domain.step == 1 and domain.time == .001
     np.testing.assert_allclose(flow.numpy(), before, atol=3e-14)

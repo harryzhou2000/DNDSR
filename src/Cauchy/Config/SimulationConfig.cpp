@@ -68,6 +68,15 @@ namespace DNDS::Cauchy
         {
             if (patch.is_object() && target.is_object())
             {
+                const std::string limitedVRPath = "/numerics/limitedVR";
+                if (path.size() >= limitedVRPath.size() && path.compare(path.size() - limitedVRPath.size(), limitedVRPath.size(), limitedVRPath) == 0 && patch.contains("variant"))
+                {
+                    // Like an input preset, a variant selects explicit defaults
+                    // for this layer; fields beside it then override them and a
+                    // later layer wins. Save expanded controls and provenance.
+                    target = CFV::LimitedVRSettings::ForVariant(patch.at("variant").get<std::string>());
+                    Origin(target, path, source + " LVR variant defaults", origins);
+                }
                 if (!patch.empty())
                     origins.erase(path);
                 for (const auto &[key, child] : patch.items())
@@ -117,6 +126,7 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(numerics.reconstructionIterations > 0 && std::isfinite(numerics.reconstructionTolerance) && numerics.reconstructionTolerance >= 0,
                                   "invalid Cauchy numerical controls");
             numerics.cfv.Validate();
+            numerics.limitedVR.Validate();
             const auto &riemann = numerics.riemann;
             DNDS_check_throw_info((numerics.flux != "Roe_M3" && numerics.flux != "Roe_M5") || riemann.fixScale > 0,
                                   "low-dissipation Roe flux requires a positive fixScale divisor");
@@ -244,8 +254,9 @@ namespace DNDS::Cauchy
         require(s.numerics.reconstruction == "constant" || s.numerics.reconstruction == "gradient" || s.numerics.reconstruction == "variational", "reconstruction " + s.numerics.reconstruction);
         require(s.numerics.gradient == "leastSquares" || s.numerics.gradient == "greenGauss" || s.numerics.gradient == "ggmp", "gradient " + s.numerics.gradient);
         require(s.numerics.viscousGradient == "primitive" || s.numerics.viscousGradient == "polynomial", "viscous gradient " + s.numerics.viscousGradient);
-        require(s.numerics.limiter == "none" || s.numerics.limiter == "WBAP", "limiter " + s.numerics.limiter);
+        require(s.numerics.limiter == "none" || s.numerics.limiter == "WBAP" || s.numerics.limiter == "LVR", "limiter " + s.numerics.limiter);
         require(s.numerics.limiter != "WBAP" || s.numerics.reconstruction != "constant", "WBAP needs polynomial reconstruction");
+        require(s.numerics.limiter != "LVR" || (s.numerics.reconstruction == "variational" && s.numerics.cfv.maxOrder >= 2), "LVR needs degree2/3 variational reconstruction");
         require(s.numerics.cfv.cacheDiffBase, "Cauchy residual requires cached face basis derivatives");
         require(!s.implicit.multigrid.levels || (s.numerics.reconstruction == "variational" && s.numerics.cfv.maxOrder >= 2), "polynomial FAS requires high-order variational reconstruction");
         for (const auto &[zone, condition] : s.boundaries)

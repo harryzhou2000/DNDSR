@@ -1,4 +1,4 @@
-#include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
+#include "Cauchy/Discretization/LimitedVRInternal.hpp"
 #include "Cauchy/Physics/FlowProfile.hpp"
 #include "Cauchy/Physics/ReconstructionPositivity.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
@@ -84,6 +84,7 @@ namespace DNDS::Cauchy
         CFV::FVField gradient;
         std::optional<CFV::FVField> conservativeGradient;
         CFV::FVField primitive;
+        std::unique_ptr<LimitedVRWorkspace> limitedVR;
         std::optional<CFV::FVField> lowResidual;
         R::Array<real> positivityValues;
         // Only the optional progressive-order policy needs a second sampled
@@ -125,9 +126,11 @@ namespace DNDS::Cauchy
                 conservativeGradient.emplace(data.metrics.BuildField(5 * data.metrics.Dimension()));
             if (!meanOnly && data.equation.Viscous() && data.settings.numerics.viscousGradient == "primitive")
                 primitiveBoundary.emplace(data.gradient.BuildBoundaryValues(5));
+            if (!meanOnly && data.limitedVRGeometry)
+                limitedVR = std::make_unique<LimitedVRWorkspace>(data, reconstruction);
             if (!meanOnly && data.settings.numerics.positivity)
                 lowResidual.emplace(data.metrics.BuildField(5));
-            if (!meanOnly && data.settings.numerics.limiter == "WBAP" && data.settings.numerics.characteristicLimiter)
+            if (!meanOnly && (data.settings.numerics.limiter == "WBAP" || limitedVR) && data.settings.numerics.characteristicLimiter)
                 characteristic = data.reconstruction.BuildFaceTransform(0, 5);
             if (!meanOnly && (data.settings.numerics.limiter == "WBAP" || data.settings.numerics.positivity))
             {
@@ -166,9 +169,13 @@ namespace DNDS::Cauchy
         MPI::LocalStage(mesh->getMPI(), [&]
                         {
             settings.numerics.ValidatePositivity();
+            settings.numerics.limitedVR.Validate();
+            DNDS_check_throw_info(settings.numerics.limiter != "LVR" || (settings.numerics.reconstruction == "variational" && settings.numerics.cfv.maxOrder >= 2),
+                                  "LVR requires degree2/3 variational reconstruction");
             DNDS_check_throw_info(settings.numerics.viscousGradient == "primitive" || settings.numerics.viscousGradient == "polynomial",
                                   "unknown Cauchy viscous gradient scheme"); });
         auto data = std::make_shared<Data>(std::move(mesh), ResolveSweepOrdering(settings), equation);
+        const bool limitedVR = settings.numerics.limiter == "LVR" && (settings.numerics.limitedVR.alphaMax > 0 || settings.numerics.limitedVR.contactAlphaMax > 0);
         auto meshRead = data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto topology = meshRead.HostView();
         auto geometry = data->metrics.AcquireRead();
@@ -307,7 +314,7 @@ namespace DNDS::Cauchy
             while (entry < data->offsets[point.cell + 1] && data->samples[entry].point != globalPoint) ++entry;
             DNDS_check_throw_info(entry < data->offsets[point.cell + 1], "boundary quadrature missing from cell incidences");
         }
-        if (settings.numerics.positivity)
+        if (settings.numerics.positivity || limitedVR)
         {
             data->positivityOffsets.resize(size_t(data->metrics.NumCell()) + 1, 0);
             for (index iCell = 0; iCell < data->metrics.NumCell(); ++iCell)
@@ -337,7 +344,8 @@ namespace DNDS::Cauchy
                 }
             }
             data->positivitySamples.emplace(data->reconstruction, cells, points, false);
-        } });
+        }
+        if (limitedVR) data->limitedVRGeometry = std::make_shared<LimitedVRGeometry>(*data); });
         // Zone presence is a domain-global property; do not reject a condition
         // just because this partition has no wall faces. Only small BC IDs move.
         std::vector<int> zones(localZones.begin(), localZones.end()), counts(data->mesh->mpi.size), starts(counts.size() + 1, 0);
@@ -374,14 +382,16 @@ namespace DNDS::Cauchy
         const bool channels[]{meanOnly, request.meanThermodynamics, request.faceSpectralRadius, request.faceWaveJump,
                               request.facePressureMinimum, request.cellSpectralSum, request.cellWaveJump, request.cellPressureMinimum, wave, pressure,
                               _data->equation.Viscous(), _data->settings.numerics.viscousGradient == "polynomial",
-                              _data->settings.numerics.viscousLimited, _data->settings.numerics.noGRPOnWall};
-        int flags[28]{};
-        for (int j = 0; j < 14; ++j)
+                              _data->settings.numerics.viscousLimited, _data->settings.numerics.noGRPOnWall,
+                              _data->settings.numerics.limiter == "LVR", bool(_data->limitedVRGeometry)};
+        constexpr int channelNumber = sizeof(channels) / sizeof(channels[0]);
+        int flags[2 * channelNumber]{};
+        for (int j = 0; j < channelNumber; ++j)
         {
             flags[2 * j] = int(channels[j]);
             flags[2 * j + 1] = -int(channels[j]);
         }
-        MPI_Allreduce(MPI_IN_PLACE, flags, 28, MPI_INT, MPI_MIN, Metrics().Communicator());
+        MPI_Allreduce(MPI_IN_PLACE, flags, 2 * channelNumber, MPI_INT, MPI_MIN, Metrics().Communicator());
         // Equal requested buffers cannot mask different numerical policies:
         // one rank may ignore a stencil that another rank uses in its flux.
         DNDS_check_throw_info(flags[16] == -flags[17] && flags[18] == -flags[19], "Riemann stencil capability differs between domain ranks");
@@ -389,6 +399,28 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(flags[2 * j] == -flags[2 * j + 1], "FV workspace mode or auxiliary channels differ between domain ranks");
         for (int j = 10; j < 14; ++j)
             DNDS_check_throw_info(flags[2 * j] == -flags[2 * j + 1], "FV viscous policy differs between domain ranks");
+        for (int j = 14; j < channelNumber; ++j)
+            DNDS_check_throw_info(flags[2 * j] == -flags[2 * j + 1], "LVR capability differs between domain ranks");
+        if (_data->settings.numerics.limiter == "LVR")
+        {
+            const MPIInfo mpi(Metrics().Communicator());
+            std::string local, reference;
+            MPI::LocalStage(mpi, [&]
+                            {
+                local = Json(_data->settings).dump();
+                DNDS_check_throw_info(local.size() <= size_t(INT_MAX), "LVR setup configuration exceeds MPI count range"); });
+            int length = mpi.rank == 0 ? int(local.size()) : 0;
+            MPI_Bcast(&length, 1, MPI_INT, 0, mpi.comm);
+            MPI::LocalStage(mpi, [&]
+                            { reference = mpi.rank == 0 ? local : std::string(size_t(length), '\0'); });
+            MPI_Bcast(reference.data(), length, MPI_CHAR, 0, mpi.comm);
+            // Layer counts change the collective/halo schedule. Exact setup
+            // agreement also rejects silent threshold/model mismatches; no
+            // hash collision or per-iteration agreement is involved.
+            int agree = local == reference;
+            MPI_Allreduce(MPI_IN_PLACE, &agree, 1, MPI_INT, MPI_MIN, mpi.comm);
+            DNDS_check_throw_info(agree, "LVR configuration differs between domain ranks");
+        }
         auto work = std::make_shared<Workspace>(*_data, state, meanOnly);
         work->auxiliary = BuildAuxiliaryValues(request);
         if (work->auxiliary.cellWaveJump)
@@ -415,7 +447,43 @@ namespace DNDS::Cauchy
     void FiniteVolume::ResetReconstruction(Workspace &workspace) const
     {
         DNDS_check_throw_info(workspace.owner == _data.get(), "foreign FV workspace");
-        Algebra::Fill(workspace.reconstruction.coefficients, 0.);
+        // DITR's midpoint workspace is trial-local. Its retained limiter gates
+        // must be cold with its polynomial, including after restart/retry.
+        // Reserve every destination before changing any local warm state.
+        std::optional<R::Array<real>::WriteLease> coefficients, history, alpha;
+        try
+        {
+            coefficients.emplace(workspace.reconstruction.coefficients.Owned().Write());
+            if (workspace.limitedVR)
+            {
+                history.emplace(workspace.limitedVR->previous.Write());
+                alpha.emplace(workspace.limitedVR->alpha.Write());
+            }
+        }
+        catch (...)
+        {
+            if (coefficients)
+                coefficients->CancelUnmodified();
+            if (history)
+                history->CancelUnmodified();
+            if (alpha)
+                alpha->CancelUnmodified();
+            throw;
+        }
+        const auto values = coefficients->View<R::UniformTableRows>();
+        for (index iCell = 0; iCell < values.RowCount(); ++iCell)
+            for (index j = 0; j < values.RowSize(iCell); ++j)
+                values(iCell, j) = 0;
+        if (history)
+        {
+            const auto h = history->View<R::FixedRows<2>>();
+            const auto a = alpha->View<R::FixedRows<1>>();
+            for (index iCell = 0; iCell < h.RowCount(); ++iCell)
+            {
+                h(iCell, 0) = h(iCell, 1) = 0;
+                a(iCell, 0) = 0;
+            }
+        }
         workspace.fluxReady = false;
     }
     const CFV::FVField &FiniteVolume::ReconstructionGuess(const Workspace &workspace) const
@@ -429,7 +497,7 @@ namespace DNDS::Cauchy
                               "flux reconstruction requires this plan's prepared workspace");
         return workspace.Flux().coefficients;
     }
-    void FiniteVolume::RestoreReconstructionGuess(Workspace &workspace, const R::Array<real> &coefficients) const
+    void FiniteVolume::RestoreReconstructionGuess(Workspace &workspace, const R::Array<real> &coefficients, const R::Array<real> *limitedVRHistory) const
     {
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
                         {
@@ -441,20 +509,41 @@ namespace DNDS::Cauchy
             const auto values = read.View<R::UniformTableRows>();
             for (index iCell = 0; iCell < values.RowCount(); ++iCell)
                 for (index j = 0; j < values.RowSize(iCell); ++j)
-                    DNDS_check_throw_info(std::isfinite(values(iCell, j)), "nonfinite restart reconstruction guess"); });
+                    DNDS_check_throw_info(std::isfinite(values(iCell, j)), "nonfinite restart reconstruction guess");
+            DNDS_check_throw_info(workspace.limitedVR || !limitedVRHistory, "LVR history requires an active matching workspace");
+            if (limitedVRHistory)
+            {
+                DNDS_check_throw_info(limitedVRHistory->GetDevice() == R::Device::Host() && !limitedVRHistory->Layout().IsVariable() &&
+                                          limitedVRHistory->RowCount() == Metrics().NumCell() && limitedVRHistory->Layout().Width() == 2,
+                                      "LVR history shape or placement differs");
+                for (const auto *input : {&coefficients, limitedVRHistory})
+                    for (const auto *output : {&workspace.reconstruction.coefficients.Owned(), &workspace.limitedVR->previous})
+                        DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), output->Storage()), "reconstruction restore aliases its source");
+                const auto history = limitedVRHistory->Read(); const auto h = history.View<R::UniformTableRows>();
+                const std::array<real, 2> caps{_data->settings.numerics.limitedVR.alphaMax, _data->settings.numerics.limitedVR.contactAlphaMax};
+                for (index iCell = 0; iCell < h.RowCount(); ++iCell)
+                    for (int j = 0; j < 2; ++j)
+                        DNDS_check_throw_info(std::isfinite(h(iCell, j)) && h(iCell, j) >= 0 && h(iCell, j) <= caps[j], "LVR history exceeds its valid branch cap");
+            } });
         std::optional<R::Array<real>::ReadLease> source;
         std::optional<R::Array<real>::WriteLease> destination;
+        std::optional<R::Array<real>::ReadLease> historySource;
+        std::optional<R::Array<real>::WriteLease> historyDestination;
         try
         {
             MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
                             {
                 source.emplace(coefficients.Read());
-                destination.emplace(workspace.reconstruction.coefficients.Owned().Write()); });
+                if (limitedVRHistory) historySource.emplace(limitedVRHistory->Read());
+                destination.emplace(workspace.reconstruction.coefficients.Owned().Write());
+                if (workspace.limitedVR) historyDestination.emplace(workspace.limitedVR->previous.Write()); });
         }
         catch (...)
         {
             if (destination)
                 destination->CancelUnmodified();
+            if (historyDestination)
+                historyDestination->CancelUnmodified();
             if (source)
                 source->CancelUnmodified();
             throw;
@@ -464,12 +553,61 @@ namespace DNDS::Cauchy
         for (index iCell = 0; iCell < output.RowCount(); ++iCell)
             for (index j = 0; j < output.RowSize(iCell); ++j)
                 output(iCell, j) = input(iCell, j);
+        if (historyDestination)
+        {
+            const auto to = historyDestination->View<R::FixedRows<2>>();
+            const auto from = historySource ? historySource->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{};
+            for (index iCell = 0; iCell < to.RowCount(); ++iCell)
+                for (int j = 0; j < 2; ++j)
+                    to(iCell, j) = historySource ? from(iCell, j) : 0;
+        }
         workspace.fluxReady = false;
     }
     void FiniteVolume::Evaluate(CFV::FVField &state, CFV::FVField &residual, Workspace &work,
                                 R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
         EvaluateImpl(state, residual, work, engine, stream, time);
+    }
+    const R::Array<real> *FiniteVolume::LimitedVRHistory(const Workspace &work) const
+    {
+        DNDS_check_throw_info(work.owner == _data.get(), "foreign LVR workspace");
+        return work.limitedVR ? &work.limitedVR->previous : nullptr;
+    }
+    const R::Array<real> *FiniteVolume::LimitedVRAlpha(const Workspace &work) const
+    {
+        DNDS_check_throw_info(work.owner == _data.get(), "foreign LVR workspace");
+        return work.limitedVR ? &work.limitedVR->alpha : nullptr;
+    }
+    index FiniteVolume::PrepareFaceCharacteristics(const CFV::FVField &state, CFV::FaceCharacteristicTransform &transform) const
+    {
+        auto geometry = Metrics().AcquireRead();
+        const auto metric = geometry.HostView();
+        auto meshRead = _data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        const auto mesh = meshRead.HostView();
+        index fallbacks = 0;
+        {
+            auto owned = state.Owned().Read(), ghost = state.Ghost().Read();
+            const FieldView u{owned.View<R::UniformTableRows>(), ghost.View<R::UniformTableRows>()};
+            auto forward = transform.forward.Write(), inverse = transform.inverse.Write();
+            const auto l = forward.View<R::TableRows>(), r = inverse.View<R::TableRows>();
+            for (auto iFace : _data->stencilFaces)
+            {
+                const auto cells = mesh.FaceCells(iFace);
+                if (cells[0] < 0 || cells[0] >= Metrics().NumCellProc())
+                    continue;
+                const auto left = Load(u, cells[0]);
+                auto right = left;
+                if (cells[1] >= 0 && cells[1] < Metrics().NumCellProc())
+                    right = RotateState(Load(u, cells[1]), CFV::Detail::OtherFrameInCell(mesh, iFace, 0));
+                const auto normal = metric.GetFaceNorm(metric.FaceQuadratureBegin(iFace));
+                const auto matrices = _data->equation.PrepareCharacteristics(left, right, {normal[0], normal[1], normal[2]});
+                fallbacks += matrices.componentwiseFallback;
+                for (index j = 0; j < 25; ++j)
+                    l(iFace, j) = matrices.forward[j], r(iFace, j) = matrices.inverse[j];
+            }
+        }
+        _data->reconstruction.FinalizeFaceTransform(transform);
+        return fallbacks;
     }
     void FiniteVolume::EvaluateMean(CFV::FVField &state, CFV::FVField &residual, MeanWorkspace &work,
                                     R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
@@ -495,6 +633,19 @@ namespace DNDS::Cauchy
         // row-loop check or extra mutation generation is introduced.
         auto unused = residual.Owned().Write();
         unused.CancelUnmodified();
+        if (work.limitedVR)
+        {
+            for (auto *array : {&work.limitedVR->previous, &work.limitedVR->alpha})
+            {
+                auto unused = array->Write();
+                unused.CancelUnmodified();
+            }
+            const auto history = work.limitedVR->previous.Read(); const auto h = history.View<R::FixedRows<2>>();
+            const std::array<real, 2> caps{_data->settings.numerics.limitedVR.alphaMax, _data->settings.numerics.limitedVR.contactAlphaMax};
+            for (index iCell = 0; iCell < h.RowCount(); ++iCell)
+                for (int j = 0; j < 2; ++j)
+                    DNDS_check_throw_info(std::isfinite(h(iCell, j)) && h(iCell, j) >= 0 && h(iCell, j) <= caps[j], "LVR history exceeds its valid branch cap");
+        }
         if (_data->settings.execution.overlap)
             auxiliaryPreparation.emplace(BeginAuxValues(state, work.auxiliary, time)); });
         JoinStreamOnException auxiliaryJoin(stream);
@@ -522,6 +673,7 @@ namespace DNDS::Cauchy
             operation.Wait();
         };
         const bool primitiveViscosity = !work.meanOnly && bool(work.primitiveBoundary);
+        const bool hasGradientWork = bool(work.conservativeGradient) || primitiveViscosity || bool(work.limitedVR);
         std::optional<R::TransferOperation> gradientOperation;
         std::optional<R::TransferOperation> meanOperation;
         if (overlap)
@@ -596,6 +748,8 @@ namespace DNDS::Cauchy
         {
             if (work.conservativeGradient)
                 _data->gradient.Evaluate(state, work.gradientBoundary, *work.conservativeGradient, {1}, region);
+            if (work.limitedVR)
+                _data->limitedVRGeometry->gradient.Evaluate(state, work.gradientBoundary, work.limitedVR->gradients, {1}, region);
             if (!primitiveViscosity)
                 return;
             fillPrimitive(state.Owned(), work.primitive.Owned());
@@ -621,6 +775,8 @@ namespace DNDS::Cauchy
         {
             if (work.conservativeGradient)
                 _data->gradient.Evaluate(state, work.gradientBoundary, *work.conservativeGradient, {1}, CFV::ReconstructionRegion::HaloDependent);
+            if (work.limitedVR)
+                _data->limitedVRGeometry->gradient.Evaluate(state, work.gradientBoundary, work.limitedVR->gradients, {1}, CFV::ReconstructionRegion::HaloDependent);
             if (primitiveViscosity)
             {
                 fillPrimitive(state.Ghost(), work.primitive.Ghost());
@@ -628,7 +784,17 @@ namespace DNDS::Cauchy
             }
         };
         std::optional<R::TransferOperation> firstCoefficientOperation;
-        if (!work.meanOnly && overlap && _data->settings.numerics.reconstruction == "variational")
+        const auto reconstructionSweep = [&](CFV::ReconstructionRegion region)
+        {
+            if (work.limitedVR)
+                _data->reconstruction.DoReconstructionIterLimitedTo(state, work.reconstruction.coefficients, work.reconstruction, work.boundary,
+                                                                    work.limitedVR->target.coefficients, work.limitedVR->alpha, region);
+            else
+                _data->reconstruction.DoReconstructionIterTo(state, work.reconstruction.coefficients, work.reconstruction, work.boundary, region);
+        };
+        // LVR first needs its completed O2 target and distributed gates. Its GG
+        // core still overlaps the mean halo; a VR core cannot precede that gate.
+        if (!work.meanOnly && !work.limitedVR && overlap && _data->settings.numerics.reconstruction == "variational")
         {
             if (_data->settings.numerics.reconstructionBoundaryFromPolynomial)
                 updateReconstructionBoundary();
@@ -645,14 +811,14 @@ namespace DNDS::Cauchy
             auto *preparation = &*auxiliaryPreparation;
             engine.Submit(stream, [preparation](auto)
                           { preparation->Apply(CFV::ReconstructionRegion::Core); });
-            if (work.conservativeGradient || primitiveViscosity)
+            if (hasGradientWork)
                 engine.Submit(stream, [&](auto)
                               { prepareGradientCore(CFV::ReconstructionRegion::Core); });
             // The first VR core consumes only owned means and coefficients.
             // It is independent of both active ghost writes and of auxiliary
             // preparation, which may run concurrently on a CPU worker.
             if (firstCoefficientOperation)
-                _data->reconstruction.DoReconstructionIterTo(state, work.reconstruction.coefficients, work.reconstruction, work.boundary, CFV::ReconstructionRegion::Core);
+                reconstructionSweep(CFV::ReconstructionRegion::Core);
         }
         if (meanOperation)
             meanOperation->Wait();
@@ -667,7 +833,7 @@ namespace DNDS::Cauchy
                               {
                     preparation->Apply(CFV::ReconstructionRegion::HaloDependent);
                     preparation->Finish(*output); });
-                if (work.conservativeGradient || primitiveViscosity)
+                if (hasGradientWork)
                     engine.Submit(stream, [&](auto)
                                   { prepareGradientDependent(); });
                 stream.Record().WaitHost();
@@ -688,6 +854,13 @@ namespace DNDS::Cauchy
             exchange(*work.waveHalo);
         if (work.pressureHalo)
             exchange(*work.pressureHalo);
+        if (work.limitedVR)
+        {
+            if (_data->settings.numerics.characteristicLimiter)
+                MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                                { work.characteristicFallbacks += PrepareFaceCharacteristics(state, work.characteristic); });
+            work.limitedVR->Build(*_data, state, _data->settings.numerics.characteristicLimiter ? &work.characteristic : nullptr, engine, stream);
+        }
         // Keep the previous unlimited polynomial as the initial guess.
         // Resetting it every stage turns a fixed sweep cap into a spatial error.
         if (work.meanOnly || _data->settings.numerics.reconstruction != "variational")
@@ -717,10 +890,9 @@ namespace DNDS::Cauchy
                 else
                     operation = engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream.Context());
                 if (overlap && !corePrepared)
-                    _data->reconstruction.DoReconstructionIterTo(state, work.reconstruction.coefficients, work.reconstruction, work.boundary, CFV::ReconstructionRegion::Core);
+                    reconstructionSweep(CFV::ReconstructionRegion::Core);
                 operation.Wait();
-                _data->reconstruction.DoReconstructionIterTo(state, work.reconstruction.coefficients, work.reconstruction, work.boundary,
-                                                             overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
+                reconstructionSweep(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
                 work.iterations = iteration + 1;
                 bool converged = false;
                 if ((_data->settings.numerics.reconstructionTolerance > 0 && iteration % 4 == 3) || iteration + 1 == _data->settings.numerics.reconstructionIterations)
@@ -750,34 +922,7 @@ namespace DNDS::Cauchy
                             {
             work.PrepareFlux();
             if (_data->settings.numerics.characteristicLimiter)
-            {
-                auto owned = state.Owned().Read(), ghost = state.Ghost().Read();
-                const FieldView u{owned.View<R::UniformTableRows>(), ghost.View<R::UniformTableRows>()};
-                auto forward = work.characteristic.forward.Write(), inverse = work.characteristic.inverse.Write();
-                auto l = forward.View<R::TableRows>(), r = inverse.View<R::TableRows>();
-                for (auto iFace : _data->stencilFaces)
-                {
-                    const auto cells = mesh.FaceCells(iFace);
-                    // Extra closure faces can have no owned parent. Their
-                    // matrix is never consumed by an owned-cell limiter.
-                    if (cells[0] < 0 || cells[0] >= Metrics().NumCellProc())
-                        continue;
-                    const auto left = Load(u, cells[0]);
-                    auto right = left;
-                    if (cells[1] >= 0 && cells[1] < Metrics().NumCellProc())
-                        right = RotateState(Load(u, cells[1]), CFV::Detail::OtherFrameInCell(mesh, iFace, 0));
-                    const auto normal = metric.GetFaceNorm(metric.FaceQuadratureBegin(iFace));
-                    const auto matrices = _data->equation.PrepareCharacteristics(left, right, {normal[0], normal[1], normal[2]});
-                    work.characteristicFallbacks += matrices.componentwiseFallback;
-                    for (index j = 0; j < 25; ++j)
-                    {
-                        l(iFace, j) = matrices.forward[j];
-                        r(iFace, j) = matrices.inverse[j];
-                    }
-                }
-            }
-            if (_data->settings.numerics.characteristicLimiter)
-                _data->reconstruction.FinalizeFaceTransform(work.characteristic); });
+                work.characteristicFallbacks += PrepareFaceCharacteristics(state, work.characteristic); });
             for (int order = _data->settings.numerics.cfv.maxOrder; order >= 1; --order)
             {
                 auto operation = engine.ChecksAccess() ? work.FluxHalo().BeginChecked(stream) : work.FluxHalo().BeginScheduled(stream.Context());

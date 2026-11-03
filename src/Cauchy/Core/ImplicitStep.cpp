@@ -7,6 +7,7 @@ namespace DNDS::Cauchy
     void Domain::InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh)
     {
         _steady = time.steady;
+        _rejectUnconvergedStages = settings.implicit.rejectUnconvergedStages;
         if (time.method == "ssprk3" && !_steady)
         {
             DNDS_check_throw_info(!settings.implicit.multigrid.levels, "polynomial FAS requires an implicit time method");
@@ -42,7 +43,7 @@ namespace DNDS::Cauchy
         };
         MPI::LocalStage(mpi, [&]
                         { _timeStepper = std::make_unique<ODE::FieldTimeStepper>(_trial.Block("flow"), _steady ? "bdf1" : time.method, [mpi, checks = settings.implicit.collectiveChecks](const auto &run)
-                                                                                 { if (checks) MPI::LocalStage(mpi, run); else run(); }, ODE::DITRSettings{time.ditr.fraction, time.ditr.theta, time.ditr.iterations}, factory); });
+                                                                                 { if (checks) MPI::LocalStage(mpi, run); else run(); }, ODE::DITRSettings{time.ditr.fraction, time.ditr.theta, time.ditr.iterations, settings.implicit.rejectUnconvergedStages}, factory); });
         _implicit = std::make_unique<NonlinearSolver>(_fv, _trial.Block("flow"), _workspace, _engine, _stream, settings);
         if (settings.implicit.multigrid.levels)
             _multigrid = std::make_unique<PolynomialMultigrid>(mesh, _fv, _trial.Block("flow"), *_implicit, _engine, _stream, settings);
@@ -67,23 +68,56 @@ namespace DNDS::Cauchy
         _lastAlpha = std::min(_lastAlpha, report.minimumIncrementAlpha);
         const bool converged = report.converged;
         _lastImplicit.push_back(std::move(report));
-        return converged;
+        // A cap is an iteration-control decision, not a numerical failure.
+        // Preserve the actual convergence flag even when Euler-style policy
+        // accepts the final iterate. Invalid corrections/states still throw.
+        return converged || !_rejectUnconvergedStages;
     }
     void Domain::PreserveReconstructionGuess()
     {
         if (_restoreReconstruction)
         {
-            _fv.RestoreReconstructionGuess(*_workspace, *_reconstructionBackup);
+            _fv.RestoreReconstructionGuess(*_workspace, *_reconstructionBackup, _limitedVRBackup ? &*_limitedVRBackup : nullptr);
             return;
         }
-        MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
-                        {
-            const auto &guess = _fv.ReconstructionGuess(*_workspace).Owned();
-            if (!_reconstructionBackup) _reconstructionBackup.emplace(guess.Layout());
-            const auto read = guess.Read(); auto write = _reconstructionBackup->Write();
-            const auto source = read.View<R::UniformTableRows>(); const auto output = write.View<R::UniformTableRows>();
-            for (index iCell = 0; iCell < source.RowCount(); ++iCell)
-                for (index j = 0; j < source.RowSize(iCell); ++j) output(iCell, j) = source(iCell, j); });
+        std::optional<R::Array<real>::ReadLease> guessRead, historyRead;
+        std::optional<R::Array<real>::WriteLease> guessWrite, historyWrite;
+        try
+        {
+            MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
+                            {
+                const auto &guess = _fv.ReconstructionGuess(*_workspace).Owned();
+                if (!_reconstructionBackup) _reconstructionBackup.emplace(guess.Layout());
+                guessRead.emplace(guess.Read());
+                if (const auto *history = _fv.LimitedVRHistory(*_workspace))
+                {
+                    if (!_limitedVRBackup) _limitedVRBackup.emplace(history->Layout());
+                    historyRead.emplace(history->Read());
+                }
+                guessWrite.emplace(_reconstructionBackup->Write());
+                if (historyRead) historyWrite.emplace(_limitedVRBackup->Write()); });
+        }
+        catch (...)
+        {
+            if (guessWrite)
+                guessWrite->CancelUnmodified();
+            if (historyWrite)
+                historyWrite->CancelUnmodified();
+            throw;
+        }
+        const auto source = guessRead->View<R::UniformTableRows>();
+        const auto output = guessWrite->View<R::UniformTableRows>();
+        for (index iCell = 0; iCell < source.RowCount(); ++iCell)
+            for (index j = 0; j < source.RowSize(iCell); ++j)
+                output(iCell, j) = source(iCell, j);
+        if (historyRead)
+        {
+            const auto from = historyRead->View<R::UniformTableRows>();
+            const auto to = historyWrite->View<R::UniformTableRows>();
+            for (index iCell = 0; iCell < from.RowCount(); ++iCell)
+                for (int j = 0; j < 2; ++j)
+                    to(iCell, j) = from(iCell, j);
+        }
         _restoreReconstruction = true;
     }
     void Domain::PrepareImplicitStep(real dt)

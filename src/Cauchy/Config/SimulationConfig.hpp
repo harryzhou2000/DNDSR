@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CFV/Plans/FiniteVolumePlan.hpp"
+#include "CFV/Math/LimitedVR.hpp"
 #include "Cauchy/Core/DomainPlacement.hpp"
 #include "Cauchy/Riemann/RiemannFlux.hpp"
 #include <map>
@@ -88,6 +89,7 @@ namespace DNDS::Cauchy
         int positivityBetaPower = 1;
         real densityFloor = 1e-12, pressureFloor = 1e-12;
         CFV::ReconstructionSettings cfv;
+        CFV::LimitedVRSettings limitedVR;
         RiemannSettings riemann;
         void ValidatePositivity() const;
         DNDS_DECLARE_CONFIG(NumericsSettings)
@@ -95,7 +97,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(reconstruction, "constant, gradient, or variational reconstruction");
             DNDS_FIELD(gradient, "leastSquares, greenGauss, or ggmp");
             DNDS_FIELD(flux, "Numerical inviscid flux family");
-            DNDS_FIELD(limiter, "none or WBAP; positivity is checked separately");
+            DNDS_FIELD(limiter, "none, WBAP or native LVR; positivity is checked separately");
             DNDS_FIELD(reconstructionIterations, "Fixed local VR sweeps per residual");
             DNDS_FIELD(reconstructionTolerance, "Relative Jacobi update tolerance; zero uses the fixed sweep count");
             DNDS_FIELD(characteristicLimiter, "Use equation-provided cell-mean face characteristics for 3WBAP");
@@ -114,6 +116,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(densityFloor, "Positive inclusive density admissibility floor");
             DNDS_FIELD(pressureFloor, "Positive inclusive pressure admissibility floor for the initial perfect-gas equation");
             config.field_section(&T::cfv, "cfv", "Independent mathematical CFV configuration");
+            config.field_section(&T::limitedVR, "limitedVR", "Native v2/v3 target-penalty controls");
             config.field_section(&T::riemann, "riemann", "Numerical flux correction controls, independent of EOS");
         }
     };
@@ -228,6 +231,7 @@ namespace DNDS::Cauchy
         real pseudoCFL = 10, maxPseudoCFL = 1e4, pseudoGrowth = 1.3, relaxation = 1;
         bool roeDissipation = false, collectiveChecks = true;
         bool requireConvergedReconstruction = false;
+        bool rejectUnconvergedStages = false;
         ImplicitLinearSettings linear;
         ImplicitSGSSettings sgs;
         ImplicitILUSettings ilu;
@@ -253,6 +257,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(roeDissipation, "Use full equation-owned characteristic dissipation; requires block diagonal");
             DNDS_FIELD(collectiveChecks, "Coordinate local failures between implicit kernels; false selects caller-ordered eager execution");
             DNDS_FIELD(requireConvergedReconstruction, "Require the requested VR tolerance as well as the mean equation target; false preserves Euler-style fixed-sweep acceptance");
+            DNDS_FIELD(rejectUnconvergedStages, "Reject a finite admissible stage or DITR outer solve at its iteration cap; false advances the final iterate like Euler while retaining an unconverged report");
             config.field_section(&T::linear, "linear", "Linear solve controls");
             config.field_section(&T::sgs, "sgs", "Symmetric relaxation controls");
             config.field_section(&T::ilu, "ilu", "Rank-local factorization controls");
