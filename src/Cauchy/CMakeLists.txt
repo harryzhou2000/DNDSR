@@ -1,4 +1,4 @@
-set(CPPS Core/DomainPlacement.cpp Core/Domain.cpp Core/ImplicitStep.cpp Core/Simulation.cpp Config/SimulationConfig.cpp Physics/EquationSystem.cpp State/EquationDofs.cpp State/DerivedFields.cpp Motion/RigidMotion.cpp
+set(CPPS Core/DomainPlacement.cpp Core/Domain.cpp Core/ImplicitStep.cpp Core/Simulation.cpp Config/SimulationConfig.cpp Physics/EquationSystem.cpp State/EquationDofs.cpp State/DerivedFields.cpp Motion/RigidMotion.cpp Boundary/BoundaryInputs.cpp
     Boundary/BoundarySystem.cpp Discretization/FiniteVolume.cpp Discretization/LimitedVR.cpp Discretization/PrepareAuxValues.cpp Discretization/RHS.cpp Discretization/TimeStep.cpp Core/TimeStep.cpp Implicit/LinearProblem.cpp Implicit/SGS.cpp Implicit/ILU.cpp Implicit/LinearSolver.cpp Implicit/NonlinearSolver.cpp Implicit/PrepareJacobian.cpp Multigrid/PolynomialMultigrid.cpp IO/Checkpoint.cpp Riemann/RiemannFlux.cpp)
 dnds_add_lib(cauchy "${CPPS}" "cfv;geom;dnds;${DNDS_EXTERNAL_LIBS}" "${DNDS_PCH_TARGETS_FAST}" OFF ON ON)
 dnds_add_lib(cauchy_shared "${CPPS}" "cfv_shared;geom_shared;dnds_shared;${DNDS_EXTERNAL_LIBS}" "${DNDS_PCH_TARGETS_FAST}" ON ON ON)

@@ -5,6 +5,7 @@
 #include "Cauchy/State/EquationDofs.hpp"
 #include "Cauchy/State/DerivedFields.hpp"
 #include "Cauchy/Boundary/BoundarySystem.hpp"
+#include "Cauchy/Boundary/BoundaryInputs.hpp"
 #include "Cauchy/Implicit/LinearProblem.hpp"
 #include "CFV/Plans/GradientPlan.hpp"
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
@@ -61,6 +62,7 @@ namespace DNDS::Cauchy
             Runtime::ArrayStorage::Shared ownedStorage, ghostStorage;
             uint64_t ownedVersion, ghostVersion, ownedShape, ghostShape;
             real time;
+            std::optional<BoundaryInputs> boundary;
             std::array<bool, 7> present{};
             std::array<Runtime::ArrayStorage::Shared, 7> storage{};
             std::array<Runtime::ArrayStorage::Shared, 3> ghosts{};
@@ -116,6 +118,7 @@ namespace DNDS::Cauchy
         /// Optional distinct polynomial for viscosity. Absence uses coefficients.
         /// Retain its read leases through execution, exactly as for coefficients.
         std::optional<RHSFieldView> viscousCoefficients;
+        std::optional<RHSScalarView> boundary;
     };
     /// Explicit outputs. Diagnostics accumulate across core/dependent calls;
     /// caller initializes them before an evaluation and reduces them afterwards.
@@ -136,6 +139,7 @@ namespace DNDS::Cauchy
         struct LimitedVRWorkspace;
         struct MatrixFreeJacobian;
         std::shared_ptr<const Data> _data;
+        void ValidateBoundaryLayout(const BoundaryInputs &input) const;
 
     public:
         struct Workspace;
@@ -177,6 +181,19 @@ namespace DNDS::Cauchy
         const CFV::FiniteVolumePlan &Metrics() const;
         const Geom::UnstructuredMesh &Mesh() const;
         const RigidMotion &Motion() const;
+        const std::vector<BoundaryPoint> &BoundaryPoints() const;
+        bool HasInterfaces() const;
+        BoundaryInputs BuildBoundaryInputs() const;
+        /// Synchronous local point operations, no MPI. Begin withdraws the
+        /// publication; publish checks complete admissible interface rows only.
+        void BeginBoundaryUpdate(BoundaryInputs &input) const;
+        void PublishBoundaryInputs(BoundaryInputs &input, real time, StateEpoch epoch = {}) const;
+        void ValidateBoundaryInputs(const BoundaryInputs &input, real time) const;
+        /// Share a packet with another FV level only after proving identical
+        /// boundary point order/geometry. No interpolation or payload copy.
+        BoundaryInputs AliasBoundaryInputs(const BoundaryInputs &input) const;
+        void SetBoundaryInputs(Workspace &workspace, const BoundaryInputs &input) const;
+        void SetBoundaryInputs(MeanWorkspace &workspace, const BoundaryInputs &input) const;
         /// Additional channels are allocated once and fused into auxiliary
         /// preparation. Implicit consumers request face/cell spectral values;
         /// explicit consumers retain the minimal default packet. Collective:
@@ -232,12 +249,12 @@ namespace DNDS::Cauchy
         /// Requested outputs remain reserved until Finish/destruction. Unwinding
         /// after partial writes follows Runtime failure semantics: replace failed
         /// output buffers/workspace before retrying. No communication is posted.
-        AuxiliaryPreparation BeginAuxValues(const CFV::FVField &state, AuxiliaryValues &output, real time = 0) const;
+        AuxiliaryPreparation BeginAuxValues(const CFV::FVField &state, AuxiliaryValues &output, real time = 0, const BoundaryInputs *boundary = nullptr) const;
         /// Stateless fused CPU operator. Input halos must already be current and
         /// host-visible. Writes only the explicit optional outputs, performs no
         /// communication/global reduction, and never mutates state or FV caches.
         /// Private face scratch belongs to output, not the immutable FV plan.
-        void PrepareAuxValues(const CFV::FVField &state, AuxiliaryValues &output, real time = 0) const;
+        void PrepareAuxValues(const CFV::FVField &state, AuxiliaryValues &output, real time = 0, const BoundaryInputs *boundary = nullptr) const;
         /// Reject changed inputs, geometry, boundary time, output selection,
         /// cell row identity or overwritten buffers before a result is reused.
         void ValidateAuxValues(const CFV::FVField &state, const AuxiliaryValues &values, real time = 0) const;

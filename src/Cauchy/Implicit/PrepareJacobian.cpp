@@ -162,6 +162,8 @@ namespace DNDS::Cauchy
         checkAlias(state.Ghost());
         checkAlias(faceArray);
         checkAlias(inversePseudoTime);
+        if (auxiliary._origin->boundary)
+            checkAlias(auxiliary._origin->boundary->flow);
         if (auxiliary.meanThermodynamics)
             checkAlias(*auxiliary.meanThermodynamics);
         for (const auto *derived : {&auxiliary.derivedOwned, &auxiliary.derivedGhost})
@@ -183,6 +185,13 @@ namespace DNDS::Cauchy
         RHSAuxiliaryViews packet;
         std::array<std::optional<R::Array<real>::ReadLease>, 5> retained;
         std::optional<DerivedFields::ReadScope> derivedOwned, derivedGhost;
+        std::optional<R::Array<real>::ReadLease> boundaryRead;
+        RHSScalarView incoming;
+        if (auxiliary._origin->boundary)
+        {
+            boundaryRead.emplace(auxiliary._origin->boundary->flow.Read());
+            incoming = boundaryRead->View<R::UniformTableRows>();
+        }
         if (auxiliary.meanThermodynamics)
         {
             retained[0].emplace(auxiliary.meanThermodynamics->Read());
@@ -276,7 +285,7 @@ namespace DNDS::Cauchy
                     own.diagonal().array() += factor * (convection + diffusion);
                     continue; // Euler's scalar diagonal does not linearize BCs.
                 }
-                const auto right = sample.other == UnInitIndex ? sample.boundary.Exterior(_data->equation.Gas(), left, normal, point, time, &frame)
+                const auto right = sample.other == UnInitIndex ? FiniteVolumeDetail::BoundaryExterior(sample, _data->equation.Gas(), left, time, frame, incoming)
                                                                : RotateState(Load(mean, sample.other), sample.rotation);
                 Matrix dissipation = Matrix::Identity() * (convection + diffusion);
                 if (controls.roeDissipation)
@@ -318,7 +327,7 @@ namespace DNDS::Cauchy
                 {
                     if (controls.roeDissipation)
                     {
-                        const auto boundary = sample.boundary.ExteriorJacobian(_data->equation.Gas(), left, normal, point, time, &frame);
+                        const auto boundary = sample.boundary.kind == BoundaryKind::Interface ? std::array<real, 25>{} : sample.boundary.ExteriorJacobian(_data->equation.Gas(), left, normal, point, time, &frame);
                         own.noalias() += other * Eigen::Map<const Matrix>(boundary.data());
                     }
                 }

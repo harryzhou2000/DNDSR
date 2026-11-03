@@ -49,6 +49,10 @@ namespace DNDS::Cauchy
         const int modes = data->reconstruction.NRecDOF(), dim = data->metrics.Dimension();
         const auto &gas = data->equation.Gas();
         const auto frame = data->motion.At(time);
+        DNDS_check_throw_info(!data->hasInterfaces || input.boundary, "RHS requires incoming interface values");
+        const auto incoming = input.boundary.value_or(RHSScalarView{});
+        if (input.boundary)
+            DNDS_check_throw_info(incoming.RowCount() == index(data->boundaryEntries.size()) && incoming.Width() == 5, "RHS interface input shape differs");
         const bool viscous = data->equation.Viscous() && input.includeViscosity;
         const bool polynomialViscosity = viscous && data->settings.numerics.viscousGradient == "polynomial";
         const auto viscousCoefficient = input.viscousCoefficients.value_or(input.coefficients);
@@ -157,7 +161,7 @@ namespace DNDS::Cauchy
                 }
                 else
                 {
-                    right = sample.boundary.Exterior(gas, left.state, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time, &frame);
+                    right = FiniteVolumeDetail::BoundaryExterior(sample, gas, left.state, time, frame, incoming);
                     viscousRight = right;
                     rightGradient = left.gradient;
                 }
@@ -165,7 +169,7 @@ namespace DNDS::Cauchy
                 const auto leftFlux = data->equation.PrepareFluxState(left.state), rightFlux = data->equation.PrepareFluxState(right);
                 const Vector3 point{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]};
                 const auto gridVelocity = frame.GridVelocity(point);
-                const auto leftMean = Load(mean, iCell), rightMean = sample.other == UnInitIndex ? sample.boundary.Exterior(gas, leftMean, normal, point, time, &frame) : RotateState(Load(mean, sample.other), sample.rotation);
+                const auto leftMean = Load(mean, iCell), rightMean = sample.other == UnInitIndex ? FiniteVolumeDetail::BoundaryExterior(sample, gas, leftMean, time, frame, incoming) : RotateState(Load(mean, sample.other), sample.rotation);
                 const auto leftMeanData = hasThermo ? Riemann::AcousticState{{leftMean, thermo(iCell, 0)}, thermo(iCell, 1)} : data->equation.PrepareFluxState(leftMean);
                 const auto rightMeanData = sample.other == UnInitIndex || !hasThermo ? data->equation.PrepareFluxState(rightMean) : Riemann::AcousticState{{rightMean, thermo(sample.other, 0)}, thermo(sample.other, 1)};
                 const auto prepared = data->equation.PrepareRiemann(data->flux, leftFlux, rightFlux, leftMeanData, rightMeanData, normal, gridVelocity);
@@ -188,7 +192,7 @@ namespace DNDS::Cauchy
                 FlowState lowFlux{};
                 if (produceLow)
                     lowFlux = Riemann::Rusanov(leftMeanData, rightMeanData, normal, gridVelocity);
-                if (polynomialViscosity && (sample.other != UnInitIndex || sample.boundary.kind == BoundaryKind::NoSlipWall))
+                if (polynomialViscosity && (sample.other != UnInitIndex || sample.boundary.kind == BoundaryKind::NoSlipWall || sample.boundary.kind == BoundaryKind::Interface))
                 {
                     FlowState rightLinearization = right;
                     if (sample.other == UnInitIndex)
@@ -207,7 +211,7 @@ namespace DNDS::Cauchy
                     for (int j = 0; j < 5; ++j)
                         faceMean[j] = .5 * (left.state[j] + rightLinearization[j]);
                     DNDS_check_throw_info(ThermallyAdmissible(faceMean, data->thermalBounds), "inadmissible polynomial viscous linearization");
-                    const bool wall = sample.other == UnInitIndex;
+                    const bool wall = sample.other == UnInitIndex && sample.boundary.kind == BoundaryKind::NoSlipWall;
                     const real inverseDistance = wall && data->settings.numerics.noGRPOnWall ? 0 : 1 / sample.viscousDistance;
                     const auto diffusion = PolynomialViscousFlux(data->equation, left.state, rightLinearization, left.viscousState, viscousRight,
                                                                  left.gradient, rightGradient, normal, inverseDistance, wall && !sample.boundary.isothermal);
@@ -222,7 +226,7 @@ namespace DNDS::Cauchy
                     auto primitive = gas.Primitive(left.state);
                     auto gradient = left.gradient;
                     const auto ownPrimitive = gas.Primitive(Load(mean, iCell));
-                    const auto rightPrimitive = gas.Primitive(sample.other == UnInitIndex ? sample.boundary.FaceValue(gas, Load(mean, iCell), normal, point, time, &frame) : RotateState(Load(mean, sample.other), sample.rotation));
+                    const auto rightPrimitive = gas.Primitive(sample.other == UnInitIndex ? FiniteVolumeDetail::BoundaryFaceValue(sample, gas, Load(mean, iCell), time, frame, incoming) : RotateState(Load(mean, sample.other), sample.rotation));
                     // Evaluate into an owning vector: an Eigen expression
                     // would retain a dangling temporary cell barycenter.
                     const Geom::tPoint distance = sample.other == UnInitIndex ? Geom::tPoint(sample.ownPoint - metric.GetCellBary(iCell)) : Geom::tPoint(sample.otherPoint - metric.GetCellBary(iCell));

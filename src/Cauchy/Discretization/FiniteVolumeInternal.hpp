@@ -19,6 +19,7 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         index auxiliaryFace = UnInitIndex;
         real viscousDistance = 0;
         index face = UnInitIndex;
+        index boundaryPoint = UnInitIndex;
     };
     template <class View>
     FlowState Load(const View &input, index iCell)
@@ -36,10 +37,35 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
             state[1 + d] = rotated[d];
         return state;
     }
+    inline FlowState BoundaryFaceValue(const Sample &sample, const PerfectGas &gas, const FlowState &inside,
+                                       real time, const RigidFrame &frame, RHSScalarView incoming)
+    {
+        if (sample.boundary.kind == BoundaryKind::Interface)
+            return Load(incoming, sample.boundaryPoint);
+        return sample.boundary.FaceValue(gas, inside, {sample.normal[0], sample.normal[1], sample.normal[2]},
+                                         {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time, &frame);
+    }
+    inline FlowState BoundaryExterior(const Sample &sample, const PerfectGas &gas, const FlowState &inside,
+                                      real time, const RigidFrame &frame, RHSScalarView incoming)
+    {
+        if (sample.boundary.kind == BoundaryKind::Interface)
+            return Load(incoming, sample.boundaryPoint);
+        return sample.boundary.Exterior(gas, inside, {sample.normal[0], sample.normal[1], sample.normal[2]},
+                                        {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time, &frame);
+    }
 }
 
 namespace DNDS::Cauchy
 {
+    namespace Detail
+    {
+        struct BoundaryPointLayout
+        {
+            std::weak_ptr<Geom::UnstructuredMesh> mesh;
+            Runtime::VersionStamp stamp;
+            std::vector<BoundaryPoint> points;
+        };
+    }
     struct FiniteVolume::Data
     {
         using Sample = FiniteVolumeDetail::Sample;
@@ -56,6 +82,9 @@ namespace DNDS::Cauchy
         std::vector<index> offsets;
         std::vector<Sample> samples;
         std::vector<index> boundaryEntries;
+        std::shared_ptr<Detail::BoundaryPointLayout> boundaryLayout;
+        std::vector<index> gradientBoundaryPoints;
+        bool hasInterfaces = false;
         std::vector<index> stencilFaces;
         std::vector<index> faceEntries;
         std::vector<index> auxiliaryCoreFaces, auxiliaryDependentFaces;

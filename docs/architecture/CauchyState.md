@@ -82,8 +82,10 @@ view/kernel. It must preserve full parent tile pitch when freezing a segment.
 An allocation ID is host dispatch/lifetime metadata, not a device indexing input.
 
 `ReadOwned(context)`/`ReadWithGhost(context)`/`WriteOwned(context)` accept an
-explicit device context; `Complete(stream.Record())` can attach one enclosing
-stream prefix after the final launch. The device-callable view machinery is
+explicit device context; `Complete(Runtime::Completion::Record(context))` can
+attach one enclosing native-stream prefix after the final direct launch. Engine
+`ExecutionStream::Record()` returns a separate scheduling `StreamEvent`, not
+this direct-access completion type. The device-callable view machinery is
 present, but EquationDofs currently has CPU mock/layout tests and no dedicated
 CUDA launch test. This is not a claim that Cauchy's physical CUDA wrappers or
 queued multi-stream scheduling integration are implemented.

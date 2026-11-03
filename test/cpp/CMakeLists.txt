@@ -203,6 +203,7 @@ dnds_add_unit_test(cauchy_config "Cauchy/test_Config.cpp" "cauchy;cfv;geom;dnds"
 dnds_add_unit_test(cauchy_physics "Cauchy/test_PerfectGas.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_unit_test(cauchy_derived_fields "Cauchy/test_DerivedFields.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_unit_test(cauchy_rigid_motion "Cauchy/test_RigidMotion.cpp" "cauchy;cfv;geom;dnds")
+dnds_add_mpi_test(cauchy_boundary_inputs "Cauchy/test_BoundaryInputs.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_multidomain_mesh "Cauchy/test_MultidomainMesh.cpp" "cauchy;cfv;geom;dnds")
 # Fixture-only exact predicates use CGAL's header-only Boost backend, keeping
 # generation independent of optional GMP/MPFR installations.
@@ -241,6 +242,7 @@ add_dependencies(cauchy_unit_tests dnds_test_cauchy_implicit_domain)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_checkpoint)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_physical_timestep)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_rigid_motion)
+add_dependencies(cauchy_unit_tests dnds_test_cauchy_boundary_inputs)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_multidomain_mesh)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_viscous_flux)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_auxiliary_preparation)

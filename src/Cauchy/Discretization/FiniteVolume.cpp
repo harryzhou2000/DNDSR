@@ -100,6 +100,7 @@ namespace DNDS::Cauchy
         std::optional<R::Array<real>> primitiveBoundary;
         R::TransferBinding meanHalo, coefficientHalo, gradientHalo;
         AuxiliaryValues auxiliary;
+        std::optional<BoundaryInputs> incoming;
         std::optional<R::TransferBinding> waveHalo, pressureHalo;
         const Data *owner;
         R::ArrayStorage::Shared ownedStorage, ghostStorage;
@@ -293,6 +294,12 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(other == UnInitIndex || other < data->metrics.NumCell(), "auxiliary core depends on an input ghost");
             }
         data->boundaryEntries.resize(size_t(data->reconstruction.NumBoundaryQuadrature()));
+        data->boundaryLayout=std::make_shared<Detail::BoundaryPointLayout>();
+        data->boundaryLayout->mesh=data->mesh;
+        data->boundaryLayout->stamp=data->mesh->versions.Stamp(R::Change::Topology|R::Change::Geometry|R::Change::Distribution|R::Change::Layout);
+        data->boundaryLayout->points.reserve(data->boundaryEntries.size());
+        for(const auto &[zone,boundary]:settings.boundaries)
+            data->hasInterfaces=data->hasInterfaces||boundary.kind=="interface";
         for (index iPoint = 0; iPoint < data->reconstruction.NumBoundaryQuadrature(); ++iPoint)
         {
             const auto point = data->reconstruction.GetBoundaryQuadrature(iPoint);
@@ -301,6 +308,21 @@ namespace DNDS::Cauchy
             entry = data->offsets[point.cell];
             while (entry < data->offsets[point.cell + 1] && data->samples[entry].point != globalPoint) ++entry;
             DNDS_check_throw_info(entry < data->offsets[point.cell + 1], "boundary quadrature missing from cell incidences");
+            auto &sample=data->samples[entry];
+            sample.boundaryPoint=iPoint;
+            data->boundaryLayout->points.push_back({point.cell,point.face,point.quadrature,sample.zone,
+                {sample.ownPoint[0],sample.ownPoint[1],sample.ownPoint[2]},
+                {sample.normal[0],sample.normal[1],sample.normal[2]},sample.boundary.kind==BoundaryKind::Interface});
+        }
+        data->gradientBoundaryPoints.resize(size_t(data->gradient.NumBoundaryQuadrature()));
+        for(index iPoint=0;iPoint<data->gradient.NumBoundaryQuadrature();++iPoint)
+        {
+            const auto point=data->gradient.GetBoundaryQuadrature(iPoint);
+            const auto globalPoint=metric.FaceQuadratureBegin(point.face)+point.quadrature;
+            index entry=data->offsets[point.cell];
+            while(entry<data->offsets[point.cell+1]&&data->samples[entry].point!=globalPoint) ++entry;
+            DNDS_check_throw_info(entry<data->offsets[point.cell+1]&&data->samples[entry].boundaryPoint!=UnInitIndex,"gradient boundary point has no canonical boundary row");
+            data->gradientBoundaryPoints[iPoint]=data->samples[entry].boundaryPoint;
         }
         if (settings.numerics.positivity || limitedVR)
         {
@@ -375,6 +397,15 @@ namespace DNDS::Cauchy
     {
         return std::make_shared<MeanWorkspace>(MeanWorkspace{BuildWorkspaceImpl(state, {}, true)});
     }
+    void FiniteVolume::SetBoundaryInputs(Workspace &workspace, const BoundaryInputs &input) const
+    {
+        DNDS_check_throw_info(workspace.owner == _data.get(), "boundary input belongs to a foreign workspace");
+        workspace.incoming = AliasBoundaryInputs(input);
+    }
+    void FiniteVolume::SetBoundaryInputs(MeanWorkspace &workspace, const BoundaryInputs &input) const
+    {
+        SetBoundaryInputs(*workspace.work, input);
+    }
     std::shared_ptr<FiniteVolume::Workspace> FiniteVolume::BuildWorkspaceImpl(CFV::FVField &state, AuxiliaryRequest request, bool meanOnly) const
     {
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
@@ -386,11 +417,14 @@ namespace DNDS::Cauchy
         request.cellPressureMinimum = request.cellPressureMinimum || pressure;
         // Agree resolved channels before constructing any differing bindings.
         // One small setup reduction; no additional check in the RHS hot path.
-        const bool channels[]{meanOnly, request.meanThermodynamics, request.faceSpectralRadius, request.faceWaveJump,
-                              request.facePressureMinimum, request.cellSpectralSum, request.cellWaveJump, request.cellPressureMinimum, wave, pressure,
-                              _data->equation.Viscous(), _data->settings.numerics.viscousGradient == "polynomial",
-                              _data->settings.numerics.viscousLimited, _data->settings.numerics.noGRPOnWall,
-                              _data->settings.numerics.limiter == "LVR", bool(_data->limitedVRGeometry)};
+        constexpr int derivedFirst = 16;
+        bool channels[derivedFirst + DerivedQuantityNumber]{meanOnly, request.meanThermodynamics, request.faceSpectralRadius, request.faceWaveJump,
+                                                            request.facePressureMinimum, request.cellSpectralSum, request.cellWaveJump, request.cellPressureMinimum, wave, pressure,
+                                                            _data->equation.Viscous(), _data->settings.numerics.viscousGradient == "polynomial",
+                                                            _data->settings.numerics.viscousLimited, _data->settings.numerics.noGRPOnWall,
+                                                            _data->settings.numerics.limiter == "LVR", bool(_data->limitedVRGeometry)};
+        for (int quantity = 0; quantity < DerivedQuantityNumber; ++quantity)
+            channels[derivedFirst + quantity] = request.derived.enabled[quantity];
         constexpr int channelNumber = sizeof(channels) / sizeof(channels[0]);
         int flags[2 * channelNumber]{};
         for (int j = 0; j < channelNumber; ++j)
@@ -406,8 +440,10 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(flags[2 * j] == -flags[2 * j + 1], "FV workspace mode or auxiliary channels differ between domain ranks");
         for (int j = 10; j < 14; ++j)
             DNDS_check_throw_info(flags[2 * j] == -flags[2 * j + 1], "FV viscous policy differs between domain ranks");
-        for (int j = 14; j < channelNumber; ++j)
+        for (int j = 14; j < derivedFirst; ++j)
             DNDS_check_throw_info(flags[2 * j] == -flags[2 * j + 1], "LVR capability differs between domain ranks");
+        for (int j = derivedFirst; j < channelNumber; ++j)
+            DNDS_check_throw_info(flags[2 * j] == -flags[2 * j + 1], "derived-property selection differs between domain ranks");
         if (_data->settings.numerics.limiter == "LVR")
         {
             const MPIInfo mpi(Metrics().Communicator());
@@ -440,12 +476,17 @@ namespace DNDS::Cauchy
     {
         DNDS_check_throw_info(work.owner == _data.get(), "foreign finite-volume workspace");
         const auto &values = work.auxiliary;
-        DNDS_check_throw_info((!required.meanThermodynamics || values.meanThermodynamics) &&
+        DNDS_check_throw_info((!required.meanThermodynamics || values.meanThermodynamics || values._derivedThermodynamics) &&
                                   (!required.faceSpectralRadius || values.faceSpectralRadius) &&
                                   (!required.faceWaveJump || values.faceWaveJump) && (!required.facePressureMinimum || values.facePressureMinimum) &&
                                   (!required.cellSpectralSum || values.cellSpectralSum) && (!required.cellWaveJump || values.cellWaveJump) &&
                                   (!required.cellPressureMinimum || values.cellPressureMinimum),
                               "finite-volume workspace lacks required auxiliary channels");
+        for (int q = 0; q < DerivedQuantityNumber; ++q)
+            if (required.derived.enabled[q])
+                DNDS_check_throw_info(values.derivedOwned && values.derivedGhost && values.derivedOwned->Request().Has(DerivedQuantity(q)) &&
+                                          values.derivedGhost->Request().Has(DerivedQuantity(q)),
+                                      "finite-volume workspace lacks a required derived property");
     }
     Json FiniteVolume::ReconstructionMetadata() const
     {
@@ -639,10 +680,19 @@ namespace DNDS::Cauchy
                                     R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
         std::optional<AuxiliaryPreparation> auxiliaryPreparation;
+        std::optional<R::Array<real>::ReadLease> incomingRead;
+        std::optional<RHSScalarView> incomingView;
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
                         {
         Metrics().ValidateField(state, 5);
         Metrics().ValidateField(residual, 5);
+        DNDS_check_throw_info(!HasInterfaces()||work.incoming,"FV evaluation needs a ready interface packet");
+        if(work.incoming)
+        {
+            ValidateBoundaryInputs(*work.incoming,time);
+            incomingRead.emplace(work.incoming->flow.Read());
+            incomingView=incomingRead->View<R::UniformTableRows>();
+        }
         DNDS_check_throw_info(work.owner == _data.get() && stream.Context().device == R::Device::Host() &&
                                   state.Owned().SharedStorage() == work.ownedStorage && state.Ghost().SharedStorage() == work.ghostStorage,
                               "foreign FV workspace, rebound field, or unavailable execution backend");
@@ -668,7 +718,7 @@ namespace DNDS::Cauchy
                     DNDS_check_throw_info(std::isfinite(h(iCell, j)) && h(iCell, j) >= 0 && h(iCell, j) <= caps[j], "LVR history exceeds its valid branch cap");
         }
         if (_data->settings.execution.overlap)
-            auxiliaryPreparation.emplace(BeginAuxValues(state, work.auxiliary, time)); });
+            auxiliaryPreparation.emplace(BeginAuxValues(state, work.auxiliary, time,work.incoming?&*work.incoming:nullptr)); });
         JoinStreamOnException auxiliaryJoin(stream);
         work.auxiliary._origin.reset();
         work.fluxReady = false;
@@ -689,6 +739,7 @@ namespace DNDS::Cauchy
         const auto &gas = _data->equation.Gas();
         const bool overlap = _data->settings.execution.overlap;
         const auto frame = _data->motion.At(time);
+        const auto incoming = incomingView.value_or(RHSScalarView{});
         auto exchange = [&](R::TransferBinding &binding)
         {
             auto operation = engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream.Context());
@@ -708,21 +759,21 @@ namespace DNDS::Cauchy
         {
             auto mean = state.Owned().Read();
             const auto values = mean.View<R::UniformTableRows>();
-            auto fill = [&](auto &array, const auto &plan)
+            auto fill = [&](auto &array, const auto &plan, bool gradient)
             {
                 auto write = array.Write();
                 const auto target = write.template View<R::TableRows>();
                 for (index iPoint = 0; iPoint < plan.NumBoundaryQuadrature(); ++iPoint)
                 {
                     const auto q = plan.GetBoundaryQuadrature(iPoint);
-                    const auto &condition = _data->boundary.At(mesh.GetFaceZone(q.face));
-                    const auto face = condition.FaceValue(gas, Load(values, q.cell), {q.normal[0], q.normal[1], q.normal[2]}, {q.point[0], q.point[1], q.point[2]}, time, &frame);
+                    const auto &sample = _data->samples[_data->boundaryEntries[gradient ? _data->gradientBoundaryPoints[iPoint] : iPoint]];
+                    const auto face = FiniteVolumeDetail::BoundaryFaceValue(sample, gas, Load(values, q.cell), time, frame, incoming);
                     for (int j = 0; j < 5; ++j)
                         target(iPoint, j) = face[j];
                 }
             };
-            fill(work.boundary.values, _data->reconstruction);
-            fill(work.gradientBoundary, _data->gradient);
+            fill(work.boundary.values, _data->reconstruction, false);
+            fill(work.gradientBoundary, _data->gradient, true);
         }
         const auto updateReconstructionBoundary = [&]
         {
@@ -744,8 +795,7 @@ namespace DNDS::Cauchy
                         inside[j] += rec(sample.cell, j * modes + mode) * b(0, mode);
                 if (!gas.Admissible(inside))
                     inside = Load(u, sample.cell);
-                const auto face = sample.boundary.FaceValue(gas, inside, {sample.normal[0], sample.normal[1], sample.normal[2]},
-                                                            {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time, &frame);
+                const auto face = FiniteVolumeDetail::BoundaryFaceValue(sample, gas, inside, time, frame, incoming);
                 for (int j = 0; j < 5; ++j)
                     values(iPoint, j) = face[j];
             }
@@ -785,7 +835,8 @@ namespace DNDS::Cauchy
                 for (index iPoint = 0; iPoint < _data->gradient.NumBoundaryQuadrature(); ++iPoint)
                 {
                     const auto point = _data->gradient.GetBoundaryQuadrature(iPoint);
-                    const auto value = gas.Primitive(_data->boundary.At(mesh.GetFaceZone(point.face)).FaceValue(gas, Load(values, point.cell), {point.normal[0], point.normal[1], point.normal[2]}, {point.point[0], point.point[1], point.point[2]}, time, &frame));
+                    const auto &sample = _data->samples[_data->boundaryEntries[_data->gradientBoundaryPoints[iPoint]]];
+                    const auto value = gas.Primitive(FiniteVolumeDetail::BoundaryFaceValue(sample, gas, Load(values, point.cell), time, frame, incoming));
                     const FlowState primitive{value.density, value.velocity[0], value.velocity[1], value.velocity[2], value.temperature};
                     for (int j = 0; j < 5; ++j)
                         target(iPoint, j) = primitive[j];
@@ -864,7 +915,7 @@ namespace DNDS::Cauchy
             }
             else
             {
-                PrepareAuxValues(state, work.auxiliary, time);
+                PrepareAuxValues(state, work.auxiliary, time,work.incoming?&*work.incoming:nullptr);
                 prepareGradientCore(CFV::ReconstructionRegion::All);
             } });
         if (primitiveViscosity)
@@ -1029,7 +1080,7 @@ namespace DNDS::Cauchy
             auxiliary.cellWaveJump = wave;
         if (work.auxiliary.cellPressureMinimum)
             auxiliary.cellPressureMinimum = pressure;
-        const auto kernel = [rhs, time, lowOutput, produceLow = bool(work.lowResidual), includeViscosity = !work.meanOnly,
+        const auto kernel = [rhs, time, lowOutput, incomingView, produceLow = bool(work.lowResidual), includeViscosity = !work.meanOnly,
                              forces = &work.forces, diagnostics = &work.fallbacks](CFV::ReconstructionRegion region,
                                                                                    const auto &mean, const auto &coefficient, const auto &gradientInput,
                                                                                    const RHSAuxiliaryViews &auxiliaryInput, const std::optional<FieldView> &viscousInput, auto result)
@@ -1037,7 +1088,7 @@ namespace DNDS::Cauchy
             RHSWriteViews outputs{result, std::nullopt, diagnostics, forces};
             if (produceLow)
                 outputs.lowOrder = lowOutput;
-            rhs.Apply({mean, coefficient, gradientInput, auxiliaryInput, includeViscosity, viscousInput}, outputs, region, time);
+            rhs.Apply({mean, coefficient, gradientInput, auxiliaryInput, includeViscosity, viscousInput, incomingView}, outputs, region, time);
         };
         const auto &fluxCoefficients = FluxReconstruction(work);
         auto operation = engine.ChecksAccess() ? work.FluxHalo().BeginChecked(stream) : work.FluxHalo().BeginScheduled(stream.Context());
@@ -1332,12 +1383,23 @@ namespace DNDS::Cauchy
     {
         const auto frame = _data->motion.At(time);
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        { DNDS_check_throw_info(hdfDeflateLevel >= 0 && hdfDeflateLevel <= 9, "VTKHDF compression level must be in [0,9]"); });
+                        {
+            DNDS_check_throw_info(hdfDeflateLevel >= 0 && hdfDeflateLevel <= 9, "VTKHDF compression level must be in [0,9]");
+            DNDS_check_throw_info(!HasInterfaces()||work.incoming,"surface output needs incoming interface values");
+            if(work.incoming) ValidateBoundaryInputs(*work.incoming,time); });
         auto outputSettings = _data->mesh->hdf5OutSetting;
         outputSettings.deflateLevel = hdfDeflateLevel;
         auto read = state.Owned().Read();
         const auto u = read.View<R::UniformTableRows>();
         const auto &gas = _data->equation.Gas();
+        std::optional<R::Array<real>::ReadLease> incomingRead;
+        RHSScalarView incoming;
+        if (work.incoming)
+        {
+            ValidateBoundaryInputs(*work.incoming, time);
+            incomingRead.emplace(work.incoming->flow.Read());
+            incoming = incomingRead->View<R::UniformTableRows>();
+        }
         static const std::array<std::string, 10> names{"rho", "rhou", "rhov", "rhow", "rhoE", "p", "u", "v", "w", "Mach"};
         _data->mesh->PrintParallelVTKHDFDataArray(prefix, "", 10, 0, 0, 0, [](int i)
                                                   { return names.at(i); }, [&](int i, index iCell)
@@ -1368,8 +1430,7 @@ namespace DNDS::Cauchy
                 for (int j = 0; j < 5; ++j) for (int mode = 0; mode < modes; ++mode)
                     value[j] += coefficient(sample.cell, j * modes + mode) * b(0, mode);
                 if (!gas.Admissible(value)) value = Load(u, sample.cell);
-                const auto physical = gas.Primitive(sample.boundary.FaceValue(gas, value, {sample.normal[0], sample.normal[1], sample.normal[2]},
-                    {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time, &frame));
+                const auto physical = gas.Primitive(FiniteVolumeDetail::BoundaryFaceValue(sample,gas,value,time,frame,incoming));
                 surface << Mesh().OriginalEntityId(Geom::EntityKind::Cell, sample.cell) << ',' << sample.zone;
                 for (int d = 0; d < 3; ++d) surface << ',' << sample.ownPoint[d];
                 for (int d = 0; d < 3; ++d) surface << ',' << sample.normal[d];

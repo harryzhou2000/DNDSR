@@ -50,6 +50,7 @@ namespace DNDS::Cauchy
     }
     FlowState BoundaryCondition::FaceValue(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point, real time, const RigidFrame *frame) const
     {
+        DNDS_check_throw_info(kind != BoundaryKind::Interface, "interface boundary needs a ready incoming packet");
         if (kind == BoundaryKind::Analytic)
             return AnalyticValue(*this, gas, point, time, frame);
         if (kind == BoundaryKind::DoubleMachBottom)
@@ -84,6 +85,7 @@ namespace DNDS::Cauchy
     }
     FlowState BoundaryCondition::Exterior(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point, real time, const RigidFrame *frame) const
     {
+        DNDS_check_throw_info(kind != BoundaryKind::Interface, "interface boundary needs a ready incoming packet");
         if (kind == BoundaryKind::Analytic)
             return AnalyticValue(*this, gas, point, time, frame);
         if (kind == BoundaryKind::DoubleMachBottom)
@@ -118,6 +120,7 @@ namespace DNDS::Cauchy
     }
     std::array<real, 25> BoundaryCondition::ExteriorJacobian(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point, real time, const RigidFrame *frame) const
     {
+        DNDS_check_throw_info(kind != BoundaryKind::Interface, "interface boundary Jacobian needs a frozen incoming packet");
         std::array<real, 25> result{};
         if (kind == BoundaryKind::Analytic)
             return result;
@@ -211,6 +214,8 @@ namespace DNDS::Cauchy
                 condition.kind = BoundaryKind::Analytic;
             else if (source.kind == "doubleMachBottom")
                 condition.kind = BoundaryKind::DoubleMachBottom;
+            else if (source.kind == "interface")
+                condition.kind = BoundaryKind::Interface;
             else
                 DNDS_check_throw_info(false, "unsupported boundary family " + source.kind);
             condition.farfield = gas.Conservative(source.primitive);

@@ -63,6 +63,47 @@ valid only for a fixed frame. Default inactive motion/new wall-frame controls
 normalize away for existing fixed-grid configuration compatibility. These are
 rigid, constant-volume operations; deforming ALE/GCL is not implemented.
 
+`BoundaryInputs` is an explicit incoming interface packet in receiver axes,
+separate from conservative means and from physical-BC reconstruction scratch.
+It currently contains flow5; additional equation blocks can accompany it later.
+`BoundaryPoints()` exposes the canonical reference-frame point order used by
+reconstruction, gradients, auxiliary faces and RHS incidences. The coupling
+controller owns search, donor polynomial evaluation, vector rotation and return
+transfers. The domain posts no hidden interface exchange from a row accessor.
+
+```text
+BuildBoundaryInputs -> BeginBoundaryUpdate (withdraw, clear rows to NaN)
+  -> fill/transfer every interface row -> PublishBoundaryInputs(time, epoch)
+  -> SetBoundaryInputs(workspace) -> auxiliary / VR / RHS / Jacobian
+```
+
+Publication checks the receiver's admissibility bounds and records payload/shape
+generations, physical time and the controller's actual source epoch. Clearing
+rows catches an incomplete refresh without a coverage bitmap or accidentally
+accepting values from the previous stage. Unused physical-BC rows are unspecified;
+their boundary operators still compute ordinary physical conditions. Packet
+queries do not refresh data or certify current donor state. The controller
+freezes donor snapshots and coordinates publication/failures across its coupling
+communicator before domains consume them. Serialize packet update/publication
+calls, finish all producers/receives, and release conflicting debug views first.
+
+Interface BCs have no fallback functor: an absent, unpublished, modified or
+wrong-time packet fails at the wrapper boundary. Raw RHS views borrow the ready
+packet with caller-retained leases. Auxiliary provenance also retains its input
+packet, so a later interface update invalidates the corresponding Jacobian's
+auxiliary inputs. A fixed incoming trace has zero derivative with respect to the
+local interior state in a decoupled implicit solve. Pointwise EOS evaluation,
+fluxes and the rotation source remain stateless.
+
+`AliasBoundaryInputs` can share payload across FV levels after proving identical
+reference mesh, canonical point order, geometry and boundary semantics. This is
+not interpolation and never accepts equal row counts alone. Normal validation
+then uses the matched layout identity and native generations outside hot loops.
+The focused test reproduces analytic nonconstant P3 reconstruction, residual and
+frozen Jacobian action exactly, including rigid posing, and rejects incomplete
+or modified publication. This packet facility alone is not a physical
+multi-domain stage driver; that orchestration remains separate work.
+
 `CoordinatedSchedule` is a scalar mock of the frozen-trace contract, not a fluid
 integrator. All domains read the same old trace snapshot for a round. Only each
 domain root publishes its candidate to the control communicator. Failure leaves

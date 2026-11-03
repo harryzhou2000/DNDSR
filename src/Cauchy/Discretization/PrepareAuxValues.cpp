@@ -65,6 +65,9 @@ namespace DNDS::Cauchy
         std::optional<R::Array<real>::ReadLease> owned, ghost;
         std::optional<EquationDofs> derivedSource;
         std::optional<DerivedFields::ReadScope> derivedOwned, derivedGhost;
+        std::optional<BoundaryInputs> boundary;
+        std::optional<R::Array<real>::ReadLease> boundaryRead;
+        RHSScalarView incoming;
         std::array<std::optional<R::Array<real>::WriteLease>, 7> writes;
         std::array<R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows>, 7> values;
         std::optional<R::Array<real>::WriteLease> scratchWrite;
@@ -74,11 +77,17 @@ namespace DNDS::Cauchy
         int phase = 0;
         bool started = false;
 
-        State(std::shared_ptr<const FiniteVolume::Data> owner, const CFV::FVField &input, const AuxiliaryValues &output, real atTime)
+        State(std::shared_ptr<const FiniteVolume::Data> owner, const CFV::FVField &input, const AuxiliaryValues &output, real atTime, const BoundaryInputs *trace)
             : data(std::move(owner)), source(input), buffers(output), geometry(data->metrics.AcquireRead()), time(atTime), frame(data->motion.At(atTime))
         {
             data->partition.Validate();
             owned.emplace(source.Owned().Read());
+            if (trace)
+            {
+                boundary = *trace;
+                boundaryRead.emplace(boundary->flow.Read());
+                incoming = boundaryRead->View<R::UniformTableRows>();
+            }
             if (buffers.derivedOwned || buffers.derivedGhost)
                 derivedSource.emplace(EquationDofs::Coupled(data->equation.Schema(), source));
             const auto arrays = AuxiliaryArrays(buffers);
@@ -182,7 +191,7 @@ namespace DNDS::Cauchy
                     const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
                     const Vector3 point{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]};
                     const auto gridVelocity = frame.GridVelocity(point);
-                    const auto right = sample.other == UnInitIndex ? sample.boundary.Exterior(gas, left, normal, point, time, &frame)
+                    const auto right = sample.other == UnInitIndex ? FiniteVolumeDetail::BoundaryExterior(sample, gas, left, time, frame, incoming)
                                                                    : RotateState(Load(mean, sample.other), sample.rotation);
                     const auto rightData = sample.other == UnInitIndex ? equation.PrepareFluxState(right) : prepared(sample.other, right);
                     DNDS_check_throw_info(rightData.flow.pressure > 0 && std::isfinite(rightData.soundSpeed), "invalid boundary mean in auxiliary preparation");
@@ -312,6 +321,7 @@ namespace DNDS::Cauchy
         const auto &source = _state->source;
         AuxiliaryValues::Origin origin{_state->data, source.Owned().SharedStorage(), source.Ghost().SharedStorage(), source.Owned().Version(), source.Ghost().Version(),
                                        source.Owned().ShapeVersion(), source.Ghost().ShapeVersion(), _state->time};
+        origin.boundary = _state->boundary;
         for (int k = 0; k < 7; ++k)
             if (actual[k])
             {
@@ -336,10 +346,13 @@ namespace DNDS::Cauchy
         output._origin = std::move(origin);
         _state.reset();
     }
-    FiniteVolume::AuxiliaryPreparation FiniteVolume::BeginAuxValues(const CFV::FVField &state, AuxiliaryValues &output, real time) const
+    FiniteVolume::AuxiliaryPreparation FiniteVolume::BeginAuxValues(const CFV::FVField &state, AuxiliaryValues &output, real time, const BoundaryInputs *boundary) const
     {
         output._origin.reset();
         Metrics().ValidateField(state, 5);
+        DNDS_check_throw_info(!HasInterfaces() || boundary, "auxiliary preparation needs an incoming interface packet");
+        if (boundary)
+            ValidateBoundaryInputs(*boundary, time);
         DNDS_check_throw_info(std::isfinite(time) && state.Device() == R::Device::Host(), "auxiliary preparation requires finite boundary time and available CPU inputs");
         const auto arrays = AuxiliaryArrays(output);
         const index faces = index(_data->stencilFaces.size());
@@ -364,11 +377,11 @@ namespace DNDS::Cauchy
         const bool needScratch = (arrays[4] && !arrays[1]) || (arrays[5] && !arrays[2]) || (arrays[6] && !arrays[3]);
         if (needScratch && (!output._faceScratch || output._faceScratch->RowCount() != faces))
             output._faceScratch.emplace(R::RowLayout::Dense(faces, 3));
-        return AuxiliaryPreparation(std::make_unique<AuxiliaryPreparation::State>(_data, state, output, time));
+        return AuxiliaryPreparation(std::make_unique<AuxiliaryPreparation::State>(_data, state, output, time, boundary));
     }
-    void FiniteVolume::PrepareAuxValues(const CFV::FVField &state, AuxiliaryValues &output, real time) const
+    void FiniteVolume::PrepareAuxValues(const CFV::FVField &state, AuxiliaryValues &output, real time, const BoundaryInputs *boundary) const
     {
-        auto preparation = BeginAuxValues(state, output, time);
+        auto preparation = BeginAuxValues(state, output, time, boundary);
         preparation.Apply();
         preparation.Finish(output);
     }
@@ -381,6 +394,9 @@ namespace DNDS::Cauchy
         // version comparison alone must not accept that in-flight mutation.
         const auto ownedRead = state.Owned().Read(), ghostRead = state.Ghost().Read();
         const auto &origin = *values._origin;
+        DNDS_check_throw_info(!HasInterfaces() || origin.boundary, "auxiliary publication lacks incoming interface provenance");
+        if (origin.boundary)
+            ValidateBoundaryInputs(*origin.boundary, time);
         DNDS_check_throw_info(origin.owner.get() == _data.get() && time == origin.time &&
                                   origin.ownedStorage == state.Owned().SharedStorage() && origin.ghostStorage == state.Ghost().SharedStorage() &&
                                   origin.ownedVersion == state.Owned().Version() && origin.ghostVersion == state.Ghost().Version() &&

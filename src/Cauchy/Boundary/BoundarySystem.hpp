@@ -14,7 +14,8 @@ namespace DNDS::Cauchy
         SlipWall,
         NoSlipWall,
         Analytic,
-        DoubleMachBottom
+        DoubleMachBottom,
+        Interface
     };
     /// Resolved numerical BC, independent of mesh storage and time scheduling.
     /// Construction validates names; a kernel receives plain parameters.

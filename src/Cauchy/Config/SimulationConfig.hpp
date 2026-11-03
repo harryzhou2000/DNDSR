@@ -146,7 +146,7 @@ namespace DNDS::Cauchy
         FlowProfileSettings profile;
         DNDS_DECLARE_CONFIG(BoundarySettings)
         {
-            DNDS_FIELD(kind, "extrapolate, farfield, slipWall, noSlipWall, analytic, or doubleMachBottom");
+            DNDS_FIELD(kind, "extrapolate, farfield, slipWall, noSlipWall, analytic, doubleMachBottom, or interface");
             DNDS_FIELD(thermal, "Wall thermal law: adiabatic or isothermal");
             DNDS_FIELD(wallVelocityFrame, "mesh: velocity relative to moving wall; ground: prescribed absolute ground velocity");
             DNDS_FIELD(primitive, "Farfield rho,u,v,w,p; three velocities on any geometry");
