@@ -20,7 +20,7 @@ namespace DNDS::Cauchy
         std::string _name;
         EquationSystem _equation;
         FiniteVolume _fv;
-        Algebra::DofBundle _accepted, _trial;
+        EquationDofs _accepted, _trial;
         CFV::FVField _residual, _initial;
         std::shared_ptr<FiniteVolume::Workspace> _workspace;
         std::shared_ptr<FiniteVolume::Workspace> _observationWorkspace;
@@ -69,11 +69,12 @@ namespace DNDS::Cauchy
         const std::string &Name() const { return _name; }
         const EquationSystem &Equation() const { return _equation; }
         const FiniteVolume &Discretization() const { return _fv; }
-        const Algebra::DofBundle &State() const { return _accepted; }
+        const Algebra::DofBundle &State() const { return _accepted.Fields(); }
+        const EquationDofs &Dofs() const { return _accepted; }
         /// Coarse debugging/input boundary. Release writers before a trial and
         /// all views before commit; aliases intentionally block conflicting writes.
-        CFV::FVField &Flow() { return _accepted.Block("flow"); }
-        const CFV::FVField &Flow() const { return _accepted.Block("flow"); }
+        CFV::FVField &Flow() { return _accepted.CoupledField(); }
+        const CFV::FVField &Flow() const { return _accepted.CoupledField(); }
         real Time() const { return _time; }
         /// Actual last committed physical step, including retry halving. Zero
         /// for steady/fresh state or an older restart without this information.

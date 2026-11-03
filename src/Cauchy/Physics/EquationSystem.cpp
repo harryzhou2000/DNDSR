@@ -1,5 +1,6 @@
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
+#include "Cauchy/State/EquationDofs.hpp"
 #include <Eigen/LU>
 
 namespace DNDS::Cauchy
@@ -24,6 +25,15 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(state.BlockNumber() == index(_schema.blocks.size()), "equation state block count differs");
         for (const auto &block : _schema.blocks)
             DNDS_check_throw_info(state.Block(block.name).Width() == index(block.components.size()), "equation component count differs");
+    }
+    void EquationSystem::ValidateStateSchema(const EquationDofs &state) const
+    {
+        state.RequireSchema(_schema);
+    }
+    EquationKernelProfile EquationSystem::ResolveKernelProfile(Runtime::Device device) const
+    {
+        DNDS_check_throw_info(device == Runtime::Device::Host(), "Cauchy equation kernels are unavailable on the requested device; no implicit host fallback");
+        return EquationKernelProfile::CompressiblePerfectGasCPU;
     }
     FlowCharacteristics EquationSystem::PrepareCharacteristics(const FlowState &left, const FlowState &right, const Vector3 &faceNormal) const
     {

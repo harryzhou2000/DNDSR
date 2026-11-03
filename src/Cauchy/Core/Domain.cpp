@@ -15,14 +15,12 @@ namespace DNDS::Cauchy
                 return R::RowLayout::TiledColMajor(0, 5, 32);
             return R::RowLayout::Dense(0, 5);
         }
-        Algebra::DofBundle BuildState(const FiniteVolume &discrete, const DomainSettings &settings)
+        EquationDofs BuildState(const FiniteVolume &discrete, const EquationSystem &equation, const DomainSettings &settings)
         {
             const auto &fv = discrete.Metrics();
             auto field = fv.BuildField(FlowLayout(settings));
-            Algebra::DofBundle result(field.Space());
             discrete.Initialize(field, settings.initialProfile, settings.initialPrimitive);
-            result.Add("flow", std::move(field));
-            return result;
+            return EquationDofs::Coupled(equation.Schema(), std::move(field));
         }
         EquationSystem ResolveEquation(const std::string &name, const DomainSettings &settings)
         {
@@ -39,9 +37,9 @@ namespace DNDS::Cauchy
     }
     Domain::Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time)
         : _name(std::move(name)), _equation(ResolveEquation(_name, settings)), _fv(mesh, settings, _equation),
-          _accepted(BuildState(_fv, settings)), _trial(_accepted.Clone()),
+          _accepted(BuildState(_fv, _equation, settings)), _trial(_accepted.Clone()),
           _residual(_fv.Metrics().BuildField(FlowLayout(settings))), _initial(_fv.Metrics().BuildField(FlowLayout(settings))),
-          _workspace(_fv.BuildWorkspace(_trial.Block("flow"), TimeAuxiliary(time))),
+          _workspace(_fv.BuildWorkspace(_trial, TimeAuxiliary(time))),
           _engine(size_t(settings.execution.hostThreads), settings.execution.checkAccess ? std::make_shared<R::AccessTrackingContext>() : nullptr),
           _stream(_engine.CreateCPUStream())
     {
@@ -71,7 +69,7 @@ namespace DNDS::Cauchy
     }
     void Domain::UpdateStage(real dt, real historyWeight, real stageWeight, real stageTime)
     {
-        _fv.Evaluate(_trial.Block("flow"), _residual, *_workspace, _engine, _stream, stageTime);
+        _fv.Evaluate(_trial, _residual, *_workspace, _engine, _stream, stageTime);
         _lastFallbacks += _fv.LastFaceFallbacks(*_workspace);
         _lastCharacteristicFallbacks += _fv.LastCharacteristicFallbacks(*_workspace);
         auto geometry = _fv.Metrics().AcquireRead();
@@ -86,7 +84,7 @@ namespace DNDS::Cauchy
             index limited = 0;
             MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
                             {
-                const auto initialRead = _initial.Owned().Read(), stateRead = _trial.Block("flow").Owned().Read();
+                const auto initialRead = _initial.Owned().Read(), stateRead = _trial.CoupledField().Owned().Read();
                 const auto highRead = _residual.Owned().Read(), lowRead = _fv.LowOrderResidual(*_workspace).Owned().Read();
                 const auto initial = initialRead.View<R::UniformTableRows>(), state = stateRead.View<R::UniformTableRows>();
                 const auto high = highRead.View<R::UniformTableRows>(), low = lowRead.View<R::UniformTableRows>();
@@ -139,9 +137,9 @@ namespace DNDS::Cauchy
                 {
                     const real residual = alpha == 1 ? rhs(iCell, j) : (1 - alpha) * low(iCell, j) + alpha * rhs(iCell, j);
                     stage(iCell, j) = historyWeight * initial(iCell, j) + stageWeight * (stage(iCell, j) + dt * residual / metrics.GetCellVol(iCell));
-                } }, R::ReadAs<R::UniformTableRows>(_initial.Owned()), R::ReadAs<R::UniformTableRows>(_residual.Owned()), R::ReadWriteAs<R::UniformTableRows>(_trial.Block("flow").Owned()));
+                } }, R::ReadAs<R::UniformTableRows>(_initial.Owned()), R::ReadAs<R::UniformTableRows>(_residual.Owned()), R::ReadWriteAs<R::UniformTableRows>(_trial.CoupledField().Owned()));
         _stream.Record().WaitHost();
-        DNDS_check_throw_info(_fv.Admissible(_trial.Block("flow")), "Cauchy SSPRK3 stage is inadmissible; accepted state unchanged");
+        DNDS_check_throw_info(_fv.Admissible(_trial.CoupledField()), "Cauchy SSPRK3 stage is inadmissible; accepted state unchanged");
     }
     void Domain::PrepareStep(real dt)
     {
@@ -159,7 +157,7 @@ namespace DNDS::Cauchy
         // the retaining rank and strand peers at the next domain collective.
         MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
                         {
-            Algebra::Copy(_engine, _stream, _trial.Block("flow"), Flow());
+            Algebra::Copy(_engine, _stream, _trial.CoupledField(), Flow());
             Algebra::Copy(_engine, _stream, _initial, Flow());
             _stream.Record().WaitHost(); });
         _lastFallbacks = 0;
@@ -213,7 +211,7 @@ namespace DNDS::Cauchy
         try
         {
             MPI::LocalStage(mpi, [&]
-                            { destination.emplace(Flow().Owned().Write()); source.emplace(_trial.Block("flow").Owned().Read()); });
+                            { destination.emplace(Flow().Owned().Write()); source.emplace(_trial.CoupledField().Owned().Read()); });
             // Restore only after accepted-state publication is known to be
             // available. A retained debug reader must not change the future
             // polynomial guess when it rejects the accompanying state load.
@@ -247,9 +245,9 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(_fv.Admissible(Flow()), "accepted Cauchy mean is inadmissible");
         MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
                         {
-            Algebra::Copy(_engine, _stream, _trial.Block("flow"), Flow());
+            Algebra::Copy(_engine, _stream, _trial.CoupledField(), Flow());
             _stream.Record().WaitHost(); });
-        _fv.Evaluate(_trial.Block("flow"), _residual, *_workspace, _engine, _stream, _time);
+        _fv.Evaluate(_trial, _residual, *_workspace, _engine, _stream, _time);
         _lastFallbacks = _fv.LastFaceFallbacks(*_workspace);
         return _residual;
     }
@@ -309,7 +307,7 @@ namespace DNDS::Cauchy
         // Observation owns its own persistent reconstruction scratch and RHS.
         if (!_observationWorkspace)
         {
-            _observationWorkspace = _fv.BuildWorkspace(Flow());
+            _observationWorkspace = _fv.BuildWorkspace(_accepted);
             _observationResidual.emplace(_fv.Metrics().BuildField(Flow().Owned().Layout()));
         }
         // Start every observation from the accepted numerical guess, not the
@@ -321,6 +319,6 @@ namespace DNDS::Cauchy
         const auto &guess = _restoreReconstruction ? *_reconstructionBackup : _fv.ReconstructionGuess(*_workspace).Owned();
         const auto *history = _restoreReconstruction ? (_limitedVRBackup ? &*_limitedVRBackup : nullptr) : _fv.LimitedVRHistory(*_workspace);
         _fv.RestoreReconstructionGuess(*_observationWorkspace, guess, history);
-        _fv.Evaluate(Flow(), *_observationResidual, *_observationWorkspace, _engine, _stream, _time);
+        _fv.Evaluate(_accepted, *_observationResidual, *_observationWorkspace, _engine, _stream, _time);
     }
 }

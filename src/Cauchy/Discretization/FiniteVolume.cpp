@@ -360,6 +360,24 @@ namespace DNDS::Cauchy
     }
     const CFV::FiniteVolumePlan &FiniteVolume::Metrics() const { return _data->metrics; }
     const Geom::UnstructuredMesh &FiniteVolume::Mesh() const { return *_data->mesh; }
+    CFV::FVField &FiniteVolume::RequireState(EquationDofs &state) const
+    {
+        _data->equation.ValidateStateSchema(state);
+        switch (_data->equation.ResolveKernelProfile(state.Device()))
+        {
+        case EquationKernelProfile::CompressiblePerfectGasCPU:
+            return state.CoupledField();
+        }
+        DNDS_check_throw_info(false, "unavailable Cauchy finite-volume kernel profile");
+        return state.CoupledField();
+    }
+    std::shared_ptr<FiniteVolume::Workspace> FiniteVolume::BuildWorkspace(EquationDofs &state, AuxiliaryRequest request) const
+    {
+        CFV::FVField *field = nullptr;
+        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                        { field = &RequireState(state); });
+        return BuildWorkspace(*field, request);
+    }
     std::shared_ptr<FiniteVolume::Workspace> FiniteVolume::BuildWorkspace(CFV::FVField &state, AuxiliaryRequest request) const
     {
         return BuildWorkspaceImpl(state, request, false);
@@ -567,6 +585,20 @@ namespace DNDS::Cauchy
                                 R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
         EvaluateImpl(state, residual, work, engine, stream, time);
+    }
+    void FiniteVolume::Evaluate(EquationDofs &state, CFV::FVField &residual, Workspace &work,
+                                R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
+    {
+        // Match the existing checked/unchecked orchestration policy. With
+        // checks disabled callers coordinate rank-local exceptions themselves.
+        CFV::FVField *field = nullptr;
+        const auto validate = [&]
+        { field = &RequireState(state); };
+        if (_data->settings.implicit.collectiveChecks)
+            MPI::LocalStage(MPIInfo(Metrics().Communicator()), validate);
+        else
+            validate();
+        EvaluateImpl(*field, residual, work, engine, stream, time);
     }
     const R::Array<real> *FiniteVolume::LimitedVRHistory(const Workspace &work) const
     {

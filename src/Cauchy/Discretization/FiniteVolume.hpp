@@ -2,6 +2,7 @@
 
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
+#include "Cauchy/State/EquationDofs.hpp"
 #include "Cauchy/Boundary/BoundarySystem.hpp"
 #include "Cauchy/Implicit/LinearProblem.hpp"
 #include "CFV/Plans/GradientPlan.hpp"
@@ -154,6 +155,10 @@ namespace DNDS::Cauchy
         /// explicit consumers retain the minimal default packet. Collective:
         /// domain ranks must request the same resolved channels/workspace mode.
         std::shared_ptr<Workspace> BuildWorkspace(CFV::FVField &state, AuxiliaryRequest additional = {}) const;
+        /// Semantic frontend. Validate the equation profile and backend before
+        /// preparing persistent transfers. Initial kernels require one coupled
+        /// physical field; split bindings fail without flattening or copying.
+        std::shared_ptr<Workspace> BuildWorkspace(EquationDofs &state, AuxiliaryRequest additional = {}) const;
         /// Separate typed scratch for Euler's zero-reconstruction physical-dt
         /// trial. It cannot be supplied to a nonlinear reconstruction solve.
         std::shared_ptr<MeanWorkspace> BuildMeanWorkspace(CFV::FVField &state) const;
@@ -252,6 +257,11 @@ namespace DNDS::Cauchy
         /// on exceptions; failed scratch allocations require replacement.
         void Evaluate(CFV::FVField &state, CFV::FVField &residual, Workspace &workspace,
                       Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
+        /// Equation-independent entry; dispatch/semantic checks occur outside
+        /// cell loops. The field overload is the trusted compressible-kernel
+        /// adapter used by stage and multigrid scratch, not a model selector.
+        void Evaluate(EquationDofs &state, CFV::FVField &residual, Workspace &workspace,
+                      Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
         /// Euler physical-dt trial: configured convective flux/BC/auxiliary
         /// policy, zero polynomial and viscosity explicitly ignored. No VR,
         /// WBAP or reconstruction PP. Uses only its independent typed scratch;
@@ -297,6 +307,7 @@ namespace DNDS::Cauchy
         void WriteVisualization(const CFV::FVField &state, const Workspace &workspace, const std::string &prefix, real time, int hdfDeflateLevel = 0) const;
 
     private:
+        CFV::FVField &RequireState(EquationDofs &state) const;
         index PrepareFaceCharacteristics(const CFV::FVField &state, CFV::FaceCharacteristicTransform &transform) const;
         std::shared_ptr<Workspace> BuildWorkspaceImpl(CFV::FVField &state, AuxiliaryRequest request, bool meanOnly) const;
         void EvaluateImpl(CFV::FVField &state, CFV::FVField &residual, Workspace &workspace,

@@ -27,6 +27,9 @@ namespace DNDS::Cauchy
         real reconstructionRelativeUpdate = 0;
         Linear::LinearIterationReport lastLinear;
     };
+    /// Initial compressible-flow5 CPU stage adapter. Its physical PP, norms
+    /// and identity accumulation do not implement other equation profiles.
+    /// The underlying time interface and coupled linear algebra are generic.
     /// CPU pseudo-time-continuation stage solver. Time equations supply explicit
     /// source/mass/RHS coefficients; physics/discretization, sparse algebra and
     /// physical history remain separate. Each instance binds to one stable trial

@@ -1,10 +1,11 @@
 # Cauchy solver: module contracts and implementation ledger
 
-Status2026-11-02: foundation, optional checked eager execution and the
+Status2026-11-03: foundation, optional checked eager execution and the
 single-domain CPU flow solver include native implicit linear/nonlinear solves,
 BDF/Trapz/ESDIRK/DITR, polynomial FAS and persistent-ID restart in focused tests.
-The complete Euler PP suite, matched performance and physical qualification
-remain in progress. See [implicit contracts](CauchyImplicit.md) and
+Euler-derived PP and native LVR have focused distributed coverage; qualified
+physical studies and performance limits are recorded in the plan repo. The
+Mach20 steady target and full DMR qualification remain open. See [implicit contracts](CauchyImplicit.md) and
 [coupled DITR](DITR.md) for the current boundaries.
 Do not treat mocks, flux parity or short smooth-flow tests as broad
 production acceptance. The independent plan repo's document37 defines the full
@@ -15,7 +16,7 @@ flowchart TD
     Config[Resolved SimulationConfig + capability plan] --> Simulation
     Simulation --> Placement[DomainPlacement: control/domain communicators]
     Simulation --> Domain
-    Domain --> State[Accepted/trial DofBundle + physical epoch]
+    Domain --> State[Accepted/trial EquationDofs + physical epoch]
     Domain --> Equation[EquationSystem: schema + thermodynamic preparation]
     Domain --> FV[FiniteVolume: immutable preparation + per-run Workspace]
     FV --> Geom[Geom mesh + cell-node-cell work partition]
@@ -40,6 +41,11 @@ domain root publishes its candidate to the control communicator. Failure leaves
 accepted time and traces unchanged; retry uses a fresh trial identity. Domain
 callbacks must coordinate their internal collective phases before returning or
 throwing. MPI process failure recovery is not promised.
+
+The [equation-state contract](CauchyState.md) describes semantic `EquationDofs`
+bindings, physical ownership, layout-aware block views and explicit kernel
+dispatch. `Domain` now holds accepted/trial bindings while preserving the
+physical `State()` and flow5 `Flow()` accessors.
 
 `DNDS/Algebra/DofBundle` composes named numerical blocks on one row space. It
 contains no equation/BC/mesh policy. Blocks retain their individual physical

@@ -16,6 +16,62 @@ namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
 namespace A = DNDS::Algebra;
 static DNDS::MPIInfo mpi;
+TEST_CASE("Semantic finite-volume dispatch preserves the trusted flow kernel and rejects an incompatible model before communication")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 8);
+    for (int layout = 0; layout < 3; ++layout)
+    {
+        C::DomainSettings settings;
+        settings.execution.hostThreads = 2;
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.reconstructionIterations = 3;
+        settings.numerics.limiter = "WBAP";
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        const auto shape = layout == 0 ? R::RowLayout::Dense(0, 5) : layout == 1 ? R::RowLayout::ColMajor(0, 5, {8, 1})
+                                                                                 : R::RowLayout::TiledColMajor(0, 5, 32);
+        auto raw = fv.Metrics().BuildField(shape);
+        {
+            auto write = raw.Owned().Write();
+            const auto values = write.View<R::UniformTableRows>();
+            for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+            {
+                const auto center = fv.Metrics().GetCellCent(iCell);
+                const auto state = equation.Gas().Conservative({1 + .05 * std::sin(6.283185307179586 * center[0]), .3, -.1, .2, 1});
+                for (int j = 0; j < 5; ++j)
+                    values(iCell, j) = state[j];
+            }
+        }
+        auto semantic = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(shape), "packed");
+        A::Copy(semantic.CoupledField(), raw);
+        auto rawResult = fv.Metrics().BuildField(shape), semanticResult = fv.Metrics().BuildField(shape);
+        auto rawWork = fv.BuildWorkspace(raw), semanticWork = fv.BuildWorkspace(semantic);
+        R::EagerEngine engine(2);
+        const auto stream = engine.CreateCPUStream();
+        fv.Evaluate(raw, rawResult, *rawWork, engine, stream);
+        fv.Evaluate(semantic, semanticResult, *semanticWork, engine, stream);
+        {
+            const auto a = rawResult.Owned().Read(), b = semanticResult.Owned().Read();
+            const auto x = a.View<R::UniformTableRows>(), y = b.View<R::UniformTableRows>();
+            for (DNDS::index iCell = 0; iCell < x.RowCount(); ++iCell)
+                for (int j = 0; j < 5; ++j)
+                    CHECK(x(iCell, j) == y(iCell, j));
+        }
+        // One rank advertises pressure in place of energy while keeping the
+        // same width and allocation. All ranks must reject before posting MPI.
+        auto wrongSchema = equation.Schema();
+        if (!mpi.rank)
+            wrongSchema.blocks[0].components[4].name = "rhop";
+        auto wrong = C::EquationDofs::Coupled(wrongSchema, semantic.CoupledField(), "packed");
+        const auto resultVersion = semanticResult.Owned().Version();
+        const auto stateVersion = semantic.CoupledField().Owned().Version();
+        CHECK_THROWS(fv.BuildWorkspace(wrong));
+        CHECK_THROWS(fv.Evaluate(wrong, semanticResult, *semanticWork, engine, stream));
+        CHECK(semanticResult.Owned().Version() == resultVersion);
+        CHECK(semantic.CoupledField().Owned().Version() == stateVersion);
+    }
+}
 TEST_CASE("Euler reconstruction PP selects a mean or progressively truncated reference across layouts during halo exchange")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);

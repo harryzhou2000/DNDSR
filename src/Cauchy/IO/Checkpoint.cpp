@@ -459,7 +459,7 @@ namespace DNDS::Cauchy
                                   "Cauchy restart persistent-cell mesh topology/geometry mismatch: topology " + topologyDifference + "; coordinates " + coordinateDifference); });
         _trialReady = false;
         // Existing trial allocations and binding identities remain stable.
-        auto &trial = _trial.Block("flow");
+        auto &trial = _trial.CoupledField();
         transfer(flow, trial.Owned());
         DNDS_check_throw_info(_fv.Admissible(trial), "Cauchy restart contains inadmissible states");
         Runtime::Array<real> guess;

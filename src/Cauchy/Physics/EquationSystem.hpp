@@ -3,27 +3,19 @@
 #include "Cauchy/Physics/PerfectGas.hpp"
 #include "Cauchy/Physics/Positivity.hpp"
 #include "Cauchy/Riemann/RiemannFlux.hpp"
+#include "Cauchy/Physics/EquationSchema.hpp"
 #include "DNDS/Algebra/DofBundle.hpp"
 #include <algorithm>
 
 namespace DNDS::Cauchy
 {
     struct EquationSettings;
-    struct ComponentSchema
+    class EquationDofs;
+    /// Coarse dispatch key. CPU branching and specialized device kernels may
+    /// share this interface; a missing backend never falls back implicitly.
+    enum class EquationKernelProfile
     {
-        std::string name, units, conservationGroup;
-    };
-    struct EquationBlockSchema
-    {
-        std::string name;
-        std::vector<ComponentSchema> components;
-        /// Physical polar-vector triples, independent of geometric dimension.
-        std::vector<index> vectorStarts;
-    };
-    struct EquationSchema
-    {
-        std::string family, energyConvention, physicalAccumulation;
-        std::vector<EquationBlockSchema> blocks;
+        CompressiblePerfectGasCPU
     };
     /// Value owner for optional model-prepared data. Input() creates borrowed
     /// pointers after this owner reaches its final location; copies/moves never
@@ -66,6 +58,7 @@ namespace DNDS::Cauchy
         const EquationSchema &Schema() const { return _schema; }
         const PerfectGas &Gas() const { return _gas; }
         bool Viscous() const { return _viscous; }
+        EquationKernelProfile ResolveKernelProfile(Runtime::Device device) const;
         /// Model-owned thermodynamic chain rule. Numerical face penalties stay
         /// in Discretization; no EOS or energy calculation enters Riemann.
         FlowGradient PreparePrimitiveGradient(const FlowState &state, const FlowGradient &gradient) const
@@ -109,6 +102,9 @@ namespace DNDS::Cauchy
         /// Cell-mean characteristic basis for reconstruction limiting; EOS
         /// eigenstructure belongs to the equation provider, never CFV policy.
         FlowCharacteristics PrepareCharacteristics(const FlowState &left, const FlowState &right, const Vector3 &normal) const;
+        /// Compatibility check of physical block names/widths only. New
+        /// frontend calls use EquationDofs for exact component semantics.
         void ValidateStateSchema(const Algebra::DofBundle &state) const;
+        void ValidateStateSchema(const EquationDofs &state) const;
     };
 }
