@@ -16,7 +16,7 @@ namespace DNDS::Cauchy
         // numerical scope may retire on a worker; MPI resources stay outside.
         R::Array<real> rhs, input, inputGhost, forward, forwardGhost, output;
         R::Array<real>::ReadLease diagonalRead, inverseRead, rhsRead, inputRead;
-        Algebra::BlockMatrixStorage::ReadAccess blocksRead;
+        OffDiagonalReadAccess blocksRead;
         std::optional<R::Array<real>::ReadLease> inputGhostRead, forwardRead, forwardGhostRead;
         std::optional<R::Array<real>::WriteLease> forwardWrite, outputWrite;
         uint64_t initialForwardGhost;
@@ -27,7 +27,7 @@ namespace DNDS::Cauchy
             : pattern(problem._pattern), components(problem._components), mode(problem._diagonalStorage),
               rhs(b.Owned()), input(old.Owned()), inputGhost(old.Ghost()), forward(temporary.Owned()), forwardGhost(temporary.Ghost()), output(result.Owned()),
               diagonalRead(problem._diagonal.Read()), inverseRead(problem._inverse.Read()), rhsRead(rhs.Read()), inputRead(input.Read()),
-              blocksRead(problem._offDiagonal.Read()), initialForwardGhost(forwardGhost.Version()), middleExchange(middle)
+              blocksRead(problem.ReadOffDiagonal()), initialForwardGhost(forwardGhost.Version()), middleExchange(middle)
         {
             DNDS_check_throw_info(problem._inverseCurrent && problem._diagonal.Version() == problem._diagonalVersion &&
                                       problem._inverse.Version() == problem._inverseVersion,
@@ -64,9 +64,10 @@ namespace DNDS::Cauchy
             const auto y = Algebra::MakeEigenRowMatrices(forwardValues, components, 1);
             const auto result = Algebra::MakeEigenRowMatrices(destination, components, 1);
             const auto inv = Algebra::MakeEigenRowMatrices(inverseRead.View<R::TableRows>(), components, mode == DiagonalStorage::Block ? components : 1);
-            const auto blocks = blocksRead.View();
             const index ownedRows = index(pattern->partition->owned);
             started = true;
+            blocksRead.WithBlocks([&](const auto &blocks)
+                                  {
             const auto run = [&](auto size)
             {
                 Eigen::Matrix<real, decltype(size)::value, 1> value(components);
@@ -96,7 +97,7 @@ namespace DNDS::Cauchy
             if (components == 5)
                 run(std::integral_constant<int, 5>{});
             else
-                run(std::integral_constant<int, Eigen::Dynamic>{});
+                run(std::integral_constant<int, Eigen::Dynamic>{}); });
         }
     };
 

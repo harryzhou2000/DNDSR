@@ -63,20 +63,25 @@ namespace DNDS::Cauchy
     }
     LinearProblemContext::LinearProblemContext(Algebra::DofSpace space, index components,
                                                std::vector<std::vector<index>> columns,
-                                               std::vector<index> core, DiagonalStorage diagonal)
+                                               std::vector<index> core, DiagonalStorage diagonal, OffDiagonalStorage offDiagonal)
         : _space(std::move(space)), _pattern(BuildPattern(_space, std::move(columns), std::move(core))), _components(components), _diagonalStorage(diagonal),
           _diagonal(R::RowLayout::Dense(_pattern->partition->owned, DiagonalWidth(components, diagonal))),
-          _inverse(_diagonal.Layout()), _offDiagonal(Counts(_pattern->columns), components)
+          _inverse(_diagonal.Layout()), _offDiagonalStorage(offDiagonal)
     {
+        DNDS_check_throw_info(offDiagonal == OffDiagonalStorage::Assembled || offDiagonal == OffDiagonalStorage::SemiMatrixFree,
+                              "invalid off-diagonal storage mode");
+        if (offDiagonal == OffDiagonalStorage::Assembled)
+            _offDiagonal.emplace(Counts(_pattern->columns), components);
         _diagonalStoragePin = _diagonal.SharedStorage();
         _diagonalShape = _diagonal.ShapeVersion();
-        _offDiagonalStoragePin = _offDiagonal.Values().SharedStorage();
+        if (_offDiagonal)
+            _offDiagonalStoragePin = _offDiagonal->Values().SharedStorage();
     }
     void LinearProblemContext::ValidateMatrix() const
     {
         Layout();
         DNDS_check_throw_info(_diagonal.SharedStorage() == _diagonalStoragePin && _diagonal.ShapeVersion() == _diagonalShape &&
-                                  _offDiagonal.Values().SharedStorage() == _offDiagonalStoragePin,
+                                  (!_offDiagonal || _offDiagonal->Values().SharedStorage() == _offDiagonalStoragePin),
                               "linear matrix allocation or shape changed");
     }
     void LinearProblemContext::ValidateField(const Field &field) const
@@ -90,8 +95,45 @@ namespace DNDS::Cauchy
     {
         ValidateField(input);
         ValidateField(output);
-        for (const auto *source : {&input.Owned(), &input.Ghost(), &_diagonal, &_inverse, &_offDiagonal.Values()})
+        for (const auto *source : {&input.Owned(), &input.Ghost(), &_diagonal, &_inverse})
             DNDS_check_throw_info(!Algebra::Detail::Overlaps(output.Owned().Storage(), source->Storage()), "linear output aliases input or matrix storage");
+        if (_offDiagonal)
+            DNDS_check_throw_info(!Algebra::Detail::Overlaps(output.Owned().Storage(), _offDiagonal->Values().Storage()), "linear output aliases matrix storage");
+    }
+    Algebra::BlockMatrixStorage &LinearProblemContext::OffDiagonal()
+    {
+        DNDS_check_throw_info(_offDiagonal, "semi-matrix-free context has no assembled off-diagonal storage");
+        return *_offDiagonal;
+    }
+    const Algebra::BlockMatrixStorage &LinearProblemContext::OffDiagonal() const
+    {
+        DNDS_check_throw_info(_offDiagonal, "semi-matrix-free context has no assembled off-diagonal storage");
+        return *_offDiagonal;
+    }
+    void LinearProblemContext::PublishOffDiagonalEvaluator(std::shared_ptr<const OffDiagonalEvaluator> evaluator)
+    {
+        ValidateMatrix();
+        DNDS_check_throw_info(!_offDiagonal && evaluator && evaluator->Components() == _components &&
+                                  evaluator->RowSpaceIdentity() == _pattern->partition && evaluator->Columns() == _pattern->columns &&
+                                  _offDiagonalGeneration < UINT64_MAX,
+                              "invalid evaluated off-diagonal publication");
+        auto publication = _diagonal.Write();
+        _offDiagonalEvaluator = std::move(evaluator);
+        ++_offDiagonalGeneration;
+        publication.CancelUnmodified();
+    }
+    uint64_t LinearProblemContext::OffDiagonalGeneration() const
+    {
+        return _offDiagonal ? _offDiagonal->Values().Version() : _offDiagonalGeneration;
+    }
+    LinearProblemContext::OffDiagonalReadAccess LinearProblemContext::ReadOffDiagonal() const
+    {
+        ValidateMatrix();
+        if (_offDiagonal)
+            return {_offDiagonal->Read(), _components};
+        auto publication = _diagonal.Read();
+        DNDS_check_throw_info(_offDiagonalEvaluator, "semi-matrix-free off-diagonal data have not been prepared");
+        return {std::move(publication), _offDiagonalEvaluator, _components};
     }
     void LinearProblemContext::InvertDiagonal()
     {
@@ -139,15 +181,16 @@ namespace DNDS::Cauchy
         if (region != LinearRegion::Core && _pattern->hasGhostColumns)
             ghost.emplace(input.Ghost().Read());
         const auto diagonal = _diagonal.Read();
-        const auto offDiagonal = _offDiagonal.Read();
+        const auto offDiagonal = ReadOffDiagonal();
         auto destination = output.Owned().Write();
         const auto x = Algebra::MakeEigenRowMatrices(owned.View<R::UniformTableRows>(), _components, 1);
         const auto y = Algebra::MakeEigenRowMatrices(destination.View<R::UniformTableRows>(), _components, 1);
         const auto d = diagonal.View<R::TableRows>();
-        const auto blocks = offDiagonal.View();
         const auto matrix = Algebra::MakeEigenRowMatrices(d, _components, _diagonalStorage == DiagonalStorage::Block ? _components : 1);
         const auto remote = ghost ? ghost->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{};
         const auto xGhost = Algebra::MakeEigenRowMatrices(remote, _components, 1);
+        offDiagonal.WithBlocks([&](const auto &blocks)
+                               {
         const auto compute = [&](index iCell)
         {
             if (_diagonalStorage == DiagonalStorage::Block)
@@ -168,7 +211,7 @@ namespace DNDS::Cauchy
                 compute(iCell);
         else
             for (auto iCell : region == LinearRegion::Core ? _pattern->core : _pattern->dependent)
-                compute(iCell);
+                compute(iCell); });
     }
     void LinearProblemContext::ApplySGS(const Field &rhs, const Field &input, Field &forward, Field &output) const
     {

@@ -198,6 +198,7 @@ namespace DNDS::Cauchy
         const auto nonnegative = [](real value)
         { return std::isfinite(value) && value >= 0; };
         DNDS_check_throw_info((diagonal == "entries" || diagonal == "block") && (!roeDissipation || diagonal == "block") &&
+                                  (jacobianAction == "assembled" || jacobianAction == "semiMatrixFree") &&
                                   iterations > 0 && minIterations >= 0 && minIterations <= iterations && consoleInterval >= 0 &&
                                   nonnegative(relativeTolerance) && nonnegative(absoluteTolerance) &&
                                   std::isfinite(pseudoCFL) && pseudoCFL > 0 && std::isfinite(maxPseudoCFL) && maxPseudoCFL >= pseudoCFL &&

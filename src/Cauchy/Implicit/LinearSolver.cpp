@@ -157,9 +157,9 @@ namespace DNDS::Cauchy
                                   "invalid linear solver controls");
             DNDS_check_throw_info(!(settings.method == "gmres" && settings.preconditioner == "ilu" && settings.exchangeBetweenSweeps),
                                   "local ILU has no inter-scan exchange"); });
-        const std::array<int64_t, 11> integers{settings.method == "gmres", settings.preconditioner == "ilu", settings.maxIterations, settings.subspace,
+        const std::array<int64_t, 12> integers{settings.method == "gmres", settings.preconditioner == "ilu", settings.maxIterations, settings.subspace,
                                                settings.sgsSweeps, settings.iluFill, settings.iluCoreFirst, settings.exchangeBetweenSweeps,
-                                               execution.overlap, execution.collectiveChecks, problem->Components()};
+                                               execution.overlap, execution.collectiveChecks, problem->Components(), int(problem->OffDiagonalMode())};
         auto lowest = integers, highest = integers;
         const std::array<real, 2> tolerances{settings.relativeTolerance, settings.absoluteTolerance};
         auto lowTolerance = tolerances, highTolerance = tolerances;
@@ -194,7 +194,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(_data, "linear solver was moved");
         auto &data = *_data;
         std::optional<R::Array<real>::ReadLease> diagonal;
-        std::optional<A::BlockMatrixStorage::ReadAccess> offDiagonal;
+        std::optional<LinearProblemContext::OffDiagonalReadAccess> offDiagonal;
         MPI::LocalStage(data.mpi, [&]
                         {
             DNDS_check_throw_info(!data.failed, "linear workspace failed; rebuild it before reuse");
@@ -202,7 +202,7 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(rhs.Space().Same(data.problem->Space()) && index(rhs.Width()) == data.problem->Components() && rhs.Device() == R::Device::Host(), "linear RHS differs from its problem");
             DNDS_check_throw_info(rhs.Owned().Storage().IsIdle(), "linear RHS must be host-visible and released by other accesses");
             DNDS_check_throw_info(!A::Detail::Overlaps(rhs.Owned().Storage(), data.problem->Diagonal().Storage()) &&
-                                      !A::Detail::Overlaps(rhs.Owned().Storage(), data.problem->OffDiagonal().Values().Storage()), "linear RHS aliases matrix storage");
+                                      (!data.problem->HasAssembledOffDiagonal() || !A::Detail::Overlaps(rhs.Owned().Storage(), data.problem->OffDiagonal().Values().Storage())), "linear RHS aliases matrix storage");
             if (initialGuess)
             {
                 initialGuess->Validate();
@@ -217,7 +217,7 @@ namespace DNDS::Cauchy
                         DNDS_check_throw_info(!A::Detail::Overlaps(source->Storage(), destination->Storage()), "linear RHS aliases mutable workspace");
             }
             diagonal.emplace(data.problem->Diagonal().Read());
-            offDiagonal.emplace(data.problem->OffDiagonal().Read());
+            offDiagonal.emplace(data.problem->ReadOffDiagonal());
             if (data.settings.method == "gmres" && data.settings.preconditioner == "ilu")
             {
                 if (!data.problem->ILUFactorsCurrent()) data.problem->FactorizeILU();

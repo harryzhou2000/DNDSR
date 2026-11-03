@@ -34,7 +34,8 @@ namespace DNDS::Cauchy
               mpi(fv.Metrics().Communicator()), stateOwned(state.Owned().SharedStorage()), stateGhost(state.Ghost().SharedStorage()),
               spatial(fv.Metrics().BuildField(state.Owned().Layout())), defect(fv.Metrics().BuildField(state.Owned().Layout())), candidate(fv.Metrics().BuildField(state.Owned().Layout())),
               inversePseudoTime(R::RowLayout::Dense(fv.Metrics().NumCell(), 1)),
-              problem(fv.BuildLinearProblem(state, settings.diagonal == "block" ? DiagonalStorage::Block : DiagonalStorage::Entries))
+              problem(fv.BuildLinearProblem(state, settings.diagonal == "block" ? DiagonalStorage::Block : DiagonalStorage::Entries,
+                                            settings.jacobianAction == "semiMatrixFree" ? OffDiagonalStorage::SemiMatrixFree : OffDiagonalStorage::Assembled))
         {
             rhsReduction = settings.positivity.rhsReduction == "cell" ? AlphaReduction::Cell : settings.positivity.rhsReduction == "minimumLimited" ? AlphaReduction::MinimumLimited
                                                                                                                                                     : AlphaReduction::MinimumAll;

@@ -9,7 +9,96 @@ namespace DNDS::Cauchy
     using FiniteVolumeDetail::RotateState;
     using Matrix = Eigen::Matrix<real, 5, 5>;
 
-    std::shared_ptr<LinearProblemContext> FiniteVolume::BuildLinearProblem(const CFV::FVField &prototype, DiagonalStorage diagonal) const
+    /// Frozen physics with reusable geometry, independent of the FV owner's
+    /// communicator lifetime. Only the weak owner key is used to reuse geometry
+    /// at the next preparation. Block evaluation needs no mesh/Array leases.
+    struct FiniteVolume::MatrixFreeJacobian final : OffDiagonalEvaluator
+    {
+        struct Point
+        {
+            index other, auxiliary, sample;
+            Vector3 normal;
+            Eigen::Matrix3d rotation;
+            real weight;
+        };
+        struct Geometry
+        {
+            std::weak_ptr<const Data> owner;
+            std::shared_ptr<const Algebra::DofSpace::Partition> partition;
+            std::vector<std::vector<index>> columns;
+            std::vector<std::vector<std::vector<Point>>> rows;
+        };
+        std::shared_ptr<const Geometry> geometry;
+        EquationSystem equation;
+        std::vector<FlowState> means;
+        std::vector<std::array<real, 2>> radius;
+        std::vector<std::array<real, 3>> magnitudes;
+        real scale;
+        bool roe;
+        MatrixFreeJacobian(const FiniteVolume &fv, const LinearProblemContext &output, JacobianPreparation controls)
+            : equation(fv._data->equation), scale(controls.residualScale), roe(controls.roeDissipation)
+        {
+            auto old = std::dynamic_pointer_cast<const MatrixFreeJacobian>(output.PreparedOffDiagonalEvaluator());
+            if (old && old->geometry->owner.lock() == fv._data)
+                geometry = old->geometry;
+            else
+            {
+                auto prepared = std::make_shared<Geometry>();
+                prepared->owner = fv._data;
+                prepared->partition = output.Space().Pin();
+                prepared->columns = output.Columns();
+                prepared->rows.resize(output.Columns().size());
+                auto read = fv.Metrics().AcquireRead();
+                const auto metric = read.HostView();
+                for (index iCell = 0; iCell < index(prepared->rows.size()); ++iCell)
+                {
+                    auto &row = prepared->rows[iCell];
+                    const auto &columns = output.Columns()[iCell];
+                    row.resize(columns.size());
+                    for (index entry = fv._data->offsets[iCell]; entry < fv._data->offsets[iCell + 1]; ++entry)
+                    {
+                        const auto &sample = fv._data->samples[entry];
+                        if (sample.other == UnInitIndex || sample.other == iCell)
+                            continue; // These contributions belong to the diagonal.
+                        const auto slot = std::find(columns.begin(), columns.end(), sample.other);
+                        DNDS_check_throw_info(slot != columns.end(), "evaluated Jacobian stencil is missing an adjacent cell");
+                        row[slot - columns.begin()].push_back({sample.other, sample.auxiliaryFace, entry, {sample.normal[0], sample.normal[1], sample.normal[2]}, sample.rotation, metric.GetFaceWeight(sample.point)});
+                    }
+                }
+                geometry = std::move(prepared);
+            }
+            if (roe)
+                magnitudes.resize(fv._data->samples.size());
+        }
+        index Components() const override { return 5; }
+        std::shared_ptr<const Algebra::DofSpace::Partition> RowSpaceIdentity() const override { return geometry->partition; }
+        const std::vector<std::vector<index>> &Columns() const override { return geometry->columns; }
+        void EvaluateBlock(index iRow, index iBlock, Eigen::Ref<Eigen::MatrixXd> output) const override
+        {
+            output.setZero();
+            for (const auto &point : geometry->rows[iRow][iBlock])
+            {
+                const auto right = RotateState(means[point.other], point.rotation);
+                Matrix dissipation = Matrix::Identity() * (radius[point.auxiliary][0] + radius[point.auxiliary][1]);
+                if (roe)
+                {
+                    const auto basis = equation.PrepareCharacteristics(means[iRow], right, point.normal);
+                    Eigen::Matrix<real, 5, 1> lambda;
+                    const auto &signal = magnitudes[point.sample];
+                    lambda << signal[0], signal[0], signal[0], signal[1], signal[2];
+                    dissipation = Eigen::Map<const Matrix>(basis.inverse.data()) * lambda.asDiagonal() * Eigen::Map<const Matrix>(basis.forward.data());
+                    dissipation.diagonal().array() += radius[point.auxiliary][1];
+                }
+                const auto derivative = equation.PrepareFluxJacobian(right, point.normal);
+                const Matrix other = (.5 * scale * point.weight) * (Eigen::Map<const Matrix>(derivative.data()) - dissipation);
+                Matrix rotation = Matrix::Identity();
+                rotation.block<3, 3>(1, 1) = point.rotation;
+                output.noalias() += other * rotation;
+            }
+        }
+    };
+
+    std::shared_ptr<LinearProblemContext> FiniteVolume::BuildLinearProblem(const CFV::FVField &prototype, DiagonalStorage diagonal, OffDiagonalStorage offDiagonal) const
     {
         Metrics().ValidateField(prototype, 5);
         _data->partition.Validate();
@@ -26,7 +115,7 @@ namespace DNDS::Cauchy
             std::sort(row.begin(), row.end());
             row.erase(std::unique(row.begin(), row.end()), row.end());
         }
-        return std::make_shared<LinearProblemContext>(prototype.Space(), 5, std::move(columns), _data->partition.Core(), diagonal);
+        return std::make_shared<LinearProblemContext>(prototype.Space(), 5, std::move(columns), _data->partition.Core(), diagonal, offDiagonal);
     }
     void FiniteVolume::PrepareJacobian(const CFV::FVField &state, const AuxiliaryValues &auxiliary,
                                        const R::Array<real> &inversePseudoTime, LinearProblemContext &output,
@@ -48,7 +137,7 @@ namespace DNDS::Cauchy
         const auto checkAlias = [&](const R::Array<real> &source)
         {
             DNDS_check_throw_info(!Algebra::Detail::Overlaps(source.Storage(), output.Diagonal().Storage()) &&
-                                      !Algebra::Detail::Overlaps(source.Storage(), output.OffDiagonal().Values().Storage()),
+                                      (!output.HasAssembledOffDiagonal() || !Algebra::Detail::Overlaps(source.Storage(), output.OffDiagonal().Values().Storage())),
                                   "Jacobian output aliases a frozen input");
         };
         checkAlias(state.Owned());
@@ -89,19 +178,31 @@ namespace DNDS::Cauchy
                               "Roe Jacobian requires the configured flux's prepared stencil signals");
         const auto radius = face.View<R::UniformTableRows>(), inverseTau = pseudo.View<R::UniformTableRows>();
         DNDS_check_throw_info(radius.RowCount() == index(_data->stencilFaces.size()) && radius.Width() == 2, "Jacobian face spectral shape differs");
-        auto diagonal = output.Diagonal().Write();
+        std::shared_ptr<MatrixFreeJacobian> evaluated;
+        if (!output.HasAssembledOffDiagonal())
+        {
+            evaluated = std::make_shared<MatrixFreeJacobian>(*this, output, controls);
+            evaluated->means.resize(state.Owned().RowCount() + state.Ghost().RowCount());
+            for (index iCell = 0; iCell < index(evaluated->means.size()); ++iCell)
+                evaluated->means[iCell] = Load(mean, iCell);
+            evaluated->radius.resize(radius.RowCount());
+            for (index iFace = 0; iFace < radius.RowCount(); ++iFace)
+                evaluated->radius[iFace] = {radius(iFace, 0), radius(iFace, 1)};
+        }
+        std::optional<R::Array<real>::WriteLease> diagonal(output.Diagonal().Write());
         std::optional<Algebra::BlockMatrixStorage::WriteAccess> offDiagonal;
         try
         {
-            offDiagonal.emplace(output.OffDiagonal().Write());
+            if (output.HasAssembledOffDiagonal())
+                offDiagonal.emplace(output.OffDiagonal().Write());
         }
         catch (...)
         {
-            diagonal.CancelUnmodified();
+            diagonal->CancelUnmodified();
             throw;
         }
-        const auto d = diagonal.View<R::TableRows>();
-        const auto blocks = offDiagonal->View();
+        const auto d = diagonal->View<R::TableRows>();
+        const auto blocks = offDiagonal ? std::optional(offDiagonal->View()) : std::nullopt;
         const auto prepared = [&](index iCell, const FlowState &u)
         {
             if (packet.meanThermodynamics)
@@ -113,8 +214,9 @@ namespace DNDS::Cauchy
             const real inverseStep = inverseTau(iCell, 0);
             DNDS_check_throw_info(std::isfinite(inverseStep) && inverseStep >= 0, "nonfinite or negative inverse pseudo-time");
             Matrix own = Matrix::Identity() * (metric.GetCellVol(iCell) * (inverseStep + controls.physicalMass));
-            for (index j = 0; j < blocks.BlockNumber(iCell); ++j)
-                blocks(iCell, j).setZero();
+            if (blocks)
+                for (index j = 0; j < blocks->BlockNumber(iCell); ++j)
+                    (*blocks)(iCell, j).setZero();
             const auto left = Load(mean, iCell);
             for (index entry = _data->offsets[iCell]; entry < _data->offsets[iCell + 1]; ++entry)
             {
@@ -155,12 +257,16 @@ namespace DNDS::Cauchy
                         settings.pressureStencilMin = std::min(settings.pressureStencilMin, minimum);
                     }
                     const auto signals = _data->flux.Evaluate(model.Input(leftData, rightData, normal), settings);
+                    if (evaluated)
+                        evaluated->magnitudes[entry] = {signals.contact, signals.acousticPlus, signals.acousticMinus};
                     Eigen::Matrix<real, 5, 1> magnitudes;
                     magnitudes << signals.contact, signals.contact, signals.contact, signals.acousticPlus, signals.acousticMinus;
                     dissipation = Eigen::Map<const Matrix>(characteristic.inverse.data()) * magnitudes.asDiagonal() * Eigen::Map<const Matrix>(characteristic.forward.data());
                     dissipation.diagonal().array() += diffusion;
                 }
                 own += factor * dissipation;
+                if (evaluated && sample.other != UnInitIndex && sample.other != iCell)
+                    continue; // Physical derivative is regenerated by the evaluator.
                 const auto derivative = _data->equation.PrepareFluxJacobian(right, normal);
                 Matrix other = factor * (Eigen::Map<const Matrix>(derivative.data()) - dissipation);
                 if (sample.other == UnInitIndex)
@@ -178,12 +284,12 @@ namespace DNDS::Cauchy
                     other = (other * rotation).eval();
                     if (sample.other == iCell)
                         own += other;
-                    else
+                    else if (blocks)
                     {
                         const auto &row = output.Columns()[iCell];
                         const auto slot = std::find(row.begin(), row.end(), sample.other);
                         DNDS_check_throw_info(slot != row.end(), "Jacobian stencil is missing an adjacent cell");
-                        blocks(iCell, slot - row.begin()) += other;
+                        (*blocks)(iCell, slot - row.begin()) += other;
                     }
                 }
             }
@@ -195,5 +301,8 @@ namespace DNDS::Cauchy
                 for (int j = 0; j < 5; ++j)
                     d(iCell, j) = own(j, j);
         }
+        diagonal.reset();
+        if (evaluated)
+            output.PublishOffDiagonalEvaluator(std::move(evaluated));
     }
 }

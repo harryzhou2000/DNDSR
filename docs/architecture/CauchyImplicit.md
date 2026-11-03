@@ -118,9 +118,46 @@ physical discard/retry and commit rejection by a retained debug reader.
 `Cauchy/Implicit/LinearProblemContext` owns the numerical matrix for one fixed
 native DOF space. Its immutable sparse columns use the same owned-plus-ghost
 local numbering as the input field. It stores rank-owned rows only, separate
-diagonal-entry or full diagonal blocks, and full off-diagonal blocks. Blocks use
+diagonal-entry or full diagonal blocks. By default full off-diagonal blocks use
 `DNDS::Algebra::BlockMatrixStorage`; diagonal values and inverses are native
 Arrays. No legacy ArrayDOF or EulerJacobian adapter is involved.
+
+`implicit.jacobianAction="semiMatrixFree"` omits the assembled off-diagonal
+Array and regenerates blocks from frozen physical data. This is the same
+simplified approximate Jacobian as `"assembled"`, not a Frechet derivative of
+the high-order residual. Both modes support scalar or block diagonals, scalar
+or characteristic Roe dissipation, periodic momentum transforms and physical
+BC/self-periodic diagonal terms. SGS, GMRES action and local ILU filling use
+the same block-read interface. ILU still stores and factors its explicit local
+template; this is not matrix-free factorization.
+
+The physical evaluator owns mean values, face radii and (for Roe) prepared
+characteristic magnitudes. EquationSystem regenerates physical derivatives and
+characteristic matrices; EOS calculations remain outside Riemann. Quadrature
+geometry is immutable and reused on subsequent preparation. A weak FV-owner
+key identifies that geometry without retaining the mesh or communicator.
+Changing live means/auxiliary after preparation cannot change the frozen
+operator. Reprepare explicitly for a new nonlinear state; stale auxiliary
+provenance rejects before matrix writes.
+
+`ReadOffDiagonal().WithBlocks(callback)` selects a block accessor once outside
+the numerical loop. Stored blocks retain their ordinary stable Eigen maps;
+evaluated blocks return owning matrices, with flow5 on the stack. Holding the
+result of one block query and evaluating another is safe. Other component
+counts use a generic dynamic dense matrix. A raw callback/map still requires
+the enclosing read scope to remain alive; custom evaluators must own immutable
+inputs, match exact row identity/columns/components, perform no MPI or hidden
+mutation, and obey the same controller serialization contract.
+
+Publishing evaluated data validates its complete stencil and exact row identity
+outside the hot loops. A short exclusive diagonal lease guards publication;
+evaluated reads pin a shared diagonal lease. Active action/SGS/factor readers
+therefore reject replacement. Publication does not change the diagonal values
+or its generation, but advances a separate off-diagonal generation, invalidating
+old ILU factors. A numeric read scope retains row metadata and allocations or
+the immutable evaluator, without communicator ownership. Unprepared evaluated
+data, explicit storage access in evaluated mode, and mismatched selection across
+domain ranks all fail explicitly. No CUDA kernel/fallback is introduced.
 
 The constructor checks the core set against actual matrix columns. Its logical
 scan visits `[core][noncore]`, without permuting physical arrays or communication

@@ -218,7 +218,7 @@ namespace DNDS::Cauchy
     };
     struct ImplicitSettings
     {
-        std::string diagonal = "entries";
+        std::string diagonal = "entries", jacobianAction = "assembled";
         index iterations = 100, minIterations = 1;
         index consoleInterval = 0;
         real relativeTolerance = 1e-8, absoluteTolerance = 1e-11;
@@ -237,6 +237,7 @@ namespace DNDS::Cauchy
         DNDS_DECLARE_CONFIG(ImplicitSettings)
         {
             DNDS_FIELD(diagonal, "entries or full block diagonal storage");
+            DNDS_FIELD(jacobianAction, "assembled or semiMatrixFree off-diagonal blocks; the diagonal and local ILU factors remain explicit");
             DNDS_FIELD(iterations, "Maximum nonlinear corrections per physical stage");
             DNDS_FIELD(minIterations, "Minimum corrections before accepting a stage");
             DNDS_FIELD(consoleInterval, "Rank-zero nonlinear residual/VR progress interval; zero disables it");

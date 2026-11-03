@@ -105,6 +105,7 @@ namespace DNDS::Cauchy
     class FiniteVolume
     {
         struct Data;
+        struct MatrixFreeJacobian;
         std::shared_ptr<const Data> _data;
 
     public:
@@ -128,12 +129,18 @@ namespace DNDS::Cauchy
         };
         RHSOperator AcquireRHSOperator() const;
         /// Allocate a fixed cell-face-cell matrix stencil using the prototype's
-        /// native row space. No payload is copied from the prototype.
-        std::shared_ptr<LinearProblemContext> BuildLinearProblem(const CFV::FVField &prototype, DiagonalStorage diagonal) const;
-        /// Fill explicit integrated approximate-Jacobian coefficients from
+        /// native row space. No payload is copied from the prototype. Evaluated
+        /// mode omits off-diagonal storage; PrepareJacobian supplies its frozen
+        /// physical snapshot. Both modes retain explicit diagonal storage.
+        std::shared_ptr<LinearProblemContext> BuildLinearProblem(const CFV::FVField &prototype, DiagonalStorage diagonal,
+                                                                 OffDiagonalStorage offDiagonal = OffDiagonalStorage::Assembled) const;
+        /// Prepare integrated approximate-Jacobian coefficients from
         /// frozen means and prepared face signals. No input mutation, MPI or
         /// inverse/factor preparation occurs here. inversePseudoTime is an
         /// owned-cell scalar table. Caller completes all halos before entry.
+        /// Semi-matrix-free mode copies frozen physical data, reuses immutable
+        /// geometry, and regenerates blocks during action/SGS/ILU filling. It
+        /// retains no live mean/auxiliary leases after preparation returns.
         void PrepareJacobian(const CFV::FVField &state, const AuxiliaryValues &auxiliary,
                              const Runtime::Array<real> &inversePseudoTime, LinearProblemContext &output,
                              JacobianPreparation controls = {}, real time = 0) const;

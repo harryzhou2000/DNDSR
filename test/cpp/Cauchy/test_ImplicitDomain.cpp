@@ -75,58 +75,60 @@ TEST_CASE("P3 implicit periodic transport conserves flow and discard restores th
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 6);
     for (const std::string method : {"esdirk4", "ditr"})
-    {
-        C::DomainSettings settings;
-        settings.numerics.reconstruction = "variational";
-        settings.numerics.cfv.maxOrder = 3;
-        settings.numerics.reconstructionIterations = 120;
-        settings.numerics.reconstructionTolerance = 1e-10;
-        settings.numerics.faceFallback = false;
-        settings.implicit.relativeTolerance = 1e-9;
-        settings.implicit.absoluteTolerance = 1e-11;
-        settings.implicit.linear.relativeTolerance = 1e-3;
-        settings.implicit.minIterations = 0;
-        C::TimeSettings time;
-        time.method = method;
-        C::Domain retried("retry", mesh, settings, time), direct("direct", mesh, settings, time);
-        DensityWave(retried);
-        DensityWave(direct);
-        const auto initial = Integral(retried);
-        retried.PrepareStep(.005);
-        retried.DiscardStep();
-        CHECK(retried.Time() == 0);
-        CHECK(retried.Epoch().acceptedStep == 0);
-        retried.Advance(.005);
-        direct.Advance(.005);
-        CHECK(retried.Time() == .005);
-        CHECK(retried.LastFaceFallbacks() == 0);
+        for (const std::string action : {"assembled", "semiMatrixFree"})
         {
-            const auto a = retried.Flow().Owned().Read(), b = direct.Flow().Owned().Read();
-            for (DNDS::index iCell = 0; iCell < a.View().RowCount(); ++iCell)
-                for (int j = 0; j < 5; ++j)
-                    CHECK(a.View()(iCell, j) == b.View()(iCell, j));
+            C::DomainSettings settings;
+            settings.implicit.jacobianAction = action;
+            settings.numerics.reconstruction = "variational";
+            settings.numerics.cfv.maxOrder = 3;
+            settings.numerics.reconstructionIterations = 120;
+            settings.numerics.reconstructionTolerance = 1e-10;
+            settings.numerics.faceFallback = false;
+            settings.implicit.relativeTolerance = 1e-9;
+            settings.implicit.absoluteTolerance = 1e-11;
+            settings.implicit.linear.relativeTolerance = 1e-3;
+            settings.implicit.minIterations = 0;
+            C::TimeSettings time;
+            time.method = method;
+            C::Domain retried("retry", mesh, settings, time), direct("direct", mesh, settings, time);
+            DensityWave(retried);
+            DensityWave(direct);
+            const auto initial = Integral(retried);
+            retried.PrepareStep(.005);
+            retried.DiscardStep();
+            CHECK(retried.Time() == 0);
+            CHECK(retried.Epoch().acceptedStep == 0);
+            retried.Advance(.005);
+            direct.Advance(.005);
+            CHECK(retried.Time() == .005);
+            CHECK(retried.LastFaceFallbacks() == 0);
+            {
+                const auto a = retried.Flow().Owned().Read(), b = direct.Flow().Owned().Read();
+                for (DNDS::index iCell = 0; iCell < a.View().RowCount(); ++iCell)
+                    for (int j = 0; j < 5; ++j)
+                        CHECK(a.View()(iCell, j) == b.View()(iCell, j));
+            }
+            const auto final = Integral(retried);
+            for (int j = 0; j < 5; ++j)
+                CHECK(final[j] == doctest::Approx(initial[j]).epsilon(2e-11));
+            if (method == "ditr")
+            {
+                CHECK(retried.LastCoupledIterations() > 0);
+                CHECK(retried.LastCoupledTargetRatio() <= 1);
+                CHECK(retried.LastImplicitStages().size() == size_t(2 * retried.LastCoupledIterations()));
+            }
+            else
+                CHECK(retried.LastImplicitStages().size() == 5);
+            for (const auto &report : retried.LastImplicitStages())
+            {
+                CHECK(report.converged);
+                CHECK(report.iterations > 0);
+                CHECK(report.reconstructionIterations > 0);
+                CHECK(report.reconstructionIterations <= settings.numerics.reconstructionIterations);
+                CHECK(report.reconstructionRelativeUpdate <= settings.numerics.reconstructionTolerance);
+            }
+            CHECK(retried.Discretization().Admissible(retried.Flow()));
         }
-        const auto final = Integral(retried);
-        for (int j = 0; j < 5; ++j)
-            CHECK(final[j] == doctest::Approx(initial[j]).epsilon(2e-11));
-        if (method == "ditr")
-        {
-            CHECK(retried.LastCoupledIterations() > 0);
-            CHECK(retried.LastCoupledTargetRatio() <= 1);
-            CHECK(retried.LastImplicitStages().size() == size_t(2 * retried.LastCoupledIterations()));
-        }
-        else
-            CHECK(retried.LastImplicitStages().size() == 5);
-        for (const auto &report : retried.LastImplicitStages())
-        {
-            CHECK(report.converged);
-            CHECK(report.iterations > 0);
-            CHECK(report.reconstructionIterations > 0);
-            CHECK(report.reconstructionIterations <= settings.numerics.reconstructionIterations);
-            CHECK(report.reconstructionRelativeUpdate <= settings.numerics.reconstructionTolerance);
-        }
-        CHECK(retried.Discretization().Admissible(retried.Flow()));
-    }
 }
 TEST_CASE("Steady BDF1 infinite-dt mode removes a nonconstant residual without advancing physical time")
 {

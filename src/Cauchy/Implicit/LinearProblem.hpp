@@ -3,6 +3,7 @@
 #include "DNDS/Algebra/BlockMatrixStorage.hpp"
 #include "DNDS/Algebra/DofAlgebra.hpp"
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace DNDS::Cauchy
@@ -17,6 +18,24 @@ namespace DNDS::Cauchy
     {
         Entries,
         Block
+    };
+    enum class OffDiagonalStorage
+    {
+        Assembled,
+        SemiMatrixFree
+    };
+    /// Immutable physical block producer. Columns and block ordinals belong to
+    /// LinearProblemContext. Implementations own frozen numerical inputs; they
+    /// must not borrow live means, perform communication or mutate hidden caches.
+    /// Blocks use column-major component order, including periodic transforms.
+    class OffDiagonalEvaluator
+    {
+    public:
+        virtual ~OffDiagonalEvaluator() = default;
+        virtual index Components() const = 0;
+        virtual std::shared_ptr<const Algebra::DofSpace::Partition> RowSpaceIdentity() const = 0;
+        virtual const std::vector<std::vector<index>> &Columns() const = 0;
+        virtual void EvaluateBlock(index iRow, index iBlock, Eigen::Ref<Eigen::MatrixXd> output) const = 0;
     };
     /// Integrated residual convention: A=M/dTau+physicalMass*M-residualScale*J_R.
     /// Roe dissipation requires a full diagonal block; scalar dissipation keeps
@@ -48,7 +67,10 @@ namespace DNDS::Cauchy
         index _components;
         DiagonalStorage _diagonalStorage;
         Runtime::Array<real> _diagonal, _inverse;
-        Algebra::BlockMatrixStorage _offDiagonal;
+        OffDiagonalStorage _offDiagonalStorage;
+        std::optional<Algebra::BlockMatrixStorage> _offDiagonal;
+        std::shared_ptr<const OffDiagonalEvaluator> _offDiagonalEvaluator;
+        uint64_t _offDiagonalGeneration = 0;
         uint64_t _diagonalVersion = 0, _inverseVersion = 0;
         Runtime::ArrayStorage::Shared _diagonalStoragePin, _offDiagonalStoragePin;
         uint64_t _diagonalShape = 0;
@@ -74,7 +96,8 @@ namespace DNDS::Cauchy
         /// order; physical arrays and MPI mappings are not reordered.
         LinearProblemContext(Algebra::DofSpace space, index components,
                              std::vector<std::vector<index>> columns,
-                             std::vector<index> core, DiagonalStorage diagonal);
+                             std::vector<index> core, DiagonalStorage diagonal,
+                             OffDiagonalStorage offDiagonal = OffDiagonalStorage::Assembled);
         LinearProblemContext(const LinearProblemContext &) = delete;
         LinearProblemContext &operator=(const LinearProblemContext &) = delete;
         LinearProblemContext(LinearProblemContext &&) noexcept = default;
@@ -93,8 +116,71 @@ namespace DNDS::Cauchy
         void Validate() const { ValidateMatrix(); }
         Runtime::Array<real> &Diagonal() { return _diagonal; }
         const Runtime::Array<real> &Diagonal() const { return _diagonal; }
-        Algebra::BlockMatrixStorage &OffDiagonal() { return _offDiagonal; }
-        const Algebra::BlockMatrixStorage &OffDiagonal() const { return _offDiagonal; }
+        OffDiagonalStorage OffDiagonalMode() const { return _offDiagonalStorage; }
+        bool HasAssembledOffDiagonal() const { return bool(_offDiagonal); }
+        /// Explicit storage access is unavailable in semi-matrix-free mode.
+        Algebra::BlockMatrixStorage &OffDiagonal();
+        const Algebra::BlockMatrixStorage &OffDiagonal() const;
+        /// Numeric preparation only; serialize with all context access. The
+        /// returned immutable producer may supply reusable geometry to the next
+        /// preparation. Numerical consumers use ReadOffDiagonal instead.
+        const std::shared_ptr<const OffDiagonalEvaluator> &PreparedOffDiagonalEvaluator() const { return _offDiagonalEvaluator; }
+        /// Publish a fully frozen producer. A short exclusive diagonal lease
+        /// guards this publication against active operators/SGS/factor reads.
+        /// No diagonal value or generation is changed by this publication.
+        void PublishOffDiagonalEvaluator(std::shared_ptr<const OffDiagonalEvaluator> evaluator);
+        uint64_t OffDiagonalGeneration() const;
+        /// Retains numerical storage or the frozen evaluator. Evaluated reads
+        /// also pin the diagonal as publication guard. Retain this scope through
+        /// all block use; no source means/communicators are retained by it.
+        class OffDiagonalReadAccess
+        {
+            std::optional<Algebra::BlockMatrixStorage::ReadAccess> _assembled;
+            std::optional<Runtime::Array<real>::ReadLease> _publication;
+            std::shared_ptr<const OffDiagonalEvaluator> _evaluator;
+            index _components;
+            friend class LinearProblemContext;
+            OffDiagonalReadAccess(Algebra::BlockMatrixStorage::ReadAccess assembled, index components)
+                : _assembled(std::move(assembled)), _components(components) {}
+            OffDiagonalReadAccess(Runtime::Array<real>::ReadLease publication, std::shared_ptr<const OffDiagonalEvaluator> evaluator, index components)
+                : _publication(std::move(publication)), _evaluator(std::move(evaluator)), _components(components) {}
+            template <int Size>
+            struct EvaluatedBlocks
+            {
+                const OffDiagonalEvaluator *evaluator;
+                index components;
+                Eigen::Matrix<real, Size, Size> operator()(index iRow, index iBlock) const
+                {
+                    if constexpr (Runtime::AccessBoundsChecks)
+                    {
+                        const auto &columns = evaluator->Columns();
+                        DNDS_assert(iRow >= 0 && iRow < index(columns.size()) && iBlock >= 0 && iBlock < index(columns[iRow].size()));
+                    }
+                    Eigen::Matrix<real, Size, Size> result(components, components);
+                    evaluator->EvaluateBlock(iRow, iBlock, result);
+                    return result;
+                }
+            };
+
+        public:
+            /// Dispatch once outside loops. The callback receives a callable
+            /// (row,block): assembled mode returns the ordinary stable map;
+            /// evaluated mode returns an owning block value, with flow5 on the
+            /// stack. Querying another block never overwrites a previous result.
+            /// Other component counts use the generic dynamic dense matrix.
+            template <class Callback>
+            void WithBlocks(Callback &&callback) const
+            {
+                DNDS_check_throw_info(_assembled || _evaluator, "off-diagonal read scope is moved");
+                if (_assembled)
+                    callback(_assembled->View());
+                else if (_components == 5)
+                    callback(EvaluatedBlocks<5>{_evaluator.get(), _components});
+                else
+                    callback(EvaluatedBlocks<Eigen::Dynamic>{_evaluator.get(), _components});
+            }
+        };
+        OffDiagonalReadAccess ReadOffDiagonal() const;
         /// Explicit preparation of diagonal inverses. Block mode follows the
         /// active Euler guarded LU/SVD inversion policy. Later diagonal writes
         /// invalidate the inverses; active writers are rejected by read leases.

@@ -57,13 +57,14 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(_ilu, "ILU structure is not prepared");
         _ilu->current = false;
         const auto diagonal = _diagonal.Read();
-        const auto offDiagonal = _offDiagonal.Read();
+        const auto offDiagonal = ReadOffDiagonal();
         const auto d = Algebra::MakeEigenRowMatrices(diagonal.View<R::TableRows>(), _components,
                                                      _diagonalStorage == DiagonalStorage::Block ? _components : 1);
-        const auto blocks = offDiagonal.View();
         {
             auto write = _ilu->factors->Matrix().Write();
             const auto matrix = write.View();
+            offDiagonal.WithBlocks([&](const auto &blocks)
+                                   {
             for (index iCell = 0; iCell < index(_pattern->partition->owned); ++iCell)
             {
                 if (_diagonalStorage == DiagonalStorage::Block)
@@ -84,11 +85,11 @@ namespace DNDS::Cauchy
                 };
                 copy(_ilu->symbolic->lowerTriStructure[iCell], 1);
                 copy(_ilu->symbolic->upperTriStructure[iCell], 1 + index(_ilu->symbolic->lowerTriStructure[iCell].size()));
-            }
+            } });
         }
         _ilu->factors->Factorize();
         _ilu->diagonalVersion = _diagonal.Version();
-        _ilu->offDiagonalVersion = _offDiagonal.Values().Version();
+        _ilu->offDiagonalVersion = OffDiagonalGeneration();
         _ilu->current = true;
     }
     bool LinearProblemContext::ILUFactorsCurrent() const
@@ -97,9 +98,9 @@ namespace DNDS::Cauchy
         {
             ValidateMatrix();
             const auto diagonal = _diagonal.Read();
-            const auto offDiagonal = _offDiagonal.Read();
+            const auto offDiagonal = ReadOffDiagonal();
             return _ilu && _ilu->current && _ilu->diagonalVersion == _diagonal.Version() &&
-                   _ilu->offDiagonalVersion == _offDiagonal.Values().Version() && _ilu->factors->FactorsCurrent();
+                   _ilu->offDiagonalVersion == OffDiagonalGeneration() && _ilu->factors->FactorsCurrent();
         }
         catch (const std::exception &)
         {
@@ -123,9 +124,9 @@ namespace DNDS::Cauchy
         ValidateOutputs(rhs, output);
         ValidateOutputs(forward, output);
         const auto diagonal = _diagonal.Read();
-        const auto offDiagonal = _offDiagonal.Read();
+        const auto offDiagonal = ReadOffDiagonal();
         DNDS_check_throw_info(_ilu && _ilu->current && _ilu->diagonalVersion == _diagonal.Version() &&
-                                  _ilu->offDiagonalVersion == _offDiagonal.Values().Version(),
+                                  _ilu->offDiagonalVersion == OffDiagonalGeneration(),
                               "ILU factors are missing or stale against the operator");
         _ilu->factors->Solve(rhs.Owned(), forward.Owned(), output.Owned());
     }

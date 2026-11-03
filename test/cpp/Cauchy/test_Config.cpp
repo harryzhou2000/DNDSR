@@ -92,6 +92,10 @@ TEST_CASE("Cauchy implicit controls resolve through the root and reject contradi
     CHECK_THROWS(C::SimulationConfig::Resolve({{"time", {{"method", "ditr"}, {"ditr", {{"absoluteTolerance", -1}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"roeDissipation", true}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"iterations", 0}}}}}}, 2));
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"jacobianAction", "unknown"}}}}}}, 2));
+    CHECK(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"jacobianAction", "semiMatrixFree"}}}}}}, 2)
+              .Domains()[0]
+              .settings.implicit.jacobianAction == "semiMatrixFree");
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"linear", {{"preconditioner", "ilu"}}}, {"sgs", {{"exchangeBetweenSweeps", true}}}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"positivity", {{"rhsRelax", 0}}}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"positivity", {{"rhsReduction", "unknown"}}}}}}}}, 2));

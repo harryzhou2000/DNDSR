@@ -28,6 +28,20 @@ namespace
         return value;
     }
     double RHS(int rank, DNDS::index iCell, int j) { return .4 + .1 * rank - .06 * iCell + .05 * j; }
+    struct EvaluatedOff final : C::OffDiagonalEvaluator
+    {
+        std::shared_ptr<const A::DofSpace::Partition> partition;
+        std::vector<std::vector<DNDS::index>> declaredColumns = columns;
+        DNDS::index components = 5;
+        explicit EvaluatedOff(const A::DofSpace &space) : partition(space.Pin()) {}
+        DNDS::index Components() const override { return components; }
+        auto RowSpaceIdentity() const -> std::shared_ptr<const A::DofSpace::Partition> override { return partition; }
+        const std::vector<std::vector<DNDS::index>> &Columns() const override { return declaredColumns; }
+        void EvaluateBlock(DNDS::index iRow, DNDS::index iBlock, Eigen::Ref<Eigen::MatrixXd> output) const override
+        {
+            output = Off(iRow, columns[iRow][iBlock]);
+        }
+    };
     struct Fixture
     {
         DNDS::MPIInfo mpi{MPI_COMM_WORLD};
@@ -44,26 +58,34 @@ namespace
             receive[(rank + size - 1) % size] = {0, 1};
             return R::RowTransferPlan::Known(communication, 4, 2, send, receive);
         }
-        Fixture(int layout = 0)
+        Fixture(int layout = 0, bool evaluated = false)
             : communication(std::make_shared<R::CommunicationContext>(MPI_COMM_WORLD)),
               space(communication, 4, 2, "coupled linear solver oracle"), route(Route(communication, rank, size)),
-              problem(std::make_shared<C::LinearProblemContext>(space, 5, columns, std::vector<DNDS::index>{1, 0}, C::DiagonalStorage::Block)),
+              problem(std::make_shared<C::LinearProblemContext>(space, 5, columns, std::vector<DNDS::index>{1, 0}, C::DiagonalStorage::Block,
+                                                                evaluated ? C::OffDiagonalStorage::SemiMatrixFree : C::OffDiagonalStorage::Assembled)),
               rhs(space, layout == 0 ? R::RowLayout::Dense(0, 5, 8) : layout == 1 ? R::RowLayout::ColMajor(0, 5, {8, 1})
                                                                                   : R::RowLayout::TiledColMajor(0, 5, 32))
         {
-            auto diagonal = problem->Diagonal().Write();
-            auto off = problem->OffDiagonal().Write();
-            auto b = rhs.Owned().Write();
-            for (DNDS::index iCell = 0; iCell < 4; ++iCell)
             {
-                const auto block = Diagonal(iCell);
-                for (int j = 0; j < 25; ++j)
-                    diagonal.View()(iCell, j) = block.data()[j];
-                for (DNDS::index k = 0; k < DNDS::index(columns[iCell].size()); ++k)
-                    off.View()(iCell, k) = Off(iCell, columns[iCell][k]);
-                for (int j = 0; j < 5; ++j)
-                    b.View<R::UniformTableRows>()(iCell, j) = RHS(rank, iCell, j);
+                auto diagonal = problem->Diagonal().Write();
+                std::optional<A::BlockMatrixStorage::WriteAccess> off;
+                if (!evaluated)
+                    off.emplace(problem->OffDiagonal().Write());
+                auto b = rhs.Owned().Write();
+                for (DNDS::index iCell = 0; iCell < 4; ++iCell)
+                {
+                    const auto block = Diagonal(iCell);
+                    for (int j = 0; j < 25; ++j)
+                        diagonal.View()(iCell, j) = block.data()[j];
+                    for (DNDS::index k = 0; k < DNDS::index(columns[iCell].size()); ++k)
+                        if (off)
+                            off->View()(iCell, k) = Off(iCell, columns[iCell][k]);
+                    for (int j = 0; j < 5; ++j)
+                        b.View<R::UniformTableRows>()(iCell, j) = RHS(rank, iCell, j);
+                }
             }
+            if (evaluated)
+                problem->PublishOffDiagonalEvaluator(std::make_shared<EvaluatedOff>(space));
         }
         R::TransferBinding Bind(Field &field) const
         {
@@ -95,9 +117,10 @@ namespace
 }
 TEST_CASE("Cauchy coupled linear solvers match a global dense oracle with real persistent halos")
 {
-    for (int scenario = 0; scenario < 7; ++scenario)
+    for (int selection = 0; selection < 14; ++selection)
     {
-        Fixture fixture(scenario % 3);
+        const int scenario = selection % 7;
+        Fixture fixture(scenario % 3, selection >= 7);
         C::LinearSolveSettings settings;
         settings.method = scenario < 3 ? "sgs" : "gmres";
         settings.preconditioner = scenario >= 5 ? "ilu" : "sgs";
@@ -183,6 +206,58 @@ TEST_CASE("Cauchy linear controls and rank-local access failures reject collecti
     CHECK_THROWS(solver.Solve(fixture.rhs));
     writer.reset();
     CHECK(solver.Solve(fixture.rhs).converged);
+}
+TEST_CASE("Evaluated block publication validates row identity, column ordinals and active read scopes")
+{
+    Fixture fixture(1, true);
+    const auto generation = fixture.problem->OffDiagonalGeneration();
+    CHECK_THROWS(fixture.problem->PublishOffDiagonalEvaluator(nullptr));
+    {
+        A::DofSpace other(4, 2);
+        CHECK_THROWS(fixture.problem->PublishOffDiagonalEvaluator(std::make_shared<EvaluatedOff>(other)));
+    }
+    for (int error = 0; error < 2; ++error)
+    {
+        auto invalid = std::make_shared<EvaluatedOff>(fixture.space);
+        if (error == 0)
+            invalid->components = 4;
+        else
+            std::swap(invalid->declaredColumns[2][0], invalid->declaredColumns[2][1]);
+        CHECK_THROWS(fixture.problem->PublishOffDiagonalEvaluator(invalid));
+    }
+    {
+        auto held = fixture.problem->ReadOffDiagonal();
+        CHECK_THROWS(fixture.problem->PublishOffDiagonalEvaluator(std::make_shared<EvaluatedOff>(fixture.space)));
+    }
+    CHECK(fixture.problem->OffDiagonalGeneration() == generation);
+    fixture.problem->PublishOffDiagonalEvaluator(std::make_shared<EvaluatedOff>(fixture.space));
+    CHECK(fixture.problem->OffDiagonalGeneration() == generation + 1);
+    {
+        Fixture assembled;
+        CHECK_THROWS(assembled.problem->PublishOffDiagonalEvaluator(std::make_shared<EvaluatedOff>(assembled.space)));
+    }
+    if (fixture.size > 1)
+    {
+        Fixture mixed(0, fixture.rank % 2);
+        CHECK_THROWS(C::LinearSolver(mixed.problem, mixed.rhs, [&](Field &field)
+                                     { return mixed.Bind(field); }));
+    }
+    std::optional<C::LinearProblemContext::OffDiagonalReadAccess> retained;
+    {
+        Fixture temporary(2, true);
+        retained.emplace(temporary.problem->ReadOffDiagonal());
+        temporary.problem.reset();
+    }
+    // Numeric access retains no communicator owners. Its frozen row descriptor
+    // and producer survive the complete original context/fixture lifetime.
+    retained->WithBlocks([&](const auto &view)
+                         {
+    const auto first = view(0, 0), second = view(1, 0);
+    CHECK(first.isApprox(Off(0, 1), 1e-15));
+    CHECK(second.isApprox(Off(1, 0), 1e-15));
+    for (DNDS::index iCell = 0; iCell < 4; ++iCell)
+        for (DNDS::index j = 0; j < DNDS::index(columns[iCell].size()); ++j)
+            CHECK(view(iCell, j).isApprox(Off(iCell, columns[iCell][j]), 1e-15)); });
 }
 int main(int argc, char **argv)
 {
