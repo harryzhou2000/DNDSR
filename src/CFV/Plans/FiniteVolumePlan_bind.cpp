@@ -197,6 +197,10 @@ namespace DNDS::CFV
                  "One synchronous CPU sweep. Release Python array views and refresh input halos first.")
             .def("DoReconstructionIterTo", &VariationalReconstructionPlan::DoReconstructionIterTo,
                  py::arg("mean"), py::arg("input"), py::arg("workspace"), py::arg("boundary"), py::arg("region") = ReconstructionRegion::All)
+            .def("DoReconstructionIterLimitedTo", &VariationalReconstructionPlan::DoReconstructionIterLimitedTo,
+                 py::arg("mean"), py::arg("input"), py::arg("workspace"), py::arg("boundary"), py::arg("target"), py::arg("alpha"),
+                 py::arg("region") = ReconstructionRegion::All,
+                 "CPU A-weighted penalty sweep. Freeze finite target and alpha in [0,1]; refresh input halos before dependent work and commit only after all rows finish.")
             .def("CommitReconstruction", &VariationalReconstructionPlan::CommitReconstruction)
             .def("DoLimiterWBAP_3Order", &VariationalReconstructionPlan::DoLimiterWBAP_3Order,
                  py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr,

@@ -139,6 +139,7 @@ namespace DNDS::CFV
         std::shared_ptr<const Detail::FiniteVolumeData> _data;
         explicit FiniteVolumePlan(std::shared_ptr<const Detail::FiniteVolumeData> data) : _data(std::move(data)) {}
         friend class VariationalReconstructionPlan;
+        friend class LimitedVRPlan;
 
     public:
         /// axisymmetric uses radius=y>=0 and measures r*dA/r*ds, without 2*pi.
@@ -247,6 +248,9 @@ namespace DNDS::CFV
         friend class PolynomialSamplingPlan;
         std::shared_ptr<const Detail::ReconstructionData> _data;
         explicit VariationalReconstructionPlan(std::shared_ptr<const Detail::ReconstructionData> data) : _data(std::move(data)) {}
+        void DoReconstructionIterImpl(const FVField &mean, const FVField &input, ReconstructionWorkspace &work,
+                                      const ReconstructionBoundaryValues &boundary, ReconstructionRegion region,
+                                      const FVField *target, const Runtime::Array<real> *alpha) const;
 
     public:
         static VariationalReconstructionPlan ConstructRecCoeff(FiniteVolumePlan metrics, ReconstructionSettings settings = {});
@@ -282,6 +286,18 @@ namespace DNDS::CFV
         void DoReconstructionIterTo(const FVField &mean, const FVField &input, ReconstructionWorkspace &work,
                                     const ReconstructionBoundaryValues &boundary,
                                     ReconstructionRegion region = ReconstructionRegion::All) const;
+        /// A-weighted LVR penalty: blend the unrelaxed VR row toward target by
+        /// alpha, then apply the configured Jacobi/SOR relaxation. Alpha is an
+        /// owned scalar table in [0,1]; target has the same coefficient schema.
+        /// Freeze both through the reconstruction solve. Alpha0 is unlimited
+        /// VR; alpha1 skips neighbor terms. Inputs/target/alpha never alias the
+        /// output. Target values must be finite. Only owned target rows are read.
+        /// Core/Dependent and Commit have the same contract as the ordinary
+        /// two-buffer sweep. Physical sensing and target preparation are external.
+        void DoReconstructionIterLimitedTo(const FVField &mean, const FVField &input, ReconstructionWorkspace &work,
+                                           const ReconstructionBoundaryValues &boundary, const FVField &target,
+                                           const Runtime::Array<real> &alpha,
+                                           ReconstructionRegion region = ReconstructionRegion::All) const;
         /// Copy the completed temporary into owned coefficients. The caller
         /// certifies every owned row was produced and all old sends completed.
         void CommitReconstruction(ReconstructionWorkspace &work) const;

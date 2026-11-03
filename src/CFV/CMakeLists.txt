@@ -25,7 +25,9 @@ Prepare/FiniteVolumePlan.cpp
 Prepare/VariationalReconstructionPlan.cpp
 Prepare/ReconstructionDevicePlan.cpp
 Prepare/GradientPlan.cpp
+Prepare/LimitedVRPlan.cpp
 Operators/Gradient.cpp
+Operators/LimitedVR.cpp
 Prepare/PolynomialSamplingPlan.cpp
 Operators/Reconstruction.cpp
 Operators/ReconstructionLinear.cpp

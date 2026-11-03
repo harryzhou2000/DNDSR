@@ -121,6 +121,18 @@ namespace DNDS::CFV
     void VariationalReconstructionPlan::DoReconstructionIterTo(const FVField &mean, const FVField &input, ReconstructionWorkspace &work,
                                                                const ReconstructionBoundaryValues &boundary, ReconstructionRegion region) const
     {
+        DoReconstructionIterImpl(mean, input, work, boundary, region, nullptr, nullptr);
+    }
+    void VariationalReconstructionPlan::DoReconstructionIterLimitedTo(const FVField &mean, const FVField &input, ReconstructionWorkspace &work,
+                                                                      const ReconstructionBoundaryValues &boundary, const FVField &target,
+                                                                      const R::Array<real> &alpha, ReconstructionRegion region) const
+    {
+        DoReconstructionIterImpl(mean, input, work, boundary, region, &target, &alpha);
+    }
+    void VariationalReconstructionPlan::DoReconstructionIterImpl(const FVField &mean, const FVField &input, ReconstructionWorkspace &work,
+                                                                 const ReconstructionBoundaryValues &boundary, ReconstructionRegion region,
+                                                                 const FVField *target, const R::Array<real> *alpha) const
+    {
         auto meshRead = Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         Validate();
         CheckWorkspace(_data.get(), work);
@@ -137,6 +149,26 @@ namespace DNDS::CFV
         DNDS_check_throw_info(!Algebra::Detail::Overlaps(input.Owned().Storage(), work.temporary.Owned().Storage()) &&
                                   !Algebra::Detail::Overlaps(input.Ghost().Storage(), work.temporary.Owned().Storage()),
                               "reconstruction output aliases input");
+        for (const auto *source : {&mean.Owned(), &mean.Ghost(), &boundary.values})
+            DNDS_check_throw_info(!Algebra::Detail::Overlaps(source->Storage(), work.temporary.Owned().Storage()),
+                                  "reconstruction output aliases mean or boundary input");
+        std::optional<R::Array<real>::ReadLease> targetRead, alphaRead;
+        R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows> targetValues, penalty;
+        if (target)
+        {
+            Metrics().ValidateField(*target, n * nv);
+            CheckArray(*alpha, Metrics().NumCell(), 1);
+            for (const auto *source : {&target->Owned(), &target->Ghost(), alpha})
+                DNDS_check_throw_info(!Algebra::Detail::Overlaps(source->Storage(), work.temporary.Owned().Storage()),
+                                      "reconstruction output aliases penalty input");
+            targetRead.emplace(target->Owned().Read());
+            alphaRead.emplace(alpha->Read());
+            targetValues = targetRead->View<R::UniformTableRows>();
+            penalty = alphaRead->View<R::UniformTableRows>();
+            for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
+                DNDS_check_throw_info(std::isfinite(penalty(iCell, 0)) && penalty(iCell, 0) >= 0 && penalty(iCell, 0) <= 1,
+                                      "reconstruction penalty alpha must be finite and in [0,1]");
+        }
         auto meanOwned = mean.Owned().Read();
         std::optional<R::Array<real>::ReadLease> meanGhost, recGhost;
         if (region != ReconstructionRegion::Core)
@@ -162,6 +194,9 @@ namespace DNDS::CFV
         const auto rotations = rotationRead.View<R::FixedRows<9>>();
         const auto nextMatrices = Algebra::MakeEigenRowMatrices(next, n, nv);
         const auto currentMatrices = Algebra::MakeEigenRowMatrices(current, n, nv);
+        std::optional<decltype(Algebra::MakeEigenRowMatrices(current, n, nv))> targetMatrices;
+        if (target)
+            targetMatrices.emplace(Algebra::MakeEigenRowMatrices(targetValues, n, nv));
         const R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows> nextRead{
             next.data, next.offsets, next.rows, next.width, next.stride, next.sizes, next.kind};
         const auto visitedMatrices = Algebra::MakeEigenRowMatrices(nextRead, n, nv);
@@ -173,6 +208,12 @@ namespace DNDS::CFV
         {
             auto output = nextMatrices[iCell];
             output = currentMatrices[iCell] * (1 - relax);
+            const real alphaCell = target ? penalty(iCell, 0) : 0;
+            const real scale = relax * (1 - alphaCell);
+            if (alphaCell > 0)
+                output.noalias() += (relax * alphaCell) * (*targetMatrices)[iCell];
+            if (scale == 0)
+                return;
             for (index iEntry = offsets(iCell, 0); iEntry < offsets(iCell + 1, 0); ++iEntry)
             {
                 const index other = neighbors(iEntry, 0);
@@ -186,13 +227,13 @@ namespace DNDS::CFV
                     // Component rotation is independent of spatial derivative
                     // pullback, already included in the prepared B block.
                     // Apply scalar columns directly, then correct vector blocks.
-                    output.noalias() += relax * ConstMap(matrices[iEntry].data(), n, n) * otherCoefficients;
+                    output.noalias() += scale * ConstMap(matrices[iEntry].data(), n, n) * otherCoefficients;
                     if (_data->hasRotatedPeriodicity)
                         for (auto first : work.periodicVectorStarts)
                         {
                             const Eigen::Map<const Geom::tGPoint> rotation(rotations[iEntry].data());
                             rotatedRec = otherCoefficients.middleCols(first, 3) * (rotation.transpose() - Geom::tGPoint::Identity());
-                            output.middleCols(first, 3).noalias() += relax * ConstMap(matrices[iEntry].data(), n, n) * rotatedRec;
+                            output.middleCols(first, 3).noalias() += scale * ConstMap(matrices[iEntry].data(), n, n) * rotatedRec;
                         }
                     for (index variable = 0; variable < nv; ++variable)
                     {
@@ -206,13 +247,13 @@ namespace DNDS::CFV
                                     for (int d = 0; d < 3; ++d)
                                         value += rotation(variable - first, d) * u(other, first + d);
                                 }
-                        output.col(variable).noalias() += Eigen::Map<const Eigen::VectorXd>(vectors[iEntry].data(), n) * (relax * (value - u(iCell, variable)));
+                        output.col(variable).noalias() += Eigen::Map<const Eigen::VectorXd>(vectors[iEntry].data(), n) * (scale * (value - u(iCell, variable)));
                     }
                 }
                 else
                     for (index iQ = bOffsets(iEntry, 0); iQ < bOffsets(iEntry + 1, 0); ++iQ)
                         for (index variable = 0; variable < nv; ++variable)
-                            output.col(variable).noalias() += Eigen::Map<const Eigen::VectorXd>(injection[iQ].data(), n) * (relax * (bValues(iQ, variable) - u(iCell, variable)));
+                            output.col(variable).noalias() += Eigen::Map<const Eigen::VectorXd>(injection[iQ].data(), n) * (scale * (bValues(iQ, variable) - u(iCell, variable)));
             }
         };
         if (region == ReconstructionRegion::Core || (region == ReconstructionRegion::All && Settings().coreFirst))
