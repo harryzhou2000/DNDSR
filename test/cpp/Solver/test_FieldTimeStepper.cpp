@@ -66,6 +66,49 @@ TEST_CASE("Native implicit time methods converge with independent nonautonomous 
         CHECK(std::log2(coarse / fine) >= minimumOrder);
     }
 }
+TEST_CASE("External controller interleaves coherent stages without changing native time equations")
+{
+    const A::DofSpace space(1);
+    for (const std::string method : {"bdf2", "trapz", "esdirk2", "esdirk3", "esdirk4"})
+    {
+        CAPTURE(method);
+        Field state(space, 1), trial(space, 1), reference(space, 1), expected(space, 1);
+        A::Fill(state, 1.);
+        A::Fill(reference, 1.);
+        O::FieldTimeStepper external(state, method), serial(reference, method);
+        CHECK_THROWS(external.CompleteStage(trial, Evaluate()));
+        double time = 0;
+        for (const double dt : {.1, .05})
+        {
+            REQUIRE(serial.Prepare(reference, expected, time, dt, Evaluate(), Solve()));
+            external.BeginStages(state, trial, time, dt);
+            const auto generation = state.Owned().Version();
+            for (int stage = 0; stage < external.StageNumber(); ++stage)
+            {
+                CHECK_FALSE(external.HasPendingTrial());
+                const auto equation = external.PrepareStage(trial);
+                CHECK(equation.stage == stage);
+                CHECK(equation.time >= time);
+                CHECK(equation.time <= time + dt);
+                CHECK(Value(trial) == Value(state));
+                // A real controller prepares other domains and exchanges their
+                // traces here, before any local stage solver changes its input.
+                if (equation.implicit)
+                    REQUIRE(Solve()(trial, *equation.source, equation.mass, equation.rhsScale, equation.time, stage));
+                external.CompleteStage(trial, Evaluate());
+            }
+            CHECK(external.HasPendingTrial());
+            CHECK(state.Owned().Version() == generation);
+            CHECK(Value(trial) == Value(expected));
+            A::Copy(state, trial);
+            A::Copy(reference, expected);
+            external.Commit();
+            serial.Commit();
+            CHECK(external.PreviousDt() == dt);
+            time += dt;
+        }
+    }
+}
 TEST_CASE("Native BDF1 steady limit has zero physical mass and history source at a frozen time")
 {
     const A::DofSpace space(2);

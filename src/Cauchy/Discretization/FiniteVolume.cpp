@@ -369,6 +369,7 @@ namespace DNDS::Cauchy
         _data = std::move(data);
     }
     const CFV::FiniteVolumePlan &FiniteVolume::Metrics() const { return _data->metrics; }
+    const CFV::VariationalReconstructionPlan &FiniteVolume::Reconstruction() const { return _data->reconstruction; }
     const Geom::UnstructuredMesh &FiniteVolume::Mesh() const { return *_data->mesh; }
     const RigidMotion &FiniteVolume::Motion() const { return _data->motion; }
     CFV::FVField &FiniteVolume::RequireState(EquationDofs &state) const
@@ -614,7 +615,7 @@ namespace DNDS::Cauchy
     void FiniteVolume::Evaluate(CFV::FVField &state, CFV::FVField &residual, Workspace &work,
                                 R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
-        EvaluateImpl(state, residual, work, engine, stream, time);
+        EvaluateImpl(state, &residual, work, engine, stream, time);
     }
     void FiniteVolume::Evaluate(EquationDofs &state, CFV::FVField &residual, Workspace &work,
                                 R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
@@ -628,7 +629,7 @@ namespace DNDS::Cauchy
             MPI::LocalStage(MPIInfo(Metrics().Communicator()), validate);
         else
             validate();
-        EvaluateImpl(*field, residual, work, engine, stream, time);
+        EvaluateImpl(*field, &residual, work, engine, stream, time);
     }
     const R::Array<real> *FiniteVolume::LimitedVRHistory(const Workspace &work) const
     {
@@ -674,9 +675,28 @@ namespace DNDS::Cauchy
     void FiniteVolume::EvaluateMean(CFV::FVField &state, CFV::FVField &residual, MeanWorkspace &work,
                                     R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
-        EvaluateImpl(state, residual, *work.work, engine, stream, time);
+        EvaluateImpl(state, &residual, *work.work, engine, stream, time);
     }
-    void FiniteVolume::EvaluateImpl(CFV::FVField &state, CFV::FVField &residual, Workspace &work,
+    void FiniteVolume::PrepareReconstruction(CFV::FVField &state, Workspace &work, R::EagerEngine &engine,
+                                             const R::ExecutionStream &stream, real time) const
+    {
+        EvaluateImpl(state, nullptr, work, engine, stream, time);
+    }
+    void FiniteVolume::RefreshSamplingInputs(CFV::FVField &state, Workspace &work, R::EagerEngine &engine,
+                                             const R::ExecutionStream &stream) const
+    {
+        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                        {
+            Metrics().ValidateField(state,5);
+            DNDS_check_throw_info(work.owner==_data.get()&&state.Owned().SharedStorage()==work.ownedStorage&&
+                                  state.Ghost().SharedStorage()==work.ghostStorage,"sampling workspace/state binding differs"); });
+        for (auto *binding : {&work.meanHalo, &work.coefficientHalo})
+        {
+            auto operation = engine.ChecksAccess() ? binding->BeginChecked(stream) : binding->BeginScheduled(stream.Context());
+            operation.Wait();
+        }
+    }
+    void FiniteVolume::EvaluateImpl(CFV::FVField &state, CFV::FVField *residual, Workspace &work,
                                     R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
         std::optional<AuxiliaryPreparation> auxiliaryPreparation;
@@ -685,7 +705,7 @@ namespace DNDS::Cauchy
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
                         {
         Metrics().ValidateField(state, 5);
-        Metrics().ValidateField(residual, 5);
+        if(residual) Metrics().ValidateField(*residual, 5);
         DNDS_check_throw_info(!HasInterfaces()||work.incoming,"FV evaluation needs a ready interface packet");
         if(work.incoming)
         {
@@ -696,14 +716,17 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(work.owner == _data.get() && stream.Context().device == R::Device::Host() &&
                                   state.Owned().SharedStorage() == work.ownedStorage && state.Ghost().SharedStorage() == work.ghostStorage,
                               "foreign FV workspace, rebound field, or unavailable execution backend");
-        DNDS_check_throw_info(!Algebra::Detail::Overlaps(state.Owned().Storage(), residual.Owned().Storage()) &&
-                                  !Algebra::Detail::Overlaps(state.Ghost().Storage(), residual.Owned().Storage()),
+        if(residual)
+        {
+        DNDS_check_throw_info(!Algebra::Detail::Overlaps(state.Owned().Storage(), residual->Owned().Storage()) &&
+                                  !Algebra::Detail::Overlaps(state.Ghost().Storage(), residual->Owned().Storage()),
                               "Cauchy residual output overlaps its state input");
         // Residuals are synchronous at this public boundary. Preflight their
         // debug-visible output before any rank starts halo communication; no
         // row-loop check or extra mutation generation is introduced.
-        auto unused = residual.Owned().Write();
+        auto unused = residual->Owned().Write();
         unused.CancelUnmodified();
+        }
         if (work.limitedVR)
         {
             for (auto *array : {&work.limitedVR->previous, &work.limitedVR->alpha})
@@ -1012,6 +1035,14 @@ namespace DNDS::Cauchy
         }
         if (!work.meanOnly && _data->settings.numerics.positivity)
             LimitReconstructionPPImpl(state, work, false);
+        if (!residual)
+        {
+            if (gradientOperation)
+                gradientOperation->Wait();
+            exchange(work.FluxHalo());
+            stream.Record().WaitHost();
+            return;
+        }
         const bool polynomialViscosity = !work.meanOnly && _data->equation.Viscous() && _data->settings.numerics.viscousGradient == "polynomial";
         std::optional<R::Array<real>::WriteLease> lowWrite;
         R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows> lowOutput;
@@ -1100,7 +1131,7 @@ namespace DNDS::Cauchy
         JoinStreamOnException residualJoin(stream);
         if (overlap)
             R::SubmitArrays(engine, stream, [kernel, gradientInput = FieldView{gradients.owned, {}}, coreAuxiliary, viscousCoefficients](auto, auto mean, auto rec, auto result)
-                            { kernel(CFV::ReconstructionRegion::Core, FieldView{mean, {}}, FieldView{rec, {}}, gradientInput, coreAuxiliary, viscousCoefficients, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
+                            { kernel(CFV::ReconstructionRegion::Core, FieldView{mean, {}}, FieldView{rec, {}}, gradientInput, coreAuxiliary, viscousCoefficients, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::WriteAs<R::UniformTableRows>(residual->Owned()));
         operation.Wait();
         if (gradientOperation)
         {
@@ -1115,7 +1146,7 @@ namespace DNDS::Cauchy
             viscousCoefficients->ghost = viscousGhost->View<R::UniformTableRows>();
         }
         R::SubmitArrays(engine, stream, [kernel, gradients, auxiliary, overlap, viscousCoefficients](auto, auto mean, auto meanGhost, auto rec, auto recGhost, auto result)
-                        { kernel(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All, FieldView{mean, meanGhost}, FieldView{rec, recGhost}, gradients, auxiliary, viscousCoefficients, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(state.Ghost()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Ghost()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
+                        { kernel(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All, FieldView{mean, meanGhost}, FieldView{rec, recGhost}, gradients, auxiliary, viscousCoefficients, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(state.Ghost()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Ghost()), R::WriteAs<R::UniformTableRows>(residual->Owned()));
         // Local read scopes pin geometry/cache pointers through both submitted
         // phases. A later async public wrapper can retain these same scopes;
         // this CPU synchronous convenience observes only its own stream prefix.

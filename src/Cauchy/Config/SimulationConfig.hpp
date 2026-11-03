@@ -378,6 +378,24 @@ namespace DNDS::Cauchy
         DomainRankGroup placement;
         DomainSettings settings;
     };
+    /// Directed point-interpolation connection. Configure two entries for a
+    /// two-way interface. Zone IDs are scoped to their respective domains.
+    struct InterfaceSettings
+    {
+        std::string donor, receiver, routing = "coarseBoxes";
+        int donorZone = 0, receiverZone = 0, coarseBoxesPerRank = 4;
+        real maxGap = 1e-8;
+        DNDS_DECLARE_CONFIG(InterfaceSettings)
+        {
+            DNDS_FIELD(donor, "Donor domain name");
+            DNDS_FIELD(receiver, "Receiver domain name");
+            DNDS_FIELD(donorZone, "Selected donor boundary zone");
+            DNDS_FIELD(receiverZone, "Interface receiver boundary zone");
+            DNDS_FIELD(routing, "coarseBoxes or allGatherBoundary correctness baseline");
+            DNDS_FIELD(coarseBoxesPerRank, "Maximum coarse routing boxes per donor rank");
+            DNDS_FIELD(maxGap, "Maximum physical point-to-surface projection distance");
+        }
+    };
     struct ConfigOverride
     {
         std::string pointer;
@@ -403,6 +421,7 @@ namespace DNDS::Cauchy
             std::vector<DomainConfig> domains;
             TimeSettings time;
             OutputSettings output;
+            std::vector<InterfaceSettings> interfaces;
         };
         std::shared_ptr<const Data> _data;
         explicit SimulationConfig(std::shared_ptr<const Data> data) : _data(std::move(data)) {}
@@ -417,6 +436,7 @@ namespace DNDS::Cauchy
         const std::vector<DomainConfig> &Domains() const { return _data->domains; }
         const TimeSettings &Time() const { return _data->time; }
         const OutputSettings &Output() const { return _data->output; }
+        const std::vector<InterfaceSettings> &Interfaces() const { return _data->interfaces; }
         std::vector<DomainRankGroup> RankGroups() const;
     };
 }

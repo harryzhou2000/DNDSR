@@ -1,4 +1,5 @@
 #include "Cauchy/Core/Domain.hpp"
+#include "Cauchy/Core/Simulation.hpp"
 #include "DNDS/Runtime/Interop/Array_bind.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
@@ -113,4 +114,39 @@ PYBIND11_MODULE(cauchy_pybind11, m)
                  C::Json input;
                  DNDS::MPI::LocalStage(DNDS::MPIInfo(domain.Discretization().Metrics().Communicator()), [&] { input = C::Json::parse(resolved); });
                  domain.ReadCheckpoint(path, input); }, py::arg("path"), py::arg("resolved_json"), py::call_guard<py::gil_scoped_release>());
+    py::class_<C::Simulation>(m, "Simulation", "Coordinated CPU domains. Every control rank calls advance; local meshes follow configured domain-rank order. Release debug views before publication. No process-failure recovery.")
+        .def(py::init([](const std::vector<std::shared_ptr<DNDS::Geom::UnstructuredMesh>> &meshes, const DNDS::MPIInfo &mpi, const std::string &json)
+                      {
+            C::Json input;
+            DNDS::MPI::LocalStage(mpi,[&]{input=C::Json::parse(json);});
+            auto config=C::SimulationConfig::ResolveCollective(input,mpi.comm);
+            DNDS::MPI::LocalStage(mpi,[&]
+            {
+                DNDS_check_throw_info(meshes.size()==config.Domains().size(),"one Python mesh slot is required for each configured domain");
+                for(DNDS::index iDomain=0;iDomain<DNDS::index(meshes.size());++iDomain)
+                {
+                    const auto &ranks=config.Domains()[iDomain].placement.ranks;
+                    const bool local=std::find(ranks.begin(),ranks.end(),mpi.rank)!=ranks.end();
+                    DNDS_check_throw_info(bool(meshes[iDomain])==local,"Python Simulation mesh must be None exactly on domain nonmembers");
+                }
+            });
+            return std::make_unique<C::Simulation>(std::move(config),mpi.comm,[&](DNDS::index iDomain,const auto &,const auto &domainMPI)
+            {
+                DNDS::MPI::LocalStage(domainMPI,[&]
+                {
+                    int comparison=MPI_UNEQUAL;
+                    MPI_Comm_compare(meshes[iDomain]->getMPI().comm,domainMPI.comm,&comparison);
+                    DNDS_check_throw_info(comparison==MPI_IDENT||comparison==MPI_CONGRUENT,"Python mesh communicator differs from configured domain membership/order");
+                });
+                return meshes[iDomain];
+            }); }),
+             py::arg("meshes"), py::arg("mpi"), py::arg("config_json") = "{}", py::call_guard<py::gil_scoped_release>())
+        .def_property_readonly("time", &C::Simulation::Time)
+        .def_property_readonly("step", &C::Simulation::Step)
+        .def("local", &C::Simulation::Local, py::arg("domain"))
+        .def("domain", static_cast<C::Domain &(C::Simulation::*)(DNDS::index)>(&C::Simulation::GetDomain), py::arg("domain"), py::return_value_policy::reference_internal,
+             "Borrow a local domain, retaining Simulation. Advance through Simulation to keep clocks and interface snapshots coordinated.")
+        .def("advance", &C::Simulation::Advance, py::arg("dt"), py::call_guard<py::gil_scoped_release>())
+        .def_property_readonly("resolved_json", [](const C::Simulation &simulation)
+                               { return simulation.Config().Root().dump(); });
 }

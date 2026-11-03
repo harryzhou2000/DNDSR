@@ -641,6 +641,15 @@ publication succeeds; discard/retry never changes accepted history. Variable
 BDF2 uses the last accepted timestep, with BDF1 startup or an explicit reset.
 Independent nonautonomous exact-stage tests verify orders and retry semantics.
 Domain now connects these time equations to the nonlinear stage solver below.
+The same BDF/Trapz/ESDIRK implementation also exposes `BeginStages`,
+`PrepareStage` and `CompleteStage`. A prepared `StageEquation` borrows its source
+until completion/discard and describes mass, RHS scale, time and stage index.
+An external controller prepares all domains before exchanging their traces,
+then solves/evaluates each domain and completes the stage. No time coefficient
+or BDF history formula is duplicated in that controller. A trial becomes
+committable only after its final stage completes. Single-domain `Prepare` and
+`PrepareSteady` use this same protocol. DITR retains its coupled midpoint/end
+driver; a one-pass external sequence explicitly rejects it.
 The requested implicit flow5 PP measures have distributed operator/transaction
 tests. Full physical qualification, high-order viscous equivalence and the
 remaining phase implementation/performance work are still outstanding.

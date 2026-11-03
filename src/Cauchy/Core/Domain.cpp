@@ -64,7 +64,7 @@ namespace DNDS::Cauchy
                                                : _timeMeanHalo->BeginScheduled(_stream.Context());
         transfer.Wait();
         MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
-                        { _fv.PrepareAuxValues(Flow(), *_timeAuxiliary, _time); });
+                        { _fv.PrepareAuxValues(Flow(), *_timeAuxiliary, _time, _interfaceInputs ? &*_interfaceInputs : nullptr); });
         return _fv.StableStep(Flow(), *_timeAuxiliary, cfl, _time);
     }
     void Domain::UpdateStage(real dt, real historyWeight, real stageWeight, real stageTime)
@@ -141,7 +141,7 @@ namespace DNDS::Cauchy
         _stream.Record().WaitHost();
         DNDS_check_throw_info(_fv.Admissible(_trial.CoupledField()), "Cauchy SSPRK3 stage is inadmissible; accepted state unchanged");
     }
-    void Domain::PrepareStep(real dt)
+    void Domain::BeginTrial(real dt)
     {
         _trialReady = false;
         int valid = std::isfinite(dt) && dt > 0 && (_steady || (std::isfinite(_time + dt) && _time + dt > _time));
@@ -170,6 +170,11 @@ namespace DNDS::Cauchy
         // The polynomial guess is numerical state for explicit fixed-sweep VR
         // too. Preserve it before either time driver can overwrite the trial.
         PreserveReconstructionGuess();
+    }
+    void Domain::PrepareStep(real dt)
+    {
+        DNDS_check_throw_info(!_fv.HasInterfaces(), "interface domains must advance through their coordinated Simulation");
+        BeginTrial(dt);
         if (_timeStepper)
         {
             PrepareImplicitStep(dt);
@@ -187,6 +192,79 @@ namespace DNDS::Cauchy
         _trialTime = _time + dt;
         _trialReady = true;
     }
+    int Domain::CoordinatedStageNumber() const { return _timeStepper ? _timeStepper->StageNumber() : 3; }
+    void Domain::BindInterfaceInputs(const BoundaryInputs &input)
+    {
+        MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
+                        {
+            _fv.SetBoundaryInputs(*_workspace,input);
+            if(_observationWorkspace) _fv.SetBoundaryInputs(*_observationWorkspace,input);
+            if(_timePPWorkspace) _fv.SetBoundaryInputs(*_timePPWorkspace,input);
+            _interfaceInputs=input; });
+        if (_multigrid)
+            _multigrid->SetBoundaryInputs(input);
+    }
+    void Domain::BeginCoordinatedStep(real dt)
+    {
+        DNDS_check_throw_info(!_timeStepper || _timeStepper->SupportsStageSequence(), "multi-domain DITR needs an external coupled midpoint/end iteration controller");
+        BeginTrial(dt);
+        _lastImplicit.clear();
+        _lastCoupledIterations = 0;
+        _lastCoupledTargetRatio = 0;
+        _coordinatedStage = 0;
+        _coordinatedPrepared = false;
+        _stageEquation.reset();
+        if (_timeStepper)
+            _timeStepper->BeginStages(_initial, _trial.CoupledField(), _time, dt, _steady);
+    }
+    real Domain::PrepareCoordinatedStage(int stage)
+    {
+        DNDS_check_throw_info(stage == _coordinatedStage && stage < CoordinatedStageNumber() && !_coordinatedPrepared,
+                              "coordinated domain stage is out of order");
+        _trialEpoch.stage = stage;
+        _coordinatedPrepared = true;
+        if (_timeStepper)
+        {
+            _stageEquation = _timeStepper->PrepareStage(_trial.CoupledField());
+            return _stageEquation->time;
+        }
+        static constexpr real c[]{0, 1, .5};
+        return _time + c[stage] * _trialDt;
+    }
+    void Domain::SolveCoordinatedStage()
+    {
+        DNDS_check_throw_info(_coordinatedPrepared, "coordinated domain stage was not prepared");
+        if (_stageEquation)
+        {
+            const auto &equation = *_stageEquation;
+            if (equation.implicit)
+            {
+                const auto report = _multigrid ? _multigrid->Solve(*equation.source, equation.mass, equation.rhsScale, equation.time, equation.stage)
+                                               : _implicit->Solve(_trial.CoupledField(), *equation.source, equation.mass, equation.rhsScale, equation.time, equation.stage);
+                DNDS_check_throw_info(RecordImplicitStage(report), "coordinated implicit stage reached its correction cap");
+            }
+        }
+        else
+        {
+            static constexpr real history[]{0, .75, 1. / 3}, weight[]{1, .25, 2. / 3}, c[]{0, 1, .5};
+            UpdateStage(_trialDt, history[_coordinatedStage], weight[_coordinatedStage], _time + c[_coordinatedStage] * _trialDt);
+        }
+    }
+    void Domain::CompleteCoordinatedStage()
+    {
+        DNDS_check_throw_info(_coordinatedPrepared, "no coordinated stage to complete");
+        if (_timeStepper)
+            _timeStepper->CompleteStage(_trial.CoupledField(), [this](auto &state, auto &rate, real time, int stage)
+                                        { EvaluateImplicitRate(state, rate, *_workspace, time, stage); });
+        _coordinatedPrepared = false;
+        _stageEquation.reset();
+        if (++_coordinatedStage == CoordinatedStageNumber())
+        {
+            DNDS_check_throw_info(_fv.Admissible(_trial.CoupledField()), "coordinated candidate is inadmissible");
+            _trialTime = _steady ? _time : _time + _trialDt;
+            _trialReady = true;
+        }
+    }
     void Domain::CommitStep()
     {
         MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
@@ -195,6 +273,24 @@ namespace DNDS::Cauchy
         ++epoch.acceptedStep;
         epoch.stage = 0;
         PublishTrial(_trialTime, epoch);
+        if (_timeStepper)
+            _timeStepper->Commit();
+        _lastAcceptedDt = _trialDt;
+    }
+    void Domain::CommitReserved(R::Array<real>::WriteLease &destination, R::Array<real>::ReadLease &source)
+    {
+        // Simulation reserved every domain's destination/source and agreed
+        // readiness globally before entering this allocation-free publication.
+        const auto input = source.View<R::UniformTableRows>();
+        const auto output = destination.View<R::UniformTableRows>();
+        for (index iCell = 0; iCell < _fv.Metrics().NumCell(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+                output(iCell, j) = input(iCell, j);
+        _time = _trialTime;
+        _epoch = _trialEpoch;
+        ++_epoch.acceptedStep;
+        _epoch.stage = 0;
+        _trialReady = _restoreReconstruction = false;
         if (_timeStepper)
             _timeStepper->Commit();
         _lastAcceptedDt = _trialDt;
@@ -309,6 +405,8 @@ namespace DNDS::Cauchy
         {
             _observationWorkspace = _fv.BuildWorkspace(_accepted);
             _observationResidual.emplace(_fv.Metrics().BuildField(Flow().Owned().Layout()));
+            if (_interfaceInputs)
+                _fv.SetBoundaryInputs(*_observationWorkspace, *_interfaceInputs);
         }
         // Start every observation from the accepted numerical guess, not the
         // last observation and not a cold zero polynomial. This preserves

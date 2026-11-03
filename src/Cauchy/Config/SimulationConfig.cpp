@@ -286,7 +286,7 @@ namespace DNDS::Cauchy
     SimulationConfig SimulationConfig::Resolve(const Json &input, int size, const std::vector<ConfigOverride> &overrides)
     {
         DNDS_check_throw_info(size > 0, "invalid simulation size");
-        Allowed(input, {"schemaVersion", "profiles", "defaults", "domains", "time", "output"}, "");
+        Allowed(input, {"schemaVersion", "profiles", "defaults", "domains", "time", "output", "interfaces"}, "");
         DNDS_check_throw_info(input.value("schemaVersion", 1) == 1, "unsupported Cauchy schema version");
         const auto schema = DomainSettings::schema();
         const auto profiles = input.value("profiles", Json::object());
@@ -351,6 +351,19 @@ namespace DNDS::Cauchy
         for (const auto *section : {"time", "output"})
             if (input.contains(section))
                 Merge(data->root[section], input[section], std::string("/") + section, "solver override", data->provenance);
+        if (input.contains("interfaces"))
+        {
+            DNDS_check_throw_info(input["interfaces"].is_array(), "interfaces must be an array of directed connections");
+            data->root["interfaces"] = Json::array();
+            for (const auto &entry : input["interfaces"])
+            {
+                Keys(entry, InterfaceSettings::schema(), "/interfaces");
+                Json resolved = InterfaceSettings{};
+                resolved.update(entry);
+                data->root["interfaces"].push_back(std::move(resolved));
+            }
+            Origin(data->root["interfaces"], "/interfaces", "solver override", data->provenance);
+        }
         for (const auto &override : overrides)
         {
             const Json::json_pointer pointer(override.pointer);
@@ -382,6 +395,31 @@ namespace DNDS::Cauchy
         Keys(data->root["output"], OutputSettings::schema(), "/output");
         data->time = data->root["time"].get<TimeSettings>();
         data->output = data->root["output"].get<OutputSettings>();
+        std::set<std::pair<std::string, int>> receivers;
+        for (const auto &entry : data->root.value("interfaces", Json::array()))
+        {
+            Keys(entry, InterfaceSettings::schema(), "/interfaces");
+            auto connection = entry.get<InterfaceSettings>();
+            DNDS_check_throw_info(names.count(connection.donor) && names.count(connection.receiver) && connection.donor != connection.receiver,
+                                  "interface donor/receiver names must identify distinct configured domains");
+            DNDS_check_throw_info(connection.routing == "coarseBoxes" || connection.routing == "allGatherBoundary", "unknown interface routing mode");
+            DNDS_check_throw_info(connection.coarseBoxesPerRank > 0 && std::isfinite(connection.maxGap) && connection.maxGap >= 0, "invalid interface search bounds");
+            DNDS_check_throw_info(receivers.emplace(connection.receiver, connection.receiverZone).second, "interface receiver zone has multiple incoming connections");
+            const auto receiver = std::find_if(data->domains.begin(), data->domains.end(), [&](const auto &domain)
+                                               { return domain.placement.name == connection.receiver; });
+            const auto donor = std::find_if(data->domains.begin(), data->domains.end(), [&](const auto &domain)
+                                            { return domain.placement.name == connection.donor; });
+            DNDS_check_throw_info(donor->settings.equation.eos == receiver->settings.equation.eos &&
+                                      donor->settings.equation.gamma == receiver->settings.equation.gamma && donor->settings.equation.gasConstant == receiver->settings.equation.gasConstant,
+                                  "initial flow5 interfaces require the same gas/energy convention on both domains");
+            const auto condition = receiver->settings.boundaries.find(std::to_string(connection.receiverZone));
+            DNDS_check_throw_info(condition != receiver->settings.boundaries.end() && condition->second.kind == "interface", "receiver zone must have an interface boundary condition");
+            data->interfaces.push_back(std::move(connection));
+        }
+        for (const auto &domain : data->domains)
+            for (const auto &[zone, condition] : domain.settings.boundaries)
+                DNDS_check_throw_info(condition.kind != "interface" || receivers.count({domain.placement.name, std::stoi(zone)}), "interface boundary has no incoming connection");
+        DNDS_check_throw_info(data->interfaces.empty() || data->time.steady || data->time.method != "ditr", "multi-domain DITR requires coupled midpoint/end coordination");
         const std::vector<std::string> timeMethods{"ssprk3", "bdf1", "bdf2", "trapz", "esdirk2", "esdirk3", "esdirk4", "ditr"};
         DNDS_check_throw_info(std::find(timeMethods.begin(), timeMethods.end(), data->time.method) != timeMethods.end() && std::isfinite(data->time.dt) && data->time.dt > 0 && data->time.steps >= 0 &&
                                   std::isfinite(data->time.finalTime) && data->time.finalTime >= 0 && std::isfinite(data->time.cfl) && data->time.cfl >= 0 &&

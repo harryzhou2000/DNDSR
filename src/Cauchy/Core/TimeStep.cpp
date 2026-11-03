@@ -33,6 +33,8 @@ namespace DNDS::Cauchy
         {
             _timePPResidual.emplace(_fv.Metrics().BuildField(Flow().Owned().Layout()));
             _timePPWorkspace = _fv.BuildMeanWorkspace(Flow());
+            if (_interfaceInputs)
+                _fv.SetBoundaryInputs(*_timePPWorkspace, *_interfaceInputs);
         }
         _fv.EvaluateMean(Flow(), *_timePPResidual, *_timePPWorkspace, _engine, _stream, _time);
         result = _fv.LimitPhysicalStep(Flow(), *_timePPResidual, requestedDt, _timePP.relax, _timePP.scale, _timeCompressionPower);

@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 from DNDSR import DNDS, Geom
-from DNDSR.Cauchy import Domain, PhysicalStepLimit, DerivedQuantity
+from DNDSR.Cauchy import Domain, Simulation, PhysicalStepLimit, DerivedQuantity
 
 
 def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=False, time_pp=False, lvr_variant=None):
@@ -39,6 +39,61 @@ def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=Fa
             "positivity": True, "faceFallback": False,
         })
     return Domain(mesh, json.dumps(config)), primitive
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("split", [False, True])
+def test_coordinated_simulation_python_owners_and_reversed_subgroups(split):
+    import gc
+
+    world = MPI.COMM_WORLD
+    if split and world.size == 1:
+        pytest.skip("split-domain fixture needs at least two ranks")
+    comm = world.Split(world.rank % 2, -world.rank) if split else world
+    mesh_mpi = DNDS.MPIInfo(comm.handle)
+    control = DNDS.MPIInfo(world.handle)
+    path = Path(__file__).resolve().parents[2] / "data/mesh/Uniform_3x3_wall.cgns"
+    mesh = Geom.with_native_topology(Geom.read_native_cgns(mesh_mpi, str(path), 2))
+    with mesh.acquire_read(faces=True) as read:
+        local_zones = {int(read.boundary_info(i).zone) for i in range(mesh.NumBnd())}
+    zones = set().union(*world.allgather(local_zones))
+    ranks = [list(reversed([r for r in range(world.size) if r % 2 == side])) if split
+             else list(range(world.size)) for side in range(2)]
+    meshes = [mesh if not split or world.rank % 2 == side else None for side in range(2)]
+    config = {"domains": [{"name": str(side), "ranks": ranks[side]} for side in range(2)],
+              "defaults": {"numerics": {"reconstruction": "constant"},
+                           "boundaries": {str(zone): {"kind": "farfield"} for zone in zones}},
+              "time": {"method": "bdf2"}}
+    simulation = Simulation(meshes, control, json.dumps(config))
+    simulation.advance(.001)
+    simulation.advance(.001)
+    assert simulation.step == 2
+    local = world.rank % 2 if split else 1
+    assert simulation.local(local)
+    domain = simulation.domain(local)
+    assert domain.time == simulation.time
+    # The receiver zone exists, but the donor selection does not. This reaches
+    # the patch guard rather than the earlier unused-BC configuration check.
+    bad = json.loads(json.dumps(config))
+    receiver_zone = min(zones)
+    bad["defaults"]["boundaries"][str(receiver_zone)] = {"kind": "interface"}
+    bad["interfaces"] = [{"donor": str(side), "receiver": str(1-side),
+                          "donorZone": 999, "receiverZone": receiver_zone} for side in range(2)]
+    with pytest.raises(RuntimeError, match="globally empty"):
+        Simulation(meshes, control, json.dumps(bad))
+    # reference_internal retains the Simulation, while a shared native Array
+    # independently retains its allocation after both frontend handles vanish.
+    flow = domain.flow
+    del simulation
+    assert domain.step == 2
+    del domain
+    gc.collect()
+    values = flow.numpy()
+    np.testing.assert_allclose(values, np.tile([1, 0, 0, 0, 2.5], (values.shape[0], 1)), rtol=0, atol=2e-14)
+    del values, flow, meshes, mesh
+    gc.collect()
+    if split:
+        comm.Free()
 
 
 @pytest.mark.mpi

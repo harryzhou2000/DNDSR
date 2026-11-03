@@ -1,7 +1,20 @@
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
+#include "Geom/Interface/BoundaryInterface.hpp"
+#include "DNDS/MPI/CollectiveStage.hpp"
 
 namespace DNDS::Cauchy
 {
+    Geom::BoundaryPatch FiniteVolume::BuildBoundaryPatch(int zone) const
+    {
+        std::vector<index> selected;
+        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                        {
+        auto read=_data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
+        const auto view=read.HostView();
+        for(index iBnd=0;iBnd<view.NumBnd();++iBnd)
+            if(view.GetBndZone(iBnd)==zone) selected.push_back(iBnd); });
+        return Geom::BoundaryPatch::Create(_data->mesh, selected);
+    }
     const std::vector<BoundaryPoint> &FiniteVolume::BoundaryPoints() const
     {
         Metrics().Validate();

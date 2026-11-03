@@ -109,6 +109,12 @@ namespace DNDS::Cauchy
             return result;
         }
     };
+    void PolynomialMultigrid::SetBoundaryInputs(const BoundaryInputs &input)
+    {
+        MPI::LocalStage(_data->mpi, [&]
+                        {
+            for(auto &coarse:_data->coarse) coarse->discrete.SetBoundaryInputs(*coarse->workspace,input); });
+    }
     PolynomialMultigrid::PolynomialMultigrid(ssp<Geom::UnstructuredMesh> mesh, const FiniteVolume &fine, CFV::FVField &state,
                                              NonlinearSolver &fineSolver, R::EagerEngine &engine, R::ExecutionStream stream, const DomainSettings &settings)
     {

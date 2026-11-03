@@ -1,0 +1,186 @@
+#define DOCTEST_CONFIG_IMPLEMENT
+#include "doctest.h"
+#include "Cauchy/Core/Simulation.hpp"
+#include "CartesianFixture.hpp"
+#include "RotatingVortexFixture.hpp"
+#include <iostream>
+
+namespace C = DNDS::Cauchy;
+namespace R = DNDS::Runtime;
+using I = DNDS::index;
+static DNDS::MPIInfo mpi;
+namespace
+{
+    C::Json Domains(bool split)
+    {
+        std::vector<int> a, b;
+        for (int rank = mpi.size - 1; rank >= 0; --rank)
+        {
+            if (!split || rank % 2 == 0)
+                a.push_back(rank);
+            if (!split || rank % 2 == 1)
+                b.push_back(rank);
+        }
+        if (b.empty())
+            b = a;
+        return C::Json::array({{{"name", "outer"}, {"ranks", a}}, {{"name", "disk"}, {"ranks", b}}});
+    }
+    std::vector<double> Values(const C::Domain &domain)
+    {
+        const auto read = domain.Flow().Owned().Read();
+        const auto values = read.View<R::UniformTableRows>();
+        std::vector<double> result;
+        for (I iCell = 0; iCell < values.RowCount(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+                result.push_back(values(iCell, j));
+        return result;
+    }
+    std::array<double, 2> Integrals(const C::Simulation &simulation)
+    {
+        std::array<double, 2> value{};
+        for (I iDomain = 0; iDomain < 2; ++iDomain)
+            if (simulation.Local(iDomain))
+            {
+                const auto &domain = simulation.GetDomain(iDomain);
+                const auto geometry = domain.Discretization().Metrics().AcquireRead();
+                const auto metric = geometry.HostView();
+                const auto read = domain.Flow().Owned().Read();
+                const auto u = read.View<R::UniformTableRows>();
+                for (I iCell = 0; iCell < u.RowCount(); ++iCell)
+                {
+                    value[0] += metric.GetCellVol(iCell) * u(iCell, 0);
+                    value[1] += metric.GetCellVol(iCell) * u(iCell, 4);
+                }
+            }
+        MPI_Allreduce(MPI_IN_PLACE, value.data(), 2, MPI_DOUBLE, MPI_SUM, mpi.comm);
+        return value;
+    }
+}
+TEST_CASE("Coordinated domains retain single-domain time equations and atomic publication")
+{
+    for (const std::string method : {"ssprk3", "bdf2", "esdirk4"})
+    {
+        CAPTURE(method);
+        C::Json input{{"domains", Domains(mpi.size > 1)}, {"time", {{"method", method}}}, {"defaults", {{"numerics", {{"reconstruction", "constant"}, {"flux", "rusanov"}}}, {"initialPrimitive", {1, .1, .2, .03, 1}}, {"initialProfile", {{"kind", "isentropicVortex"}, {"strength", .2}, {"period", 10}}}, {"implicit", {{"iterations", 30}, {"absoluteTolerance", 1e-12}}}}}};
+        const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
+        const auto factory = [](I, const auto &, const auto &domainMPI)
+        { return CauchyTest::PeriodicQuads(domainMPI, 4, 10); };
+        C::Simulation simulation(config, mpi.comm, factory);
+        std::vector<std::unique_ptr<C::Domain>> reference(2);
+        for (I iDomain = 0; iDomain < 2; ++iDomain)
+            if (simulation.Local(iDomain))
+            {
+                const auto &domain = config.Domains()[iDomain];
+                reference[iDomain] = std::make_unique<C::Domain>(domain.placement.name,
+                                                                 factory(iDomain, domain, DNDS::MPIInfo(simulation.Placement().Context(iDomain)->Communicator())), domain.settings, config.Time());
+            }
+        for (int step = 0; step < 2; ++step)
+        {
+            simulation.Advance(.001);
+            for (I iDomain = 0; iDomain < 2; ++iDomain)
+                if (reference[iDomain])
+                {
+                    reference[iDomain]->Advance(.001);
+                    CHECK(Values(simulation.GetDomain(iDomain)) == Values(*reference[iDomain]));
+                    CHECK(simulation.GetDomain(iDomain).Time() == simulation.Time());
+                }
+        }
+        // Only one rank in the second domain retains a reader. Every domain's
+        // accepted field and BDF history must remain at the previous step.
+        std::vector<std::vector<double>> before(2);
+        for (I iDomain = 0; iDomain < 2; ++iDomain)
+            if (simulation.Local(iDomain))
+                before[iDomain] = Values(simulation.GetDomain(iDomain));
+        std::optional<R::Array<double>::ReadLease> held;
+        if (simulation.Placement().DomainRank(1) == 0)
+            held.emplace(simulation.GetDomain(1).Flow().Owned().Read());
+        CHECK_THROWS(simulation.Advance(.001));
+        CHECK(simulation.Step() == 2);
+        CHECK(simulation.Time() == .002);
+        held.reset();
+        for (I iDomain = 0; iDomain < 2; ++iDomain)
+            if (simulation.Local(iDomain))
+                CHECK(Values(simulation.GetDomain(iDomain)) == before[iDomain]);
+        simulation.Advance(.001);
+        for (I iDomain = 0; iDomain < 2; ++iDomain)
+            if (reference[iDomain])
+            {
+                reference[iDomain]->Advance(.001);
+                CHECK(Values(simulation.GetDomain(iDomain)) == Values(*reference[iDomain]));
+            }
+    }
+}
+TEST_CASE("P3 flow5 crosses a posed disk interface with dense and sparse distributed matching")
+{
+    for (bool split : {false, true})
+    {
+        if (split && mpi.size == 1)
+            continue;
+        for (double omega : {0., .02})
+        {
+            CAPTURE(split);
+            CAPTURE(omega);
+            C::Json input{{"domains", Domains(split)}, {"time", {{"method", !split && omega == 0 ? "esdirk2" : "ssprk3"}}}, {"defaults", {{"initialPrimitive", {1, .1, .2, .03, 1}}, {"initialProfile", {{"kind", "isentropicVortex"}, {"strength", .5}, {"period", 10}}}, {"boundaries", {{"101", {{"kind", "interface"}}}}}, {"numerics", {{"reconstruction", "variational"}, {"flux", "rusanov"}, {"limiter", "none"}, {"positivity", false}, {"reconstructionIterations", 12}, {"cfv", {{"maxOrder", 3}, {"intOrder", 5}, {"jacobiRelax", .8}, {"boundaryDerivativeWeights", {1, 0, 0, 0}}}}}}}}, {"interfaces", C::Json::array({{{"donor", "outer"}, {"receiver", "disk"}, {"donorZone", 101}, {"receiverZone", 101}, {"maxGap", .02}}, {{"donor", "disk"}, {"receiver", "outer"}, {"donorZone", 101}, {"receiverZone", 101}, {"maxGap", .02}}})}};
+            input["domains"][1]["overrides"] = {{"motion", {{"angularVelocity", {0, 0, omega}}, {"center", {5, 5, 0}}}}};
+            const auto factory = [](I iDomain, const auto &, const auto &domainMPI)
+            { return CauchyTest::VortexPatch(domainMPI, iDomain == 1, 12, 32); };
+            const auto sparseConfig = C::SimulationConfig::ResolveCollective(input, mpi.comm);
+            C::Simulation sparse(sparseConfig, mpi.comm, factory);
+            const auto initial = Integrals(sparse);
+            for (int step = 0; step < 3; ++step)
+                sparse.Advance(.001);
+            const auto final = Integrals(sparse);
+            double error = 0;
+            for (I iDomain = 0; iDomain < 2; ++iDomain)
+                if (sparse.Local(iDomain))
+                {
+                    const auto &domain = sparse.GetDomain(iDomain);
+                    const auto &settings = sparseConfig.Domains()[iDomain].settings;
+                    error = std::max(error, domain.Discretization().Error(domain.Flow(), settings.initialProfile, settings.initialPrimitive, sparse.Time())[2][0]);
+                    CHECK(domain.Discretization().Admissible(domain.Flow()));
+                }
+            MPI_Allreduce(MPI_IN_PLACE, &error, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+            if (mpi.rank == 0)
+                std::cout << "IV interfaces split=" << split << " omega=" << omega << " rho_Linf=" << error << " mass_drift=" << final[0] - initial[0] << " energy_drift=" << final[1] - initial[1] << '\n';
+            CHECK(error > 1e-10);
+            CHECK(error < 2e-3);
+            CHECK(std::abs(final[0] - initial[0]) < 2e-3);
+            CHECK(std::abs(final[1] - initial[1]) < 5e-3);
+            // Same physical meshes and poses, independent dense routing. Every
+            // resulting field component must agree, not merely the match count.
+            for (auto &connection : input["interfaces"])
+                connection["routing"] = "allGatherBoundary";
+            C::Simulation dense(C::SimulationConfig::ResolveCollective(input, mpi.comm), mpi.comm, factory);
+            for (int step = 0; step < 3; ++step)
+                dense.Advance(.001);
+            for (I iDomain = 0; iDomain < 2; ++iDomain)
+                if (sparse.Local(iDomain))
+                    CHECK(Values(sparse.GetDomain(iDomain)) == Values(dense.GetDomain(iDomain)));
+            if (!split && omega != 0)
+            {
+                const auto old = Values(sparse.GetDomain(0));
+                std::optional<R::Array<double>::ReadLease> held;
+                if (mpi.rank == 0)
+                    held.emplace(sparse.GetDomain(1).Flow().Owned().Read());
+                CHECK_THROWS(sparse.Advance(.001));
+                held.reset();
+                CHECK(sparse.Step() == 3);
+                CHECK(Values(sparse.GetDomain(0)) == old);
+                CHECK(sparse.GetDomain(0).StableStep(.2) > 0);
+                CHECK_NOTHROW(sparse.GetDomain(0).Diagnostics(sparseConfig.Domains()[0].settings, {}));
+            }
+        }
+    }
+}
+int main(int argc, char **argv)
+{
+    MPI_Init(&argc, &argv);
+    mpi.setWorld();
+    int status;
+    {
+        doctest::Context context(argc, argv);
+        status = context.run();
+    }
+    MPI_Finalize();
+    return status;
+}

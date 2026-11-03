@@ -22,6 +22,17 @@ namespace DNDS::ODE
         using Evaluate = std::function<void(Field &, Field &, real, int)>;
         using SolveStage = std::function<bool(Field &, const Field &, real, real, real, int)>;
         using LocalStage = std::function<void(const std::function<void()> &)>;
+        /// Borrowed equation for one prepared stage. Source is null for an
+        /// explicit stage; otherwise it remains valid until completion/discard.
+        /// A controller may exchange boundary
+        /// inputs between PrepareStage and solving this equation on each domain.
+        struct StageEquation
+        {
+            const Field *source;
+            real mass, rhsScale, time;
+            int stage;
+            bool implicit;
+        };
 
     private:
         std::string _method;
@@ -36,6 +47,9 @@ namespace DNDS::ODE
         FieldDITR::StageFactory _stageFactory;
         std::unique_ptr<FieldDITR> _ditr;
         bool _rebuildDITR = false;
+        bool _stagesActive = false, _stagePrepared = false;
+        int _nextStage = 0;
+        real _startTime = 0;
         template <class F>
         void RunLocal(F &&run) const
         {
@@ -131,10 +145,92 @@ namespace DNDS::ODE
         bool HasPendingTrial() const { return _pending; }
         const DITRIterationReport *LastDITRReport() const { return _ditr ? &_ditr->LastReport() : nullptr; }
         real PreviousDt() const { return _previousDt; }
+        /// DITR owns a coupled midpoint/end iteration, not a one-pass tableau.
+        /// Its external coordination must use that coupled protocol explicitly.
+        bool SupportsStageSequence() const { return !_ditr; }
+        int StageNumber() const { return _a.empty() ? 1 : int(_a.size()); }
         const Field &PreviousState() const
         {
             DNDS_check_throw_info(_history, "no accepted BDF history");
             return _previous;
+        }
+        /// Begin a serialized synchronous trial without executing its stages.
+        /// All ranks agree controls. Accepted history changes only at Commit.
+        /// The controller must CompleteStage before preparing the next one.
+        void BeginStages(const Field &initial, Field &trial, real time, real dt, bool steady = false)
+        {
+            Discard();
+            RunLocal([&]
+                     {
+                DNDS_check_throw_info(SupportsStageSequence(), "DITR requires coupled iteration coordination, not a one-pass stage sequence");
+                DNDS_check_throw_info(std::isfinite(time) && (steady ? _method == "bdf1" :
+                    std::isfinite(dt) && dt > 0 && std::isfinite(time + dt) && time + dt > time), "invalid stage-sequence controls");
+                BeginInitial(initial, trial); });
+            _pendingSteady = steady;
+            _pendingDt = steady ? 0 : dt;
+            _startTime = time;
+            _nextStage = 0;
+            _stagesActive = true;
+        }
+        StageEquation PrepareStage(Field &trial)
+        {
+            DNDS_check_throw_info(_stagesActive && !_stagePrepared && _nextStage < StageNumber(), "no next time stage, or previous stage is unfinished");
+            const int stage = _nextStage;
+            const bool implicit = _a.empty() || _a[stage][stage] != 0;
+            real mass = _pendingSteady ? 0 : 1 / _pendingDt, scale = 1;
+            const real time = _pendingSteady ? _startTime : _startTime + (_a.empty() ? 1 : _c[stage]) * _pendingDt;
+            RunLocal([&]
+                     {
+                Check(trial);
+                Algebra::Copy(trial, _pendingInitial);
+                if (_pendingSteady)
+                    Algebra::Fill(_source, 0.);
+                else if (_a.empty())
+                {
+                    const real ratio = _pendingDt / (_history ? _previousDt : _pendingDt);
+                    if (_method == "bdf2" && _history)
+                    {
+                        DNDS_check_throw_info(std::isfinite(ratio) && ratio > 0 && std::isfinite(ratio * ratio), "invalid BDF step ratio");
+                        const real denominator = 1 + 2 * ratio;
+                        Algebra::LinearCombination(_source, (1 + ratio) * (1 + ratio) / (denominator * _pendingDt), _pendingInitial,
+                                                   -ratio * ratio / (denominator * _pendingDt), _previous);
+                        scale = (1 + ratio) / denominator;
+                    }
+                    else
+                    {
+                        Algebra::Copy(_source, _pendingInitial);
+                        Algebra::Scale(_source, mass);
+                    }
+                }
+                else if (implicit)
+                {
+                    Algebra::Copy(_source, _pendingInitial);
+                    Algebra::Scale(_source, mass);
+                    for (int previous = 0; previous < stage; ++previous)
+                        if (_a[stage][previous] != 0)
+                            Algebra::Axpy(_source, _a[stage][previous], _rates[previous]);
+                    scale = _a[stage][stage];
+                } });
+            _stagePrepared = true;
+            return {implicit ? &_source : nullptr, implicit ? mass : 0, implicit ? scale : 0, time, stage, implicit};
+        }
+        /// Record the solved/current stage rate before the next stage can use
+        /// it. BDF/steady need no rate callback. This posts no hidden solve or
+        /// exchange. The caller supplies a coherent fixed stage boundary trace.
+        void CompleteStage(Field &trial, const Evaluate &evaluate = {})
+        {
+            DNDS_check_throw_info(_stagesActive && _stagePrepared, "no prepared time stage to complete");
+            if (!_a.empty())
+            {
+                DNDS_check_throw_info(evaluate, "DIRK stage completion needs its rate evaluation");
+                evaluate(trial, _rates[_nextStage], _startTime + _c[_nextStage] * _pendingDt, _nextStage);
+            }
+            _stagePrepared = false;
+            if (++_nextStage == StageNumber())
+            {
+                _pending = true;
+                _stagesActive = false;
+            }
         }
         /// Preparation is serialized and synchronous. All participating ranks
         /// must call it with agreed controls and callbacks that coordinate local
@@ -144,15 +240,14 @@ namespace DNDS::ODE
         /// still needs Commit *after* its external accepted-state publication.
         bool Prepare(const Field &initial, Field &trial, real time, real dt, const Evaluate &evaluate, const SolveStage &solve, const FieldDITR::Converged &coupled = {})
         {
-            _pending = false;
-            _pendingSteady = false;
+            Discard();
             RunLocal([&]
-                     {
-            DNDS_check_throw_info(evaluate && solve && std::isfinite(time) && std::isfinite(dt) && dt > 0 && std::isfinite(time + dt) && time + dt > time, "invalid time trial controls");
-            BeginInitial(initial, trial); });
+                     { DNDS_check_throw_info(evaluate && solve && std::isfinite(time) && std::isfinite(dt) && dt > 0 && std::isfinite(time + dt) && time + dt > time, "invalid time trial controls"); });
             _pendingDt = dt;
             if (_ditr)
             {
+                RunLocal([&]
+                         { BeginInitial(initial, trial); });
                 if (_rebuildDITR)
                 {
                     RunLocal([&]
@@ -170,55 +265,18 @@ namespace DNDS::ODE
                 }
                 return _pending;
             }
-            if (_a.empty())
+            BeginStages(initial, trial, time, dt);
+            for (int stage = 0; stage < StageNumber(); ++stage)
             {
-                const real ratio = dt / (_history ? _previousDt : dt);
-                if (_method == "bdf2" && _history)
+                const auto equation = PrepareStage(trial);
+                if (equation.implicit && !solve(trial, *equation.source, equation.mass, equation.rhsScale, equation.time, equation.stage))
                 {
-                    // Euler's normalized variable-step BDF2: physical mass
-                    // stays 1/dt and RHS scale carries (1+r)/(1+2r).
-                    DNDS_check_throw_info(std::isfinite(ratio) && ratio > 0 && std::isfinite(ratio * ratio), "invalid BDF step ratio");
-                    const real denominator = 1 + 2 * ratio;
-                    RunLocal([&]
-                             {
-                    Algebra::LinearCombination(_source, (1 + ratio) * (1 + ratio) / (denominator * dt), initial,
-                                               -ratio * ratio / (denominator * dt), _previous);
-                    Algebra::Copy(trial, initial); });
-                    _pending = solve(trial, _source, 1 / dt, (1 + ratio) / denominator, time + dt, 0);
+                    Discard();
+                    return false;
                 }
-                else
-                {
-                    RunLocal([&]
-                             {
-                    Algebra::Copy(_source, initial);
-                    Algebra::Scale(_source, 1 / dt);
-                    Algebra::Copy(trial, initial); });
-                    _pending = solve(trial, _source, 1 / dt, 1, time + dt, 0);
-                }
-                return _pending;
+                CompleteStage(trial, evaluate);
             }
-            for (int stage = 0; stage < int(_a.size()); ++stage)
-            {
-                RunLocal([&]
-                         {
-                Algebra::Copy(trial, initial);
-                if (_a[stage][stage] != 0)
-                {
-                    Algebra::Copy(_source, initial);
-                    Algebra::Scale(_source, 1 / dt);
-                    for (int previous = 0; previous < stage; ++previous)
-                        if (_a[stage][previous] != 0)
-                            Algebra::Axpy(_source, _a[stage][previous], _rates[previous]);
-                } });
-                if (_a[stage][stage] != 0)
-                {
-                    if (!solve(trial, _source, 1 / dt, _a[stage][stage], time + _c[stage] * dt, stage))
-                        return false;
-                }
-                evaluate(trial, _rates[stage], time + _c[stage] * dt, stage);
-            }
-            _pending = true;
-            return true; // All supported DIRK tableaus are stiffly accurate.
+            return _pending; // All supported DIRK tableaus are stiffly accurate.
         }
         /// BDF1 infinite-dt limit: zero physical mass/history source and frozen
         /// time. No infinity enters arithmetic and no rate callback is needed.
@@ -226,16 +284,15 @@ namespace DNDS::ODE
         /// be committed. Caller serializes/co-ordinates callbacks as in Prepare.
         bool PrepareSteady(const Field &initial, Field &trial, real time, const SolveStage &solve)
         {
-            _pending = false;
-            _pendingSteady = true;
-            RunLocal([&]
-                     {
-                DNDS_check_throw_info(_method == "bdf1" && solve && std::isfinite(time), "steady limit requires BDF1 and a finite frozen time");
-                BeginInitial(initial, trial);
-                Algebra::Fill(_source, 0.);
-                Algebra::Copy(trial, initial); });
-            _pendingDt = 0;
-            _pending = solve(trial, _source, 0, 1, time, 0);
+            DNDS_check_throw_info(solve, "steady stage needs its solver");
+            BeginStages(initial, trial, time, 0, true);
+            const auto equation = PrepareStage(trial);
+            if (!solve(trial, *equation.source, equation.mass, equation.rhsScale, equation.time, equation.stage))
+            {
+                Discard();
+                return false;
+            }
+            CompleteStage(trial);
             return _pending;
         }
         /// Only call once the matching physical trial was published. Pure
@@ -254,12 +311,13 @@ namespace DNDS::ODE
             _history = true;
             _pending = false;
         }
-        void Discard() noexcept { _pending = _pendingSteady = false; }
+        void Discard() noexcept { _pending = _pendingSteady = _stagesActive = _stagePrepared = false; }
         /// After an externally replaced state or incompatible restart, take a
         /// BDF1 startup step rather than silently consuming stale history.
         void ResetHistory() noexcept
         {
-            _history = _pending = _pendingSteady = false;
+            Discard();
+            _history = false;
             _previousDt = 0;
         }
         void RestoreHistory(const Field &previous, real dt)
@@ -269,7 +327,7 @@ namespace DNDS::ODE
             Algebra::Copy(_previous, previous);
             _previousDt = dt;
             _history = true;
-            _pending = _pendingSteady = false;
+            Discard();
         }
     };
 }

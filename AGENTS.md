@@ -145,8 +145,9 @@ shared libraries AND install them.** The Python modules load `.so` files
 from `python/DNDSR/`, which are only placed there by `cmake --install`.
 Running Python tests against stale or missing `.so` files will produce
 misleading crashes (segfaults, aborts, wrong results) that look like code
-bugs but are actually stale-binary problems. **Every time C++ source
-changes, repeat both steps before running Python tests:**
+bugs but are actually stale-binary problems. **After functional C++ changes,
+repeat both steps before running Python tests. Formatter-only changes do not
+require a rebuild or reinstall:**
 
 ```bash
 # Step 1: Build pybind11 targets

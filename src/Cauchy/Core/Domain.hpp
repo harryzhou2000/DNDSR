@@ -17,6 +17,7 @@ namespace DNDS::Cauchy
     /// state separation and explicit domain-local residual boundary.
     class Domain
     {
+        friend class Simulation;
         std::string _name;
         EquationSystem _equation;
         FiniteVolume _fv;
@@ -63,6 +64,21 @@ namespace DNDS::Cauchy
         void PreserveReconstructionGuess();
         void EvaluateImplicitRate(CFV::FVField &state, CFV::FVField &rate, FiniteVolume::Workspace &workspace, real time, int stage);
         bool RecordImplicitStage(NonlinearIterationReport report);
+        void BeginTrial(real dt);
+        /// Simulation alone interleaves these serialized domain-local phases.
+        /// Boundary exchanges happen between preparation and solve, outside
+        /// every domain's inner nonlinear loop and MPI communicator.
+        void BeginCoordinatedStep(real dt);
+        real PrepareCoordinatedStage(int stage);
+        void SolveCoordinatedStage();
+        void CompleteCoordinatedStage();
+        int CoordinatedStageNumber() const;
+        std::optional<ODE::FieldTimeStepper::StageEquation> _stageEquation;
+        int _coordinatedStage = 0;
+        bool _coordinatedPrepared = false;
+        std::optional<BoundaryInputs> _interfaceInputs;
+        void BindInterfaceInputs(const BoundaryInputs &input);
+        void CommitReserved(Runtime::Array<real>::WriteLease &destination, Runtime::Array<real>::ReadLease &source);
 
     public:
         Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time = {});
@@ -107,6 +123,8 @@ namespace DNDS::Cauchy
         void DiscardStep() noexcept
         {
             _trialReady = false;
+            _coordinatedPrepared = false;
+            _stageEquation.reset();
             if (_timeStepper)
                 _timeStepper->Discard();
         }

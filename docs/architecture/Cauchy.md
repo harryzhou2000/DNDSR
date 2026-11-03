@@ -1,6 +1,6 @@
 # Cauchy solver: module contracts and implementation ledger
 
-Status2026-11-03: foundation, optional checked eager execution and the
+Status2026-11-04: foundation, optional checked eager execution and the
 single-domain CPU flow solver include native implicit linear/nonlinear solves,
 BDF/Trapz/ESDIRK/DITR, full/subset polynomial FAS and persistent-ID restart in focused tests.
 Euler-derived PP and native LVR have focused distributed coverage; qualified
@@ -17,6 +17,10 @@ flowchart TD
     Config[Resolved SimulationConfig + capability plan] --> Simulation
     Simulation --> Placement[DomainPlacement: control/domain communicators]
     Simulation --> Domain
+    Simulation --> Interface[InterfaceCoupling: posed matching + sampling + frozen traces]
+    Interface --> InterfaceGeom[Geom distributed boundary correspondence]
+    Interface --> InterfaceCFV[CFV polynomial sampling + persistent result transfer]
+    Interface --> BCInput[Accepted/trial BoundaryInputs]
     Domain --> State[Accepted/trial EquationDofs + physical epoch]
     Domain --> Equation[EquationSystem: schema + thermodynamic preparation]
     Domain --> FV[FiniteVolume: immutable preparation + per-run Workspace]
@@ -24,6 +28,7 @@ flowchart TD
     FV --> CFV[FV metrics + gradient/VR + WBAP]
     FV --> Flux[RiemannFlux: common prepared-state interface]
     FV --> BC[BoundarySystem: quadrature/exterior values]
+    BCInput --> FV
     Domain --> Engine[EagerEngine + direct MPI + optional access checking]
     Domain --> Implicit[Native stage solves + time equations + optional p-FAS]
     Domain --> IO[Persistent-ID HDF5 checkpoint + redistribution]
@@ -101,8 +106,80 @@ not interpolation and never accepts equal row counts alone. Normal validation
 then uses the matched layout identity and native generations outside hot loops.
 The focused test reproduces analytic nonconstant P3 reconstruction, residual and
 frozen Jacobian action exactly, including rigid posing, and rejects incomplete
-or modified publication. This packet facility alone is not a physical
-multi-domain stage driver; that orchestration remains separate work.
+or modified publication. `Interface/InterfaceCoupling` produces these packets
+using Geom distributed matching and CFV direct polynomial interpolation.
+
+The physical CPU multi-domain stage controller supports serial local domains
+on shared ranks and concurrent local solves on disjoint/reversed communicator
+groups. Nonmembers hold descriptors/routes and no dummy mesh/field. Root
+`interfaces` entries select donor/receiver names and boundary zones, routing
+(`coarseBoxes` or `allGatherBoundary`), coarse box count and maximum projection
+gap. A receiver zone has exactly one incoming connection and an `interface` BC;
+two-way connections use two directed entries. The initial flow5 profile requires
+the same gas/energy convention on each side.
+Individual ranks may have no selected boundary/query rows. Each directed
+connection must have a globally nonempty donor patch and receiver quadrature;
+unused or misspelled zone IDs reject instead of producing a silent no-op.
+
+```mermaid
+flowchart TD
+  A[Prepare every domain stage state] --> B[Refresh predictor mean/coefficient halos]
+  B --> C[Geom posed matching and CFV polynomial sampling]
+  C --> D[Publish receiver-frame traces]
+  D --> E[Prepare current VR and limiter polynomials]
+  E --> F[Resample and freeze stage traces]
+  F --> G[Local explicit update or decoupled implicit solve]
+  G --> H[Complete every time stage]
+  H --> I{Final stage?}
+  I -->|no| A
+  I -->|yes| J[Refresh accepted-time traces]
+  J --> K[Reserve every accepted destination and publish]
+```
+
+Stage query points are posed into ground coordinates. Geom projects each query
+onto the donor boundary before CFV evaluates its adjacent-cell polynomial.
+Returned absolute momentum is rotated from donor to receiver axes; density and
+absolute total energy are unchanged. Intrinsic mesh geometry/VR caches stay in
+their reference frame. A new stage-time pose rebuilds correspondence/sampling;
+the predictor/refined rounds at that time reuse stable scratch and persistent
+native result bindings. This implementation freezes the refined trace during
+the local stage solve. Per-nonlinear-iteration refresh and a global coupled
+implicit solve require further coordination; neither is implied here.
+
+Accepted and trial boundary packets use separate allocations. Repeated trial
+rounds reuse scratch; commit swaps packet handles, and discard restores the
+retained accepted publication without payload copies or new matching. Initial
+accepted-time traces are prepared before CFL/diagnostic queries. The controller
+reserves all accepted state destinations before changing any domain, so a debug
+reader blocking one domain rejects the entire publication. The caller must
+serialize stepping and external mutation; this is not process-failure recovery.
+Point interpolation imposes no conservative flux, so short IV error/drift checks
+must not be interpreted as global conservation or fourth-order interface proof.
+
+```text
+Python Simulation handle ----owns----> C++ Simulation
+Python borrowed Domain ------retains----^     |
+                                             +-- unique Domain objects
+                                             |     +-- shared immutable FV/mesh plans
+                                             |     +-- native means and VR workspace
+                                             +-- unique InterfaceCoupling
+                                                   +-- matching/sampling plans
+                                                   +-- persistent return bindings
+                                                   +-- accepted/trial BoundaryInputs
+                                                          -> shared ArrayStorage
+Python domain.flow / retained NumPy view ------------------> allocation + metadata
+```
+
+Python `Simulation(meshes, mpi, config_json)` accepts one mesh slot per domain;
+nonmembers supply `None`. Each mesh communicator must match configured domain
+membership **and rank order** (identical or congruent, not merely similar).
+`simulation.domain(i)` retains its parent Simulation; a shared `domain.flow`
+Array independently retains storage after frontend destruction. All control
+ranks call `advance`, including ranks with no local domain. Destroy communicator
+owners on an MPI-permitted thread before finalization. The initial Python tests
+cover shared meshes and reversed split communicators; the geometric rotating-IV
+fixture is in the C++ suite. The production executable still has the single-
+domain output/restart frontend restriction described below.
 
 `CoordinatedSchedule` is a scalar mock of the frozen-trace contract, not a fluid
 integrator. All domains read the same old trace snapshot for a round. Only each
@@ -166,8 +243,8 @@ rank-local rejection and retry epochs, empty local ownership, mixed physical
 field formats, subset updates and numerically poisoned ghosts. These foundation
 mocks do not establish physical inter-domain coupling. Real single-domain
 `Domain`, residuals, SSPRK3, basic IO and Python stepping are implemented
-separately below. Physical multi-domain advancement rejects until the coupling/
-transaction package is implemented.
+separately below. The physical stage/packet controller described above has its
+own distributed fluid tests; the scalar mocks remain independent placement tests.
 
 `Config/SimulationConfig` expands immutable domain profiles, solver defaults,
 domain overrides and CLI pointers, retaining leaf provenance. Domain rank groups
@@ -246,7 +323,7 @@ studies. Inadmissible means/stages reject; no mean clipping.
 Final coefficient exchange overlaps the owned-only core residual; dependent cells
 run after exchange. The synchronous wrapper observes its own submitted prefix.
 
-`Core/Domain` holds accepted and trial state separately and supplies stationary-grid
+`Core/Domain` holds accepted and trial state separately and supplies rigid-frame
 SSPRK3 with physical boundary stage times `t,t+dt,t+dt/2`. All stage means are
 checked collectively. A rejected trial
 does not replace accepted values/time; a commit preflights destination leases
@@ -254,11 +331,12 @@ collectively, cancelling unused accesses if a peer rejects. Residual inspection
 overwrites workspace and invalidates any prepared candidate. First-stage tests
 cover planar/3D geometry, all three table layouts, inline/worker execution, empty
 owners, periodic constants, spatial order, smooth transport, shear and retry.
-`Simulation::Advance` coordinates the single-domain candidate and accepted clock;
-the executable uses this entry. `Simulation::ReadCheckpoint` restores both
+`Simulation::Advance` coordinates domain candidates and the accepted clock;
+the executable uses this entry. `Simulation::ReadCheckpoint` currently restores a single domain's
 simulation and domain epochs. Directly advancing its contained Domain creates a
 clock mismatch that is rejected at the next coordinated advancement. Standalone
-Python Domain stepping remains a supported debugging/tuning frontend.
+Python Domain stepping remains a supported debugging/tuning frontend for domains
+without inter-domain boundaries. Interface domains advance through Simulation.
 
 `cauchy_solver` builds `app/cauchy.exe`; it reads a Cauchy JSON and optional
 `--restart path.h5`. Paths are relative to its invocation directory. The current
@@ -388,7 +466,7 @@ fields, alias residual output to an input, or use escaped raw pointers. Keep MPI
 contexts and solver objects alive until operations finish and destroy them before
 MPI finalization on an MPI-permitted thread. This is coordinated error handling,
 not process-failure recovery. GPU flow kernels, real-gas adapters, species/RANS,
-motion and physical multi-domain coupling remain later
+deforming ALE, coupled multi-domain DITR and multi-domain checkpoint orchestration remain later
 capability packages and fail explicitly when requested now.
 
 See [checked execution](CheckedExecution.md) for the shared optional submission

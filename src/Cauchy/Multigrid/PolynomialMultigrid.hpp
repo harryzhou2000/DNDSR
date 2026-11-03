@@ -25,5 +25,8 @@ namespace DNDS::Cauchy
         /// coarse FAS forcing. Caps return unconverged. Coarse levels have no
         /// mutable VR warm guesses; they are reset by restriction every cycle.
         NonlinearIterationReport Solve(const CFV::FVField &source, real mass, real rhsScale, real time, int stage = 0);
+        /// Frozen stage trace shared with coarse levels after checking their
+        /// canonical boundary quadrature order. Performs no interface exchange.
+        void SetBoundaryInputs(const BoundaryInputs &input);
     };
 }

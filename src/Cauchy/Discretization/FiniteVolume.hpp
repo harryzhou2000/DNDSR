@@ -9,6 +9,11 @@
 #include "Cauchy/Implicit/LinearProblem.hpp"
 #include "CFV/Plans/GradientPlan.hpp"
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
+
+namespace DNDS::Geom
+{
+    class BoundaryPatch;
+}
 #include "Geom/Access/EntityWorkPartition.hpp"
 #include <array>
 #include <optional>
@@ -179,9 +184,14 @@ namespace DNDS::Cauchy
                              JacobianPreparation controls = {}, real time = 0) const;
         FiniteVolume(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const EquationSystem &equation);
         const CFV::FiniteVolumePlan &Metrics() const;
+        const CFV::VariationalReconstructionPlan &Reconstruction() const;
         const Geom::UnstructuredMesh &Mesh() const;
         const RigidMotion &Motion() const;
         const std::vector<BoundaryPoint> &BoundaryPoints() const;
+        /// Direct owned-boundary selection for a physical coupling adapter.
+        /// The result retains the reference mesh without exposing a mutable
+        /// owner handle through the solver's read-only mesh facade.
+        Geom::BoundaryPatch BuildBoundaryPatch(int zone) const;
         bool HasInterfaces() const;
         BoundaryInputs BuildBoundaryInputs() const;
         /// Synchronous local point operations, no MPI. Begin withdraws the
@@ -272,6 +282,16 @@ namespace DNDS::Cauchy
         /// overwrites ReconstructionGuess(), which remains the unlimited guess.
         /// With filtering disabled these references share the same coefficients.
         const CFV::FVField &FluxReconstruction(const Workspace &workspace) const;
+        /// Prepare the same boundary/VR/limiter polynomial as Evaluate, without
+        /// computing a residual. Refreshes its canonical halos before returning.
+        /// A coupling controller may sample it to refresh incoming traces.
+        /// Interface packets must already be published at this stage time.
+        void PrepareReconstruction(CFV::FVField &state, Workspace &workspace, Runtime::EagerEngine &engine,
+                                   const Runtime::ExecutionStream &stream, real time) const;
+        /// Refresh stage means and the retained unlimited polynomial for a
+        /// predictor sampling round. Reuses the workspace's canonical bindings.
+        void RefreshSamplingInputs(CFV::FVField &state, Workspace &workspace, Runtime::EagerEngine &engine,
+                                   const Runtime::ExecutionStream &stream) const;
         /// Interpretation of stored polynomial rows; independent of physical
         /// flow schema. Restart may restore means and cold-start incompatible
         /// coefficients rather than matching a C++ static row type.
@@ -354,7 +374,7 @@ namespace DNDS::Cauchy
         CFV::FVField &RequireState(EquationDofs &state) const;
         index PrepareFaceCharacteristics(const CFV::FVField &state, CFV::FaceCharacteristicTransform &transform) const;
         std::shared_ptr<Workspace> BuildWorkspaceImpl(CFV::FVField &state, AuxiliaryRequest request, bool meanOnly) const;
-        void EvaluateImpl(CFV::FVField &state, CFV::FVField &residual, Workspace &workspace,
+        void EvaluateImpl(CFV::FVField &state, CFV::FVField *residual, Workspace &workspace,
                           Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time) const;
         /// Evaluate preserves its preceding WBAP result; the public standalone
         /// projection always starts afresh from the unlimited guess.
