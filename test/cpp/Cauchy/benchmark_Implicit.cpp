@@ -6,6 +6,7 @@
 #include "Geom/IO/NativeMeshCGNS.hpp"
 #include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
 #include "ControllerPhaseBenchmark.hpp"
+#include "PolynomialMultigridBenchmark.hpp"
 #include <iostream>
 
 namespace C = DNDS::Cauchy;
@@ -21,10 +22,12 @@ int main(int argc, char **argv)
     const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
     try
     {
-        DNDS_check_throw_info(argc == 7 || argc == 8, "arguments: unit-square-mesh repetitions trials check-access overlap semi-matrix-free [extra-controller-phases]");
+        DNDS_check_throw_info(argc >= 7 && argc <= 9, "arguments: unit-square-mesh repetitions trials check-access overlap semi-matrix-free [extra-controller-phases] [polynomial-multigrid-only]");
         const int repetitions = std::stoi(argv[2]), trials = std::stoi(argv[3]);
         const bool checked = std::stoi(argv[4]), overlap = std::stoi(argv[5]), evaluated = std::stoi(argv[6]);
-        const bool extra = argc == 8 && std::stoi(argv[7]);
+        const bool extra = argc >= 8 && std::stoi(argv[7]);
+        const bool polynomial = argc == 9 && std::stoi(argv[8]);
+        DNDS_check_throw_info(!polynomial || (!extra && !evaluated), "pMG cost profile uses PP-off assembled matrices; other phase modes remain separate");
         DNDS_check_throw_info(repetitions > 0 && trials > 0, "positive benchmark repetitions/trials required");
         const auto measure = [&](auto &&action, int count = 1)
         {
@@ -130,6 +133,14 @@ int main(int argc, char **argv)
                                { return metrics.BindHalo(field); }, linear, {overlap, checked});
         for (int trial = 0; trial < trials; ++trial)
         {
+            if (polynomial)
+            {
+                auto variants = CauchyBenchmark::PolynomialPhases(mesh, fv, state, engine, stream, settings, checked, repetitions, measure);
+                DNDS_check_throw_info(state.Owned().Version() == ownedVersion, "pMG cost profile changed its reference means");
+                if (mpi.rank == 0)
+                    std::cout << "CAUCHY_PMG_BENCH " << C::Json{{"cells", global}, {"np", mpi.size}, {"degree", 3}, {"trial", trial}, {"repetitions", repetitions}, {"checked", checked}, {"overlap", overlap}, {"import", import}, {"topology", topology}, {"fv_prepare", preparation}, {"mass", 1e5}, {"positivity", false}, {"owned_generation_preserved", true}, {"variants", std::move(variants)}}.dump() << std::endl;
+                continue;
+            }
             fv.Evaluate(state, residual, *workspace, engine, stream);
             const double evaluate = measure([&]
                                             { fv.Evaluate(state, residual, *workspace, engine, stream); }, repetitions);
