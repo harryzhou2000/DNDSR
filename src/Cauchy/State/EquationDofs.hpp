@@ -14,6 +14,13 @@ namespace DNDS::Cauchy
         index first = 0;
     };
 
+    /// Host dispatch metadata, resolved without guessing allocation grouping
+    /// from pointers. The physical field retains its complete layout/pitch.
+    struct EquationBlockLocation
+    {
+        index physicalField, firstComponent, componentNumber;
+    };
+
     /// Borrowed component range. Preserve the complete parent layout: changing
     /// its width would change the tile pitch of an AoSoA array incorrectly.
     /// Resolve segments outside kernels; these plain views retain no owner.
@@ -97,6 +104,11 @@ namespace DNDS::Cauchy
         const Algebra::DofSpace &Space() const { return _fields.Space(); }
         const Algebra::DofBundle &Fields() const { return _fields; }
         index PhysicalFieldNumber() const { return _fields.BlockNumber(); }
+        /// Validate once at operator entry, then inspect PhysicalField(...)
+        /// for parent layout/device and acquire its normal access scope. This
+        /// metadata query grants no pointer access or asynchronous permission.
+        EquationBlockLocation LocateBlock(index iBlock) const;
+        EquationBlockLocation LocateBlock(const std::string &block) const;
         /// Communication/IO adapters access a physical field explicitly. Value
         /// changes are allowed; replacement handles invalidate this binding.
         Algebra::DofField<real> &PhysicalField(index iField);
@@ -114,6 +126,10 @@ namespace DNDS::Cauchy
         /// Bind a new stage field to the same coupled descriptor. This shares
         /// metadata, not payload, and never copies or flattens its values.
         EquationDofs RebindCoupled(Algebra::DofField<real> field) const;
+        /// Bind stage/workspace fields to the same immutable logical map.
+        /// Names/order, widths, device and DofSpace must match; per-field physical
+        /// layouts may differ. Shares metadata/handles, never flattens/copies data.
+        EquationDofs RebindFields(Algebra::DofBundle fields) const;
         EquationDofs Clone() const;
 
         class ReadScope

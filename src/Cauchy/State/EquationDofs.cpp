@@ -174,6 +174,18 @@ namespace DNDS::Cauchy
     {
         return const_cast<Algebra::DofField<real> &>(std::as_const(*this).PhysicalField(iField));
     }
+    EquationBlockLocation EquationDofs::LocateBlock(index iBlock) const
+    {
+        Validate();
+        DNDS_check_throw_info(iBlock >= 0 && iBlock < index(_definition->blocks.size()), "equation block index out of range");
+        const auto &block = _definition->blocks[iBlock];
+        return {block.field, block.first, block.width};
+    }
+    EquationBlockLocation EquationDofs::LocateBlock(const std::string &block) const
+    {
+        DNDS_check_throw_info(_definition, "equation DOF binding is moved");
+        return LocateBlock(_definition->Find(block));
+    }
     void EquationDofs::Validate() const
     {
         DNDS_check_throw_info(_definition && _fields.Space().Same(_definition->space) && _fields.BlockNumber() == index(_definition->fields.size()) &&
@@ -235,6 +247,11 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(_definition->coupled, "stage rebinding requires coupled logical storage");
         Algebra::DofBundle fields(field.Space());
         fields.Add(_definition->fields.front(), std::move(field));
+        return {_definition, std::move(fields)};
+    }
+    EquationDofs EquationDofs::RebindFields(Algebra::DofBundle fields) const
+    {
+        Validate();
         return {_definition, std::move(fields)};
     }
     EquationDofs::ReadScope::ReadScope(const EquationDofs &state, bool ghosts, R::ExecutionContext context)

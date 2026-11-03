@@ -145,6 +145,15 @@ TEST_CASE("Logical flow4/5 with RANS and many species maps exactly across physic
                 CHECK(state.ComponentNumber() == (flow == 4 ? 17 : 21));
                 CHECK(state.BlockNumber() == 3);
                 CHECK(state.PhysicalFieldNumber() == (split ? 3 : 1));
+                I componentOffset = 0;
+                for (I iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+                {
+                    const auto location = state.LocateBlock(schema.blocks[iBlock].name);
+                    CHECK(location.physicalField == (split ? iBlock : 0));
+                    CHECK(location.firstComponent == (split ? 0 : componentOffset));
+                    CHECK(location.componentNumber == I(schema.blocks[iBlock].components.size()));
+                    componentOffset += location.componentNumber;
+                }
                 // Independent native full-field oracle catches a segment view
                 // that rewrites a tiled parent's physical component count.
                 I logicalFirst = 0;
@@ -158,7 +167,7 @@ TEST_CASE("Logical flow4/5 with RANS and many species maps exactly across physic
                             CHECK(view(iRow, j) == Value(mpi.rank, iRow, logicalFirst + j));
                     logicalFirst += view.Width();
                 }
-                auto output = state.Clone();
+                auto output = state.RebindFields(state.Fields().Clone());
                 Pointwise(state, output);
                 CheckValues(output, 3, -2);
                 CheckValues(state);
@@ -194,6 +203,30 @@ TEST_CASE("Logical flow4/5 with RANS and many species maps exactly across physic
                     first += block.ComponentNumber();
                 }
             }
+}
+TEST_CASE("Hybrid equation blocks expose physical grouping and rebind across parent layouts")
+{
+    Fixture fixture;
+    A::DofBundle fields(fixture.space);
+    fields.Add("chemistry", A::DofField<double>(fixture.space, Layout(14, 1)));
+    fields.Add("fluid", A::DofField<double>(fixture.space, Layout(7, 2)));
+    C::EquationDofs state(Schema(5), std::move(fields), {{"flow", "fluid", 0}, {"rans", "fluid", 5}, {"species", "chemistry", 0}});
+    Fill(state);
+    const auto flow = state.LocateBlock("flow"), rans = state.LocateBlock("rans"), species = state.LocateBlock("species");
+    CHECK(flow.physicalField == 1);
+    CHECK(rans.physicalField == flow.physicalField);
+    CHECK(rans.firstComponent == 5);
+    CHECK(species.physicalField == 0);
+    CHECK(state.PhysicalField(flow.physicalField).Width() == 7);
+    CHECK(state.PhysicalField(species.physicalField).Width() == 14);
+    A::DofBundle stageFields(fixture.space);
+    stageFields.Add("chemistry", A::DofField<double>(fixture.space, Layout(14, 2)));
+    stageFields.Add("fluid", A::DofField<double>(fixture.space, Layout(7, 0)));
+    auto stage = state.RebindFields(std::move(stageFields));
+    Pointwise(state, stage);
+    CheckValues(stage, 3, -2);
+    CheckValues(state);
+    CHECK(stage.LocateBlock("rans").firstComponent == 5);
 }
 TEST_CASE("Owned-only pointwise algebra and reductions overlap direct halo writes without regional splitting")
 {

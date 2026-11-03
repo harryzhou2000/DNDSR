@@ -31,6 +31,13 @@ storage identity and shape generation. Replacing an allocation or changing its
 shape invalidates that binding and requires an explicit new one; ordinary value
 updates are allowed.
 
+`RebindFields(bundle)` does the same for separate or hybrid storage: physical
+field names/order, component widths, device and row space must match, while
+individual AoS/SoA/AoSoA layouts may differ. It shares the immutable map and new
+field handles without copying or flattening their payload. Stage/time/linear
+drivers still need their extended physical-profile adapters; this operation
+alone does not remove the current flow5 production restriction.
+
 `Domain::Dofs()` exposes the accepted semantic binding read-only. The existing
 `State()` physical-bundle access and `Flow()` flow5 field access remain available.
 Python `domain.flow` still shares the accepted owned Runtime Array: retaining
@@ -80,6 +87,14 @@ future layout-specific GPU kernel, host dispatch must inspect both the physical
 layout and block-to-allocation mapping, then select the appropriate specialized
 view/kernel. It must preserve full parent tile pitch when freezing a segment.
 An allocation ID is host dispatch/lifetime metadata, not a device indexing input.
+
+At host dispatch, `LocateBlock("flow")` returns `physicalField`,
+`firstComponent` and `componentNumber`. Inspect
+`PhysicalField(location.physicalField).Owned().Layout()` for the full parent
+layout/pitch. This distinguishes, for example, a tiled seven-component flow/RANS
+parent plus a separate species array from one coupled parent, without pointer
+comparison. Location metadata grants no data-access permission; retain normal
+read/write scopes for the chosen kernel. It stays outside device/hot loops.
 
 `ReadOwned(context)`/`ReadWithGhost(context)`/`WriteOwned(context)` accept an
 explicit device context; `Complete(Runtime::Completion::Record(context))` can
