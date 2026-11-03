@@ -16,6 +16,72 @@ are not the same as maximum-rank total. No timer output certifies convergence.
 The coupled DITR method, its independent intermediate-stage workspace and
 accepted/trial history contracts are documented in [DITR.md](DITR.md).
 
+## Interface input refresh protocol
+
+`Core/InterfaceIterationSchedule` supplies one stage/attempt's CPU control hooks.
+It is independent of mesh matching, physical BC evaluation, equation width and
+payload layout. `StateEpoch` now has its own small header; the existing
+`CoordinatedSchedule` scalar clock mock retains its public type/API.
+
+```mermaid
+flowchart LR
+    Owner[Stage/attempt owner] --> Begin[BeginIteration]
+    Begin --> Post[External hook: freeze sources and post transfer]
+    Post --> Core[Independent mean / physical BC / core work]
+    Core --> Join[CompleteInputs: join and agree success]
+    Join --> Ready[TraceContext: published source identity]
+    Ready --> Dep[Dependent work]
+    Dep --> End[EndIteration]
+    Post --> Failure[Failure: explicit Discard drains transfers]
+    Join --> Failure
+```
+
+The owner constructs the schedule collectively on the coupling communication
+context with one agreed stage identity, time, refresh policy and check mode.
+Stage metadata agreement always runs at construction. Normal mode coordinates
+local method/hook failures before publication; caller-ordered mode omits
+per-iteration agreements and requires the caller to coordinate failures before
+peers enter dependent collectives. Hooks coordinate their own internal
+collective phases before throwing. Changing only one rank's stage, time,
+refresh policy or check mode rejects during setup.
+
+`PerStage` invokes begin/complete on iteration zero and reuses that packet through
+the remaining nonlinear iterations. `TraceContext()` keeps source iteration zero
+rather than relabelling cached data. `PerIteration` invokes the hooks for each
+frozen round. Both follow Begin/independent/Complete/dependent/End. Ordinals start
+at zero and are consecutive; invalid calls reject before another transfer posts.
+Trace access before completion or after failure rejects. No exchange occurs
+inside a linear or Krylov application.
+
+Hooks retain actual packet allocations, source versions, plans and active
+operations. The schedule owns logical context and publication state; an epoch
+alone cannot prove array bytes match it. Native transfer/lease facilities keep
+sources immutable during sends and prevent ghost reads during writes. Complete
+prepares incoming CPU data and is agreed before the context becomes usable.
+On failure/rejection call idempotent `Discard()` to drain operations; it permanently
+invalidates that schedule and does no numerical rollback. Destruction issues
+no implicit Discard; captured owners keep their ordinary cleanup behavior.
+Construct/call/destroy on an MPI-permitted controller thread and release final
+communication/transfer owners before MPI finalization.
+Retry creates a fresh schedule with a fresh trial identity.
+If the discard hook fails after partial cleanup, retain the owners and retry
+cleanup; successful discard becomes idempotent only after its agreement returns.
+
+Distributed mocks use canonical direct payload transfers from two domain roots,
+including shared/reversed and disjoint rank groups and empty source ranks. An
+independent two-variable recurrence checks both policies. Inline and worker
+engines exercise overlap and unsplit order. A gated live worker retains owned
+reads while the controller progresses real MPI requests; metadata remains
+unpublished until CompleteInputs. Setup mismatches and rank-local begin/complete
+failures reject; tests drain their requests and retry with a fresh identity.
+
+This is the C4 control facility, **not physical multi-domain fluid integration**.
+Domain still executes single-domain flow5. C5 must bind real packets to boundary
+operators, compose interface readiness with MPI-core sets, coordinate domains
+after local convergence, and implement stage/global acceptance and restart.
+CUDA/capture needs scheduled readiness; CPU completion here does not certify
+device stream completion.
+
 ## Steady BDF1 limit and physical endpoints
 
 `time.steady=true` uses the analytic infinite-timestep limit of BDF1. The

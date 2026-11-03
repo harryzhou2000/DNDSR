@@ -1,16 +1,12 @@
 #pragma once
 
 #include "Cauchy/Core/DomainPlacement.hpp"
+#include "Cauchy/Core/StateEpoch.hpp"
 #include <functional>
 #include <cmath>
 
 namespace DNDS::Cauchy
 {
-    struct StateEpoch
-    {
-        uint64_t acceptedStep = 0, trial = 0, stage = 0, couplingIteration = 0;
-        uint64_t geometry = 0, schema = 0;
-    };
     /// One physical clock for all fluid domains. A round consumes frozen traces
     /// and returns fresh candidates; iteration order does not implement block GS.
     /// Domain-local work must complete/coordinate its own collectives before
