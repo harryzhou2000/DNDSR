@@ -54,6 +54,13 @@ namespace DNDS::Cauchy
                 auto &settings = domain["settings"];
                 settings.erase("execution");
                 settings.erase("implicit");
+                if (settings.contains("motion") && settings["motion"].value("angularVelocity", Vector3{}) == Vector3{} &&
+                    settings["motion"].value("translationVelocity", Vector3{}) == Vector3{})
+                    settings.erase("motion"); // Old fixed-frame archives had no motion section.
+                if (settings.contains("boundaries") && settings["boundaries"].is_object())
+                    for (auto &condition : settings["boundaries"])
+                        if (condition.value("wallVelocityFrame", std::string("mesh")) == "mesh")
+                            condition.erase("wallVelocityFrame");
                 if (settings.contains("mesh") && settings["mesh"].is_object())
                     settings["mesh"].erase("file");
                 if (settings.contains("numerics") && settings["numerics"].is_object())
@@ -123,6 +130,44 @@ namespace DNDS::Cauchy
                 }
             }
             return config;
+        }
+        Json FrameMetadata(const FiniteVolume &fv, real time)
+        {
+            const auto frame = fv.Motion().At(time);
+            std::array<real, 9> rotation;
+            std::array<real, 3> translation;
+            std::copy_n(frame.pose.rotation.data(), 9, rotation.data());
+            std::copy_n(frame.pose.translation.data(), 3, translation.data());
+            return {{"convention", "absolute-velocity-and-energy-in-mesh-axes"}, {"law", fv.Motion().Settings()}, {"rotation_column_major", rotation}, {"translation", translation}};
+        }
+        bool CompatibleFrame(const Json &metadata, const FiniteVolume &fv, real time)
+        {
+            if (!metadata.is_object() || !metadata.contains("frame"))
+                return !fv.Motion().At(0).moving;
+            try
+            {
+                const auto expected = FrameMetadata(fv, time);
+                const auto &stored = metadata["frame"];
+                if (stored.at("convention") != expected["convention"] || stored.at("law") != expected["law"])
+                    return false;
+                for (const auto *name : {"rotation_column_major", "translation"})
+                {
+                    const auto &a = stored.at(name), &b = expected.at(name);
+                    if (!a.is_array() || a.size() != b.size())
+                        return false;
+                    for (index j = 0; j < index(a.size()); ++j)
+                    {
+                        const real x = a[j].get<real>(), y = b[j].get<real>();
+                        if (!std::isfinite(x) || std::abs(x - y) > 32 * std::numeric_limits<real>::epsilon() * std::max(real(1), std::abs(y)))
+                            return false;
+                    }
+                }
+                return true;
+            }
+            catch (const Json::exception &)
+            {
+                return false;
+            }
         }
         index StoredRows(const Serializer::SerializerBaseSSP &serializer, const std::string &name)
         {
@@ -324,7 +369,7 @@ namespace DNDS::Cauchy
         int flags[]{int(includeReconstruction), -int(includeReconstruction), int(history), -int(history), int(limitedVRHistory), -int(limitedVRHistory)};
         MPI_Allreduce(MPI_IN_PLACE, flags, 6, MPI_INT, MPI_MIN, mpi.comm);
         DNDS_check_throw_info(flags[0] == -flags[1] && flags[2] == -flags[3] && flags[4] == -flags[5], "checkpoint optional sections differ between ranks");
-        const Json metadata{{"schema_version", 1}, {"mesh_envelope", 2}, {"flow", FlowSchema(_equation)}, {"reconstruction", _fv.ReconstructionMetadata()}, {"time_method", _timeStepper ? _timeStepper->Method() : "ssprk3"}, {"history", history}, {"limited_vr_history", limitedVRHistory}, {"limited_vr_history_schema", 1}};
+        const Json metadata{{"schema_version", 1}, {"mesh_envelope", 2}, {"flow", FlowSchema(_equation)}, {"reconstruction", _fv.ReconstructionMetadata()}, {"time_method", _timeStepper ? _timeStepper->Method() : "ssprk3"}, {"history", history}, {"limited_vr_history", limitedVRHistory}, {"limited_vr_history_schema", 1}, {"frame", FrameMetadata(_fv, _time)}};
         auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
         serializer->OpenFile(path, false);
         serializer->WriteInt("cauchy_format", 4);
@@ -415,6 +460,7 @@ namespace DNDS::Cauchy
         int valid = name == _name && !storedConfig.is_discarded() && CompatibleConfig(storedConfig) == CompatibleConfig(resolved) && std::isfinite(time) && time >= 0 && step >= 0 &&
                     flow.RowCount() == ids.RowCount() && flow.Layout().Width() == 5;
         valid = valid && (version < 4 || (metadata.is_object() && metadata.value("schema_version", 0) == 1 && metadata.value("flow", Json()) == FlowSchema(_equation)));
+        valid = valid && CompatibleFrame(metadata, _fv, std::isfinite(time) ? time : 0);
         valid = valid && (!limitedVRHistory || (reconstruction && limitedVRHistory->RowCount() == ids.RowCount() &&
                                                 !limitedVRHistory->Layout().IsVariable() && limitedVRHistory->Layout().Width() == 2));
         valid = valid && (version < 4 || (metadata.is_object() && metadata.value("limited_vr_history", false) == bool(limitedVRHistory) &&

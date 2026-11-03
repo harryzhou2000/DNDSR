@@ -315,6 +315,38 @@ TEST_CASE("CGNS checkpoint remains physical across independently built MPI parti
     }
     Remove({path});
 }
+TEST_CASE("Rigid motion restart retains absolute-state convention and BDF history")
+{
+    const auto path = Path("cauchy-rigid-frame-");
+    const C::Json input{{"defaults", {{"motion", {{"angularVelocity", {0, 0, .2}}, {"center", {.4, .3, 0}}}}, {"numerics", {{"reconstruction", "constant"}}}}}, {"time", {{"method", "bdf2"}}}};
+    const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 3);
+    C::Domain source("flow", mesh, config.Domains()[0].settings, config.Time());
+    source.Advance(.001);
+    source.WriteCheckpoint(path, config.Root());
+    {
+        auto serializer = std::make_shared<DNDS::Serializer::SerializerH5>(mpi);
+        serializer->OpenFile(path, true);
+        std::string metadata;
+        serializer->ReadString("metadata_json", metadata);
+        const auto frame = C::Json::parse(metadata)["frame"];
+        CHECK(frame["convention"] == "absolute-velocity-and-energy-in-mesh-axes");
+        CHECK(frame["law"]["angularVelocity"][2] == .2);
+        CHECK(frame["rotation_column_major"].size() == 9);
+        serializer->CloseFile();
+    }
+    C::Domain restored("flow", mesh, config.Domains()[0].settings, config.Time());
+    restored.ReadCheckpoint(path, config.Root());
+    CHECK(restored.Time() == source.Time());
+    source.Advance(.002);
+    restored.Advance(.002);
+    const auto a = source.Flow().Owned().Read(), b = restored.Flow().Owned().Read();
+    const auto u = a.View<R::UniformTableRows>(), v = b.View<R::UniformTableRows>();
+    for (DNDS::index iCell = 0; iCell < u.RowCount(); ++iCell)
+        for (int j = 0; j < 5; ++j)
+            CHECK(u(iCell, j) == v(iCell, j));
+    Remove({path});
+}
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);

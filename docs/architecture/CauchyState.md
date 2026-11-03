@@ -70,6 +70,24 @@ incorrectly change the tile pitch. `view.Fixed<5>()` checks a static component
 width outside the kernel and returns statically shaped row spans. Plain views
 are trivially copyable and device-callable; they retain no ownership themselves.
 
+These are also the frozen-pointer device views: the host resolves names and
+leases, then passes block structs by value to a kernel. Their parent retains
+the physical layout kind, full width and pitch, plus each logical block's
+offset/width. A flow5 block can therefore be a segment of one21-component array
+or a separate five-component array with the same logical indexing. No shared
+pointer, string lookup or allocation occurs in device element access. For a
+future layout-specific GPU kernel, host dispatch must inspect both the physical
+layout and block-to-allocation mapping, then select the appropriate specialized
+view/kernel. It must preserve full parent tile pitch when freezing a segment.
+An allocation ID is host dispatch/lifetime metadata, not a device indexing input.
+
+`ReadOwned(context)`/`ReadWithGhost(context)`/`WriteOwned(context)` accept an
+explicit device context; `Complete(stream.Record())` can attach one enclosing
+stream prefix after the final launch. The device-callable view machinery is
+present, but EquationDofs currently has CPU mock/layout tests and no dedicated
+CUDA launch test. This is not a claim that Cauchy's physical CUDA wrappers or
+queued multi-stream scheduling integration are implemented.
+
 Each physical array is leased once even when several logical segments occupy
 it. If a later reservation fails, earlier unchanged reservations are cancelled.
 Holding a writer for one segment therefore reserves the entire physical owned

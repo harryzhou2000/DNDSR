@@ -110,11 +110,11 @@ namespace DNDS::Cauchy::Riemann
         }
         return flux;
     }
-    DNDS_DEVICE_CALLABLE inline real SignalSpeed(const AcousticState &input, const Vector3 &normal)
+    DNDS_DEVICE_CALLABLE inline real SignalSpeed(const AcousticState &input, const Vector3 &normal, const Vector3 &gridVelocity = {})
     {
         real speed = 0;
         for (int d = 0; d < 3; ++d)
-            speed += input.flow.conservative[1 + d] / input.flow.conservative[0] * normal[d];
+            speed += (input.flow.conservative[1 + d] / input.flow.conservative[0] - gridVelocity[d]) * normal[d];
         return std::abs(speed) + input.soundSpeed;
     }
     /// Face contribution to the legacy H-correction stencil. The sound speeds
@@ -130,10 +130,10 @@ namespace DNDS::Cauchy::Riemann
         // max(|du+da|, |du-da|, |da|) = |du|+|da|.
         return std::abs(jump) + std::abs(right.soundSpeed - left.soundSpeed);
     }
-    DNDS_DEVICE_CALLABLE inline FlowState Rusanov(const AcousticState &left, const AcousticState &right, const Vector3 &normal)
+    DNDS_DEVICE_CALLABLE inline FlowState Rusanov(const AcousticState &left, const AcousticState &right, const Vector3 &normal, const Vector3 &gridVelocity = {})
     {
-        const auto a = PhysicalFlux(left.flow, normal), b = PhysicalFlux(right.flow, normal);
-        const real speedLeft = SignalSpeed(left, normal), speedRight = SignalSpeed(right, normal);
+        const auto a = PhysicalFlux(left.flow, normal, gridVelocity), b = PhysicalFlux(right.flow, normal, gridVelocity);
+        const real speedLeft = SignalSpeed(left, normal, gridVelocity), speedRight = SignalSpeed(right, normal, gridVelocity);
         const real alpha = speedLeft > speedRight ? speedLeft : speedRight;
         FlowState result;
         for (int j = 0; j < 5; ++j)

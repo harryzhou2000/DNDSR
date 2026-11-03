@@ -6,10 +6,36 @@ namespace DNDS::Cauchy
 {
     namespace
     {
-        FlowState FarfieldValue(const PerfectGas &gas, const FlowState &inside, const FlowState &farfield, const Vector3 &normal)
+        Vector3 WallVelocity(const BoundaryCondition &condition, const Vector3 &point, const RigidFrame *frame)
+        {
+            if (!frame || !frame->moving)
+                return condition.velocity;
+            if (!condition.wallMovesWithMesh)
+                return frame->LocalVector(condition.velocity);
+            auto velocity = frame->GridVelocity(point);
+            for (int d = 0; d < 3; ++d)
+                velocity[d] += condition.velocity[d];
+            return velocity;
+        }
+        FlowState AnalyticValue(const BoundaryCondition &condition, const PerfectGas &gas, const Vector3 &point, real time, const RigidFrame *frame)
+        {
+            const auto value = ProfileValue(condition.profile, condition.prescribedPrimitive, gas, frame ? frame->WorldPoint(point) : point, time);
+            return frame ? frame->LocalState(value) : value;
+        }
+        real GridNormalSpeed(const Vector3 &normal, const Vector3 &point, const RigidFrame *frame)
+        {
+            if (!frame || !frame->moving)
+                return 0;
+            const auto velocity = frame->GridVelocity(point);
+            real speed = 0;
+            for (int d = 0; d < 3; ++d)
+                speed += velocity[d] * normal[d];
+            return speed;
+        }
+        FlowState FarfieldValue(const PerfectGas &gas, const FlowState &inside, const FlowState &farfield, const Vector3 &normal, real gridNormalSpeed)
         {
             const auto local = gas.Primitive(inside), far = gas.Primitive(farfield);
-            real normalSpeed = 0;
+            real normalSpeed = -gridNormalSpeed;
             for (int d = 0; d < 3; ++d)
                 normalSpeed += local.velocity[d] * normal[d];
             if (normalSpeed >= local.soundSpeed)
@@ -22,73 +48,75 @@ namespace DNDS::Cauchy
             return gas.Conservative({source.density, source.velocity[0], source.velocity[1], source.velocity[2], normalSpeed > 0 ? far.pressure : local.pressure});
         }
     }
-    FlowState BoundaryCondition::FaceValue(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point, real time) const
+    FlowState BoundaryCondition::FaceValue(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point, real time, const RigidFrame *frame) const
     {
         if (kind == BoundaryKind::Analytic)
-            return ProfileValue(profile, prescribedPrimitive, gas, point, time);
+            return AnalyticValue(*this, gas, point, time, frame);
         if (kind == BoundaryKind::DoubleMachBottom)
         {
             auto condition = *this;
-            condition.kind = point[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
-            return condition.FaceValue(gas, inside, normal, point, time);
+            condition.kind = (frame ? frame->WorldPoint(point) : point)[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
+            return condition.FaceValue(gas, inside, normal, point, time, frame);
         }
         if (kind == BoundaryKind::Farfield)
-            return FarfieldValue(gas, inside, farfield, normal);
+            return FarfieldValue(gas, inside, frame ? frame->LocalState(farfield) : farfield, normal, GridNormalSpeed(normal, point, frame));
         if (kind == BoundaryKind::Extrapolate)
             return inside;
         const auto p = gas.Primitive(inside);
+        const auto wallVelocity = WallVelocity(*this, point, frame);
         FlowState face{p.density, p.velocity[0], p.velocity[1], p.velocity[2], p.pressure};
         if (kind == BoundaryKind::SlipWall)
         {
             real speed = 0;
             for (int d = 0; d < 3; ++d)
-                speed += p.velocity[d] * normal[d];
+                speed += (p.velocity[d] - wallVelocity[d]) * normal[d];
             for (int d = 0; d < 3; ++d)
                 face[1 + d] -= speed * normal[d];
         }
         else
         {
             for (int d = 0; d < 3; ++d)
-                face[1 + d] = velocity[d];
+                face[1 + d] = wallVelocity[d];
             if (isothermal)
                 face[0] = p.pressure / (gas.gasConstant * temperature);
         }
         return gas.Conservative(face);
     }
-    FlowState BoundaryCondition::Exterior(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point, real time) const
+    FlowState BoundaryCondition::Exterior(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point, real time, const RigidFrame *frame) const
     {
         if (kind == BoundaryKind::Analytic)
-            return ProfileValue(profile, prescribedPrimitive, gas, point, time);
+            return AnalyticValue(*this, gas, point, time, frame);
         if (kind == BoundaryKind::DoubleMachBottom)
         {
             auto condition = *this;
-            condition.kind = point[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
-            return condition.Exterior(gas, inside, normal, point, time);
+            condition.kind = (frame ? frame->WorldPoint(point) : point)[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
+            return condition.Exterior(gas, inside, normal, point, time, frame);
         }
         if (kind == BoundaryKind::Farfield)
-            return FarfieldValue(gas, inside, farfield, normal);
+            return FarfieldValue(gas, inside, frame ? frame->LocalState(farfield) : farfield, normal, GridNormalSpeed(normal, point, frame));
         if (kind == BoundaryKind::Extrapolate)
             return inside;
         const auto p = gas.Primitive(inside);
+        const auto wallVelocity = WallVelocity(*this, point, frame);
         FlowState exterior{p.density, p.velocity[0], p.velocity[1], p.velocity[2], p.pressure};
         if (kind == BoundaryKind::SlipWall)
         {
             real speed = 0;
             for (int d = 0; d < 3; ++d)
-                speed += p.velocity[d] * normal[d];
+                speed += (p.velocity[d] - wallVelocity[d]) * normal[d];
             for (int d = 0; d < 3; ++d)
                 exterior[1 + d] -= 2 * speed * normal[d];
         }
         else
         {
             for (int d = 0; d < 3; ++d)
-                exterior[1 + d] = 2 * velocity[d] - p.velocity[d];
+                exterior[1 + d] = 2 * wallVelocity[d] - p.velocity[d];
             // Enforce T_wall through the viscous gradient, not an extrapolated
             // negative exterior temperature. Inviscid wall uses equal rho,p.
         }
         return gas.Conservative(exterior);
     }
-    std::array<real, 25> BoundaryCondition::ExteriorJacobian(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point, real time) const
+    std::array<real, 25> BoundaryCondition::ExteriorJacobian(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point, real time, const RigidFrame *frame) const
     {
         std::array<real, 25> result{};
         if (kind == BoundaryKind::Analytic)
@@ -96,17 +124,27 @@ namespace DNDS::Cauchy
         if (kind == BoundaryKind::DoubleMachBottom)
         {
             auto condition = *this;
-            condition.kind = point[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
-            return condition.ExteriorJacobian(gas, inside, normal, point, time);
+            condition.kind = (frame ? frame->WorldPoint(point) : point)[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
+            return condition.ExteriorJacobian(gas, inside, normal, point, time, frame);
         }
         for (int j = 0; j < 5; ++j)
             result[j * 5 + j] = 1;
         if (kind == BoundaryKind::Extrapolate)
             return result;
+        const auto wallVelocity = WallVelocity(*this, point, frame);
         if (kind == BoundaryKind::SlipWall)
         {
-            // Orthogonal momentum reflection preserves kinetic and total
-            // energy. The pressure recovery cancels in this conservative map.
+            // Reflection about the moving wall's normal velocity. Absolute
+            // total energy changes only by the reflected kinetic energy.
+            real wallNormal = 0;
+            for (int d = 0; d < 3; ++d)
+                wallNormal += wallVelocity[d] * normal[d];
+            result[4] += 2 * wallNormal * wallNormal;
+            for (int d = 0; d < 3; ++d)
+            {
+                result[1 + d] += 2 * wallNormal * normal[d];
+                result[(1 + d) * 5 + 4] -= 2 * wallNormal * normal[d];
+            }
             for (int column = 0; column < 3; ++column)
                 for (int row = 0; row < 3; ++row)
                     result[(1 + column) * 5 + 1 + row] -= 2 * normal[row] * normal[column];
@@ -118,16 +156,16 @@ namespace DNDS::Cauchy
             // Wall temperature belongs to the viscous face law, not Exterior.
             for (int d = 0; d < 3; ++d)
             {
-                result[1 + d] = 2 * velocity[d];
+                result[1 + d] = 2 * wallVelocity[d];
                 result[(1 + d) * 5 + 1 + d] = -1;
-                result[4] += 2 * velocity[d] * velocity[d];
-                result[(1 + d) * 5 + 4] = -2 * velocity[d];
+                result[4] += 2 * wallVelocity[d] * wallVelocity[d];
+                result[(1 + d) * 5 + 4] = -2 * wallVelocity[d];
             }
             return result;
         }
         DNDS_check_throw_info(kind == BoundaryKind::Farfield, "boundary Jacobian requires a resolved physical condition");
         const auto local = gas.Primitive(inside);
-        real normalSpeed = 0, speedSquared = 0;
+        real normalSpeed = -GridNormalSpeed(normal, point, frame), speedSquared = 0;
         for (int d = 0; d < 3; ++d)
         {
             normalSpeed += local.velocity[d] * normal[d];
@@ -179,6 +217,8 @@ namespace DNDS::Cauchy
             condition.prescribedPrimitive = source.primitive;
             condition.profile = source.profile;
             condition.velocity = source.velocity;
+            DNDS_check_throw_info(source.wallVelocityFrame == "mesh" || source.wallVelocityFrame == "ground", "unknown wall velocity frame");
+            condition.wallMovesWithMesh = source.wallVelocityFrame == "mesh";
             condition.temperature = source.temperature;
             condition.isothermal = source.thermal == "isothermal";
             _conditions.emplace(std::stoi(zone), condition);

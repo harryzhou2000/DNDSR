@@ -4,6 +4,7 @@
 #include "CFV/Math/LimitedVR.hpp"
 #include "Cauchy/Core/DomainPlacement.hpp"
 #include "Cauchy/Riemann/RiemannFlux.hpp"
+#include "Cauchy/Motion/RigidMotion.hpp"
 #include <map>
 
 namespace DNDS::Cauchy
@@ -138,6 +139,7 @@ namespace DNDS::Cauchy
     struct BoundarySettings
     {
         std::string kind = "extrapolate", thermal = "adiabatic";
+        std::string wallVelocityFrame = "mesh";
         std::array<real, 5> primitive{1, 0, 0, 0, 1};
         std::array<real, 3> velocity{0, 0, 0};
         real temperature = 1;
@@ -146,8 +148,9 @@ namespace DNDS::Cauchy
         {
             DNDS_FIELD(kind, "extrapolate, farfield, slipWall, noSlipWall, analytic, or doubleMachBottom");
             DNDS_FIELD(thermal, "Wall thermal law: adiabatic or isothermal");
+            DNDS_FIELD(wallVelocityFrame, "mesh: velocity relative to moving wall; ground: prescribed absolute ground velocity");
             DNDS_FIELD(primitive, "Farfield rho,u,v,w,p; three velocities on any geometry");
-            DNDS_FIELD(velocity, "Prescribed stationary-boundary wall velocity");
+            DNDS_FIELD(velocity, "Prescribed wall velocity in wallVelocityFrame; farfield/analytic data always use ground axes");
             DNDS_FIELD(temperature, "Positive isothermal wall temperature");
             config.field_section(&T::profile, "profile", "Space/time input for analytic boundary values");
         }
@@ -272,6 +275,7 @@ namespace DNDS::Cauchy
         EquationSettings equation;
         ExecutionSettings execution;
         MeshSettings mesh;
+        RigidMotionSettings motion;
         NumericsSettings numerics;
         ImplicitSettings implicit;
         std::array<real, 5> initialPrimitive{1, 0, 0, 0, 1};
@@ -282,6 +286,7 @@ namespace DNDS::Cauchy
             config.field_section(&T::equation, "equation", "Equation and constitutive laws");
             config.field_section(&T::execution, "execution", "Explicit execution capabilities");
             config.field_section(&T::mesh, "mesh", "Mesh input");
+            config.field_section(&T::motion, "motion", "Prescribed rigid frame and mesh velocity; absolute flow state in mesh axes");
             config.field_section(&T::numerics, "numerics", "Discrete operators");
             config.field_section(&T::implicit, "implicit", "Nonlinear CPU implicit stage controls");
             DNDS_FIELD(initialPrimitive, "Constant initial rho,u,v,w,p");

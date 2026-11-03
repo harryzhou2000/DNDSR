@@ -70,11 +70,12 @@ namespace DNDS::Cauchy
         std::optional<R::Array<real>::WriteLease> scratchWrite;
         R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows> scratch;
         real time;
+        RigidFrame frame;
         int phase = 0;
         bool started = false;
 
         State(std::shared_ptr<const FiniteVolume::Data> owner, const CFV::FVField &input, const AuxiliaryValues &output, real atTime)
-            : data(std::move(owner)), source(input), buffers(output), geometry(data->metrics.AcquireRead()), time(atTime)
+            : data(std::move(owner)), source(input), buffers(output), geometry(data->metrics.AcquireRead()), time(atTime), frame(data->motion.At(atTime))
         {
             data->partition.Validate();
             owned.emplace(source.Owned().Read());
@@ -179,13 +180,15 @@ namespace DNDS::Cauchy
                 {
                     const auto &sample = data->samples[first + q];
                     const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
-                    const auto right = sample.other == UnInitIndex ? sample.boundary.Exterior(gas, left, normal, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time)
+                    const Vector3 point{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]};
+                    const auto gridVelocity = frame.GridVelocity(point);
+                    const auto right = sample.other == UnInitIndex ? sample.boundary.Exterior(gas, left, normal, point, time, &frame)
                                                                    : RotateState(Load(mean, sample.other), sample.rotation);
                     const auto rightData = sample.other == UnInitIndex ? equation.PrepareFluxState(right) : prepared(sample.other, right);
                     DNDS_check_throw_info(rightData.flow.pressure > 0 && std::isfinite(rightData.soundSpeed), "invalid boundary mean in auxiliary preparation");
                     if (spectral)
                     {
-                        convection = std::max({convection, Riemann::SignalSpeed(leftData, normal), Riemann::SignalSpeed(rightData, normal)});
+                        convection = std::max({convection, Riemann::SignalSpeed(leftData, normal, gridVelocity), Riemann::SignalSpeed(rightData, normal, gridVelocity)});
                         const real scaleL = derived ? (*derived)(sample.cell, 2) : writes[0] ? values[0](sample.cell, 2)
                                                                                              : equation.DiffusionScale(left);
                         const real scaleR = sample.other != UnInitIndex && derived ? (*derived)(sample.other, 2) : sample.other != UnInitIndex && writes[0] ? values[0](sample.other, 2)
@@ -219,6 +222,8 @@ namespace DNDS::Cauchy
         {
             if (!writes[4] && !writes[5] && !writes[6])
                 return;
+            const auto metric = geometry.HostView();
+            const real rotationBound = Geom::tPoint{frame.angularVelocity[0], frame.angularVelocity[1], frame.angularVelocity[2]}.norm();
             for (const auto iCell : cells)
             {
                 real sum = 0, wave = 0, pressure = std::numeric_limits<real>::max();
@@ -233,7 +238,7 @@ namespace DNDS::Cauchy
                         pressure = std::min(pressure, writes[3] ? values[3](iAux, 0) : scratch(iAux, 2));
                 }
                 if (writes[4])
-                    values[4](iCell, 0) = sum;
+                    values[4](iCell, 0) = sum + metric.GetCellVol(iCell) * rotationBound;
                 if (writes[5])
                     values[5](iCell, 0) = wave;
                 if (writes[6])

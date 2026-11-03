@@ -46,6 +46,7 @@ namespace DNDS::Cauchy
         ssp<Geom::UnstructuredMesh> mesh;
         DomainSettings settings;
         EquationSystem equation;
+        RigidMotion motion;
         Riemann::RiemannFlux flux;
         BoundarySystem boundary;
         CFV::FiniteVolumePlan metrics;
@@ -65,7 +66,7 @@ namespace DNDS::Cauchy
         std::vector<index> positivityOffsets;
         ThermalBounds thermalBounds;
         Data(ssp<Geom::UnstructuredMesh> source, DomainSettings controls, EquationSystem physics)
-            : mesh(std::move(source)), settings(std::move(controls)), equation(std::move(physics)), flux(Riemann::RiemannFlux::Resolve(settings.numerics.flux)),
+            : mesh(std::move(source)), settings(std::move(controls)), equation(std::move(physics)), motion(settings.motion, settings.mesh.dimension), flux(Riemann::RiemannFlux::Resolve(settings.numerics.flux)),
               boundary(settings.boundaries, equation.Gas()), metrics(CFV::FiniteVolumePlan::ConstructMetrics(mesh, settings.numerics.cfv.intOrder)),
               reconstruction(CFV::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings.numerics.cfv)),
               gradient(CFV::GradientPlan::Prepare(*mesh, metrics, settings.numerics.gradient == "greenGauss" ? CFV::GradientMethod::GreenGauss : settings.numerics.gradient == "ggmp" ? CFV::GradientMethod::GGMP

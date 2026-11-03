@@ -78,9 +78,15 @@ namespace DNDS::Cauchy
         }
         /// Model-owned physical flux derivative for approximate implicit
         /// operators. Numerical dissipation and time/mass scaling are separate.
-        std::array<real, 25> PrepareFluxJacobian(const FlowState &state, const Vector3 &normal) const
+        std::array<real, 25> PrepareFluxJacobian(const FlowState &state, const Vector3 &normal, const Vector3 &gridVelocity = {}) const
         {
-            return _gas.FluxJacobian(state, normal);
+            auto jacobian = _gas.FluxJacobian(state, normal);
+            real normalSpeed = 0;
+            for (int d = 0; d < 3; ++d)
+                normalSpeed += gridVelocity[d] * normal[d];
+            for (int j = 0; j < 5; ++j)
+                jacobian[j + 5 * j] -= normalSpeed;
+            return jacobian;
         }
         /// Maximum molecular momentum/thermal diffusivity for the initial
         /// Newtonian/Fourier profile. Other transport models supply this bound.

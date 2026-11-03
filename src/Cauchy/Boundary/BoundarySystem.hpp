@@ -25,20 +25,21 @@ namespace DNDS::Cauchy
         Vector3 velocity{};
         real temperature = 1;
         bool isothermal = false;
+        bool wallMovesWithMesh = true;
         FlowProfileSettings profile;
         FlowState prescribedPrimitive{};
         /// Physical face value for reconstruction/gradient input. Wall normal
         /// is outward from the interior parent. Extrapolation leaves U unchanged.
-        FlowState FaceValue(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0) const;
+        FlowState FaceValue(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0, const RigidFrame *frame = nullptr) const;
         /// Riemann exterior state. Wall velocity is prescribed; this initial
-        /// fixed-grid implementation does not imply ALE geometric conservation.
-        FlowState Exterior(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0) const;
+        /// rigid-frame implementation does not imply deforming ALE support.
+        FlowState Exterior(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0, const RigidFrame *frame = nullptr) const;
         /// Column-major derivative of Exterior with respect to its conservative
         /// interior state, with branch, normal, prescribed data and time frozen.
         /// The derivative is one-sided at characteristic/DMR branch switches;
         /// callers linearize a selected physical state, not the switch itself.
         /// This model-owned BC derivative is separate from Riemann dissipation.
-        std::array<real, 25> ExteriorJacobian(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0) const;
+        std::array<real, 25> ExteriorJacobian(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0, const RigidFrame *frame = nullptr) const;
     };
     class BoundarySystem
     {

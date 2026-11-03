@@ -348,6 +348,7 @@ namespace DNDS::Cauchy
     }
     const CFV::FiniteVolumePlan &FiniteVolume::Metrics() const { return _data->metrics; }
     const Geom::UnstructuredMesh &FiniteVolume::Mesh() const { return *_data->mesh; }
+    const RigidMotion &FiniteVolume::Motion() const { return _data->motion; }
     CFV::FVField &FiniteVolume::RequireState(EquationDofs &state) const
     {
         _data->equation.ValidateStateSchema(state);
@@ -687,6 +688,7 @@ namespace DNDS::Cauchy
         const auto mesh = meshRead.HostView();
         const auto &gas = _data->equation.Gas();
         const bool overlap = _data->settings.execution.overlap;
+        const auto frame = _data->motion.At(time);
         auto exchange = [&](R::TransferBinding &binding)
         {
             auto operation = engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream.Context());
@@ -714,7 +716,7 @@ namespace DNDS::Cauchy
                 {
                     const auto q = plan.GetBoundaryQuadrature(iPoint);
                     const auto &condition = _data->boundary.At(mesh.GetFaceZone(q.face));
-                    const auto face = condition.FaceValue(gas, Load(values, q.cell), {q.normal[0], q.normal[1], q.normal[2]}, {q.point[0], q.point[1], q.point[2]}, time);
+                    const auto face = condition.FaceValue(gas, Load(values, q.cell), {q.normal[0], q.normal[1], q.normal[2]}, {q.point[0], q.point[1], q.point[2]}, time, &frame);
                     for (int j = 0; j < 5; ++j)
                         target(iPoint, j) = face[j];
                 }
@@ -743,7 +745,7 @@ namespace DNDS::Cauchy
                 if (!gas.Admissible(inside))
                     inside = Load(u, sample.cell);
                 const auto face = sample.boundary.FaceValue(gas, inside, {sample.normal[0], sample.normal[1], sample.normal[2]},
-                                                            {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time);
+                                                            {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time, &frame);
                 for (int j = 0; j < 5; ++j)
                     values(iPoint, j) = face[j];
             }
@@ -783,7 +785,7 @@ namespace DNDS::Cauchy
                 for (index iPoint = 0; iPoint < _data->gradient.NumBoundaryQuadrature(); ++iPoint)
                 {
                     const auto point = _data->gradient.GetBoundaryQuadrature(iPoint);
-                    const auto value = gas.Primitive(_data->boundary.At(mesh.GetFaceZone(point.face)).FaceValue(gas, Load(values, point.cell), {point.normal[0], point.normal[1], point.normal[2]}, {point.point[0], point.point[1], point.point[2]}, time));
+                    const auto value = gas.Primitive(_data->boundary.At(mesh.GetFaceZone(point.face)).FaceValue(gas, Load(values, point.cell), {point.normal[0], point.normal[1], point.normal[2]}, {point.point[0], point.point[1], point.point[2]}, time, &frame));
                     const FlowState primitive{value.density, value.velocity[0], value.velocity[1], value.velocity[2], value.temperature};
                     for (int j = 0; j < 5; ++j)
                         target(iPoint, j) = primitive[j];
@@ -1074,10 +1076,10 @@ namespace DNDS::Cauchy
     {
         template <class MeshView>
         FlowState CellAverage(const MeshView &mesh, index iCell, const FlowProfileSettings &profile,
-                              const FlowState &primitive, const PerfectGas &gas, real time)
+                              const FlowState &primitive, const PerfectGas &gas, real time, const RigidFrame &frame)
         {
             if (profile.kind == "constant")
-                return gas.Conservative(primitive);
+                return frame.LocalState(gas.Conservative(primitive));
             Geom::tSmallCoords coords;
             mesh.GetCoordsOnCell(iCell, coords);
             const auto element = mesh.GetCellElement(iCell);
@@ -1090,7 +1092,7 @@ namespace DNDS::Cauchy
                 const auto &shape = Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(order).at(iQ);
                 const Geom::tPoint point = Geom::Elem::PPhysicsCoordD01Nj(coords, shape);
                 const real weight = Geom::Elem::CellJacobianDet(mesh.Dimension(), coords, shape) * quadrature.GetWeight(iQ);
-                const auto value = ProfileValue(profile, primitive, gas, {point[0], point[1], point[2]}, time);
+                const auto value = frame.LocalState(ProfileValue(profile, primitive, gas, frame.WorldPoint({point[0], point[1], point[2]}), time));
                 for (int j = 0; j < 5; ++j)
                     average[j] += weight * value[j];
                 volume += weight;
@@ -1109,9 +1111,10 @@ namespace DNDS::Cauchy
             const auto mesh = meshRead.HostView();
             auto write = state.Owned().Write();
             auto values = write.View<R::UniformTableRows>();
+            const auto frame = _data->motion.At(0);
             for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
             {
-                const auto average = CellAverage(mesh, iCell, profile, primitive, _data->equation.Gas(), 0);
+                const auto average = CellAverage(mesh, iCell, profile, primitive, _data->equation.Gas(), 0, frame);
                 for (int j = 0; j < 5; ++j) values(iCell, j) = average[j];
             } });
     }
@@ -1126,9 +1129,10 @@ namespace DNDS::Cauchy
             auto geometry = Metrics().AcquireRead();
             const auto metric = geometry.HostView();
             auto read = state.Owned().Read(); const auto values = read.View<R::UniformTableRows>();
+            const auto frame = _data->motion.At(time);
             for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
             {
-                const auto exact = CellAverage(mesh, iCell, profile, primitive, _data->equation.Gas(), time);
+                const auto exact = CellAverage(mesh, iCell, profile, primitive, _data->equation.Gas(), time, frame);
                 const real weight = metric.GetCellVol(iCell); volume += weight;
                 for (int j = 0; j < 5; ++j)
                 {
@@ -1326,6 +1330,7 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::WriteVisualization(const CFV::FVField &state, const Workspace &work, const std::string &prefix, real time, int hdfDeflateLevel) const
     {
+        const auto frame = _data->motion.At(time);
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
                         { DNDS_check_throw_info(hdfDeflateLevel >= 0 && hdfDeflateLevel <= 9, "VTKHDF compression level must be in [0,9]"); });
         auto outputSettings = _data->mesh->hdf5OutSetting;
@@ -1364,7 +1369,7 @@ namespace DNDS::Cauchy
                     value[j] += coefficient(sample.cell, j * modes + mode) * b(0, mode);
                 if (!gas.Admissible(value)) value = Load(u, sample.cell);
                 const auto physical = gas.Primitive(sample.boundary.FaceValue(gas, value, {sample.normal[0], sample.normal[1], sample.normal[2]},
-                    {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time));
+                    {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time, &frame));
                 surface << Mesh().OriginalEntityId(Geom::EntityKind::Cell, sample.cell) << ',' << sample.zone;
                 for (int d = 0; d < 3; ++d) surface << ',' << sample.ownPoint[d];
                 for (int d = 0; d < 3; ++d) surface << ',' << sample.normal[d];

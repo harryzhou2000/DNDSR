@@ -3,6 +3,7 @@
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/Simulation.hpp"
 #include "CartesianFixture.hpp"
+#include "../CFV/ReconstructionFixture.hpp"
 #include <optional>
 
 namespace C = DNDS::Cauchy;
@@ -289,6 +290,42 @@ TEST_CASE("DITR coupled cap advances by default and rejects only with explicit c
         CHECK(domain.Time() == doctest::Approx(.01));
         CHECK(domain.Epoch().acceptedStep == 1);
         CHECK(domain.Discretization().Admissible(domain.Flow()));
+    }
+}
+TEST_CASE("Rotating physical domains retain a uniform inertial flow with explicit and implicit stage times")
+{
+    const auto mesh = CFVTest::CartesianHexes(mpi, 3);
+    for (const std::string method : {"ssprk3", "esdirk4"})
+    {
+        C::DomainSettings settings;
+        settings.mesh.dimension = 3;
+        settings.motion.angularVelocity = {.1, -.2, .3};
+        settings.motion.translationVelocity = {.02, -.01, .03};
+        settings.motion.center = {.3, .4, .5};
+        settings.initialPrimitive = {1.2, .3, -.2, .1, 1.1};
+        settings.boundaries["7"].kind = "analytic";
+        settings.boundaries["7"].primitive = settings.initialPrimitive;
+        settings.numerics.reconstruction = "constant";
+        settings.numerics.cfv.maxOrder = 1;
+        settings.implicit.diagonal = "block";
+        settings.implicit.roeDissipation = true;
+        settings.implicit.absoluteTolerance = 1e-12;
+        settings.implicit.relativeTolerance = 1e-10;
+        C::TimeSettings time;
+        time.method = method;
+        C::Domain domain("rotating", mesh, settings, time);
+        const auto world = domain.Equation().Gas().Conservative(settings.initialPrimitive);
+        for (int step = 0; step < 4; ++step)
+            domain.Advance(.001);
+        const auto frame = domain.Discretization().Motion().At(domain.Time());
+        const auto exact = frame.LocalState(world);
+        const auto read = domain.Flow().Owned().Read();
+        const auto values = read.View<R::UniformTableRows>();
+        for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+                CHECK(values(iCell, j) == doctest::Approx(exact[j]).epsilon(2e-9).scale(1));
+        for (const auto &stage : domain.LastImplicitStages())
+            CHECK(stage.converged);
     }
 }
 int main(int argc, char **argv)

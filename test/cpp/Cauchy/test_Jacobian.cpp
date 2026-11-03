@@ -20,7 +20,14 @@ TEST_CASE("Integrated approximate Jacobian matches frozen-spectral flux differen
         settings.numerics.reconstruction = "constant";
         settings.numerics.cfv.maxOrder = 1;
         if (!periodic)
+        {
             settings.boundaries["7"].kind = "slipWall";
+            settings.motion.angularVelocity = {.2, -.1, .3};
+            settings.motion.translationVelocity = {.07, -.03, .02};
+            settings.motion.center = {.3, -.2, .1};
+        }
+        const double time = .4;
+        const auto frame = C::RigidMotion(settings.motion, settings.mesh.dimension).At(time);
         const auto equation = C::EquationSystem::Resolve(settings.equation);
         C::BoundarySystem boundaries(settings.boundaries, equation.Gas());
         C::FiniteVolume fv(mesh, settings, equation);
@@ -50,7 +57,7 @@ TEST_CASE("Integrated approximate Jacobian matches frozen-spectral flux differen
         if (periodic)
             request.derived = {C::DerivedQuantity::Temperature, C::DerivedQuantity::MolecularViscosity};
         auto auxiliary = fv.BuildAuxiliaryValues(request);
-        fv.PrepareAuxValues(state, auxiliary);
+        fv.PrepareAuxValues(state, auxiliary, time);
         const auto stateVersion = state.Owned().Version();
         for (auto diagonal : {C::DiagonalStorage::Entries, C::DiagonalStorage::Block})
             for (auto mode : {C::OffDiagonalStorage::Assembled, C::OffDiagonalStorage::SemiMatrixFree})
@@ -64,7 +71,7 @@ TEST_CASE("Integrated approximate Jacobian matches frozen-spectral flux differen
                 controls.physicalMass = 3;
                 controls.residualScale = .7;
                 controls.roeDissipation = !periodic;
-                fv.PrepareJacobian(state, auxiliary, inverseTau, *problem, controls);
+                fv.PrepareJacobian(state, auxiliary, inverseTau, *problem, controls, time);
                 problem->InvertDiagonal();
                 problem->Apply(delta, action);
                 auto geometry = fv.Metrics().AcquireRead();
@@ -86,8 +93,10 @@ TEST_CASE("Integrated approximate Jacobian matches frozen-spectral flux differen
                 };
                 const auto residual = [&](DNDS::index iCell, double h)
                 {
-                    C::FlowState value{};
                     const auto left = perturbed(iCell, h);
+                    auto value = frame.RotationSource(left);
+                    for (auto &component : value)
+                        component *= metric.GetCellVol(iCell);
                     const auto faces = topology.CellFaces(iCell);
                     for (DNDS::rowsize slot = 0; slot < DNDS::rowsize(faces.size()); ++slot)
                     {
@@ -95,7 +104,6 @@ TEST_CASE("Integrated approximate Jacobian matches frozen-spectral flux differen
                         const auto found = std::lower_bound(fv.AuxiliaryFaces().begin(), fv.AuxiliaryFaces().end(), iFace);
                         REQUIRE(found != fv.AuxiliaryFaces().end());
                         const auto iAux = found - fv.AuxiliaryFaces().begin();
-                        const double lambda = radius(iAux, 0) + radius(iAux, 1);
                         const auto other = topology.CellFaceOther(iCell, iFace, slot);
                         const int sign = topology.CellIsFaceBack(iCell, iFace, slot) ? 1 : -1;
                         for (DNDS::index q = metric.FaceQuadratureBegin(iFace); q < metric.FaceQuadratureEnd(iFace); ++q)
@@ -103,9 +111,28 @@ TEST_CASE("Integrated approximate Jacobian matches frozen-spectral flux differen
                             const DNDS::Geom::tPoint normal = sign * metric.GetFaceNorm(q);
                             const C::Vector3 n{normal[0], normal[1], normal[2]};
                             const auto point = metric.GetFacePoint(q);
-                            const auto right = other == DNDS::UnInitIndex ? boundaries.At(topology.GetFaceZone(iFace)).Exterior(equation.Gas(), left, n, {point[0], point[1], point[2]}) : perturbed(other, h);
-                            const auto a = C::Riemann::PhysicalFlux(equation.PrepareFluxState(left).flow, n);
-                            const auto b = C::Riemann::PhysicalFlux(equation.PrepareFluxState(right).flow, n);
+                            const C::Vector3 location{point[0], point[1], point[2]};
+                            const auto gridVelocity = frame.GridVelocity(location);
+                            const auto right = other == DNDS::UnInitIndex ? boundaries.At(topology.GetFaceZone(iFace)).Exterior(equation.Gas(), left, n, location, time, &frame) : perturbed(other, h);
+                            double lambda = radius(iAux, 0) + radius(iAux, 1);
+                            if (controls.roeDissipation)
+                            {
+                                // Full-block Rusanov uses pointwise frozen
+                                // signals; the auxiliary radius is a face max.
+                                // Rotation makes w.n vary along one face.
+                                const auto baseLeft = perturbed(iCell, 0);
+                                const auto baseRight = other == DNDS::UnInitIndex ? boundaries.At(topology.GetFaceZone(iFace)).Exterior(equation.Gas(), baseLeft, n, location, time, &frame) : perturbed(other, 0);
+                                const auto signal = [&](const C::FlowState &u)
+                                {
+                                    double speed = 0;
+                                    for (int d = 0; d < 3; ++d)
+                                        speed += (u[1 + d] / u[0] - gridVelocity[d]) * n[d];
+                                    return std::abs(speed) + std::sqrt(equation.Gas().gamma * equation.Gas().Pressure(u) / u[0]);
+                                };
+                                lambda = std::max(signal(baseLeft), signal(baseRight)) + radius(iAux, 1);
+                            }
+                            const auto a = C::Riemann::PhysicalFlux(equation.PrepareFluxState(left).flow, n, gridVelocity);
+                            const auto b = C::Riemann::PhysicalFlux(equation.PrepareFluxState(right).flow, n, gridVelocity);
                             for (int j = 0; j < 5; ++j)
                                 value[j] -= .5 * metric.GetFaceWeight(q) * (a[j] + b[j] - lambda * (right[j] - left[j]));
                         }

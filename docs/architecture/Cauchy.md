@@ -36,6 +36,33 @@ declared order, including noncontiguous/reversed groups. Domain iterators use th
 domain communicator, and simulation acceptance uses control boundaries. Release
 the final placement/context owner on an MPI-permitted thread before finalization.
 
+`Motion/RigidMotion` prepares immutable stage-time poses and kinematics for
+prescribed constant angular/translation velocity. Geometry, quadrature and VR
+bases stay in reference coordinates. Stored velocity is absolute fluid velocity
+expressed in the moving Cartesian axes; total energy retains absolute kinetic
+energy. The ALE face flux receives the local grid velocity explicitly, including
+energy pressure work. The component-axis source is `-Omega cross momentum`,
+with zero energy source. Approximate flux Jacobians include `-w_n I`; full block
+diagonals include the negative rotation-source derivative. Scalar diagonal
+preconditioning uses an angular-speed norm bound because it cannot store that
+skew block. Cell time-step spectral sums include the same source norm bound.
+
+Farfield and analytic profile data use ground coordinates/velocity and rotate
+into the current domain axes. Characteristic inflow/outflow counts use relative
+normal speed. Walls default to `wallVelocityFrame="mesh"`: prescribed velocity
+is relative to the moving wall, in its reference axes. `"ground"` prescribes an
+absolute ground velocity. Slip reflection, no-slip reflection and their frozen
+BC Jacobians use the resulting wall velocity. Boundary values are prepared for
+the actual physical stage time. No centrifugal/double-Coriolis source or relative
+kinetic-energy offset belongs to this absolute-state convention.
+
+Restart metadata records this convention, the prescribed motion law and the
+pose at accepted time. A reader reconstructs the pose from that law/time and
+checks the stored pose to roundoff. Old archives without frame metadata remain
+valid only for a fixed frame. Default inactive motion/new wall-frame controls
+normalize away for existing fixed-grid configuration compatibility. These are
+rigid, constant-volume operations; deforming ALE/GCL is not implemented.
+
 `CoordinatedSchedule` is a scalar mock of the frozen-trace contract, not a fluid
 integrator. All domains read the same old trace snapshot for a round. Only each
 domain root publishes its candidate to the control communicator. Failure leaves

@@ -17,7 +17,7 @@ namespace DNDS::Cauchy
         struct Point
         {
             index other, auxiliary, sample;
-            Vector3 normal;
+            Vector3 normal, location;
             Eigen::Matrix3d rotation;
             real weight;
         };
@@ -30,6 +30,7 @@ namespace DNDS::Cauchy
         };
         std::shared_ptr<const Geometry> geometry;
         EquationSystem equation;
+        RigidFrame frame;
         std::vector<FlowState> means;
         std::vector<std::array<real, 2>> radius;
         std::vector<std::array<real, 3>> magnitudes;
@@ -37,8 +38,8 @@ namespace DNDS::Cauchy
         bool roe;
         bool selected = false;
         std::array<bool, 5> active{};
-        MatrixFreeJacobian(const FiniteVolume &fv, const LinearProblemContext &output, JacobianPreparation controls)
-            : equation(fv._data->equation), scale(controls.residualScale), roe(controls.roeDissipation)
+        MatrixFreeJacobian(const FiniteVolume &fv, const LinearProblemContext &output, JacobianPreparation controls, real time)
+            : equation(fv._data->equation), frame(fv._data->motion.At(time)), scale(controls.residualScale), roe(controls.roeDissipation)
         {
             const Algebra::ComponentSelection selection(5, controls.updateComponents);
             selected = !selection.All();
@@ -68,7 +69,7 @@ namespace DNDS::Cauchy
                             continue; // These contributions belong to the diagonal.
                         const auto slot = std::find(columns.begin(), columns.end(), sample.other);
                         DNDS_check_throw_info(slot != columns.end(), "evaluated Jacobian stencil is missing an adjacent cell");
-                        row[slot - columns.begin()].push_back({sample.other, sample.auxiliaryFace, entry, {sample.normal[0], sample.normal[1], sample.normal[2]}, sample.rotation, metric.GetFaceWeight(sample.point)});
+                        row[slot - columns.begin()].push_back({sample.other, sample.auxiliaryFace, entry, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, metric.GetFaceWeight(sample.point)});
                     }
                 }
                 geometry = std::move(prepared);
@@ -95,7 +96,7 @@ namespace DNDS::Cauchy
                     dissipation = Eigen::Map<const Matrix>(basis.inverse.data()) * lambda.asDiagonal() * Eigen::Map<const Matrix>(basis.forward.data());
                     dissipation.diagonal().array() += radius[point.auxiliary][1];
                 }
-                const auto derivative = equation.PrepareFluxJacobian(right, point.normal);
+                const auto derivative = equation.PrepareFluxJacobian(right, point.normal, frame.GridVelocity(point.location));
                 const Matrix other = (.5 * scale * point.weight) * (Eigen::Map<const Matrix>(derivative.data()) - dissipation);
                 Matrix rotation = Matrix::Identity();
                 rotation.block<3, 3>(1, 1) = point.rotation;
@@ -174,6 +175,9 @@ namespace DNDS::Cauchy
             }
         auto geometry = Metrics().AcquireRead();
         const auto metric = geometry.HostView();
+        const auto frame = _data->motion.At(time);
+        const auto sourceDerivative = frame.NegativeSourceJacobian();
+        const real rotationBound = Geom::tPoint{frame.angularVelocity[0], frame.angularVelocity[1], frame.angularVelocity[2]}.norm();
         const auto owned = state.Owned().Read(), ghost = state.Ghost().Read(), face = faceArray.Read(), pseudo = inversePseudoTime.Read();
         const RHSFieldView mean{owned.View<R::UniformTableRows>(), ghost.View<R::UniformTableRows>()};
         RHSAuxiliaryViews packet;
@@ -212,7 +216,7 @@ namespace DNDS::Cauchy
         std::shared_ptr<MatrixFreeJacobian> evaluated;
         if (!output.HasAssembledOffDiagonal())
         {
-            evaluated = std::make_shared<MatrixFreeJacobian>(*this, output, controls);
+            evaluated = std::make_shared<MatrixFreeJacobian>(*this, output, controls, time);
             evaluated->means.resize(state.Owned().RowCount() + state.Ghost().RowCount());
             for (index iCell = 0; iCell < index(evaluated->means.size()); ++iCell)
                 evaluated->means[iCell] = Load(mean, iCell);
@@ -245,6 +249,15 @@ namespace DNDS::Cauchy
             const real inverseStep = inverseTau(iCell, 0);
             DNDS_check_throw_info(std::isfinite(inverseStep) && inverseStep >= 0, "nonfinite or negative inverse pseudo-time");
             Matrix own = Matrix::Identity() * (metric.GetCellVol(iCell) * (inverseStep + controls.physicalMass));
+            if (frame.moving)
+            {
+                if (output.DiagonalMode() == DiagonalStorage::Block)
+                    own += (controls.residualScale * metric.GetCellVol(iCell)) * Eigen::Map<const Matrix>(sourceDerivative.data());
+                else
+                    // Scalar entries cannot represent the skew rotation block.
+                    // Retain an explicit norm bound as a preconditioning term.
+                    own.diagonal().array() += controls.residualScale * metric.GetCellVol(iCell) * rotationBound;
+            }
             if (blocks)
                 for (index j = 0; j < blocks->BlockNumber(iCell); ++j)
                     (*blocks)(iCell, j).setZero();
@@ -254,6 +267,7 @@ namespace DNDS::Cauchy
                 const auto &sample = _data->samples[entry];
                 const auto iAux = sample.auxiliaryFace;
                 const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]}, point{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]};
+                const auto gridVelocity = frame.GridVelocity(point);
                 const real convection = radius(iAux, 0), diffusion = radius(iAux, 1);
                 DNDS_check_throw_info(std::isfinite(convection) && convection >= 0 && std::isfinite(diffusion) && diffusion >= 0, "invalid face spectral radius in Jacobian");
                 const real factor = .5 * controls.residualScale * metric.GetFaceWeight(sample.point);
@@ -262,7 +276,7 @@ namespace DNDS::Cauchy
                     own.diagonal().array() += factor * (convection + diffusion);
                     continue; // Euler's scalar diagonal does not linearize BCs.
                 }
-                const auto right = sample.other == UnInitIndex ? sample.boundary.Exterior(_data->equation.Gas(), left, normal, point, time)
+                const auto right = sample.other == UnInitIndex ? sample.boundary.Exterior(_data->equation.Gas(), left, normal, point, time, &frame)
                                                                : RotateState(Load(mean, sample.other), sample.rotation);
                 Matrix dissipation = Matrix::Identity() * (convection + diffusion);
                 if (controls.roeDissipation)
@@ -271,7 +285,7 @@ namespace DNDS::Cauchy
                     DNDS_check_throw_info(!characteristic.componentwiseFallback, "Roe Jacobian requires a valid physical characteristic basis");
                     const auto leftData = prepared(iCell, left);
                     const auto rightData = sample.other == UnInitIndex ? _data->equation.PrepareFluxState(right) : prepared(sample.other, right);
-                    const auto model = _data->equation.PrepareRiemann(_data->flux, leftData, rightData, leftData, rightData, normal);
+                    const auto model = _data->equation.PrepareRiemann(_data->flux, leftData, rightData, leftData, rightData, normal, gridVelocity);
                     auto settings = _data->settings.numerics.riemann.KernelSettings();
                     if (packet.cellWaveJump)
                     {
@@ -287,7 +301,7 @@ namespace DNDS::Cauchy
                             minimum = std::min(minimum, (*packet.cellPressureMinimum)(sample.other, 0));
                         settings.pressureStencilMin = std::min(settings.pressureStencilMin, minimum);
                     }
-                    const auto signals = _data->flux.Evaluate(model.Input(leftData, rightData, normal), settings);
+                    const auto signals = _data->flux.Evaluate(model.Input(leftData, rightData, normal, gridVelocity), settings);
                     if (evaluated)
                         evaluated->magnitudes[entry] = {signals.contact, signals.acousticPlus, signals.acousticMinus};
                     Eigen::Matrix<real, 5, 1> magnitudes;
@@ -298,13 +312,13 @@ namespace DNDS::Cauchy
                 own += factor * dissipation;
                 if (evaluated && sample.other != UnInitIndex && sample.other != iCell)
                     continue; // Physical derivative is regenerated by the evaluator.
-                const auto derivative = _data->equation.PrepareFluxJacobian(right, normal);
+                const auto derivative = _data->equation.PrepareFluxJacobian(right, normal, gridVelocity);
                 Matrix other = factor * (Eigen::Map<const Matrix>(derivative.data()) - dissipation);
                 if (sample.other == UnInitIndex)
                 {
                     if (controls.roeDissipation)
                     {
-                        const auto boundary = sample.boundary.ExteriorJacobian(_data->equation.Gas(), left, normal, point, time);
+                        const auto boundary = sample.boundary.ExteriorJacobian(_data->equation.Gas(), left, normal, point, time, &frame);
                         own.noalias() += other * Eigen::Map<const Matrix>(boundary.data());
                     }
                 }

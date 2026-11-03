@@ -108,6 +108,7 @@ namespace DNDS::Cauchy
         {
             const auto &settings = domain.settings;
             settings.implicit.Validate();
+            settings.motion.Validate(settings.mesh.dimension);
             DNDS_check_throw_info(!settings.implicit.requireConvergedReconstruction || settings.numerics.reconstruction != "variational" || settings.numerics.reconstructionTolerance > 0,
                                   "strict implicit VR acceptance requires a positive reconstructionTolerance");
             DNDS_check_throw_info(!domain.placement.name.empty() && !domain.placement.ranks.empty(), "Cauchy domain needs a name and ranks");
@@ -166,7 +167,7 @@ namespace DNDS::Cauchy
                                           std::all_of(condition.velocity.begin(), condition.velocity.end(), [](real v)
                                                       { return std::isfinite(v); }),
                                       "invalid boundary state");
-                DNDS_check_throw_info(condition.kind == "noSlipWall" || (condition.thermal == "adiabatic" && condition.velocity == std::array<real, 3>{0, 0, 0}),
+                DNDS_check_throw_info(condition.kind == "noSlipWall" || (condition.thermal == "adiabatic" && (condition.kind == "slipWall" || condition.velocity == std::array<real, 3>{0, 0, 0})),
                                       "wall thermal/velocity parameters supplied to a non-wall condition");
             }
         }
@@ -269,6 +270,7 @@ namespace DNDS::Cauchy
             require(condition.kind == "extrapolate" || condition.kind == "farfield" || condition.kind == "slipWall" || condition.kind == "noSlipWall" || condition.kind == "analytic" || condition.kind == "doubleMachBottom", "BC zone " + zone + ": " + condition.kind);
             require(condition.kind != "doubleMachBottom" || condition.profile.kind == "doubleMachReflection", "DMR bottom requires its analytic shock profile");
             require(condition.thermal == "adiabatic" || condition.thermal == "isothermal", "thermal BC " + condition.thermal);
+            require(condition.wallVelocityFrame == "mesh" || condition.wallVelocityFrame == "ground", "wall velocity frame " + condition.wallVelocityFrame);
             require(condition.kind != "noSlipWall" || s.equation.transport == "NewtonianFourier", "no-slip wall needs viscous transport");
         }
         if (!missing.empty())
