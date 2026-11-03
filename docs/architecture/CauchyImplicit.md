@@ -15,9 +15,11 @@ behavior: its BDF2 driver takes only its first, BDF1 startup step at dt1e200.
 Configuration resolution forces `method=bdf1`, at most one outer solve, no
 physical final-time/CFL cap and no timestep-halving retries, recording each
 override's provenance. `dt` remains a required positive finite placeholder
-and is ignored by the steady equation. The nonlinear stage must actually
-converge before publication; reaching its correction cap rejects the candidate
-and leaves accepted means, time and history unchanged. A finite-dt BDF1
+and is ignored by the steady equation. By default the final finite admissible
+iterate is published even at the correction cap, retaining an unconverged
+report; this is an iterate, not a converged steady result. Explicit
+`implicit.rejectUnconvergedStages=true` rejects at the cap and leaves accepted
+means, time and history unchanged. A finite-dt BDF1
 transient with an outer residual stop is not this steady mode.
 
 `implicit.consoleInterval` enables rank-zero progress at selected nonlinear

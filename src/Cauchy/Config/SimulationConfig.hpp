@@ -301,8 +301,8 @@ namespace DNDS::Cauchy
         {
             DNDS_FIELD(fraction, "U2R2 intermediate time fraction; CPU positive-scale profile requires (0,2/3)");
             DNDS_FIELD(theta, "Positive H+theta*I intermediate-equation weight");
-            DNDS_FIELD(iterations, "Maximum coupled outer corrections; both original equations must converge");
-            DNDS_FIELD(minIterations, "Minimum coupled corrections before accepting both equations");
+            DNDS_FIELD(iterations, "Maximum coupled outer corrections; implicit.rejectUnconvergedStages selects rejection at the cap");
+            DNDS_FIELD(minIterations, "Minimum coupled corrections before early convergence of both original equations");
             DNDS_FIELD(relativeTolerance, "Per-component outer H/I norm target relative to each initial norm");
             DNDS_FIELD(absoluteTolerance, "Per-component absolute outer H/I norm target");
         }

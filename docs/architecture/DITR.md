@@ -40,7 +40,10 @@ Caller serializes access, agrees controls/callback order on all participating
 ranks, retains callback resources and coordinates local errors before MPI.
 Callbacks complete synchronously and must not retain temporary raw views.
 Prepare changes only trial/scratch. False means cap/failed-stage rejection and
-the object can be reused with a fresh trial. An exception can leave partial
+the object can be reused with a fresh trial. Generic `DITRSettings` defaults to
+rejecting an outer cap; with `rejectUnconverged=false`, true can instead mean
+an accepted final unconverged iterate. `LastReport().converged` remains false
+in that case. An exception can leave partial
 scratch and marks this component failed; restore the physical trial and rebuild
 the component before retry. It neither advances clocks nor commits accepted
 history. Native GPU execution is explicitly rejected until kernels/adapters
@@ -70,7 +73,8 @@ pointers. Factory callbacks and their retained resources outlive all stage uses.
 Cauchy supplies separate intermediate means, polynomial guess, auxiliary,
 gradient, matrix, linear and optional pMG workspaces, sharing immutable FV
 geometry. Rate scratch may be reused sequentially; the three semidiscrete rate
-fields retained by DITR are distinct. The intermediate polynomial cold-starts
+fields retained by DITR are distinct. The intermediate polynomial and retained
+LVR gates cold-start
 at each physical trial, including retry. Fine polynomial/history rollback uses
 the existing Domain transaction. Thus a compatible reconstruction checkpoint
 needs no additional persistent intermediate polynomial dataset.
@@ -81,12 +85,16 @@ absolute tolerances. The initial Cauchy stage-solver profile requires
 fractions fail during configuration. The generic mathematical component allows
 other fractions for stage solvers supporting signed scales. Inner nonlinear
 tolerances remain under `implicit`: choose them tighter than the requested
-outer H/I accuracy. Their convergence alone never accepts the physical step.
+outer H/I accuracy. Their convergence alone never proves outer convergence.
 
 Cauchy tests both original H/I equations with per-component volume-weighted
 norms and a collective decision. Outer tolerances default to1e-8/1e-10; the
 initial inner defaults are1e-8/1e-11. Users requesting substantially tighter
 outer targets should also tighten inner tolerances; an unresolved residual
-floor reaches the cap and rejects the trial. Counters and CSV columns separate
+floor reaches the cap. Cauchy defaults to advancing the final finite admissible
+iterate, retaining the unmet target ratio. Explicit
+`implicit.rejectUnconvergedStages=true` rejects the whole physical trial on
+inner/FAS or outer caps. Nonfinite values and inadmissible states still fail.
+Counters and CSV columns separate
 coupled outer iterations/target ratio from inner stage solves/target ratios.
 The latter count actual solve calls, not distinct physical stage identities.
