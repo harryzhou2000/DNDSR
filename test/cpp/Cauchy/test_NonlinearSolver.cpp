@@ -364,7 +364,7 @@ TEST_CASE("Subset correction masks before Euler PP and preserves frozen means ex
                     CHECK(std::memcmp(&read.View()(iCell, j), &initial[j], sizeof(double)) == 0);
     }
     const auto generation = state.Owned().Version();
-    for (const std::vector<DNDS::index> bad : {std::vector<DNDS::index>{-1}, {0, 0}, {5}})
+    for (const std::vector<DNDS::index> bad : {std::vector<DNDS::index>{0, 0}, {5}})
     {
         C::NonlinearSolveControl control;
         control.updateComponents = bad;

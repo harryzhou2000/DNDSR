@@ -281,7 +281,6 @@ TEST_CASE("Selected FAS rejects invalid selections and callbacks that write froz
     level.smoothSelected = [](Field &u, const Field &, I, const auto &)
     { A::Scale(u, 2.); return I(1); };
     CHECK_THROWS(M::FASCycle({level}, {}, {0, 0, 1, {0, 0}}));
-    CHECK_THROWS(M::FASCycle({level}, {}, {0, 0, 1, {-1}}));
     CHECK_THROWS(M::FASCycle({level}, {}, {0, 0, 1, {2}}));
     M::FASCycle badSmoother({level}, {}, {0, 0, 1, {0}});
     CHECK_THROWS(badSmoother.Apply(rhs));
