@@ -682,3 +682,46 @@ complementary periodic tags (-1/-4, -2/-5), while coordinates matched exactly.
 A permanent CGNS repartition test was proven failing before this correction.
 It now passes at np1/2/4/8. The actual old format3 archive also loads and takes
 its next ESDIRK4 step after repartition, preserving loaded means and diagnostics.
+
+## Frozen-state phase benchmark
+
+Build the opt-in `cauchy_benchmark_implicit` target with tests enabled. It uses
+the public DNDS/Geom/CFV/Cauchy facilities on a unit-square CGNS mesh, including
+ordinary physical boundary labels (mapped to farfield) or unit-periodic labels.
+Arguments are mesh, repetition count, trial count, scheduled-access checking,
+overlap and semi-matrix-free selection, respectively:
+
+```sh
+OMP_NUM_THREADS=1 mpiexec -n 32 ./test/cpp/cauchy_benchmark_implicit \
+  ../data/mesh/Uniform256.cgns 10 3 1 1 0
+```
+
+Run timings on an exclusive allocated node. Uniform256 has65,536cells, giving
+2,048cells/rank at np32. The separate `cfv_benchmark_fv_facility` compares native
+and legacy VR preparation/sweeps/WBAP on the same mesh, means and halo schedule.
+Local small runs validate benchmark execution; they are not performance evidence.
+
+`CAUCHY_PHASE_BENCH` lines report seconds per call, using a barrier outside
+each batch and the maximum elapsed time among ranks. Import, topology, combined
+FV preparation and ILU symbolic setup are separate one-shot measurements.
+Diagonal inversion is timed once after a real Jacobian fill because repeated
+calls otherwise measure cached no-ops. Numeric factorization is repeated;
+its elapsed time includes copying native matrix blocks into the local factor.
+
+`evaluate` includes five fixed Jacobi VR sweeps, auxiliary preparation, RHS,
+leases and transfers. `raw_rhs` retains its input/output scopes across the
+batch and calls the stateless operator with explicit fallback diagnostics.
+It must agree exactly within1e-12 with the latest composed result. Auxiliary,
+Jacobian, matrix action, local SGS pair, local ILU solve, complete five-iteration
+SGS orchestration and direct mean halo each have their own measurement. These
+are nested/alternative measurements, **not additive parts of Evaluate**.
+
+The frozen smooth flow5 state uses perfect gas, polynomial viscosity and full
+AoS. Every sample checks preserved owned-state generation, finite outputs,
+zero fallback and exactly five linear iterations. This is not a nonlinear PDE
+solve or an independent mathematical oracle; dedicated UTs supply those
+oracles. Fixed means do not imply settled finite-sweep reconstruction.
+PP and physical ODE/nonlinear controllers are outside this benchmark. The
+`checked` argument selects both scheduled-access checking and the linear
+wrapper's optional collective-error preflights; required shape/route checks,
+solve-entry agreement and numerical reductions remain enabled.
