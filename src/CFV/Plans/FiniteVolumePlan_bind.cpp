@@ -232,7 +232,7 @@ namespace DNDS::CFV
             .def("BuildBoundaryValues", [](const GradientPlan &plan, index components)
                  { return Runtime::PythonArray::Share(plan.BuildBoundaryValues(components)); })
             .def("Evaluate", &GradientPlan::Evaluate, py::arg("mean"), py::arg("boundaryValues"), py::arg("gradient"),
-                 py::arg("periodicVectorStarts") = std::vector<index>{})
+                 py::arg("periodicVectorStarts") = std::vector<index>{}, py::arg("region") = ReconstructionRegion::All)
             .def("ConvertToCoefficients", &GradientPlan::ConvertToCoefficients);
         py::class_<DistributedInterfaceSamplingPlan>(m, "DistributedInterfaceSamplingPlan")
             .def(py::init<VariationalReconstructionPlan, Geom::DistributedInterfacePointMap>())

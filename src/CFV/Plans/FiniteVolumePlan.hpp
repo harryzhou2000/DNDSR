@@ -4,6 +4,7 @@
 #include "DNDS/Config/ConfigParam.hpp"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include "Geom/Access/EntitySpace.hpp"
+#include "Geom/Access/EntityWorkPartition.hpp"
 #include "Geom/Geometry/Geometric.hpp"
 #include "Geom/Unstructured/UnstructuredMeshFwd.hpp"
 #include "DNDS/Math/HardEigen.hpp"
@@ -152,6 +153,11 @@ namespace DNDS::CFV
         int Dimension() const;
         bool Axisymmetric() const;
         const Geom::EntitySpace &Cells() const;
+        /// Lazily cached conservative cell-node-cell split, shared by copies
+        /// and gradient/reconstruction consumers. Purely rank-local; no halo
+        /// fetch or MPI is posted. Complete published node-star adjacency is
+        /// required. The returned shallow owner survives this plan handle.
+        Geom::EntityWorkPartition CellWorkPartition() const;
         FVField BuildField(index width) const;
         /// Uniform physical prototype; derive owned/ghost pitches independently.
         FVField BuildField(Runtime::RowLayout prototype, Runtime::Device device = Runtime::Device::Host()) const;

@@ -97,6 +97,110 @@ TEST_CASE("Standalone gradients recover linear fields with physical boundary sam
     }
 }
 
+TEST_CASE("Gradient core phases exclude active MPI ghost writes across table layouts")
+{
+    // At np2 both ranks own cells; np4/8 additionally exercise an empty owner.
+    // Three or more complete grid rows per active rank ensure a real core and
+    // dependent region, instead of a vacuous empty-core split comparison.
+    auto fixture = G::OverlapTest::BuildNativeFixture(mpi, mpi.size > 2, 24);
+    auto metrics = C::FiniteVolumePlan::ConstructMetrics(fixture.mesh);
+    const auto partition = metrics.CellWorkPartition(), shared = metrics.CellWorkPartition();
+    CHECK(&partition.Core() == &shared.Core());
+    CHECK(&partition.HaloDependent() == &shared.HaloDependent());
+    if (metrics.NumCell())
+    {
+        REQUIRE_FALSE(partition.Core().empty());
+        if (mpi.size > 1)
+            REQUIRE_FALSE(partition.HaloDependent().empty());
+    }
+    const double expected[]{2, -.7, -.2, .3, .6, -.1, -.7, 1.2};
+    const auto value = [&](const G::tPoint &point, I component)
+    { return 1 + component + expected[2 * component] * point[0] + expected[2 * component + 1] * point[1]; };
+    for (auto method : {C::GradientMethod::GreenGauss, C::GradientMethod::LeastSquares, C::GradientMethod::GGMP})
+    {
+        auto plan = C::GradientPlan::Prepare(*fixture.mesh, metrics, method);
+        auto boundary = plan.BuildBoundaryValues(4);
+        {
+            auto write = boundary.Write();
+            for (I iPoint = 0; iPoint < plan.NumBoundaryQuadrature(); ++iPoint)
+                for (I component = 0; component < 4; ++component)
+                    write.View()(iPoint, component) = value(plan.GetBoundaryQuadrature(iPoint).point, component);
+        }
+        for (int layout = 0; layout < 3; ++layout)
+        {
+            const auto shape = [&](I width)
+            {
+                return layout == 0 ? R::RowLayout::Dense(0, width, width + 2) : layout == 1 ? R::RowLayout::ColMajor(0, width, {16, 1})
+                                                                                            : R::RowLayout::TiledColMajor(0, width, 16);
+            };
+            auto mean = metrics.BuildField(shape(4)), full = metrics.BuildField(shape(8)), split = metrics.BuildField(shape(8));
+            {
+                auto geometry = metrics.AcquireRead();
+                auto write = mean.Owned().Write();
+                const auto u = write.View<R::UniformTableRows>();
+                for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+                    for (I component = 0; component < 4; ++component)
+                        u(iCell, component) = value(geometry.HostView().GetCellBary(iCell), component);
+                auto output = split.Owned().Write();
+                const auto out = output.View<R::UniformTableRows>();
+                for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+                    for (I j = 0; j < 8; ++j)
+                        out(iCell, j) = 123456;
+            }
+            const auto version = mean.Owned().Version();
+            auto halo = metrics.BindHalo(mean);
+            halo.Begin().Wait();
+            plan.Evaluate(mean, boundary, full, {1});
+            auto pending = halo.Begin();
+            CHECK_NOTHROW(plan.Evaluate(mean, boundary, split, {1}, C::ReconstructionRegion::Core));
+            {
+                auto read = split.Owned().Read();
+                const auto out = read.View<R::UniformTableRows>();
+                for (auto iCell : partition.Core())
+                    for (I j = 0; j < 8; ++j)
+                        CHECK(out(iCell, j) == doctest::Approx(expected[j]).epsilon(1e-11));
+                for (auto iCell : partition.HaloDependent())
+                    for (I j = 0; j < 8; ++j)
+                        CHECK(out(iCell, j) == 123456);
+            }
+            if (metrics.Cells().NumGhost())
+            {
+                const auto before = split.Owned().Version();
+                CHECK_THROWS(plan.Evaluate(mean, boundary, split, {1}, C::ReconstructionRegion::HaloDependent));
+                CHECK_THROWS(plan.Evaluate(mean, boundary, split, {1}));
+                CHECK(split.Owned().Version() == before);
+            }
+            pending.Wait();
+            plan.Evaluate(mean, boundary, split, {1}, C::ReconstructionRegion::HaloDependent);
+            {
+                auto a = full.Owned().Read(), b = split.Owned().Read();
+                const auto reference = a.View<R::UniformTableRows>(), actual = b.View<R::UniformTableRows>();
+                for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+                    for (I j = 0; j < 8; ++j)
+                    {
+                        CHECK(actual(iCell, j) == reference(iCell, j));
+                        CHECK(actual(iCell, j) == doctest::Approx(expected[j]).epsilon(1e-11));
+                    }
+            }
+            CHECK(mean.Owned().Version() == version);
+            CHECK_THROWS(plan.Evaluate(mean, boundary, split, {1}, static_cast<C::ReconstructionRegion>(100)));
+            if (metrics.NumCell() && metrics.Cells().NumGhost())
+            {
+                // Core deliberately never acquires the input ghost read, so
+                // explicit output/input alias validation must cover it too.
+                const auto inputBytes = size_t(mean.Ghost().RowCount() * 4) * sizeof(double);
+                const auto outputBytes = size_t(split.Owned().RowCount() * 8) * sizeof(double);
+                auto buffer = R::Buffer::Allocate(std::max(inputBytes, outputBytes));
+                auto aliasedInput = mean, aliasedOutput = split;
+                aliasedInput.Ghost() = R::Array<double>::FromStorage(R::RowLayout::Dense(mean.Ghost().RowCount(), 4), buffer.Subspan(0, inputBytes));
+                aliasedOutput.Owned() = R::Array<double>::FromStorage(R::RowLayout::Dense(split.Owned().RowCount(), 8), buffer.Subspan(0, outputBytes));
+                CHECK_THROWS_WITH_AS(plan.Evaluate(aliasedInput, boundary, aliasedOutput, {1}, C::ReconstructionRegion::Core),
+                                     doctest::Contains("gradient output overlaps"), std::exception);
+            }
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);

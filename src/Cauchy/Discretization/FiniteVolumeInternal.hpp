@@ -71,6 +71,6 @@ namespace DNDS::Cauchy
               reconstruction(CFV::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings.numerics.cfv)),
               gradient(CFV::GradientPlan::Prepare(*mesh, metrics, settings.numerics.gradient == "greenGauss" ? CFV::GradientMethod::GreenGauss : settings.numerics.gradient == "ggmp" ? CFV::GradientMethod::GGMP
                                                                                                                                                                                       : CFV::GradientMethod::LeastSquares)),
-              partition(Geom::EntityWorkPartition::CellNodeCell(*mesh)), thermalBounds(equation.PrepareThermalBounds(settings.numerics.densityFloor, settings.numerics.temperatureFloor, settings.numerics.pressureFloor)) {}
+              partition(metrics.CellWorkPartition()), thermalBounds(equation.PrepareThermalBounds(settings.numerics.densityFloor, settings.numerics.temperatureFloor, settings.numerics.pressureFloor)) {}
     };
 }

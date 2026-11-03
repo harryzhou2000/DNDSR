@@ -21,10 +21,11 @@ namespace DNDS::CFV
         struct Data
         {
             FiniteVolumePlan metrics;
+            Geom::EntityWorkPartition partition;
             Runtime::Array<index> offsets, neighbors, boundaryIds;
             Runtime::Array<real> weights, rotations;
             std::vector<BoundaryQuadraturePoint> boundary;
-            Data(FiniteVolumePlan plan) : metrics(std::move(plan)) {}
+            Data(FiniteVolumePlan plan) : metrics(std::move(plan)), partition(metrics.CellWorkPartition()) {}
         };
         std::shared_ptr<const Data> _data;
         explicit GradientPlan(std::shared_ptr<const Data> data) : _data(std::move(data)) {}
@@ -40,10 +41,13 @@ namespace DNDS::CFV
         /// is an explicit overwrite, not a limiter or second reconstruction.
         void ConvertToCoefficients(const FVField &gradient, const VariationalReconstructionPlan &reconstruction,
                                    FVField &coefficients) const;
-        /// Owned output rows hold [component*dimension+direction]. Release input
-        /// writers and finish input halo/BC producers first. Output must be
-        /// distinct from inputs; ordinary Runtime leases reject alias conflicts.
+        /// Owned output rows hold [component*dimension+direction]. Core reads
+        /// owned means only, so an input ghost write may be active. Complete
+        /// the input halo before HaloDependent/All. BC values must be ready.
+        /// Partial calls overwrite only their selected output rows; the caller
+        /// completes both phases before consuming a full gradient. Calls sharing
+        /// an output are serialized. Output must be distinct from all inputs.
         void Evaluate(const FVField &mean, const Runtime::Array<real> &boundaryValues, FVField &gradient,
-                      const std::vector<index> &periodicVectorStarts = {}) const;
+                      const std::vector<index> &periodicVectorStarts = {}, ReconstructionRegion region = ReconstructionRegion::All) const;
     };
 }

@@ -4,6 +4,7 @@
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/Simulation.hpp"
 #include "../CFV/ReconstructionFixture.hpp"
+#include "../Geom/NativeMeshOverlapFixture.hpp"
 #include "CartesianFixture.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include <filesystem>
@@ -1524,6 +1525,82 @@ TEST_CASE("Cauchy overlap and unsplit orchestration agree across CPU launchers")
                     CHECK(values == expected);
             }
     }
+}
+TEST_CASE("Primitive gradient overlap preserves conservative reconstruction across layouts and CPU launchers")
+{
+    // Row strips leave nonempty core/dependent regions even at np8, plus an
+    // empty owner at np4/8. The gradient-plan test has an independent affine
+    // oracle; here compare complete nonlinear orchestration and warm guesses.
+    const auto mesh = DNDS::Geom::OverlapTest::BuildNativeFixture(mpi, mpi.size > 2, 24).mesh;
+    for (const std::string reconstruction : {"gradient", "variational"})
+        for (int layout = 0; layout < 3; ++layout)
+        {
+            std::vector<DNDS::real> expected;
+            for (bool overlap : {false, true})
+                for (int workers : {0, 2})
+                {
+                    C::DomainSettings settings;
+                    settings.equation.transport = "NewtonianFourier";
+                    settings.equation.viscosity = .01;
+                    settings.boundaries[std::to_string(DNDS::Geom::BC_ID_DEFAULT_WALL)].kind = "extrapolate";
+                    settings.execution.overlap = overlap;
+                    settings.numerics.reconstruction = reconstruction;
+                    settings.numerics.gradient = reconstruction == "gradient" ? "leastSquares" : "ggmp";
+                    settings.numerics.reconstructionIterations = 2;
+                    settings.numerics.cfv.maxOrder = reconstruction == "gradient" ? 1 : 2;
+                    settings.numerics.flux = "Roe_M9";
+                    const auto equation = C::EquationSystem::Resolve(settings.equation);
+                    C::FiniteVolume fv(mesh, settings, equation);
+                    const auto partition = fv.Metrics().CellWorkPartition();
+                    if (fv.Metrics().NumCell())
+                    {
+                        REQUIRE_FALSE(partition.Core().empty());
+                        if (mpi.size > 1)
+                            REQUIRE_FALSE(partition.HaloDependent().empty());
+                    }
+                    const auto shape = layout == 0 ? R::RowLayout::Dense(0, 5, 7) : layout == 1 ? R::RowLayout::ColMajor(0, 5, {16, 1})
+                                                                                                : R::RowLayout::TiledColMajor(0, 5, 16);
+                    auto state = fv.Metrics().BuildField(shape), residual = fv.Metrics().BuildField(shape);
+                    {
+                        auto write = state.Owned().Write();
+                        const auto values = write.View<R::UniformTableRows>();
+                        for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                        {
+                            const auto point = fv.Metrics().GetCellCent(iCell);
+                            const auto value = equation.Gas().Conservative({1 + .03 * point[0], .2 + .02 * point[1], -.1 + .01 * point[0] * point[0], .05, 1 + .02 * point[1] * point[1]});
+                            for (int j = 0; j < 5; ++j)
+                                values(iCell, j) = value[j];
+                        }
+                    }
+                    const auto version = state.Owned().Version();
+                    auto work = fv.BuildWorkspace(state);
+                    // Both checked and caller-ordered eager MPI bridges occur
+                    // in the matrix; every row includes inline and worker CPU.
+                    R::EagerEngine engine(workers, layout == 1 ? nullptr : std::make_shared<R::AccessTrackingContext>());
+                    const auto stream = engine.CreateCPUStream();
+                    for (int iteration = 0; iteration < 2; ++iteration)
+                        fv.Evaluate(state, residual, *work, engine, stream);
+                    CHECK(state.Owned().Version() == version);
+                    CHECK(fv.LastFaceFallbacks(*work) == 0);
+                    std::vector<DNDS::real> values;
+                    const std::array<const R::Array<DNDS::real> *, 3> outputs{&residual.Owned(), &fv.ReconstructionGuess(*work).Owned(), &fv.FluxReconstruction(*work).Owned()};
+                    for (const auto *array : outputs)
+                    {
+                        auto read = array->Read();
+                        const auto view = read.View<R::UniformTableRows>();
+                        for (DNDS::index iCell = 0; iCell < view.RowCount(); ++iCell)
+                            for (DNDS::index j = 0; j < view.RowSize(iCell); ++j)
+                            {
+                                CHECK(std::isfinite(view(iCell, j)));
+                                values.push_back(view(iCell, j));
+                            }
+                    }
+                    if (!overlap && workers == 0)
+                        expected = std::move(values);
+                    else
+                        CHECK(values == expected);
+                }
+        }
 }
 TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen inputs")
 {

@@ -158,6 +158,14 @@ namespace DNDS::CFV
     int FiniteVolumePlan::Dimension() const { return _data->dim; }
     bool FiniteVolumePlan::Axisymmetric() const { return _data->axisymmetric; }
     const EntitySpace &FiniteVolumePlan::Cells() const { return _data->cells; }
+    EntityWorkPartition FiniteVolumePlan::CellWorkPartition() const
+    {
+        Validate();
+        std::call_once(_data->partitionOnce, [&]
+                       { _data->workPartition.emplace(EntityWorkPartition::CellNodeCell(*_data->mesh)); });
+        _data->workPartition->Validate();
+        return *_data->workPartition;
+    }
     FVField FiniteVolumePlan::BuildField(index width) const
     {
         Validate();

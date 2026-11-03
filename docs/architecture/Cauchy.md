@@ -457,9 +457,22 @@ true. Mean exchange can run while local physical boundary values are built;
 each VR or descending WBAP sweep and the final RHS can compute owned-only core
 rows while its coefficient halo is active. With false, the wrapper waits for
 the same exchange, skips Core and invokes All once. It retains identical transfer
-and publication contracts. Primitive viscous-gradient preparation
-still requires completed means; overlapping its own core work is a separate
-phase item.
+and publication contracts. Direct conservative gradients and primitive viscous
+gradients use `GradientPlan::Evaluate(..., region)` with the same conservative
+cell-node-cell partition. Their core calls acquire owned input only; dependent
+calls follow observed mean-halo completion. Primitive and conservative gradients
+have distinct output and boundary buffers so neither can overwrite the other.
+The primitive-gradient halo starts after both gradient phases complete and can
+run during VR/limiting and core RHS work. Its ghost read is acquired only after
+the transfer completes, before the dependent RHS phase.
+
+`FiniteVolumePlan::CellWorkPartition()` lazily shares one immutable partition
+among FV, gradient and VR setup; it performs no MPI or remote fetch. Gradient
+setup proves its prepared core stencils use owned input only. Direct callers
+must complete both gradient phases before reading the full output, serialize
+writes to that output, and complete the input transfer before dependent/All
+calls. Checks and lease acquisition occur outside numerical row loops. The
+standalone All path remains available for callers which do not overlap.
 
 The first VR core sweep starts before waiting for the mean halo, with its
 coefficient halo active too. It consumes owned means/coefficients and ready local
@@ -468,9 +481,9 @@ concurrently. Its dependent sweep runs after both required halos are complete.
 Later VR sweeps retain the same coefficient/core overlap. The disabled-overlap
 path still runs one All call per sweep, with the same selected logical ordering.
 
-Split SOR automatically visits core rows first. For an exact comparison with an
-unsplit SOR run, also select `numerics.cfv.coreFirst=true`: otherwise changing
-the ordering changes the finite-sweep method. CPU inline and worker launchers
+Split SOR automatically visits core rows first. Cauchy resolves that same
+logical ordering for its unsplit policy. Standalone CFV comparisons must also
+select the same ordering: changing it changes the finite-sweep method. CPU inline and worker launchers
 use the same orchestration. Tests compare two retained-guess residual evaluations
 with viscosity, H-correction and WBAP enabled, for both Jacobi and SOR, including
 the resulting reconstruction coefficients.

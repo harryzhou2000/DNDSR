@@ -61,6 +61,8 @@ namespace DNDS::CFV
             {
                 const index face = view.CellFaces(iCell)[slot];
                 const index other = view.CellFaceOther(iCell, face, rowsize(slot));
+                DNDS_check_throw_info(other == UnInitIndex || (other >= 0 && other < metrics.NumCellProc()),
+                                      "gradient stencil requires a complete face-neighbor ghost mapping");
                 const bool back = view.CellIsFaceBack(iCell, face, rowsize(slot));
                 const int side = back ? 0 : 1;
                 const tGPoint rotation = Detail::OtherFrameInCell(view, face, side);
@@ -118,6 +120,12 @@ namespace DNDS::CFV
                     weights(next - count + i, d) = d < dim ? initial(d, i) : 0;
         }
         offsets(metrics.NumCell(), 0) = next;
+        // Prove owned-only access once, using the actual prepared entries.
+        // The hot core kernel needs neither ghost views nor row-mask checks.
+        for (auto iCell : data->partition.Core())
+            for (index entry = offsets(iCell, 0); entry < offsets(iCell + 1, 0); ++entry)
+                DNDS_check_throw_info(neighbors(entry, 0) == UnInitIndex || neighbors(entry, 0) < metrics.NumCell(),
+                                      "gradient core stencil references a ghost input");
         return GradientPlan(std::move(data));
     }
 }

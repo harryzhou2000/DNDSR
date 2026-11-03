@@ -49,10 +49,13 @@ namespace DNDS::CFV
     }
 
     void GradientPlan::Evaluate(const FVField &mean, const Runtime::Array<real> &boundaryValues, FVField &gradient,
-                                const std::vector<index> &periodicVectorStarts) const
+                                const std::vector<index> &periodicVectorStarts, ReconstructionRegion region) const
     {
         namespace R = Runtime;
         auto geometry = _data->metrics.AcquireRead();
+        _data->partition.Validate();
+        DNDS_check_throw_info(region == ReconstructionRegion::All || region == ReconstructionRegion::Core || region == ReconstructionRegion::HaloDependent,
+                              "unknown gradient work region");
         const index components = mean.Width(), dim = _data->metrics.Dimension();
         Detail::ValidateVectorBlocks(components, periodicVectorStarts);
         _data->metrics.ValidateField(mean, components);
@@ -60,8 +63,18 @@ namespace DNDS::CFV
         DNDS_check_throw_info(boundaryValues.GetDevice() == R::Device::Host() && boundaryValues.Layout().Kind() == R::RowLayoutKind::Table &&
                                   boundaryValues.RowCount() == NumBoundaryQuadrature() && boundaryValues.Layout().Width() == components,
                               "gradient boundary value shape or placement differs");
-        auto owned = mean.Owned().Read(), ghost = mean.Ghost().Read(), boundary = boundaryValues.Read();
-        R::PairReadView<real, R::AccessBoundsChecks, R::UniformTableRows> u{owned.View<R::UniformTableRows>(), ghost.View<R::UniformTableRows>()};
+        DNDS_check_throw_info(!Algebra::Detail::Overlaps(gradient.Owned().Storage(), mean.Owned().Storage()) &&
+                                  !Algebra::Detail::Overlaps(gradient.Owned().Storage(), mean.Ghost().Storage()) &&
+                                  !Algebra::Detail::Overlaps(gradient.Owned().Storage(), boundaryValues.Storage()),
+                              "gradient output overlaps its inputs");
+        auto owned = mean.Owned().Read(), boundary = boundaryValues.Read();
+        std::optional<R::Array<real>::ReadLease> ghost;
+        R::PairReadView<real, R::AccessBoundsChecks, R::UniformTableRows> u{owned.View<R::UniformTableRows>(), {}};
+        if (region != ReconstructionRegion::Core)
+        {
+            ghost.emplace(mean.Ghost().Read());
+            u.ghost = ghost->View<R::UniformTableRows>();
+        }
         auto outWrite = gradient.Owned().Write();
         auto offsets = _data->offsets.Read(), neighbors = _data->neighbors.Read(), boundaryIds = _data->boundaryIds.Read();
         auto weights = _data->weights.Read();
@@ -71,7 +84,7 @@ namespace DNDS::CFV
         const auto w = weights.View<R::FixedRows<3>>();
         const auto bv = boundary.View<R::TableRows>();
         const auto output = outWrite.View<R::UniformTableRows>();
-        for (index iCell = 0; iCell < _data->metrics.NumCell(); ++iCell)
+        const auto apply = [&](index iCell)
         {
             std::fill(output[iCell].begin(), output[iCell].end(), 0);
             for (index entry = offset(iCell, 0); entry < offset(iCell + 1, 0); ++entry)
@@ -91,6 +104,12 @@ namespace DNDS::CFV
                     for (index d = 0; d < dim; ++d)
                         output(iCell, component * dim + d) += w(entry, d) * difference;
                 }
-        }
+        };
+        if (region == ReconstructionRegion::All)
+            for (index iCell = 0; iCell < _data->metrics.NumCell(); ++iCell)
+                apply(iCell);
+        else
+            for (auto iCell : region == ReconstructionRegion::Core ? _data->partition.Core() : _data->partition.HaloDependent())
+                apply(iCell);
     }
 }

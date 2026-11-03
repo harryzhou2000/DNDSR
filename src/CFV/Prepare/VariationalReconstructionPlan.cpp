@@ -22,7 +22,7 @@ namespace DNDS::CFV
             auto meshRead = geometry->mesh->AcquireRead(MeshReadRequirements::CellFlux());
             const auto mesh = meshRead.HostView();
             data = std::make_shared<Detail::ReconstructionData>(metrics, settings);
-            data->workPartition.emplace(Geom::EntityWorkPartition::CellNodeCell(*geometry->mesh));
+            data->workPartition.emplace(metrics.CellWorkPartition());
             const int n = data->n, dim = geometry->dim, degree = settings.maxOrder;
             const Math::TaylorBasis polynomial(dim, degree);
             const index nCell = mesh.NumCell(), nFace = mesh.NumFaceProc();

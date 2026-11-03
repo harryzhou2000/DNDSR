@@ -82,6 +82,7 @@ namespace DNDS::Cauchy
         std::optional<R::TransferBinding> fluxHalo;
         bool fluxReady = false;
         CFV::FVField gradient;
+        std::optional<CFV::FVField> conservativeGradient;
         CFV::FVField primitive;
         std::optional<CFV::FVField> lowResidual;
         R::Array<real> positivityValues;
@@ -95,6 +96,7 @@ namespace DNDS::Cauchy
         index characteristicFallbacks = 0;
         CFV::ReconstructionBoundaryValues boundary;
         R::Array<real> gradientBoundary;
+        std::optional<R::Array<real>> primitiveBoundary;
         R::TransferBinding meanHalo, coefficientHalo, gradientHalo;
         AuxiliaryValues auxiliary;
         std::optional<R::TransferBinding> waveHalo, pressureHalo;
@@ -117,6 +119,12 @@ namespace DNDS::Cauchy
         {
             Algebra::Fill(reconstruction.coefficients, 0.);
             Algebra::Fill(reconstruction.temporary, 0.);
+            // Conservative reconstruction and primitive viscous gradients may
+            // both run before VR. Their outputs/BCs must not share scratch.
+            if (!meanOnly && data.settings.numerics.reconstruction == "gradient")
+                conservativeGradient.emplace(data.metrics.BuildField(5 * data.metrics.Dimension()));
+            if (!meanOnly && data.equation.Viscous() && data.settings.numerics.viscousGradient == "primitive")
+                primitiveBoundary.emplace(data.gradient.BuildBoundaryValues(5));
             if (!meanOnly && data.settings.numerics.positivity)
                 lowResidual.emplace(data.metrics.BuildField(5));
             if (!meanOnly && data.settings.numerics.limiter == "WBAP" && data.settings.numerics.characteristicLimiter)
@@ -513,6 +521,8 @@ namespace DNDS::Cauchy
             auto operation = engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream.Context());
             operation.Wait();
         };
+        const bool primitiveViscosity = !work.meanOnly && bool(work.primitiveBoundary);
+        std::optional<R::TransferOperation> gradientOperation;
         std::optional<R::TransferOperation> meanOperation;
         if (overlap)
         {
@@ -564,6 +574,59 @@ namespace DNDS::Cauchy
                     values(iPoint, j) = face[j];
             }
         };
+        // Primitive gradients retain the original cell-gradient mathematics:
+        // differentiating a linear conservative polynomial would add spurious
+        // heat conduction to Couette flow's quadratic kinetic energy. Only
+        // scheduling changes here; these arrays are independent of VR output.
+        const auto fillPrimitive = [&](const auto &input, auto &output)
+        {
+            const auto read = input.Read();
+            auto write = output.Write();
+            const auto from = read.template View<R::UniformTableRows>();
+            const auto to = write.template View<R::UniformTableRows>();
+            for (index iCell = 0; iCell < output.RowCount(); ++iCell)
+            {
+                const auto value = gas.Primitive(Load(from, iCell));
+                const FlowState primitive{value.density, value.velocity[0], value.velocity[1], value.velocity[2], value.temperature};
+                for (int j = 0; j < 5; ++j)
+                    to(iCell, j) = primitive[j];
+            }
+        };
+        const auto prepareGradientCore = [&](CFV::ReconstructionRegion region)
+        {
+            if (work.conservativeGradient)
+                _data->gradient.Evaluate(state, work.gradientBoundary, *work.conservativeGradient, {1}, region);
+            if (!primitiveViscosity)
+                return;
+            fillPrimitive(state.Owned(), work.primitive.Owned());
+            {
+                auto mean = state.Owned().Read();
+                const auto values = mean.View<R::UniformTableRows>();
+                auto write = work.primitiveBoundary->Write();
+                const auto target = write.View<R::TableRows>();
+                for (index iPoint = 0; iPoint < _data->gradient.NumBoundaryQuadrature(); ++iPoint)
+                {
+                    const auto point = _data->gradient.GetBoundaryQuadrature(iPoint);
+                    const auto value = gas.Primitive(_data->boundary.At(mesh.GetFaceZone(point.face)).FaceValue(gas, Load(values, point.cell), {point.normal[0], point.normal[1], point.normal[2]}, {point.point[0], point.point[1], point.point[2]}, time));
+                    const FlowState primitive{value.density, value.velocity[0], value.velocity[1], value.velocity[2], value.temperature};
+                    for (int j = 0; j < 5; ++j)
+                        target(iPoint, j) = primitive[j];
+                }
+            }
+            if (region == CFV::ReconstructionRegion::All)
+                fillPrimitive(state.Ghost(), work.primitive.Ghost());
+            _data->gradient.Evaluate(work.primitive, *work.primitiveBoundary, work.gradient, {1}, region);
+        };
+        const auto prepareGradientDependent = [&]
+        {
+            if (work.conservativeGradient)
+                _data->gradient.Evaluate(state, work.gradientBoundary, *work.conservativeGradient, {1}, CFV::ReconstructionRegion::HaloDependent);
+            if (primitiveViscosity)
+            {
+                fillPrimitive(state.Ghost(), work.primitive.Ghost());
+                _data->gradient.Evaluate(work.primitive, *work.primitiveBoundary, work.gradient, {1}, CFV::ReconstructionRegion::HaloDependent);
+            }
+        };
         std::optional<R::TransferOperation> firstCoefficientOperation;
         if (!work.meanOnly && overlap && _data->settings.numerics.reconstruction == "variational")
         {
@@ -571,6 +634,9 @@ namespace DNDS::Cauchy
                 updateReconstructionBoundary();
             firstCoefficientOperation.emplace(engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream.Context()));
         }
+        // Worker callbacks borrow the helpers and mesh scopes above. On every
+        // exceptional controller exit, join before any of those resources die.
+        JoinStreamOnException gradientJoin(stream);
         if (overlap)
         {
             // Post both required transfers before queueing CPU work: the checked
@@ -579,6 +645,9 @@ namespace DNDS::Cauchy
             auto *preparation = &*auxiliaryPreparation;
             engine.Submit(stream, [preparation](auto)
                           { preparation->Apply(CFV::ReconstructionRegion::Core); });
+            if (work.conservativeGradient || primitiveViscosity)
+                engine.Submit(stream, [&](auto)
+                              { prepareGradientCore(CFV::ReconstructionRegion::Core); });
             // The first VR core consumes only owned means and coefficients.
             // It is independent of both active ghost writes and of auxiliary
             // preparation, which may run concurrently on a CPU worker.
@@ -598,10 +667,23 @@ namespace DNDS::Cauchy
                               {
                     preparation->Apply(CFV::ReconstructionRegion::HaloDependent);
                     preparation->Finish(*output); });
+                if (work.conservativeGradient || primitiveViscosity)
+                    engine.Submit(stream, [&](auto)
+                                  { prepareGradientDependent(); });
                 stream.Record().WaitHost();
             }
             else
-                PrepareAuxValues(state, work.auxiliary, time); });
+            {
+                PrepareAuxValues(state, work.auxiliary, time);
+                prepareGradientCore(CFV::ReconstructionRegion::All);
+            } });
+        if (primitiveViscosity)
+        {
+            if (overlap)
+                gradientOperation.emplace(engine.ChecksAccess() ? work.gradientHalo.BeginChecked(stream) : work.gradientHalo.BeginScheduled(stream.Context()));
+            else
+                exchange(work.gradientHalo);
+        }
         if (work.waveHalo)
             exchange(*work.waveHalo);
         if (work.pressureHalo)
@@ -612,8 +694,7 @@ namespace DNDS::Cauchy
             Algebra::Fill(work.reconstruction.coefficients, 0.);
         if (!work.meanOnly && _data->settings.numerics.reconstruction == "gradient")
         {
-            _data->gradient.Evaluate(state, work.gradientBoundary, work.gradient, {1});
-            _data->gradient.ConvertToCoefficients(work.gradient, _data->reconstruction, work.reconstruction.coefficients);
+            _data->gradient.ConvertToCoefficients(*work.conservativeGradient, _data->reconstruction, work.reconstruction.coefficients);
         }
         else if (!work.meanOnly && _data->settings.numerics.reconstruction == "variational")
         {
@@ -712,42 +793,6 @@ namespace DNDS::Cauchy
         if (!work.meanOnly && _data->settings.numerics.positivity)
             LimitReconstructionPPImpl(state, work, false);
         const bool polynomialViscosity = !work.meanOnly && _data->equation.Viscous() && _data->settings.numerics.viscousGradient == "polynomial";
-        if (!work.meanOnly && _data->equation.Viscous() && !polynomialViscosity)
-        {
-            // Retain the original primitive-cell-gradient scheme. A linear
-            // conservative reconstruction cannot represent Couette's quadratic
-            // kinetic energy; differentiating that polynomial as if it were
-            // exact introduces artificial heat conduction. The explicit high-
-            // order polynomial mode above uses sufficient conservative modes.
-            auto fillPrimitive = [&](const auto &input, auto &output)
-            {
-                const auto read = input.Read();
-                auto write = output.Write();
-                for (index iCell = 0; iCell < output.RowCount(); ++iCell)
-                {
-                    const auto value = gas.Primitive(Load(read.template View<R::UniformTableRows>(), iCell));
-                    const FlowState primitive{value.density, value.velocity[0], value.velocity[1], value.velocity[2], value.temperature};
-                    for (int j = 0; j < 5; ++j)
-                        write.View()(iCell, j) = primitive[j];
-                }
-            };
-            fillPrimitive(state.Owned(), work.primitive.Owned());
-            fillPrimitive(state.Ghost(), work.primitive.Ghost());
-            {
-                auto mean = state.Owned().Read();
-                auto write = work.gradientBoundary.Write();
-                for (index q = 0; q < _data->gradient.NumBoundaryQuadrature(); ++q)
-                {
-                    const auto point = _data->gradient.GetBoundaryQuadrature(q);
-                    const auto value = gas.Primitive(_data->boundary.At(mesh.GetFaceZone(point.face)).FaceValue(gas, Load(mean.View<R::UniformTableRows>(), point.cell), {point.normal[0], point.normal[1], point.normal[2]}, {point.point[0], point.point[1], point.point[2]}, time));
-                    const FlowState primitive{value.density, value.velocity[0], value.velocity[1], value.velocity[2], value.temperature};
-                    for (int j = 0; j < 5; ++j)
-                        write.View()(q, j) = primitive[j];
-                }
-            }
-            _data->gradient.Evaluate(work.primitive, work.gradientBoundary, work.gradient, {1});
-            exchange(work.gradientHalo);
-        }
         std::optional<R::Array<real>::WriteLease> lowWrite;
         R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows> lowOutput;
         if (work.lowResidual)
@@ -757,11 +802,15 @@ namespace DNDS::Cauchy
         }
         std::optional<R::Array<real>::ReadLease> gradOwned, gradGhost;
         FieldView gradients;
-        if (!work.meanOnly && _data->equation.Viscous() && !polynomialViscosity)
+        if (primitiveViscosity)
         {
             gradOwned.emplace(work.gradient.Owned().Read());
-            gradGhost.emplace(work.gradient.Ghost().Read());
-            gradients = {gradOwned->View<R::UniformTableRows>(), gradGhost->View<R::UniformTableRows>()};
+            gradients.owned = gradOwned->View<R::UniformTableRows>();
+            if (!gradientOperation)
+            {
+                gradGhost.emplace(work.gradient.Ghost().Read());
+                gradients.ghost = gradGhost->View<R::UniformTableRows>();
+            }
         }
         ValidateAuxValues(state, work.auxiliary, time);
         const auto thermoRead = work.auxiliary.meanThermodynamics->Read();
@@ -819,6 +868,12 @@ namespace DNDS::Cauchy
             R::SubmitArrays(engine, stream, [kernel, gradientInput = FieldView{gradients.owned, {}}, coreAuxiliary, viscousCoefficients](auto, auto mean, auto rec, auto result)
                             { kernel(CFV::ReconstructionRegion::Core, FieldView{mean, {}}, FieldView{rec, {}}, gradientInput, coreAuxiliary, viscousCoefficients, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::WriteAs<R::UniformTableRows>(residual.Owned()));
         operation.Wait();
+        if (gradientOperation)
+        {
+            gradientOperation->Wait();
+            gradGhost.emplace(work.gradient.Ghost().Read());
+            gradients.ghost = gradGhost->View<R::UniformTableRows>();
+        }
         if (viscousOperation)
         {
             viscousOperation->Wait();

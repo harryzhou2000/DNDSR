@@ -6,6 +6,7 @@
 #include "CFV/Math/TaylorBasis.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
 #include "Geom/Access/EntityWorkPartition.hpp"
+#include <mutex>
 
 namespace DNDS::CFV::Detail
 {
@@ -17,6 +18,8 @@ namespace DNDS::CFV::Detail
         Geom::EntitySpace cells;
         Algebra::DofSpace dofs;
         std::optional<Runtime::RowTransferPlan> halo;
+        mutable std::once_flag partitionOnce;
+        mutable std::optional<Geom::EntityWorkPartition> workPartition;
         int dim, intOrder;
         bool axisymmetric;
         // Cell table: volume, center[3], barycenter[3], isotropic half-box scale.
