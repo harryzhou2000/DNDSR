@@ -8,6 +8,9 @@ CUDA GPU support.
 The [2026-10-31 VR SVD correction](dev/vr_svd_cutoff_2026-10-31.md) documents the
 small-mode cutoff change, setup diagnostics and affected nonzero-tolerance cases.
 
+The [2026-11-03 extended Euler rotation correction](dev/euler_extended_rotation_2026-11-03.md)
+records the NS_EX/NS_EX_3D absolute-velocity source convention and focused tests.
+
 ## Core Modules
 
 | Module     | Directory    | Description                                              |

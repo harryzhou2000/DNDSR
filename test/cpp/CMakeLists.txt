@@ -414,6 +414,7 @@ add_dependencies(all_unit_tests euler_unit_tests)
 euler_add_unit_test(gas_thermo "Euler/test_GasThermo.cpp" "cfv;geom;dnds")
 euler_add_unit_test(riemann_solvers "Euler/test_RiemannSolvers.cpp" "cfv;geom;dnds")
 euler_add_unit_test(rans "Euler/test_RANS.cpp" "cfv;geom;dnds")
+euler_add_unit_test(rotating_frame "Euler/test_RotatingFrame.cpp" "cfv;geom;dnds")
 euler_add_unit_test(limited_vr "Euler/test_LimitedVR.cpp" "cfv;geom;dnds")
 if(DNDS_USE_CANTERA)
     euler_add_unit_test(source_chemical "Euler/test_SourceChemical.cpp" "euler_library_NS_EX;euler_library_fast_NS_EX;cfv;geom;dnds")
@@ -439,6 +440,7 @@ set(EULER_TEST_TARGETS
     euler_test_gas_thermo
     euler_test_riemann_solvers
     euler_test_rans
+    euler_test_rotating_frame
     euler_test_limited_vr
     euler_test_evaluator_pipeline
 )

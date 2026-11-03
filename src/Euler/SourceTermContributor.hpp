@@ -84,17 +84,27 @@ namespace DNDS::Euler
             jac(I4, Seq123) -= massForce(Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>));
     }
 
+    /// Match the evaluator's state convention and negative-source Jacobian.
+    /// Absolute velocity is expressed in rotating axes: only the momentum
+    /// basis rotates, so its source is -Omega cross momentum, with no energy
+    /// work. Centrifugal/double-Coriolis terms belong to relative velocity.
     template <EulerModel model, int dim, class TFrame>
     inline void evalSourceRotatingFrame(const TFrame &frame, const Geom::tPoint &pPhy,
                                         typename EulerModelTraits<model>::TU &ret,
                                         typename EulerModelTraits<model>::TJacobianU &jac,
                                         const typename EulerModelTraits<model>::TU &U, int Mode)
     {
+        auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
+        auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
+#ifdef USE_ABS_VELO_IN_ROTATION
+        if (Mode == 0 || Mode == 2)
+            ret(Seq123) -= frame.vOmega().cross(Geom::ToThreeDim<dim>(U(Seq123)))(Seq012);
+        if (Mode == 2)
+            jac(Seq123, Seq123) -= Geom::CrossVecToMat(-frame.vOmega())(Seq012, Seq012);
+#else
         using Traits = EulerModelTraits<model>;
         using TVec = typename Traits::TVec;
         using TMat = typename Traits::TMat;
-        auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
-        auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
         auto I4 = dim + 1;
         Geom::tPoint radi = pPhy - frame.center;
         Geom::tPoint radiR = radi - frame.axis * (frame.axis.dot(radi));
@@ -112,6 +122,7 @@ namespace DNDS::Euler
             jac(I4, Seq123) -= mvolForce + dmvolForceDrhov.transpose() * U(Seq123) / U(0);
             jac(I4, 0) -= -mvolForce.dot(U(Seq123)) / sqr(U(0));
         }
+#endif
     }
 
     template <EulerModel model>
