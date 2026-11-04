@@ -57,7 +57,8 @@ namespace DNDS::Cauchy
             }
         }
 
-        /// Apply after the common flow5 increment compression. Preserve Euler's
+        /// Apply after Euler's whole-vector thermal increment compression.
+        /// Preserve Euler's
         /// exponential scalar repair and SA-only 1e-6 floor, not a new common
         /// line search. Precondition: the old mean is admissible and finite.
         template <class Mean, class Delta>

@@ -502,6 +502,122 @@ TEST_CASE("Two-equation auxiliary viscosity consumes current conservative mean g
         }
 }
 
+TEST_CASE("RANS final thermal increment compression retains Euler whole-vector scaling")
+{
+    auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    mesh->BuildNodeWallDist([](auto)
+                            { return false; });
+    for (const auto *model : {"SA", "KOmegaSST"})
+        for (int split = 0; split < 2; ++split)
+        {
+            auto settings = Settings();
+            settings.boundaries.clear();
+            settings.numerics.positivity = true;
+            auto modelSettings = Equation(settings).RANS().Settings();
+            modelSettings.model = model;
+            const auto equation = C::EquationSystem::Resolve(settings.equation).WithRANS(modelSettings);
+            std::map<std::string, double> initial{{equation.RANS().ComponentNames()[0], .02}};
+            if (equation.RANS().ComponentNumber() == 2)
+                initial[equation.RANS().ComponentNames()[1]] = .1;
+            settings.numerics.ransState.referenceConservative = initial;
+            C::FiniteVolume fv(mesh, settings, equation);
+            auto state = State(fv, split);
+            fv.InitializeConstant(state, {1, 0, 0, 0, 1}, {}, 0, {}, initial);
+            auto delta = C::EquationDofOperations::NewVector(state);
+            C::EquationDofOperations::Fill(delta, 0);
+            {
+                auto write = delta.WriteOwned();
+                const auto flow = write.Block("flow"), rans = write.Block("rans");
+                for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                {
+                    flow(iCell, 4) = -5;
+                    for (I j = 0; j < rans.ComponentNumber(); ++j)
+                        rans(iCell, j) = .001 * (j + 1);
+                }
+            }
+            R::EagerEngine engine(split ? 2 : 0);
+            const auto stream = engine.CreateCPUStream();
+            C::EquationNonlinearSolver solver(fv, state, fv.BuildEquationWorkspace(state), engine, stream,
+                                              settings, A::ComponentSelection(state.ComponentNumber()));
+            const auto report = solver.ApplyCorrection(state, delta);
+            REQUIRE(report.second < 1);
+            const auto read = state.ReadOwned();
+            const auto flow = read.Block("flow"), rans = read.Block("rans");
+            for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            {
+                // Infer the actual applied factor from the flow energy, not
+                // the implementation's alpha helper or its diagnostic minimum.
+                const double factor = (2.5 - flow(iCell, 4)) / 5;
+                CHECK(factor > 0);
+                CHECK(factor < 1);
+                CHECK(flow(iCell, 0) == 1);
+                for (I j = 0; j < rans.ComponentNumber(); ++j)
+                    CHECK(rans(iCell, j) == doctest::Approx((j ? .1 : .02) + factor * .001 * (j + 1)).epsilon(1e-13));
+            }
+        }
+}
+
+TEST_CASE("P3 thermal reconstruction compression preserves admissible RANS linear coefficients")
+{
+    auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    mesh->BuildNodeWallDist([](auto)
+                            { return false; });
+    for (const auto *model : {"SA", "KOmegaSST"})
+        for (int reference = 0; reference < 2; ++reference)
+        {
+            auto settings = Settings();
+            settings.boundaries.clear();
+            settings.numerics.reconstruction = "variational";
+            settings.numerics.cfv.maxOrder = 3;
+            settings.numerics.cfv.intOrder = 4;
+            settings.numerics.positivity = true;
+            settings.numerics.positivityCompressToMean = !reference;
+            auto modelSettings = Equation(settings).RANS().Settings();
+            modelSettings.model = model;
+            const auto equation = C::EquationSystem::Resolve(settings.equation).WithRANS(modelSettings);
+            std::map<std::string, double> initial{{equation.RANS().ComponentNames()[0], .02}};
+            if (equation.RANS().ComponentNumber() == 2)
+                initial[equation.RANS().ComponentNames()[1]] = .1;
+            settings.numerics.ransState.referenceConservative = initial;
+            C::FiniteVolume fv(mesh, settings, equation);
+            auto state = State(fv, reference);
+            fv.InitializeConstant(state, {1, 0, 0, 0, 1}, {}, 0, {}, initial);
+            auto work = fv.BuildEquationWorkspace(state);
+            auto guess = fv.ReconstructionGuess(*work);
+            C::EquationDofOperations::Fill(guess, 0);
+            const int modes = fv.Reconstruction().NRecDOF();
+            {
+                auto write = guess.WriteOwned();
+                const auto flow = write.Block("flow"), rans = write.Block("rans");
+                for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                {
+                    flow(iCell, 4 * modes + (reference ? 2 : 0)) = -300;
+                    for (int j = 0; j < equation.RANS().ComponentNumber(); ++j)
+                        rans(iCell, j * modes) = .0002 * (j + 1);
+                }
+            }
+            const C::EquationDofOperations::Binding unchangedMeans(state), unchangedGuess(guess);
+            fv.LimitReconstructionPP(state, *work);
+            CHECK_NOTHROW(unchangedMeans.Check(state, true));
+            CHECK_NOTHROW(unchangedGuess.Check(guess, true));
+            const auto stats = fv.PositivityReconstructionStats(*work);
+            REQUIRE(stats.first > 0);
+            REQUIRE(stats.second < 1);
+            const auto read = fv.FluxReconstruction(*work).ReadOwned();
+            const auto flow = read.Block("flow"), rans = read.Block("rans");
+            for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            {
+                CHECK(std::abs(flow(iCell, 4 * modes + (reference ? 2 : 0))) < 300);
+                for (int j = 0; j < equation.RANS().ComponentNumber(); ++j)
+                {
+                    CHECK(rans(iCell, j * modes) == .0002 * (j + 1));
+                    for (int mode = 1; mode < modes; ++mode)
+                        CHECK(rans(iCell, j * modes + mode) == 0);
+                }
+            }
+        }
+}
+
 TEST_CASE("SA implicit updates repair scalars after flow compression without unfreezing masked components")
 {
     auto mesh = CauchyTest::PeriodicQuads(mpi, 4);

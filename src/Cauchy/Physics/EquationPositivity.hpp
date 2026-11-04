@@ -44,6 +44,16 @@ namespace DNDS::Cauchy
         std::array<const real *, 2> speciesEnergies{};
         index components, flowFirst, speciesFirst, independent;
 
+        /// Flow and transported species share reconstruction compression.
+        /// RANS reconstruction uses separate scalar rules. This is not the
+        /// final increment policy: Euler scales the whole increment there.
+        /// Indices are logical equation components, independent of storage layout.
+        DNDS_DEVICE_CALLABLE bool CompressesReconstructionComponent(index j) const
+        {
+            return (j >= flowFirst && j < flowFirst + 5) ||
+                   (j >= speciesFirst && j < speciesFirst + independent);
+        }
+
         template <class Row>
         DNDS_DEVICE_CALLABLE FlowState Flow(const Row &values) const
         {
@@ -112,9 +122,15 @@ namespace DNDS::Cauchy
                     return false;
             return true;
         }
-        /// Euler density relaxation and scheme-one energy compression, with
-        /// common scaling of the complete increment. RANS-specific scalar
-        /// final repair belongs to its model adapter, not this thermal rule.
+        /// Euler density relaxation and scheme-one energy compression.
+        /// Returns alpha for U+alpha*dU: density first, then both relaxed
+        /// energy bounds, followed by alpha^(compression*power)*(1-1e-5)
+        /// when limited. The caller scales the complete increment/solve RHS,
+        /// or uses alpha to restrict its scalar dt/dTau. RANS positivity is
+        /// not part of the factor calculation. Species affect the thermal
+        /// references and must move with flow along this conservative line.
+        /// The old state must be admissible; a nonfinite result must fail.
+        /// Scalar repair and final combined-state validation remain required.
         template <class Row, class Increment>
         DNDS_DEVICE_CALLABLE real IncrementFraction(const Row &state, const Increment &increment, real relax, int compression, int power) const
         {
@@ -145,8 +161,10 @@ namespace DNDS::Cauchy
             return fraction < 1 ? std::pow(fraction, compression * power) * (1 - 1e-5) : 1;
         }
         /// Euler final density/energy increment repair (.99 safety, .9 pull-up).
-        /// Returns the common multiplier, or NaN if pull-up fails. Callers
-        /// must reject a nonfinite result; no species repair occurs here.
+        /// Returns the whole-increment multiplier, or NaN if pull-up fails.
+        /// Callers must reject a nonfinite result, scale all components, then
+        /// perform the separate RANS/species repairs and validate the combined
+        /// state. This function neither mutates a row nor repairs species.
         template <class Row, class Increment>
         DNDS_DEVICE_CALLABLE real FixFraction(const Row &state, const Increment &increment) const
         {
@@ -186,7 +204,10 @@ namespace DNDS::Cauchy
                     return std::numeric_limits<real>::quiet_NaN();
             return fraction;
         }
-        /// Euler common quadrature beta. Raw affine references determine the
+        /// Euler flow/species quadrature beta. Apply only to components selected
+        /// by CompressesReconstructionComponent(), relative to the supplied
+        /// admissible base. This differs from whole-vector increment repair.
+        /// Raw affine references determine the
         /// concave energy ratio; a failed property-repaired postcheck falls
         /// back to the validated reference, as in the legacy species path.
         template <class Row, class BaseValues, class HigherValues>

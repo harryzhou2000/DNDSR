@@ -184,11 +184,14 @@ namespace DNDS::Cauchy
                 {
                     ++data.limited;
                     data.minimum = std::min(data.minimum, beta);
-                    for (index j = 0; j < coefficients.ComponentNumber(); ++j)
-                    {
-                        const real reference = referenceLayout ? referenceLayout->View()(iCell, j) : 0;
-                        coefficients(iCell, j) = reference + beta * (coefficients(iCell, j) - reference);
-                    }
+                    for (index component = 0; component < input.ComponentNumber(); ++component)
+                        if (bounds.CompressesReconstructionComponent(component))
+                            for (int mode = 0; mode < modes; ++mode)
+                            {
+                                const index j = component * modes + mode;
+                                const real reference = referenceLayout ? referenceLayout->View()(iCell, j) : 0;
+                                coefficients(iCell, j) = reference + beta * (coefficients(iCell, j) - reference);
+                            }
                 }
             }
         }

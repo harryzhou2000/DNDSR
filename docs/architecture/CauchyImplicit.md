@@ -173,12 +173,10 @@ with the first spatial RHS norm, then still takes the running maximum of
 equation residual norms. Cauchy's `runningMaximum` implements the default
 unseeded behavior (`resBaseType=0`), not this extra RHS seed.
 
-Extended-state PP follow-up: flow5 compression must not scale RANS or species
-increments/reconstruction; their scalar limiters are separate. Physical-dt and
-pseudo-dTau PP restrictions use the flow5 scale. The current extended-state
-implementation still applies common scaling in several paths; its separation
-and composition-dependent thermal postchecks are pending correction. Passing
-homogeneous mixture tests do not validate this block-separation contract.
+The [PP policy](CauchyPositivity.md) distinguishes Euler's whole-vector
+increment/RHS compression from its flow/species reconstruction compression and
+separate scalar repairs. Composition-dependent thermal compression remains
+coupled; no independent species backoff is introduced.
 
 Euler's density/L1/running-maximum criterion is selected with
 `normOrder=1`, `residualReference="runningMaximum"`, `residualComponents=["rho"]`
@@ -570,6 +568,9 @@ limited/unlimited halo, policy-agreement and old-archive tests cover these contr
 Physical Re20/Re200 qualification and matched performance are separate gates.
 
 ## Implicit PP and physical time building blocks
+
+See [Cauchy positivity semantics](CauchyPositivity.md) for the mathematical
+constraints, application scopes, legacy references and remaining RANS gaps.
 
 The unlimited VR warm guess and the filtered flux polynomial are distinct
 fields when WBAP or reconstruction PP is enabled, as in Euler's default

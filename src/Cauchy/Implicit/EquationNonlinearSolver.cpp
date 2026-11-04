@@ -440,8 +440,8 @@ namespace DNDS::Cauchy
                         changeRANS[j] = fraction * change[data.ransFirst + j];
                     }
                     DNDS_check_throw_info(data.rans->Admissible(oldRANS), "RANS correction requires an admissible old mean");
-                    // Euler's scalar update is independent of the optional
-                    // flow compression switch, and follows that compression.
+                    // Preserve Euler's order: whole-vector thermal compression,
+                    // then component-wise RANS repair of that scaled increment.
                     data.rans->RepairIncrement(oldRANS, changeRANS);
                     for (int j = 0; j < data.rans->components; ++j) nextRANS[j] = oldRANS[j] + changeRANS[j];
                     data.rans->RepairMean(candidate(iCell, data.flowFirst), nextRANS);
