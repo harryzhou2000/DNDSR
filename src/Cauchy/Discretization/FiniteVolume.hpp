@@ -75,6 +75,8 @@ namespace DNDS::Cauchy
             std::array<uint64_t, 7> versions{}, shapes{};
         };
         std::optional<Origin> _origin;
+        struct EquationOrigin;
+        std::shared_ptr<const EquationOrigin> _equationOrigin;
         // Only needed when a cell reduction is requested without its matching
         // public face output. Columns: spectral sum, wave jump, pressure min.
         std::optional<Runtime::Array<real>> _faceScratch;
@@ -176,6 +178,37 @@ namespace DNDS::Cauchy
                       Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
         const EquationDofs &ReconstructionGuess(const EquationWorkspace &workspace) const;
         const EquationDofs &FluxReconstruction(const EquationWorkspace &workspace) const;
+        /// Whole-equation counterpart of AuxiliaryPreparation. Holds numeric
+        /// input scopes and reserves optional output arrays before writing.
+        /// Core reads owned inputs only; complete every input field's halo
+        /// before HaloDependent. All runs those phases consecutively. No MPI
+        /// or hidden state update occurs here. Finish publishes exact source,
+        /// output and time provenance. Do not replace buffers during the scope.
+        /// Keep FV/derived-bundle owners on the controller through worker joins;
+        /// retained preparation plans may own MPI resources indirectly.
+        class EquationAuxiliaryPreparation
+        {
+            struct State;
+            std::unique_ptr<State> _state;
+            explicit EquationAuxiliaryPreparation(std::unique_ptr<State> state);
+            friend class FiniteVolume;
+
+        public:
+            EquationAuxiliaryPreparation(EquationAuxiliaryPreparation &&) noexcept;
+            EquationAuxiliaryPreparation &operator=(EquationAuxiliaryPreparation &&) noexcept;
+            ~EquationAuxiliaryPreparation();
+            void Apply(CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All);
+            void Finish(AuxiliaryValues &output);
+        };
+        /// Synchronous CPU property preparation with explicit mixture workers.
+        /// The caller owns collective order/error handling and halo completion;
+        /// even an empty rank uses the same outer schedule. Initial boundary
+        /// support matches EquationWorkspace: extrapolate and adiabatic walls.
+        EquationAuxiliaryPreparation BeginAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time = 0,
+                                                    std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt) const;
+        void PrepareAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time = 0,
+                              std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt) const;
+        void ValidateAuxValues(const EquationDofs &state, const AuxiliaryValues &values, real time = 0) const;
         /// Copyable immutable read scope for RHS geometry/basis data. Apply is
         /// stateless: no MPI, reconstruction, cache update or hidden counters.
         /// Raw input/output views require retained/declared Array leases and

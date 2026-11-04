@@ -155,6 +155,23 @@ TEST_CASE("Auxiliary core completes during a real mean halo write and full publi
             auto reference = fv.BuildAuxiliaryValues({true, true, true, true, true, true, true});
             fv.PrepareAuxValues(state, reference, .25);
             const auto expected = Save(reference);
+            // The logical-state producer preserves the established flow5
+            // auxiliary values exactly, without repacking the physical table.
+            auto semantic = C::EquationDofs::Coupled(equation.Schema(), state);
+            auto logical = fv.BuildAuxiliaryValues({true, true, true, true, true, true, true});
+            auto logicalExchange = halo.Begin();
+            auto logicalPreparation = fv.BeginAuxValues(semantic, logical, .25);
+            logicalPreparation.Apply(DNDS::CFV::ReconstructionRegion::Core);
+            CHECK_THROWS(logicalPreparation.Apply(DNDS::CFV::ReconstructionRegion::HaloDependent));
+            logicalExchange.Wait();
+            logicalPreparation.Apply(DNDS::CFV::ReconstructionRegion::HaloDependent);
+            logicalPreparation.Finish(logical);
+            fv.ValidateAuxValues(semantic, logical, .25);
+            Compare(expected, logical);
+            auto reduced = fv.BuildAuxiliaryValues({false, false, false, false, true, true, true});
+            fv.PrepareAuxValues(semantic, reduced, .25);
+            fv.ValidateAuxValues(semantic, reduced, .25);
+            Compare(expected, reduced);
             double wave = std::accumulate(expected[2].begin(), expected[2].end(), 0.);
             MPI_Allreduce(MPI_IN_PLACE, &wave, 1, MPI_DOUBLE, MPI_SUM, mpi.comm);
             CHECK(wave > 0); // Nonconstant, nonzero signal fixture, including w.
@@ -274,6 +291,10 @@ TEST_CASE("Unused private face scratch is safe when caller supplied outputs move
     large.PrepareAuxValues(state, reference);
     large.PrepareAuxValues(state, output);
     CHECK_NOTHROW(large.ValidateAuxValues(state, output));
+    Compare(Save(reference), output);
+    auto logical = C::EquationDofs::Coupled(equation.Schema(), state);
+    large.PrepareAuxValues(logical, output);
+    large.ValidateAuxValues(logical, output);
     Compare(Save(reference), output);
 }
 TEST_CASE("Auxiliary reductions count both incidences of a self-periodic face")

@@ -344,6 +344,7 @@ namespace DNDS::Cauchy
             }
         }
         output._origin = std::move(origin);
+        output._equationOrigin.reset();
         _state.reset();
     }
     FiniteVolume::AuxiliaryPreparation FiniteVolume::BeginAuxValues(const CFV::FVField &state, AuxiliaryValues &output, real time, const BoundaryInputs *boundary) const

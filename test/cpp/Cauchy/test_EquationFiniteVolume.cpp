@@ -50,6 +50,27 @@ namespace
             }
         }
     }
+    void CompareAuxiliary(const C::AuxiliaryValues &a, const C::AuxiliaryValues &b)
+    {
+        const auto arrays = [](const auto &v)
+        {
+            return std::array<const R::Array<double> *, 7>{v.meanThermodynamics ? &*v.meanThermodynamics : nullptr,
+                                                           v.faceSpectralRadius ? &*v.faceSpectralRadius : nullptr, v.faceWaveJump ? &*v.faceWaveJump : nullptr,
+                                                           v.facePressureMinimum ? &*v.facePressureMinimum : nullptr, v.cellSpectralSum ? &v.cellSpectralSum->Owned() : nullptr,
+                                                           v.cellWaveJump ? &v.cellWaveJump->Owned() : nullptr, v.cellPressureMinimum ? &v.cellPressureMinimum->Owned() : nullptr};
+        };
+        const auto x = arrays(a), y = arrays(b);
+        for (int k = 0; k < 7; ++k)
+            if (x[k] && y[k])
+            {
+                const auto xr = x[k]->Read(), yr = y[k]->Read();
+                const auto u = xr.View<R::UniformTableRows>(), v = yr.View<R::UniformTableRows>();
+                REQUIRE(u.RowCount() == v.RowCount());
+                for (I iRow = 0; iRow < u.RowCount(); ++iRow)
+                    for (I j = 0; j < u.RowSize(iRow); ++j)
+                        CHECK(u(iRow, j) == doctest::Approx(v(iRow, j)).epsilon(2e-11).scale(1));
+            }
+    }
 }
 
 TEST_CASE("Equation FV uses the established P3/gradient/WBAP flow5 kernels across CPU launchers and layouts")
@@ -272,6 +293,9 @@ TEST_CASE("Actual mixture FV residual preserves separate/permuted fields and cor
     const auto stream = engine.CreateCPUStream();
     baseline.Evaluate(referenceState, expected, *baseWork, engine, stream);
     ConservativeIntegral(expected);
+    const C::AuxiliaryRequest all{true, true, true, true, true, true, true};
+    auto referenceAuxiliary = baseline.BuildAuxiliaryValues(all);
+    baseline.PrepareAuxValues(referenceState, referenceAuxiliary, .25, mixture.workers);
     for (int layout = 1; layout < 3; ++layout)
     {
         settings.execution.overlap = layout == 1;
@@ -284,6 +308,24 @@ TEST_CASE("Actual mixture FV residual preserves separate/permuted fields and cor
         fv.Evaluate(state, result, *work, engine, stream);
         Compare(expected, result, 5e-11);
         CHECK(state.PhysicalField(0).Owned().Version() == before);
+        auto request = all;
+        if (layout == 1)
+            request.derived.enabled[int(C::DerivedQuantity::Temperature)] = true;
+        auto auxiliary = fv.BuildAuxiliaryValues(request);
+        std::vector<R::TransferBinding> bindings;
+        std::vector<R::TransferOperation> active;
+        for (I iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+            bindings.push_back(fv.Metrics().BindHalo(state.PhysicalField(iField)));
+        for (auto &binding : bindings)
+            active.push_back(binding.Begin());
+        auto preparation = fv.BeginAuxValues(state, auxiliary, .25, mixture.workers);
+        preparation.Apply(DNDS::CFV::ReconstructionRegion::Core);
+        for (auto &operation : active)
+            operation.Wait();
+        preparation.Apply(DNDS::CFV::ReconstructionRegion::HaloDependent);
+        preparation.Finish(auxiliary);
+        fv.ValidateAuxValues(state, auxiliary, .25);
+        CompareAuxiliary(referenceAuxiliary, auxiliary);
         // One late physical output conflict must reject on all ranks before
         // a field halo is posted or an earlier output generation is published.
         const auto version = result.PhysicalField(0).Owned().Version();
@@ -292,6 +334,15 @@ TEST_CASE("Actual mixture FV residual preserves separate/permuted fields and cor
             pin.emplace(result.PhysicalField(result.PhysicalFieldNumber() - 1).Owned().Read());
         CHECK_THROWS(fv.Evaluate(state, result, *work, engine, stream));
         CHECK(result.PhysicalField(0).Owned().Version() == version);
+        // A species-only mutation invalidates the property publication too.
+        {
+            const auto location = state.LocateBlock("species");
+            auto write = state.PhysicalField(location.physicalField).Owned().Write();
+            const auto values = write.View<R::UniformTableRows>();
+            if (values.RowCount())
+                values(0, location.firstComponent) += 1e-8;
+        }
+        CHECK_THROWS(fv.ValidateAuxValues(state, auxiliary, .25));
     }
     if (mpi.size > 1)
     {

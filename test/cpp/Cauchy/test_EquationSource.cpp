@@ -3,6 +3,7 @@
 #include "Cauchy/Physics/EquationSource.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/Physics/EquationTransport.hpp"
+#include "Cauchy/Physics/EquationFlux.hpp"
 #include "Cauchy/State/EquationTimeStepper.hpp"
 #include "Cauchy/Implicit/LinearSolver.hpp"
 #include "Euler/SourceTermContributor.hpp"
@@ -160,6 +161,60 @@ TEST_CASE("Mixture source point matches the Euler source and all conservative de
     }
 }
 
+TEST_CASE("Mixture physical ALE flux derivatives include composition energy and all conservative columns")
+{
+    Fixture fixture;
+    auto evaluator = fixture.equation.MakePointEvaluator(fixture.workers.Acquire(), {false, false, true});
+    const auto u = fixture.Point(2);
+    const C::FlowState flow{u[0], u[1], u[2], u[3], u[4]};
+    const C::Vector3 normal{.6, 0, .8}, grid{.12, -.04, .07};
+    for (int j = 0; j < fixture.components; ++j)
+    {
+        const auto point = evaluator.Evaluate(flow, {u.data() + 5, fixture.species - 1});
+        C::FlowState direction{};
+        if (j < 5)
+            direction[j] = 1;
+        struct SpeciesDirection
+        {
+            int column;
+            double operator[](int k) const { return column == 5 + k ? 1 : 0; }
+        } speciesDirection{j};
+        const auto primitive = C::PreparePrimitiveDerivative(flow, direction, point, speciesDirection);
+        const auto derivative = C::PrepareCompressibleFluxDerivative(flow, direction, point.thermo.pressure, primitive.pressure, normal, grid);
+        double speed = 0, deltaSpeed = 0;
+        for (int d = 0; d < 3; ++d)
+        {
+            speed += (flow[1 + d] / flow[0] - grid[d]) * normal[d];
+            deltaSpeed += primitive.rhoVelocityTemperature[1 + d] * normal[d];
+        }
+        Eigen::VectorXd expected(fixture.components);
+        for (int i = 0; i < 5; ++i)
+            expected[i] = derivative[i];
+        for (int k = 0; k < fixture.species - 1; ++k)
+            expected[5 + k] = C::PrepareAdvectedScalarFluxDerivative(u[5 + k], j == 5 + k ? 1 : 0, speed, deltaSpeed);
+        const double h = 2e-6 * std::max(std::abs(u[j]), 1e-3);
+        const auto sample = [&](double sign)
+        {
+            Eigen::VectorXd shifted = u;
+            shifted[j] += sign * h;
+            const C::FlowState state{shifted[0], shifted[1], shifted[2], shifted[3], shifted[4]};
+            const auto properties = evaluator.Evaluate(state, {shifted.data() + 5, fixture.species - 1});
+            const auto flux = C::Riemann::PhysicalFlux({state, properties.thermo.pressure}, normal, grid);
+            Eigen::VectorXd result(fixture.components);
+            for (int i = 0; i < 5; ++i)
+                result[i] = flux[i];
+            double q = 0;
+            for (int d = 0; d < 3; ++d)
+                q += (state[1 + d] / state[0] - grid[d]) * normal[d];
+            for (int k = 0; k < fixture.species - 1; ++k)
+                result[5 + k] = shifted[5 + k] * q;
+            return result;
+        };
+        const Eigen::VectorXd actual = (sample(1) - sample(-1)) / (2 * h);
+        CAPTURE(j);
+        CHECK((actual - expected).lpNorm<Eigen::Infinity>() < 2e-6 * std::max(1., expected.lpNorm<Eigen::Infinity>()));
+    }
+}
 TEST_CASE("Owned chemical sources honor separate layouts, stale temperature guesses and ghost independence")
 {
     Fixture fixture;

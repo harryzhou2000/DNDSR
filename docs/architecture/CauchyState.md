@@ -283,6 +283,46 @@ and physical RANS/flame acceptance remain separate work.
 
 ## Logical rows in coupled linear algebra
 
+`BeginAuxValues(EquationDofs, outputs, time, workers)` prepares the same optional
+`AuxiliaryValues` packet for separate or coupled equation fields. The CPU scope
+reserves requested outputs before writing, retains owned input through Core,
+then acquires ghost input only for HaloDependent. The caller posts/joins every
+physical mean field's canonical halo and coordinates distributed failures.
+`PrepareAuxValues` is the consecutive All convenience. Exact schema/backend
+checks remain outside point loops; no global-state repacking occurs.
+
+```text
+mean halos active -> owned-only Core: derived refresh / means / faces / cells
+join all halos   -> HaloDependent: ghost refresh / means / faces / cells
+Finish           -> immutable source/output/time publication
+```
+
+Both ordinary mean thermodynamics and optional derived bundles are supported.
+A mixture uses one explicit matching chemistry worker at a time; no chemistry
+rates are requested for these face/mean properties. Pressure, acoustics and
+molecular/species diffusion bounds come from the actual EOS/transport provider.
+The initial equation boundary profile covers extrapolation and adiabatic walls.
+Wave/pressure statistics and cell spectral sums have the existing definitions;
+missing face outputs use private scratch only when a requested reduction needs
+it. An unused retained scratch allocation is neither acquired nor written.
+
+`Finish` records the FV owner, every physical source binding and owned/ghost
+generation, output storage/shape/value generations, row parts and time.
+`ValidateAuxValues` rejects active inputs/outputs as well as stale generations;
+a change confined to species invalidates the packet. Abandoned started scopes
+fail unfinished numerical outputs. The origin keeps a numeric source alias and
+weak FV key. The preparation itself retains plans: keep FV and derived-bundle
+owners on the controller through worker joins so final MPI cleanup stays there.
+
+`Physics/EquationFlux.hpp` provides pure physical ALE flux derivatives with
+pressure and its directional derivative supplied explicitly by the EOS/energy
+producer. Scalar conservative transport uses the same relative normal velocity.
+The ideal-mixture primitive chain rule supplies composition/thermal derivatives;
+no equivalent-gamma closure is added. These point derivatives are independently
+checked by conservative perturbations, including all species columns and moving
+grid velocity. Connecting them to the extended FV matrix producer is the next
+integration step; this does not claim that producer is implemented already.
+
 `ReadScope::ComponentLayout()` and `WriteScope::ComponentLayout()` resolve
 logical components to physical parents once. The returned
 `DNDS::Algebra::DofComponentLayout<T>` owns a small host descriptor table, while
