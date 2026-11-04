@@ -8,6 +8,9 @@
 #include <future>
 #include <optional>
 #include <type_traits>
+#include <filesystem>
+#include <fstream>
+#include <unistd.h>
 
 namespace P = DNDS::Physics;
 namespace C = P::Chemistry;
@@ -29,12 +32,45 @@ static std::vector<double> Fractions(int species)
     return result;
 }
 
+TEST_CASE("Loaded model description detects changed kinetics with unchanged species")
+{
+    C::ChemicalSource source(Mechanism(), "", 340, 1.225);
+    const auto original = source.ModelDescription();
+    auto changed = original;
+    const auto start = changed.find("A: ");
+    REQUIRE(start != std::string::npos);
+    size_t length = 0;
+    const auto rate = std::stod(changed.substr(start + 3), &length);
+    REQUIRE(rate > 0);
+    changed.replace(start + 3, length, std::to_string(2 * rate));
+    const auto path = std::filesystem::temp_directory_path() / ("cauchy-model-" + std::to_string(getpid()) + ".yaml");
+    struct Cleanup
+    {
+        std::filesystem::path path;
+        ~Cleanup()
+        {
+            std::error_code error;
+            std::filesystem::remove(path, error);
+        }
+    } cleanup{path};
+    {
+        std::ofstream file(path);
+        file << changed;
+        REQUIRE(file.good());
+    }
+    C::ChemicalSource other(path.string(), "", 340, 1.225);
+    CHECK(other.speciesNames() == source.speciesNames());
+    CHECK(other.ModelDescription() != original);
+}
+
 TEST_CASE("shared mixture: fused SI outputs, scaled UV and legacy Euler properties agree")
 {
     const P::ReferenceScales scales{1.225, 340, 2, 288.15};
     auto legacyPool = std::make_shared<std::vector<C::ChemicalSource>>();
     legacyPool->emplace_back(Mechanism(), "", scales.U0, scales.rho0);
     auto &source = legacyPool->front();
+    const auto modelDescription = source.ModelDescription();
+    CHECK(modelDescription == source.clone()->ModelDescription());
     const int species = source.nSpecies();
     REQUIRE(species == 10);
     auto fractions = Fractions(species);
@@ -45,6 +81,7 @@ TEST_CASE("shared mixture: fused SI outputs, scaled UV and legacy Euler properti
     std::vector<double> diffusion(species), enthalpy(species);
     source.EvaluateProperties(temperature, pressure, Y, thermo, &transport,
                               {diffusion.data(), species}, {enthalpy.data(), species});
+    CHECK(source.ModelDescription() == modelDescription); // Mutable TPY is not restart identity.
     CHECK(thermo.pressure == pressure);
     CHECK(thermo.internalEnergy == doctest::Approx(source.mixtureIntEnergy(temperature, Y, pressure)).epsilon(1e-13));
     CHECK(thermo.soundSpeed == doctest::Approx(source.speedOfSound(temperature, Y, pressure)).epsilon(1e-13));

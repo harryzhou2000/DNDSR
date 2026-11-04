@@ -418,7 +418,7 @@ namespace DNDS::Cauchy
             _timeStepper->Commit();
         _lastAcceptedDt = _trialDt;
     }
-    void Domain::PublishTrial(real time, StateEpoch epoch, const R::Array<real> *reconstructionGuess, const R::Array<real> *limitedVRHistory)
+    void Domain::PublishTrial(real time, StateEpoch epoch, const R::Array<real> *reconstructionGuess, const R::Array<real> *limitedVRHistory, const EquationDofs *equationGuess)
     {
         // Agree local immediate-access availability before any accepted values
         // change. A retained debug/Python view must not allow a partial commit
@@ -436,6 +436,8 @@ namespace DNDS::Cauchy
             // polynomial guess when it rejects the accompanying state load.
             if (reconstructionGuess)
                 _fv.RestoreReconstructionGuess(*_workspace, *reconstructionGuess, limitedVRHistory);
+            if (equationGuess)
+                _fv.RestoreReconstructionGuess(*_equationWorkspace, *equationGuess);
         }
         catch (...)
         {
@@ -568,9 +570,11 @@ namespace DNDS::Cauchy
     }
     void Domain::WriteVisualization(const std::string &prefix, int hdfDeflateLevel)
     {
-        DNDS_check_throw_info(!_equationWorkspace, "equation-state visualization output is not connected yet");
         EvaluateObservation();
-        _fv.WriteVisualization(Flow(), *_observationWorkspace, prefix, _time, hdfDeflateLevel);
+        if (_equationWorkspace)
+            _fv.WriteVisualization(_accepted, *_equationObservationWorkspace, prefix, _time, hdfDeflateLevel, _workers);
+        else
+            _fv.WriteVisualization(Flow(), *_observationWorkspace, prefix, _time, hdfDeflateLevel);
     }
     void Domain::EvaluateObservation()
     {

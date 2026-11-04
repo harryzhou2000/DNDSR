@@ -15,7 +15,7 @@ from DNDSR.Cauchy import Domain, Simulation, PhysicalStepLimit, DerivedQuantity
 
 
 @pytest.mark.mpi
-def test_configured_mixture_fields_implicit_step_and_native_worker_refresh():
+def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_path):
     import os
 
     mpi = DNDS.MPIInfo()
@@ -63,6 +63,21 @@ def test_configured_mixture_fields_implicit_step_and_native_worker_refresh():
     assert not derived.current(domain)
     assert derived.refresh(domain)
     assert derived.current(domain)
+    saved = {name: array.numpy().copy() for name, array in fields.items()}
+    path = MPI.COMM_WORLD.bcast(str(tmp_path / "mixture.h5") if MPI.COMM_WORLD.rank == 0 else None, root=0)
+    domain.write_checkpoint(path, json.dumps(config))
+    domain.advance(1e-6)
+    domain.read_checkpoint(path, json.dumps(config))
+    assert domain.time == 1e-6 and domain.step == 1
+    for name, array in fields.items():
+        np.testing.assert_array_equal(array.numpy(), saved[name])
+    domain.write_visualization(path + ".output")
+    import h5py
+
+    with h5py.File(path + ".output.vtkhdf", "r") as output:
+        values = output["VTKHDF/CellData"]
+        assert "rhoY:H2" in values and "Y:N2" in values and "T" in values
+        assert np.all(np.isfinite(values["T"][:]))
 
 
 def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=False, time_pp=False, lvr_variant=None):

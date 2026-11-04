@@ -16,6 +16,7 @@
 #include "CFV/Math/PeriodicFrame.hpp"
 #include <cstdlib>
 #include <numeric>
+#include <limits>
 
 namespace C = DNDS::Cauchy;
 namespace A = DNDS::Algebra;
@@ -127,6 +128,30 @@ TEST_CASE("Equation FV uses the established P3/gradient/WBAP flow5 kernels acros
         fv.Evaluate(state, result, *work, engine, stream);
         Compare(result, C::EquationDofs::Coupled(equation.Schema(), expected), 2e-12);
         ConservativeIntegral(result);
+        if (variant == 1)
+        {
+            const auto &coefficients = fv.ReconstructionGuess(*work);
+            auto snapshot = C::EquationDofOperations::NewVector(coefficients);
+            auto replacement = C::EquationDofOperations::NewVector(coefficients);
+            C::EquationDofOperations::Copy(snapshot, coefficients);
+            C::EquationDofOperations::Fill(replacement, .125);
+            std::optional<C::EquationDofs::ReadScope> retained;
+            if (mpi.rank == 0)
+                retained.emplace(coefficients.ReadOwned());
+            CHECK_THROWS(fv.RestoreReconstructionGuess(*work, replacement));
+            retained.reset();
+            Compare(coefficients, snapshot, 1e-15);
+            if (mpi.rank == 0)
+            {
+                auto write = replacement.WriteOwned();
+                write.Block(0)(0, 0) = std::numeric_limits<double>::quiet_NaN();
+            }
+            CHECK_THROWS(fv.RestoreReconstructionGuess(*work, replacement));
+            Compare(coefficients, snapshot, 1e-15);
+            C::EquationDofOperations::Fill(replacement, .125);
+            fv.RestoreReconstructionGuess(*work, replacement);
+            Compare(coefficients, replacement, 1e-15);
+        }
     }
 }
 

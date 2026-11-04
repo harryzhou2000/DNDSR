@@ -191,6 +191,8 @@ def test_python_reducer_lifetime_through_eager_mpi_progress():
                               0, R.DestinationInit.Identity)
     binding = R.PayloadPlan(route, source.layout, target.layout, source.element_schema()).bind(
         source, target, reducer=reducer, options=R.TransferOptions(R.TransferMode.Transient, ctx, 73))
+    with pytest.raises(RuntimeError, match="preflight"):
+        binding.begin_scheduled(caller_valid=rank != 0)
     progress = R.MPIProgress()
     operation = binding.begin_scheduled()
     done = progress.import_operation(operation)

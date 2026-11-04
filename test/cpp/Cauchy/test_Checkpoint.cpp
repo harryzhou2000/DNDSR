@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/Simulation.hpp"
+#include "Cauchy/IO/EquationArchive.hpp"
 #include "CartesianFixture.hpp"
 #include "../CFV/ReconstructionFixture.hpp"
 #include "DNDS/Runtime/Array/ArrayIO.hpp"
@@ -11,6 +12,8 @@
 #include <filesystem>
 #include <unistd.h>
 #include <limits>
+#include <fstream>
+#include <sstream>
 
 namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
@@ -47,6 +50,221 @@ namespace
         MPI_Barrier(mpi.comm);
     }
 }
+TEST_CASE("Equation archive remaps coupled and split fields without confusing component ranges")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 3);
+    C::DomainSettings settings;
+    C::FiniteVolume fv(mesh, settings, C::EquationSystem::Resolve(settings.equation));
+    auto schema = C::EquationSystem::Resolve(settings.equation).Schema();
+    schema.blocks.push_back({"tracers", {{"a", "1", "tracer"}, {"b", "1", "tracer"}}, {}});
+    auto coupled = C::EquationDofs::Coupled(schema, fv.Metrics().BuildField(R::RowLayout::ColMajor(0, 7)));
+    {
+        auto write = coupled.WriteOwned();
+        for (DNDS::index iBlock = 0; iBlock < coupled.BlockNumber(); ++iBlock)
+        {
+            const auto values = write.Block(iBlock);
+            for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                for (DNDS::index j = 0; j < values.ComponentNumber(); ++j)
+                    values(iCell, j) = 1000 * mpi.rank + 100 * iCell + 10 * iBlock + j;
+        }
+    }
+    DNDS::Algebra::DofBundle fields(fv.Metrics().Space());
+    fields.Add("flow", fv.Metrics().BuildField(R::RowLayout::Dense(0, 5)));
+    fields.Add("tracers", fv.Metrics().BuildField(R::RowLayout::TiledColMajor(0, 2, 32)));
+    auto split = C::EquationDofs::Separate(schema, std::move(fields));
+    auto context = std::make_shared<R::CommunicationContext>(mpi.comm);
+    std::vector<R::RowRequest> requests;
+    for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+        requests.push_back({mpi.rank, mesh->NumCell() - 1 - iCell, iCell});
+    R::RowTransferPlan route(context, mesh->NumCell(), mesh->NumCell(), requests);
+    C::EquationArchive archive{C::DescribeEquationStorage(coupled), {coupled.PhysicalField(0).Owned()}};
+    archive.Restore(split, route, context);
+    {
+        const auto read = split.ReadOwned();
+        for (DNDS::index iBlock = 0; iBlock < split.BlockNumber(); ++iBlock)
+            for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                for (DNDS::index j = 0; j < read.Block(iBlock).ComponentNumber(); ++j)
+                    CHECK(read.Block(iBlock)(iCell, j) == 1000 * mpi.rank + 100 * (mesh->NumCell() - 1 - iCell) + 10 * iBlock + j);
+    }
+    C::EquationArchive splitArchive{C::DescribeEquationStorage(split), {split.PhysicalField(0).Owned(), split.PhysicalField(1).Owned()}};
+    splitArchive.Restore(coupled, route, context);
+    const auto read = coupled.ReadOwned();
+    for (DNDS::index iBlock = 0; iBlock < coupled.BlockNumber(); ++iBlock)
+        for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+            for (DNDS::index j = 0; j < read.Block(iBlock).ComponentNumber(); ++j)
+                CHECK(read.Block(iBlock)(iCell, j) == 1000 * mpi.rank + 100 * iCell + 10 * iBlock + j);
+}
+#ifdef DNDS_USE_CANTERA
+namespace
+{
+    C::DomainSettings MixtureSettings()
+    {
+        C::DomainSettings settings;
+        settings.equation.eos = "idealGasMixture";
+        settings.equation.mixture.mechanismFile = "h2o2.yaml";
+        settings.initialTemperature = 1000 / settings.equation.mixture.T0;
+        settings.initialMassFractions = {{"H2", .1}, {"O2", .2}};
+        settings.initialPrimitive = {1, .2, -.1, .03, 1};
+        settings.execution.layout = "soa";
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 2;
+        settings.numerics.reconstructionIterations = 4;
+        settings.numerics.faceFallback = false;
+        return settings;
+    }
+    void InitializeMixtureWave(C::Domain &domain)
+    {
+        auto state = domain.Dofs();
+        auto write = state.WriteOwned();
+        for (DNDS::index iBlock = 0; iBlock < domain.Dofs().BlockNumber(); ++iBlock)
+        {
+            const auto values = write.Block(iBlock);
+            for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+            {
+                const auto point = domain.Discretization().Metrics().GetCellCent(iCell);
+                const double scale = 1 + .05 * std::sin(6.283185307179586 * (point[0] + point[1]));
+                for (DNDS::index j = 0; j < values.ComponentNumber(); ++j)
+                    values(iCell, j) *= scale;
+            }
+        }
+    }
+    void CompareEquation(const C::EquationDofs &a, const C::EquationDofs &b, double tolerance = 0)
+    {
+        const auto left = a.ReadOwned(), right = b.ReadOwned();
+        for (DNDS::index iBlock = 0; iBlock < a.BlockNumber(); ++iBlock)
+            for (DNDS::index iCell = 0; iCell < left.Block(iBlock).owned.RowCount(); ++iCell)
+                for (DNDS::index j = 0; j < left.Block(iBlock).ComponentNumber(); ++j)
+                    if (tolerance == 0)
+                        CHECK(left.Block(iBlock)(iCell, j) == right.Block(iBlock)(iCell, j));
+                    else
+                        CHECK(left.Block(iBlock)(iCell, j) == doctest::Approx(right.Block(iBlock)(iCell, j)).epsilon(tolerance));
+    }
+}
+TEST_CASE("Mixture restart redistributes every block and cold starts changed polynomial degree")
+{
+    const auto path = Path("cauchy-mixture-redistributed-"), cold = path + ".cold.h5";
+    auto settings = MixtureSettings();
+    const C::Json metadata{{"test", "mixture persistent IDs"}};
+    MPI_Comm writers = MPI_COMM_NULL;
+    MPI_Comm_split(mpi.comm, mpi.rank < std::max(1, mpi.size / 2) ? 0 : MPI_UNDEFINED, mpi.rank, &writers);
+    if (writers != MPI_COMM_NULL)
+    {
+        {
+            C::Domain source("mixture", CauchyTest::PeriodicQuads(DNDS::MPIInfo(writers), 4), settings);
+            InitializeMixtureWave(source);
+            source.ResidualState();
+            source.WriteCheckpoint(path, metadata, true);
+        }
+        MPI_Comm_free(&writers);
+    }
+    MPI_Barrier(mpi.comm);
+    settings.execution.layout = "aosoa32";
+    settings.numerics.cfv.maxOrder = 3;
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    C::Domain restored("mixture", mesh, settings), expected("mixture", mesh, settings);
+    InitializeMixtureWave(expected);
+    restored.ReadCheckpoint(path, metadata);
+    CompareEquation(restored.Dofs(), expected.Dofs());
+    restored.WriteCheckpoint(cold, metadata, true);
+    auto file = std::make_shared<DNDS::Serializer::SerializerH5>(mpi);
+    file->OpenFile(cold, true);
+    std::string text;
+    file->ReadString("metadata_json", text);
+    const auto description = C::Json::parse(text).at("reconstruction_storage");
+    const auto range = DNDS::EvenSplitRange(mpi.rank, mpi.size, 16);
+    const auto coefficients = C::EquationArchive::Read(file, "reconstruction_field_", description, mpi, {range.second - range.first, range.first});
+    for (const auto &field : coefficients.fields)
+    {
+        const auto read = field.Read();
+        for (DNDS::index iCell = 0; iCell < field.RowCount(); ++iCell)
+            for (DNDS::index j = 0; j < field.RowSize(iCell); ++j)
+                CHECK(read.View()(iCell, j) == 0);
+    }
+    file->CloseFile();
+    Remove({path, cold});
+}
+TEST_CASE("Mixture BDF2 restart restores species history and warm reconstruction transactionally")
+{
+    const auto path = Path("cauchy-mixture-history-");
+    auto settings = MixtureSettings();
+    C::TimeSettings time;
+    time.method = "bdf2";
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 3);
+    C::Domain source("mixture", mesh, settings, time);
+    InitializeMixtureWave(source);
+    source.Advance(1e-5);
+    source.Advance(2e-5);
+    const C::Json metadata{{"test", "mixture history"}};
+    source.WriteCheckpoint(path, metadata, true);
+    settings.execution.layout = "aosoa32";
+    C::Domain restored("mixture", mesh, settings, time);
+    const auto before = restored.Dofs().Clone();
+    std::optional<R::Array<double>::ReadLease> held;
+    if (mpi.rank == 0)
+        held.emplace(restored.Dofs().PhysicalField(1).Owned().Read());
+    CHECK_THROWS(restored.ReadCheckpoint(path, metadata));
+    CompareEquation(restored.Dofs(), before);
+    CHECK(restored.Time() == 0);
+    held.reset();
+    restored.ReadCheckpoint(path, metadata);
+    CompareEquation(restored.Dofs(), source.Dofs());
+    CHECK(restored.PreviousTimeStep() == source.PreviousTimeStep());
+    source.Advance(1.5e-5);
+    restored.Advance(1.5e-5);
+    CompareEquation(restored.Dofs(), source.Dofs(), 2e-13);
+    Remove({path});
+}
+TEST_CASE("Mixture visualization writes conservative species and physical boundary traces")
+{
+    const auto prefix = Path("cauchy-mixture-output-");
+    auto settings = MixtureSettings();
+    settings.mesh.dimension = 3;
+    settings.boundaries["7"].kind = "extrapolate";
+    const auto mesh = CFVTest::CartesianHexes(mpi, 1);
+    C::Domain domain("mixture", mesh, settings);
+    const auto before = domain.Dofs().Clone();
+    domain.WriteVisualization(prefix, 1);
+    CompareEquation(domain.Dofs(), before);
+    const auto file = H5Fopen((prefix + ".vtkhdf").c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+    REQUIRE(file >= 0);
+    for (const auto &field : std::vector<std::pair<std::string, double>>{{"rho", 1}, {"rhoY:H2", .1}, {"Y:H2", .1}, {"Y:O2", .2}, {"Y:N2", .7}, {"T", settings.initialTemperature}})
+    {
+        const auto dataset = H5Dopen(file, ("VTKHDF/CellData/" + field.first).c_str(), H5P_DEFAULT);
+        REQUIRE(dataset >= 0);
+        const auto space = H5Dget_space(dataset);
+        REQUIRE(H5Sget_simple_extent_npoints(space) == 1);
+        double value = 0;
+        CHECK(H5Dread(dataset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, &value) >= 0);
+        CHECK(value == doctest::Approx(field.second).epsilon(1e-12));
+        H5Sclose(space);
+        H5Dclose(dataset);
+    }
+    H5Fclose(file);
+    const auto surfacePath = prefix + "_surface_rank" + std::to_string(mpi.rank) + ".csv";
+    std::ifstream surface(surfacePath);
+    std::string line;
+    REQUIRE(bool(std::getline(surface, line)));
+    CHECK(line.find("w,T,Y:H2,") != std::string::npos);
+    DNDS::index rows = 0;
+    while (std::getline(surface, line))
+    {
+        std::istringstream record(line);
+        std::vector<double> values;
+        std::string token;
+        while (std::getline(record, token, ','))
+            values.push_back(std::stod(token));
+        REQUIRE(values.size() == 25);
+        CHECK(values[14] == doctest::Approx(settings.initialTemperature).epsilon(1e-12));
+        CHECK(values[15] == doctest::Approx(.1).epsilon(1e-12));
+        ++rows;
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &rows, 1, MPI_INT64_T, MPI_SUM, mpi.comm);
+    CHECK(rows > 0);
+    surface.close();
+    CHECK(std::filesystem::remove(surfacePath));
+    Remove({prefix + ".vtkhdf"});
+}
+#endif
 TEST_CASE("Older viscous archives retain primitive gradients and reject a silent polynomial method change")
 {
     const auto path = Path("cauchy-viscous-policy-");

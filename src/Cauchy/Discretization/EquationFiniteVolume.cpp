@@ -605,8 +605,34 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::RestoreReconstructionGuess(EquationWorkspace &work, const EquationDofs &guess) const
     {
-        DNDS_check_throw_info(work.owner == _data, "foreign equation reconstruction workspace");
-        EquationDofOperations::Copy(work.coefficients, guess);
+        std::optional<EquationDofs::ReadScope> source;
+        std::optional<EquationDofs::WriteScope> destination;
+        try
+        {
+            MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                            {
+                DNDS_check_throw_info(work.owner == _data, "foreign equation reconstruction workspace");
+                work.coefficients.RequireCompatible(guess);
+                EquationDofOperations::RequireDistinct(work.coefficients, guess);
+                source.emplace(guess.ReadOwned());
+                for (index iBlock = 0; iBlock < guess.BlockNumber(); ++iBlock)
+                {
+                    const auto input = source->Block(iBlock);
+                    for (index iCell = 0; iCell < input.owned.RowCount(); ++iCell)
+                        for (index j = 0; j < input.ComponentNumber(); ++j)
+                            DNDS_check_throw_info(std::isfinite(input(iCell, j)), "nonfinite equation reconstruction guess");
+                }
+                destination.emplace(work.coefficients.WriteOwned()); });
+        }
+        catch (...)
+        {
+            if (destination)
+                destination->CancelUnmodified();
+            throw;
+        }
+        for (index iBlock = 0; iBlock < guess.BlockNumber(); ++iBlock)
+            Algebra::ApplyHostRows(Algebra::PointwiseOperation::Copy, destination->Block(iBlock), source->Block(iBlock).owned,
+                                   EquationBlockArrayView<const real>{}, real(0), real(0));
         work.sourceState.reset();
         work.sourceCoefficients.reset();
     }

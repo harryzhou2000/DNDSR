@@ -9,6 +9,7 @@
 // #undef DNDS_USE_CANTERA
 #ifdef DNDS_USE_CANTERA
 #    include "cantera/core.h"
+#    include "cantera/base/YamlWriter.h"
 #    include "cantera/numerics/Integrator.h"
 #    include "cantera/zeroD/IdealGasReactor.h"
 #    include "cantera/zeroD/ReactorNet.h"
@@ -155,6 +156,27 @@ namespace DNDS::Physics::Chemistry
         std::string transportModel = "MixtureAveraged";
         std::string transportModelNormalized = "mixtureaveraged";
         std::string transportModelCantera = "mixture-averaged";
+        std::shared_ptr<const std::string> description;
+
+        std::string modelDescription() const
+        {
+#ifdef DNDS_USE_CANTERA
+            Cantera::YamlWriter writer;
+            writer.setPrecision(17);
+            writer.skipUserDefined();
+            writer.addPhase(sol);
+            auto description = Cantera::AnyMap::fromYamlString(writer.toYamlString());
+            for (const auto *key : {"date", "generator", "git-commit"})
+                description.erase(key);
+            for (auto &phase : description["phases"].asVector<Cantera::AnyMap>())
+                phase.erase("state");
+            description.setMetadata("precision", Cantera::AnyValue(17L));
+            return description.toYamlString();
+#else
+            DNDS_check_throw_info(false, "ChemicalSource model description requires Cantera");
+            return {};
+#endif
+        }
 
         Impl(const std::string &mechanismFile, const std::string &phaseName,
              double U0In, double rho0In, double TBaseIn, std::string transportModelIn)
@@ -167,6 +189,10 @@ namespace DNDS::Physics::Chemistry
 #ifdef DNDS_USE_CANTERA
             I.sol = Cantera::newSolution(mechanismFile, phaseName, I.transportModelCantera);
             I.solT = Cantera::newSolution(mechanismFile, phaseName, I.transportModelCantera);
+            // Freeze the loaded model once, before clone's parameter/unit
+            // round trips can add rounding noise. Clones share this immutable
+            // provenance just as they share ModelIdentity, never mutable state.
+            I.description = std::make_shared<const std::string>(modelDescription());
             auto gas = I.sol->thermo();
             I.Ns = static_cast<int>(gas->nSpecies());
             I.speciesNames.resize(I.Ns);
@@ -453,6 +479,7 @@ namespace DNDS::Physics::Chemistry
             c.solT = R.solT->clone({}, false, false);
 #endif
             c.Ns = R.Ns;
+            c.description = R.description;
             c.speciesNames = R.speciesNames;
             c.mw = R.mw;
             c.invMw = R.invMw;
@@ -611,6 +638,11 @@ namespace DNDS::Physics::Chemistry
     {
         DNDS_assert(impl_);
         return impl_->Ns;
+    }
+    std::string ChemicalSource::ModelDescription() const
+    {
+        DNDS_check_throw_info(impl_, "model description needs an initialized chemical backend");
+        return *impl_->description;
     }
     int ChemicalSource::nReactions() const
     {

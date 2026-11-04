@@ -52,6 +52,8 @@ namespace DNDS::Physics::Thermodynamics
         /// Bookkeeping reference temperature, not a universal EOS validity bound.
         real BaseTemperature() const;
         std::shared_ptr<const void> ModelIdentity() const;
+        /// Persistent loaded-model description frozen at material construction.
+        const std::string &ModelDescription() const;
 
         /// Linear volumetric internal energy at the backend's reference floor.
         /// Uses raw transported rhoY (including the dependent species), without

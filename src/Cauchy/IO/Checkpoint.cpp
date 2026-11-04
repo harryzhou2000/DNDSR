@@ -1,4 +1,5 @@
 #include "Cauchy/Core/Domain.hpp"
+#include "Cauchy/IO/EquationArchive.hpp"
 #include "DNDS/Runtime/Array/ArrayIO.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
@@ -20,7 +21,7 @@ namespace DNDS::Cauchy
                 return Geom::BC_ID_PERIODIC_3;
             return zone;
         }
-        Json FlowSchema(const EquationSystem &equation)
+        Json EquationMetadata(const EquationSystem &equation)
         {
             const auto &schema = equation.Schema();
             Json blocks = Json::array();
@@ -31,7 +32,25 @@ namespace DNDS::Cauchy
                     components.push_back({{"name", component.name}, {"units", component.units}, {"conservation_group", component.conservationGroup}});
                 blocks.push_back({{"name", block.name}, {"components", components}, {"vector_starts", block.vectorStarts}});
             }
-            return {{"family", schema.family}, {"energy_convention", schema.energyConvention}, {"physical_accumulation", schema.physicalAccumulation}, {"blocks", blocks}, {"eos", "perfectGas"}, {"gamma", equation.Gas().gamma}, {"gas_constant", equation.Gas().gasConstant}};
+            Json result{{"family", schema.family}, {"energy_convention", schema.energyConvention}, {"physical_accumulation", schema.physicalAccumulation}, {"blocks", blocks}};
+            if (equation.HasMixture())
+            {
+                const auto &material = equation.Mixture();
+                const auto &scales = material.Scales();
+                result["eos"] = "idealGasMixture";
+                result["species"] = material.SpeciesNames();
+                result["reference_scales"] = {scales.rho0, scales.U0, scales.L0, scales.T0};
+                result["base_temperature"] = material.BaseTemperature();
+                result["base_internal_energies"] = material.BaseSpecificInternalEnergies();
+                result["model_description"] = material.ModelDescription();
+            }
+            else
+            {
+                result["eos"] = "perfectGas";
+                result["gamma"] = equation.Gas().gamma;
+                result["gas_constant"] = equation.Gas().gasConstant;
+            }
+            return result;
         }
         nlohmann::json CompatibleConfig(Json config)
         {
@@ -376,17 +395,22 @@ namespace DNDS::Cauchy
     }
     void Domain::WriteCheckpoint(const std::string &path, const Json &resolved, bool includeReconstruction) const
     {
-        DNDS_check_throw_info(!_equationWorkspace, "equation-state checkpoint output is not connected yet");
         const MPIInfo mpi(_fv.Metrics().Communicator());
         const bool history = _timeStepper && _timeStepper->Method() == "bdf2" && _timeStepper->HasHistory();
-        const bool limitedVRHistory = includeReconstruction && _fv.LimitedVRHistory(*_workspace);
+        const bool limitedVRHistory = includeReconstruction && !_equationWorkspace && _fv.LimitedVRHistory(*_workspace);
         int flags[]{int(includeReconstruction), -int(includeReconstruction), int(history), -int(history), int(limitedVRHistory), -int(limitedVRHistory)};
         MPI_Allreduce(MPI_IN_PLACE, flags, 6, MPI_INT, MPI_MIN, mpi.comm);
         DNDS_check_throw_info(flags[0] == -flags[1] && flags[2] == -flags[3] && flags[4] == -flags[5], "checkpoint optional sections differ between ranks");
-        const Json metadata{{"schema_version", 1}, {"mesh_envelope", 2}, {"flow", FlowSchema(_equation)}, {"reconstruction", _fv.ReconstructionMetadata()}, {"time_method", _timeStepper ? _timeStepper->Method() : "ssprk3"}, {"history", history}, {"limited_vr_history", limitedVRHistory}, {"limited_vr_history_schema", 1}, {"frame", FrameMetadata(_fv, _time)}};
+        Json metadata{{"schema_version", 1}, {"mesh_envelope", 2}, {"flow", EquationMetadata(_equation)}, {"reconstruction", _fv.ReconstructionMetadata()}, {"time_method", _timeStepper ? _timeStepper->Method() : "ssprk3"}, {"history", history}, {"limited_vr_history", limitedVRHistory}, {"limited_vr_history_schema", 1}, {"frame", FrameMetadata(_fv, _time)}};
+        if (_equationWorkspace)
+        {
+            metadata["state_storage"] = DescribeEquationStorage(_accepted);
+            if (includeReconstruction)
+                metadata["reconstruction_storage"] = DescribeEquationStorage(_fv.ReconstructionGuess(*_equationWorkspace));
+        }
         auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
         serializer->OpenFile(path, false);
-        serializer->WriteInt("cauchy_format", 4);
+        serializer->WriteInt("cauchy_format", _equationWorkspace ? 5 : 4);
         serializer->WriteString("resolved_config", resolved.dump());
         serializer->WriteString("metadata_json", metadata.dump());
         serializer->WriteString("domain_name", _name);
@@ -400,21 +424,32 @@ namespace DNDS::Cauchy
         Runtime::WriteArray(envelope->topology, serializer, "mesh_topology", mpi);
         Runtime::WriteArray(envelope->coordinates, serializer, "mesh_coordinates", mpi);
         Runtime::WriteArray(envelope->periodicTransforms, serializer, "periodic_transforms", mpi);
-        Runtime::WriteArray(Flow().Owned(), serializer, "flow", mpi);
-        if (includeReconstruction)
-            Runtime::WriteArray(_restoreReconstruction ? *_reconstructionBackup : _fv.ReconstructionGuess(*_workspace).Owned(), serializer, "reconstruction_guess", mpi);
+        if (_equationWorkspace)
+        {
+            WriteEquationArrays(_accepted, serializer, "state_field_", mpi);
+            if (includeReconstruction)
+                WriteEquationArrays(_restoreReconstruction ? *_equationBackup : _fv.ReconstructionGuess(*_equationWorkspace), serializer, "reconstruction_field_", mpi);
+        }
+        else
+        {
+            Runtime::WriteArray(Flow().Owned(), serializer, "flow", mpi);
+            if (includeReconstruction)
+                Runtime::WriteArray(_restoreReconstruction ? *_reconstructionBackup : _fv.ReconstructionGuess(*_workspace).Owned(), serializer, "reconstruction_guess", mpi);
+        }
         if (limitedVRHistory)
             Runtime::WriteArray(_restoreReconstruction ? *_limitedVRBackup : *_fv.LimitedVRHistory(*_workspace), serializer, "limited_vr_history", mpi);
         if (history)
         {
             serializer->WriteReal("history_dt", _timeStepper->PreviousDt());
-            Runtime::WriteArray(_timeStepper->PreviousState().CoupledField().Owned(), serializer, "history_flow", mpi);
+            if (_equationWorkspace)
+                WriteEquationArrays(_timeStepper->PreviousState(), serializer, "history_field_", mpi);
+            else
+                Runtime::WriteArray(_timeStepper->PreviousState().CoupledField().Owned(), serializer, "history_flow", mpi);
         }
         serializer->CloseFile();
     }
     void Domain::ReadCheckpoint(const std::string &path, const Json &resolved)
     {
-        DNDS_check_throw_info(!_equationWorkspace, "equation-state checkpoint input is not connected yet");
         const MPIInfo mpi(_fv.Metrics().Communicator());
         auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
         serializer->OpenFile(path, true);
@@ -427,7 +462,7 @@ namespace DNDS::Cauchy
         serializer->ReadString("domain_name", name);
         serializer->ReadReal("accepted_time", time);
         serializer->ReadIndex("accepted_step", step);
-        DNDS_check_throw_info(version >= 2 && version <= 4, "unsupported Cauchy checkpoint format");
+        DNDS_check_throw_info(version >= 2 && version <= 5, "unsupported Cauchy checkpoint format");
         const auto rowCount = StoredRows(serializer, "cell_ids");
         const auto range = EvenSplitRange(mpi.rank, mpi.size, rowCount);
         const Serializer::ArrayGlobalOffset shard{range.second - range.first, range.first};
@@ -435,9 +470,11 @@ namespace DNDS::Cauchy
         auto topology = Runtime::ReadArray<index>(serializer, "mesh_topology", mpi, shard);
         auto coordinates = Runtime::ReadArray<real>(serializer, "mesh_coordinates", mpi, shard);
         auto transforms = Runtime::ReadArray<real>(serializer, "periodic_transforms", mpi, {1, 0});
-        auto flow = Runtime::ReadArray<real, Runtime::FixedRows<5>>(serializer, "flow", mpi, shard);
+        std::optional<Runtime::Array<real>> flow;
+        if (version < 5)
+            flow.emplace(Runtime::ReadArray<real, Runtime::FixedRows<5>>(serializer, "flow", mpi, shard));
         Json metadata;
-        if (version == 4)
+        if (version >= 4)
         {
             std::string serialized;
             serializer->ReadString("metadata_json", serialized);
@@ -454,27 +491,38 @@ namespace DNDS::Cauchy
             limitedVRHistory.emplace(Runtime::ReadArray<real>(serializer, "limited_vr_history", mpi, shard));
         std::optional<Runtime::Array<real>> history;
         real historyDt = 0;
-        if (version == 4 && metadata.is_object() && metadata.value("history", false))
+        if (version >= 4 && metadata.is_object() && metadata.value("history", false))
         {
             serializer->ReadReal("history_dt", historyDt);
-            history.emplace(Runtime::ReadArray<real, Runtime::FixedRows<5>>(serializer, "history_flow", mpi, shard));
+            if (version < 5)
+                history.emplace(Runtime::ReadArray<real, Runtime::FixedRows<5>>(serializer, "history_flow", mpi, shard));
+        }
+        std::optional<EquationArchive> stateArchive, reconstructionArchive, historyArchive;
+        if (version == 5)
+        {
+            stateArchive.emplace(EquationArchive::Read(serializer, "state_field_", metadata.at("state_storage"), mpi, shard));
+            if (metadata.contains("reconstruction_storage"))
+                reconstructionArchive.emplace(EquationArchive::Read(serializer, "reconstruction_field_", metadata.at("reconstruction_storage"), mpi, shard));
+            if (metadata.value("history", false))
+                historyArchive.emplace(EquationArchive::Read(serializer, "history_field_", metadata.at("state_storage"), mpi, shard));
         }
         serializer->CloseFile();
         // Older BDF2 files carry the last physical dt with their history.
         // Other old files leave it unknown (zero): the first resumed step has
         // no growth cap, then its actual accepted dt establishes the reference.
-        if (!entries.count("last_accepted_dt") && history)
+        if (!entries.count("last_accepted_dt") && (history || historyArchive))
             lastDt = historyDt;
         DNDS_check_throw_info(std::isfinite(lastDt) && lastDt >= 0, "invalid stored last accepted timestep");
         if (std::isfinite(time) && time >= 0 && lastDt > time)
             DNDS_check_throw_info(lastDt - time <= 1024 * std::numeric_limits<real>::epsilon() * std::max(lastDt, time),
                                   "stored last accepted timestep exceeds the physical clock");
-        if (entries.count("last_accepted_dt") && history)
+        if (entries.count("last_accepted_dt") && (history || historyArchive))
             DNDS_check_throw_info(lastDt == historyDt, "stored last accepted timestep conflicts with BDF history");
         auto storedConfig = Json::parse(config, nullptr, false);
         int valid = name == _name && !storedConfig.is_discarded() && CompatibleConfig(storedConfig) == CompatibleConfig(resolved) && std::isfinite(time) && time >= 0 && step >= 0 &&
-                    flow.RowCount() == ids.RowCount() && flow.Layout().Width() == 5;
-        valid = valid && (version < 4 || (metadata.is_object() && metadata.value("schema_version", 0) == 1 && metadata.value("flow", Json()) == FlowSchema(_equation)));
+                    (stateArchive ? bool(_equationWorkspace) && stateArchive->Compatible(_trial) && stateArchive->fields[0].RowCount() == ids.RowCount()
+                                  : !_equationWorkspace && flow && flow->RowCount() == ids.RowCount() && flow->Layout().Width() == 5);
+        valid = valid && (version < 4 || (metadata.is_object() && metadata.value("schema_version", 0) == 1 && metadata.value("flow", Json()) == EquationMetadata(_equation)));
         valid = valid && CompatibleFrame(metadata, _fv, std::isfinite(time) ? time : 0);
         valid = valid && (!limitedVRHistory || (reconstruction && limitedVRHistory->RowCount() == ids.RowCount() &&
                                                 !limitedVRHistory->Layout().IsVariable() && limitedVRHistory->Layout().Width() == 2));
@@ -486,7 +534,7 @@ namespace DNDS::Cauchy
             const auto differences = storedConfig.is_discarded() ? nlohmann::json() : nlohmann::json::diff(CompatibleConfig(storedConfig), CompatibleConfig(resolved));
             DNDS_check_throw_info(false, "Cauchy restart config/equation schema mismatch; normalized config differences: " + differences.dump());
         }
-        const int meshEnvelope = version == 4 ? metadata.value("mesh_envelope", 1) : 1;
+        const int meshEnvelope = version >= 4 ? metadata.value("mesh_envelope", 1) : 1;
         DNDS_check_throw_info(meshEnvelope == 1 || meshEnvelope == 2, "unsupported Cauchy mesh envelope");
         auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
         const auto targetIds = CellIds(*this);
@@ -519,9 +567,53 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(topologyDifference.empty() && coordinateDifference.empty() && SameRows(transforms, envelope->periodicTransforms),
                                   "Cauchy restart persistent-cell mesh topology/geometry mismatch: topology " + topologyDifference + "; coordinates " + coordinateDifference); });
         _trialReady = false;
+        // Extended state shares the same mesh/ID validation and publication
+        // transaction as historical flow5. No accepted field is changed until
+        // means, optional reconstruction and BDF history have all been checked.
+        if (stateArchive)
+        {
+            stateArchive->Restore(_trial, route, context);
+            DNDS_check_throw_info(Admissible(_trial), "Cauchy restart contains inadmissible equation states");
+            std::optional<EquationDofs> guess;
+            MPI::LocalStage(mpi, [&]
+                            { guess.emplace(EquationDofOperations::NewVector(_fv.ReconstructionGuess(*_equationWorkspace))); });
+            int compatible = reconstructionArchive && reconstructionArchive->Compatible(*guess) &&
+                             metadata.value("reconstruction", Json()) == _fv.ReconstructionMetadata();
+            MPI_Allreduce(MPI_IN_PLACE, &compatible, 1, MPI_INT, MPI_MIN, mpi.comm);
+            if (compatible)
+                reconstructionArchive->Restore(*guess, route, context);
+            else
+                EquationDofOperations::Fill(*guess, 0);
+            std::unique_ptr<EquationTimeStepper> restoredStepper;
+            if (_timeStepper)
+            {
+                MPI::LocalStage(mpi, [&]
+                                { restoredStepper = _timeStepper->Fresh(); });
+                if (historyArchive && metadata.value("time_method", std::string{}) == restoredStepper->Method() && restoredStepper->Method() == "bdf2")
+                {
+                    std::optional<EquationDofs> previous;
+                    MPI::LocalStage(mpi, [&]
+                                    {
+                        DNDS_check_throw_info(std::isfinite(historyDt) && historyDt > 0, "invalid equation restart history timestep");
+                        previous.emplace(EquationDofOperations::NewVector(_trial)); });
+                    historyArchive->Restore(*previous, route, context);
+                    DNDS_check_throw_info(Admissible(*previous), "inadmissible equation restart history");
+                    MPI::LocalStage(mpi, [&]
+                                    { restoredStepper->RestoreHistory(*previous, historyDt); });
+                }
+            }
+            StateEpoch epoch;
+            epoch.acceptedStep = uint64_t(step);
+            PublishTrial(time, epoch, nullptr, nullptr, &*guess);
+            if (restoredStepper)
+                _timeStepper.swap(restoredStepper);
+            _lastAcceptedDt = lastDt;
+            _nextTrial = 0;
+            return;
+        }
         // Existing trial allocations and binding identities remain stable.
         auto &trial = _trial.CoupledField();
-        transfer(flow, trial.Owned());
+        transfer(*flow, trial.Owned());
         DNDS_check_throw_info(_fv.Admissible(trial), "Cauchy restart contains inadmissible states");
         Runtime::Array<real> guess;
         MPI::LocalStage(mpi, [&]

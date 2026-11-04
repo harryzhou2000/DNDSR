@@ -225,6 +225,12 @@ namespace DNDS::Physics::Chemistry
         /// Equal filenames/species counts do not prove equal loaded mechanisms.
         /// This token carries no mutable Cantera state and is not a restart ID.
         std::shared_ptr<const void> ModelIdentity() const { return modelIdentity_; }
+        /// Setup-only deterministic description of the loaded species,
+        /// thermodynamics, transport and reactions, including imported data.
+        /// Omits mutable phase state, timestamps and user comments. Frozen at
+        /// initial load and shared by clones. Strict restart comparison may
+        /// reject a different Cantera serialization version conservatively.
+        std::string ModelDescription() const;
 
         const std::string &mechanismFile() const { return mechanismFile_; }
         const std::string &phaseName() const { return phaseName_; }

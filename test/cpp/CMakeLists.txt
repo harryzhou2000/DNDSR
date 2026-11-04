@@ -241,6 +241,12 @@ dnds_add_mpi_test(cauchy_nonlinear "Cauchy/test_NonlinearSolver.cpp" "cauchy;cfv
 dnds_add_mpi_test(cauchy_polynomial_multigrid "Cauchy/test_PolynomialMultigrid.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_implicit_domain "Cauchy/test_ImplicitDomain.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_checkpoint "Cauchy/test_Checkpoint.cpp" "cauchy;cfv;geom;dnds")
+if(DNDS_USE_CANTERA)
+    foreach(NP ${DNDS_TEST_NP_LIST})
+        set_property(TEST dnds_cauchy_checkpoint_np${NP} APPEND PROPERTY ENVIRONMENT
+            "DNDS_MECH_PATH=${DNDS_CANTERA_DATA_DIR}" "CANTERA_DATA=${DNDS_CANTERA_DATA_DIR}")
+    endforeach()
+endif()
 dnds_add_mpi_test(cauchy_physical_timestep "Cauchy/test_PhysicalTimeStep.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_viscous_flux "Cauchy/test_ViscousFlux.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_auxiliary_preparation "Cauchy/test_AuxiliaryPreparation.cpp" "cauchy;cfv;geom;dnds")

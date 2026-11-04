@@ -183,9 +183,11 @@ namespace DNDS::Cauchy
         void Evaluate(EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace,
                       Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
         const EquationDofs &ReconstructionGuess(const EquationWorkspace &workspace) const;
-        /// Owned warm-guess restore/reset; no halo transfer or mean mutation.
-        /// Caller joins pending workspace work and releases conflicting views.
+        /// Collective transactional owned warm-guess restore: finite-value and
+        /// lease preflight precedes every write. No halo transfer/mean mutation.
+        /// Caller joins workspace work and supplies a distinct snapshot.
         void RestoreReconstructionGuess(EquationWorkspace &workspace, const EquationDofs &guess) const;
+        /// Local reset; caller coordinates failures and joins workspace work.
         void ResetReconstruction(EquationWorkspace &workspace) const;
         const EquationDofs &FluxReconstruction(const EquationWorkspace &workspace) const;
         /// Latest complete equation evaluation's global coefficient-update
@@ -491,6 +493,12 @@ namespace DNDS::Cauchy
         /// Native parallel VTKHDF cell means and rank-local surface quadrature
         /// samples. Does not gather mesh/state to a serial rank.
         void WriteVisualization(const CFV::FVField &state, const Workspace &workspace, const std::string &prefix, real time, int hdfDeflateLevel = 0) const;
+        /// All conservative blocks plus mean thermodynamic/species fields and
+        /// reconstructed boundary traces. Reads an observation workspace only;
+        /// does not modify the production reconstruction or any state values.
+        void WriteVisualization(const EquationDofs &state, const EquationWorkspace &workspace,
+                                const std::string &prefix, real time, int hdfDeflateLevel,
+                                const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers) const;
 
     private:
         void ValidateEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &workspace, real time) const;

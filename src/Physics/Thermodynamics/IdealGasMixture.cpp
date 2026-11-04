@@ -8,6 +8,7 @@ namespace DNDS::Physics::Thermodynamics
     {
         ReferenceScales scales;
         std::shared_ptr<const void> identity;
+        std::string description;
         std::vector<std::string> species;
         std::vector<real> baseEnergy, gasConstants;
         real temperatureFloor;
@@ -20,6 +21,7 @@ namespace DNDS::Physics::Thermodynamics
             DNDS_check_throw_info(scales.U0 == prototype.velScale() && scales.rho0 == prototype.rhoScale(),
                                   "mixture scales differ from the chemical backend's energy/source convention");
             species = prototype.speciesNames();
+            description = prototype.ModelDescription();
             auto base = prototype.mixtureBaseInternalRhoESpecies();
             baseEnergy.assign(base.data, base.data + base.nSpecies);
             gasConstants = prototype.speciesGasConstants();
@@ -35,6 +37,7 @@ namespace DNDS::Physics::Thermodynamics
     const ReferenceScales &IdealGasMixture::Scales() const { return _state->scales; }
     real IdealGasMixture::BaseTemperature() const { return _state->temperatureFloor; }
     std::shared_ptr<const void> IdealGasMixture::ModelIdentity() const { return _state->identity; }
+    const std::string &IdealGasMixture::ModelDescription() const { return _state->description; }
     real IdealGasMixture::BaseInternalEnergy(real rho, Chemistry::ConstSpeciesBufferView rhoY) const
     {
         DNDS_assert(rhoY.nSpecies == SpeciesNumber() - 1);

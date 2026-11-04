@@ -79,7 +79,7 @@ namespace DNDS::Cauchy
         index _lastCharacteristicFallbacks = 0;
         void UpdateStage(real dt, real historyWeight, real stageWeight, real stageTime);
         void PublishTrial(real time, StateEpoch epoch, const Runtime::Array<real> *reconstructionGuess = nullptr,
-                          const Runtime::Array<real> *limitedVRHistory = nullptr);
+                          const Runtime::Array<real> *limitedVRHistory = nullptr, const EquationDofs *equationGuess = nullptr);
         void EvaluateObservation();
         void InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh);
         void ConfigureTimeStep(const TimeSettings &time, int compressionPower);
@@ -192,6 +192,9 @@ namespace DNDS::Cauchy
         /// missing/incompatible polynomial guesses cold-start at zero. Active
         /// LVR stores its retained shock/contact history with an opted-in warm
         /// guess; both restore together or cold-start together.
+        /// Extended equation archives retain all physical fields and their
+        /// logical block map, including species history. Native layouts are
+        /// preserved on write and converted on read. Derived fields are omitted.
         void WriteCheckpoint(const std::string &path, const Json &resolved, bool includeReconstruction = false) const;
         void ReadCheckpoint(const std::string &path, const Json &resolved);
     };

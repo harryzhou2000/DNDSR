@@ -124,16 +124,17 @@ PYBIND11_MODULE(cauchy_pybind11, m)
         .def("discard_step", &C::Domain::DiscardStep)
         .def("stable_step", &C::Domain::StableStep, py::arg("cfl"), py::call_guard<py::gil_scoped_release>())
         .def("limit_physical_step", &C::Domain::LimitPhysicalStep, py::arg("dt"), py::call_guard<py::gil_scoped_release>(), "Collective configured Euler PP/growth bound, without advancing state or history. All ranks pass the same positive dt and release conflicting views; advance with result.dt.")
+        .def("write_visualization", &C::Domain::WriteVisualization, py::arg("prefix"), py::arg("hdf_deflate_level") = 0, py::call_guard<py::gil_scoped_release>(), "Collective accepted-state VTKHDF and boundary CSV output in code units, including all species fields. Uses separate observation reconstruction. Release debug views before calling; pass a common path/compression setting.")
         .def("write_checkpoint", [](const C::Domain &domain, const std::string &path, const std::string &resolved, bool reconstruction)
              {
                  C::Json input;
                  DNDS::MPI::LocalStage(DNDS::MPIInfo(domain.Discretization().Metrics().Communicator()), [&] { input = C::Json::parse(resolved); });
-                 domain.WriteCheckpoint(path, input, reconstruction); }, py::arg("path"), py::arg("resolved_json"), py::arg("include_reconstruction") = false, py::call_guard<py::gil_scoped_release>())
+                 domain.WriteCheckpoint(path, input, reconstruction); }, py::arg("path"), py::arg("resolved_json"), py::arg("include_reconstruction") = false, py::call_guard<py::gil_scoped_release>(), "Collective native checkpoint of all equation fields and BDF history; physical layouts are preserved. Optional reconstruction supports compatible warm continuation. Pass common metadata/path on the domain communicator.")
         .def("read_checkpoint", [](C::Domain &domain, const std::string &path, const std::string &resolved)
              {
                  C::Json input;
                  DNDS::MPI::LocalStage(DNDS::MPIInfo(domain.Discretization().Metrics().Communicator()), [&] { input = C::Json::parse(resolved); });
-                 domain.ReadCheckpoint(path, input); }, py::arg("path"), py::arg("resolved_json"), py::call_guard<py::gil_scoped_release>());
+                 domain.ReadCheckpoint(path, input); }, py::arg("path"), py::arg("resolved_json"), py::call_guard<py::gil_scoped_release>(), "Collective persistent-cell-ID restart, permitting redistribution and layout changes. Release all retained views, including species. Accepted means/history publish together; missing or incompatible reconstruction cold-starts.");
     py::class_<C::Simulation>(m, "Simulation", "Coordinated CPU domains. Every control rank calls advance; local meshes follow configured domain-rank order. Release debug views before publication. No process-failure recovery.")
         .def(py::init([](const std::vector<std::shared_ptr<DNDS::Geom::UnstructuredMesh>> &meshes, const DNDS::MPIInfo &mpi, const std::string &json)
                       {

@@ -201,7 +201,8 @@ owned values. History Commit uses nonthrowing handle swaps after accepted-state
 publication; Discard preserves accepted history. Callback exceptions can leave
 scratch partial. DITR Begin restores the intermediate means and rate guesses;
 Domain resets its intermediate reconstruction before a retry. The flow5 checkpoint keeps its existing `history_flow` representation
-through an explicit adapter; extended physical checkpoint sections are pending.
+through an explicit adapter; extended physical fields use the format-5 block
+archive described below.
 Layout-independent time equations do not by themselves complete extended
 production BC, PP, physical Jacobian assembly or RANS/species validation.
 
@@ -285,7 +286,7 @@ extrapolate BC producers until connected. The established flow5 path retains
 its existing capabilities. Euler-style thermal/species PP now composes with the
 equation-state residual and nonlinear stages; see
 [CauchyImplicit.md](CauchyImplicit.md#equation-state-thermal-and-species-pp).
-Extended checkpoint/frontend adapters
+Extended restart and visualization support is described below; frontend adapters
 and physical RANS/flame acceptance remain separate work.
 
 ## Logical rows in coupled linear algebra
@@ -532,10 +533,10 @@ that outlives submission.
 The source follows the active Euler repair, temperature-floor, units and
 unfiltered-Jacobian conventions described in [shared Physics](Physics.md).
 The limited equation-state FV profile above includes this source. The production
-Domain's extended BC/PP and checkpoint path are not yet connected. The physical
+Domain connects the extended BC/PP and checkpoint paths. The physical
 Jacobian and whole-equation nonlinear stage operator now compose with the logical
 linear/time drivers; see [CauchyImplicit.md](CauchyImplicit.md#whole-equation-cpu-nonlinear-adapter).
-The production extended Domain frontend is still pending. Its physical source/implicit-reactor fixtures do not qualify a full
+The standardized production frontend remains separate work. The physical source/implicit-reactor fixtures do not qualify a full
 RANS/species spatial solver or the pending NACA/flame studies.
 
 `PreparePrimitiveDerivative` accepts one conservative flow direction and a
@@ -642,8 +643,8 @@ enables Fourier heat conduction and suppresses species diffusion through the
 wall. This is the existing wall discretization, not a new boundary penalty.
 
 The approximate equation Jacobian retains Euler's scalar physical-BC diagonal
-contribution. This checkpoint does not introduce an exact boundary derivative
-or complete production Domain/restart integration. The established flow5
+contribution. This does not introduce an exact boundary derivative.
+The extended Domain/restart path uses these same operators. The established flow5
 boundary/Jacobian APIs and their larger analytic-profile set remain available.
 
 For an explicit mixture refresh, pass a worker lease:
@@ -681,3 +682,56 @@ direct halo overlap, exact field/segment oracles, rejected bindings and failed
 writer reservations, retained lifetimes, explicit device rejection, and exact
 typed/raw finite-volume parity. Existing physical, restart and Python tests
 continue to qualify the supported flow5 frontend.
+
+## Extended equation restart
+
+`Cauchy/IO/EquationArchive` separates storage mapping from model and mesh checks.
+It describes logical blocks by name, physical-field ordinal, first component
+and width. Each owned physical field is written directly with Runtime Array IO;
+there is no forced AoS copy or serialized ghost payload. Reads retain the stored
+row shard until the canonical persistent-cell-ID route is available. When
+physical grouping matches, that route transfers directly into the destination's
+AoS/SoA/AoSoA layout. A different coupled/split grouping uses temporary remapped
+fields and scatters logical blocks locally. This conversion belongs to restart,
+not numerical kernels. Every component range must cover its parent exactly,
+without overlap or holes; matching the total component count is insufficient.
+
+Extended Domains write `cauchy_format=5`. The top-level metadata and mesh
+envelope retain the format-4 conventions, with `state_storage` and optional
+`reconstruction_storage` descriptors added to `metadata_json`. Native arrays
+are named `state_field_0`, `state_field_1`, etc.; optional arrays use
+`reconstruction_field_` and `history_field_`. The history uses the mean-state
+block map. BDF2's previous state includes every equation block and its previous
+dt. `cell_ids`, topology, coordinates, periodic transforms, accepted time/step
+and last dt retain their existing meanings. Existing perfect-gas flow5 files
+continue to use format 4 and read formats 2 through 4.
+
+The default still omits reconstruction. An explicitly saved compatible guess
+restores every block; missing guesses or changed polynomial metadata/widths
+cold-start all coefficients at zero. A changed physical layout does not make
+the guess incompatible. Derived thermodynamic caches are never persisted.
+Loading uses trial buffers and reserves all accepted writes before publishing;
+a retained Python/C++ species reader blocks the whole accepted-state commit.
+The BDF owner is replaced only after successful publication.
+
+Mixture metadata includes ordered species, energy convention, reference scales,
+reference energies and a frozen Cantera description of the loaded model. This
+description expands imported thermodynamics, transport and reactions, omits
+mutable TPY state and timestamps, and is captured once before worker cloning.
+Clones share the original description rather than adding parameter-round-trip
+noise to provenance. Strict comparison deliberately does not promise restart
+compatibility between different Cantera serialization versions. Filenames or
+matching species counts alone cannot authorize a restart with changed chemistry.
+
+`WriteVisualization` uses a separate observation reconstruction, so output
+cadence does not overwrite the production warm-start guess. Volume VTKHDF
+contains all conservative component names (including transported `rhoY:name`),
+plus `p`, `T`, `u`, `v`, `w`, `Mach` and all `Y:name` fractions, including the
+dependent species. Derived properties are evaluated once per cell into an
+output-only buffer, using the same equation model and explicit worker pool as
+the numerical operators. Output is in code units. Physical surface CSV traces
+evaluate the limited reconstruction at boundary quadrature points and apply
+the equation boundary-value producer; their columns include temperature and
+full species fractions. An inadmissible reconstructed trace falls back to its
+cell mean before applying the BC, as in the existing flow output path.
+Accepted means and the production reconstruction remain unchanged.
