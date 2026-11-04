@@ -100,6 +100,7 @@ namespace DNDS::Cauchy
         std::vector<R::Array<real>> sourceValues;
         bool chemical;
         int iterations = 0;
+        real relativeUpdate = 0;
         std::optional<EquationDofOperations::Binding> sourceState, sourceCoefficients;
         real sourceTime = 0;
 
@@ -483,10 +484,25 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
         return work.coefficients;
     }
+    void FiniteVolume::ValidateWorkspace(const EquationDofs &state, const EquationWorkspace &work) const
+    {
+        DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
+        work.binding.Check(state);
+    }
     const EquationDofs &FiniteVolume::FluxReconstruction(const EquationWorkspace &work) const
     {
         DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
         return work.fluxCoefficients;
+    }
+    int FiniteVolume::LastReconstructionIterations(const EquationWorkspace &work) const
+    {
+        DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
+        return work.iterations;
+    }
+    real FiniteVolume::LastReconstructionUpdate(const EquationWorkspace &work) const
+    {
+        DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
+        return work.relativeUpdate;
     }
 
     void FiniteVolume::Evaluate(EquationDofs &state, EquationDofs &residual, EquationWorkspace &work,
@@ -494,6 +510,7 @@ namespace DNDS::Cauchy
     {
         work.sourceState.reset();
         work.sourceCoefficients.reset();
+        work.relativeUpdate = _data->settings.numerics.reconstruction == "variational" ? std::numeric_limits<real>::infinity() : 0;
         const MPIInfo mpi(Metrics().Communicator());
         // Observe only this lane's producer prefix. MPI remains on the caller's
         // controller thread, including when the CPU launcher uses worker threads.
@@ -504,7 +521,7 @@ namespace DNDS::Cauchy
                         {
             DNDS_check_throw_info(work.owner == _data && std::isfinite(time) && stream.Context().device == R::Device::Host(),
                                   "foreign equation workspace, invalid time or missing CPU backend");
-            work.binding.Check(state);
+            ValidateWorkspace(state, work);
             _data->equation.ValidateStateSchema(residual);
             state.RequireCompatible(residual);
             EquationDofOperations::RequireDistinct(state, residual);
@@ -627,7 +644,8 @@ namespace DNDS::Cauchy
                                 }
                         } });
                     MPI_Allreduce(MPI_IN_PLACE, norms, 2, MPI_DOUBLE, MPI_SUM, mpi.comm);
-                    converged = std::sqrt(norms[0] / std::max(norms[1], real(1e-300))) <= numerics.reconstructionTolerance;
+                    work.relativeUpdate = std::sqrt(norms[0] / std::max(norms[1], real(1e-300)));
+                    converged = work.relativeUpdate <= numerics.reconstructionTolerance;
                 }
                 local([&]
                       { for (auto &field : work.fields) _data->reconstruction.CommitReconstruction(field.reconstruction); });

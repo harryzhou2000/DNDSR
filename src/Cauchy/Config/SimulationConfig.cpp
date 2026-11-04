@@ -196,23 +196,28 @@ namespace DNDS::Cauchy
     }
     void ImplicitSettings::Validate() const
     {
+        ValidateComponents(5);
+    }
+    void ImplicitSettings::ValidateComponents(index components) const
+    {
+        DNDS_check_throw_info(components > 0 && components < INT_MAX, "invalid implicit equation dimension");
         DNDS_check_throw_info((normOrder == 1 || normOrder == 2) &&
                                   (residualReference == "initial" || residualReference == "runningMaximum") &&
                                   !residualComponents.empty(),
                               "invalid implicit residual norm/reference/components");
-        std::array<bool, 5> selected{};
+        std::vector<int> selected;
         for (const auto component : residualComponents)
         {
-            DNDS_check_throw_info(component >= 0 && component < 5 && !selected[component], "implicit residual components must be distinct flow5 indices");
-            selected[component] = true;
+            DNDS_check_throw_info(component >= 0 && component < components && std::find(selected.begin(), selected.end(), component) == selected.end(), "implicit residual components must be distinct equation indices");
+            selected.push_back(component);
         }
         const auto nonnegative = [](real value)
         { return std::isfinite(value) && value >= 0; };
-        std::array<bool, 5> updated{};
+        std::vector<int> updated;
         for (const auto component : multigrid.updateComponents)
         {
-            DNDS_check_throw_info(component >= 0 && component < 5 && !updated[component], "pMG update components must be distinct flow5 indices");
-            updated[component] = true;
+            DNDS_check_throw_info(component >= 0 && component < components && std::find(updated.begin(), updated.end(), component) == updated.end(), "pMG update components must be distinct equation indices");
+            updated.push_back(component);
         }
         DNDS_check_throw_info((diagonal == "entries" || diagonal == "block") && (!roeDissipation || diagonal == "block") &&
                                   (jacobianAction == "assembled" || jacobianAction == "semiMatrixFree") &&

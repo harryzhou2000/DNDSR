@@ -9,24 +9,26 @@ namespace DNDS::Cauchy
     /// All components remain observable; selection only controls acceptance.
     /// One instance belongs to one solve, including a finest FAS solve. It
     /// performs no MPI and never changes residuals, corrections or tolerances.
-    class ResidualConvergence
+    template <class Norms>
+    class BasicResidualConvergence
     {
         const ImplicitSettings &_settings;
-        FlowState _initial{}, _reference{};
+        Norms _initial{}, _reference{};
         bool _started = false, _accepted = false;
         real _ratio = 0;
 
     public:
         /// Settings must be validated and outlive this policy.
-        explicit ResidualConvergence(const ImplicitSettings &settings) : _settings(settings) {}
-        void Observe(const FlowState &residual)
+        explicit BasicResidualConvergence(const ImplicitSettings &settings, Norms prototype = {}) : _settings(settings), _initial(prototype), _reference(prototype) {}
+        void Observe(const Norms &residual)
         {
+            DNDS_check_throw_info(residual.size() == _initial.size(), "residual component count changed");
             for (auto value : residual)
                 DNDS_check_throw_info(std::isfinite(value) && value >= 0, "invalid global residual norm");
             if (!_started)
                 _initial = _reference = residual;
             else if (_settings.residualReference == "runningMaximum")
-                for (int j = 0; j < 5; ++j)
+                for (index j = 0; j < index(residual.size()); ++j)
                     _reference[j] = std::max(_reference[j], residual[j]);
             _started = true;
             _accepted = true;
@@ -42,9 +44,10 @@ namespace DNDS::Cauchy
                 _ratio = std::max(_ratio, std::min(ratio, std::numeric_limits<real>::max()));
             }
         }
-        const FlowState &Initial() const { return _initial; }
-        const FlowState &Reference() const { return _reference; }
+        const Norms &Initial() const { return _initial; }
+        const Norms &Reference() const { return _reference; }
         bool Accepted() const { return _started && _accepted; }
         real TargetRatio() const { return _ratio; }
     };
+    using ResidualConvergence = BasicResidualConvergence<FlowState>;
 }

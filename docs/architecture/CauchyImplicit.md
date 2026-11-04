@@ -801,6 +801,87 @@ A permanent CGNS repartition test was proven failing before this correction.
 It now passes at np1/2/4/8. The actual old format3 archive also loads and takes
 its next ESDIRK4 step after repartition, preserving loaded means and diagnostics.
 
+## Whole-equation CPU nonlinear adapter
+
+`EquationNonlinearSolver` connects the equation-state FV residual, physical
+Jacobian and logical linear driver to the same private iteration policy as
+`NonlinearSolver`. It does not flatten separate flow/species fields or infer
+logical positions from physical storage order. The original flow5 adapter
+keeps its existing PP and p-FAS behavior.
+
+```mermaid
+flowchart TD
+    Time[EquationTimeStepper: history and stage equation] --> Equation[EquationNonlinearSolver: bound trial state]
+    Field[Existing flow5 NonlinearSolver] --> Policy[Shared nonlinear iteration policy]
+    Equation --> Policy
+    Policy --> Residual[Evaluate integrated FV residual and reconstruction]
+    Residual --> Norm[All-component norms; explicit stopping selection]
+    Norm --> Auxiliary[Prepare explicit auxiliary bundle and pseudo-time]
+    Auxiliary --> Jacobian[Physical coupled Jacobian, including source quadrature]
+    Jacobian --> Linear[EquationLinearSolver: SGS or GMRES with SGS/ILU]
+    Linear --> Candidate[Separate candidate; actual EOS and species validation]
+    Candidate --> Commit[Agree admissibility, then copy owned means]
+    Commit --> Residual
+```
+
+The constructor requires an explicit resolved `ComponentSelection` for stopping.
+This prevents the historical flow5 config default from silently ignoring extra
+equations. `ImplicitSettings::Validate()` retains its existing five-component
+frontend contract; `ValidateComponents(n)` validates a resolved operator's
+dimension. Every component's norm is reported in the dynamic equation report,
+even when only a subset controls stopping. Update selection is independent and
+projects the linear problem before correction; unselected means are copied
+exactly. Norm formulas, initial/running-maximum reference, pseudo-CFL growth,
+fixed correction cap and optional profiling use the shared iteration policy.
+
+The equation adapter initially requires the implemented EquationWorkspace
+profile and rejects PP, Roe dissipation and p-FAS. It retains actual mean halos
+and high-order source samples from each residual evaluation. Subsequent aux
+preparation is stateless with explicit outputs; the source Jacobian consumes
+the current reconstruction publication rather than evaluating only the mean.
+The final VR iteration count and already-reduced update norm are observable.
+Strict VR acceptance needs a positive reconstruction tolerance. With fixed
+sweeps and no norm measurement, its update diagnostic is infinity; constant or
+direct-gradient reconstruction reports zero. Reading diagnostics adds no MPI.
+
+The caller constructs/calls/destroys this CPU adapter collectively in domain
+order, serializes its bound state, workspace and engine, and retains MPI owners
+on the controller through worker joins. Each input/output physical field must
+be distinct; debug views must not conflict with its reads/writes. All ranks
+agree solve coefficients, correction caps and arbitrary-length component
+selections before iteration. Checked mode coordinates local failures between
+operators. Caller-ordered mode delegates that intermediate error coordination
+to the caller; entry agreement and numerical reductions still run.
+Construction and Solve join their supplied CPU lane's incoming prefix before
+reading means. Dependencies on other lanes remain the caller's responsibility.
+
+Correction is prepared in a separate candidate. All values must be finite;
+raw independent species must be nonnegative and sum to at most density. The
+actual EOS validates temperature and pressure, including the configured floors,
+before any bound-state writer is acquired. Rejection by these candidate checks
+preserves owned state and its generations. This is an admissibility check, not a new compression,
+line search or rollback algorithm. Euler-derived extended PP and mean-species
+repair remain separate integration work. A finite correction-capped report is
+unconverged; the time orchestrator retains the Euler default acceptance policy
+unless rejection is explicitly requested.
+
+This is a usable full-equation stage operator, not yet the production extended
+Domain frontend. Boundary/PP/checkpoint/frontend/RANS adapters and the requested
+NACA0012/flame studies remain required. CUDA kernels remain deferred.
+
+Focused tests compare finite-sweep flow5 corrections/norms against the existing
+adapter, recover a mixture manufactured state with separate/permuted storage,
+and advance a distributed reacting FV state through the actual nonlinear and
+BDF drivers toward an independent Cantera reactor trajectory. The latter
+checks temporal refinement and preserved full-energy flow components; it is
+not the pending spatial flame sanity study. Critical errors cover aliasing and
+negative-species candidate rejection without changing input generations.
+
+```sh
+cmake --build build --target dnds_test_cauchy_equation_finite_volume dnds_test_cauchy_nonlinear -j8
+ctest --test-dir build -R '^dnds_cauchy_(equation_finite_volume|nonlinear)_np(1|2|4|8)$' --output-on-failure -j1
+```
+
 ## Frozen-state phase benchmark
 
 Build the opt-in `cauchy_benchmark_implicit` target with tests enabled. It uses

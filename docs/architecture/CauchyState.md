@@ -522,8 +522,10 @@ that outlives submission.
 The source follows the active Euler repair, temperature-floor, units and
 unfiltered-Jacobian conventions described in [shared Physics](Physics.md).
 The limited equation-state FV profile above includes this source. The production
-Domain's extended nonlinear/physical-Jacobian adapters, BC/PP and checkpoint path
-are not yet connected. Its physical source/implicit-reactor fixtures do not qualify a full
+Domain's extended BC/PP and checkpoint path are not yet connected. The physical
+Jacobian and whole-equation nonlinear stage operator now compose with the logical
+linear/time drivers; see [CauchyImplicit.md](CauchyImplicit.md#whole-equation-cpu-nonlinear-adapter).
+The production extended Domain frontend is still pending. Its physical source/implicit-reactor fixtures do not qualify a full
 RANS/species spatial solver or the pending NACA/flame studies.
 
 `PreparePrimitiveDerivative` accepts one conservative flow direction and a

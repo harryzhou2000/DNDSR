@@ -167,6 +167,9 @@ namespace DNDS::Cauchy
         /// flow5 Workspace retains those established capabilities.
         std::shared_ptr<EquationWorkspace> BuildEquationWorkspace(EquationDofs &state,
                                                                   std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt) const;
+        /// Local preflight of owner and bound state allocations. No numerical
+        /// access, property refresh or communication occurs here.
+        void ValidateWorkspace(const EquationDofs &state, const EquationWorkspace &workspace) const;
         /// Integrated residual for every logical equation block. CPU controller
         /// entry is synchronous; mean/coefficient transfers overlap owned-only
         /// core work when configured. Caller serializes workspace/state handles
@@ -179,6 +182,12 @@ namespace DNDS::Cauchy
                       Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
         const EquationDofs &ReconstructionGuess(const EquationWorkspace &workspace) const;
         const EquationDofs &FluxReconstruction(const EquationWorkspace &workspace) const;
+        /// Latest complete equation evaluation's global coefficient-update
+        /// norm. No extra reduction occurs when reading these diagnostics.
+        /// Fixed sweeps without a tolerance leave the update norm unmeasured
+        /// (infinity); constant/gradient reconstruction reports zero.
+        int LastReconstructionIterations(const EquationWorkspace &workspace) const;
+        real LastReconstructionUpdate(const EquationWorkspace &workspace) const;
         /// Whole-equation counterpart of AuxiliaryPreparation. Holds numeric
         /// input scopes and reserves optional output arrays before writing.
         /// Core reads owned inputs only; complete every input field's halo
@@ -267,6 +276,7 @@ namespace DNDS::Cauchy
                              const EquationWorkspace *sourceReconstruction = nullptr) const;
         FiniteVolume(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const EquationSystem &equation);
         const CFV::FiniteVolumePlan &Metrics() const;
+        const EquationSystem &Equation() const;
         const CFV::VariationalReconstructionPlan &Reconstruction() const;
         const Geom::UnstructuredMesh &Mesh() const;
         const RigidMotion &Motion() const;

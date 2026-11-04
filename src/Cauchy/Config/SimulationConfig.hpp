@@ -243,6 +243,9 @@ namespace DNDS::Cauchy
         ImplicitPositivitySettings positivity;
         PolynomialMultigridSettings multigrid;
         void Validate() const;
+        /// Operator-level validation after resolving an equation's dimension.
+        /// The existing config/frontend validation retains its flow5 contract.
+        void ValidateComponents(index components) const;
         DNDS_DECLARE_CONFIG(ImplicitSettings)
         {
             DNDS_FIELD(diagonal, "entries or full block diagonal storage");

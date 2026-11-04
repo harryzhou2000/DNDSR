@@ -126,9 +126,11 @@ invalid or missing guess uses the backend's existing initialization. These
 point methods can serve explicit derived-field refresh and fused quadrature
 work. Cauchy's `EquationPointEvaluator` and explicit mixture derived refresh
 now use them, including material/scale publication keys and actual stale
-temperature warm starts; see [Cauchy state](CauchyState.md). Production extended
-RHS/stage/linear/BC/PP/checkpoint integration is separate. These point facilities
-do not by themselves implement a RANS/species solver or change current flow5
+temperature warm starts; see [Cauchy state](CauchyState.md). The production
+Domain still needs extended BC/PP/checkpoint integration. The equation-state FV,
+physical Jacobian and nonlinear/linear stage operators now use these point
+facilities, as described in [CauchyImplicit.md](CauchyImplicit.md#whole-equation-cpu-nonlinear-adapter).
+These point facilities do not by themselves implement a RANS/species solver or change current flow5
 frontend dispatch.
 
 ## Conservative chemical point source

@@ -33,12 +33,13 @@ namespace DNDS::Cauchy
         /// Null means no clock queries or extra communication. A provided
         /// output resets per call and retains partial timings on exceptions.
         NonlinearProfile *profile = nullptr;
-        /// Empty updates all flow5 components. A subset solves the principal
+        /// Empty updates all components. A subset solves the principal
         /// linear system with all other means frozen, including through PP.
         /// This never changes the separately configured convergence selection.
         std::vector<index> updateComponents;
     };
-    struct NonlinearIterationReport
+    template <class Norms>
+    struct BasicNonlinearIterationReport
     {
         bool converged = false;
         index iterations = 0, linearIterations = 0, rhsLimited = 0, incrementLimited = 0;
@@ -46,7 +47,7 @@ namespace DNDS::Cauchy
         std::vector<index> levelCorrections;
         /// All component norms remain visible even for a selected-component
         /// stop. Reference may be a running maximum; initial never changes.
-        FlowState initialResidual{}, referenceResidual{}, residual{};
+        Norms initialResidual{}, referenceResidual{}, residual{};
         real residualTargetRatio = 0;
         real minimumRHSAlpha = 1, minimumIncrementAlpha = 1, pseudoCFL = 0;
         /// Final equation evaluation's reconstruction, not an observation
@@ -55,6 +56,8 @@ namespace DNDS::Cauchy
         real reconstructionRelativeUpdate = 0;
         Linear::LinearIterationReport lastLinear;
     };
+    using NonlinearIterationReport = BasicNonlinearIterationReport<FlowState>;
+    using EquationNonlinearIterationReport = BasicNonlinearIterationReport<std::vector<real>>;
     /// Initial compressible-flow5 CPU stage adapter. Its physical PP, norms
     /// and identity accumulation do not implement other equation profiles.
     /// The underlying time interface and coupled linear algebra are generic.
@@ -99,5 +102,40 @@ namespace DNDS::Cauchy
         /// bit-identical. Ranks must agree selection and scale before entering.
         std::pair<index, real> ApplyCorrection(CFV::FVField &state, const CFV::FVField &correction, real scale = 1,
                                                const std::vector<index> &updateComponents = {});
+    };
+
+    /// CPU whole-equation stage adapter over the shared nonlinear iteration
+    /// policy, equation FV and coupled linear driver. The explicit residual
+    /// selection is resolved by the equation frontend; it cannot silently use
+    /// the historical flow5 defaults for a larger system. Every component's
+    /// norm is reported. Storage grouping/layout may differ between operands.
+    ///
+    /// Initial equation profile matches EquationWorkspace: no PP, Roe or p-FAS
+    /// fallback. Missing profiles reject at construction. A capped finite solve
+    /// remains unconverged and leaves acceptance to the time orchestrator.
+    /// Callers serialize bound state/workspace/engine access, coordinate all
+    /// domain ranks and keep owners on the controller through worker joins.
+    class EquationNonlinearSolver
+    {
+        struct Data;
+        std::shared_ptr<Data> _data;
+
+    public:
+        EquationNonlinearSolver(const FiniteVolume &discrete, EquationDofs &state, std::shared_ptr<FiniteVolume::EquationWorkspace> workspace,
+                                Runtime::EagerEngine &engine, Runtime::ExecutionStream stream, const DomainSettings &settings,
+                                const Algebra::ComponentSelection &residualSelection,
+                                std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt);
+        EquationNonlinearIterationReport Solve(EquationDofs &state, const EquationDofs &source, real mass, real rhsScale, real time,
+                                               int stage = 0, NonlinearSolveControl control = {});
+        /// Same normalized stage operator as the field adapter, without
+        /// changing owned means. Does not imply a connected p-FAS frontend.
+        void EvaluateEquation(EquationDofs &state, EquationDofs &value, real mass, real rhsScale, real time);
+        /// Caller agrees scale/selection and releases conflicting views before
+        /// entry. Candidate EOS/raw-species checks precede any state mutation.
+        /// No extended compression/repair is applied in this initial profile.
+        std::pair<index, real> ApplyCorrection(EquationDofs &state, const EquationDofs &correction, real scale = 1,
+                                               const std::vector<index> &updateComponents = {});
+        std::pair<int, real> ReconstructionStats() const;
+        bool ReconstructionConverged() const;
     };
 }

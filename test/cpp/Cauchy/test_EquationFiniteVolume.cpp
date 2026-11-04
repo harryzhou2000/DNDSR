@@ -3,6 +3,8 @@
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/Implicit/LinearSolver.hpp"
+#include "Cauchy/Implicit/NonlinearSolver.hpp"
+#include "Cauchy/State/EquationTimeStepper.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/Physics/EquationSource.hpp"
 #include "CartesianFixture.hpp"
@@ -122,6 +124,57 @@ TEST_CASE("Equation FV uses the established P3/gradient/WBAP flow5 kernels acros
         fv.Evaluate(state, result, *work, engine, stream);
         Compare(result, C::EquationDofs::Coupled(equation.Schema(), expected), 2e-12);
         ConservativeIntegral(result);
+    }
+}
+
+TEST_CASE("Logical nonlinear flow5 retains native finite-sweep stage mathematics")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    for (int scenario = 0; scenario < 2; ++scenario)
+    {
+        C::DomainSettings settings;
+        settings.numerics.reconstruction = scenario ? "variational" : "constant";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.reconstructionIterations = 8;
+        settings.numerics.reconstructionTolerance = scenario ? 1e-8 : 0;
+        settings.numerics.faceFallback = false;
+        settings.implicit.linear.method = scenario ? "gmres" : "sgs";
+        settings.implicit.linear.relativeTolerance = 1e-5;
+        settings.implicit.diagonal = scenario ? "block" : "entries";
+        settings.execution.overlap = scenario;
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto raw = fv.Metrics().BuildField(R::RowLayout::ColMajor(0, 5, {8, 1}));
+        auto source = fv.Metrics().BuildField(5);
+        const auto target = equation.Gas().Conservative({1.2, .3, -.1, .2, 1.1});
+        {
+            auto u = raw.Owned().Write(), b = source.Owned().Write();
+            for (I iCell = 0; iCell < raw.Owned().RowCount(); ++iCell)
+                for (int j = 0; j < 5; ++j)
+                {
+                    u.View()(iCell, j) = target[j] * (1 + .01 * std::sin(2 * iCell + mpi.rank + j));
+                    b.View()(iCell, j) = 20 * target[j];
+                }
+        }
+        auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(R::RowLayout::TiledColMajor(0, 5, 8)));
+        A::Copy(state.CoupledField(), raw);
+        auto right = C::EquationDofs::Coupled(equation.Schema(), source);
+        R::EagerEngine engine(scenario ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateCPUStream();
+        C::AuxiliaryRequest request;
+        request.faceSpectralRadius = request.cellSpectralSum = true;
+        C::NonlinearSolver reference(fv, raw, fv.BuildWorkspace(raw, request), engine, stream, settings);
+        C::EquationNonlinearSolver solver(fv, state, fv.BuildEquationWorkspace(state), engine, stream, settings, A::ComponentSelection(5));
+        const auto expected = reference.Solve(raw, source, 20, .5, .1, 0, {2});
+        const auto actual = solver.Solve(state, right, 20, .5, .1, 0, {2});
+        CHECK(actual.iterations == expected.iterations);
+        CHECK(actual.linearIterations == expected.linearIterations);
+        CHECK(actual.converged == expected.converged);
+        CHECK(actual.reconstructionIterations == expected.reconstructionIterations);
+        CHECK(actual.reconstructionRelativeUpdate == doctest::Approx(expected.reconstructionRelativeUpdate).epsilon(1e-10));
+        for (int j = 0; j < 5; ++j)
+            CHECK(actual.residual[j] == doctest::Approx(expected.residual[j]).epsilon(1e-10).scale(1e-10));
+        Compare(state, C::EquationDofs::Coupled(equation.Schema(), raw), 1e-12);
     }
 }
 
@@ -847,6 +900,179 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
     CHECK_THROWS(withSource.PrepareJacobian(b, auxiliaryB, inverseTau, *matrixB, controls, 0, mixture.workers, wb.get()));
     CHECK(matrixB->Diagonal().Version() == version);
 }
+TEST_CASE("Coupled mixture nonlinear stage recovers a manufactured target through separate or permuted arrays")
+{
+    MixtureFixture mixture;
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    for (int scenario = 0; scenario < 2; ++scenario)
+    {
+        C::DomainSettings settings;
+        settings.numerics.reconstruction = scenario ? "variational" : "constant";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.reconstructionIterations = 40;
+        settings.numerics.reconstructionTolerance = 1e-9;
+        settings.numerics.viscousGradient = "polynomial";
+        settings.numerics.faceFallback = false;
+        settings.implicit.requireConvergedReconstruction = scenario;
+        settings.implicit.linear.method = "gmres";
+        settings.implicit.linear.preconditioner = scenario ? "sgs" : "ilu";
+        settings.implicit.linear.relativeTolerance = 1e-5;
+        settings.implicit.relativeTolerance = 1e-8;
+        settings.implicit.absoluteTolerance = 1e-10;
+        settings.implicit.diagonal = "block";
+        settings.implicit.jacobianAction = scenario ? "semiMatrixFree" : "assembled";
+        settings.implicit.collectiveChecks = scenario;
+        settings.execution.overlap = scenario;
+        C::FiniteVolume fv(mesh, settings, mixture.equation);
+        auto target = mixture.State(fv.Metrics().Space(), 0), state = mixture.State(fv.Metrics().Space(), scenario + 1);
+        mixture.Fill(target, fv.Metrics(), true);
+        C::EquationDofOperations::Copy(state, target);
+        {
+            auto write = state.WriteOwned();
+            const auto layout = write.ComponentLayout();
+            const auto u = layout.View();
+            for (I iCell = 0; iCell < u.RowCount(); ++iCell)
+                for (I j = 0; j < u.ComponentNumber(); ++j)
+                    u(iCell, j) *= 1 + .001 * std::sin(2 * iCell + mpi.rank + j);
+        }
+        auto source = C::EquationDofOperations::NewVector(target);
+        C::EquationDofOperations::Copy(source, target);
+        C::EquationDofOperations::Scale(source, 20);
+        R::EagerEngine engine(scenario ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateCPUStream();
+        auto work = fv.BuildEquationWorkspace(state, mixture.workers);
+        C::EquationNonlinearSolver solver(fv, state, work, engine, stream, settings, A::ComponentSelection(state.ComponentNumber()), mixture.workers);
+        const auto report = solver.Solve(state, source, 20, .5, .1);
+        CAPTURE(scenario);
+        CAPTURE(report.iterations);
+        CAPTURE(report.residualTargetRatio);
+        REQUIRE(report.converged);
+        CHECK(report.linearIterations > 0);
+        CHECK(report.residual.size() == size_t(mixture.species + 4));
+        CHECK(report.residual.back() < 1e-9);
+        CHECK(solver.ReconstructionConverged());
+        Compare(state, target, 2e-9);
+        // A rejected negative species update must not mutate any physical field.
+        auto increment = C::EquationDofOperations::NewVector(state);
+        C::EquationDofOperations::Fill(increment, 0);
+        {
+            auto write = increment.WriteOwned();
+            const auto species = write.Block("species");
+            for (I iCell = 0; iCell < species.RowCount(); ++iCell)
+                species(iCell, 0) = -100;
+        }
+        const C::EquationDofOperations::Binding before(state);
+        CHECK_THROWS(solver.ApplyCorrection(state, increment));
+        CHECK_NOTHROW(before.Check(state, true));
+        CHECK_THROWS(solver.Solve(state, state, 20, .5, .1));
+    }
+}
+
+TEST_CASE("Production equation nonlinear stages advance a distributed reacting FV state toward Cantera")
+{
+    MixtureFixture mixture;
+    const auto equation = C::EquationSystem::FromIdealGasMixture(mixture.material, false);
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    C::DomainSettings settings;
+    settings.equation.source = "chemical";
+    settings.numerics.reconstruction = "constant";
+    settings.numerics.faceFallback = false;
+    settings.implicit.linear.method = "gmres";
+    settings.implicit.linear.preconditioner = "ilu";
+    settings.implicit.linear.relativeTolerance = 1e-10;
+    settings.implicit.linear.absoluteTolerance = 1e-13;
+    settings.implicit.diagonal = "block";
+    settings.implicit.pseudoCFL = 1e4;
+    settings.implicit.maxPseudoCFL = 1e8;
+    settings.implicit.relativeTolerance = 1e-10;
+    settings.implicit.absoluteTolerance = 1e-8;
+    C::FiniteVolume fv(mesh, settings, equation);
+    auto initial = mixture.State(fv.Metrics().Space(), 0);
+    mixture.Fill(initial, fv.Metrics(), true);
+    std::vector<double> expected(size_t(mixture.species + 4)), fractions(size_t(mixture.species), 1e-6);
+    {
+        // Every rank uses the same analytic initial point, including any empty
+        // owner. Do not infer reference composition from a local ghost row.
+        fractions[0] = .027;
+        fractions[3] = .22;
+        fractions[5] = .02;
+        fractions.back() = 0;
+        fractions.back() = 1 - std::accumulate(fractions.begin(), fractions.end(), 0.);
+        const double rho = .8;
+        const P::Chemistry::ConstSpeciesBufferView y{fractions.data(), mixture.species};
+        const double p = rho * mixture.scales.rho0 * mixture.prototype.mixtureR(y) * 1400;
+        expected[0] = rho;
+        expected[1] = rho * .2;
+        expected[2] = rho * -.04;
+        expected[3] = rho * .03;
+        expected[4] = rho * mixture.prototype.mixtureIntEnergy(1400, y, p) / mixture.scales.SpecificEnergy() + .5 * rho * (.04 + .0016 + .0009);
+    }
+    constexpr double totalTime = 1e-5;
+    double temperature = 1400;
+    mixture.prototype.advanceConstVolume(temperature, expected[0] * mixture.scales.rho0, {fractions.data(), mixture.species}, 1,
+                                         totalTime * mixture.scales.Time(), 1e-11, 1e-20);
+    for (int k = 0; k < mixture.species - 1; ++k)
+        expected[5 + k] = expected[0] * fractions[k];
+    const auto run = [&](int steps)
+    {
+        auto accepted = mixture.State(fv.Metrics().Space(), 2), trial = mixture.State(fv.Metrics().Space(), 1);
+        C::EquationDofOperations::Copy(accepted, initial);
+        C::EquationDofOperations::Copy(trial, initial);
+        R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateCPUStream();
+        auto work = fv.BuildEquationWorkspace(trial, mixture.workers);
+        C::EquationNonlinearSolver nonlinear(fv, trial, work, engine, stream, settings, A::ComponentSelection(trial.ComponentNumber()), mixture.workers);
+        C::EquationTimeStepper stepper(accepted, "bdf1");
+        const auto evaluate = [&](auto &state, auto &rate, double time, int)
+        {
+            fv.Evaluate(state, rate, *work, engine, stream, time);
+            const auto geometry = fv.Metrics().AcquireRead();
+            const auto metric = geometry.HostView();
+            auto write = rate.WriteOwned();
+            const auto layout = write.ComponentLayout();
+            const auto values = layout.View();
+            for (I iCell = 0; iCell < values.RowCount(); ++iCell)
+                for (I j = 0; j < values.ComponentNumber(); ++j)
+                    values(iCell, j) /= metric.GetCellVol(iCell);
+        };
+        const auto solve = [&](auto &state, const auto &source, double mass, double scale, double time, int stage)
+        {
+            const auto report = nonlinear.Solve(state, source, mass, scale, time, stage);
+            CHECK(report.converged);
+            CHECK(report.residual.size() == expected.size());
+            return report.converged;
+        };
+        for (int step = 0; step < steps; ++step)
+        {
+            REQUIRE(stepper.Prepare(accepted, trial, step * totalTime / steps, totalTime / steps, evaluate, solve));
+            C::EquationDofOperations::Copy(accepted, trial);
+            stepper.Commit();
+        }
+        double error = 0, change = 0;
+        const auto read = accepted.ReadOwned(), old = initial.ReadOwned();
+        const auto layout = read.ComponentLayout(), oldLayout = old.ComponentLayout();
+        const auto u = layout.View(), before = oldLayout.View();
+        for (I iCell = 0; iCell < u.RowCount(); ++iCell)
+            for (I j = 0; j < u.ComponentNumber(); ++j)
+            {
+                error = std::max(error, std::abs(u(iCell, j) - expected[j]));
+                change = std::max(change, std::abs(u(iCell, j) - before(iCell, j)));
+                if (j < 5)
+                    CHECK(u(iCell, j) == doctest::Approx(before(iCell, j)).epsilon(1e-12));
+            }
+        MPI_Allreduce(MPI_IN_PLACE, &error, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+        MPI_Allreduce(MPI_IN_PLACE, &change, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+        CHECK(change > 1e-9);
+        return error;
+    };
+    const double coarse = run(4), fine = run(8);
+    CAPTURE(coarse);
+    CAPTURE(fine);
+    CHECK(coarse > 1e-12);
+    CHECK(fine < .8 * coarse);
+    CHECK(fine < 1e-5);
+}
+
 #endif
 
 int main(int argc, char **argv)

@@ -364,6 +364,7 @@ namespace DNDS::Cauchy
         _data = std::move(data);
     }
     const CFV::FiniteVolumePlan &FiniteVolume::Metrics() const { return _data->metrics; }
+    const EquationSystem &FiniteVolume::Equation() const { return _data->equation; }
     const CFV::VariationalReconstructionPlan &FiniteVolume::Reconstruction() const { return _data->reconstruction; }
     const Geom::UnstructuredMesh &FiniteVolume::Mesh() const { return *_data->mesh; }
     const RigidMotion &FiniteVolume::Motion() const { return _data->motion; }
