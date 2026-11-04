@@ -976,14 +976,7 @@ namespace DNDS::Euler
             real muTur = 0;
             if constexpr (Traits::hasSA)
             {
-                real Chi = uMean(I4 + 1) * muRef / muf;
-#ifdef USE_NS_SA_NEGATIVE_MODEL
-                if (Chi < 10)
-                    Chi = 0.05 * std::log(1 + std::exp(20 * Chi));
-#endif
-                real Chi3 = cube(Chi);
-                real fnu1 = Chi3 / (Chi3 + std::pow(RANS::SA::cnu1, 3));
-                muTur = muf * std::max((Chi * fnu1), 0.0);
+                muTur = RANS::GetMut_SA<dim>(uMean, muRef, muf);
             }
             if constexpr (Traits::has2EQ)
             {
@@ -1020,16 +1013,7 @@ namespace DNDS::Euler
             DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
             if constexpr (Traits::hasSA)
             {
-                real sigma = RANS::SA::sigma;
-                real fn = 1;
-#ifdef USE_NS_SA_NEGATIVE_MODEL
-                if (UMeanXYC(I4 + 1) < 0)
-                {
-                    real Chi = UMeanXYC(I4 + 1) * muRef / mufPhy;
-                    fn = (RANS::SA::cn1 + std::pow(Chi, 3)) / (RANS::SA::cn1 - std::pow(Chi, 3));
-                }
-#endif
-                VisFlux(I4 + 1) = DiffUxyPrimC(Seq012, {I4 + 1}).dot(uNormC) * (mufPhy + UMeanXYC(I4 + 1) * muRef * fn) / sigma;
+                RANS::GetVisFlux_SA<dim>(UMeanXYC, DiffUxyPrimC, uNormC, muRef, mufPhy, VisFlux);
 
                 real tauPressure = DiffUxyPrimC(Seq012, Seq123).trace() * (2. / 3.) * (muTur); //! SA's normal stress
                 tauPressure *= 0;                                                              // !not standard SA, abandoning

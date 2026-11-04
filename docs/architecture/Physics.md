@@ -34,6 +34,7 @@ flowchart TD
 | `Physics/Transport/MixtureAveragedDiffusion.hpp` | Conservative species-flux correction and full-enthalpy energy diffusion |
 | `Physics/Transport/NewtonianFourier.hpp` | Pure three-component Stokes stress, viscous work and Fourier normal heat flux |
 | `Physics/RANS/RANSModels.hpp` | Existing SA, Wilcox, SST and realizable k-epsilon constitutive/source kernels |
+| `Physics/RANS/Model.hpp` | CPU point adapter selecting those kernels, with conservative gradients, model settings and positive implicit destruction diagonals |
 
 `Euler/Chemistry/ChemicalSource.hpp` and `Euler/RANS_ke.hpp` forward to the
 canonical definitions and retain `Euler::Chemistry` and `Euler::RANS` aliases.
@@ -55,6 +56,52 @@ historical signature forwards with no correction, preserving the enabled
 absolute-velocity convention. This removes a dormant relative-velocity branch
 that referred to undeclared evaluator settings inside the old math header;
 frame policy now belongs to its caller, without a Geom dependency.
+
+### RANS point adapter and wall samples
+
+`Physics::RANS::Model` selects SA, Wilcox k-omega, Menter SST or realizable
+k-epsilon once at setup. Its fixed point scratch contains flow5 and up to two
+RANS conservative components, plus their three-direction gradients. This is
+point-local scratch, not a prescription for physical DOF allocations. Callers
+gather from logical blocks; neither species offsets nor Array layout enter the
+constitutive kernels. The adapter owns no mesh, MPI context or EOS worker.
+
+`Transport` returns turbulent viscosity, conductivity (`cp*mu_t/Pr_t`) and
+species diffusivity (`mu_t/(rho*Sc_t)`). `DiffusionFlux` converts conservative
+RANS gradients to specific-variable gradients with the same shared chain rule
+as the thermodynamic layer; it never treats an energy gradient as temperature.
+`Source` returns the existing production/destruction model. In contrast,
+`ImplicitSourceDiagonal` returns Euler's **positive approximate destruction
+diagonal**, suitable for addition to the implicit matrix. It is not a full
+Jacobian or a finite-difference derivative of the entire nonlinear source.
+SA viscosity and diffusion formulas now have shared functions called by Euler
+as well, including the compile-time negative-SA convention.
+
+The caller must provide finite, admissible point values, positive molecular
+viscosity/density/wall distance/cell length, a unit normal, common code units
+and a consistent Cartesian frame. Validate batches outside hot loops. The
+adapter does not clip solution values, apply wall BCs, infer reference scales,
+or silently fall back from a missing device implementation.
+
+`Cauchy::WallDistanceSamples` consumes Geom's completed nodal wall field. It
+interpolates **scalar nodal norms** with P1/P2 shape functions at cell and face
+quadrature points, using the existing shared reference shape cache. It does
+not interpolate vectors and then take their norm. CSR sample buffers are
+allocated before filling, cover only local/ghost entities and perform no MPI.
+Its explicit nonnegative floor clips higher-order undershoot; the default is
+zero, so a source caller requiring strictly positive distance must choose a
+positive floor. Cell means use Euler's arithmetic quadrature-mean convention.
+`AcquireRead` pins the mesh and buffers and checks geometry/wall-publication
+versions before exposing plain CPU views. A wall rebuild invalidates samples
+even when coordinates have not changed. No separate Cauchy wall search exists.
+
+These are integration foundations, **not completed Cauchy RANS support**.
+The equation schema/configuration, spatial transport/source assembly, wall
+states, approximate matrix contributions and model-specific admissibility
+still need connection before a RANS profile may be enabled. Euler's DES
+length uses an inertia-aligned bounding box; the isotropic native FV scale
+must not silently replace it. QCR, eigenvalue and reconstruction/source-order
+options remain explicit integration work, as tracked in the plan51 ledger.
 
 ## Ownership and use
 

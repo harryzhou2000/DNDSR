@@ -165,6 +165,42 @@ namespace DNDS::Physics::RANS
         static constexpr real sigma = 2.0 / 3.0; ///< SA model diffusion coefficient sigma.
     }
 
+    /// Euler SA eddy viscosity, including its established smooth nonnegative
+    /// property evaluation for the SA-neg transported variable. State is
+    /// conservative; muRef is the SA variable scale, not molecular viscosity.
+    template <int dim, class TU>
+    real GetMut_SA(const TU &state, real muRef, real molecularViscosity)
+    {
+        real chi = state(dim + 2) * muRef / molecularViscosity;
+#ifdef USE_NS_SA_NEGATIVE_MODEL
+        if (chi < 10)
+            chi = .05 * std::log(1 + std::exp(20 * chi));
+#endif
+        const real chi3 = cube(chi);
+        const real fnu1 = chi3 / (chi3 + std::pow(SA::cnu1, 3));
+        return molecularViscosity * std::max(chi * fnu1, 0.0);
+    }
+
+    /// Positive SA normal diffusion from the specific-variable gradient. This
+    /// preserves Euler's fn branch and sigma scaling, including negative SA.
+    /// Other flux components are untouched; SA adds no isotropic normal stress.
+    template <int dim, class TU, class TGradient, class TNormal, class TFlux>
+    void GetVisFlux_SA(const TU &state, const TGradient &primitiveGradient, const TNormal &normal,
+                       real muRef, real molecularViscosity, TFlux &flux)
+    {
+        real fn = 1;
+#ifdef USE_NS_SA_NEGATIVE_MODEL
+        if (state(dim + 2) < 0)
+        {
+            const real chi = state(dim + 2) * muRef / molecularViscosity;
+            fn = (SA::cn1 + std::pow(chi, 3)) / (SA::cn1 - std::pow(chi, 3));
+        }
+#endif
+        const auto directions = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
+        flux(dim + 2) = primitiveGradient(directions, {dim + 2}).dot(normal) *
+                        (molecularViscosity + state(dim + 2) * muRef * fn) / SA::sigma;
+    }
+
     /** @brief Wall-omega boundary condition coefficient for k-omega family models.
      *
      *  Applied at wall boundaries as: rhoOmegaWall = mu / d^2 * kWallOmegaCoeff,
