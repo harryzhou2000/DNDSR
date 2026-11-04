@@ -90,6 +90,12 @@ TEST_CASE("Reconstruction PP controls are explicit and reject unsupported compat
 }
 TEST_CASE("Cauchy implicit controls resolve through the root and reject contradictory paths")
 {
+    const auto defaults = C::SimulationConfig::Resolve(C::Json::object(), 2);
+    CHECK(defaults.Domains()[0].settings.implicit.residualComponents == std::vector<std::string>{"rho"});
+    const auto named = C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"residualComponents", {"rho", "flow.rhou"}}}}}}}, 2);
+    CHECK(named.Domains()[0].settings.implicit.residualComponents == std::vector<std::string>{"rho", "flow.rhou"});
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"residualComponents", {0}}}}}}}, 2));
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"residualComponents", {"rho", "rho"}}}}}}}, 2));
     for (const std::string method : {"ssprk3", "bdf1", "bdf2", "trapz", "esdirk2", "esdirk3", "esdirk4", "ditr"})
     {
         const auto config = C::SimulationConfig::Resolve({{"time", {{"method", method}}}, {"defaults", {{"implicit", {{"linear", {{"preconditioner", "ilu"}}}}}}}}, 2);

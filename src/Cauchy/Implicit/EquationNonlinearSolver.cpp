@@ -123,8 +123,14 @@ namespace DNDS::Cauchy
         MPI::LocalStage(mpi, [&]
                         {
             implicit.residualComponents.clear();
-            for (index j = 0; j < state.ComponentNumber(); ++j)
-                if (residualSelection.Includes(j)) implicit.residualComponents.push_back(int(j));
+            index ordinal = 0;
+            for (const auto &block : state.Schema().blocks)
+                for (const auto &component : block.components)
+                {
+                    if (!residualSelection.All() && residualSelection.Includes(ordinal))
+                        implicit.residualComponents.push_back(block.name + "." + component.name);
+                    ++ordinal;
+                }
             DNDS_check_throw_info(residualSelection.All() || residualSelection.Indices().back() < state.ComponentNumber(), "equation residual selection exceeds its dimension");
             implicit.ValidateComponents(state.ComponentNumber());
             settings.numerics.ValidatePositivity();
@@ -151,6 +157,17 @@ namespace DNDS::Cauchy
     EquationNonlinearIterationReport EquationNonlinearSolver::Solve(EquationDofs &state, const EquationDofs &source,
                                                                     real mass, real rhsScale, real time, int stage, NonlinearSolveControl control)
     {
+        return Execute(state, source, mass, rhsScale, time, stage, std::move(control), false, nullptr);
+    }
+    EquationNonlinearIterationReport EquationNonlinearSolver::CorrectOnce(EquationDofs &state, const EquationDofs &source,
+                                                                          real mass, real rhsScale, real time, int stage, NonlinearSolveControl control, const EquationDofs *cachedRate)
+    {
+        control.correctionLimit = 1;
+        return Execute(state, source, mass, rhsScale, time, stage, std::move(control), true, cachedRate);
+    }
+    EquationNonlinearIterationReport EquationNonlinearSolver::Execute(EquationDofs &state, const EquationDofs &source,
+                                                                      real mass, real rhsScale, real time, int stage, NonlinearSolveControl control, bool singleCorrection, const EquationDofs *cachedRate)
+    {
         auto &data = *_data;
         if (control.profile)
             *control.profile = {};
@@ -164,6 +181,11 @@ namespace DNDS::Cauchy
                             {
                 data.stream.Record().WaitHost();
                 data.binding.Check(state);
+                if (cachedRate)
+                {
+                    state.RequireCompatible(*cachedRate);
+                    EquationDofOperations::RequireDistinct(data.spatial, *cachedRate);
+                }
                 data.ValidateMeans(state);
                 EquationDofOperations::CheckCompatible(state, source);
                 EquationDofOperations::RequireDistinct(state, source);
@@ -173,7 +195,8 @@ namespace DNDS::Cauchy
                     (control.initialPseudoCFL == 0 || (std::isfinite(control.initialPseudoCFL) && control.initialPseudoCFL >= data.settings.pseudoCFL && control.initialPseudoCFL <= data.settings.maxPseudoCFL)),
                     "invalid equation implicit stage coefficients");
                 serialized = Json{{"mass", mass}, {"rhsScale", rhsScale}, {"time", time}, {"limit", control.correctionLimit},
-                    {"CFL", control.initialPseudoCFL}, {"selection", selection.Indices()}}.dump();
+                    {"CFL", control.initialPseudoCFL}, {"selection", selection.Indices()},
+                    {"singleCorrection", singleCorrection}, {"cachedRate", bool(cachedRate)}}.dump();
                 DNDS_check_throw_info(serialized.size() <= size_t(INT_MAX), "equation solve controls exceed MPI string range"); });
             NonlinearDetail::AgreeControls(data.mpi, serialized);
         }
@@ -181,9 +204,27 @@ namespace DNDS::Cauchy
         initial.residual.resize(size_t(nv));
         auto geometry = data.discrete.Metrics().AcquireRead();
         const auto metric = geometry.HostView();
-        return NonlinearDetail::Iterate(data.settings, data.mpi.rank, stage, control, std::move(initial), data.reconstructionTolerance, [&]
-                                        { data.discrete.Evaluate(state, data.spatial, *data.workspace, *data.engine, data.stream, time); }, [&](auto &norms)
-                                        {
+        const auto evaluate = [&]
+        {
+            if (!cachedRate)
+            {
+                data.discrete.Evaluate(state, data.spatial, *data.workspace, *data.engine, data.stream, time);
+                return;
+            }
+            data.discrete.PrepareCorrectionAux(state, *data.workspace, data.auxiliary, *data.engine, data.stream, time);
+            data.Stage([&]
+                       {
+                const auto read = cachedRate->ReadOwned(); auto write = data.spatial.WriteOwned();
+                for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+                {
+                    const auto rate = read.Block(iBlock).owned;
+                    const auto output = write.Block(iBlock);
+                    for (index iCell = 0; iCell < rate.RowCount(); ++iCell)
+                        for (index j = 0; j < rate.ComponentNumber(); ++j) output(iCell, j) = metric.GetCellVol(iCell) * rate(iCell, j);
+                } });
+        };
+        const auto measure = [&](auto &norms)
+        {
                 std::vector<real> local(size_t(nv + 1));
                 data.Stage([&]
                 {
@@ -205,22 +246,25 @@ namespace DNDS::Cauchy
                         }
                     }
                 });
+                if (singleCorrection) return; // Defect is ready; no stopping norm is needed.
                 MPI_Allreduce(MPI_IN_PLACE, local.data(), int(nv + 1), MPI_DOUBLE, MPI_SUM, data.mpi.comm);
                 DNDS_check_throw_info(std::isfinite(local[nv]) && local[nv] > 0, "invalid global equation stage volume");
                 for (index j = 0; j < nv; ++j)
                 {
                     norms[j] = data.settings.normOrder == 1 ? local[j] / local[nv] : std::sqrt(local[j] / local[nv]);
                     DNDS_check_throw_info(std::isfinite(norms[j]), "nonfinite equation global stage norm");
-                } }, [&]
-                                        { return ReconstructionStats(); }, [&](auto &report)
-                                        {
+                } };
+        const auto reconstruction = [&]
+        { return ReconstructionStats(); };
+        const auto advance = [&](auto &report)
+        {
                 index rhsLimited = 0;
                 real rhsAlpha = 1;
                 {
                     const NonlinearDetail::PhaseTimer timer(control.profile, NonlinearProfile::PseudoTimePP);
                     data.Stage([&]
                     {
-                        data.discrete.PrepareAuxValues(state, data.auxiliary, time, data.workers);
+                        if (!cachedRate) data.discrete.PrepareAuxValues(state, data.auxiliary, time, data.workers);
                         const auto read = data.auxiliary.cellSpectralSum->Owned().Read();
                         const auto meanRead = state.ReadOwned(); const auto meanLayout = meanRead.ComponentLayout(); const auto means = meanLayout.View();
                         auto residualWrite = data.defect.WriteOwned(); const auto residualLayout = residualWrite.ComponentLayout(); const auto defect = residualLayout.View();
@@ -288,7 +332,24 @@ namespace DNDS::Cauchy
                 {
                     report.rhsLimited += rhsLimited; report.minimumRHSAlpha = std::min(report.minimumRHSAlpha, rhsAlpha);
                     report.incrementLimited += result.first; report.minimumIncrementAlpha = std::min(report.minimumIncrementAlpha, result.second);
-                } });
+                } };
+        if (singleCorrection)
+        {
+            auto report = std::move(initial);
+            report.pseudoCFL = control.initialPseudoCFL == 0 ? data.settings.pseudoCFL : control.initialPseudoCFL;
+            {
+                const NonlinearDetail::PhaseTimer timer(control.profile, NonlinearProfile::Residual);
+                evaluate();
+                if (control.profile)
+                    ++control.profile->residualEvaluations;
+            }
+            measure(report.residual);
+            std::tie(report.reconstructionIterations, report.reconstructionRelativeUpdate) = reconstruction();
+            advance(report);
+            report.iterations = 1;
+            return report;
+        }
+        return NonlinearDetail::Iterate(data.settings, state.Schema(), data.mpi.rank, stage, control, std::move(initial), data.reconstructionTolerance, evaluate, measure, reconstruction, advance);
     }
     std::pair<int, real> EquationNonlinearSolver::ReconstructionStats() const
     {

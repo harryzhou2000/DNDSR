@@ -1,3 +1,4 @@
+#include "DNDS/Algebra/DofHalo.hpp"
 #include "CFV/Detail/ReconstructionData.hpp"
 #include "Geom/Quadratures/Quadrature.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
@@ -195,6 +196,12 @@ namespace DNDS::CFV
                         { ValidateField(field, field.Width()); });
         return R::PayloadPlan(*_data->halo, field.Owned().Layout(), field.Ghost().Layout(), R::ElementSchema::Arithmetic<real>())
             .Bind(field.Owned(), field.Ghost(), R::TransferTransport::Direct);
+    }
+    Algebra::DofHalo<> FiniteVolumePlan::BindTrackedHalo(FVField &field) const
+    {
+        MPI::LocalStage(_data->mesh->getMPI(), [&]
+                        { ValidateField(field, field.Width()); });
+        return Algebra::DofHalo<>(field, *_data->halo);
     }
     real FiniteVolumePlan::GetCellVol(index iCell) const
     {

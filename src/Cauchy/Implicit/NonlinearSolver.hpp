@@ -69,6 +69,9 @@ namespace DNDS::Cauchy
     {
         struct Data;
         std::shared_ptr<Data> _data;
+        NonlinearIterationReport Execute(CFV::FVField &state, const CFV::FVField &source,
+                                         real mass, real rhsScale, real time, int stage,
+                                         NonlinearSolveControl control, bool singleCorrection, const CFV::FVField *cachedRate);
 
     public:
         NonlinearSolver(const FiniteVolume &discrete, CFV::FVField &state, std::shared_ptr<FiniteVolume::Workspace> workspace,
@@ -87,6 +90,16 @@ namespace DNDS::Cauchy
         /// All ranks agree the override and initial pseudo-CFL before iteration.
         NonlinearIterationReport Solve(CFV::FVField &state, const CFV::FVField &source,
                                        real mass, real rhsScale, real time, int stage = 0, NonlinearSolveControl control = {});
+        /// Exactly one pseudo-time/Jacobian/linear/PP update, with no convergence
+        /// loop or norm reduction. The caller owns CFL progression and stopping.
+        /// Accepts stale input halo; returns owned updates with unspecified halo.
+        /// report.converged is false: this operation makes no acceptance decision.
+        /// Optional cachedRate is a method-owned F=dU/dt (owned values only).
+        /// Caller guarantees its time/stage provenance; it is consumed verbatim,
+        /// with fresh auxiliary preparation but no duplicate reconstruction/RHS.
+        NonlinearIterationReport CorrectOnce(CFV::FVField &state, const CFV::FVField &source,
+                                             real mass, real rhsScale, real time, int stage = 0, NonlinearSolveControl control = {},
+                                             const CFV::FVField *cachedRate = nullptr);
         /// FAS operator in the same normalized convention as Solve. No input
         /// mean mutation; Evaluate may refresh ghosts and reconstruction scratch.
         void EvaluateEquation(CFV::FVField &state, CFV::FVField &value, real mass, real rhsScale, real time);
@@ -95,6 +108,7 @@ namespace DNDS::Cauchy
         /// Already agreed by the FV reconstruction's global norm. No MPI here.
         /// With strict acceptance disabled, fixed-sweep Euler behavior remains.
         bool ReconstructionConverged() const;
+        real ReconstructionTolerance() const;
         /// Apply a separate increment using the same Euler flow5 PP policy as
         /// the smoother. Returns global (limited cells, minimum fraction).
         /// Candidate admissibility is agreed before any state values change.
@@ -119,6 +133,9 @@ namespace DNDS::Cauchy
     {
         struct Data;
         std::shared_ptr<Data> _data;
+        EquationNonlinearIterationReport Execute(EquationDofs &state, const EquationDofs &source,
+                                                 real mass, real rhsScale, real time, int stage,
+                                                 NonlinearSolveControl control, bool singleCorrection, const EquationDofs *cachedRate);
 
     public:
         EquationNonlinearSolver(const FiniteVolume &discrete, EquationDofs &state, std::shared_ptr<FiniteVolume::EquationWorkspace> workspace,
@@ -127,6 +144,10 @@ namespace DNDS::Cauchy
                                 std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt);
         EquationNonlinearIterationReport Solve(EquationDofs &state, const EquationDofs &source, real mass, real rhsScale, real time,
                                                int stage = 0, NonlinearSolveControl control = {});
+        /// Whole-equation counterpart of NonlinearSolver::CorrectOnce, retaining
+        /// split allocation/layout and EOS/source/PP dispatch. No nested solve.
+        EquationNonlinearIterationReport CorrectOnce(EquationDofs &state, const EquationDofs &source, real mass, real rhsScale, real time,
+                                                     int stage = 0, NonlinearSolveControl control = {}, const EquationDofs *cachedRate = nullptr);
         /// Same normalized stage operator as the field adapter, without
         /// changing owned means. Does not imply a connected p-FAS frontend.
         void EvaluateEquation(EquationDofs &state, EquationDofs &value, real mass, real rhsScale, real time);

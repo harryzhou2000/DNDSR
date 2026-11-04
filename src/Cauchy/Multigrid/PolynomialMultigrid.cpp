@@ -1,5 +1,5 @@
 #include "Cauchy/Multigrid/PolynomialMultigrid.hpp"
-#include "Cauchy/Implicit/ResidualConvergence.hpp"
+#include "Cauchy/Implicit/NonlinearIteration.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include <tuple>
 
@@ -39,26 +39,18 @@ namespace DNDS::Cauchy
         NonlinearIterationReport *report = nullptr;
         Data(const FiniteVolume &discrete, CFV::FVField &input, NonlinearSolver &solver, const ImplicitSettings &controls)
             : fine(discrete), state(input), value(discrete.Metrics().BuildField(input.Owned().Layout())), fineSolver(&solver), settings(controls), mpi(discrete.Metrics().Communicator()) {}
-        void Accumulate(const NonlinearIterationReport &step)
-        {
-            report->linearIterations += step.linearIterations;
-            report->iterations += step.iterations;
-            report->rhsLimited += step.rhsLimited;
-            report->incrementLimited += step.incrementLimited;
-            report->minimumRHSAlpha = std::min(report->minimumRHSAlpha, step.minimumRHSAlpha);
-            report->minimumIncrementAlpha = std::min(report->minimumIncrementAlpha, step.minimumIncrementAlpha);
-            report->lastLinear = step.lastLinear;
-            report->pseudoCFL = step.pseudoCFL;
-        }
         Multigrid::FASLevel Level(CFV::FVField input, NonlinearSolver &solver, index level)
         {
             auto *relax = &solver;
             const auto smooth = [this, relax, level](auto &u, const auto &source, index count, const std::vector<index> &components)
             {
-                const auto step = relax->Solve(u, source, mass, rhsScale, time, stage, {count, smootherCFL[level], nullptr, components});
-                smootherCFL[level] = step.pseudoCFL;
-                Accumulate(step);
-                return step.iterations;
+                for (index correction = 0; correction < count; ++correction)
+                {
+                    const auto step = relax->CorrectOnce(u, source, mass, rhsScale, time, stage,
+                                                         {1, smootherCFL[level], nullptr, components});
+                    NonlinearDetail::AccumulateWork(*report, step);
+                }
+                return count;
             };
             return {std::move(input),
                     [this, relax](auto &u, auto &out)
@@ -72,6 +64,24 @@ namespace DNDS::Cauchy
                         report->minimumIncrementAlpha = std::min(report->minimumIncrementAlpha, alpha);
                     },
                     smooth};
+        }
+        void BindEquation(const CFV::FVField &source, real equationMass, real equationScale, real equationTime, int equationStage, real pseudoCFL)
+        {
+            MPI::LocalStage(mpi, [&]
+                            {
+            fine.Metrics().ValidateField(source, 5);
+            DNDS_check_throw_info(std::isfinite(equationMass) && equationMass >= 0 && std::isfinite(equationScale) && equationScale > 0 && std::isfinite(equationTime) && (pseudoCFL == 0 || (std::isfinite(pseudoCFL) && pseudoCFL >= settings.pseudoCFL && pseudoCFL <= settings.maxPseudoCFL)), "invalid polynomial FAS equation coefficients");
+            for (const auto *input : {&source.Owned(), &source.Ghost()})
+                for (const auto *output : {&state.Owned(), &state.Ghost()})
+                    DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), output->Storage()), "polynomial FAS source aliases state"); });
+            std::array<real, 4> minimum{equationMass, equationScale, equationTime, pseudoCFL}, maximum = minimum;
+            MPI_Allreduce(MPI_IN_PLACE, minimum.data(), 4, MPI_DOUBLE, MPI_MIN, mpi.comm);
+            MPI_Allreduce(MPI_IN_PLACE, maximum.data(), 4, MPI_DOUBLE, MPI_MAX, mpi.comm);
+            DNDS_check_throw_info(minimum == maximum, "polynomial FAS coefficients differ between ranks");
+            mass = equationMass;
+            rhsScale = equationScale;
+            time = equationTime;
+            stage = equationStage;
         }
         void BuildCycle()
         {
@@ -162,64 +172,48 @@ namespace DNDS::Cauchy
         }
         data.BuildCycle();
     }
+    NonlinearIterationReport PolynomialMultigrid::ApplyCycle(const CFV::FVField &source, real mass, real rhsScale, real time, int stage, real pseudoCFL)
+    {
+        auto &data = *_data;
+        data.BindEquation(source, mass, rhsScale, time, stage, pseudoCFL);
+        if (!data.cycle)
+            data.BuildCycle();
+        const real cfl = pseudoCFL == 0 ? data.settings.pseudoCFL : pseudoCFL;
+        std::fill(data.smootherCFL.begin(), data.smootherCFL.end(), cfl);
+        NonlinearIterationReport report;
+        report.pseudoCFL = cfl;
+        data.report = &report;
+        try
+        {
+            const auto work = data.cycle->Apply(source);
+            report.multigridCycles = report.iterations = 1;
+            report.levelCorrections = work.corrections;
+        }
+        catch (...)
+        {
+            data.cycle.reset();
+            data.report = nullptr;
+            throw;
+        }
+        data.report = nullptr;
+        return report;
+    }
     NonlinearIterationReport PolynomialMultigrid::Solve(const CFV::FVField &source, real mass, real rhsScale, real time, int stage)
     {
         auto &data = *_data;
-        MPI::LocalStage(data.mpi, [&]
-                        {
-            data.fine.Metrics().ValidateField(source, 5);
-            DNDS_check_throw_info(std::isfinite(mass) && mass >= 0 && std::isfinite(rhsScale) && rhsScale > 0 && std::isfinite(time), "invalid polynomial FAS equation coefficients");
-            for (const auto *input : {&source.Owned(), &source.Ghost()})
-                for (const auto *output : {&data.state.Owned(), &data.state.Ghost()})
-                    DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), output->Storage()), "polynomial FAS source aliases state"); });
-        std::array<real, 3> minimum{mass, rhsScale, time}, maximum = minimum;
-        MPI_Allreduce(MPI_IN_PLACE, minimum.data(), 3, MPI_DOUBLE, MPI_MIN, data.mpi.comm);
-        MPI_Allreduce(MPI_IN_PLACE, maximum.data(), 3, MPI_DOUBLE, MPI_MAX, data.mpi.comm);
-        DNDS_check_throw_info(minimum == maximum, "polynomial FAS coefficients differ between ranks");
-        data.mass = mass;
-        data.rhsScale = rhsScale;
-        data.time = time;
-        data.stage = stage;
-        if (!data.cycle)
-            data.BuildCycle();
-        std::fill(data.smootherCFL.begin(), data.smootherCFL.end(), data.settings.pseudoCFL);
-        NonlinearIterationReport report;
-        ResidualConvergence convergence(data.settings);
-        data.report = &report;
-        report.levelCorrections.assign(data.coarse.size() + 1, 0);
-        report.initialResidual = data.Measure(source);
-        for (index cycle = 0; cycle <= data.settings.multigrid.cycles; ++cycle)
-        {
-            report.residual = cycle ? data.Measure(source) : report.initialResidual;
-            // Fine residual acceptance owns this snapshot; a coarse smoother's
-            // last workspace must not be reported as the physical fine VR.
-            std::tie(report.reconstructionIterations, report.reconstructionRelativeUpdate) = data.fineSolver->ReconstructionStats();
-            convergence.Observe(report.residual);
-            report.initialResidual = convergence.Initial();
-            report.referenceResidual = convergence.Reference();
-            report.residualTargetRatio = convergence.TargetRatio();
-            const bool converged = report.iterations >= data.settings.minIterations && data.fineSolver->ReconstructionConverged() && convergence.Accepted();
-            if (converged || cycle == data.settings.multigrid.cycles)
-            {
-                report.converged = converged;
-                data.report = nullptr;
-                return report;
-            }
-            Multigrid::FASCycleReport work;
-            try
-            {
-                work = data.cycle->Apply(source);
-            }
-            catch (...)
-            {
-                data.cycle.reset();
-                data.report = nullptr;
-                throw;
-            }
-            ++report.multigridCycles;
-            for (index level = 0; level < index(work.corrections.size()); ++level)
-                report.levelCorrections[level] += work.corrections[level];
-        }
-        return report;
+        data.BindEquation(source, mass, rhsScale, time, stage, 0);
+        // Compatibility frontend: use exactly the same finest controller as a
+        // direct solve, with one V-cycle replacing one correction. The cycle
+        // cap retains its existing configuration name; iterations count cycles.
+        auto settings = data.settings;
+        settings.iterations = settings.multigrid.cycles;
+        FlowState residual{};
+        return NonlinearDetail::Iterate(settings, data.fine.Equation().Schema(), data.mpi.rank, stage, {}, NonlinearIterationReport{}, data.fineSolver->ReconstructionTolerance(), [&]
+                                        { residual = data.Measure(source); }, [&](auto &norms)
+                                        { norms = residual; }, [&]
+                                        { return data.fineSolver->ReconstructionStats(); }, [&](auto &report)
+                                        {
+                const auto step = ApplyCycle(source, mass, rhsScale, time, stage, report.pseudoCFL);
+                NonlinearDetail::AccumulateWork(report, step); });
     }
 }

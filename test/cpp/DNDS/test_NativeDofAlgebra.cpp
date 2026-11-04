@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "DNDS/Algebra/DofAlgebra.hpp"
+#include "DNDS/Algebra/DofHalo.hpp"
 #include <atomic>
 #include <thread>
 
@@ -400,5 +401,86 @@ TEST_CASE("Native DOF commands and reductions mix physical formats without touch
                 CHECK(ghostX.View()(iRow, iComp) == -727);
                 CHECK(ghostY.View()(iRow, iComp) == -727);
             }
+    }
+}
+
+TEST_CASE("DOF halo publication tracks completed epochs while owned core work overlaps")
+{
+    const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    for (const int workers : {0, 2})
+    {
+        auto context = std::make_shared<R::CommunicationContext>(mpi.comm);
+        A::DofSpace space(context, 3, 1);
+        A::DofField<> input(space, R::RowLayout::ColMajor(0, 2, {8, 1})), output(space, 2);
+        {
+            auto owned = input.Owned().Write(), ghost = input.Ghost().Write(), stale = output.Ghost().Write();
+            for (DNDS::index iRow = 0; iRow < 3; ++iRow)
+                for (DNDS::index j = 0; j < 2; ++j)
+                    owned.View()(iRow, j) = 10 * mpi.rank + iRow + .25 * j;
+            for (DNDS::index j = 0; j < 2; ++j)
+                ghost.View()(0, j) = stale.View()(0, j) = -727;
+        }
+        const int donor = (mpi.rank + mpi.size - 1) % mpi.size;
+        R::RowTransferPlan route(context, 3, 1, {{donor, 0, 0}});
+        A::DofHalo<> halo(input, route);
+        auto alias = halo;
+        R::EagerEngine engine(workers);
+        const auto stream = engine.CreateCPUStream();
+        std::atomic<bool> coreStarted{false}, releaseCore{false};
+        struct Release
+        {
+            std::atomic<bool> &value;
+            ~Release() { value.store(true); }
+        } release{releaseCore};
+        auto exchange = halo.Begin(1, engine, stream);
+        engine.Submit(stream, [&](auto)
+                      {
+            const auto read = input.Owned().Read(); auto write = output.Owned().Write();
+            coreStarted.store(true);
+            if (workers) while (!releaseCore.load()) std::this_thread::yield();
+            for (DNDS::index iRow = 1; iRow < 3; ++iRow)
+                for (DNDS::index j = 0; j < 2; ++j)
+                    write.View()(iRow, j) = read.View()(iRow, j) + read.View()(iRow - 1, j); });
+        while (!coreStarted.load())
+            std::this_thread::yield();
+        exchange.Wait(); // Worker remains active until the main thread releases it.
+        alias.RequireCurrent(input, 1);
+        releaseCore.store(true);
+        stream.Record().WaitHost();
+        {
+            const auto read = input.Owned().Read(), ghost = input.Ghost().Read();
+            auto write = output.Owned().Write();
+            for (DNDS::index j = 0; j < 2; ++j)
+                write.View()(0, j) = read.View()(0, j) + ghost.View()(0, j);
+        }
+        {
+            const auto read = output.Owned().Read(), stale = output.Ghost().Read();
+            for (DNDS::index j = 0; j < 2; ++j)
+            {
+                CHECK(read.View()(0, j) == 10 * (mpi.rank + donor) + .5 * j);
+                CHECK(read.View()(1, j) == 20 * mpi.rank + 1 + .5 * j);
+                CHECK(read.View()(2, j) == 20 * mpi.rank + 3 + .5 * j);
+                CHECK(stale.View()(0, j) == -727); // Output halo is intentionally stale.
+            }
+        }
+        if (mpi.rank == 0)
+        {
+            auto write = input.Owned().Write();
+            for (DNDS::index j = 0; j < 2; ++j)
+                write.View()(0, j) += 100;
+        }
+        CHECK_THROWS(alias.RequireCurrent(input, 2)); // Includes unchanged receiving ranks.
+        halo.Begin(2, engine, stream).Wait();
+        alias.RequireCurrent(input, 2);
+        {
+            const auto ghost = input.Ghost().Read();
+            for (DNDS::index j = 0; j < 2; ++j)
+                CHECK(ghost.View()(0, j) == 10 * donor + .25 * j + (donor == 0 ? 100 : 0));
+        }
+        {
+            auto ghost = input.Ghost().Write();
+            ghost.View()(0, 0) = -1;
+        }
+        CHECK_THROWS(halo.RequireCurrent(input, 2)); // External ghost writes invalidate the receipt.
     }
 }

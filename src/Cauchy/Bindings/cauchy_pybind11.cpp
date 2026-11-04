@@ -39,27 +39,27 @@ PYBIND11_MODULE(cauchy_pybind11, m)
         .def("current", [](const C::DerivedFields &fields, const C::Domain &domain)
              { return fields.Current(domain.Dofs(), domain.Equation()); }, "Provenance snapshot; does not reserve access or refresh.")
         .def("refresh", [](C::DerivedFields &fields, const C::Domain &domain, bool onlyIfStale)
-             { return C::RefreshDerivedFields(domain.Dofs(), domain.Equation(), fields, onlyIfStale); }, py::arg("domain"), py::arg("only_if_stale") = false, py::call_guard<py::gil_scoped_release>(), "Synchronous local pointwise refresh of all enabled properties. No MPI; ghost state must already be ready. Release conflicting views first.");
+             { return domain.RefreshDerived(fields, onlyIfStale); }, py::arg("domain"), py::arg("only_if_stale") = false, py::call_guard<py::gil_scoped_release>(), "Synchronous local pointwise refresh of all enabled properties using the domain worker. No MPI; ghost state must already be ready. Release conflicting views first.");
     py::class_<C::PhysicalStepLimit>(m, "PhysicalStepLimit", "Explicit physical-step PP result; caller advances with dt. Counts/alpha precede growth capping and retries.")
         .def_readonly("dt", &C::PhysicalStepLimit::dt)
         .def_readonly("limited_cells", &C::PhysicalStepLimit::limitedCells)
         .def_readonly("minimum_alpha", &C::PhysicalStepLimit::minimumAlpha)
         .def_readonly("growth_limited", &C::PhysicalStepLimit::growthLimited);
-    py::class_<C::NonlinearIterationReport>(m, "NonlinearIterationReport", "Read-only snapshot of one implicit stage's convergence and correction counts.")
-        .def_readonly("converged", &C::NonlinearIterationReport::converged)
-        .def_readonly("iterations", &C::NonlinearIterationReport::iterations)
-        .def_readonly("linear_iterations", &C::NonlinearIterationReport::linearIterations)
-        .def_readonly("reconstruction_iterations", &C::NonlinearIterationReport::reconstructionIterations)
-        .def_readonly("reconstruction_relative_update", &C::NonlinearIterationReport::reconstructionRelativeUpdate)
-        .def_readonly("multigrid_cycles", &C::NonlinearIterationReport::multigridCycles)
-        .def_readonly("level_corrections", &C::NonlinearIterationReport::levelCorrections)
-        .def_readonly("initial_residual", &C::NonlinearIterationReport::initialResidual)
-        .def_readonly("reference_residual", &C::NonlinearIterationReport::referenceResidual)
-        .def_readonly("residual_target_ratio", &C::NonlinearIterationReport::residualTargetRatio)
-        .def_readonly("residual", &C::NonlinearIterationReport::residual)
-        .def_readonly("rhs_limited", &C::NonlinearIterationReport::rhsLimited)
-        .def_readonly("increment_limited", &C::NonlinearIterationReport::incrementLimited);
-    py::class_<C::Domain>(m, "Domain", "CPU compressible flow5 domain. Collective methods use the mesh communicator. Release all debug views before stepping; no CUDA fallback.")
+    py::class_<C::EquationNonlinearIterationReport>(m, "NonlinearIterationReport", "Read-only snapshot of one implicit stage; norms include every logical equation component.")
+        .def_readonly("converged", &C::EquationNonlinearIterationReport::converged)
+        .def_readonly("iterations", &C::EquationNonlinearIterationReport::iterations)
+        .def_readonly("linear_iterations", &C::EquationNonlinearIterationReport::linearIterations)
+        .def_readonly("reconstruction_iterations", &C::EquationNonlinearIterationReport::reconstructionIterations)
+        .def_readonly("reconstruction_relative_update", &C::EquationNonlinearIterationReport::reconstructionRelativeUpdate)
+        .def_readonly("multigrid_cycles", &C::EquationNonlinearIterationReport::multigridCycles)
+        .def_readonly("level_corrections", &C::EquationNonlinearIterationReport::levelCorrections)
+        .def_readonly("initial_residual", &C::EquationNonlinearIterationReport::initialResidual)
+        .def_readonly("reference_residual", &C::EquationNonlinearIterationReport::referenceResidual)
+        .def_readonly("residual_target_ratio", &C::EquationNonlinearIterationReport::residualTargetRatio)
+        .def_readonly("residual", &C::EquationNonlinearIterationReport::residual)
+        .def_readonly("rhs_limited", &C::EquationNonlinearIterationReport::rhsLimited)
+        .def_readonly("increment_limited", &C::EquationNonlinearIterationReport::incrementLimited);
+    py::class_<C::Domain>(m, "Domain", "CPU compressible domain with perfect gas or the explicit ideal-mixture profile. Collective methods use the mesh communicator. Release all debug views before stepping; no CUDA fallback.")
         .def(py::init([](std::shared_ptr<DNDS::Geom::UnstructuredMesh> mesh, const std::string &json, const std::string &name)
                       {
             const auto mpi=mesh->getMPI();
@@ -74,6 +74,13 @@ PYBIND11_MODULE(cauchy_pybind11, m)
              py::arg("mesh"), py::arg("config_json") = "{}", py::arg("name") = "fluid", py::call_guard<py::gil_scoped_release>())
         .def_property_readonly("flow", [](C::Domain &domain)
                                { return R::PythonArray::Share(domain.Flow().Owned()); }, "Shared owned flow Array; follows normal retained-view/access contracts.")
+        .def_property_readonly("fields", [](C::Domain &domain)
+                               {
+            std::map<std::string, R::PythonArray> result;
+            const auto &state = domain.Dofs();
+            for (DNDS::index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+                result.emplace(state.Fields().Name(iField), R::PythonArray::Share(state.PhysicalField(iField).Owned()));
+            return result; }, "Shared physical owned fields, including species. Retained views follow the same lease/publication rules as flow.")
         .def("make_derived_fields", [](const C::Domain &domain, const std::vector<C::DerivedQuantity> &quantities, bool ghost)
              {
             C::DerivedRequest request;
@@ -88,7 +95,7 @@ PYBIND11_MODULE(cauchy_pybind11, m)
         .def_property_readonly("previous_dt", &C::Domain::PreviousTimeStep, "Last actual committed physical dt; zero for steady/fresh or unknown old restart history.")
         .def_property_readonly("steady", &C::Domain::Steady)
         .def_property_readonly("coupled_iterations", &C::Domain::LastCoupledIterations)
-        .def_property_readonly("coupled_target_ratio", &C::Domain::LastCoupledTargetRatio, "Latest original coupled H/I residual ratio; zero for uncoupled time methods.")
+        .def_property_readonly("coupled_target_ratio", &C::Domain::LastCoupledTargetRatio, "Selected-component ratio of the DITR I+H stopping residual after both coupled-stage updates; the same value appears in its single nonlinear report. Zero for other methods.")
         .def_property_readonly("step", [](const C::Domain &domain)
                                { return domain.Epoch().acceptedStep; })
         .def_property_readonly("face_fallbacks", &C::Domain::LastFaceFallbacks)
@@ -103,6 +110,14 @@ PYBIND11_MODULE(cauchy_pybind11, m)
                      value = &domain.Residual();
                  }
                  return R::PythonArray::Share(value->Owned()); }, "Collective integrated residual; returned Array aliases overwriteable workspace. Invalidates any prepared candidate.")
+        .def("residual_fields", [](C::Domain &domain)
+             {
+                 const C::EquationDofs *value;
+                 { py::gil_scoped_release release; value = &domain.ResidualState(); }
+                 std::map<std::string, R::PythonArray> result;
+                 for (DNDS::index iField = 0; iField < value->PhysicalFieldNumber(); ++iField)
+                     result.emplace(value->Fields().Name(iField), R::PythonArray::Share(value->PhysicalField(iField).Owned()));
+                 return result; }, "Collective full-equation integrated residual fields; shared overwriteable scratch, with the same candidate-invalidating and view-release rules as residual.")
         .def("advance", &C::Domain::Advance, py::arg("dt"), py::call_guard<py::gil_scoped_release>(), "Collective configured time method; invalid candidate leaves accepted state/time/history unchanged.")
         .def("prepare_step", &C::Domain::PrepareStep, py::arg("dt"), py::call_guard<py::gil_scoped_release>())
         .def("commit_step", &C::Domain::CommitStep, py::call_guard<py::gil_scoped_release>())

@@ -8,6 +8,8 @@
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/Physics/EquationSource.hpp"
 #include "Cauchy/Physics/EquationPositivity.hpp"
+#include "Cauchy/Core/Domain.hpp"
+#include "Cauchy/Core/Simulation.hpp"
 #include "CartesianFixture.hpp"
 #include "../CFV/ReconstructionFixture.hpp"
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
@@ -553,6 +555,169 @@ TEST_CASE("Mixture isothermal wall conducts the independent Fourier flux without
     }
     MPI_Allreduce(MPI_IN_PLACE, &actual, 1, MPI_DOUBLE, MPI_SUM, mpi.comm);
     CHECK(actual == doctest::Approx(expected).epsilon(2e-10));
+}
+
+TEST_CASE("Configured mixture Domains advance every block through production time and publication paths")
+{
+    MixtureFixture mixture;
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    std::vector<double> fractions(size_t(mixture.species), 1e-6);
+    fractions[0] = .027;
+    fractions[3] = .22;
+    fractions[5] = .02;
+    fractions.back() = 0;
+    fractions.back() = 1 - std::accumulate(fractions.begin(), fractions.end(), 0.);
+    C::Json composition = C::Json::object();
+    for (int k = 0; k < mixture.species; ++k)
+        composition[mixture.material.SpeciesNames()[k]] = fractions[k];
+    C::Json input{{"defaults", {{"equation", {{"eos", "idealGasMixture"}, {"source", "chemical"}, {"mixture", {{"mechanismFile", mixture.prototype.mechanismFile()}, {"rho0", mixture.scales.rho0}, {"U0", mixture.scales.U0}, {"L0", mixture.scales.L0}, {"T0", mixture.scales.T0}}}}}, {"initialPrimitive", {.8, .2, -.04, .03, 1}}, {"initialTemperature", 1400 / mixture.scales.T0}, {"initialMassFractions", composition}, {"execution", {{"layout", "soa"}, {"hostThreads", 2}}}, {"numerics", {{"reconstruction", "constant"}, {"faceFallback", false}}}, {"implicit", {{"diagonal", "block"}, {"pseudoCFL", 1e4}, {"maxPseudoCFL", 1e8}, {"relativeTolerance", 1e-10}, {"absoluteTolerance", 1e-8}, {"residualComponents", C::Json::array()}, {"linear", {{"method", "gmres"}, {"preconditioner", "ilu"}, {"relativeTolerance", 1e-10}, {"absoluteTolerance", 1e-13}}}}}}}, {"time", {{"method", "bdf1"}}}};
+    const auto startFractions = fractions;
+    constexpr double totalTime = 1e-5;
+    double temperature = 1400;
+    mixture.prototype.advanceConstVolume(temperature, .8 * mixture.scales.rho0, {fractions.data(), mixture.species}, 1,
+                                         totalTime * mixture.scales.Time(), 1e-12, 1e-18);
+    for (int scenario = 0; scenario < 4; ++scenario)
+    {
+        const int steps = scenario == 0 ? 8 : 4;
+        input["time"]["method"] = scenario == 0 ? "ssprk3" : scenario == 1 ? "bdf1"
+                                                         : scenario == 2   ? "esdirk4"
+                                                                           : "ditr";
+        if (scenario >= 3)
+        {
+            // Reaction-dominated production profile: use the requested U2R1.
+            // U2R2 remains covered by the independent public time-method oracle
+            // and nonreacting Domain tests; it need not converge this stiff
+            // reactor within the same pseudo-time budget.
+            input["time"]["ditr"] = C::Json{{"variant", "U2R1"}};
+        }
+        if (scenario == 3)
+        {
+            auto names = C::Json::array();
+            for (int k = 0; k < mixture.species - 1; ++k)
+                names.push_back("rhoY:" + mixture.material.SpeciesNames()[k]);
+            input["defaults"]["implicit"]["residualComponents"] = std::move(names);
+            // In this homogeneous reactor density cannot stop chemistry.
+            // DITR observes after one pair of corrections. Density-only
+            // acceptance need not imply convergence of the species equations.
+            auto densityInput = input;
+            densityInput["defaults"]["implicit"].erase("residualComponents");
+            const auto densityConfig = C::SimulationConfig::ResolveCollective(densityInput, mpi.comm);
+            C::Domain densityOnly("density-only", mesh, densityConfig.Domains()[0].settings, densityConfig.Time());
+            const auto unchanged = densityOnly.Dofs().Clone();
+            densityOnly.Advance(totalTime / steps);
+            CHECK(densityOnly.LastCoupledIterations() == 1);
+            CHECK(densityOnly.LastCoupledTargetRatio() <= 1);
+            REQUIRE(densityOnly.LastImplicitStages().size() == 1);
+            CHECK(densityOnly.LastImplicitStages().front().converged);
+            const auto after = densityOnly.Dofs().ReadOwned(), before = unchanged.ReadOwned();
+            const auto flowAfter = after.Block("flow"), flowBefore = before.Block("flow");
+            for (I iCell = 0; iCell < flowAfter.owned.RowCount(); ++iCell)
+                for (I j = 0; j < flowAfter.ComponentNumber(); ++j)
+                    CHECK(flowAfter(iCell, j) == doctest::Approx(flowBefore(iCell, j)).epsilon(1e-11));
+        }
+        input["defaults"]["execution"]["layout"] = scenario == 0 ? "aos" : scenario == 1 ? "soa"
+                                                                                         : "aosoa32";
+        input["defaults"]["execution"]["overlap"] = bool(scenario);
+        input["defaults"]["execution"]["hostThreads"] = scenario ? 2 : 0;
+        input["defaults"]["numerics"]["positivity"] = scenario != 0;
+        if (scenario == 2)
+        {
+            input["defaults"]["numerics"]["reconstruction"] = "variational";
+            input["defaults"]["numerics"]["cfv"] = C::Json{{"maxOrder", 3}};
+            input["defaults"]["numerics"]["limiter"] = "WBAP";
+            input["defaults"]["numerics"]["characteristicLimiter"] = false;
+        }
+        const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
+        C::Domain domain("mixture", mesh, config.Domains()[0].settings, config.Time());
+        REQUIRE(domain.Dofs().PhysicalFieldNumber() == 2);
+        const auto initial = domain.Dofs().Clone();
+        const auto dt = domain.StableStep(.5);
+        CHECK(std::isfinite(dt));
+        CHECK(dt > 0);
+        CHECK(domain.ResidualState().ComponentNumber() == mixture.species + 4);
+        int firstStep = 0;
+        if (scenario == 1)
+        {
+            domain.PrepareStep(totalTime / steps);
+            const C::EquationDofOperations::Binding before(domain.Dofs());
+            {
+                const auto location = domain.Dofs().LocateBlock("species");
+                const auto held = domain.Dofs().PhysicalField(location.physicalField).Owned().Read();
+                CHECK_THROWS(domain.CommitStep()); // A species-only view must block all publication.
+                CHECK_NOTHROW(before.Check(domain.Dofs(), true));
+                CHECK(domain.Time() == 0);
+                CHECK(domain.Epoch().acceptedStep == 0);
+            }
+            domain.CommitStep();
+            firstStep = 1;
+        }
+        for (int step = firstStep; step < steps; ++step)
+            domain.Advance(totalTime / steps);
+        CHECK(domain.Epoch().acceptedStep == uint64_t(steps));
+        CHECK(domain.Time() == doctest::Approx(totalTime).epsilon(2e-15));
+        if (scenario)
+        {
+            REQUIRE_FALSE(domain.LastImplicitStages().empty());
+            for (const auto &report : domain.LastImplicitStages())
+            {
+                INFO("method=" << config.Time().method << " variant=" << config.Time().ditr.variant << " iterations=" << report.iterations << " target=" << report.residualTargetRatio
+                               << " residual=" << C::Json(report.residual).dump() << " initial=" << C::Json(report.initialResidual).dump());
+                CHECK(report.converged);
+                CHECK(report.residual.size() == size_t(mixture.species + 4));
+            }
+            if (scenario >= 3)
+            {
+                REQUIRE(domain.LastImplicitStages().size() == 1);
+                CHECK(domain.LastCoupledTargetRatio() <= 1);
+                CHECK(domain.LastImplicitStages().front().iterations == domain.LastCoupledIterations());
+                CHECK(domain.LastImplicitStages().front().residualTargetRatio == domain.LastCoupledTargetRatio());
+            }
+        }
+        double error = 0, change = 0;
+        {
+            const auto read = domain.Dofs().ReadOwned(), before = initial.ReadOwned();
+            const auto flow = read.Block("flow"), oldFlow = before.Block("flow"), species = read.Block("species");
+            for (I iCell = 0; iCell < flow.owned.RowCount(); ++iCell)
+            {
+                for (int j = 0; j < 5; ++j)
+                    CHECK(flow(iCell, j) == doctest::Approx(oldFlow(iCell, j)).epsilon(2e-12).scale(1));
+                for (int k = 0; k < mixture.species - 1; ++k)
+                {
+                    error = std::max(error, std::abs(species(iCell, k) - .8 * fractions[k]));
+                    change = std::max(change, std::abs(species(iCell, k) - .8 * startFractions[k]));
+                }
+            }
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &error, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+        MPI_Allreduce(MPI_IN_PLACE, &change, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+        CHECK(change > 1e-7);
+        CHECK(error < 3e-7);
+        const auto diagnostics = domain.Diagnostics(config.Domains()[0].settings, {});
+        CHECK(diagnostics[2] > 0);
+        CHECK(diagnostics[3] > 0);
+        CHECK(diagnostics[13] > 0);
+    }
+    input["defaults"]["numerics"]["reconstruction"] = "constant";
+    input["defaults"]["numerics"]["limiter"] = "none";
+    input["time"]["method"] = "bdf1";
+    input["domains"] = C::Json::array({{{"name", "a"}}, {{"name", "b"}}});
+    const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
+    C::Simulation simulation(config, mpi.comm, [&](I, const auto &, const auto &)
+                             { return mesh; });
+    simulation.Advance(totalTime);
+    for (I iDomain = 0; iDomain < 2; ++iDomain)
+    {
+        const auto &domain = simulation.GetDomain(iDomain);
+        const auto read = domain.Dofs().ReadOwned();
+        const auto species = read.Block("species");
+        double change = 0;
+        for (I iCell = 0; iCell < species.owned.RowCount(); ++iCell)
+            for (int k = 0; k < mixture.species - 1; ++k)
+                change = std::max(change, std::abs(species(iCell, k) - .8 * startFractions[k]));
+        MPI_Allreduce(MPI_IN_PLACE, &change, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+        CHECK(change > 1e-7);
+        CHECK(domain.Time() == simulation.Time());
+    }
 }
 
 TEST_CASE("Physical mixture Jacobians match frozen-signal residual differences and solve through the logical driver")

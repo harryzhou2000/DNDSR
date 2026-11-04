@@ -9,6 +9,23 @@
 
 namespace DNDS::Cauchy::NonlinearDetail
 {
+    /// Accumulate numerical work without treating coarse corrections as finest
+    /// nonlinear iterations or overwriting the finest convergence observation.
+    template <class Report>
+    void AccumulateWork(Report &total, const Report &step)
+    {
+        total.linearIterations += step.linearIterations;
+        total.rhsLimited += step.rhsLimited;
+        total.incrementLimited += step.incrementLimited;
+        total.minimumRHSAlpha = std::min(total.minimumRHSAlpha, step.minimumRHSAlpha);
+        total.minimumIncrementAlpha = std::min(total.minimumIncrementAlpha, step.minimumIncrementAlpha);
+        total.lastLinear = step.lastLinear;
+        total.multigridCycles += step.multigridCycles;
+        if (total.levelCorrections.size() < step.levelCorrections.size())
+            total.levelCorrections.resize(step.levelCorrections.size());
+        for (index level = 0; level < index(step.levelCorrections.size()); ++level)
+            total.levelCorrections[level] += step.levelCorrections[level];
+    }
     inline LinearSolveSettings ResolveLinear(const ImplicitSettings &settings)
     {
         LinearSolveSettings result;
@@ -64,16 +81,28 @@ namespace DNDS::Cauchy::NonlinearDetail
     /// and correction callbacks own their numerical access/MPI contracts;
     /// measure returns globally reduced norms without modifying their order.
     /// No physical acceptance, rollback or extra collective is introduced here.
-    template <class Report, class Evaluate, class Measure, class Reconstruction, class Advance>
-    Report Iterate(const ImplicitSettings &settings, int rank, int stage, const NonlinearSolveControl &control,
-                   Report report, real reconstructionTolerance, Evaluate &&evaluate, Measure &&measure,
-                   Reconstruction &&reconstruction, Advance &&advance)
+    enum class ResidualObservation
     {
-        BasicResidualConvergence<decltype(report.residual)> convergence(settings, report.residual);
+        BeforeUpdate,
+        AfterUpdate
+    };
+    template <class Report, class Evaluate, class Measure, class Reconstruction, class Advance>
+    Report Iterate(const ImplicitSettings &settings, const EquationSchema &schema, int rank, int stage, const NonlinearSolveControl &control,
+                   Report report, real reconstructionTolerance, Evaluate &&evaluate, Measure &&measure,
+                   Reconstruction &&reconstruction, Advance &&advance,
+                   ResidualObservation observation = ResidualObservation::BeforeUpdate)
+    {
+        BasicResidualConvergence<decltype(report.residual)> convergence(settings, schema, report.residual);
         report.pseudoCFL = control.initialPseudoCFL == 0 ? settings.pseudoCFL : control.initialPseudoCFL;
         const index limit = control.correctionLimit < 0 ? settings.iterations : control.correctionLimit;
-        for (index iteration = 0; iteration <= limit; ++iteration)
+        const bool afterUpdate = observation == ResidualObservation::AfterUpdate;
+        DNDS_check_throw_info(!afterUpdate || limit > 0, "post-update residual observation requires at least one update");
+        for (index iteration = afterUpdate ? 1 : 0; iteration <= limit; ++iteration)
         {
+            // A time problem may update several coupledStages here, with one
+            // shared CFL/reference/cap policy and one subsequent observation.
+            if (afterUpdate)
+                advance(report);
             {
                 const PhaseTimer timer(control.profile, NonlinearProfile::Residual);
                 evaluate();
@@ -101,7 +130,8 @@ namespace DNDS::Cauchy::NonlinearDetail
                     return report;
                 }
             }
-            advance(report);
+            if (!afterUpdate)
+                advance(report);
             report.pseudoCFL = std::min(settings.maxPseudoCFL, report.pseudoCFL * settings.pseudoGrowth);
         }
         return report;

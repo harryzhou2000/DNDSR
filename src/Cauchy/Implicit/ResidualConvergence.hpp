@@ -2,6 +2,7 @@
 
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/Physics/PerfectGas.hpp"
+#include "Cauchy/Physics/EquationSchema.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -14,12 +15,20 @@ namespace DNDS::Cauchy
     {
         const ImplicitSettings &_settings;
         Norms _initial{}, _reference{};
+        std::vector<index> _components;
         bool _started = false, _accepted = false;
         real _ratio = 0;
 
     public:
         /// Settings must be validated and outlive this policy.
-        explicit BasicResidualConvergence(const ImplicitSettings &settings, Norms prototype = {}) : _settings(settings), _initial(prototype), _reference(prototype) {}
+        explicit BasicResidualConvergence(const ImplicitSettings &settings, const EquationSchema &schema, Norms prototype = {})
+            : _settings(settings), _initial(prototype), _reference(prototype), _components(schema.ResolveComponents(settings.residualComponents))
+        {
+            index width = 0;
+            for (const auto &block : schema.blocks)
+                width += index(block.components.size());
+            DNDS_check_throw_info(width == index(prototype.size()), "residual norms differ from equation schema");
+        }
         void Observe(const Norms &residual)
         {
             DNDS_check_throw_info(residual.size() == _initial.size(), "residual component count changed");
@@ -33,8 +42,10 @@ namespace DNDS::Cauchy
             _started = true;
             _accepted = true;
             _ratio = 0;
-            for (const auto j : _settings.residualComponents)
+            const index count = _components.empty() ? index(residual.size()) : index(_components.size());
+            for (index iComponent = 0; iComponent < count; ++iComponent)
             {
+                const index j = _components.empty() ? iComponent : _components[iComponent];
                 const real target = std::max(_settings.absoluteTolerance, _settings.relativeTolerance * _reference[j]);
                 _accepted = _accepted && residual[j] <= target;
                 // A zero requested tolerance means exact zero. Keep diagnostics

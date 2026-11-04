@@ -14,6 +14,57 @@ from DNDSR import DNDS, Geom
 from DNDSR.Cauchy import Domain, Simulation, PhysicalStepLimit, DerivedQuantity
 
 
+@pytest.mark.mpi
+def test_configured_mixture_fields_implicit_step_and_native_worker_refresh():
+    import os
+
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    root = Path(__file__).resolve().parents[2]
+    mechanism = Path(os.environ.get("DNDS_MECH_PATH", root / "external/cfd_externals/install/data")) / "h2o2.yaml"
+    if not mechanism.is_file():
+        pytest.skip("installed h2o2 mechanism is unavailable")
+    mesh = Geom.with_native_topology(Geom.read_native_cgns(mpi, str(root / "data/mesh/Uniform_3x3_wall.cgns"), 2))
+    with mesh.acquire_read(faces=True) as read:
+        zones = {int(read.boundary_info(i).zone) for i in range(mesh.NumBnd())}
+    zones = set().union(*MPI.COMM_WORLD.allgather(zones))
+    config = {"defaults": {
+        "equation": {"eos": "idealGasMixture", "source": "chemical", "mixture": {
+            "mechanismFile": str(mechanism), "rho0": 1.225, "U0": 340, "L0": 2, "T0": 288.15}},
+        "initialPrimitive": [.8, 0, 0, 0, 1], "initialTemperature": 1400 / 288.15,
+        "initialMassFractions": {"H2": .027, "O2": .22, "H2O": .02},
+        "execution": {"layout": "soa", "hostThreads": 2, "overlap": True},
+        "numerics": {"reconstruction": "constant", "faceFallback": False, "positivity": True},
+        "implicit": {"diagonal": "block", "pseudoCFL": 1e4, "maxPseudoCFL": 1e8, "absoluteTolerance": 1e-8,
+                     "residualComponents": ["rhoY:H2", "rhoY:H2O"],
+                     "linear": {"method": "gmres", "preconditioner": "ilu"}},
+        "boundaries": {str(zone): {"kind": "extrapolate"} for zone in zones},
+    }, "time": {"method": "bdf1"}}
+    try:
+        domain = Domain(mesh, json.dumps(config))
+    except RuntimeError as error:
+        if "requires Cantera" in str(error):
+            pytest.skip("Cantera is disabled in this build")
+        raise
+    fields = domain.fields
+    assert set(fields) == {"flow", "species"}
+    before_flow, before_species = fields["flow"].numpy().copy(), fields["species"].numpy().copy()
+    residual = domain.residual_fields()
+    assert set(residual) == set(fields)
+    derived = domain.make_derived_fields([DerivedQuantity.Temperature, DerivedQuantity.Pressure])
+    assert derived.refresh(domain)
+    assert derived.current(domain)
+    assert domain.stable_step(.5) > 0
+    domain.advance(1e-6)
+    np.testing.assert_allclose(fields["flow"].numpy(), before_flow, rtol=1e-11, atol=1e-12)
+    local_change = np.max(np.abs(fields["species"].numpy() - before_species), initial=0.)
+    assert MPI.COMM_WORLD.allreduce(local_change, op=MPI.MAX) > 1e-10
+    assert all(len(report.residual) == 14 for report in domain.implicit_stages)
+    assert not derived.current(domain)
+    assert derived.refresh(domain)
+    assert derived.current(domain)
+
+
 def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=False, time_pp=False, lvr_variant=None):
     mpi = DNDS.MPIInfo()
     mpi.setWorld()
@@ -133,7 +184,7 @@ def test_shared_state_real_residual_ssprk3_and_restart(tmp_path, layout, flux, w
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("method,stages", [("bdf2", 1), ("esdirk4", 5), ("ditr", 2)])
+@pytest.mark.parametrize("method,stages", [("bdf2", 1), ("esdirk4", 5), ("ditr", 1)])
 def test_configured_implicit_method_and_retained_shared_state(tmp_path, method, stages):
     domain, primitive = build_domain(method=method)
     flow = domain.flow

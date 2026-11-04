@@ -3,6 +3,7 @@
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
 #include "Cauchy/Implicit/PositivityReduction.hpp"
 #include "Cauchy/Implicit/ResidualConvergence.hpp"
+#include "Cauchy/Implicit/NonlinearIteration.hpp"
 #include "CartesianFixture.hpp"
 #include <limits>
 #include <cstring>
@@ -12,8 +13,40 @@ namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
 namespace A = DNDS::Algebra;
 static DNDS::MPIInfo mpi;
+TEST_CASE("Shared nonlinear controller observes coupled updates once and advances CFL once")
+{
+    C::ImplicitSettings settings;
+    settings.iterations = 2;
+    settings.minIterations = 2;
+    settings.pseudoCFL = 1;
+    settings.pseudoGrowth = 2;
+    settings.maxPseudoCFL = 8;
+    settings.absoluteTolerance = .3;
+    settings.relativeTolerance = 0;
+    const auto schema = C::EquationSystem::Resolve(C::EquationSettings{}).Schema();
+    std::vector<int> visits;
+    std::vector<double> cfl;
+    double value = 1;
+    const auto report = C::NonlinearDetail::Iterate(settings, schema, mpi.rank, 0, {}, C::NonlinearIterationReport{}, 0, [&]
+                                                    { visits.push_back(2); }, [&](auto &norms)
+                                                    { norms[0] = value; visits.push_back(3); }, []
+                                                    { return std::make_pair(0, 0.); }, [&](auto &current)
+                                                    {
+            cfl.push_back(current.pseudoCFL);
+            visits.push_back(0); // Intermediate correction + refresh.
+            visits.push_back(1); // Endpoint correction + refresh.
+            value *= .5; }, C::NonlinearDetail::ResidualObservation::AfterUpdate);
+    CHECK(report.converged);
+    CHECK(report.iterations == 2);
+    CHECK(report.initialResidual[0] == .5);
+    CHECK(report.residual[0] == .25);
+    CHECK(visits == std::vector<int>{0, 1, 2, 3, 0, 1, 2, 3});
+    CHECK(cfl == std::vector<double>{1, 2});
+    CHECK(report.pseudoCFL == 2);
+}
 TEST_CASE("Implicit convergence retains initial and running references without hiding unselected components")
 {
+    const auto schema = C::EquationSystem::Resolve(C::EquationSettings{}).Schema();
     for (const auto *reference : {"initial", "runningMaximum"})
     {
         C::ImplicitSettings settings;
@@ -21,7 +54,7 @@ TEST_CASE("Implicit convergence retains initial and running references without h
         settings.absoluteTolerance = 0;
         settings.residualReference = reference;
         settings.Validate();
-        C::ResidualConvergence policy(settings);
+        C::ResidualConvergence policy(settings, schema);
         CHECK_FALSE(policy.Accepted());
         policy.Observe({2, 3, 0, 0, 0});
         policy.Observe({4, 1, 0, 0, 0});
@@ -34,9 +67,30 @@ TEST_CASE("Implicit convergence retains initial and running references without h
         CHECK_THROWS(policy.Observe({0, -1, 0, 0, 0}));
     }
     C::ImplicitSettings exact;
+    {
+        auto allSettings = exact;
+        allSettings.residualComponents.clear();
+        auto extended = schema;
+        extended.blocks.push_back({"rans", {{"rhoNuTilde", "", ""}}, {}});
+        extended.blocks.push_back({"species", {{"rhoY:H2", "", ""}}, {}});
+        C::BasicResidualConvergence<std::vector<double>> all(allSettings, extended, std::vector<double>(7, 0));
+        all.Observe({0, 0, 0, 0, 0, 0, 1});
+        CHECK_FALSE(all.Accepted()); // Empty selects the last added equation too.
+        all.Observe({0, 0, 0, 0, 0, 0, 0});
+        CHECK(all.Accepted());
+        C::BasicResidualConvergence<std::vector<double>> density(exact, extended, std::vector<double>(7, 0));
+        density.Observe({0, 0, 0, 0, 0, 0, 1});
+        CHECK(density.Accepted()); // Default density stop does not select added equations.
+        CHECK(density.Initial().back() == 1);
+        allSettings.residualComponents = {"species.rhoY:H2"};
+        C::BasicResidualConvergence<std::vector<double>> species(allSettings, extended, std::vector<double>(7, 0));
+        species.Observe({0, 0, 0, 0, 0, 0, 1});
+        CHECK_FALSE(species.Accepted());
+        CHECK(extended.ResolveComponents({"rhoY:H2", "flow.rhou"}) == std::vector<DNDS::index>{6, 1});
+    }
     exact.relativeTolerance = exact.absoluteTolerance = 0;
-    exact.residualComponents = {0};
-    C::ResidualConvergence policy(exact);
+    exact.residualComponents = {"rho"};
+    C::ResidualConvergence policy(exact, schema);
     policy.Observe({0, 100, 0, 0, 0});
     CHECK(policy.Accepted());
     CHECK(policy.TargetRatio() == 0);
@@ -44,12 +98,12 @@ TEST_CASE("Implicit convergence retains initial and running references without h
     policy.Observe({1e-300, 100, 0, 0, 0});
     CHECK_FALSE(policy.Accepted());
     CHECK(std::isfinite(policy.TargetRatio()));
-    for (const std::vector<int> components : {std::vector<int>{}, {0, 0}, {-1}, {5}})
+    for (const std::vector<std::string> components : {std::vector<std::string>{"rho", "flow.rho"}, {"missing"}})
     {
         exact.residualComponents = components;
-        CHECK_THROWS(exact.Validate());
+        CHECK_THROWS(schema.ResolveComponents(exact.residualComponents));
     }
-    exact.residualComponents = {0};
+    exact.residualComponents = {"rho"};
     exact.normOrder = 3;
     CHECK_THROWS(exact.Validate());
     exact.normOrder = 1;
@@ -69,8 +123,7 @@ TEST_CASE("Distributed implicit L1 L2 norms and selected-component stops use the
             settings.implicit.relativeTolerance = .1;
             settings.implicit.absoluteTolerance = 1e-12;
             settings.implicit.residualReference = "runningMaximum";
-            if (densityOnly)
-                settings.implicit.residualComponents = {0};
+            settings.implicit.residualComponents = densityOnly ? std::vector<std::string>{"rho"} : std::vector<std::string>{};
             const auto equation = C::EquationSystem::Resolve(settings.equation);
             C::FiniteVolume fv(mesh, settings, equation);
             const auto layout = order == 1 ? R::RowLayout::ColMajor(0, 5) : R::RowLayout::TiledColMajor(0, 5, 4);
@@ -102,6 +155,46 @@ TEST_CASE("Distributed implicit L1 L2 norms and selected-component stops use the
             CHECK(report.residualTargetRatio == doctest::Approx(densityOnly ? 0 : 10));
             CHECK(state.Owned().Version() == version);
         }
+}
+TEST_CASE("One correction reuses the ordinary solve update without a stopping loop")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    C::DomainSettings settings;
+    settings.numerics.reconstruction = "constant";
+    settings.implicit.iterations = 1;
+    settings.implicit.minIterations = 1;
+    settings.implicit.relativeTolerance = settings.implicit.absoluteTolerance = 0;
+    const auto equation = C::EquationSystem::Resolve(settings.equation);
+    C::FiniteVolume fv(mesh, settings, equation);
+    auto reference = fv.Metrics().BuildField(5), single = fv.Metrics().BuildField(5), source = fv.Metrics().BuildField(5);
+    fv.Initialize(reference, {}, {1, .1, 0, 0, 1});
+    A::Copy(single, reference);
+    A::Copy(source, reference);
+    A::Scale(source, 20.);
+    {
+        auto write = source.Owned().Write();
+        for (DNDS::index iCell = 0; iCell < source.Owned().RowCount(); ++iCell)
+            write.View()(iCell, 0) += .01 * (fv.Metrics().Cells().LocalToGlobal(iCell) + 1);
+    }
+    R::EagerEngine engine;
+    const auto stream = engine.CreateCPUStream();
+    C::AuxiliaryRequest request;
+    request.faceSpectralRadius = request.cellSpectralSum = true;
+    C::NonlinearSolver full(fv, reference, fv.BuildWorkspace(reference, request), engine, stream, settings);
+    C::NonlinearSolver one(fv, single, fv.BuildWorkspace(single, request), engine, stream, settings);
+    const auto version = source.Owned().Version();
+    const auto solved = full.Solve(reference, source, 20, 1, .1);
+    C::NonlinearProfile profile;
+    const auto corrected = one.CorrectOnce(single, source, 20, 1, .1, 0, {-1, 0, &profile});
+    CHECK(corrected.iterations == 1);
+    CHECK_FALSE(corrected.converged);
+    CHECK(profile.residualEvaluations == 1);
+    CHECK(corrected.linearIterations == solved.linearIterations);
+    CHECK(source.Owned().Version() == version);
+    const auto a = reference.Owned().Read(), b = single.Owned().Read();
+    for (DNDS::index iCell = 0; iCell < reference.Owned().RowCount(); ++iCell)
+        for (int j = 0; j < 5; ++j)
+            CHECK(a.View()(iCell, j) == b.View()(iCell, j));
 }
 TEST_CASE("Euler alpha reductions agree sparse triggers and reject mismatched policies or statistics")
 {
@@ -185,6 +278,9 @@ TEST_CASE("Native implicit stage recovers a constant manufactured solution from 
     for (int scenario = 0; scenario < 3; ++scenario)
     {
         C::DomainSettings settings;
+        // This manufactured oracle requires every equation to meet its target;
+        // do not silently inherit the production density-only default.
+        settings.implicit.residualComponents.clear();
         settings.numerics.reconstruction = scenario == 2 ? "variational" : "constant";
         settings.numerics.cfv.maxOrder = scenario == 2 ? 3 : 1;
         settings.numerics.reconstructionIterations = 100;

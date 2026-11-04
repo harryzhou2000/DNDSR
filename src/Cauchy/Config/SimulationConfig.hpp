@@ -10,10 +10,30 @@
 namespace DNDS::Cauchy
 {
     using Json = nlohmann::ordered_json;
+    /// Species names are model-defined keys, not configuration member names.
+    inline Json SpeciesMassFractionsSchema()
+    {
+        return {{"type", "object"}, {"additionalProperties", {{"type", "number"}}}};
+    }
+    struct MixtureSettings
+    {
+        std::string mechanismFile, phaseName;
+        real rho0 = 1, U0 = 1, L0 = 1, T0 = 1;
+        DNDS_DECLARE_CONFIG(MixtureSettings)
+        {
+            DNDS_FIELD(mechanismFile, "Cantera mechanism path or installed mechanism name");
+            DNDS_FIELD(phaseName, "Cantera phase; empty selects the default phase");
+            DNDS_FIELD(rho0, "SI reference density");
+            DNDS_FIELD(U0, "SI reference velocity");
+            DNDS_FIELD(L0, "SI reference length");
+            DNDS_FIELD(T0, "SI reference temperature");
+        }
+    };
     struct EquationSettings
     {
         std::string system = "compressible", eos = "perfectGas", transport = "inviscid", source = "none";
         real gamma = 1.4, gasConstant = 1., viscosity = 0., prandtl = 0.72;
+        MixtureSettings mixture;
         DNDS_DECLARE_CONFIG(EquationSettings)
         {
             DNDS_FIELD(system, "Coupled equation family");
@@ -24,6 +44,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(gasConstant, "Specific gas constant in the chosen units");
             DNDS_FIELD(viscosity, "Constant dynamic viscosity");
             DNDS_FIELD(prandtl, "Molecular Prandtl number");
+            config.field_section(&T::mixture, "mixture", "Ideal-gas mixture mechanism and reference scales");
         }
     };
     struct ExecutionSettings
@@ -153,7 +174,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(thermal, "Wall thermal law: adiabatic or isothermal");
             DNDS_FIELD(wallVelocityFrame, "mesh: velocity relative to moving wall; ground: prescribed absolute ground velocity");
             DNDS_FIELD(primitive, "Farfield rho,u,v,w,p; three velocities on any geometry");
-            DNDS_FIELD(massFractions, "Prescribed species mass fractions; omitted last species fills the remainder");
+            config.field_schema(&T::massFractions, "massFractions", "Prescribed species mass fractions; omitted last species fills the remainder", SpeciesMassFractionsSchema);
             DNDS_FIELD(velocity, "Prescribed wall velocity in wallVelocityFrame; farfield/analytic data always use ground axes");
             DNDS_FIELD(temperature, "Positive isothermal wall temperature");
             config.field_section(&T::profile, "profile", "Space/time input for analytic boundary values");
@@ -236,7 +257,7 @@ namespace DNDS::Cauchy
         real relativeTolerance = 1e-8, absoluteTolerance = 1e-11;
         int normOrder = 2;
         std::string residualReference = "initial";
-        std::vector<int> residualComponents{0, 1, 2, 3, 4};
+        std::vector<std::string> residualComponents{"rho"};
         real pseudoCFL = 10, maxPseudoCFL = 1e4, pseudoGrowth = 1.3, relaxation = 1;
         bool roeDissipation = false, collectiveChecks = true;
         bool requireConvergedReconstruction = false;
@@ -248,7 +269,8 @@ namespace DNDS::Cauchy
         PolynomialMultigridSettings multigrid;
         void Validate() const;
         /// Operator-level validation after resolving an equation's dimension.
-        /// The existing config/frontend validation retains its flow5 contract.
+        /// Configuration checks name syntax first; material setup resolves
+        /// component names against the actual equation schema before execution.
         void ValidateComponents(index components) const;
         DNDS_DECLARE_CONFIG(ImplicitSettings)
         {
@@ -261,7 +283,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(absoluteTolerance, "Per-component absolute volume-weighted stage residual tolerance");
             DNDS_FIELD(normOrder, "Volume-weighted residual norm: 1 or 2");
             DNDS_FIELD(residualReference, "initial or runningMaximum per-component reference within one solve");
-            DNDS_FIELD(residualComponents, "Distinct flow5 component indices required for convergence; all five by default");
+            DNDS_FIELD(residualComponents, "Named nonlinear and DITR convergence components, e.g. rho, flow.rhou or rhoY:H2. Default [rho]; empty selects all. Names resolve against the equation schema");
             DNDS_FIELD(pseudoCFL, "Initial local pseudo-time CFL for each stage");
             DNDS_FIELD(maxPseudoCFL, "Maximum pseudo-time CFL");
             DNDS_FIELD(pseudoGrowth, "CFL growth factor after each nonlinear correction");
@@ -286,6 +308,8 @@ namespace DNDS::Cauchy
         NumericsSettings numerics;
         ImplicitSettings implicit;
         std::array<real, 5> initialPrimitive{1, 0, 0, 0, 1};
+        std::map<std::string, real> initialMassFractions;
+        real initialTemperature = 0;
         FlowProfileSettings initialProfile;
         std::map<std::string, BoundarySettings> boundaries;
         DNDS_DECLARE_CONFIG(DomainSettings)
@@ -297,6 +321,8 @@ namespace DNDS::Cauchy
             config.field_section(&T::numerics, "numerics", "Discrete operators");
             config.field_section(&T::implicit, "implicit", "Nonlinear CPU implicit stage controls");
             DNDS_FIELD(initialPrimitive, "Constant initial rho,u,v,w,p");
+            config.field_schema(&T::initialMassFractions, "initialMassFractions", "Initial species mass fractions; omitted last species receives the remainder", SpeciesMassFractionsSchema);
+            DNDS_FIELD(initialTemperature, "Positive constant initial temperature overrides initialPrimitive pressure; zero uses pressure");
             config.field_section(&T::initialProfile, "initialProfile", "Quadrature-averaged initial physical field");
             config.field_map_of<BoundarySettings>(&T::boundaries, "boundaries", "Boundary-zone ID to condition");
         }
@@ -307,18 +333,20 @@ namespace DNDS::Cauchy
     DomainSettings ResolveSweepOrdering(DomainSettings settings);
     struct DITRTimeSettings
     {
+        std::string variant = "U2R2";
         real fraction = .55, theta = .9146;
         index iterations = 100, minIterations = 0;
         real relativeTolerance = 1e-8, absoluteTolerance = 1e-10;
         void Validate() const;
         DNDS_DECLARE_CONFIG(DITRTimeSettings)
         {
-            DNDS_FIELD(fraction, "U2R2 intermediate time fraction; CPU positive-scale profile requires (0,2/3)");
+            DNDS_FIELD(variant, "U2R2 or U2R1 interpolation; U2R1 is available for reaction-dominated stepping");
+            DNDS_FIELD(fraction, "Intermediate time fraction; CPU positive-scale profile requires (0,2/3)");
             DNDS_FIELD(theta, "Positive H+theta*I intermediate-equation weight");
-            DNDS_FIELD(iterations, "Maximum coupled outer corrections; implicit.rejectUnconvergedStages selects rejection at the cap");
-            DNDS_FIELD(minIterations, "Minimum coupled corrections before early convergence of both original equations");
-            DNDS_FIELD(relativeTolerance, "Per-component outer H/I norm target relative to each initial norm");
-            DNDS_FIELD(absoluteTolerance, "Per-component absolute outer H/I norm target");
+            DNDS_FIELD(iterations, "Maximum corrections in the single DITR nonlinear loop; implicit.rejectUnconvergedStages selects cap rejection");
+            DNDS_FIELD(minIterations, "Minimum paired intermediate/endpoint corrections before convergence");
+            DNDS_FIELD(relativeTolerance, "Selected-component I+H residual target relative to the configured reference norm");
+            DNDS_FIELD(absoluteTolerance, "Selected-component absolute I+H residual target");
         }
     };
     struct PhysicalTimePositivitySettings
@@ -358,7 +386,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(maxRetries, "Maximum timestep halvings after a rejected candidate");
             DNDS_FIELD(steadyTolerance, "Relative accepted-state residual target; zero means physical transient");
             DNDS_FIELD(steadyMinSteps, "Minimum accepted steps before a steady stop");
-            config.field_section(&T::ditr, "ditr", "Coupled U2R2 time equations");
+            config.field_section(&T::ditr, "ditr", "Coupled U2R2/U2R1 time equations");
             config.field_section(&T::positivity, "positivity", "Euler physical timestep positivity/growth policy");
         }
     };

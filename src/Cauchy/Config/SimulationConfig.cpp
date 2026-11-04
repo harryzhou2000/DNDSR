@@ -107,7 +107,7 @@ namespace DNDS::Cauchy
         void Validate(const DomainConfig &domain, int size)
         {
             const auto &settings = domain.settings;
-            settings.implicit.Validate();
+            settings.implicit.ValidateComponents(settings.equation.eos == "perfectGas" ? 5 : INT_MAX - 1);
             settings.motion.Validate(settings.mesh.dimension);
             DNDS_check_throw_info(!settings.implicit.requireConvergedReconstruction || settings.numerics.reconstruction != "variational" || settings.numerics.reconstructionTolerance > 0,
                                   "strict implicit VR acceptance requires a positive reconstructionTolerance");
@@ -136,6 +136,9 @@ namespace DNDS::Cauchy
                                       std::isfinite(riemann.pressureStencilMin) && riemann.pressureStencilMin > 0,
                                   "invalid Cauchy Riemann controls");
             PrimitiveValid(settings.initialPrimitive);
+            DNDS_check_throw_info(std::isfinite(settings.initialTemperature) && settings.initialTemperature >= 0 &&
+                                      (equation.eos != "perfectGas" || settings.initialMassFractions.empty()),
+                                  "invalid constant initial thermodynamic input");
             const auto validateProfile = [](const FlowProfileSettings &profile)
             {
                 DNDS_check_throw_info(profile.kind == "constant" || profile.kind == "isentropicVortex" || profile.kind == "doubleMachReflection" || profile.kind == "cylinderWake", "unknown physical field profile");
@@ -187,7 +190,7 @@ namespace DNDS::Cauchy
     }
     void DITRTimeSettings::Validate() const
     {
-        DNDS_check_throw_info(std::isfinite(fraction) && fraction > 0 && fraction < real(2) / 3 &&
+        DNDS_check_throw_info((variant == "U2R2" || variant == "U2R1") && std::isfinite(fraction) && fraction > 0 && fraction < real(2) / 3 &&
                                   std::isfinite(theta) && theta > 0 && iterations > 0 && minIterations >= 0 && minIterations <= iterations &&
                                   std::isfinite(relativeTolerance) && relativeTolerance >= 0 && std::isfinite(absoluteTolerance) && absoluteTolerance >= 0,
                               "invalid/unavailable DITR positive-stage-scale controls");
@@ -206,13 +209,12 @@ namespace DNDS::Cauchy
     {
         DNDS_check_throw_info(components > 0 && components < INT_MAX, "invalid implicit equation dimension");
         DNDS_check_throw_info((normOrder == 1 || normOrder == 2) &&
-                                  (residualReference == "initial" || residualReference == "runningMaximum") &&
-                                  !residualComponents.empty(),
+                                  (residualReference == "initial" || residualReference == "runningMaximum"),
                               "invalid implicit residual norm/reference/components");
-        std::vector<int> selected;
-        for (const auto component : residualComponents)
+        std::vector<std::string> selected;
+        for (const auto &component : residualComponents)
         {
-            DNDS_check_throw_info(component >= 0 && component < components && std::find(selected.begin(), selected.end(), component) == selected.end(), "implicit residual components must be distinct equation indices");
+            DNDS_check_throw_info(!component.empty() && std::find(selected.begin(), selected.end(), component) == selected.end(), "implicit residual components must be distinct nonempty names");
             selected.push_back(component);
         }
         const auto nonnegative = [](real value)
@@ -263,9 +265,28 @@ namespace DNDS::Cauchy
         require(s.execution.layout == "aos" || s.execution.layout == "soa" || s.execution.layout == "aosoa32", "flow layout " + s.execution.layout);
         require(s.execution.communication == "mpi-direct", "transport " + s.execution.communication);
         require(s.equation.system == "compressible", "equation " + s.equation.system);
-        require(s.equation.eos == "perfectGas", "EOS " + s.equation.eos);
+        const bool mixture = s.equation.eos == "idealGasMixture";
+        require(s.equation.eos == "perfectGas" || mixture, "EOS " + s.equation.eos);
+#ifndef DNDS_USE_CANTERA
+        require(!mixture, "idealGasMixture requires Cantera in this build");
+#endif
         require(s.equation.transport == "inviscid" || s.equation.transport == "NewtonianFourier", "constitutive law " + s.equation.transport);
-        require(s.equation.source == "none", "volume source " + s.equation.source);
+        require(s.equation.source == "none" || (mixture && s.equation.source == "chemical"), "volume source " + s.equation.source);
+        if (mixture)
+        {
+            const auto &material = s.equation.mixture;
+            require(!material.mechanismFile.empty(), "mixture mechanismFile");
+            require(std::isfinite(material.rho0) && material.rho0 > 0 && std::isfinite(material.U0) && material.U0 > 0 &&
+                        std::isfinite(material.L0) && material.L0 > 0 && std::isfinite(material.T0) && material.T0 > 0,
+                    "mixture reference scales");
+            require(s.equation.viscosity == 0, "mixture transport uses its material, not constant viscosity");
+            require(s.initialProfile.kind == "constant", "nonconstant mixture initialization");
+            require(Riemann::RiemannFlux::Resolve(s.numerics.flux).Kind() == Riemann::Solver::Rusanov && !s.numerics.faceFallback,
+                    "mixture flux preparation/face fallback");
+            require(s.numerics.limiter == "none" || (s.numerics.limiter == "WBAP" && !s.numerics.characteristicLimiter), "mixture limiter");
+            require(s.equation.transport != "NewtonianFourier" || s.numerics.viscousGradient == "polynomial", "mixture viscous gradient");
+            require(!s.implicit.multigrid.levels && !s.implicit.roeDissipation, "mixture p-FAS/Roe Jacobian");
+        }
         require(Riemann::RiemannFlux::Available(s.numerics.flux), "numerical flux " + s.numerics.flux);
         require(s.numerics.reconstruction == "constant" || s.numerics.reconstruction == "gradient" || s.numerics.reconstruction == "variational", "reconstruction " + s.numerics.reconstruction);
         require(s.numerics.gradient == "leastSquares" || s.numerics.gradient == "greenGauss" || s.numerics.gradient == "ggmp", "gradient " + s.numerics.gradient);
@@ -280,6 +301,8 @@ namespace DNDS::Cauchy
             require(condition.kind != "doubleMachBottom" || condition.profile.kind == "doubleMachReflection", "DMR bottom requires its analytic shock profile");
             require(condition.thermal == "adiabatic" || condition.thermal == "isothermal", "thermal BC " + condition.thermal);
             require(condition.wallVelocityFrame == "mesh" || condition.wallVelocityFrame == "ground", "wall velocity frame " + condition.wallVelocityFrame);
+            require(!mixture || (condition.kind != "interface" && condition.kind != "doubleMachBottom" && (condition.kind != "analytic" || condition.profile.kind == "constant")),
+                    "mixture boundary profile " + condition.kind);
             require(condition.kind != "noSlipWall" || s.equation.transport == "NewtonianFourier", "no-slip wall needs viscous transport");
         }
         if (!missing.empty())
@@ -289,7 +312,7 @@ namespace DNDS::Cauchy
                 message += "\n  " + item;
             DNDS_check_throw_info(false, message);
         }
-        return {{"cpu/perfectGas/flow5", "cpu/" + s.numerics.flux, "cpu/" + s.equation.transport,
+        return {{mixture ? "cpu/idealGasMixture/flow5+species" : "cpu/perfectGas/flow5", "cpu/" + s.numerics.flux, "cpu/" + s.equation.transport,
                  "cfv/" + s.numerics.reconstruction, "cfv/" + s.numerics.limiter, "runtime/mpi-direct"}};
     }
     SimulationConfig SimulationConfig::Resolve(const Json &input, int size, const std::vector<ConfigOverride> &overrides)
@@ -459,7 +482,12 @@ namespace DNDS::Cauchy
                 }
         }
         for (const auto &domain : data->domains)
+        {
             DNDS_check_throw_info(data->time.method != "ssprk3" || !domain.settings.implicit.multigrid.levels, "polynomial FAS requires an implicit time method");
+            if (domain.settings.equation.eos == "idealGasMixture")
+                DNDS_check_throw_info(!data->time.positivity.enabled && !(data->time.method == "ssprk3" && domain.settings.numerics.positivity),
+                                      "mixture physical-dt and explicit flux-blend PP adapters are not connected yet");
+        }
         DNDS_check_throw_info(data->output.interval >= 0 && data->output.historyInterval > 0 && !data->output.prefix.empty(), "invalid Cauchy output controls");
         DNDS_check_throw_info(data->output.hdfDeflateLevel >= 0 && data->output.hdfDeflateLevel <= 9, "Cauchy output hdfDeflateLevel must be in [0,9]");
         return SimulationConfig(std::move(data));

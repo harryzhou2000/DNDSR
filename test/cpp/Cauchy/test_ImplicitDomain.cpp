@@ -116,7 +116,9 @@ TEST_CASE("P3 implicit periodic transport conserves flow and discard restores th
             {
                 CHECK(retried.LastCoupledIterations() > 0);
                 CHECK(retried.LastCoupledTargetRatio() <= 1);
-                CHECK(retried.LastImplicitStages().size() == size_t(2 * retried.LastCoupledIterations()));
+                REQUIRE(retried.LastImplicitStages().size() == 1);
+                CHECK(retried.LastImplicitStages().front().iterations == retried.LastCoupledIterations());
+                CHECK(retried.LastImplicitStages().front().residualTargetRatio == retried.LastCoupledTargetRatio());
             }
             else
                 CHECK(retried.LastImplicitStages().size() == 5);
@@ -259,6 +261,16 @@ TEST_CASE("DITR coupled cap advances by default and rejects only with explicit c
     bool reject = false;
     SUBCASE("Euler cap policy") {}
     SUBCASE("Explicit rejection") { reject = true; }
+    SUBCASE("One spatial FAS cycle per coupledStage")
+    {
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.implicit.requireConvergedReconstruction = false;
+        settings.implicit.multigrid.levels = 2;
+        settings.implicit.multigrid.preSmooth = 1;
+        settings.implicit.multigrid.postSmooth = 1;
+        settings.implicit.multigrid.coarseSmooth = 1;
+    }
     settings.implicit.rejectUnconvergedStages = reject;
     C::TimeSettings time;
     time.method = "ditr";
@@ -279,9 +291,19 @@ TEST_CASE("DITR coupled cap advances by default and rejects only with explicit c
     CHECK(Integral(domain) == before);
     CHECK(domain.LastCoupledIterations() == 1);
     CHECK(domain.LastCoupledTargetRatio() > 1);
-    REQUIRE(domain.LastImplicitStages().size() == 2);
-    for (const auto &inner : domain.LastImplicitStages())
-        CHECK(inner.converged);
+    REQUIRE(domain.LastImplicitStages().size() == 1);
+    CHECK_FALSE(domain.LastImplicitStages().front().converged);
+    CHECK(domain.LastImplicitStages().front().iterations == 1);
+    CHECK(domain.LastImplicitStages().front().residualTargetRatio == domain.LastCoupledTargetRatio());
+    if (settings.implicit.multigrid.levels)
+    {
+        const auto &report = domain.LastImplicitStages().front();
+        CHECK(report.multigridCycles == 2);           // Intermediate then endpoint, one each.
+        REQUIRE(report.levelCorrections.size() == 3); // Fine plus two coarse levels.
+        CHECK(report.levelCorrections[0] == 4);       // Two visits, pre+post each.
+        CHECK(report.levelCorrections[1] == 4);
+        CHECK(report.levelCorrections[2] == 2); // One coarsest correction per visit.
+    }
     if (reject)
         CHECK_THROWS(domain.CommitStep());
     else

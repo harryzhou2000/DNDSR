@@ -183,6 +183,10 @@ namespace DNDS::Cauchy
         void Evaluate(EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace,
                       Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
         const EquationDofs &ReconstructionGuess(const EquationWorkspace &workspace) const;
+        /// Owned warm-guess restore/reset; no halo transfer or mean mutation.
+        /// Caller joins pending workspace work and releases conflicting views.
+        void RestoreReconstructionGuess(EquationWorkspace &workspace, const EquationDofs &guess) const;
+        void ResetReconstruction(EquationWorkspace &workspace) const;
         const EquationDofs &FluxReconstruction(const EquationWorkspace &workspace) const;
         /// Latest complete equation evaluation's global coefficient-update
         /// norm. No extra reduction occurs when reading these diagnostics.
@@ -370,6 +374,7 @@ namespace DNDS::Cauchy
         /// cell row identity or overwritten buffers before a result is reused.
         void ValidateAuxValues(const CFV::FVField &state, const AuxiliaryValues &values, real time = 0) const;
         real StableStep(const CFV::FVField &state, const AuxiliaryValues &values, real cfl, real time = 0) const;
+        real StableStep(const EquationDofs &state, const AuxiliaryValues &values, real cfl, real time = 0) const;
         /// Clear owned polynomial and retained LVR gates at a synchronous
         /// workspace boundary. Local only; reserve all local destinations before
         /// writing, and let the caller coordinate rank-local errors. Evaluate
@@ -464,6 +469,14 @@ namespace DNDS::Cauchy
         /// Only flux-required stencil channels are present. Cell ghosts are
         /// refreshed from owners using the field's canonical mapping.
         const AuxiliaryValues &PreparedAuxValues(const Workspace &workspace) const;
+        /// Synchronous correction preparation when the time method already
+        /// supplies a physical RHS cache. Refresh means and auxiliary values,
+        /// without advancing reconstruction, limiter history or evaluating RHS.
+        /// Input halo may be stale. Retain this bound workspace through return.
+        void PrepareCorrectionAux(CFV::FVField &state, Workspace &workspace, Runtime::EagerEngine &engine,
+                                  const Runtime::ExecutionStream &stream, real time) const;
+        void PrepareCorrectionAux(EquationDofs &state, EquationWorkspace &workspace, AuxiliaryValues &auxiliary,
+                                  Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time) const;
         const ThermalBounds &ThermalConstraints() const;
         /// Collective checked projection of a fresh copy of the unlimited
         /// guess into flux coefficients, retaining the unlimited guess. Reads only

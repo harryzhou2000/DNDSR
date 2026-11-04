@@ -87,8 +87,8 @@ namespace DNDS::Cauchy
             const real normalizedTime = stage.stageTime == 0 ? 0 : stage.stageTime;
             static_assert(sizeof(timeBits) == sizeof(normalizedTime));
             std::memcpy(&timeBits, &normalizedTime, sizeof(timeBits));
-            std::array<uint64_t, 8> key{stage.epoch.acceptedStep, stage.epoch.trial, stage.epoch.stage, stage.epoch.geometry,
-                                        stage.epoch.schema, timeBits, uint64_t(policy), uint64_t(collectiveChecks)};
+            std::array<uint64_t, 9> key{stage.epoch.acceptedStep, stage.epoch.trial, stage.epoch.stage, stage.epoch.geometry,
+                                        stage.epoch.schema, stage.epoch.coupledStage, timeBits, uint64_t(policy), uint64_t(collectiveChecks)};
             auto minimum = key, maximum = key;
             MPI_Allreduce(MPI_IN_PLACE, minimum.data(), int(key.size()), MPI_UINT64_T, MPI_MIN, mpi.comm);
             MPI_Allreduce(MPI_IN_PLACE, maximum.data(), int(key.size()), MPI_UINT64_T, MPI_MAX, mpi.comm);

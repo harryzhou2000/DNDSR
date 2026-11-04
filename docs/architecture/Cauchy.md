@@ -199,8 +199,10 @@ the GIL. `defaults.execution.overlap=true` enables native halo/core overlap;
 Python call returns after native work is joined. Retained array debug views
 still obey the normal lease contract and must be released before conflicting
 stepping or publication. Domain tests cover inline/worker execution and shared/
-split simulation ownership. This is CPU flow5 support, not RANS/species or CUDA
-production acceptance.
+split simulation ownership. Configured ideal-mixture Domains also expose shared
+flow/species fields, full residual reports, implicit stepping and explicit-worker
+derived refresh. Their guarded output/restart and other missing profiles are
+listed in [CauchyState.md](CauchyState.md); this is not RANS or CUDA acceptance.
 
 Runtime arrays, transfers, streams/events and native CFV reconstruction,
 gradient, limiter and sampling APIs are exposed separately. CFV has All/Core/
@@ -243,11 +245,12 @@ physical array. Keep flow5 together; RANS and species may occupy separate arrays
 with their own uniform layouts. Kernel wrappers resolve block/schema choices
 once and pass stride-aware row views; numerical loops must not infer a species
 pointer from the end of a flow row. Coupled equations remain coupled regardless
-of physical block separation. A future coupled matrix/vector adapter must map
-the equation's component ordering across blocks without requiring a persistent
-flattened state. Current Cauchy kernels, implicit matrices, stage callbacks and
-checkpoint sections implement **flow5 only**; the existing bundle container is
-not evidence that multi-block implicit stepping is already implemented.
+of physical block separation. The coupled matrix/vector adapter maps logical
+component ordering across blocks without a persistent flattened state. The
+configured ideal-mixture Domain now uses full-state FV/implicit stages and
+publication with separate flow/species arrays. Checkpoint/output and several
+extended numerical profiles remain guarded until their adapters are connected;
+RANS and incompressible physical models are not supplied by the bundle container.
 
 Checkpoint writing calls native `Runtime::WriteArray` on the owned field;
 there is no normalization buffer to AoS. Contiguous-row arrays use format3

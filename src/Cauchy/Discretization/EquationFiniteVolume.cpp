@@ -1,3 +1,4 @@
+#include "DNDS/Algebra/DofHalo.hpp"
 #include "Cauchy/Discretization/EquationFiniteVolumeInternal.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/Physics/EquationTransport.hpp"
@@ -90,7 +91,9 @@ namespace DNDS::Cauchy
         EquationDofOperations::Binding binding;
         std::vector<Field> fields, limited;
         EquationDofs coefficients, fluxCoefficients, boundary;
-        std::vector<R::TransferBinding> meanHalo, coefficientHalo, fluxHalo;
+        std::vector<Algebra::DofHalo<>> meanHalo;
+        uint64_t meanEpoch = 0;
+        std::vector<R::TransferBinding> coefficientHalo, fluxHalo;
         std::shared_ptr<EquationPositivityWorkspace> positivity;
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
         std::vector<index> logicalFirst, vectorStarts;
@@ -234,7 +237,7 @@ namespace DNDS::Cauchy
         {
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             {
-                meanHalo.push_back(owner->metrics.BindHalo(state.PhysicalField(iField)));
+                meanHalo.push_back(owner->metrics.BindTrackedHalo(state.PhysicalField(iField)));
                 coefficientHalo.push_back(owner->metrics.BindHalo(fields[iField].reconstruction.coefficients));
                 if (!limited.empty())
                     fluxHalo.push_back(owner->metrics.BindHalo(limited[iField].reconstruction.coefficients));
@@ -427,12 +430,28 @@ namespace DNDS::Cauchy
                 for (const auto iCell : region == CFV::ReconstructionRegion::Core ? owner->partition.Core() : owner->partition.HaloDependent())
                     compute(iCell);
         }
-        void AddChemicalSource(const EquationDofs &state, EquationDofs &result, EquationPointEvaluator &evaluator)
+        void SampleChemicalState(const EquationDofs &state)
         {
+            sourceState.reset();
+            sourceCoefficients.reset();
             if (!sourceSampling)
                 return;
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                 sourceSampling->Evaluate(state.PhysicalField(iField), fluxCoefficients.PhysicalField(iField), sourceValues[iField]);
+        }
+        void PublishChemicalState(const EquationDofs &state, real time)
+        {
+            if (!sourceSampling)
+                return;
+            sourceState.emplace(state.NumericAlias());
+            sourceCoefficients.emplace(fluxCoefficients.NumericAlias());
+            sourceTime = time;
+        }
+        void AddChemicalSource(const EquationDofs &state, EquationDofs &result, EquationPointEvaluator &evaluator)
+        {
+            if (!sourceSampling)
+                return;
+            SampleChemicalState(state);
             std::vector<R::Array<real>::ReadLease> sources;
             for (const auto &field : sourceValues)
                 sources.push_back(field.Read());
@@ -462,6 +481,43 @@ namespace DNDS::Cauchy
         }
     };
 
+    void FiniteVolume::PrepareCorrectionAux(EquationDofs &state, EquationWorkspace &work, AuxiliaryValues &auxiliary,
+                                            R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
+    {
+        const MPIInfo mpi(Metrics().Communicator());
+        std::optional<EquationAuxiliaryPreparation> preparation;
+        MPI::LocalStage(mpi, [&]
+                        {
+            ValidateWorkspace(state, work);
+            DNDS_check_throw_info(stream.Context().device == R::Device::Host(), "equation correction requires a CPU stream");
+            PreflightHalo(state);
+            preparation.emplace(BeginAuxValues(state, auxiliary, time, work.workers)); });
+        StreamJoin join{stream};
+        std::vector<Algebra::DofHalo<>::Operation> transfers;
+        transfers.reserve(work.meanHalo.size());
+        ++work.meanEpoch;
+        for (auto &halo : work.meanHalo)
+            transfers.push_back(halo.Begin(work.meanEpoch, engine, stream, _data->settings.implicit.collectiveChecks));
+        if (_data->settings.execution.overlap)
+            engine.Submit(stream, [&](auto)
+                          { preparation->Apply(CFV::ReconstructionRegion::Core); });
+        for (auto &transfer : transfers)
+            transfer.Wait();
+        MPI::LocalStage(mpi, [&]
+                        {
+            for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+                work.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), work.meanEpoch);
+            engine.Submit(stream, [&](auto)
+            {
+                preparation->Apply(_data->settings.execution.overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
+                preparation->Finish(auxiliary);
+                // Source Jacobians use the retained current polynomial. No VR
+                // sweep or chemical-rate evaluation is hidden in this refresh.
+                work.SampleChemicalState(state);
+                work.PublishChemicalState(state, time);
+            });
+            stream.Record().WaitHost(); });
+    }
     void FiniteVolume::InitializeConstant(EquationDofs &state, const FlowState &primitive,
                                           const std::map<std::string, real> &massFractions, real temperature,
                                           std::optional<Physics::Chemistry::ChemicalWorkerPool> workers) const
@@ -546,6 +602,22 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
         return work.fluxCoefficients;
     }
+    void FiniteVolume::RestoreReconstructionGuess(EquationWorkspace &work, const EquationDofs &guess) const
+    {
+        DNDS_check_throw_info(work.owner == _data, "foreign equation reconstruction workspace");
+        EquationDofOperations::Copy(work.coefficients, guess);
+        work.sourceState.reset();
+        work.sourceCoefficients.reset();
+    }
+    void FiniteVolume::ResetReconstruction(EquationWorkspace &work) const
+    {
+        DNDS_check_throw_info(work.owner == _data, "foreign equation reconstruction workspace");
+        EquationDofOperations::Fill(work.coefficients, 0);
+        for (auto &field : work.fields)
+            Algebra::Fill(field.reconstruction.temporary, 0.);
+        work.sourceState.reset();
+        work.sourceCoefficients.reset();
+    }
     int FiniteVolume::LastReconstructionIterations(const EquationWorkspace &work) const
     {
         DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
@@ -617,7 +689,7 @@ namespace DNDS::Cauchy
                 operations.push_back(engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream.Context()));
             return operations;
         };
-        const auto wait = [](std::vector<R::TransferOperation> &operations)
+        const auto wait = [](auto &operations)
         { for (auto &operation : operations) operation.Wait(); operations.clear(); };
         const auto submit = [&](auto action)
         { engine.Submit(stream, [action = std::move(action)](auto)
@@ -643,7 +715,11 @@ namespace DNDS::Cauchy
         };
         // Locals captured by worker commands remain alive even on exceptions.
         StreamJoin join{stream};
-        auto meanOperations = begin(work.meanHalo);
+        std::vector<Algebra::DofHalo<>::Operation> meanOperations;
+        meanOperations.reserve(work.meanHalo.size());
+        ++work.meanEpoch;
+        for (auto &halo : work.meanHalo)
+            meanOperations.push_back(halo.Begin(work.meanEpoch, engine, stream, _data->settings.implicit.collectiveChecks));
         std::vector<R::TransferOperation> firstCoefficients;
         const auto &numerics = _data->settings.numerics;
         const bool variational = numerics.reconstruction == "variational";
@@ -659,6 +735,10 @@ namespace DNDS::Cauchy
             submit([&]
                    { sweep(CFV::ReconstructionRegion::Core); });
         wait(meanOperations);
+        local([&]
+              {
+            for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+                work.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), work.meanEpoch); });
         if (numerics.reconstruction == "gradient")
         {
             submit([&, rest]
@@ -765,10 +845,7 @@ namespace DNDS::Cauchy
               { stream.Record().WaitHost(); });
         if (work.chemical && work.sourceSampling)
             local([&]
-                  {
-                work.sourceState.emplace(state.NumericAlias());
-                work.sourceCoefficients.emplace(work.fluxCoefficients.NumericAlias());
-                work.sourceTime=time; });
+                  { work.PublishChemicalState(state, time); });
     }
 
     void FiniteVolume::ValidateEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &work, real time) const
@@ -776,7 +853,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(work.owner == _data && work.chemical, "foreign or nonchemical source reconstruction");
         if (_data->equation.Mixture().SpeciesNumber() == 1)
             return;
-        DNDS_check_throw_info(work.sourceState && work.sourceCoefficients && work.sourceTime == time, "source quadrature requires a successful current RHS evaluation");
+        DNDS_check_throw_info(work.sourceState && work.sourceCoefficients && work.sourceTime == time, "source quadrature requires a current completed sample publication");
         work.sourceState->Check(state, true);
         work.sourceCoefficients->Check(work.fluxCoefficients, true);
     }

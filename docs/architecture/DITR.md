@@ -1,104 +1,72 @@
-# Native coupled DITR time equations
+# Coupled DITR time equations
 
-`Solver/StateDITR.hpp` provides the U2R2 (mask0) equations used by the active
-Euler `ImplicitHermite3SimpleJacobianDualStep::Step`. It is a synchronous CPU
-state component, separate from accepted-state publication and history.
-`FieldDITR` retains the native-field adapter; Cauchy's `EquationDITR` uses its
-whole logical state over one or several arrays. Both instantiate the same
-mathematics through explicit stage callbacks and storage/algebra adapters.
-See [Cauchy state](CauchyState.md) for ownership and layout contracts.
-U2R1/U3R1 and the legacy extra temporal multigrid
-acceleration are not implemented in this component.
+`Solver/TimeIntegration/DITRMethod.hpp` provides U2R2/U2R1 arithmetic without a
+nonlinear loop. `StateDITR.hpp` is a forwarding alias. `FieldDITR` and Cauchy's
+`EquationDITR` select storage/algebra adapters. Legacy Euler ODE is unchanged.
 
-For the initial, intermediate and endpoint states `U0,Um,Ue`, rates `F=dU/dt`
-and intermediate fraction `a`, it requires both original residuals to vanish:
+For initial, intermediate and endpoint states U0,Um,Ue and rates F=dU/dt:
 
 ```text
 H = (c0 U0+c1 Ue-Um)/dt + c2 F0+c3 Fe
 I = (U0-Ue)/dt + w0 F0+w1 Fm+w2 Fe
-c = [1-3a²+2a³, 3a²-2a³, a-2a²+a³, -a²+a³]
+U2R2: c = [1-3a²+2a³, 3a²-2a³, a-2a²+a³, -a²+a³]
+U2R1: c = [(1-a)², 2a-a², 0, -a+a²]
 w = [1/2-1/(6a), -1/(6a(a-1)), 1/2+1/(6(a-1))]
 ```
 
-The sequential correction solves the transformed intermediate equation
-`H+theta*I=0` with the endpoint frozen, then refreshes `Fm` and solves `I=0`
-with the intermediate state frozen. Default `a=.55,theta=.9146` follows the
-legacy coefficients. The inner stage callback may solve its equation to a
-chosen tolerance; the collective stopping callback must still test **both**
-original equations after the updated rates are evaluated. Convergence of an
-individual frozen-stage equation is insufficient.
+Each common nonlinear iteration makes **one** correction to H+theta*I for Um,
+refreshes Fm, makes **one** correction to I for Ue, refreshes Fe, then observes
+I+H. This matches Euler's default thetaM2=0/thetaMMG=1; it is not a maximum of
+separate H/I norms and does not contain completed inner nonlinear solves.
+Defaults a=.55/theta=.9146 follow Euler. Cauchy's positive-scale correction
+profile requires 0<a<2/3. U2R1 is available for reaction-dominated problems.
+Temporal pMG and U3R1 are deferred.
 
-The intermediate state has independent retained storage and an explicit
-`StageFactory` produces its rate/solve/reset callbacks. The factory is invoked
-lazily during Prepare, outside local-only allocation/construction. This lets a
-distributed frontend construct its own persistent halo, reconstruction,
-auxiliary and linear workspace for that allocation. Reusing an endpoint binding
-implicitly would transfer the wrong data. Optional reset runs per trial (for
-example to cold-start an intermediate polynomial). Factory/reset may neither
-rebind nor alter the intermediate means. Rate callbacks may update ghosts but
-must preserve owned inputs. Stage solvers write the provided state and preserve
-their forcing. Exact ArrayStorage pins reject same-allocation/different-view
-rebinding; these checks are outside the hot numerical loops.
+## Ownership and execution contract
 
-Caller serializes access, agrees controls/callback order on all participating
-ranks, retains callback resources and coordinates local errors before MPI.
-Callbacks complete synchronously and must not retain temporary raw views.
-Prepare changes only trial/scratch. False means cap/failed-stage rejection and
-the object can be reused with a fresh trial. Generic `DITRSettings` defaults to
-rejecting an outer cap; with `rejectUnconverged=false`, true can instead mean
-an accepted final unconverged iterate. `LastReport().converged` remains false
-in that case. An exception can leave partial
-scratch and marks this component failed; restore the physical trial and rebuild
-the component before retry. It neither advances clocks nor commits accepted
-history. Native GPU execution is explicitly rejected until kernels/adapters
-exist; there is no CPU fallback.
+The method owns initial/intermediate state, initial/intermediate/endpoint rates
+and resOther. The controller owns the endpoint trial. Begin copies initial
+state and seeds both rate guesses with F(U0,t0). PrepareCoupledStage/Complete-
+CoupledStage enforce intermediate/endpoint order. AssembleStoppingResidual
+closes each iteration. The method does not choose convergence, mutate accepted
+state, advance a clock or retain accepted-step history.
 
-Tests use fixed numeric coefficients and an independent dense2x2 solve for a
-nonautonomous scalar problem, then test both original residuals, repeated
-preparation, caps/retry, aliasing and callback mutation/rebinding. A separate
-nonautonomous convergence sequence verifies the expected asymptotic order.
-For `a=.55`, an independent exact coupled solve gives errors6.38437e-7,
-9.58222e-8,1.29855e-8,1.68644e-9 on8/16/32/64steps: apparent orders2.736,
-2.883,2.945 approach3. The earlier8→16 order test failed its2.8 bound even
-though the implementation matched that independent oracle. The test now uses
-32→64 and the stronger2.9 bound. At `a=.5`, Simpson symmetry yields order4.
-Those are building-block results; distributed Cauchy qualification is a separate gate.
+Prepared equations use resOther + alpha*F(U,t) - U/dt. resOther excludes the
+current unknown and its RHS; the other state/rate and forcing remain frozen
+through the whole correction, including a spatial V-cycle. CurrentRate exposes
+the initial guess or last refreshed rate for that stage. Correction operators
+can consume it while separately refreshing spectral auxiliary values and
+chemical-Jacobian samples, without another reconstruction or chemical-rate pass.
 
-## Time workspace and Cauchy integration
+Callbacks may refresh ghosts but preserve owned rate-input values, bindings,
+other-stage inputs and forcing. Version/binding checks stay outside hot loops.
+The controller serializes calls, agrees ordering and coordinates failures before
+MPI. Callbacks complete outputs before returning and retain no temporary raw
+views. Outputs guarantee owned values only. This is synchronous CPU execution.
 
-`FieldTimeStepper(method="ditr")` retains the independent stage factory and
-requires an explicit coupled stopping callback at Prepare. Accepted-state
-publication still precedes Commit. Discard leaves accepted history unchanged.
-Callback exceptions mark the DITR scratch for reconstruction at the next trial;
-Fresh creates new intermediate storage/bindings lazily. This also handles a
-restart transaction replacing the time workspace without retaining old stage
-pointers. Factory callbacks and their retained resources outlive all stage uses.
+Domain binds separate intermediate reconstruction/auxiliary/linear and optional
+pMG workspace to the method's intermediate allocation, sharing immutable FV
+geometry. Each trial cold-starts its intermediate polynomial; Begin resets
+means/rate guesses on retry. Fresh time storage gets a fresh operator binding.
+Accepted reconstruction rollback remains the Domain transaction. No persistent
+intermediate polynomial dataset is needed in a restart.
 
-Cauchy supplies separate intermediate means, polynomial guess, auxiliary,
-gradient, matrix, linear and optional pMG workspaces, sharing immutable FV
-geometry. Rate scratch may be reused sequentially; the three semidiscrete rate
-fields retained by DITR are distinct. The intermediate polynomial and retained
-LVR gates cold-start
-at each physical trial, including retry. Fine polynomial/history rollback uses
-the existing Domain transaction. Thus a compatible reconstruction checkpoint
-needs no additional persistent intermediate polynomial dataset.
+## Common control and current validation
 
-`time.ditr` records fraction, theta, outer cap/minimum and outer relative/
-absolute tolerances. The initial Cauchy stage-solver profile requires
-`0<fraction<2/3`, giving positive implicit endpoint RHS scale; unsupported
-fractions fail during configuration. The generic mathematical component allows
-other fractions for stage solvers supporting signed scales. Inner nonlinear
-tolerances remain under `implicit`: choose them tighter than the requested
-outer H/I accuracy. Their convergence alone never proves outer convergence.
+NonlinearDetail::Iterate observes after both corrections, once per iteration.
+LastCoupledTargetRatio is the same selected-component I+H ratio as the single
+nonlinear report. All component norms remain observable. Selection defaults to
+density; reacting cases must explicitly select species/all. A finite admissible
+capped iterate may be accepted by default, retaining converged=false; explicit
+implicit.rejectUnconvergedStages rejects it.
 
-Cauchy tests both original H/I equations with per-component volume-weighted
-norms and a collective decision. Outer tolerances default to1e-8/1e-10; the
-initial inner defaults are1e-8/1e-11. Users requesting substantially tighter
-outer targets should also tighten inner tolerances; an unresolved residual
-floor reaches the cap. Cauchy defaults to advancing the final finite admissible
-iterate, retaining the unmet target ratio. Explicit
-`implicit.rejectUnconvergedStages=true` rejects the whole physical trial on
-inner/FAS or outer caps. Nonfinite values and inadmissible states still fail.
-Counters and CSV columns separate
-coupled outer iterations/target ratio from inner stage solves/target ratios.
-The latter count actual solve calls, not distinct physical stage identities.
+Pending configuration consolidation, time.ditr iteration/minimum/tolerance keys
+explicitly override those fields of the shared policy. They do not create an
+outer loop. Named components, norm/reference and pseudo-CFL come from implicit.
+There is no inner convergence tolerance for each individual correction.
+
+Tests independently check two incomplete Euler-form iterations, both variants'
+dense-system solutions, nonautonomous temporal order and retry/publication.
+Public method and distributed implicit/FAS tests pass. Reacting-Domain
+convergence qualification is in progress; the earlier nested-driver ratios are
+not validation of this implementation. See [implicit contracts](CauchyImplicit.md).

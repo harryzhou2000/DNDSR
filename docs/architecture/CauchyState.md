@@ -136,17 +136,20 @@ output value changes.
 ...)` validate exact semantic schema, native row/storage identity and backend
 outside cell loops. `EquationSystem::ResolveKernelProfile()` distinguishes
 perfect-gas and ideal-mixture CPU models; this key alone does not promise every
-spatial/time operator exists for that model. The production FV adapter currently
-accepts only perfect-gas flow5. Requesting another device fails explicitly,
+spatial/time operator exists for that model. FV has the established perfect-gas
+adapter and the explicit whole-equation mixture profile described below.
+Requesting another device fails explicitly,
 without host fallback. In checked execution a rank-local schema mismatch is
 coordinated before communication. With `implicit.collectiveChecks=false`, the
 caller must coordinate failures before other ranks enter dependent collectives.
 The raw-field overload remains the trusted compressible stage/scratch adapter.
 
-The Domain frontend uses the semantic binding. Its available physical kernels,
-PP, nonlinear reports, checkpoint physical sections and physical stage-solver adapters
-remain **compressible flow5 only**. `CoupledField()` explicitly refuses split or
-permuted physical segments instead of silently flattening them. Generic mock
+The Domain frontend uses the semantic binding. Perfect gas retains its established
+path. Configured ideal mixtures use separate flow/species arrays, whole-equation
+FV/implicit stages, dynamic reports and full-state publication. Checkpoint/output,
+p-FAS, interface packets and explicit/physical-dt PP still require their extended
+adapters and reject rather than processing flow5 alone. `CoupledField()` explicitly
+refuses split or permuted physical segments instead of silently flattening them. Generic mock
 tests exercise 17/21-component coupled BDF/block solves and separate physical
 bindings; those tests are not RANS, species or incompressible implementations.
 Future models must supply their flux/transport, physical accumulation (including
@@ -163,8 +166,8 @@ are distinct; Scale is explicitly in-place and an exact self-Copy is a no-op.
 An unavailable device backend fails explicitly. These operations do no MPI or
 halo work. Their owned scopes can coexist with independent ghost writes.
 
-The time equations are implemented once in `Solver/StateTimeStepper.hpp` and
-`Solver/StateDITR.hpp`, with state ownership/algebra supplied by a small adapter.
+The time equations are implemented once in `Solver/TimeIntegration/`;
+`Solver/StateTimeStepper.hpp` and `Solver/StateDITR.hpp` are forwarding headers, with state ownership/algebra supplied by a small adapter.
 Historical `FieldTimeStepper`/`FieldDITR` names select the native single-field
 adapter; Cauchy's `EquationTimeStepper`/`EquationDITR` select the full semantic
 state. No tableau, BDF ratio, DITR interpolation or integration coefficient is
@@ -173,7 +176,7 @@ duplicated or changed.
 ```mermaid
 flowchart TD
     Domain --> EquationDriver[EquationTimeStepper alias]
-    EquationDriver --> Generic[StateTimeStepper and StateDITR: common mathematics]
+    EquationDriver --> Generic[Time frontend: one BDF, DIRK or DITR method owner]
     Generic --> EquationOps[EquationDofOperations: schema, bindings, scopes]
     EquationOps --> DNDS[DNDS host row arithmetic]
     EquationOps --> State[EquationDofs: flow, RANS, species]
@@ -196,8 +199,8 @@ synchronous CPU driver, with no implicit accelerator fallback.
 owned/ghost layout, space and semantic binding. `Clone` additionally copies
 owned values. History Commit uses nonthrowing handle swaps after accepted-state
 publication; Discard preserves accepted history. Callback exceptions can leave
-scratch partial, and DITR reconstructs failed intermediate workspace before a
-retry. The flow5 checkpoint keeps its existing `history_flow` representation
+scratch partial. DITR Begin restores the intermediate means and rate guesses;
+Domain resets its intermediate reconstruction before a retry. The flow5 checkpoint keeps its existing `history_flow` representation
 through an explicit adapter; extended physical checkpoint sections are pending.
 Layout-independent time equations do not by themselves complete extended
 production BC, PP, physical Jacobian assembly or RANS/species validation.
@@ -568,11 +571,31 @@ actual pressure/acoustic values into the common numerical Riemann interface.
 It does no equivalent-gamma substitution.
 
 The mixture factory supplies the property/schema interface and equation-state
-FV profile above. The production JSON/Domain frontend remains flow5-only until
-its equation-state orchestration, configuration and checkpoint adapters are
-connected. Perfect-gas-only methods such
+FV profile above. `EquationSetup::Resolve` loads configured material/scales and
+returns immutable equation metadata plus explicit mutable worker capacity.
+Domain retains both; its one ordered CPU EOS lane needs one worker even when
+the launcher uses several threads. Perfect-gas-only methods such
 as `Gas()` and the old flow-only Jacobian/characteristic producer reject a
 mixture explicitly. They cannot evaluate missing species through default gamma.
+
+For configuration use `equation.eos="idealGasMixture"`, `equation.mixture` with
+`mechanismFile`, optional `phaseName`, and SI `rho0/U0/L0/T0`. Initial constant
+input uses `initialPrimitive`, optional positive `initialTemperature`, and
+`initialMassFractions`. The current profile selects Rusanov, no face fallback,
+componentwise WBAP when enabled, polynomial viscous gradients and optional
+`source="chemical"`. Missing kernels are rejected explicitly. The current
+configuration/frontend does not infer another numerical profile from defaults.
+
+Domain stepping uses the same EquationTimeStepper for every logical component;
+implicit stages use EquationNonlinearSolver and explicit SSPRK uses full-state
+updates. Shared/split physical arrays remain unflattened, and publication reserves
+all destination fields before any accepted value changes. A species-only retained
+view blocks the entire publication. ResidualState returns every residual block;
+the historical Residual convenience still returns the flow residual. Observation
+has independent reconstruction scratch and restores the accepted warm guess, so
+diagnostics do not advance numerical state. Mixture diagnostics report actual EOS
+pressure/temperature and full-state residual norms; force integration remains
+unconnected. No full spatial-flame or RANS acceptance is implied.
 
 ### Primitive initialization and equation boundary values
 

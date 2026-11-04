@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "Solver/FieldTimeStepper.hpp"
 #include "Solver/FieldDITR.hpp"
+#include "Solver/TimeIntegration/DITRMethod.hpp"
 #include <Eigen/LU>
 
 namespace A = DNDS::Algebra;
@@ -10,6 +11,15 @@ namespace R = DNDS::Runtime;
 using Field = A::DofField<DNDS::real>;
 namespace
 {
+    struct CountTimeAllocations : O::FieldTimeOperations
+    {
+        inline static int allocations = 0;
+        static Field NewVector(const Field &prototype)
+        {
+            ++allocations;
+            return O::FieldTimeOperations::NewVector(prototype);
+        }
+    };
     double Value(const Field &field)
     {
         const auto read = field.Owned().Read();
@@ -52,6 +62,140 @@ namespace
         return std::abs(Value(state) - std::cos(1.));
     }
 }
+TEST_CASE("Time methods own only their relevant history and stage buffers")
+{
+    Field state(A::DofSpace(1), 1), trial(state.Space(), 1);
+    A::Fill(state, 1.);
+    using Stepper = O::StateTimeStepper<Field, CountTimeAllocations>;
+    for (const std::string method : {"bdf1", "bdf2", "trapz", "esdirk4", "ditr"})
+    {
+        CountTimeAllocations::allocations = 0;
+        Stepper stepper(state, method);
+        const bool bdf = method == "bdf1" || method == "bdf2";
+        const int expected = bdf ? 3 : method == "ditr" ? 6
+                                                        : 2 + stepper.StageNumber();
+        CHECK(CountTimeAllocations::allocations == expected);
+        CHECK_FALSE(stepper.HasHistory());
+        if (!bdf)
+            CHECK_THROWS(stepper.RestoreHistory(state, .1));
+        if (method != "ditr")
+        {
+            REQUIRE(stepper.Prepare(state, trial, 0, .1, Evaluate(), Solve()));
+            stepper.Commit();
+            CHECK(stepper.HasHistory() == bdf);
+            CHECK(CountTimeAllocations::allocations == expected);
+        }
+    }
+}
+TEST_CASE("Public DITR method preserves Euler one-correction sequence and I plus H stopping")
+{
+    const A::DofSpace space(1);
+    using Method = O::DITRMethod<Field, O::FieldTimeOperations>;
+    for (const auto variant : {O::DITRVariant::U2R2, O::DITRVariant::U2R1})
+    {
+        CAPTURE(int(variant));
+        Field initial(space, 1), endpoint(space, 1), stop(space, 1), rate(space, 1), defect(space, 1);
+        A::Fill(initial, 1.);
+        Method method(initial, .5, .9146, variant);
+        std::vector<int> visits;
+        const auto f = [](double u, double t)
+        { return -2 * u + t + 1; };
+        const auto evaluate = [&](Field &u, Field &out, double time, int coupledStage)
+        {
+            visits.push_back(coupledStage);
+            A::Fill(out, f(Value(u), time));
+        };
+        method.Begin(initial, endpoint, .3, .2, evaluate);
+        CHECK(visits == std::vector<int>{1}); // Initial RHS reused for both first guesses.
+        CHECK_THROWS(method.PrepareCoupledStage(endpoint, 1));
+        // Independent a=1/2 polynomial coefficients, not the production builder.
+        const std::array<double, 4> c = variant == O::DITRVariant::U2R2
+                                            ? std::array<double, 4>{.5, .5, .125, -.125}
+                                            : std::array<double, 4>{.25, .75, 0, -.25};
+        const double w0 = 1. / 6, w1 = 2. / 3, w2 = 1. / 6;
+        double middle = 1, end = 1, fm = f(1, .3), fe = fm;
+        const double f0 = fm;
+        for (int iteration = 0; iteration < 2; ++iteration)
+        {
+            for (int coupledStage = 0; coupledStage < 2; ++coupledStage)
+            {
+                const auto equation = method.PrepareCoupledStage(endpoint, coupledStage);
+                const double expectedSource = coupledStage == 0
+                                                  ? 5 * (c[0] + .9146) + 5 * (c[1] - .9146) * end + (c[2] + .9146 * w0) * f0 + (c[3] + .9146 * w2) * fe
+                                                  : 5 + w0 * f0 + w1 * fm;
+                const double alpha = coupledStage == 0 ? .9146 * w1 : w2;
+                const double oldValue = coupledStage == 0 ? middle : end;
+                const double oldRate = coupledStage == 0 ? fm : fe;
+                CHECK(equation.coupledStage == coupledStage);
+                CHECK(equation.coefficients.inverseDt == 5);
+                CHECK(equation.coefficients.rhsScale == doctest::Approx(alpha));
+                CHECK(equation.coefficients.time == doctest::Approx(coupledStage == 0 ? .4 : .5));
+                CHECK(Value(equation.resOther) == doctest::Approx(expectedSource));
+                A::Fill(rate, oldRate);
+                equation.coefficients.AssembleResidual<O::FieldTimeOperations>(defect, equation.resOther, equation.state, rate);
+                const double expectedDefect = expectedSource + alpha * oldRate - 5 * oldValue;
+                CHECK(Value(defect) == doctest::Approx(expectedDefect));
+                const double next = oldValue + .6 * expectedDefect / (5 + 2 * alpha);
+                A::Fill(equation.state, next); // Exactly one relaxed correction, not a converged solve.
+                CHECK(Value(equation.resOther) == doctest::Approx(expectedSource));
+                if (coupledStage == 0)
+                {
+                    middle = next;
+                    fm = f(middle, .4);
+                }
+                else
+                {
+                    end = next;
+                    fe = f(end, .5);
+                }
+                method.CompleteCoupledStage(endpoint, evaluate);
+            }
+            method.AssembleStoppingResidual(endpoint, stop);
+            const double h = 5 * (c[0] + c[1] * end - middle) + c[2] * f0 + c[3] * fe;
+            const double i = 5 * (1 - end) + w0 * f0 + w1 * fm + w2 * fe;
+            CHECK(Value(stop) == doctest::Approx(i + h));
+            CHECK(Value(endpoint) == doctest::Approx(end));
+            CHECK(Value(initial) == 1);
+        }
+        CHECK(visits == std::vector<int>{1, 0, 1, 0, 1});
+        const double result = Value(endpoint);
+        method.Discard();
+        method.Begin(initial, endpoint, .3, .2, evaluate);
+        CHECK(Value(endpoint) == 1);
+        CHECK(result != 1);
+        method.Discard();
+        method.IntermediateState() = initial;
+        CHECK_THROWS(method.Begin(initial, endpoint, .3, .2, evaluate));
+        CHECK(Value(initial) == 1);
+    }
+}
+
+TEST_CASE("Public normalized BDF sources exclude the current unknown and use accepted step ratios")
+{
+    const A::DofSpace space(1);
+    Field initial(space, 1), previous(space, 1), source(space, 1), current(space, 1), rate(space, 1), residual(space, 1);
+    A::Fill(initial, 3.);
+    A::Fill(previous, 2.);
+    A::Fill(current, 4.);
+    A::Fill(rate, 7.);
+    const O::BDFCoefficients bdf(2, 1, .5, .25);
+    bdf.AssembleResOther<O::FieldTimeOperations>(source, initial, &previous);
+    CHECK(bdf.equation.inverseDt == 2);
+    CHECK(bdf.equation.rhsScale == doctest::Approx(.6));
+    CHECK(Value(source) == doctest::Approx(7.6));
+    bdf.equation.AssembleResidual<O::FieldTimeOperations>(residual, source, current, rate);
+    CHECK(Value(residual) == doctest::Approx(3.8));
+    A::Fill(current, 6.);
+    bdf.equation.AssembleResidual<O::FieldTimeOperations>(residual, source, current, rate);
+    CHECK(Value(residual) == doctest::Approx(-.2));
+    CHECK(Value(source) == doctest::Approx(7.6));
+    const O::BDFCoefficients steady(1, 1, 0, 0, true);
+    steady.AssembleResOther<O::FieldTimeOperations>(source, initial);
+    CHECK(Value(source) == 0);
+    steady.equation.AssembleResidual<O::FieldTimeOperations>(residual, source, current, rate);
+    CHECK(Value(residual) == 7);
+}
+
 TEST_CASE("Native implicit time methods converge with independent nonautonomous exact stages")
 {
     const std::vector<std::pair<std::string, double>> methods{{"bdf1", .8}, {"bdf2", 1.8}, {"trapz", 1.9}, {"esdirk2", 1.8}, {"esdirk3", 2.8}, {"esdirk4", 3.5}};
@@ -104,7 +248,7 @@ TEST_CASE("External controller interleaves coherent stages without changing nati
             A::Copy(reference, expected);
             external.Commit();
             serial.Commit();
-            CHECK(external.PreviousDt() == dt);
+            CHECK(external.PreviousDt() == (method == "bdf1" || method == "bdf2" ? dt : 0));
             time += dt;
         }
     }
@@ -219,78 +363,93 @@ TEST_CASE("Native BDF history is committed explicitly and retries use the last a
     CHECK_THROWS(stepper.Prepare(state, state, .1, .05, Evaluate(), Solve()));
     CHECK_THROWS(O::FieldTimeStepper(state, "unknown"));
 }
-TEST_CASE("Native DITR solves both original coupled equations with an independent dense oracle")
+namespace
 {
-    const A::DofSpace space(1);
-    Field state(space, R::RowLayout::TiledColMajor(0, 1, 8)), trial(space, 1);
-    A::Fill(state, .7);
-    int factories = 0, resets = 0;
-    const auto factory = [&](Field &mid)
+    // Test-side controller. The public method deliberately contains no loop or
+    // convergence decision. Each visit is one linear correction using its
+    // cached physical RHS, including the initial-time first-iteration guesses.
+    struct DITRResult
     {
-        ++factories;
-        CHECK(mid.Owned().SharedStorage() != trial.Owned().SharedStorage());
-        return O::FieldDITR::StageOperator{Evaluate(), Solve(), [&]
-                                           { ++resets; }};
+        bool converged;
+        int iterations;
     };
-    O::FieldDITR ditr(state, {}, factory);
-    const double t = .3, h = .2, a = .55;
-    // Fixed numeric Hermite/integration coefficients, independent of the
-    // production coefficient builder and transformed mid-equation code.
-    const double c0 = .42525, c1 = .57475, c2 = .111375, c3 = -.136125;
-    const double w0 = 13. / 66, w1 = 200. / 297, w2 = 7. / 54;
-    const auto g = [](double x)
-    { return 2 * std::cos(x) - std::sin(x); };
-    Eigen::Matrix2d matrix;
-    matrix << 1 / h, -c1 / h + 2 * c3, 2 * w1, 1 / h + 2 * w2;
-    Eigen::Vector2d forcing;
-    forcing << c0 * .7 / h + c2 * (-2 * .7 + g(t)) + c3 * g(t + h),
-        .7 / h + w0 * (-2 * .7 + g(t)) + w1 * g(t + a * h) + w2 * g(t + h);
-    const Eigen::Vector2d exact = matrix.fullPivLu().solve(forcing);
-    double lastH = 0, lastI = 0;
-    const auto check = [&](const Field &hermite, const Field &integral, DNDS::index)
+    DITRResult SolveDITR(O::FieldDITR &method, Field &endpoint, int limit = 100, double tolerance = 2e-13)
     {
-        lastH = Value(hermite);
-        lastI = Value(integral);
-        return std::max(std::abs(lastH), std::abs(lastI)) < 2e-13;
-    };
-    REQUIRE(ditr.Prepare(state, trial, t, h, Evaluate(), Solve(), check));
-    CHECK(Value(trial) == doctest::Approx(exact[1]).epsilon(2e-13));
-    CHECK(Value(state) == .7);
-    CHECK(ditr.LastReport().converged);
-    CHECK(ditr.LastReport().iterations > 0);
-    CHECK(std::abs(lastH) < 2e-13);
-    CHECK(std::abs(lastI) < 2e-13);
-    const double first = Value(trial);
-    REQUIRE(ditr.Prepare(state, trial, t, h, Evaluate(), Solve(), check));
-    CHECK(Value(trial) == first);
-    CHECK(factories == 1);
-    CHECK(resets == 2);
+        auto defect = O::FieldTimeOperations::NewVector(endpoint);
+        for (int iteration = 1; iteration <= limit; ++iteration)
+        {
+            for (int coupledStage = 0; coupledStage < 2; ++coupledStage)
+            {
+                const auto equation = method.PrepareCoupledStage(endpoint, coupledStage);
+                const auto &c = equation.coefficients;
+                c.AssembleResidual<O::FieldTimeOperations>(defect, equation.resOther, equation.state, method.CurrentRate());
+                const double next = Value(equation.state) + Value(defect) / (c.inverseDt + 2 * c.rhsScale);
+                A::Fill(equation.state, next);
+                method.CompleteCoupledStage(endpoint, Evaluate());
+            }
+            method.AssembleStoppingResidual(endpoint, defect);
+            if (std::abs(Value(defect)) < tolerance)
+                return {true, iteration};
+        }
+        return {false, limit};
+    }
 }
-TEST_CASE("Native DITR nonautonomous convergence and capped retry distinguish physical acceptance")
+TEST_CASE("Public DITR converges to the independent original two-equation dense oracle")
+{
+    for (const auto variant : {O::DITRVariant::U2R2, O::DITRVariant::U2R1})
+    {
+        const A::DofSpace space(1);
+        Field state(space, R::RowLayout::TiledColMajor(0, 1, 8)), trial(space, 1);
+        A::Fill(state, .7);
+        O::FieldDITR method(state, .55, .9146, variant);
+        const double t = .3, h = .2, a = .55;
+        // Fixed coefficients independent of the production coefficient builder.
+        const bool u2r1 = variant == O::DITRVariant::U2R1;
+        const double c0 = u2r1 ? .2025 : .42525, c1 = u2r1 ? .7975 : .57475;
+        const double c2 = u2r1 ? 0 : .111375, c3 = u2r1 ? -.2475 : -.136125;
+        const double w0 = 13. / 66, w1 = 200. / 297, w2 = 7. / 54;
+        const auto g = [](double x)
+        { return 2 * std::cos(x) - std::sin(x); };
+        Eigen::Matrix2d matrix;
+        matrix << 1 / h, -c1 / h + 2 * c3, 2 * w1, 1 / h + 2 * w2;
+        Eigen::Vector2d forcing;
+        forcing << c0 * .7 / h + c2 * (-2 * .7 + g(t)) + c3 * g(t + h),
+            .7 / h + w0 * (-2 * .7 + g(t)) + w1 * g(t + a * h) + w2 * g(t + h);
+        const Eigen::Vector2d exact = matrix.fullPivLu().solve(forcing);
+        method.Begin(state, trial, t, h, Evaluate());
+        const auto report = SolveDITR(method, trial);
+        REQUIRE(report.converged);
+        CHECK(report.iterations > 0);
+        CHECK(Value(trial) == doctest::Approx(exact[1]).epsilon(2e-12));
+        CHECK(Value(method.IntermediateState()) == doctest::Approx(exact[0]).epsilon(2e-12));
+        const Eigen::Vector2d actual(Value(method.IntermediateState()), Value(trial));
+        CHECK((matrix * actual - forcing).lpNorm<Eigen::Infinity>() < 1e-11);
+        CHECK(Value(state) == .7);
+        const double first = Value(trial);
+        method.Discard();
+        method.Begin(state, trial, t, h, Evaluate());
+        REQUIRE(SolveDITR(method, trial).converged);
+        CHECK(Value(trial) == first);
+    }
+}
+TEST_CASE("Public DITR retains nonautonomous temporal order and controller-owned capped retry")
 {
     const auto error = [](int steps, double fraction)
     {
         const A::DofSpace space(1);
         Field state(space, 1), trial(space, 1);
         A::Fill(state, 1.);
-        O::DITRSettings settings;
-        settings.fraction = fraction;
-        O::FieldDITR ditr(state, settings, [](Field &)
-                          { return O::FieldDITR::StageOperator{Evaluate(), Solve(), {}}; });
-        const auto check = [](const Field &h, const Field &i, DNDS::index)
-        { return std::max(std::abs(Value(h)), std::abs(Value(i))) < 2e-13; };
+        O::FieldDITR method(state, fraction);
         for (int step = 0; step < steps; ++step)
         {
-            REQUIRE(ditr.Prepare(state, trial, double(step) / steps, 1. / steps, Evaluate(), Solve(), check));
+            method.Begin(state, trial, double(step) / steps, 1. / steps, Evaluate());
+            REQUIRE(SolveDITR(method, trial).converged);
             A::Copy(state, trial);
         }
         return std::abs(Value(state) - std::cos(1.));
     };
     for (double fraction : {.55, .5})
     {
-        // At alpha=.55 the independent exact 2x2 method has orders2.736,
-        // 2.883,2.945 on8/16/32/64: the third-order leading coefficient is
-        // small near alpha=.5. Use the asymptotic pair and a stricter bound.
         const double coarse = error(32, fraction), fine = error(64, fraction);
         CAPTURE(fraction);
         CAPTURE(coarse);
@@ -302,100 +461,73 @@ TEST_CASE("Native DITR nonautonomous convergence and capped retry distinguish ph
     const A::DofSpace space(1);
     Field state(space, 1), trial(space, 1);
     A::Fill(state, 1.);
-    O::DITRSettings settings;
-    settings.iterations = 5;
-    O::FieldDITR capped(state, settings, [](Field &)
-                        { return O::FieldDITR::StageOperator{Evaluate(), Solve(), {}}; });
-    const auto check = [](const Field &h, const Field &i, DNDS::index)
-    { return std::max(std::abs(Value(h)), std::abs(Value(i))) < 2e-10; };
-    CHECK_FALSE(capped.Prepare(state, trial, 0, .2, Evaluate(), Solve(), check));
-    CHECK_FALSE(capped.LastReport().converged);
-    CHECK(capped.LastReport().iterations == 5);
+    O::FieldDITR method(state);
+    method.Begin(state, trial, 0, .2, Evaluate());
+    const auto cap = SolveDITR(method, trial, 5, 2e-10);
+    CHECK_FALSE(cap.converged);
+    CHECK(cap.iterations == 5);
     CHECK(Value(state) == 1);
-    const double cappedValue = Value(trial);
-    settings.rejectUnconverged = false;
-    O::FieldDITR acceptedCap(state, settings, [](Field &)
-                             { return O::FieldDITR::StageOperator{Evaluate(), Solve(), {}}; });
-    CHECK(acceptedCap.Prepare(state, trial, 0, .2, Evaluate(), Solve(), check));
-    CHECK_FALSE(acceptedCap.LastReport().converged);
-    CHECK(acceptedCap.LastReport().iterations == 5);
-    CHECK(Value(trial) == cappedValue);
-    CHECK(Value(state) == 1);
-    CHECK(capped.Prepare(state, trial, 0, .001, Evaluate(), Solve(), check));
+    const double capped = Value(trial);
+    // The controller may publish a capped finite state or discard it; the
+    // method makes neither decision and retains no accepted-step history.
+    method.Discard();
+    method.Begin(state, trial, 0, .2, Evaluate());
+    CHECK_FALSE(SolveDITR(method, trial, 5, 2e-10).converged);
+    CHECK(Value(trial) == capped);
+    method.Discard();
+    method.Begin(state, trial, 0, .001, Evaluate());
+    CHECK(SolveDITR(method, trial, 5, 2e-10).converged);
     CHECK(Value(trial) == doctest::Approx(std::cos(.001)).epsilon(2e-10));
-    CHECK_THROWS(capped.Prepare(state, state, 0, .01, Evaluate(), Solve(), check));
-    CHECK_THROWS(O::FieldDITR(state, {}, {}));
 }
-TEST_CASE("DITR rejects intermediate rebinding and stateful rate callbacks before accepted-state mutation")
+TEST_CASE("DITR rejects rebound intermediate and stateful rate callbacks without touching accepted state")
 {
     const A::DofSpace space(1);
     Field state(space, 1), trial(space, 1);
     A::Fill(state, 1.);
-    const auto check = [](const Field &h, const Field &i, DNDS::index)
-    { return std::max(std::abs(Value(h)), std::abs(Value(i))) < 1e-12; };
-    O::FieldDITR rebound(state, {}, [&](Field &mid)
-                         { mid = state; return O::FieldDITR::StageOperator{Evaluate(), Solve(), {}}; });
+    O::FieldDITR method(state);
     const auto generation = state.Owned().Version();
-    CHECK_THROWS(rebound.Prepare(state, trial, 0, .1, Evaluate(), Solve(), check));
-    CHECK(state.Owned().Version() == generation);
-    CHECK_THROWS(rebound.Prepare(state, trial, 0, .1, Evaluate(), Solve(), check));
-    O::FieldDITR mutation(state, {}, [](Field &)
-                          { return O::FieldDITR::StageOperator{Evaluate(), Solve(), {}}; });
     const auto bad = [](Field &input, Field &output, double, int)
     { A::Scale(input, 2.); A::Copy(output, input); };
-    CHECK_THROWS(mutation.Prepare(state, trial, 0, .1, bad, Solve(), check));
+    CHECK_THROWS(method.Begin(state, trial, 0, .1, bad));
     CHECK(state.Owned().Version() == generation);
+    method.Discard();
+    method.Begin(state, trial, 0, .1, Evaluate());
+    CHECK(SolveDITR(method, trial).converged);
+    method.IntermediateState() = state;
+    CHECK_THROWS(method.Begin(state, trial, 0, .1, Evaluate()));
     CHECK(Value(state) == 1);
     CHECK_THROWS(O::DITRCoefficients(0));
     CHECK_THROWS(O::DITRCoefficients(1));
-    O::DITRSettings settings;
-    settings.iterations = 0;
-    CHECK_THROWS(O::FieldDITR(state, settings, [](Field &)
-                              { return O::FieldDITR::StageOperator{Evaluate(), Solve(), {}}; }));
 }
-TEST_CASE("Native time workspace integrates DITR rejection history and fresh intermediate bindings")
+TEST_CASE("Time facade reserves DITR publication while the external controller owns convergence")
 {
     const A::DofSpace space(1);
     Field state(space, 1), trial(space, 1);
     A::Fill(state, 1.);
-    std::vector<R::ArrayStorage::Shared> bindings;
-    const auto factory = [&](Field &mid)
-    {
-        bindings.push_back(mid.Owned().SharedStorage());
-        return O::FieldDITR::StageOperator{Evaluate(), Solve(), {}};
-    };
-    O::FieldTimeStepper stepper(state, "ditr", {}, {}, factory);
-    const auto check = [](const Field &h, const Field &i, DNDS::index)
-    { return std::max(std::abs(Value(h)), std::abs(Value(i))) < 2e-13; };
-    CHECK_THROWS(stepper.Prepare(state, trial, 0, .1, Evaluate(), Solve())); // explicit coupled checker required
-    REQUIRE(stepper.Prepare(state, trial, 0, .1, Evaluate(), Solve(), check));
+    O::FieldTimeStepper stepper(state, "ditr");
+    const auto solve = [](auto &method, auto &endpoint)
+    { return SolveDITR(method, endpoint).converged; };
+    CHECK_THROWS(stepper.Prepare(state, trial, 0, .1, Evaluate(), {}));
+    REQUIRE(stepper.Prepare(state, trial, 0, .1, Evaluate(), {}, solve));
     CHECK(stepper.HasPendingTrial());
     CHECK_FALSE(stepper.HasHistory());
-    REQUIRE(stepper.LastDITRReport());
-    CHECK(stepper.LastDITRReport()->converged);
     const double expected = Value(trial);
     stepper.Discard();
     CHECK_FALSE(stepper.HasPendingTrial());
     CHECK_THROWS(stepper.Commit());
-    REQUIRE(stepper.Prepare(state, trial, 0, .1, Evaluate(), Solve(), check));
+    REQUIRE(stepper.Prepare(state, trial, 0, .1, Evaluate(), {}, solve));
     CHECK(Value(trial) == expected);
-    CHECK(bindings.size() == 1);
     auto fresh = stepper.Fresh();
-    REQUIRE(fresh->Prepare(state, trial, 0, .1, Evaluate(), Solve(), check));
-    REQUIRE(bindings.size() == 2);
-    CHECK(bindings[0] != bindings[1]);
+    CHECK(fresh->CoupledMethod().IntermediateState().Owned().SharedStorage() !=
+          stepper.CoupledMethod().IntermediateState().Owned().SharedStorage());
+    REQUIRE(fresh->Prepare(state, trial, 0, .1, Evaluate(), {}, solve));
     CHECK(Value(trial) == expected);
     A::Copy(state, trial);
     fresh->Commit();
-    CHECK(fresh->HasHistory());
-    CHECK(fresh->PreviousDt() == .1);
-    CHECK(Value(fresh->PreviousState()) == 1);
-    const auto bad = [](Field &input, Field &output, double, int)
-    { A::Scale(input, 2.); A::Copy(output, input); };
-    CHECK_THROWS(fresh->Prepare(state, trial, .1, .1, bad, Solve(), check));
+    CHECK_FALSE(fresh->HasHistory()); // DITR is a one-step method, not BDF history.
     CHECK_FALSE(fresh->HasPendingTrial());
-    CHECK(fresh->PreviousDt() == .1);
-    REQUIRE(fresh->Prepare(state, trial, .1, .1, Evaluate(), Solve(), check));
-    CHECK(bindings.size() == 3);
+    CHECK_FALSE(fresh->Prepare(state, trial, .1, .1, Evaluate(), {}, [](auto &, auto &)
+                               { return false; }));
+    CHECK_FALSE(fresh->HasPendingTrial());
     CHECK(Value(state) == expected);
 }

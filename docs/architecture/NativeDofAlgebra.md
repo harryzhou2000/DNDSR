@@ -151,3 +151,50 @@ column-major or tiled tables; owned and ghost pitches are derived separately.
 The existing `(space, owned, ghost)` constructor shares all supported uniform
 physical tables. Async algebra traverses logical components, leaves ghosts and
 physical padding untouched, and retains the same caller-supplied stream ordering.
+
+## Explicit CPU halo publication
+
+`DNDS/Algebra/DofHalo.hpp` provides `DofHalo<T, Epoch>` over a DofField and an
+immutable owned-to-ghost RowTransferPlan. Epoch defaults to uint64_t; a caller
+may use an equality-comparable step/trial/stage tuple instead. This companion
+uses the ordinary direct PayloadPlan/TransferBinding path and retains the
+field's physical AoS/SoA/AoSoA layout. It does not add a packing buffer.
+
+```cpp
+Algebra::DofHalo<> halo(u, rowRoute); // Collective setup, persistent binding.
+auto operation = halo.Begin(exchangeEpoch, engine, cpuStream);
+// Independent core work reads u.Owned(); it cannot see the active ghost writer.
+operation.Wait();
+halo.RequireCurrent(u, exchangeEpoch); // Local check before dependent reads.
+```
+
+Explicit successful Wait/Test records source/ghost versions, bound storage,
+shape/row-space identity, route dependencies and the caller epoch. Destroying
+an unobserved operation drains it but publishes no freshness record. Copied
+companion handles share the record. Owned writes, external ghost writes,
+rebindings and shape/mapping changes invalidate it. This is a prologue check;
+ordinary access leases still protect the subsequent reads and hot loops.
+
+The caller agrees epoch meaning and exchange order across ranks, serializes the
+companion on an MPI-permitted controller, and retains the context until before
+MPI finalization. A checked CPU stream waits for its producer prefix;
+caller-ordered eager mode requires CPU producers already complete. Begin's
+optional collective preflight can be disabled only when the caller coordinates
+those errors. CUDA is explicitly unsupported here until stream-ready receipt
+semantics are provided. Destruction may drain MPI; do not retire these owners
+on arbitrary worker/device callbacks.
+
+Every Begin exchanges conservatively. An unchanged local owned version alone
+cannot detect a remote-only source update or justify an independent skip.
+With an explicit collective-mutation and common-scheduling contract, callers
+may reuse a completed publication using local RequireCurrent checks: every
+rank checks its own recorded version, not equality of version numbers across
+ranks. The exchange-or-reuse decision must be common. Changed owned values
+normally request a refresh; only requesting reuse of stale data is an error.
+The initial Cauchy pipeline still exchanges conservatively. No extra freshness
+Allreduce is required for an already agreed schedule.
+RequireCurrent checks the requested epoch in addition to versions. The record
+certifies the completed transfer, not an independent assertion that all remote
+producers chose the right physical stage. Solver orchestration supplies that
+association. Outputs of numerical operations continue to guarantee owned values
+only; no output halo exchange is implicit.

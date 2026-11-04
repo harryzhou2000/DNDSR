@@ -46,7 +46,7 @@ TEST_CASE("Finest FAS acceptance shares selected-component L1 L2 convergence wit
     {
         auto settings = Controls();
         settings.implicit.normOrder = order;
-        settings.implicit.residualComponents = {0};
+        settings.implicit.residualComponents = {"rho"};
         settings.implicit.residualReference = "runningMaximum";
         const auto equation = C::EquationSystem::Resolve(settings.equation);
         C::FiniteVolume fine(mesh, settings, equation);
@@ -113,6 +113,9 @@ TEST_CASE("Polynomial FAS recovers the original P3 manufactured equation across 
         CAPTURE(report.residual[0]);
         CHECK(report.converged);
         CHECK(report.multigridCycles > 0);
+        CHECK(report.iterations == report.multigridCycles);
+        CHECK(report.levelCorrections.front() == report.multigridCycles *
+                                                     (settings.implicit.multigrid.preSmooth + settings.implicit.multigrid.postSmooth));
         REQUIRE(report.levelCorrections.size() == size_t(settings.implicit.multigrid.levels + 1));
         CHECK(report.levelCorrections.back() > 0);
         CHECK(report.linearIterations > 0);
@@ -174,7 +177,7 @@ TEST_CASE("Selected pMG recovers nonconstant principal equations while preservin
         settings.implicit.diagonal = scenario == 0 ? "entries" : "block";
         settings.implicit.roeDissipation = scenario != 0;
         settings.implicit.jacobianAction = scenario == 2 ? "semiMatrixFree" : "assembled";
-        settings.implicit.residualComponents = scenario == 3 ? std::vector<int>{0, 1, 2, 3, 4} : std::vector<int>{0, 4};
+        settings.implicit.residualComponents = scenario == 3 ? std::vector<std::string>{} : std::vector<std::string>{"rho", "rhoE"};
         if (scenario == 1)
         {
             settings.implicit.linear.method = "gmres";
@@ -257,8 +260,8 @@ TEST_CASE("Selected pMG recovers nonconstant principal equations while preservin
         {
             CHECK(report.residual[2] == doctest::Approx(.1).epsilon(1e-10));
             auto subsetControls = settings.implicit;
-            subsetControls.residualComponents = {0, 4};
-            C::ResidualConvergence subset(subsetControls);
+            subsetControls.residualComponents = {"rho", "rhoE"};
+            C::ResidualConvergence subset(subsetControls, equation.Schema());
             subset.Observe(report.initialResidual);
             subset.Observe(report.residual);
             CHECK(subset.Accepted());

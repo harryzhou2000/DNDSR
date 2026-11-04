@@ -52,6 +52,12 @@ namespace DNDS::Cauchy
                 if (!domain.contains("settings") || !domain["settings"].is_object())
                     continue;
                 auto &settings = domain["settings"];
+                if (settings.value("initialTemperature", real(0)) == 0)
+                    settings.erase("initialTemperature");
+                if (settings.contains("initialMassFractions") && settings["initialMassFractions"].is_object() && settings["initialMassFractions"].empty())
+                    settings.erase("initialMassFractions");
+                if (settings.contains("equation") && settings["equation"].value("eos", std::string("perfectGas")) == "perfectGas")
+                    settings["equation"].erase("mixture");
                 settings.erase("execution");
                 settings.erase("implicit");
                 if (settings.contains("motion") && settings["motion"].value("angularVelocity", Vector3{}) == Vector3{} &&
@@ -370,6 +376,7 @@ namespace DNDS::Cauchy
     }
     void Domain::WriteCheckpoint(const std::string &path, const Json &resolved, bool includeReconstruction) const
     {
+        DNDS_check_throw_info(!_equationWorkspace, "equation-state checkpoint output is not connected yet");
         const MPIInfo mpi(_fv.Metrics().Communicator());
         const bool history = _timeStepper && _timeStepper->Method() == "bdf2" && _timeStepper->HasHistory();
         const bool limitedVRHistory = includeReconstruction && _fv.LimitedVRHistory(*_workspace);
@@ -407,6 +414,7 @@ namespace DNDS::Cauchy
     }
     void Domain::ReadCheckpoint(const std::string &path, const Json &resolved)
     {
+        DNDS_check_throw_info(!_equationWorkspace, "equation-state checkpoint input is not connected yet");
         const MPIInfo mpi(_fv.Metrics().Communicator());
         auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
         serializer->OpenFile(path, true);

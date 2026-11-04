@@ -1,10 +1,30 @@
 #include "Cauchy/Discretization/EquationFiniteVolumeInternal.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
+#include "DNDS/MPI/CollectiveStage.hpp"
 
 namespace DNDS::Cauchy
 {
     namespace R = Runtime;
+    real FiniteVolume::StableStep(const EquationDofs &state, const AuxiliaryValues &values, real cfl, real time) const
+    {
+        real dt = std::numeric_limits<real>::max();
+        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                        {
+            DNDS_check_throw_info(std::isfinite(cfl) && cfl > 0, "positive CFL required");
+            ValidateAuxValues(state, values, time);
+            DNDS_check_throw_info(values.cellSpectralSum, "CFL selection requires prepared cell spectral sums");
+            const auto geometry = Metrics().AcquireRead(); const auto metric = geometry.HostView();
+            const auto read = values.cellSpectralSum->Owned().Read(); const auto sums = read.View<R::UniformTableRows>();
+            for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
+            {
+                const real radius = sums(iCell, 0);
+                DNDS_check_throw_info(std::isfinite(radius) && radius > 0, "invalid cell spectral sum");
+                dt = std::min(dt, cfl * metric.GetCellVol(iCell) / radius);
+            } });
+        MPI_Allreduce(MPI_IN_PLACE, &dt, 1, MPI_DOUBLE, MPI_MIN, Metrics().Communicator());
+        return dt;
+    }
     namespace
     {
         template <class Values>

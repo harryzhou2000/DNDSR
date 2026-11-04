@@ -1,5 +1,53 @@
 # Cauchy native implicit operator contracts
 
+## Time-method revision in progress
+
+`Solver/TimeIntegration` now exposes normalized `TimeEquationCoefficients`,
+variable-step `BDFCoefficients`, Euler-compatible `DIRKTableau` and the
+`DITRMethod<State, Operations>` workspace. These definitions have no Cauchy,
+mesh, physical-model or nonlinear-solver dependencies. BDF/DIRK coefficient
+definitions are shared with the time frontend. Production Domain now uses the
+DITR method with one shared nonlinear loop. The old nested implementation is
+removed; `StateDITR.hpp` only forwards the public method type.
+
+The DITR method owns the initial snapshot, intermediate unknown and three RHS
+caches. The caller owns the endpoint trial. `Begin` evaluates the initial RHS
+and uses it for the two initial rate guesses. The external controller prepares
+coupledStage 0 (intermediate), applies one correction or spatial V-cycle, and
+completes it by refreshing that RHS. It then does the same for coupledStage 1
+(endpoint). `AssembleStoppingResidual` produces `I+H` after both updates. It
+does not test convergence or perform a solve. The controller owns stopping and
+CFL progression; a prepared `resOther` and the other stage/rate must remain
+unchanged throughout each correction, including its FAS recursion.
+`NonlinearDetail::Iterate` accepts an explicit residual-observation order:
+ordinary stage solves retain before-update observation, while a DITR problem
+can request observation after its two coupled updates. Both use the same norm,
+reference, CFL and cap policy; after-update mode has no iteration-zero stop.
+
+`NonlinearSolver::CorrectOnce` and `EquationNonlinearSolver::CorrectOnce` share
+the ordinary solve's evaluation, defect assembly, pseudo-time, approximate
+Jacobian, linear solver and PP/update implementations. They do exactly one
+update without a convergence loop or residual-norm Allreduce. Other required
+agreement, physics and linear-solver collectives remain. Their reports never
+claim convergence. Input halos may be stale; the physical evaluation handles
+its exchanges. Output guarantees owned values only. Calls remain synchronous
+and serialized against the bound state/workspace/engine.
+
+`PolynomialMultigrid::ApplyCycle` is one finest update. Its bounded smoothers
+call `CorrectOnce`; they do not restart convergence policy or pseudo-CFL growth.
+The compatibility `Solve` frontend uses the same `NonlinearDetail::Iterate`
+controller as direct solves. `iterations` counts finest V-cycles;
+`levelCorrections` separately counts level smoothing work. `multigrid.cycles`
+remains the cap for this compatibility frontend. Source coefficients and frozen
+other-stage terms are unchanged throughout a cycle. Temporal-pMG is deferred.
+
+Focused tests compare two incomplete DITR iterations against independently
+written Euler-form scalar equations for both variants, compare a single CPU
+correction byte-for-byte with the first ordinary-solve update, and exercise
+distributed FAS with explicit finest/coarse work accounting. This does not yet
+complete the remaining whole-phase qualification. BDF/DIRK history ownership
+and the first tracked mean-halo integration are described below.
+
 Optional CPU profiling uses caller-owned `NonlinearProfile` through
 `NonlinearSolveControl::profile`. A null output performs no clock queries or
 additional MPI operations. A provided output resets for each synchronous solve
@@ -103,10 +151,14 @@ transient with an outer residual stop is not this steady mode.
 
 `implicit.consoleInterval` enables rank-zero progress at selected nonlinear
 iterations; zero disables it. These norms are the uncompressed equation
-residual. Defaults remain volume-weighted L2 for all five components, tested
-against each initial stage norm and the absolute floor. Explicit controls are
+residual. Defaults use volume-weighted L2 and density-only convergence, tested
+against its initial stage norm and the absolute floor. Explicit controls are
 `normOrder=1|2`, `residualReference="initial"|"runningMaximum"` and the distinct
-component indices in `residualComponents` (default `[0,1,2,3,4]`). L1 is
+component names in `residualComponents` (default `["rho"]`; `[]` selects every
+resolved equation). Use names from the equation schema, e.g. `["rho", "rhou"]`
+or `["rhoY:H2", "rhoY:H2O"]`. A `block.component` spelling such as `flow.rho`
+disambiguates names. Unknown, ambiguous and duplicate selections fail at setup;
+names resolve once outside residual evaluation and cell loops. L1 is
 `sum(abs(integratedDefect))/sum(volume)`; L2 is
 `sqrt(sum(integratedDefect^2/volume)/sum(volume))`. Selection only controls
 acceptance: all component norms are still computed and reported. Reference
@@ -115,14 +167,17 @@ Single-level and finest p-FAS acceptance use the same small policy after the
 existing global norm reduction, with no additional collective.
 
 Euler's density/L1/running-maximum criterion is selected with
-`normOrder=1`, `residualReference="runningMaximum"`, `residualComponents=[0]`
+`normOrder=1`, `residualReference="runningMaximum"`, `residualComponents=["rho"]`
 and its relative tolerance (absoluteTolerance0 for a purely relative target).
 This choice does not assert convergence of the other equations. Reports retain
 both `initialResidual` and `referenceResidual`, plus the selected-component
 `residualTargetRatio`; CSV and Python use that ratio rather than recomputing an
 all-component initial-reference ratio. A zero requested target means exact
-zero; an unmet zero target reports the largest finite ratio. The separate
-DITR coupled H/I outer controller retains its own documented controls. Align
+zero; an unmet zero target reports the largest finite ratio. DITR uses the same
+controller and named component selection. Pending configuration consolidation,
+its existing `time.ditr` iteration/tolerance keys explicitly override the
+corresponding shared policy fields; they do not introduce another loop. RANS/species never enter the default criterion;
+a homogeneous reactor must explicitly select reacting components or all. Align
 linear relaxation and VR warmup too before calling a baseline matched.
 
 `implicit.requireConvergedReconstruction=true` additionally requires the
@@ -631,7 +686,7 @@ species/RANS-specific repairs and other Euler policies are separate extensions.
 
 `Solver/FieldTimeStepper.hpp` owns native-field time scratch and accepted BDF
 history. BDF1/2, Trapz and ESDIRK2/3/4 retain Euler's coefficients; DITR uses
-its original coupled U2R2 equations and an independent intermediate-stage factory.
+its original coupled U2R2/U2R1 equations and an independent intermediate workspace.
 A callback solves `mass*U-rhsScale*F(U,t)=source`; nonlinear/PP,
 physical accumulation and MPI orchestration remain its caller's responsibility.
 This initial profile uses identity accumulation in the semidiscrete time
@@ -648,8 +703,25 @@ An external controller prepares all domains before exchanging their traces,
 then solves/evaluates each domain and completes the stage. No time coefficient
 or BDF history formula is duplicated in that controller. A trial becomes
 committable only after its final stage completes. Single-domain `Prepare` and
-`PrepareSteady` use this same protocol. DITR retains its coupled midpoint/end
-driver; a one-pass external sequence explicitly rejects it.
+`PrepareSteady` use this same protocol. DITR delegates its coupled intermediate/endpoint problem to the shared nonlinear
+controller; a one-pass external sequence explicitly rejects it.
+
+The November 4 nested-control defect is corrected in code: each DITR iteration
+now applies one intermediate correction and one endpoint correction, refreshing
+each rate after its update. The common controller observes the method-provided
+`I+H` residual after both updates. There is one report and one CFL/reference/cap
+policy, not separate inner and outer acceptance criteria. The reacting-Domain
+validation remains in progress; earlier nested-driver ratios are not evidence
+for this corrected control.
+
+`time.ditr.variant` selects `U2R2` (default) or `U2R1` for reaction-dominated
+stepping. Fraction and theta default to .55 and .9146. See [DITR](DITR.md) for
+its equations, state ownership and callback contracts. `LastCoupledTargetRatio`
+is the same selected-component residual-to-tolerance ratio as the single common
+nonlinear report, evaluated on I+H. A ratio at most one passes the residual
+criterion; the reconstruction criterion may also be required. A cap accepted
+by the default policy retains `converged=false`.
+
 The requested implicit flow5 PP measures have distributed operator/transaction
 tests. Full physical qualification, high-order viscous equivalence and the
 remaining phase implementation/performance work are still outstanding.
@@ -693,7 +765,7 @@ to the caller; it is not an MPI exception-recovery mechanism.
 Discarded/rejected attempts restore it before retry. Accepted state and clock
 are published before committing BDF history. An external debug reader can reject
 publication collectively without advancing history; releasing it allows the
-same prepared candidate to commit. By default, an inner/FAS or DITR outer cap
+same prepared candidate to commit. By default, a nonlinear/FAS iteration cap
 advances the last finite admissible iterate, following Euler's iteration-control
 policy. It does **not** label the capped solve converged. Set
 `implicit.rejectUnconvergedStages=true` to reject the whole physical attempt at
@@ -999,3 +1071,38 @@ PP and physical ODE/nonlinear controllers are outside this benchmark. The
 `checked` argument selects both scheduled-access checking and the linear
 wrapper's optional collective-error preflights; required shape/route checks,
 solve-entry agreement and numerical reductions remain enabled.
+
+
+## Method-owned buffers and completed halo publications
+
+`StateTimeStepper` owns exactly one BDFMethod, DIRKMethod or DITRMethod under
+`Solver/TimeIntegration`. BDF owns its initial/source/accepted-history arrays;
+DIRK owns initial/source and previous-stage RHS arrays, with no accepted-step
+history; DITR owns its six required arrays without an extra BDF allocation.
+The facade enforces transaction and serialized-stage order. Source assembly is
+method-owned. `HasHistory`/`PreviousDt` describe BDF history only; restoring BDF
+history into a DIRK/DITR method fails. Commit remains allocation-free and occurs
+after accepted-state publication. Existing time-order and retry tests plus an
+allocation-count fixture check this boundary.
+
+`DNDS::Algebra::DofHalo<T,Epoch>` is a CPU transport companion over the canonical
+RowTransferPlan/PayloadPlan/TransferBinding path. It preserves physical storage
+and uses direct MPI datatypes. An explicit successful Wait/Test publishes the
+caller epoch, owned/ghost versions, exact bound storage/shape identity and the
+route dependency association. Destruction drains lifetime obligations but does
+not publish a freshness certificate. Copied companion handles share this record.
+`RequireCurrent` is a local prologue check; a lease separately establishes access
+safety. External ghost writes, owned writes, rebinding and shape/mapping changes
+invalidate the association.
+
+Cauchy's mean exchanges use this companion for flow5 and every physical field
+of an EquationDofs state. Each evaluation gets a new workspace exchange epoch;
+it always exchanges and checks completion before dependent work. Owned-only core
+work can overlap. The epoch is an exchange identity, not an inferred remote
+state version or a solver-wide physical-time certificate. External users may
+supply a richer equality-comparable step/trial/stage context. All ranks must
+agree its meaning and follow a consistent schedule. No local version comparison
+may independently skip an exchange, particularly after a remote-only update.
+With collectiveChecks disabled, the caller coordinates preflight failures as in
+the existing eager protocol. The companion rejects CUDA until a stream-ready
+publication protocol is implemented. It introduces no output-halo refresh.

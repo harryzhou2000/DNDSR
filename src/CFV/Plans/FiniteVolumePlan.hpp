@@ -16,6 +16,11 @@ namespace DNDS::Geom
 {
     class MeshReadAccess;
 }
+namespace DNDS::Algebra
+{
+    template <class T, class Epoch>
+    class DofHalo;
+}
 
 namespace DNDS::CFV
 {
@@ -169,6 +174,9 @@ namespace DNDS::CFV
         FVField BuildField(Runtime::RowLayout prototype, Runtime::Device device = Runtime::Device::Host()) const;
         /// Collective binding, retained by caller for persistent repeated pulls.
         Runtime::TransferBinding BindHalo(FVField &field) const;
+        /// CPU direct transfer with completed-publication provenance. Callers
+        /// provide coherent exchange epochs; no remote freshness is inferred.
+        Algebra::DofHalo<real, uint64_t> BindTrackedHalo(FVField &field) const;
         void ValidateField(const FVField &field, index width) const;
         MPI_Comm Communicator() const;
         real GetCellVol(index iCell) const;

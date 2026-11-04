@@ -1,3 +1,4 @@
+#include "DNDS/Algebra/DofHalo.hpp"
 #include "Cauchy/Discretization/LimitedVRInternal.hpp"
 #include "Cauchy/Physics/FlowProfile.hpp"
 #include "Cauchy/Physics/ReconstructionPositivity.hpp"
@@ -91,7 +92,9 @@ namespace DNDS::Cauchy
         CFV::ReconstructionBoundaryValues boundary;
         R::Array<real> gradientBoundary;
         std::optional<R::Array<real>> primitiveBoundary;
-        R::TransferBinding meanHalo, coefficientHalo, gradientHalo;
+        Algebra::DofHalo<> meanHalo;
+        uint64_t meanEpoch = 0;
+        R::TransferBinding coefficientHalo, gradientHalo;
         AuxiliaryValues auxiliary;
         std::optional<BoundaryInputs> incoming;
         std::optional<R::TransferBinding> waveHalo, pressureHalo;
@@ -108,7 +111,7 @@ namespace DNDS::Cauchy
             : meanOnly(meanTrial), reconstruction(data.reconstruction.BuildWorkspace(5, FieldLayout(state.Owned().Layout(), data.metrics.NumCell(), data.reconstruction.NRecDOF() * 5), {1})),
               gradient(data.metrics.BuildField(5 * data.metrics.Dimension())), primitive(data.metrics.BuildField(5)),
               positivityValues(R::RowLayout::Dense(!meanOnly && data.positivitySamples ? data.positivitySamples->Size() : 0, 5)), boundary(data.reconstruction.BuildBoundaryValues(5)),
-              gradientBoundary(data.gradient.BuildBoundaryValues(5)), meanHalo(data.metrics.BindHalo(state)),
+              gradientBoundary(data.gradient.BuildBoundaryValues(5)), meanHalo(data.metrics.BindTrackedHalo(state)),
               coefficientHalo(data.metrics.BindHalo(reconstruction.coefficients)), gradientHalo(data.metrics.BindHalo(gradient)), owner(&data),
               ownedStorage(state.Owned().SharedStorage()), ghostStorage(state.Ghost().SharedStorage())
         {
@@ -695,11 +698,10 @@ namespace DNDS::Cauchy
             Metrics().ValidateField(state,5);
             DNDS_check_throw_info(work.owner==_data.get()&&state.Owned().SharedStorage()==work.ownedStorage&&
                                   state.Ghost().SharedStorage()==work.ghostStorage,"sampling workspace/state binding differs"); });
-        for (auto *binding : {&work.meanHalo, &work.coefficientHalo})
-        {
-            auto operation = engine.ChecksAccess() ? binding->BeginChecked(stream) : binding->BeginScheduled(stream.Context());
-            operation.Wait();
-        }
+        work.meanHalo.Begin(++work.meanEpoch, engine, stream, _data->settings.implicit.collectiveChecks).Wait();
+        work.meanHalo.RequireCurrent(state, work.meanEpoch);
+        auto operation = engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream.Context());
+        operation.Wait();
     }
     void FiniteVolume::EvaluateImpl(CFV::FVField &state, CFV::FVField *residual, Workspace &work,
                                     R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
@@ -776,10 +778,11 @@ namespace DNDS::Cauchy
         const bool primitiveViscosity = !work.meanOnly && bool(work.primitiveBoundary);
         const bool hasGradientWork = bool(work.conservativeGradient) || primitiveViscosity || bool(work.limitedVR);
         std::optional<R::TransferOperation> gradientOperation;
-        std::optional<R::TransferOperation> meanOperation;
+        std::optional<Algebra::DofHalo<>::Operation> meanOperation;
+        ++work.meanEpoch;
         if (overlap)
         {
-            meanOperation.emplace(engine.ChecksAccess() ? work.meanHalo.BeginChecked(stream) : work.meanHalo.BeginScheduled(stream.Context()));
+            meanOperation.emplace(work.meanHalo.Begin(work.meanEpoch, engine, stream, _data->settings.implicit.collectiveChecks));
         }
         // Explicit quadrature values keep BC policy out of CFV kernels. All
         // stages refresh these values from their own current mean state. They
@@ -924,9 +927,10 @@ namespace DNDS::Cauchy
         if (meanOperation)
             meanOperation->Wait();
         else
-            exchange(work.meanHalo);
+            work.meanHalo.Begin(work.meanEpoch, engine, stream, _data->settings.implicit.collectiveChecks).Wait();
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
                         {
+            work.meanHalo.RequireCurrent(state, work.meanEpoch);
             if (auxiliaryPreparation)
             {
                 auto *preparation = &*auxiliaryPreparation;
@@ -1246,6 +1250,36 @@ namespace DNDS::Cauchy
     {
         DNDS_check_throw_info(work.owner == _data.get() && work.auxiliary._origin, "auxiliary values require a completed preparation for this workspace");
         return work.auxiliary;
+    }
+    void FiniteVolume::PrepareCorrectionAux(CFV::FVField &state, Workspace &work, R::EagerEngine &engine,
+                                            const R::ExecutionStream &stream, real time) const
+    {
+        const MPIInfo mpi(Metrics().Communicator());
+        std::optional<AuxiliaryPreparation> preparation;
+        MPI::LocalStage(mpi, [&]
+                        {
+            Metrics().ValidateField(state, 5);
+            DNDS_check_throw_info(work.owner == _data.get() && state.Owned().SharedStorage() == work.ownedStorage &&
+                                      state.Ghost().SharedStorage() == work.ghostStorage && stream.Context().device == R::Device::Host(),
+                                  "correction auxiliary workspace/state/backend mismatch");
+            DNDS_check_throw_info(!HasInterfaces() || work.incoming, "correction preparation needs interface values");
+            if (work.incoming) ValidateBoundaryInputs(*work.incoming, time);
+            preparation.emplace(BeginAuxValues(state, work.auxiliary, time, work.incoming ? &*work.incoming : nullptr)); });
+        JoinStreamOnException join(stream);
+        auto transfer = work.meanHalo.Begin(++work.meanEpoch, engine, stream, _data->settings.implicit.collectiveChecks);
+        if (_data->settings.execution.overlap)
+            engine.Submit(stream, [&](auto)
+                          { preparation->Apply(CFV::ReconstructionRegion::Core); });
+        transfer.Wait();
+        MPI::LocalStage(mpi, [&]
+                        {
+            work.meanHalo.RequireCurrent(state, work.meanEpoch);
+            engine.Submit(stream, [&](auto)
+            {
+                preparation->Apply(_data->settings.execution.overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
+                preparation->Finish(work.auxiliary);
+            });
+            stream.Record().WaitHost(); });
     }
     const ThermalBounds &FiniteVolume::ThermalConstraints() const { return _data->PerfectGasBounds(); }
     void FiniteVolume::LimitReconstructionPP(const CFV::FVField &state, Workspace &work) const

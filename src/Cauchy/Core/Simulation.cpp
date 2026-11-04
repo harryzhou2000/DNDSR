@@ -180,8 +180,8 @@ namespace DNDS::Cauchy
                            {
                     if(const auto *input=_interfaces->Inputs(iDomain)) domain.BindInterfaceInputs(*input); }, "interface binding");
             };
-            std::vector<std::optional<Runtime::Array<real>::WriteLease>> destinations(_domains.size());
-            std::vector<std::optional<Runtime::Array<real>::ReadLease>> sources(_domains.size());
+            std::vector<std::optional<EquationDofs::WriteScope>> destinations(_domains.size());
+            std::vector<std::optional<EquationDofs::ReadScope>> sources(_domains.size());
             try
             {
                 localPhase([&](index, Domain &domain)
@@ -233,8 +233,8 @@ namespace DNDS::Cauchy
                            { MPI::LocalStage(MPIInfo(domain._fv.Metrics().Communicator()), [&]
                                              {
                         DNDS_check_throw_info(domain._trialReady&&(!domain._timeStepper||domain._timeStepper->HasPendingTrial()),"domain has no complete candidate");
-                        destinations[iDomain].emplace(domain.Flow().Owned().Write());
-                        sources[iDomain].emplace(domain._trial.CoupledField().Owned().Read()); }); }, "publication reservation");
+                        destinations[iDomain].emplace(domain._accepted.WriteOwned());
+                        sources[iDomain].emplace(domain._trial.ReadOwned()); }); }, "publication reservation");
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                     if (_domains[iDomain])
                         _domains[iDomain]->CommitReserved(*destinations[iDomain], *sources[iDomain]);
@@ -247,8 +247,6 @@ namespace DNDS::Cauchy
                 {
                     if (destinations[iDomain])
                         destinations[iDomain]->CancelUnmodified();
-                    if (sources[iDomain])
-                        sources[iDomain]->CancelUnmodified();
                     if (_domains[iDomain])
                         _domains[iDomain]->DiscardStep();
                 }

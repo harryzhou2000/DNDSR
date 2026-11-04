@@ -115,7 +115,7 @@ TEST_CASE("Stage and iteration refresh freeze the correct traces across serial a
                 for (bool overlap : {false, true})
                 {
                     Exchange exchange(shared);
-                    const C::InterfaceStageContext stage{{7, 13, 2, 0, 11, 17}, .35};
+                    const C::InterfaceStageContext stage{{7, 13, 2, 0, 11, 17, 1}, .35};
                     C::InterfaceIterationSchedule schedule(exchange.context, stage, policy, exchange.Hooks());
                     R::EagerEngine engine(workers, std::make_shared<R::AccessTrackingContext>());
                     const auto stream = engine.CreateCPUStream();
@@ -200,6 +200,7 @@ TEST_CASE("Stage and iteration refresh freeze the correct traces across serial a
                         CHECK(published.stageTime == stage.stageTime);
                         CHECK(published.epoch.trial == 13);
                         CHECK(published.epoch.stage == 2);
+                        CHECK(published.epoch.coupledStage == 1);
                         CHECK(published.epoch.geometry == 11);
                         CHECK(published.epoch.schema == 17);
                         CHECK(published.epoch.couplingIteration == uint64_t(policy == C::InterfaceRefreshPolicy::PerStage ? 0 : iteration));
