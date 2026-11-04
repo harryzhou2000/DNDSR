@@ -35,7 +35,7 @@ updates are allowed.
 field names/order, component widths, device and row space must match, while
 individual AoS/SoA/AoSoA layouts may differ. It shares the immutable map and new
 field handles without copying or flattening their payload. Physical stage-solve
-and linear kernels still need their extended profile adapters; this operation
+and Jacobian preparation still need their extended profile adapters; this operation
 alone does not remove the current flow5 production restriction.
 
 `Domain::Dofs()` exposes the accepted semantic binding read-only. The existing
@@ -200,7 +200,7 @@ scratch partial, and DITR reconstructs failed intermediate workspace before a
 retry. The flow5 checkpoint keeps its existing `history_flow` representation
 through an explicit adapter; extended physical checkpoint sections are pending.
 Layout-independent time equations do not by themselves complete extended
-production BC, PP, linear solves or RANS/species physical validation.
+production BC, PP, physical Jacobian assembly or RANS/species validation.
 
 ## Equation-state finite volume
 
@@ -278,7 +278,7 @@ This is a functional residual path, not a completed extended production Domain.
 It explicitly rejects PP/face fallback, characteristic WBAP, other prepared
 Riemann profiles, a distinct unlimited viscous polynomial, and non-wall/non-
 extrapolate BC producers until connected. The established flow5 path retains
-its existing capabilities. Extended stage/linear/PP/checkpoint/frontend adapters
+its existing capabilities. Extended physical stage/PP/checkpoint/frontend adapters
 and physical RANS/flame acceptance remain separate work.
 
 ## Logical rows in coupled linear algebra
@@ -353,8 +353,39 @@ remain usable after original field handles disappear; a focused worker test
 proves the communication context can already expire on the controller while
 numeric row reads remain valid and retire on a worker.
 
-This does not yet extend production linear orchestration, nonlinear/Jacobian-
-preparation or checkpoint adapters. Matrix dimensions alone do not validate a physical model.
+`EquationLinearSolver` uses the same private controller implementation as
+`LinearSolver`: SGS, left-GMRES with fixed SGS sweeps or local ILU, true residual
+checks, explicit warm guesses and the optional exposed middle SGS exchange.
+The prototype prepares every physical field's canonical halo binding; a grouped
+exchange posts all fields before Core work and waits before dependent work.
+Request slots are allocated at setup and drained by a scoped guard, including
+on exceptions. No request-vector allocation is added per application.
+
+All domain ranks construct and call the driver together with agreed controls.
+`AgreeEquationBinding` checks exact schema, physical field order/width and block
+offsets before the first binding collective. Local row counts and table layouts
+may differ. FV workspace setup uses this same check. The binder receives each
+native physical field in order, reuses the domain's row mapping, and coordinates
+its own failures. Callers keep field handles/layouts and the matrix stable,
+release debug views, and retain MPI owners on the controller. Per-kernel
+`collectiveChecks=false` is caller-ordered eager execution; setup and solve-entry
+checks remain collective. This is synchronous CPU orchestration, not a queued
+CUDA implementation.
+
+```text
+LinearSolver (one field) ------> shared private linear controller <field ops>
+EquationLinearSolver ---------> shared private linear controller <equation ops>
+                                  |-- StateGMRES / fixed SGS or local ILU
+                                  |-- reusable state + per-field halo bindings
+                                  `-- scoped active request slots
+LinearProblemContext -----------> matrix action / ordered SGS / local ILU
+                                  (numeric kernels, no halo orchestration)
+```
+
+The logical driver is exercised by the distributed known-solution matrix fixture
+and the actual conservative chemical-reactor Newton test. Nonlinear/physical
+Jacobian preparation and checkpoint adapters remain separate. Matrix dimensions
+alone do not validate a physical model.
 The source/flux producer must supply the matching logical derivative ordering;
 physical RANS/species acceptance remains separately gated.
 
@@ -387,9 +418,9 @@ that outlives submission.
 
 The source follows the active Euler repair, temperature-floor, units and
 unfiltered-Jacobian conventions described in [shared Physics](Physics.md).
-This operator is available independently; the production FV residual,
-nonlinear/linear adapters, BC/PP and extended checkpoint path are not yet
-connected. Its physical source/implicit-reactor fixtures do not qualify a full
+The limited equation-state FV profile above includes this source. The production
+Domain's extended nonlinear/physical-Jacobian adapters, BC/PP and checkpoint path
+are not yet connected. Its physical source/implicit-reactor fixtures do not qualify a full
 RANS/species spatial solver or the pending NACA/flame studies.
 
 `PreparePrimitiveDerivative` accepts one conservative flow direction and a
@@ -427,7 +458,7 @@ It does no equivalent-gamma substitution.
 The mixture factory supplies the property/schema interface and equation-state
 FV profile above. The production JSON/domain
 capability plan remains flow5-only until its extended RHS, BC, Jacobian,
-stage/linear/PP/checkpoint adapters are connected. Perfect-gas-only methods such
+physical stage/PP/checkpoint adapters are connected. Perfect-gas-only methods such
 as `Gas()` and the old flow-only Jacobian/characteristic producer reject a
 mixture explicitly. They cannot evaluate missing species through default gamma.
 

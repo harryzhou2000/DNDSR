@@ -4,6 +4,7 @@
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/Physics/EquationTransport.hpp"
 #include "Cauchy/State/EquationTimeStepper.hpp"
+#include "Cauchy/Implicit/LinearSolver.hpp"
 #include "Euler/SourceTermContributor.hpp"
 #include <Eigen/LU>
 #include <cstdlib>
@@ -421,7 +422,10 @@ TEST_CASE("Chemical source rejects output reservations and Jacobian aliases befo
 TEST_CASE("Actual conservative chemical sources advance a separate-field implicit reactor toward Cantera")
 {
     Fixture fixture;
-    const A::DofSpace space(1, 0, "homogeneous chemical stage");
+    auto communication = std::make_shared<R::CommunicationContext>(mpi.comm);
+    const A::DofSpace space(communication, 1, 0, "homogeneous chemical stage");
+    const auto route = R::RowTransferPlan::Known(communication, 1, 0,
+                                                 std::vector<std::vector<I>>(mpi.size), std::vector<std::vector<I>>(mpi.size));
     const auto initial = fixture.Point(0);
     constexpr double totalTime = 1e-5;
     const auto set = [&](C::EquationDofs &state, const Eigen::VectorXd &u)
@@ -447,8 +451,19 @@ TEST_CASE("Actual conservative chemical sources advance a separate-field implici
     const auto run = [&](int steps)
     {
         auto accepted = fixture.State(space, 1), trial = fixture.State(space, 2), rates = fixture.State(space, 0);
+        auto linearRHS = C::EquationDofOperations::NewVector(accepted);
         set(accepted, initial);
         R::Array<double> jacobian(R::RowLayout::Dense(1, fixture.components * fixture.components));
+        auto problem = std::make_shared<C::LinearProblemContext>(space, fixture.components, std::vector<std::vector<I>>(1), std::vector<I>{0}, C::DiagonalStorage::Block);
+        C::LinearSolveSettings controls;
+        controls.method = "gmres";
+        controls.preconditioner = "ilu";
+        controls.subspace = 4;
+        controls.maxIterations = 8;
+        controls.relativeTolerance = 1e-12;
+        controls.absoluteTolerance = 1e-15;
+        C::EquationLinearSolver linear(problem, accepted, [&](auto &field)
+                                       { return R::PayloadPlan(route, field.Owned().Layout(), field.Ghost().Layout(), R::ElementSchema::For<double>()).Bind(field.Owned(), field.Ghost()); }, controls);
         C::EquationTimeStepper stepper(accepted, "bdf1");
         const auto evaluate = [&](auto &state, auto &rate, double, int)
         { C::EvaluateChemicalSource(fixture.equation, state, rate, fixture.workers.Acquire()); };
@@ -467,10 +482,25 @@ TEST_CASE("Actual conservative chemical sources advance a separate-field implici
                         for (int i = 0; i < fixture.components; ++i)
                             matrix(i, j) -= scale * view(0, i + fixture.components * j);
                 }
-                const Eigen::VectorXd delta = matrix.partialPivLu().solve(right - mass * u + scale * rate);
+                const Eigen::VectorXd b = right - mass * u + scale * rate;
+                const Eigen::VectorXd expected = matrix.partialPivLu().solve(b);
+                {
+                    auto write = problem->Diagonal().Write();
+                    const auto view = write.View();
+                    for (int j = 0; j < fixture.components; ++j)
+                        for (int i = 0; i < fixture.components; ++i)
+                            view(0, i + fixture.components * j) = matrix(i, j);
+                }
+                set(linearRHS, b);
+                const auto report = linear.Solve(linearRHS);
+                CHECK(report.converged);
+                if (!report.usable)
+                    return false;
+                const Eigen::VectorXd delta = get(linear.Solution());
+                CHECK((delta - expected).lpNorm<Eigen::Infinity>() < 1e-12 * std::max(1., expected.lpNorm<Eigen::Infinity>()));
                 if (!delta.allFinite())
                     return false;
-                set(state, u + delta);
+                C::EquationDofOperations::Axpy(state, 1, linear.Solution());
                 if (delta.lpNorm<Eigen::Infinity>() < 1e-13 * std::max(1., u.lpNorm<Eigen::Infinity>()))
                     return true;
             }

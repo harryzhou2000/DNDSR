@@ -472,10 +472,10 @@ TEST_CASE("Coupled matrix action ILU SGS and left GMRES preserve separate and pe
         else
             core.push_back(iRow);
     }
-    C::LinearProblemContext problem(fixture.space, nv, columns, core, C::DiagonalStorage::Block);
+    auto problem = std::make_shared<C::LinearProblemContext>(fixture.space, nv, columns, core, C::DiagonalStorage::Block);
     {
-        auto d = problem.Diagonal().Write();
-        auto b = problem.OffDiagonal().Write();
+        auto d = problem->Diagonal().Write();
+        auto b = problem->OffDiagonal().Write();
         const auto matrices = A::MakeEigenRowMatrices(d.View<R::TableRows>(), nv, nv);
         for (I iRow = 0; iRow < fixture.rows; ++iRow)
         {
@@ -484,9 +484,9 @@ TEST_CASE("Coupled matrix action ILU SGS and left GMRES preserve separate and pe
                 b.View()(iRow, j) = off(iRow, columns[iRow][j]);
         }
     }
-    problem.PrepareILUStructure(-1, false);
-    problem.FactorizeILU();
-    problem.InvertDiagonal();
+    problem->PrepareILUStructure(-1, false);
+    problem->FactorizeILU();
+    problem->InvertDiagonal();
     for (int layout = 0; layout < 3; ++layout)
     {
         auto state = fixture.Build(schema, layout, layout != 0);
@@ -506,10 +506,10 @@ TEST_CASE("Coupled matrix action ILU SGS and left GMRES preserve separate and pe
         std::vector<R::TransferOperation> operations;
         for (auto &binding : halo)
             operations.push_back(binding.Begin());
-        problem.Apply(state, result, C::LinearRegion::Core);
+        problem->Apply(state, result, C::LinearRegion::Core);
         for (auto &operation : operations)
             operation.Wait();
-        problem.Apply(state, result, C::LinearRegion::HaloDependent);
+        problem->Apply(state, result, C::LinearRegion::HaloDependent);
         {
             const auto read = result.ReadOwned();
             const auto layoutRead = read.ComponentLayout();
@@ -543,7 +543,7 @@ TEST_CASE("Coupled matrix action ILU SGS and left GMRES preserve separate and pe
                 }
             }
         }
-        problem.ApplyILU(localRhs, forward, solved);
+        problem->ApplyILU(localRhs, forward, solved);
         {
             const auto read = solved.ReadOwned();
             const auto view = read.ComponentLayout();
@@ -596,7 +596,7 @@ TEST_CASE("Coupled matrix action ILU SGS and left GMRES preserve separate and pe
             std::vector<R::TransferOperation> active;
             for (auto &binding : oldHalo)
                 active.push_back(binding.Begin());
-            auto sweep = problem.BeginSGS(rhs, old, forward, solved, middle);
+            auto sweep = problem->BeginSGS(rhs, old, forward, solved, middle);
             sweep.Lower(C::LinearRegion::Core);
             for (auto &operation : active)
                 operation.Wait();
@@ -641,59 +641,94 @@ TEST_CASE("Coupled matrix action ILU SGS and left GMRES preserve separate and pe
                 for (I j = 0; j < nv; ++j)
                     CHECK(output(iRow, j) == doctest::Approx(expected(iRow, j)).epsilon(2e-12));
         }
-        C::EquationGMRES gmres(state, 8);
-        struct Input
+        // Exercise the production controller, including every physical field's
+        // canonical halo. The independent dense row oracles above and the known
+        // exact solution remain separate from its matrix/SGS implementation.
+        for (int scenario = 0; scenario < 5; ++scenario)
         {
-            C::EquationDofs *state;
-            std::vector<R::TransferBinding> halo;
-        };
-        std::vector<Input> inputs;
-        gmres.VisitOperatorInputs([&](auto &input)
-                                  {
-            Input value{&input,{}};
-            for (I iField = 0; iField < input.PhysicalFieldNumber(); ++iField) value.halo.push_back(fixture.Bind(input.PhysicalField(iField)));
-            inputs.push_back(std::move(value)); });
-        const auto apply = [&](auto &input, auto &output)
-        {
-            const auto found = std::find_if(inputs.begin(), inputs.end(), [&](const auto &v)
-                                            { return v.state == &input; });
-            REQUIRE(found != inputs.end());
-            std::vector<R::TransferOperation> active;
-            for (auto &binding : found->halo)
-                active.push_back(binding.Begin());
-            problem.Apply(input, output, C::LinearRegion::Core);
-            for (auto &operation : active)
-                operation.Wait();
-            problem.Apply(input, output, C::LinearRegion::HaloDependent);
-        };
-        const auto products = [&](const auto &input, const auto &probes)
-        {
-            auto result = C::EquationDofOperations::LocalProducts(input, probes);
-            MPI_Allreduce(MPI_IN_PLACE, result.data(), int(result.size()), MPI_DOUBLE, MPI_SUM, mpi.comm);
-            return result;
-        };
-        const auto report = gmres.Solve(rhs, apply, [&](const auto &input, auto &output)
-                                        { problem.ApplyILU(input, forward, output); }, products, {40, 1e-12, 1e-10});
-        CHECK(report.converged);
-        CHECK(report.usable);
-        {
-            const auto read = gmres.Solution().ReadOwned();
-            const auto layoutRead = read.ComponentLayout();
-            const auto values = layoutRead.View();
-            for (I iRow = 0; iRow < fixture.rows; ++iRow)
-                for (I j = 0; j < nv; ++j)
-                    CHECK(values(iRow, j) == doctest::Approx(Value(mpi.rank, iRow, j)).epsilon(2e-10));
+            C::LinearSolveSettings controls;
+            controls.method = scenario < 2 ? "sgs" : "gmres";
+            controls.preconditioner = scenario < 3 ? "sgs" : "ilu";
+            controls.sgsSweeps = 2;
+            controls.exchangeBetweenSweeps = scenario == 1;
+            controls.iluFill = scenario == 4 ? -1 : 0;
+            controls.subspace = 8;
+            controls.maxIterations = 40;
+            controls.relativeTolerance = 1e-12;
+            controls.absoluteTolerance = 1e-10;
+            C::EquationLinearSolver solver(problem, state, [&](auto &field)
+                                           { return fixture.Bind(field); },
+                                           controls, {scenario != 0 && scenario != 3, scenario != 2});
+            const auto report = solver.Solve(rhs);
+            CHECK(report.converged);
+            CHECK(report.usable);
+            CHECK(report.iterations > 0);
+            {
+                const auto read = solver.Solution().ReadOwned();
+                const auto mapping = read.ComponentLayout();
+                const auto values = mapping.View();
+                for (I iRow = 0; iRow < fixture.rows; ++iRow)
+                    for (I j = 0; j < nv; ++j)
+                        CHECK(values(iRow, j) == doctest::Approx(Value(mpi.rank, iRow, j)).epsilon(2e-10));
+            }
+            if (scenario == 2)
+            {
+                const auto again = solver.Solve(rhs);
+                CHECK(again.converged);
+                CHECK(again.iterations == report.iterations);
+                const auto warm = solver.Solve(rhs, &solver.Solution());
+                CHECK(warm.converged);
+                CHECK(warm.iterations == 0);
+            }
         }
         if (mpi.rank == 0)
         {
             const auto generation = forward.PhysicalField(0).Owned().Version();
             const auto outputGeneration = solved.PhysicalField(0).Owned().Version();
             auto pin = solved.PhysicalField(solved.PhysicalFieldNumber() - 1).Owned().Read();
-            CHECK_THROWS(problem.ApplyILU(localRhs, forward, solved));
+            CHECK_THROWS(problem->ApplyILU(localRhs, forward, solved));
             CHECK(forward.PhysicalField(0).Owned().Version() == generation);
             CHECK(solved.PhysicalField(0).Owned().Version() == outputGeneration);
         }
     }
+}
+TEST_CASE("Logical linear driver rejects inconsistent physical binding before any halo setup")
+{
+    Fixture fixture;
+    const auto schema = Schema(5);
+    constexpr I nv = 21;
+    std::vector<std::vector<I>> columns(size_t(fixture.rows));
+    std::vector<I> core(size_t(fixture.rows));
+    std::iota(core.begin(), core.end(), I(0));
+    auto problem = std::make_shared<C::LinearProblemContext>(fixture.space, nv, columns, core, C::DiagonalStorage::Entries);
+    {
+        auto write = problem->Diagonal().Write();
+        for (I iRow = 0; iRow < fixture.rows; ++iRow)
+            for (I j = 0; j < nv; ++j)
+                write.View()(iRow, j) = 1;
+    }
+    int bindings = 0;
+    const auto bind = [&](auto &field)
+    { ++bindings; return fixture.Bind(field); };
+    if (mpi.size > 1)
+    {
+        auto inconsistent = fixture.Build(schema, mpi.rank % 3, mpi.rank == 0);
+        CHECK_THROWS(C::EquationLinearSolver(problem, inconsistent, bind));
+        CHECK(bindings == 0);
+    }
+    auto state = fixture.Build(schema, mpi.rank % 3, true);
+    Fill(state);
+    C::EquationLinearSolver solver(problem, state, bind);
+    // One critical runtime conflict: the last field is busy on one rank.
+    // Entry rejection must leave every output reusable and unchanged.
+    std::optional<R::Array<double>::WriteLease> writer;
+    if (mpi.rank == 0)
+        writer.emplace(state.PhysicalField(state.PhysicalFieldNumber() - 1).Owned().Write());
+    const auto version = solver.Solution().PhysicalField(0).Owned().Version();
+    CHECK_THROWS(solver.Solve(state));
+    CHECK(solver.Solution().PhysicalField(0).Owned().Version() == version);
+    writer.reset();
+    CHECK(solver.Solve(state).converged);
 }
 TEST_CASE("Logical scalar-diagonal SGS handles all blocks and fails an abandoned partial output")
 {

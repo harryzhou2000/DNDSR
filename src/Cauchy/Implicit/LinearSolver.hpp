@@ -51,4 +51,33 @@ namespace DNDS::Cauchy
         /// report; only converged or finite iteration-limited results are usable.
         const Field &Solution() const;
     };
+
+    /// The same domain-local CPU solve policy on a complete logical equation
+    /// state. Flow/RANS/species may share an array or occupy separate fields in
+    /// any supported table layout. Dense blocks couple every logical component;
+    /// no full-state repacking or implicit device fallback occurs.
+    ///
+    /// All domain ranks construct/call together. The prototype's physical
+    /// grouping and schema must agree across ranks before bindHalo is invoked.
+    /// The binder prepares each physical field in that order using the domain's
+    /// shared row mapping; it must coordinate its own distributed failures.
+    /// Callers serialize access, retain MPI owners on the controller, and release
+    /// views before Solve. Results and fixed-preconditioner rules match
+    /// LinearSolver. Numerical scopes and transfer requests remain separate.
+    class EquationLinearSolver
+    {
+        struct Data;
+        std::shared_ptr<Data> _data;
+
+    public:
+        using HaloBinder = LinearSolver::HaloBinder;
+        EquationLinearSolver(std::shared_ptr<LinearProblemContext> problem, const EquationDofs &prototype,
+                             const HaloBinder &bindHalo, LinearSolveSettings settings = {}, LinearExecution execution = {});
+        EquationLinearSolver(const EquationLinearSolver &) = delete;
+        EquationLinearSolver &operator=(const EquationLinearSolver &) = delete;
+        EquationLinearSolver(EquationLinearSolver &&) noexcept = default;
+        EquationLinearSolver &operator=(EquationLinearSolver &&) noexcept = default;
+        Linear::LinearIterationReport Solve(const EquationDofs &rhs, const EquationDofs *initialGuess = nullptr);
+        const EquationDofs &Solution() const;
+    };
 }
