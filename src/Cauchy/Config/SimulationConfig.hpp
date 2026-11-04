@@ -53,6 +53,7 @@ namespace DNDS::Cauchy
         int hostThreads = 0;
         bool checkAccess = true;
         bool overlap = true;
+        bool haloFreshnessChecks = false;
         DNDS_DECLARE_CONFIG(ExecutionSettings)
         {
             DNDS_FIELD(device, "Required numerical backend; no implicit fallback");
@@ -61,6 +62,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(hostThreads, "CPU worker count; zero means inline execution");
             DNDS_FIELD(checkAccess, "Validate declared scheduled accesses at submission");
             DNDS_FIELD(overlap, "Overlap input halo exchanges with owned-only core work; false waits then runs unsplit kernels");
+            DNDS_FIELD(haloFreshnessChecks, "Extra collective halo-publication audits; default off, also disabled by implicit.collectiveChecks=false");
         }
     };
     struct MeshSettings
@@ -289,7 +291,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(pseudoGrowth, "CFL growth factor after each nonlinear correction");
             DNDS_FIELD(relaxation, "Multiplier on each computed correction in (0,1]");
             DNDS_FIELD(roeDissipation, "Use full equation-owned characteristic dissipation; requires block diagonal");
-            DNDS_FIELD(collectiveChecks, "Coordinate local failures between implicit kernels; false selects caller-ordered eager execution");
+            DNDS_FIELD(collectiveChecks, "Coordinate local failures between implicit kernels; false also disables optional halo freshness audits, retaining mandatory transfer preflight");
             DNDS_FIELD(requireConvergedReconstruction, "Require the requested VR tolerance as well as the mean equation target; false preserves Euler-style fixed-sweep acceptance");
             DNDS_FIELD(rejectUnconvergedStages, "Reject a finite admissible stage or DITR outer solve at its iteration cap; false advances the final iterate like Euler while retaining an unconverged report");
             config.field_section(&T::linear, "linear", "Linear solve controls");
@@ -312,6 +314,8 @@ namespace DNDS::Cauchy
         real initialTemperature = 0;
         FlowProfileSettings initialProfile;
         std::map<std::string, BoundarySettings> boundaries;
+        /// Extra halo audits are opt-in and respect the umbrella check switch.
+        bool CheckHaloFreshness() const { return execution.haloFreshnessChecks && implicit.collectiveChecks; }
         DNDS_DECLARE_CONFIG(DomainSettings)
         {
             config.field_section(&T::equation, "equation", "Equation and constitutive laws");

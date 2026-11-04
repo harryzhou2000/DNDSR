@@ -564,6 +564,19 @@ TEST_CASE("Combined payload and binding preflight reject rank-local mismatches b
     // A rejected preflight must not retain the matching tag or any leases.
     payload.Bind(source, destination, TransferTransport::Direct, {TransferMode::Transient, context, 19}).Begin().Wait();
     CHECK(destination.Read().At(0, 4) == ((rank + 1) % size) * 100 + 24);
+    // Application-level binding checks join the existing transport preflight.
+    // One rejecting rank must stop every peer before any request is posted;
+    // both caller-ordered and checked entry points remain reusable afterward.
+    auto binding = payload.Bind(source, destination, TransferTransport::Direct, {TransferMode::Transient, context, 19});
+    EagerEngine engine(0, std::make_shared<AccessTrackingContext>());
+    const auto stream = engine.CreateCPUStream();
+    CHECK_THROWS(binding.BeginScheduled(stream.Context(), rank != 0));
+    binding.BeginScheduled(stream.Context()).Wait();
+    CHECK_THROWS(binding.BeginChecked(stream, rank != 0));
+    binding.BeginChecked(stream).Wait();
+    CHECK(source.Storage().IsIdle());
+    CHECK(destination.Storage().IsIdle());
+    CHECK(destination.Read().At(0, 4) == ((rank + 1) % size) * 100 + 24);
     if (rank == 0)
     {
         auto mutation = versions.BeginMutation(Change::Distribution);

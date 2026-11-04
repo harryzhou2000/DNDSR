@@ -849,16 +849,16 @@ namespace DNDS::Runtime
     {
         return Start(context, false);
     }
-    TransferOperation TransferBinding::BeginScheduled(ExecutionContext context) const
+    TransferOperation TransferBinding::BeginScheduled(ExecutionContext context, bool callerValid) const
     {
-        return Start(context, true);
+        return Start(context, true, {}, 0, callerValid);
     }
-    TransferOperation TransferBinding::BeginChecked(const ExecutionStream &stream) const
+    TransferOperation TransferBinding::BeginChecked(const ExecutionStream &stream, bool callerValid) const
     {
         DNDS_check_throw_info(_state, "BeginChecked is an MPI bridge; native providers use Enqueue");
         auto tracking = stream._tracking;
         uint64_t lane = 0;
-        bool valid = true;
+        bool valid = callerValid;
         try
         {
             DNDS_check_throw_info(tracking, "BeginChecked needs a checked execution stream");
@@ -891,16 +891,19 @@ namespace DNDS::Runtime
         DNDS_check_throw_info(_provider, "MPI transfer requires explicit host progress; Enqueue needs a stream-native provider");
         _provider->Enqueue(engine, stream);
     }
-    TransferOperation TransferBinding::Start(ExecutionContext context, bool scheduled, std::shared_ptr<AccessTrackingContext> tracking, uint64_t lane) const
+    TransferOperation TransferBinding::Start(ExecutionContext context, bool scheduled, std::shared_ptr<AccessTrackingContext> tracking, uint64_t lane, bool callerValid) const
     {
         if (_provider)
+        {
+            DNDS_check_throw_info(callerValid, "native transfer provider requires caller-coordinated preflight");
             return TransferOperation(_provider->Begin(context, scheduled));
+        }
         auto op = std::make_unique<TransferOperation::State>();
         op->binding = _state;
         op->context = context;
         auto begin = [&]
         {
-            bool valid = _state->plan->route.Valid();
+            bool valid = callerValid && _state->plan->route.Valid();
             {
                 std::lock_guard<std::mutex> lock(_state->mutex);
                 valid = valid && !_state->active;

@@ -1540,6 +1540,7 @@ TEST_CASE("Coupled mixture nonlinear stage recovers a manufactured target throug
         settings.implicit.diagonal = "block";
         settings.implicit.jacobianAction = scenario ? "semiMatrixFree" : "assembled";
         settings.implicit.collectiveChecks = scenario;
+        settings.execution.haloFreshnessChecks = true; // Umbrella off/on both run the same halo protocol.
         settings.execution.overlap = scenario;
         C::FiniteVolume fv(mesh, settings, mixture.equation);
         auto target = mixture.State(fv.Metrics().Space(), 0), state = mixture.State(fv.Metrics().Space(), scenario + 1);

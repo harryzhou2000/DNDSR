@@ -1103,6 +1103,13 @@ state version or a solver-wide physical-time certificate. External users may
 supply a richer equality-comparable step/trial/stage context. All ranks must
 agree its meaning and follow a consistent schedule. No local version comparison
 may independently skip an exchange, particularly after a remote-only update.
-With collectiveChecks disabled, the caller coordinates preflight failures as in
-the existing eager protocol. The companion rejects CUDA until a stream-ready
+Extra halo audits are controlled by `execution.haloFreshnessChecks` (default
+`false`). They are also disabled by `implicit.collectiveChecks=false`, even
+when explicitly requested. This gates the extra Begin diagnostic collective
+and the post-exchange freshness audits; no new freshness reduction occurs by
+default. Mandatory transfer preflights remain: the companion folds its binding
+validity into the existing MPI check, so one invalid rank cannot leave peers
+posting requests. Completion still publishes the local version record. As with
+other eager operations, callers remain responsible for common scheduling and
+producer readiness. The companion rejects CUDA until a stream-ready
 publication protocol is implemented. It introduces no output-halo refresh.

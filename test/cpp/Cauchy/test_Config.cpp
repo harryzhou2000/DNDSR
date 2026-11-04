@@ -3,6 +3,18 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("Halo freshness audits are opt-in and the collective check switch overrides them")
+{
+    const auto defaults = C::SimulationConfig::Resolve(C::Json::object(), 1);
+    CHECK_FALSE(defaults.Domains()[0].settings.execution.haloFreshnessChecks);
+    CHECK_FALSE(defaults.Domains()[0].settings.CheckHaloFreshness());
+    C::Json input{{"defaults", {{"execution", {{"haloFreshnessChecks", true}}}}}};
+    CHECK(C::SimulationConfig::Resolve(input, 1).Domains()[0].settings.CheckHaloFreshness());
+    input["defaults"]["implicit"]["collectiveChecks"] = false;
+    const auto disabled = C::SimulationConfig::Resolve(input, 1);
+    CHECK(disabled.Domains()[0].settings.execution.haloFreshnessChecks);
+    CHECK_FALSE(disabled.Domains()[0].settings.CheckHaloFreshness());
+}
 TEST_CASE("Interface capability checks honor the steady BDF1 override")
 {
     C::Json input{{"domains", C::Json::array({{{"name", "a"}}, {{"name", "b"}}})},

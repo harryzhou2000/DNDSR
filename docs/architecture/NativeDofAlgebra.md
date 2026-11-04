@@ -179,8 +179,9 @@ The caller agrees epoch meaning and exchange order across ranks, serializes the
 companion on an MPI-permitted controller, and retains the context until before
 MPI finalization. A checked CPU stream waits for its producer prefix;
 caller-ordered eager mode requires CPU producers already complete. Begin's
-optional collective preflight can be disabled only when the caller coordinates
-those errors. CUDA is explicitly unsupported here until stream-ready receipt
+extra diagnostic collective defaults off. Binding validity is folded into the
+existing MPI transfer preflight even with that diagnostic disabled; this adds
+no reduction. CUDA is explicitly unsupported here until stream-ready receipt
 semantics are provided. Destruction may drain MPI; do not retire these owners
 on arbitrary worker/device callbacks.
 

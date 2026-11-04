@@ -272,7 +272,7 @@ namespace DNDS::Runtime
         TransferBinding(std::shared_ptr<const PayloadPlan::State> plan, Buffer source, Buffer destination,
                         std::shared_ptr<const Reducer> reducer, TransferTransport transport, TransferOptions options,
                         bool layoutsValid = true);
-        TransferOperation Start(ExecutionContext context, bool scheduled, std::shared_ptr<AccessTrackingContext> tracking = {}, uint64_t lane = 0) const;
+        TransferOperation Start(ExecutionContext context, bool scheduled, std::shared_ptr<AccessTrackingContext> tracking = {}, uint64_t lane = 0, bool callerValid = true) const;
 
     public:
         /// One active Begin operation per binding. Default remains isolated persistent
@@ -290,7 +290,9 @@ namespace DNDS::Runtime
         /// DevicePacked queues pack in this context and posts receives; call
         /// Test/Wait on the MPI-permitted thread to advance sends/unpack. Its
         /// CUDA inputs may have prior scheduled producers on this same stream.
-        TransferOperation BeginScheduled(ExecutionContext context = ExecutionContext::Host()) const;
+        /// callerValid joins the existing MPI preflight, without another
+        /// collective. Native providers require caller-coordinated validation.
+        TransferOperation BeginScheduled(ExecutionContext context = ExecutionContext::Host(), bool callerValid = true) const;
         /// MPI bridge for a checked stream. Captures its producer frontier but
         /// gives MPI a distinct lane: later stream commands do not implicitly
         /// follow outstanding requests. CPU producers are observed on the host;
@@ -298,7 +300,8 @@ namespace DNDS::Runtime
         /// Full Wait/Test completion makes checked consumers/reuse eligible.
         /// All ranks call this collectively, including rank-local check errors.
         /// Stream-native providers use Enqueue instead.
-        TransferOperation BeginChecked(const ExecutionStream &stream) const;
+        /// callerValid joins the existing checked-stream MPI preflight.
+        TransferOperation BeginChecked(const ExecutionStream &stream, bool callerValid = true) const;
         /// Stream-native providers enqueue pack/transfer/unpack without host
         /// completion waits or per-exchange MPI preflight. Caller supplies input
         /// readiness and joins consumers using stream events. Private scratch

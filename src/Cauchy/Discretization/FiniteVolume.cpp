@@ -698,8 +698,10 @@ namespace DNDS::Cauchy
             Metrics().ValidateField(state,5);
             DNDS_check_throw_info(work.owner==_data.get()&&state.Owned().SharedStorage()==work.ownedStorage&&
                                   state.Ghost().SharedStorage()==work.ghostStorage,"sampling workspace/state binding differs"); });
-        work.meanHalo.Begin(++work.meanEpoch, engine, stream, _data->settings.implicit.collectiveChecks).Wait();
-        work.meanHalo.RequireCurrent(state, work.meanEpoch);
+        work.meanHalo.Begin(++work.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()).Wait();
+        if (_data->settings.CheckHaloFreshness())
+            MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                            { work.meanHalo.RequireCurrent(state, work.meanEpoch); });
         auto operation = engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream.Context());
         operation.Wait();
     }
@@ -782,7 +784,7 @@ namespace DNDS::Cauchy
         ++work.meanEpoch;
         if (overlap)
         {
-            meanOperation.emplace(work.meanHalo.Begin(work.meanEpoch, engine, stream, _data->settings.implicit.collectiveChecks));
+            meanOperation.emplace(work.meanHalo.Begin(work.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));
         }
         // Explicit quadrature values keep BC policy out of CFV kernels. All
         // stages refresh these values from their own current mean state. They
@@ -927,10 +929,11 @@ namespace DNDS::Cauchy
         if (meanOperation)
             meanOperation->Wait();
         else
-            work.meanHalo.Begin(work.meanEpoch, engine, stream, _data->settings.implicit.collectiveChecks).Wait();
+            work.meanHalo.Begin(work.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()).Wait();
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
                         {
-            work.meanHalo.RequireCurrent(state, work.meanEpoch);
+            if (_data->settings.CheckHaloFreshness())
+                work.meanHalo.RequireCurrent(state, work.meanEpoch);
             if (auxiliaryPreparation)
             {
                 auto *preparation = &*auxiliaryPreparation;
@@ -1266,14 +1269,15 @@ namespace DNDS::Cauchy
             if (work.incoming) ValidateBoundaryInputs(*work.incoming, time);
             preparation.emplace(BeginAuxValues(state, work.auxiliary, time, work.incoming ? &*work.incoming : nullptr)); });
         JoinStreamOnException join(stream);
-        auto transfer = work.meanHalo.Begin(++work.meanEpoch, engine, stream, _data->settings.implicit.collectiveChecks);
+        auto transfer = work.meanHalo.Begin(++work.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness());
         if (_data->settings.execution.overlap)
             engine.Submit(stream, [&](auto)
                           { preparation->Apply(CFV::ReconstructionRegion::Core); });
         transfer.Wait();
         MPI::LocalStage(mpi, [&]
                         {
-            work.meanHalo.RequireCurrent(state, work.meanEpoch);
+            if (_data->settings.CheckHaloFreshness())
+                work.meanHalo.RequireCurrent(state, work.meanEpoch);
             engine.Submit(stream, [&](auto)
             {
                 preparation->Apply(_data->settings.execution.overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);

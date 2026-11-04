@@ -497,7 +497,7 @@ namespace DNDS::Cauchy
         transfers.reserve(work.meanHalo.size());
         ++work.meanEpoch;
         for (auto &halo : work.meanHalo)
-            transfers.push_back(halo.Begin(work.meanEpoch, engine, stream, _data->settings.implicit.collectiveChecks));
+            transfers.push_back(halo.Begin(work.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));
         if (_data->settings.execution.overlap)
             engine.Submit(stream, [&](auto)
                           { preparation->Apply(CFV::ReconstructionRegion::Core); });
@@ -505,8 +505,9 @@ namespace DNDS::Cauchy
             transfer.Wait();
         MPI::LocalStage(mpi, [&]
                         {
-            for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
-                work.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), work.meanEpoch);
+            if (_data->settings.CheckHaloFreshness())
+                for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+                    work.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), work.meanEpoch);
             engine.Submit(stream, [&](auto)
             {
                 preparation->Apply(_data->settings.execution.overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
@@ -719,7 +720,7 @@ namespace DNDS::Cauchy
         meanOperations.reserve(work.meanHalo.size());
         ++work.meanEpoch;
         for (auto &halo : work.meanHalo)
-            meanOperations.push_back(halo.Begin(work.meanEpoch, engine, stream, _data->settings.implicit.collectiveChecks));
+            meanOperations.push_back(halo.Begin(work.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));
         std::vector<R::TransferOperation> firstCoefficients;
         const auto &numerics = _data->settings.numerics;
         const bool variational = numerics.reconstruction == "variational";
@@ -735,8 +736,9 @@ namespace DNDS::Cauchy
             submit([&]
                    { sweep(CFV::ReconstructionRegion::Core); });
         wait(meanOperations);
-        local([&]
-              {
+        if (_data->settings.CheckHaloFreshness())
+            local([&]
+                  {
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                 work.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), work.meanEpoch); });
         if (numerics.reconstruction == "gradient")
