@@ -3401,6 +3401,34 @@ namespace DNDS::Euler
             // alter uRec if necessary
             int curOrder = vfv->GetCellOrder(iCell);
             Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed> uRecBase = uRec[iCell];
+            Eigen::Matrix<real, Eigen::Dynamic, 2> scalarRec;
+            if constexpr (Traits::has2EQ)
+                scalarRec = uRec[iCell](EigenAll, {I4 + 1, I4 + 2});
+            auto limitTwoEquationScalars = [&]()
+            {
+                if constexpr (Traits::has2EQ)
+                {
+                    // Flow fallback/order reduction must not change turbulence
+                    // gradients. Bound the original scalar reconstruction about
+                    // its own mean, including means below the farfield floor.
+                    uRec[iCell](EigenAll, {I4 + 1, I4 + 2}) = scalarRec;
+                    const auto increment = (quadBase * scalarRec).eval();
+                    real theta = 1;
+                    for (int scalar = 0; scalar < 2; ++scalar)
+                    {
+                        const int variable = I4 + 1 + scalar;
+                        const real mean = u[iCell](variable);
+                        const real floor = std::min(smallReal * settings.refUPrim(variable),
+                                                    std::max(real(0), real(0.5) * mean));
+                        for (int q = 0; q < increment.rows(); ++q)
+                            if (mean + increment(q, scalar) < floor && increment(q, scalar) < 0)
+                                theta = std::min(theta, (mean - floor) / (-increment(q, scalar) + verySmallReal));
+                    }
+                    DNDS_assert(theta >= 0 && theta <= 1 && std::isfinite(theta));
+                    if (theta < 1)
+                        uRec[iCell](EigenAll, {I4 + 1, I4 + 2}) *= real(0.9) * theta;
+                }
+            };
             Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed> recBase; // * has to call checkRecBaseGood() to hold valid value
             auto checkRecBaseGood = [&]() -> bool
             {
@@ -3409,9 +3437,6 @@ namespace DNDS::Euler
                     return false;
                 if constexpr (Traits::hasSA)
                     if (recBase(EigenAll, I4 + 1).minCoeff() < rhoEps)
-                        return false;
-                if constexpr (Traits::has2EQ)
-                    if (recBase(EigenAll, I4 + 1).minCoeff() < rhoEps || recBase(EigenAll, I4 + 2).minCoeff() < rhoEps)
                         return false;
                 Eigen::Vector<real, Eigen::Dynamic> ek =
                     0.5 * (recBase(EigenAll, Seq123).array().square().rowwise().sum()) / recBase(EigenAll, 0).array();
@@ -3440,6 +3465,7 @@ namespace DNDS::Euler
             if (checkRecBaseGood())
             {
                 uRecBeta[iCell](0) = 1;
+                limitTwoEquationScalars();
                 continue; //! early exit, reconstruction is good it self
             }
             if (flag & EvaluateURecBeta_COMPRESS_TO_MEAN)
@@ -3477,29 +3503,6 @@ namespace DNDS::Euler
                                 ;
             }
 #endif
-            if constexpr (Traits::has2EQ)
-            {
-                real thetaC = 1;
-                static real v1Eps = smallReal * settings.refUPrim(I4 + 1);
-                static real v2Eps = smallReal * settings.refUPrim(I4 + 2);
-                Eigen::Vector<real, Eigen::Dynamic> v1S = recInc(EigenAll, I4 + 1) + recBase(EigenAll, I4 + 1);
-                Eigen::Vector<real, Eigen::Dynamic> v2S = recInc(EigenAll, I4 + 2) + recBase(EigenAll, I4 + 2);
-                real v1Min = v1S.minCoeff();
-                real v2Min = v2S.minCoeff();
-                if (v1Min < v1Eps)
-                    for (int iG = 0; iG < rhoS.size(); iG++)
-                        if (recInc(iG, I4 + 1) < 0) // negative increment
-                            thetaC = std::min(thetaC, (recBase(iG, I4 + 1) - v1Eps) / (-recInc(iG, I4 + 1) + verySmallReal));
-                if (v2Min < v2Eps)
-                    for (int iG = 0; iG < rhoS.size(); iG++)
-                        if (recInc(iG, I4 + 2) < 0) // negative increment
-                            thetaC = std::min(thetaC, (recBase(iG, I4 + 2) - v2Eps) / (-recInc(iG, I4 + 2) + verySmallReal));
-                // theta1 = std::min(theta1, thetaC);
-                if (thetaC < 1) // 2eq's pp not disturbing main flow
-                {
-                    uRec[iCell](EigenAll, {I4 + 1, I4 + 2}) *= thetaC * 0.9;
-                }
-            }
 
             // only compresses main flow part and rhoY_i species, avoiding RANS part
             recInc(EigenAll, Seq01234) *= theta1;
@@ -3597,6 +3600,8 @@ namespace DNDS::Euler
                     }
                 }
             }
+
+            limitTwoEquationScalars();
 
             // validation:
             recInc = quadBase * uRec[iCell];
