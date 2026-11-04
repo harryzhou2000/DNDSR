@@ -124,8 +124,8 @@ namespace DNDS::Cauchy
     /// the historical flow5 defaults for a larger system. Every component's
     /// norm is reported. Storage grouping/layout may differ between operands.
     ///
-    /// Initial equation profile matches EquationWorkspace: no Roe or p-FAS
-    /// fallback. Missing profiles reject at construction. A capped finite solve
+    /// The equation profile matches EquationWorkspace: no Roe fallback.
+    /// Polynomial FAS uses CorrectOnce as its bounded smoother. A capped finite solve
     /// remains unconverged and leaves acceptance to the time orchestrator.
     /// Callers serialize bound state/workspace/engine access, coordinate all
     /// domain ranks and keep owners on the controller through worker joins.
@@ -149,7 +149,7 @@ namespace DNDS::Cauchy
         EquationNonlinearIterationReport CorrectOnce(EquationDofs &state, const EquationDofs &source, real mass, real rhsScale, real time,
                                                      int stage = 0, NonlinearSolveControl control = {}, const EquationDofs *cachedRate = nullptr);
         /// Same normalized stage operator as the field adapter, without
-        /// changing owned means. Does not imply a connected p-FAS frontend.
+        /// changing owned means. Polynomial FAS uses this same operator.
         void EvaluateEquation(EquationDofs &state, EquationDofs &value, real mass, real rhsScale, real time);
         /// Caller agrees scale/selection and releases conflicting views before
         /// entry. Candidate EOS/raw-species checks precede any state mutation.
@@ -163,5 +163,6 @@ namespace DNDS::Cauchy
                                                const std::vector<index> &updateComponents = {});
         std::pair<int, real> ReconstructionStats() const;
         bool ReconstructionConverged() const;
+        real ReconstructionTolerance() const;
     };
 }

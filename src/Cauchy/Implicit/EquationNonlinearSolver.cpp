@@ -146,8 +146,8 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(residualSelection.All() || residualSelection.Indices().back() < state.ComponentNumber(), "equation residual selection exceeds its dimension");
             implicit.ValidateComponents(state.ComponentNumber());
             settings.numerics.ValidatePositivity();
-            DNDS_check_throw_info(!implicit.roeDissipation && implicit.multigrid.levels == 0,
-                                  "equation nonlinear Roe/pMG profile is not connected yet");
+            DNDS_check_throw_info(!implicit.roeDissipation,
+                                  "equation nonlinear Roe profile is not connected yet");
             DNDS_check_throw_info(!implicit.requireConvergedReconstruction || settings.numerics.reconstruction != "variational" || settings.numerics.reconstructionTolerance > 0,
                                   "strict implicit VR acceptance requires a positive reconstructionTolerance");
             DNDS_check_throw_info(workspace && stream.Context().device == R::Device::Host(), "equation implicit stage needs a CPU workspace and stream");
@@ -374,6 +374,10 @@ namespace DNDS::Cauchy
     bool EquationNonlinearSolver::ReconstructionConverged() const
     {
         return _data->reconstructionTolerance <= 0 || ReconstructionStats().second <= _data->reconstructionTolerance;
+    }
+    real EquationNonlinearSolver::ReconstructionTolerance() const
+    {
+        return _data->reconstructionTolerance;
     }
     std::pair<index, real> EquationNonlinearSolver::ApplyCorrection(EquationDofs &state, const EquationDofs &increment, real scale,
                                                                     const std::vector<index> &updateComponents)

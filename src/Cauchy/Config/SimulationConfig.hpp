@@ -284,7 +284,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(postSmooth, "Bounded nonlinear corrections after prolongation");
             DNDS_FIELD(coarseSmooth, "Bounded nonlinear corrections at the coarsest level");
             DNDS_FIELD(damping, "Physical coarse-correction multiplier in (0,1]");
-            DNDS_FIELD(updateComponents, "Distinct flow5 indices updated by pMG; empty updates all. Other means remain frozen; finest convergence still uses residualComponents");
+            DNDS_FIELD(updateComponents, "Distinct logical equation indices updated by pMG; empty updates all. Other means remain frozen; finest convergence still uses residualComponents");
         }
     };
     struct ImplicitSettings

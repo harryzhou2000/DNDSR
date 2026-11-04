@@ -13,7 +13,7 @@ Current CPU scope (November 5): configured flow5, SA/Wilcox/SST/realizable-k-eps
 and optional ideal-mixture chemistry share logical DOF bindings, implicit time
 equations, native archives and observation. Extended profiles use Rusanov,
 polynomial viscosity, component WBAP and Euler-compatible implicit/rec PP;
-missing characteristic/LVR/p-FAS/interface and explicit-PP adapters
+missing characteristic/LVR/interface and explicit-PP adapters
 fail explicitly. QCR and the existing SA/SST DES formulas are connected below.
 The short flame comparison is a converged discrete sanity run; the NACA pair
 is capped and does not establish converged aerodynamics. CUDA remains deferred.
@@ -163,8 +163,9 @@ The Domain frontend uses the semantic binding. Perfect gas retains its establish
 path. Configured ideal mixtures use separate flow/species arrays, whole-equation
 FV/implicit stages, dynamic reports and full-state publication. Native checkpoint
 and output preserve all logical components; the independent mean trial also
-supports whole-equation physical-dt PP. Extended p-FAS, interface packets and
-explicit flux blending still require adapters and reject rather than processing
+supports whole-equation physical-dt PP. Polynomial FAS preserves all logical
+blocks through the shared hierarchy. Extended interface packets and explicit
+flux blending still require adapters and reject rather than processing
 flow5 alone. `CoupledField()` explicitly
 refuses split or permuted physical segments instead of silently flattening them. Generic mock
 tests exercise 17/21-component coupled BDF/block solves and separate physical

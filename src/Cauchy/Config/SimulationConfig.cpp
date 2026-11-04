@@ -326,7 +326,7 @@ namespace DNDS::Cauchy
                     "extended equation flux preparation/face fallback");
             require(s.numerics.limiter == "none" || (s.numerics.limiter == "WBAP" && !s.numerics.characteristicLimiter), "extended equation limiter");
             require(s.equation.transport != "NewtonianFourier" || s.numerics.viscousGradient == "polynomial", "extended equation viscous gradient");
-            require(!s.implicit.multigrid.levels && !s.implicit.roeDissipation, "extended equation p-FAS/Roe Jacobian");
+            require(!s.implicit.roeDissipation, "extended equation Roe Jacobian");
         }
         require(s.initialField.Empty() || s.initialProfile.kind == "constant", "spatial overrides require a constant background profile");
         require(Riemann::RiemannFlux::Available(s.numerics.flux), "numerical flux " + s.numerics.flux);

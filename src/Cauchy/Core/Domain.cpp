@@ -431,7 +431,8 @@ namespace DNDS::Cauchy
             const auto &equation = *_stageEquation;
             if (equation.implicit)
             {
-                const bool accepted = _equationImplicit ? RecordImplicitStage(_equationImplicit->Solve(_trial, *equation.source, equation.mass, equation.rhsScale, equation.time, equation.stage))
+                const bool accepted = _equationImplicit ? RecordImplicitStage(_multigrid ? _multigrid->Solve(*equation.source, equation.mass, equation.rhsScale, equation.time, equation.stage)
+                                                                                         : _equationImplicit->Solve(_trial, *equation.source, equation.mass, equation.rhsScale, equation.time, equation.stage))
                                                         : RecordImplicitStage(_multigrid ? _multigrid->Solve(equation.source->CoupledField(), equation.mass, equation.rhsScale, equation.time, equation.stage)
                                                                                          : _implicit->Solve(_trial.CoupledField(), equation.source->CoupledField(), equation.mass, equation.rhsScale, equation.time, equation.stage));
                 DNDS_check_throw_info(accepted, "coordinated implicit stage reached its correction cap");

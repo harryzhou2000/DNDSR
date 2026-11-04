@@ -239,8 +239,8 @@ Every operator uses `mass*U-rhsScale*R(U)/V`. Consequently all three same-cell
 maps are identity in this normalized convention; an integrated-residual or
 different-mesh hierarchy must supply its own transfer. Cell identity/order is
 checked during setup. Means, fine/coarse matrices and mutable auxiliary/gradient
-buffers are distinct. Cauchy defaults to the whole coupled flow5 block.
-`implicit.multigrid.updateComponents` optionally selects distinct flow5 indices
+buffers are distinct. Cauchy defaults to the whole logical equation state.
+`implicit.multigrid.updateComponents` optionally selects distinct logical indices
 for every level's smoothing and correction; empty selects all. Other means stay
 bit-identical. Generic FAS supports the same contract for arbitrary component
 widths through explicit principal-system smoother callbacks.
@@ -252,10 +252,31 @@ Newton solve followed by masking. The full residual is formed and measured
 before its solve RHS is projected. Euler RHS/dTau PP uses that projected RHS,
 and increment/final PP receives a projected increment. A physical repair that
 would change a frozen component is rejected before publishing means.
-The original finest equation and all five norm components remain observable.
+The original finest equation and all component norms remain observable.
 `implicit.residualComponents` remains the independent convergence selection:
-with its default full-state setting, a nonzero frozen-equation residual prevents
+its default selects density; explicitly selecting frozen equations may prevent
 acceptance even if all updated equations have converged.
+
+The field and `EquationDofs` overloads share one hierarchy implementation and
+the generic `StateFASCycle` recursion. Coarse logical states preserve the exact
+block-to-physical-field mapping and each parent's AoS/SoA/AoSoA pitch. Their
+distinct row-space associations are constructed explicitly; only the validated
+identity transfer crosses level spaces. Coarse means are initialized from the
+admissible fine background before the level solver is constructed. Each level
+retains the same equation, material/worker pool, RANS model, wall samples and
+configured volume sources. There is no logical-state payload packing.
+
+Identity tau edges evaluate the spatial part of the operator with zero direct
+time coefficient, giving `resOther_c = resOther_f + alpha*(F_f-F_c)` directly.
+The full time coefficient remains in every smoother and finest norm. The
+separate DITR coupledStage cycles freeze their current resOther independently;
+no temporal coarsening or nested stage-convergence loop is introduced.
+
+`implicit.collectiveChecks` also controls the optional agreement around local
+cycle algebra and identity copies. With it disabled, those operations perform
+no collective; required stage-entry, transfer and numerical norm protocols are
+unchanged. Callers then own coordinated failure handling, as for other eager
+equation operators. Shape/binding checks remain local and outside cell loops.
 
 Direct nonlinear users can select the same behavior with
 `NonlinearSolveControl::updateComponents`. Selection is validated and agreed in
@@ -933,8 +954,9 @@ projects the linear problem before correction; unselected means are copied
 exactly. Norm formulas, initial/running-maximum reference, pseudo-CFL growth,
 fixed correction cap and optional profiling use the shared iteration policy.
 
-The equation adapter initially requires the implemented EquationWorkspace
-profile and rejects Roe dissipation and p-FAS. It retains actual mean halos
+The equation adapter requires the implemented EquationWorkspace profile and
+rejects unavailable Roe dissipation. Its bounded corrections and equation
+application also serve polynomial FAS. It retains actual mean halos
 and high-order source samples from each residual evaluation. Subsequent aux
 preparation is stateless with explicit outputs; the source Jacobian consumes
 the current reconstruction publication rather than evaluating only the mean.

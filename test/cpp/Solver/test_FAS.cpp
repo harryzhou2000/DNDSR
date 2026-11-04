@@ -117,6 +117,37 @@ TEST_CASE("FAS distinguishes state and residual restriction and preserves incomi
     CHECK(report.corrections == std::vector<I>{0, 1, 1});
     CHECK(report.operatorEvaluations == 4);
 }
+TEST_CASE("Identity FAS cancels a common large linear term before forming tau")
+{
+    const A::DofSpace space(1);
+    Field fine(space, 1), coarse(space, 1), source(space, 1);
+    Set(fine, {4});
+    Set(source, {2});
+    std::vector<double> observed;
+    M::FASLevel upper{fine, Multiply(1e16 - 2), NoSmooth(), {}, {}, Multiply(-2)};
+    const auto inspectSource = [&](Field &, const Field &rhs, I)
+    {
+        observed = Get(rhs);
+        return I(0); // Inspect assembly only; no mock convergence claim.
+    };
+    M::FASLevel lower{coarse, Multiply(1e16 - 3), inspectSource, {}, {}, Multiply(-3)};
+    const auto copy = [](const Field &a, Field &b)
+    { A::Copy(b, a); };
+    M::FASCycle cycle({upper, lower}, {{copy, copy, copy, true}}, {0, 0, 1});
+    cycle.Apply(source);
+    // b_c=b_f+(-3*4)-(-2*4)=-2. Forming complete operators first
+    // loses this difference against their common 4e16 time contribution.
+    CHECK(observed == std::vector<double>{-2});
+    CHECK(Get(fine) == std::vector<double>{4});
+    Set(source, {1e16});
+    upper.applyForIdentityTau = Multiply(-.25);
+    lower.applyForIdentityTau = Multiply(.25);
+    M::FASCycle history({upper, lower}, {{copy, copy, copy, true}}, {0, 0, 1});
+    history.Apply(source);
+    // (+1)-(-1)=2 survives one addition to resOther. Adding the two
+    // individual unit terms to 1e16 loses both of them to rounding.
+    CHECK(observed == std::vector<double>{1e16 + 2});
+}
 TEST_CASE("Nonlinear FAS coarse forcing preserves a known fine solution")
 {
     const A::DofSpace fineSpace(4), coarseSpace(2);

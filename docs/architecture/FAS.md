@@ -1,10 +1,22 @@
-# Native-field FAS cycles
+# State-based FAS cycles
 
-`Solver/FAS.hpp` provides a synchronous CPU V-cycle over explicit `FASLevel`
-operators and `FASTransfer` edges. Cauchy polynomial multigrid supplies spatial
+`Solver/StateFAS.hpp` provides one synchronous V-cycle over explicit
+`StateFASLevel<State>` operators and `StateFASTransfer<State>` edges.
+`StateFASCycle<State, Operations>` delegates storage and owned algebra to a small
+operations adapter. `Solver/FAS.hpp` retains the existing CPU field API as
+`FASLevel`, `FASTransfer` and `FASCycle` aliases; Cauchy's logical-state adapter
+uses the same recursion. Cauchy polynomial multigrid supplies spatial
 levels and physics; the cycle does not construct meshes, own time history,
 choose convergence criteria or perform hidden MPI. A future agglomerated
 hierarchy supplies the same three transfer operations.
+
+Operations provide allocation and compatibility checks, a retained
+`Binding::Check(state, unchangedOwned)`, owned Copy/LinearCombination/Axpy,
+component count, frozen-component checks, correction projection and selected
+addition. They must explicitly reject unavailable backends. Neither recursion
+nor the operation contract requires a single physical array, a particular row
+layout or any knowledge of equation physics. The current adapters execute on
+CPU. All physical allocation and row-metadata owners survive callback access.
 
 ```text
 FASCycle
@@ -18,6 +30,15 @@ For `F_f(U_f)=b_f`, the coarse equation is
 `U_c-I U_f`, apply the level's optional physical update policy, then post-smooth.
 The incoming coarse reference remains unchanged throughout its recursive child
 cycle. State and residual restriction need not be the same operator.
+
+An optional `cancelIdentityLinearTerm` edge is reserved for a caller-proven
+identity state restriction and the same removable linear operator on both
+levels. Both levels must supply `applyForIdentityTau`; generic default edges
+still evaluate their complete operators. For Cauchy's same-cell pMG this removes
+the common `U/dt` analytically from tau differences. Smoothing and finest
+convergence continue to use the complete time equation. This prevents a small
+spatial correction from being lost when subtracting two large time terms;
+it is not permission to omit time terms in a different-mesh hierarchy.
 
 Callbacks write provided allocations without rebinding them, and return only
 after their work and required communication completes. An operator may refresh

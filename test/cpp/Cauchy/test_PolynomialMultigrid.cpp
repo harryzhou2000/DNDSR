@@ -3,6 +3,8 @@
 #include "Cauchy/Multigrid/PolynomialMultigrid.hpp"
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Implicit/ResidualConvergence.hpp"
+#include "Cauchy/State/EquationDofAlgebra.hpp"
+#include "Cauchy/Physics/EquationProperties.hpp"
 #include "CartesianFixture.hpp"
 #include <cstring>
 
@@ -327,6 +329,215 @@ TEST_CASE("Cauchy pMG physical discard and commit retry retain the fine reconstr
         if (method == "ditr")
             CHECK(retry.LastCoupledTargetRatio() <= 1);
     }
+}
+TEST_CASE("Logical polynomial FAS recovers nonconstant RANS and reacting mixture equations without packing")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    mesh->BuildNodeWallDist([](auto)
+                            { return false; });
+    const int scenarios =
+#ifdef DNDS_USE_CANTERA
+        2;
+#else
+        1;
+#endif
+    for (int scenario = 0; scenario < scenarios; ++scenario)
+    {
+        CAPTURE(scenario);
+        auto settings = Controls();
+        settings.equation.rans.model = "SA";
+        settings.equation.rans.viscosityReference = .01;
+        settings.equation.transport = "NewtonianFourier";
+        settings.equation.viscosity = scenario ? 0 : .001;
+        if (scenario)
+        {
+            settings.equation.eos = "idealGasMixture";
+            settings.equation.source = "chemical";
+            settings.equation.mixture.mechanismFile = "h2o2.yaml";
+            settings.equation.mixture.rho0 = 2;
+            settings.equation.mixture.U0 = 200;
+            settings.equation.mixture.L0 = .02;
+            settings.equation.mixture.T0 = 300;
+        }
+        settings.numerics.faceFallback = false;
+        settings.numerics.characteristicLimiter = false;
+        settings.numerics.limiter = "WBAP";
+        settings.numerics.viscousGradient = "polynomial";
+        settings.implicit.iterations = 40;
+        settings.implicit.multigrid.cycles = 40;
+        settings.implicit.multigrid.coarseSmooth = 2;
+        settings.implicit.pseudoCFL = settings.implicit.maxPseudoCFL = 100;
+        settings.implicit.relativeTolerance = 1e-8;
+        settings.implicit.absoluteTolerance = 1e-8;
+        settings.implicit.residualComponents = {};
+        settings.implicit.collectiveChecks = scenario == 0;
+        if (!scenario)
+        {
+            settings.implicit.multigrid.updateComponents = {0, 4};
+            settings.implicit.residualComponents = {"rho", "rhoE"};
+        }
+        settings.implicit.linear.method = "sgs";
+        settings.implicit.linear.iterations = 3;
+        const auto setup = C::EquationSetup::Resolve(settings.equation);
+        C::FiniteVolume fine(mesh, settings, setup.equation);
+        A::DofBundle fields(fine.Metrics().Space());
+        // Deliberately permute the physical allocation order and couple SA
+        // before flow in its parent. Width=5 is never the parent's row pitch.
+        fields.Add("turbulentFlow", fine.Metrics().BuildField(R::RowLayout::TiledColMajor(0, 6, 4)));
+        std::vector<C::EquationDofBinding> bindings{{"flow", "turbulentFlow", 1}, {"rans", "turbulentFlow", 0}};
+        if (scenario)
+        {
+            fields.Add("composition", fine.Metrics().BuildField(R::RowLayout::ColMajor(0, setup.equation.Mixture().SpeciesNumber() - 1, {8, 1})));
+            bindings.push_back({"species", "composition", 0});
+        }
+        C::EquationDofs state(setup.equation.Schema(), std::move(fields), std::move(bindings));
+        std::map<std::string, double> fractions;
+        if (scenario)
+        {
+            const auto &names = setup.equation.Mixture().SpeciesNames();
+            for (DNDS::index k = 0; k + 1 < DNDS::index(names.size()); ++k)
+                fractions[names[k]] = 1e-6;
+            fractions["H2"] = .03;
+            fractions["O2"] = .23;
+        }
+        fine.InitializeConstant(state, {1.2, .1, -.05, .02, 1}, fractions, scenario ? 4 : 0, setup.workers, {{"rhoNuTilde", .02}});
+        {
+            auto evaluator = setup.equation.MakePointEvaluator(setup.workers ? setup.workers->Acquire() : DNDS::Physics::Chemistry::ChemicalWorkerPool::Lease{}, {});
+            const auto composition = scenario ? setup.equation.IndependentMassFractions(fractions) : std::vector<double>{};
+            auto write = state.WriteOwned();
+            const auto flow = write.Block("flow"), rans = write.Block("rans");
+            const auto species = scenario ? write.Block("species") : C::EquationBlockArrayView<double>{};
+            for (DNDS::index iCell = 0; iCell < fine.Metrics().NumCell(); ++iCell)
+            {
+                const auto x = fine.Metrics().GetCellCent(iCell);
+                const double wave = std::sin(6.283185307179586 * x[0]) * std::cos(6.283185307179586 * x[1]);
+                const double rho = 1.2 + .02 * wave;
+                auto rhoY = evaluator.SpeciesInput();
+                for (int k = 0; k < rhoY.nSpecies; ++k)
+                    species(iCell, k) = rhoY[k] = rho * composition[k];
+                const auto value = evaluator.FromPrimitive({rho, .1 + .01 * wave, -.05, .02, 1 + .01 * wave}, rhoY, scenario ? 4 + .01 * wave : 0);
+                for (int j = 0; j < 5; ++j)
+                    flow(iCell, j) = value[j];
+                rans(iCell, 0) = .02 * (1 + .02 * wave);
+            }
+        }
+        auto exact = C::EquationDofOperations::NewVector(state), source = C::EquationDofOperations::NewVector(state);
+        C::EquationDofOperations::Copy(exact, state);
+        auto work = fine.BuildEquationWorkspace(state, setup.workers);
+        R::EagerEngine engine(scenario ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateCPUStream();
+        C::EquationNonlinearSolver smoother(fine, state, work, engine, stream, settings,
+                                            A::ComponentSelection(state.ComponentNumber(), state.Schema().ResolveComponents(settings.implicit.residualComponents)), setup.workers);
+        constexpr double mass = 10000, scale = .5;
+        smoother.EvaluateEquation(state, source, mass, scale, .1);
+        const C::EquationDofOperations::Binding sourceBinding(source);
+        {
+            auto write = state.WriteOwned();
+            const A::ComponentSelection selected(state.ComponentNumber(), settings.implicit.multigrid.updateComponents);
+            DNDS::index first = 0;
+            for (DNDS::index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+            {
+                const auto values = write.Block(iBlock);
+                for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+                    for (DNDS::index j = 0; j < values.ComponentNumber(); ++j)
+                        if (selected.Includes(first + j))
+                            values(iCell, j) *= 1 + 1e-4 * std::cos(double(fine.Metrics().Cells().LocalToGlobal(iCell)) + j);
+                first += values.ComponentNumber();
+            }
+        }
+        C::PolynomialMultigrid solver(mesh, fine, state, smoother, engine, stream, settings, setup.workers);
+        const auto report = solver.Solve(source, mass, scale, .1);
+        CHECK(report.converged);
+        CHECK(report.multigridCycles > 0);
+        CHECK(report.iterations == report.multigridCycles);
+        CHECK(report.levelCorrections == std::vector<DNDS::index>{2 * report.multigridCycles, 2 * report.multigridCycles, 2 * report.multigridCycles});
+        CHECK_NOTHROW(sourceBinding.Check(source, true));
+        {
+            const auto a = state.ReadOwned(), b = exact.ReadOwned();
+            const auto al = a.ComponentLayout(), bl = b.ComponentLayout();
+            const auto actual = al.View(), expected = bl.View();
+            for (DNDS::index iCell = 0; iCell < actual.RowCount(); ++iCell)
+                for (DNDS::index j = 0; j < actual.ComponentNumber(); ++j)
+                {
+                    CHECK(actual(iCell, j) == doctest::Approx(expected(iCell, j)).epsilon(5e-8).scale(1e-10));
+                    if (!scenario && j != 0 && j != 4)
+                        CHECK(std::memcmp(&actual(iCell, j), &expected(iCell, j), sizeof(double)) == 0);
+                }
+        }
+        auto value = C::EquationDofOperations::NewVector(state);
+        smoother.EvaluateEquation(state, value, mass, scale, .1);
+        std::vector<double> norm(size_t(state.ComponentNumber()) + 1, 0);
+        {
+            const auto a = source.ReadOwned(), b = value.ReadOwned();
+            const auto al = a.ComponentLayout(), bl = b.ComponentLayout();
+            const auto desired = al.View(), actual = bl.View();
+            for (DNDS::index iCell = 0; iCell < desired.RowCount(); ++iCell)
+            {
+                const double volume = fine.Metrics().GetCellVol(iCell);
+                norm.back() += volume;
+                for (DNDS::index j = 0; j < desired.ComponentNumber(); ++j)
+                {
+                    const double defect = desired(iCell, j) - actual(iCell, j);
+                    norm[j] += volume * defect * defect;
+                }
+            }
+        }
+        MPI_Allreduce(MPI_IN_PLACE, norm.data(), int(norm.size()), MPI_DOUBLE, MPI_SUM, mpi.comm);
+        for (DNDS::index j = 0; j < state.ComponentNumber(); ++j)
+            CHECK(std::abs(report.residual[j] - std::sqrt(norm[j] / norm.back())) < 1e-7);
+    }
+}
+TEST_CASE("Equation Domain performs one spatial FAS update per DITR coupled stage and retries exactly")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    mesh->BuildNodeWallDist([](auto)
+                            { return false; });
+    auto settings = Controls();
+    settings.equation.rans.model = "SA";
+    settings.equation.rans.viscosityReference = .01;
+    settings.equation.transport = "NewtonianFourier";
+    settings.equation.viscosity = .001;
+    settings.initialRANS = {{"rhoNuTilde", .02}};
+    settings.numerics.ransState.referenceConservative = {{"rho", 1}, {"rhoNuTilde", .02}};
+    settings.numerics.faceFallback = false;
+    settings.numerics.characteristicLimiter = false;
+    settings.numerics.limiter = "WBAP";
+    settings.numerics.viscousGradient = "polynomial";
+    settings.numerics.positivity = true;
+    settings.numerics.reconstructionIterations = 4;
+    settings.numerics.reconstructionTolerance = 0;
+    settings.execution.layout = "aosoa32";
+    settings.execution.hostThreads = 2;
+    settings.implicit.linear.method = "sgs";
+    settings.implicit.linear.iterations = 2;
+    settings.implicit.absoluteTolerance = 1e-7;
+    settings.implicit.relativeTolerance = 1e-7;
+    settings.implicit.residualComponents = {"rho", "rhoNuTilde"};
+    C::TimeSettings time;
+    time.method = "ditr";
+    time.ditr.variant = "U2R1";
+    time.ditr.absoluteTolerance = 1e-7;
+    time.ditr.relativeTolerance = 1e-7;
+    C::Domain reference("reference", mesh, settings, time), retry("retry", mesh, settings, time);
+    const auto equation = C::EquationSetup::Resolve(settings.equation).equation;
+    Fill(reference.Discretization(), equation, reference.Flow(), 0);
+    Fill(retry.Discretization(), equation, retry.Flow(), 0);
+    reference.Advance(.001);
+    retry.PrepareStep(.001);
+    retry.DiscardStep();
+    retry.Advance(.001);
+    CHECK(retry.Time() == .001);
+    REQUIRE(retry.LastImplicitStages().size() == 1);
+    const auto &report = retry.LastImplicitStages().front();
+    CHECK(report.converged);
+    CHECK(report.multigridCycles == 2 * report.iterations);
+    CHECK(report.levelCorrections == std::vector<DNDS::index>{2 * report.multigridCycles, 2 * report.multigridCycles, 3 * report.multigridCycles});
+    const auto a = retry.Dofs().ReadOwned(), b = reference.Dofs().ReadOwned();
+    const auto al = a.ComponentLayout(), bl = b.ComponentLayout();
+    const auto actual = al.View(), expected = bl.View();
+    for (DNDS::index iCell = 0; iCell < actual.RowCount(); ++iCell)
+        for (DNDS::index j = 0; j < actual.ComponentNumber(); ++j)
+            CHECK(actual(iCell, j) == expected(iCell, j));
 }
 int main(int argc, char **argv)
 {

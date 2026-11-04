@@ -46,6 +46,12 @@ def test_configured_rans_fields_wall_setup_implicit_restart_and_output(tmp_path,
     config["defaults"]["numerics"]["ransState"] = {
         "referenceConservative": {"rho": config["defaults"]["initialPrimitive"][0], **initial}}
     config["defaults"]["implicit"]["residualComponents"] = ["rho", *initial]
+    if model == "SA":
+        config["defaults"]["numerics"].update({
+            "reconstruction": "variational", "cfv": {"maxOrder": 3},
+            "reconstructionIterations": 4, "reconstructionTolerance": 0.0,
+            "limiter": "WBAP", "characteristicLimiter": False})
+        config["defaults"]["implicit"]["multigrid"] = {"levels": 1}
     domain = Domain(mesh, json.dumps(config))
     fields = domain.fields
     assert set(fields) == {"flow", "rans"}
@@ -61,6 +67,8 @@ def test_configured_rans_fields_wall_setup_implicit_restart_and_output(tmp_path,
         assert len(report.residual) == 5 + len(initial)
         assert report.converged, (report.iterations, report.residual_target_ratio,
                                   report.initial_residual, report.residual)
+        if model == "SA":
+            assert report.multigrid_cycles > 0
     values = fields["rans"].numpy()
     assert np.all(values >= 0)
     changed = np.max(np.abs(values - np.array(list(initial.values()))), initial=0.)

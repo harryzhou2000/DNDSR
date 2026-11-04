@@ -36,15 +36,19 @@ namespace DNDS::Cauchy
                 const auto workspace = _fv.BuildEquationWorkspace(middle, _workers);
                 const auto solver = std::make_shared<EquationNonlinearSolver>(_fv, middle, workspace, _engine, _stream, settings,
                                                                               Algebra::ComponentSelection(middle.ComponentNumber(), _ditrComponents), _workers);
+                std::shared_ptr<PolynomialMultigrid> multigrid;
+                if (settings.implicit.multigrid.levels)
+                    multigrid = std::make_shared<PolynomialMultigrid>(mesh, _fv, middle, *solver, _engine, _stream, settings, _workers);
                 return CoupledStageOperator{
                     [this, workspace](auto &state, auto &rate, real time, int stage)
                     { EvaluateImplicitRate(state, rate, *workspace, time, stage); },
-                    [this, solver](const auto &equation, const auto &rate, real cfl)
+                    [this, solver, multigrid](const auto &equation, const auto &rate, real cfl)
                     {
                         const auto &c = equation.coefficients;
                         SetTimeStage(equation.coupledStage);
-                        return solver->CorrectOnce(equation.state, equation.resOther, c.inverseDt, c.rhsScale, c.time,
-                                                   equation.coupledStage, {1, cfl}, &rate);
+                        return multigrid ? multigrid->ApplyCycle(equation.resOther, c.inverseDt, c.rhsScale, c.time, equation.coupledStage, cfl)
+                                         : solver->CorrectOnce(equation.state, equation.resOther, c.inverseDt, c.rhsScale, c.time,
+                                                               equation.coupledStage, {1, cfl}, &rate);
                     },
                     [solver]
                     { return solver->ReconstructionStats(); },
@@ -90,7 +94,12 @@ namespace DNDS::Cauchy
         else
             _implicit = std::make_unique<NonlinearSolver>(_fv, _trial.CoupledField(), _workspace, _engine, _stream, settings);
         if (settings.implicit.multigrid.levels)
-            _multigrid = std::make_unique<PolynomialMultigrid>(mesh, _fv, _trial.CoupledField(), *_implicit, _engine, _stream, settings);
+        {
+            if (_equationImplicit)
+                _multigrid = std::make_unique<PolynomialMultigrid>(mesh, _fv, _trial, *_equationImplicit, _engine, _stream, settings, _workers);
+            else
+                _multigrid = std::make_unique<PolynomialMultigrid>(mesh, _fv, _trial.CoupledField(), *_implicit, _engine, _stream, settings);
+        }
     }
     void Domain::EvaluateImplicitRate(EquationDofs &state, EquationDofs &rate, FiniteVolume::Workspace &workspace, real time, int stage)
     {
@@ -238,7 +247,8 @@ namespace DNDS::Cauchy
         {
             SetTimeStage(stage);
             if (_equationImplicit)
-                return RecordImplicitStage(_equationImplicit->Solve(state, source, mass, scale, time, stage));
+                return RecordImplicitStage(_multigrid ? _multigrid->Solve(source, mass, scale, time, stage)
+                                                      : _equationImplicit->Solve(state, source, mass, scale, time, stage));
             return RecordImplicitStage(_multigrid ? _multigrid->Solve(source.CoupledField(), mass, scale, time, stage) : _implicit->Solve(state.CoupledField(), source.CoupledField(), mass, scale, time, stage));
         };
         const auto coupled = [&](EquationTimeStepper::DITR &method, EquationDofs &endpoint)
@@ -303,8 +313,9 @@ namespace DNDS::Cauchy
                         if (coupledStage == 0)
                             work = _coupledMiddle->correct(equation, rate, iteration.pseudoCFL);
                         else if (_equationImplicit)
-                            work = _equationImplicit->CorrectOnce(endpoint, equation.resOther, c.inverseDt, c.rhsScale, c.time,
-                                                                  coupledStage, {1, iteration.pseudoCFL}, &rate);
+                            work = _multigrid ? _multigrid->ApplyCycle(equation.resOther, c.inverseDt, c.rhsScale, c.time, coupledStage, iteration.pseudoCFL)
+                                             : _equationImplicit->CorrectOnce(endpoint, equation.resOther, c.inverseDt, c.rhsScale, c.time,
+                                                                               coupledStage, {1, iteration.pseudoCFL}, &rate);
                         else
                             work = AsEquationReport(_multigrid
                                 ? _multigrid->ApplyCycle(equation.resOther.CoupledField(), c.inverseDt, c.rhsScale, c.time, coupledStage, iteration.pseudoCFL)
