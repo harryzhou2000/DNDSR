@@ -3,6 +3,7 @@
 #include "Cauchy/State/EquationDofCommunication.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/Physics/EquationPositivity.hpp"
+#include "Cauchy/Physics/EquationRANS.hpp"
 #include "Cauchy/Implicit/PositivityReduction.hpp"
 
 namespace DNDS::Cauchy
@@ -25,10 +26,11 @@ namespace DNDS::Cauchy
         std::unique_ptr<EquationLinearSolver> linear;
         bool positivity;
         std::optional<EquationThermalPolicy> thermal;
+        std::optional<RANSStateView> rans;
         AlphaReduction rhsReduction = AlphaReduction::Cell;
         std::optional<R::Array<real>> cellRHSAlpha;
         real reconstructionTolerance, densityFloor, temperatureFloor, pressureFloor;
-        index flowFirst = -1, speciesFirst = -1;
+        index flowFirst = -1, speciesFirst = -1, ransFirst = -1;
 
         Data(const FiniteVolume &fv, EquationDofs &state, std::shared_ptr<FiniteVolume::EquationWorkspace> work,
              R::EagerEngine &executor, R::ExecutionStream lane, const DomainSettings &controls, ImplicitSettings implicit,
@@ -48,6 +50,8 @@ namespace DNDS::Cauchy
             if (positivity)
                 thermal.emplace(fv.Equation(), densityFloor, temperatureFloor, controls.numerics.sensibleEnergyFloor, pressureFloor,
                                 workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{});
+            if (fv.Equation().HasRANS())
+                rans.emplace(ResolveRANSStatePolicy(fv.Equation(), controls.numerics.ransState));
             rhsReduction = settings.positivity.rhsReduction == "cell" ? AlphaReduction::Cell : settings.positivity.rhsReduction == "minimumLimited" ? AlphaReduction::MinimumLimited
                                                                                                                                                     : AlphaReduction::MinimumAll;
             if (positivity && settings.positivity.rhsMode != "none" && rhsReduction != AlphaReduction::Cell)
@@ -59,6 +63,8 @@ namespace DNDS::Cauchy
                     flowFirst = first;
                 if (block.name == "species")
                     speciesFirst = first;
+                if (block.name == "rans")
+                    ransFirst = first;
                 first += index(block.components.size());
             }
         }
@@ -80,6 +86,7 @@ namespace DNDS::Cauchy
             const auto &equation = discrete.Equation();
             auto evaluator = equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {});
             const auto read = state.ReadOwned();
+            const auto scalars = rans ? read.Block("rans") : EquationBlockReadView{};
             const auto layout = read.ComponentLayout();
             const auto values = layout.View();
             const int independent = equation.HasMixture() ? equation.Mixture().SpeciesNumber() - 1 : 0;
@@ -91,6 +98,8 @@ namespace DNDS::Cauchy
                     DNDS_check_throw_info(bounds.Admissible(EquationPositivityDetail::PointRow<decltype(values)>{values, iCell}), "implicit equation mean violates its thermal/species bounds");
                 for (index j = 0; j < values.ComponentNumber(); ++j)
                     DNDS_check_throw_info(std::isfinite(values(iCell, j)), "nonfinite implicit equation mean");
+                if (rans)
+                    DNDS_check_throw_info(rans->Admissible(scalars[iCell]), "implicit RANS mean violates its scalar bounds");
                 FlowState flow;
                 for (int j = 0; j < 5; ++j)
                     flow[j] = values(iCell, flowFirst + j);
@@ -409,7 +418,33 @@ namespace DNDS::Cauchy
                     fraction = alpha * fix;
                 }
                 for (index j = 0; j < mean.ComponentNumber(); ++j)
+                {
                     candidate(iCell, j) = selection.Includes(j) ? mean(iCell, j) + fraction * change[j] : mean(iCell, j);
+                    // Exponential scalar repair must not hide an infinite or
+                    // NaN linear correction behind a finite floor.
+                    DNDS_check_throw_info(std::isfinite(candidate(iCell, j)), "nonfinite equation correction candidate");
+                }
+                if (data.rans)
+                {
+                    std::array<real, 2> oldRANS{}, changeRANS{}, nextRANS{};
+                    for (int j = 0; j < data.rans->components; ++j)
+                    {
+                        oldRANS[j] = mean(iCell, data.ransFirst + j);
+                        changeRANS[j] = fraction * change[data.ransFirst + j];
+                    }
+                    DNDS_check_throw_info(data.rans->Admissible(oldRANS), "RANS correction requires an admissible old mean");
+                    // Euler's scalar update is independent of the optional
+                    // flow compression switch, and follows that compression.
+                    data.rans->RepairIncrement(oldRANS, changeRANS);
+                    for (int j = 0; j < data.rans->components; ++j) nextRANS[j] = oldRANS[j] + changeRANS[j];
+                    data.rans->RepairMean(candidate(iCell, data.flowFirst), nextRANS);
+                    for (int j = 0; j < data.rans->components; ++j)
+                    {
+                        const index component = data.ransFirst + j;
+                        candidate(iCell, component) = nextRANS[j];
+                        if (!selection.Includes(component)) frozen = frozen && nextRANS[j] == oldRANS[j];
+                    }
+                }
                 if (data.positivity && independent)
                 {
                     struct SpeciesRow
@@ -422,11 +457,11 @@ namespace DNDS::Cauchy
                         if (!selection.Includes(j)) frozen = frozen && candidate(iCell, j) == mean(iCell, j);
                 }
             } });
-        // Candidate checks precede all state writers. Species repair may not
+        // Candidate checks precede all state writers. Scalar repair may not
         // silently unfreeze a masked component, even when density changed.
         MPI::LocalStage(data.mpi, [&]
                         {
-            DNDS_check_throw_info(frozen, "equation species repair would change a frozen component");
+            DNDS_check_throw_info(frozen, "equation scalar repair would change a frozen component");
             data.ValidateMeans(data.candidate); });
         data.Stage([&]
                    { EquationDofOperations::Copy(state, data.candidate); });

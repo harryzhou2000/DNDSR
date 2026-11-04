@@ -455,11 +455,12 @@ namespace DNDS::Cauchy
         /// once, and writes logical blocks through their native layout. Positive
         /// temperature overrides primitive p. No ghost exchange or reconstruction
         /// initialization; caller releases conflicting views/async work first.
-        /// Mixtures require an explicit matching worker pool. RANS currently
-        /// requires an explicit caller initialization of all logical blocks;
-        /// this initializer rejects it rather than leaving scalars untouched.
+        /// Mixtures require an explicit matching worker pool. RANS requires
+        /// every named conservative scalar; all inputs are validated before
+        /// writing any block. Does not infer turbulence values from flow.
         void InitializeConstant(EquationDofs &state, const FlowState &primitive, const std::map<std::string, real> &massFractions = {},
-                                real temperature = 0, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt) const;
+                                real temperature = 0, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
+                                const std::map<std::string, real> &ransConservative = {}) const;
         /// Volume-normalized L1/L2/Linf error in conservative cell averages.
         std::array<FlowState, 3> Error(const CFV::FVField &state, const FlowProfileSettings &profile, const FlowState &primitive, real time) const;
         real StableStep(const CFV::FVField &state, real cfl) const;

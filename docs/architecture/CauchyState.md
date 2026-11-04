@@ -806,10 +806,29 @@ RANS destruction together with sampled source state; publication cannot pair a
 new mean with an old destruction diagonal. Chemical rates and the existing RHS
 remain untouched by this refresh.
 
+`InitializeConstant` accepts a complete named conservative RANS map as its last
+argument, and initializes flow, RANS and species through their logical blocks.
+Boundary input and initialization share `ResolveRANSValues`: missing/unknown
+names and inadmissible values fail before writing a local state. It accepts
+coupled, reordered and separate physical layouts without flattening them.
+
+The full-state nonlinear correction now applies the shared Euler RANS scalar
+rules after common flow compression/final energy repair, even when optional
+flow PP is disabled. It uses the final density for SA's upper cap. Old means
+must be admissible and corrections finite; exponential repair cannot turn an
+infinite negative correction into an accepted finite value. Candidate checks
+precede state publication. A repair that changes a masked/frozen scalar fails
+without changing the input state.
+
+`numerics.ransState.saUpperLimit` defaults to `1e5`.
+`numerics.ransState.omegaLowerFactor` defaults to `.01`; an enabled omega floor
+requires a complete named `referenceConservative` map (the prescribed farfield
+reference). No boundary or initial state is implicitly chosen for that purpose.
+The numerical reference is separate from the immutable shared physical model.
+
 This is operator-level support, not a production RANS Domain profile. Root
-configuration, named scalar initialization, Python model construction, restart
-model metadata and scalar repair in the nonlinear loop remain to be connected.
-The existing constant initializer explicitly rejects RANS. Two-equation models
+model configuration and frontend initialization plumbing, Python model
+construction and restart model metadata remain to be connected. Two-equation models
 remain rejected by finite-volume construction until their turbulent kinetic
 pressure, gradient-dependent aux bounds and wall/Jacobian terms are wired.
 DES and QCR integration remain pending. Existing NS/mixture profiles retain

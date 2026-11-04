@@ -156,6 +156,9 @@ namespace DNDS::Cauchy
         /// With PP enabled, use Euler relaxed/common increment compression,
         /// final energy repair and transported mean-species repair. A repair
         /// which would alter a frozen component rejects instead of unfreezing.
+        /// RANS always applies its Euler exponential scalar update and final
+        /// model bounds after the optional common compression. Old RANS means
+        /// must be admissible, and nonfinite corrections are never repaired.
         std::pair<index, real> ApplyCorrection(EquationDofs &state, const EquationDofs &correction, real scale = 1,
                                                const std::vector<index> &updateComponents = {});
         std::pair<int, real> ReconstructionStats() const;

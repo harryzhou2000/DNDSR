@@ -620,14 +620,15 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::InitializeConstant(EquationDofs &state, const FlowState &primitive,
                                           const std::map<std::string, real> &massFractions, real temperature,
-                                          std::optional<Physics::Chemistry::ChemicalWorkerPool> workers) const
+                                          std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
+                                          const std::map<std::string, real> &ransConservative) const
     {
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
                         {
             Metrics().Validate();
             _data->equation.ValidateStateSchema(state);
             _data->equation.ResolveKernelProfile(state.Device());
-            DNDS_check_throw_info(!_data->equation.HasRANS(), "constant RANS initialization requires an explicit scalar initializer; initialize all logical blocks before evaluation");
+            const auto rans = ResolveRANSValues(_data->equation, ransConservative);
             DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && _data->equation.HasMixture() == bool(workers),
                                   "equation initialization row space/worker profile differs");
             auto fractions = _data->equation.IndependentMassFractions(massFractions);
@@ -644,6 +645,12 @@ namespace DNDS::Cauchy
                 const auto species = output.Block("species");
                 for (index iCell = 0; iCell < species.RowCount(); ++iCell)
                     for (index k = 0; k < index(fractions.size()); ++k) species(iCell, k) = fractions[k];
+            }
+            if (_data->equation.HasRANS())
+            {
+                const auto scalars = output.Block("rans");
+                for (index iCell = 0; iCell < scalars.RowCount(); ++iCell)
+                    for (index j = 0; j < scalars.ComponentNumber(); ++j) scalars(iCell, j) = rans[j];
             } });
     }
 

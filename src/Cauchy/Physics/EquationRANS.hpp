@@ -5,6 +5,13 @@
 
 namespace DNDS::Cauchy
 {
+    struct RANSStateSettings;
+    /// Resolve a complete named conservative RANS row at setup, validating
+    /// extent, model-specific admissibility and unknown names. A non-RANS
+    /// equation accepts only an empty map. No allocation or name lookup is
+    /// needed by the subsequent cell/point kernels.
+    std::array<real, 2> ResolveRANSValues(const EquationSystem &equation,
+                                          const std::map<std::string, real> &values);
     /// Plain scalar policy, separate from the flow5 thermal admissibility rule.
     /// Resolve outside a loop and apply to the logical RANS row, not a physical
     /// allocation's tail. Rows may be strided; no pointers or Array owners are
@@ -89,6 +96,9 @@ namespace DNDS::Cauchy
     RANSStateView PrepareRANSStatePolicy(const EquationSystem &equation,
                                          const std::array<real, 2> &farfield,
                                          real saUpperLimit = 1e5, real lowerFactor = .01);
+    /// Omega's numerical floor references an explicit prescribed state; it
+    /// never guesses from the initial condition or one of several boundaries.
+    RANSStateView ResolveRANSStatePolicy(const EquationSystem &equation, const RANSStateSettings &settings);
 
     /// Gather into the shared bounded point scratch. Logical flow/RANS row
     /// views preserve AoS/SoA/AoSoA strides. Derivative accessors are indexed

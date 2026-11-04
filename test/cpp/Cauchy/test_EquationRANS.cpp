@@ -154,6 +154,26 @@ TEST_CASE("RANS scalar repairs retain the Euler componentwise and exponential ru
     }
 }
 
+TEST_CASE("Named RANS initialization and numerical reference resolve against the model")
+{
+    C::RANSStateSettings settings;
+    settings.saUpperLimit = 12;
+    const auto sa = Equation("SA");
+    CHECK(C::ResolveRANSValues(sa, {{"rhoNuTilde", .02}})[0] == .02);
+    CHECK(C::ResolveRANSStatePolicy(sa, settings).saUpperLimit == 12);
+    CHECK_THROWS(C::ResolveRANSValues(sa, {{"rhoK", .02}}));
+    for (const auto *name : {"KOmegaWilcox", "KOmegaSST"})
+    {
+        const auto equation = Equation(name);
+        settings.referenceConservative.clear();
+        CHECK_THROWS(C::ResolveRANSStatePolicy(equation, settings));
+        settings.referenceConservative = {{"rhoK", .1}, {"rhoOmega", 4}};
+        CHECK(C::ResolveRANSStatePolicy(equation, settings).omegaLowerLimit == .04);
+        const auto roundTrip = C::Json(settings).get<C::RANSStateSettings>();
+        CHECK(roundTrip.referenceConservative == settings.referenceConservative);
+    }
+}
+
 TEST_CASE("RANS no-slip targets retain conservative density and viscosity conventions")
 {
     DNDS::Physics::RANS::Point mean;

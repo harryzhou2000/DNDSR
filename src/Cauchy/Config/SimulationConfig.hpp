@@ -96,6 +96,17 @@ namespace DNDS::Cauchy
         }
         Riemann::FluxSettings KernelSettings() const { return {dLambda, fixScale, incrementScale, referenceMach, pressureStencilMin}; }
     };
+    struct RANSStateSettings
+    {
+        real saUpperLimit = 1e5, omegaLowerFactor = .01;
+        std::map<std::string, real> referenceConservative;
+        DNDS_DECLARE_CONFIG(RANSStateSettings)
+        {
+            DNDS_FIELD(saUpperLimit, "Euler SA final mean upper bound multiplied by density");
+            DNDS_FIELD(omegaLowerFactor, "Euler omega floor factor multiplying the prescribed reference rhoOmega");
+            config.field_schema(&T::referenceConservative, "referenceConservative", "Named conservative reference RANS state; required for a nonzero omega floor", SpeciesMassFractionsSchema);
+        }
+    };
     struct NumericsSettings
     {
         std::string reconstruction = "gradient", gradient = "leastSquares", flux = "rusanov", limiter = "none";
@@ -114,6 +125,7 @@ namespace DNDS::Cauchy
         real densityFloor = 1e-12, pressureFloor = 1e-12;
         real sensibleEnergyFloor = 1e-12;
         real wallDistanceFloor = 1e-10;
+        RANSStateSettings ransState;
         CFV::ReconstructionSettings cfv;
         CFV::LimitedVRSettings limitedVR;
         RiemannSettings riemann;
@@ -143,6 +155,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(pressureFloor, "Positive inclusive pressure admissibility floor for the initial perfect-gas equation");
             DNDS_FIELD(sensibleEnergyFloor, "Mixture internal-energy density margin above its backend reference temperature; no gamma conversion");
             DNDS_FIELD(wallDistanceFloor, "Positive floor for nodal wall-distance quadrature samples used by RANS");
+            config.field_section(&T::ransState, "ransState", "Model-specific scalar repairs after the common flow correction");
             config.field_section(&T::cfv, "cfv", "Independent mathematical CFV configuration");
             config.field_section(&T::limitedVR, "limitedVR", "Native v2/v3 target-penalty controls");
             config.field_section(&T::riemann, "riemann", "Numerical flux correction controls, independent of EOS");
