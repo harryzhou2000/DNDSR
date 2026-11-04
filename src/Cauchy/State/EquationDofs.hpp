@@ -139,6 +139,10 @@ namespace DNDS::Cauchy
         /// layouts may differ. Shares metadata/handles, never flattens/copies data.
         EquationDofs RebindFields(Algebra::DofBundle fields) const;
         EquationDofs Clone() const;
+        /// Shallow payload/schema alias retaining numeric row identity only.
+        /// Use for worker-owned staged scopes; the controller must retain its
+        /// separate communicator/transfer owners. No values or layouts change.
+        EquationDofs NumericAlias() const;
 
         class ReadScope
         {

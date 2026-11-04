@@ -322,8 +322,39 @@ and coordinate distributed errors and halos. `LocalProducts` computes one
 owned-only dot-product batch in logical row/component order; its caller chooses
 the communicator/reduction. No implicit transfer occurs in the Krylov class.
 
-This does not yet extend the production SGS/nonlinear/Jacobian-preparation or
-checkpoint adapters. Matrix dimensions alone do not validate a physical model.
+Logical two-buffer SGS uses that same matrix context and the shared native
+scan arithmetic. `BeginSGS` owns distinct forward/output writers; `Lower`
+accepts All or Core then HaloDependent, and `Upper` accepts All or HaloDependent
+then Core. Commit with `Finish` only after both scans. Default remote values
+are the frozen old input. With explicit middle exchange, publish **every**
+forward physical field after complete lower work and before upper work. That
+join remains exposed. Core acquires no input ghost lease, so it can execute
+while those ghosts are being written. Do not replace field handles/layouts or
+change matrix values/order while the scope exists. Abandoning a started scope
+fails its unfinished output; it is not a valid partial solution.
+
+Numeric access metadata now retains only the immutable row partition, not a
+communication context. `DofSpace::NumericAlias()` and
+`EquationDofs::NumericAlias()` share row identity, schema and Array storage
+without owning the fields' MPI context. They copy no values and grant no
+access by themselves. A numeric alias deliberately cannot provide a
+communicator/reduction. The staged SGS scope uses these aliases; its controller
+retains communication/transfer owners and releases them on an MPI-permitted
+thread. Ordinary read/write scopes also keep only numeric definition metadata.
+
+```text
+controller -> matrix / original fields / transfers -> communication context
+worker SGS scope -> numeric aliases -> shared Array storage + access leases
+                                   -> schema + row partition (no MPI context)
+```
+
+The numerical alias changes neither storage identity nor generations. Scopes
+remain usable after original field handles disappear; a focused worker test
+proves the communication context can already expire on the controller while
+numeric row reads remain valid and retire on a worker.
+
+This does not yet extend production linear orchestration, nonlinear/Jacobian-
+preparation or checkpoint adapters. Matrix dimensions alone do not validate a physical model.
 The source/flux producer must supply the matching logical derivative ordering;
 physical RANS/species acceptance remains separately gated.
 

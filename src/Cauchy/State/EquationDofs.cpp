@@ -13,7 +13,7 @@ namespace DNDS::Cauchy
             index field, first, width;
         };
         EquationSchema schema;
-        Algebra::DofSpace space;
+        std::shared_ptr<const Algebra::DofSpace::Partition> partition;
         R::Device device;
         std::vector<std::string> fields;
         std::vector<index> widths;
@@ -30,7 +30,7 @@ namespace DNDS::Cauchy
             return -1;
         }
         Definition(EquationSchema value, const Algebra::DofBundle &storage, const std::vector<EquationDofBinding> &bindings)
-            : schema(std::move(value)), space(storage.Space()), device(R::Device::Host())
+            : schema(std::move(value)), partition(storage.Space().Pin()), device(R::Device::Host())
         {
             storage.Validate();
             DNDS_check_throw_info(!schema.family.empty() && !schema.physicalAccumulation.empty() && !schema.blocks.empty() &&
@@ -188,7 +188,7 @@ namespace DNDS::Cauchy
     }
     void EquationDofs::Validate() const
     {
-        DNDS_check_throw_info(_definition && _fields.Space().Same(_definition->space) && _fields.BlockNumber() == index(_definition->fields.size()) &&
+        DNDS_check_throw_info(_definition && _fields.Space().Pin() == _definition->partition && _fields.BlockNumber() == index(_definition->fields.size()) &&
                                   _pins.size() == _definition->fields.size(),
                               "equation DOF binding is moved or its row space changed");
         _fields.Validate();
@@ -254,6 +254,14 @@ namespace DNDS::Cauchy
         Validate();
         return {_definition, std::move(fields)};
     }
+    EquationDofs EquationDofs::NumericAlias() const
+    {
+        Validate();
+        Algebra::DofBundle fields(Space().NumericAlias());
+        for (index iField = 0; iField < PhysicalFieldNumber(); ++iField)
+            fields.Add(_fields.Name(iField), Algebra::DofField<real>(fields.Space(), PhysicalField(iField).Owned(), PhysicalField(iField).Ghost()));
+        return {_definition, std::move(fields)};
+    }
     EquationDofs::ReadScope::ReadScope(const EquationDofs &state, bool ghosts, R::ExecutionContext context)
         : _definition(state._definition)
     {
@@ -315,7 +323,7 @@ namespace DNDS::Cauchy
             for (index j = 0; j < block.ComponentNumber(); ++j)
                 columns.push_back({block.owned.parent, block.ghost.parent, block.owned.first + j});
         }
-        return {std::move(columns), index(_definition->space.OwnedRows()), _ghost.empty() ? 0 : index(_definition->space.GhostRows())};
+        return {std::move(columns), index(_definition->partition->owned), _ghost.empty() ? 0 : index(_definition->partition->ghost)};
     }
     EquationDofs::WriteScope::WriteScope(EquationDofs &state, R::ExecutionContext context)
         : _definition(state._definition)
@@ -366,7 +374,7 @@ namespace DNDS::Cauchy
             for (index j = 0; j < block.ComponentNumber(); ++j)
                 columns.push_back({block.parent, {}, block.first + j});
         }
-        return {std::move(columns), index(_definition->space.OwnedRows()), 0};
+        return {std::move(columns), index(_definition->partition->owned), 0};
     }
     void EquationDofs::WriteScope::Fail()
     {

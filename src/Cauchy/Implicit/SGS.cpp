@@ -1,4 +1,5 @@
 #include "Cauchy/Implicit/LinearProblem.hpp"
+#include "Cauchy/Implicit/LinearBlockKernels.hpp"
 #include <optional>
 
 namespace DNDS::Cauchy
@@ -64,40 +65,13 @@ namespace DNDS::Cauchy
             const auto y = Algebra::MakeEigenRowMatrices(forwardValues, components, 1);
             const auto result = Algebra::MakeEigenRowMatrices(destination, components, 1);
             const auto inv = Algebra::MakeEigenRowMatrices(inverseRead.View<R::TableRows>(), components, mode == DiagonalStorage::Block ? components : 1);
-            const index ownedRows = index(pattern->partition->owned);
             started = true;
             blocksRead.WithBlocks([&](const auto &blocks)
                                   {
-            const auto run = [&](auto size)
-            {
-                Eigen::Matrix<real, decltype(size)::value, 1> value(components);
-                for (index scan = 0; scan < index(rows.size()); ++scan)
-                {
-                    const index iCell = rows[Upper ? index(rows.size()) - 1 - scan : scan];
-                    value = b[iCell];
-                    const auto &columns = pattern->columns[iCell];
-                    for (index j = 0; j < index(columns.size()); ++j)
-                    {
-                        const auto column = columns[j];
-                        if (column >= ownedRows)
-                            value.noalias() -= blocks(iCell, j) * remote[column - ownedRows];
-                        else if (pattern->position[column] < pattern->position[iCell])
-                            value.noalias() -= blocks(iCell, j) * y[column];
-                        else if constexpr (Upper)
-                            value.noalias() -= blocks(iCell, j) * result[column];
-                        else
-                            value.noalias() -= blocks(iCell, j) * old[column];
-                    }
-                    if (mode == DiagonalStorage::Block)
-                        result[iCell].noalias() = inv[iCell] * value;
-                    else
-                        result[iCell].array() = inv[iCell].array() * value.array();
-                }
-            };
             if (components == 5)
-                run(std::integral_constant<int, 5>{});
+                Detail::ScanSGSRows<Upper,5>(b,old,y,result,remote,inv,blocks,*pattern,rows,components,mode==DiagonalStorage::Block);
             else
-                run(std::integral_constant<int, Eigen::Dynamic>{}); });
+                Detail::ScanSGSRows<Upper,Eigen::Dynamic>(b,old,y,result,remote,inv,blocks,*pattern,rows,components,mode==DiagonalStorage::Block); });
         }
     };
 

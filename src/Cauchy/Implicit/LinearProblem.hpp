@@ -234,11 +234,33 @@ namespace DNDS::Cauchy
         /// Callers serialize phase calls and do not replace field handles or
         /// routing during the iteration. Synchronous CPU entry points only.
         SGSIteration BeginSGS(const Field &rhs, const Field &input, Field &forward, Field &output, bool middleExchange = false) const;
+        /// Same scan/order/communication contract for logical equation fields.
+        /// Owns numeric aliases and leases, not an MPI context. The controller
+        /// retains communication owners and completes each declared halo phase.
+        class EquationSGSIteration
+        {
+            struct State;
+            std::unique_ptr<State> _state;
+            explicit EquationSGSIteration(std::unique_ptr<State> state);
+            friend class LinearProblemContext;
+
+        public:
+            EquationSGSIteration(const EquationSGSIteration &) = delete;
+            EquationSGSIteration &operator=(const EquationSGSIteration &) = delete;
+            EquationSGSIteration(EquationSGSIteration &&) noexcept;
+            EquationSGSIteration &operator=(EquationSGSIteration &&) noexcept;
+            ~EquationSGSIteration();
+            void Lower(LinearRegion region = LinearRegion::All);
+            void Upper(LinearRegion region = LinearRegion::All);
+            void Finish();
+        };
+        EquationSGSIteration BeginSGS(const EquationDofs &rhs, const EquationDofs &input, EquationDofs &forward, EquationDofs &output, bool middleExchange = false) const;
         /// Two-buffer local symmetric GS application with distinct forward
         /// scratch. Frozen remote inputs are used throughout both scans; there
         /// is no MPI between lower and upper. This unsplit convenience owns all
         /// leases for the call; staged/communication orchestration is separate.
         void ApplySGS(const Field &rhs, const Field &input, Field &forward, Field &output) const;
+        void ApplySGS(const EquationDofs &rhs, const EquationDofs &input, EquationDofs &forward, EquationDofs &output) const;
         /// Rank-local incomplete/full factor structure. Off-rank columns stay
         /// in Apply but are excluded from local factors. Core-first ordering
         /// is optional and precedes symbolic fill; local parts are independent.

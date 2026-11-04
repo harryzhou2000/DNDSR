@@ -8,6 +8,7 @@
 #include "Solver/FieldTimeStepper.hpp"
 #include "Cauchy/State/EquationTimeStepper.hpp"
 #include "Cauchy/State/EquationGMRES.hpp"
+#include "DNDS/Runtime/Execution/EagerEngine.hpp"
 #include <numeric>
 #include <optional>
 
@@ -397,7 +398,40 @@ TEST_CASE("Retained scopes preserve allocation lifetime and storage replacement 
         for (I j = 0; j < 14; ++j)
             CHECK(old(iRow, j) == Value(mpi.rank, iRow, 7 + j));
 }
-TEST_CASE("Coupled matrix action ILU and left GMRES preserve separate and permuted logical equation fields")
+TEST_CASE("Numeric equation aliases and read scopes retain rows and values without retaining MPI context")
+{
+    std::weak_ptr<R::CommunicationContext> context;
+    std::shared_ptr<const A::DofSpace::Partition> identity;
+    std::shared_ptr<C::EquationDofs> numeric;
+    std::shared_ptr<C::EquationDofs::ReadScope> read;
+    {
+        auto communication = std::make_shared<R::CommunicationContext>(mpi.comm);
+        context = communication;
+        const A::DofSpace space(communication, 2, 0, "numeric worker lifetime");
+        identity = space.Pin();
+        auto state = C::EquationDofs::Coupled(Schema(5), A::DofField<double>(space, R::RowLayout::TiledColMajor(0, 21, 32)));
+        Fill(state);
+        numeric = std::make_shared<C::EquationDofs>(state.NumericAlias());
+        read = std::make_shared<C::EquationDofs::ReadScope>(state.ReadOwned());
+        CHECK(numeric->Space().Same(space));
+        CHECK_FALSE(numeric->Space().Distributed());
+    }
+    CHECK(context.expired()); // MPI resources retire here on the controller.
+    CHECK(numeric->Space().Pin() == identity);
+    double result = 0;
+    R::EagerEngine engine(2);
+    const auto stream = engine.CreateCPUStream();
+    engine.Submit(stream, [read = std::move(read), numeric = std::move(numeric), &result](auto) mutable
+                  {
+                      result = read->Block("species")(1, 13);
+                      read.reset();
+                      numeric.reset(); // Last numeric owners may retire on a worker.
+                  });
+    stream.Record().WaitHost();
+    CHECK(result == Value(mpi.rank, 1, 20));
+}
+
+TEST_CASE("Coupled matrix action ILU SGS and left GMRES preserve separate and permuted logical equation fields")
 {
     Fixture fixture;
     const auto schema = Schema(5);
@@ -452,6 +486,7 @@ TEST_CASE("Coupled matrix action ILU and left GMRES preserve separate and permut
     }
     problem.PrepareILUStructure(-1, false);
     problem.FactorizeILU();
+    problem.InvertDiagonal();
     for (int layout = 0; layout < 3; ++layout)
     {
         auto state = fixture.Build(schema, layout, layout != 0);
@@ -516,6 +551,96 @@ TEST_CASE("Coupled matrix action ILU and left GMRES preserve separate and permut
                 for (I j = 0; j < nv; ++j)
                     CHECK(view.View()(iRow, j) == doctest::Approx(Value(mpi.rank, iRow, j)).epsilon(2e-12));
         }
+        // A non-solution old iterate makes ordering/remote-state choices
+        // observable. Independent dense row solves do not use the SGS kernel.
+        auto old = state.Clone();
+        C::EquationDofOperations::Scale(old, .2);
+        std::vector<R::TransferBinding> oldHalo, forwardHalo;
+        for (I iField = 0; iField < old.PhysicalFieldNumber(); ++iField)
+            oldHalo.push_back(fixture.Bind(old.PhysicalField(iField)));
+        for (I iField = 0; iField < forward.PhysicalFieldNumber(); ++iField)
+            forwardHalo.push_back(fixture.Bind(forward.PhysicalField(iField)));
+        const auto rightAt = [&](int owner, I row)
+        {
+            Eigen::VectorXd b = diagonal(row) * vector(owner, row);
+            for (const auto column : columns[row])
+            {
+                const int peer = column < fixture.rows ? owner : (owner + fixture.active - 1) % fixture.active;
+                b.noalias() += off(row, column) * vector(peer, column < fixture.rows ? column : fixture.rows - 2 + column - fixture.rows);
+            }
+            return b;
+        };
+        const auto lowerAt = [&](int owner)
+        {
+            Eigen::MatrixXd y(fixture.rows, nv);
+            for (I row = 0; row < fixture.rows; ++row)
+            {
+                Eigen::VectorXd value = rightAt(owner, row);
+                for (const auto column : columns[row])
+                {
+                    Eigen::VectorXd input(nv);
+                    if (column < row)
+                        input = y.row(column).transpose();
+                    else if (column < fixture.rows)
+                        input = .2 * vector(owner, column);
+                    else
+                        input = .2 * vector((owner + fixture.active - 1) % fixture.active, fixture.rows - 2 + column - fixture.rows);
+                    value.noalias() -= off(row, column) * input;
+                }
+                y.row(row) = diagonal(row).partialPivLu().solve(value).transpose();
+            }
+            return y;
+        };
+        for (bool middle : {false, true})
+        {
+            std::vector<R::TransferOperation> active;
+            for (auto &binding : oldHalo)
+                active.push_back(binding.Begin());
+            auto sweep = problem.BeginSGS(rhs, old, forward, solved, middle);
+            sweep.Lower(C::LinearRegion::Core);
+            for (auto &operation : active)
+                operation.Wait();
+            sweep.Lower(C::LinearRegion::HaloDependent);
+            if (middle)
+            {
+                active.clear();
+                for (auto &binding : forwardHalo)
+                    active.push_back(binding.Begin());
+                for (auto &operation : active)
+                    operation.Wait();
+            }
+            sweep.Upper(C::LinearRegion::HaloDependent);
+            sweep.Upper(C::LinearRegion::Core);
+            sweep.Finish();
+            const auto lower = lowerAt(mpi.rank);
+            const auto remote = lowerAt((mpi.rank + fixture.active - 1) % fixture.active);
+            Eigen::MatrixXd expected(fixture.rows, nv);
+            for (I row = fixture.rows; row > 0;)
+            {
+                --row;
+                Eigen::VectorXd value = rightAt(mpi.rank, row);
+                for (const auto column : columns[row])
+                {
+                    Eigen::VectorXd input(nv);
+                    if (column < row)
+                        input = lower.row(column).transpose();
+                    else if (column < fixture.rows)
+                        input = expected.row(column).transpose();
+                    else if (middle)
+                        input = remote.row(fixture.rows - 2 + column - fixture.rows).transpose();
+                    else
+                        input = .2 * vector((mpi.rank + fixture.active - 1) % fixture.active, fixture.rows - 2 + column - fixture.rows);
+                    value.noalias() -= off(row, column) * input;
+                }
+                expected.row(row) = diagonal(row).partialPivLu().solve(value).transpose();
+            }
+            const auto read = solved.ReadOwned();
+            const auto mapping = read.ComponentLayout();
+            const auto output = mapping.View();
+            for (I iRow = 0; iRow < fixture.rows; ++iRow)
+                for (I j = 0; j < nv; ++j)
+                    CHECK(output(iRow, j) == doctest::Approx(expected(iRow, j)).epsilon(2e-12));
+        }
         C::EquationGMRES gmres(state, 8);
         struct Input
         {
@@ -570,6 +695,41 @@ TEST_CASE("Coupled matrix action ILU and left GMRES preserve separate and permut
         }
     }
 }
+TEST_CASE("Logical scalar-diagonal SGS handles all blocks and fails an abandoned partial output")
+{
+    const A::DofSpace space(3, 0, "scalar logical SGS");
+    const auto schema = Schema(4);
+    A::DofBundle fields(space);
+    for (const auto &block : schema.blocks)
+        fields.Add(block.name, A::DofField<double>(space, Layout(I(block.components.size()), 1)));
+    auto rhs = C::EquationDofs::Separate(schema, std::move(fields));
+    Fill(rhs);
+    auto old = rhs.Clone(), forward = rhs.Clone(), output = rhs.Clone();
+    C::LinearProblemContext problem(space, rhs.ComponentNumber(), std::vector<std::vector<I>>(3), {0, 1, 2}, C::DiagonalStorage::Entries);
+    {
+        auto write = problem.Diagonal().Write();
+        const auto d = write.View<R::TableRows>();
+        for (I iRow = 0; iRow < 3; ++iRow)
+            for (I j = 0; j < rhs.ComponentNumber(); ++j)
+                d(iRow, j) = 2 + .1 * iRow + .01 * j;
+    }
+    problem.InvertDiagonal();
+    problem.ApplySGS(rhs, old, forward, output);
+    {
+        const auto read = output.ReadOwned();
+        const auto map = read.ComponentLayout();
+        const auto values = map.View();
+        for (I iRow = 0; iRow < 3; ++iRow)
+            for (I j = 0; j < rhs.ComponentNumber(); ++j)
+                CHECK(values(iRow, j) == doctest::Approx(Value(mpi.rank, iRow, j) / (2 + .1 * iRow + .01 * j)).epsilon(1e-14));
+    }
+    {
+        auto unfinished = problem.BeginSGS(rhs, old, forward, output);
+        unfinished.Lower(C::LinearRegion::Core);
+    }
+    CHECK_THROWS(output.PhysicalField(0).Owned().Read());
+}
+
 TEST_CASE("The same BDF and coupled block solve interface advances all flow RANS and species components")
 {
     Fixture fixture;

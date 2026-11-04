@@ -44,6 +44,15 @@ namespace DNDS::Algebra
         /// Numeric commands retain row identity without performing MPI resource
         /// destruction on a CPU worker or CUDA retirement callback.
         const std::shared_ptr<const Partition> &Pin() const { return _partition; }
+        /// Share numeric row identity without owning MPI resources. Controller
+        /// fields/transfer plans keep their communication context separately.
+        /// This alias deliberately cannot supply a communicator or reduction.
+        DofSpace NumericAlias() const
+        {
+            auto result = *this;
+            result._communication.reset();
+            return result;
+        }
     };
 
     namespace Detail
