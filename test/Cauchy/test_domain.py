@@ -107,7 +107,7 @@ def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_p
         # the physical implicit step is tiny; use the ordinary CFL ramp here.
         "implicit": {"diagonal": "block", "pseudoCFL": 10, "maxPseudoCFL": 1e4, "absoluteTolerance": 1e-8,
                      "residualComponents": ["rhoY:H2", "rhoY:H2O"],
-                     "linear": {"method": "gmres", "preconditioner": "ilu"}},
+                     "linear": {"method": "ilu", "iterations": 6, "relativeTolerance": 0, "absoluteTolerance": 0}},
         "boundaries": {str(zone): {"kind": "extrapolate"} for zone in zones},
     }, "time": {"method": "bdf1"}}
     if rans:
