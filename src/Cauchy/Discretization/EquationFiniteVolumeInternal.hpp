@@ -142,9 +142,11 @@ namespace DNDS::Cauchy::EquationFVDetail
             }
         }
     }
+    /// cellLength is explicit: source consumers require the prepared mesh
+    /// length; transport/diffusion do not use it and may pass zero.
     inline Physics::RANS::Point RANSPoint(const PointScratch &point, index flowFirst, index ransFirst,
                                           const Physics::RANS::Model &model, const EquationPointProperties &properties,
-                                          real wallDistance)
+                                          real wallDistance, real cellLength)
     {
         struct Gradient
         {
@@ -155,6 +157,6 @@ namespace DNDS::Cauchy::EquationFVDetail
         const RANSStateView policy{model.Kind(), model.ComponentNumber()};
         return PrepareRANSPoint(policy, point.values.data() + flowFirst, point.values.data() + ransFirst,
                                 Gradient{point, flowFirst}, Gradient{point, ransFirst}, properties.transport.viscosity,
-                                properties.thermo.cp, properties.thermo.cp / properties.thermo.cv, wallDistance, 1.);
+                                properties.thermo.cp, properties.thermo.cp / properties.thermo.cv, wallDistance, cellLength);
     }
 }

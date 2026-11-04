@@ -346,26 +346,16 @@ namespace DNDS::CFV
                     vInc = (pPhyC * pPhyC.transpose()) * JDet;
                 });
             inertia /= this->GetCellVol(iCell);
-            real inerNorm = inertia.norm();
-            real inerCond = 1;
-            if (getDim() == 2)
-                inerCond = HardEigen::Eigen2x2RealSymEigenDecompositionGetCond(inertia({0, 1}, {0, 1}));
-            else
-                inerCond = HardEigen::Eigen3x3RealSymEigenDecompositionGetCond(inertia);
-
-            if (inerCond < 1 + smallReal)
-            {
-                inertia(0, 0) += inerNorm * smallReal * 10;
-                inertia(1, 1) += inerNorm * smallReal;
-            }
-
             cellInertia[iCell] = inertia;
             tJacobi decRet;
             decRet.setIdentity();
+            // Degenerate modes have no physical principal direction. Select
+            // axes/projections under a relative threshold instead of perturbing
+            // inertia and amplifying integration roundoff into frame rotation.
             if (getDim() == 3)
-                decRet = HardEigen::Eigen3x3RealSymEigenDecompositionNormalized(inertia);
+                decRet = HardEigen::Eigen3x3RealSymPrincipalFrame(inertia);
             else
-                decRet({0, 1}, {0, 1}) = HardEigen::Eigen2x2RealSymEigenDecompositionNormalized(inertia({0, 1}, {0, 1}));
+                decRet({0, 1}, {0, 1}) = HardEigen::Eigen2x2RealSymPrincipalFrame(inertia({0, 1}, {0, 1}));
             cellMajorCoord[iCell] = decRet;
             tSmallCoords coordsCellM = cellMajorCoord[iCell].transpose() * coordsCellC;
             tPoint hBoxM = coordsCellM.array().abs().rowwise().maxCoeff();

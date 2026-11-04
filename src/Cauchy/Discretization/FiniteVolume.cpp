@@ -169,9 +169,8 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(settings.initialState.is_null() && settings.referenceState.is_null(),
                                   "resolve tagged physical inputs before constructing FiniteVolume directly");
             if (equation.HasRANS())
-                DNDS_check_throw_info(equation.RANS().Settings().desScale > 100 &&
-                                          std::isfinite(settings.numerics.wallDistanceFloor) && settings.numerics.wallDistanceFloor > 0 && mesh->HasNodeWallDist(),
-                                      "RANS FV requires DES disabled and a published nodal wall field with a positive sampling floor");
+                DNDS_check_throw_info(std::isfinite(settings.numerics.wallDistanceFloor) && settings.numerics.wallDistanceFloor > 0 && mesh->HasNodeWallDist(),
+                                      "RANS FV requires a published nodal wall field with a positive sampling floor");
             settings.numerics.limitedVR.Validate();
             DNDS_check_throw_info(!equation.HasMixture() || settings.numerics.limiter != "LVR",
                                   "mixture LVR policy is not connected yet");
@@ -182,7 +181,9 @@ namespace DNDS::Cauchy
         auto data = std::make_shared<Data>(std::move(mesh), ResolveSweepOrdering(settings), equation);
         if (equation.HasRANS())
             MPI::LocalStage(data->mesh->getMPI(), [&]
-                            { data->wallDistance.emplace(WallDistanceSamples::Construct(data->mesh, settings.numerics.cfv.intOrder, settings.numerics.wallDistanceFloor)); });
+                            {
+                data->wallDistance.emplace(WallDistanceSamples::Construct(data->mesh, settings.numerics.cfv.intOrder, settings.numerics.wallDistanceFloor));
+                data->ransCellLength = data->metrics.BuildCellMaxLenScale(); });
         const bool limitedVR = settings.numerics.limiter == "LVR" && (settings.numerics.limitedVR.alphaMax > 0 || settings.numerics.limitedVR.contactAlphaMax > 0);
         auto meshRead = data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto topology = meshRead.HostView();

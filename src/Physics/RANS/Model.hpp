@@ -14,7 +14,7 @@ namespace DNDS::Physics::RANS
         real viscosityReference = 1, turbulentPrandtl = .9, turbulentSchmidt = .9;
         real desScale = veryLargeReal;
         int desMode = 1, saVersion = 0;
-        bool saRotationCorrection = true;
+        bool saRotationCorrection = true, useQCR = false;
         SAConfig sa;
         KOmegaConfig kOmega;
         KOmegaSSTConfig sst;
@@ -29,6 +29,7 @@ namespace DNDS::Physics::RANS
             DNDS_FIELD(desMode, "SA DES mode: 0 DDES, 1 IDDES, 2 WMLES, 3 DES97");
             DNDS_FIELD(saVersion, "Euler SA variant: 0 current, 1 oldest legacy, 9001 historical sign-error reproduction");
             DNDS_FIELD(saRotationCorrection, "Euler SA-R production correction; supplied velocity is absolute");
+            DNDS_FIELD(useQCR, "Euler QCR correction of turbulent stress; disabled by default");
             config.field_section(&T::sa, "sa", "Spalart-Allmaras kernel controls");
             config.field_section(&T::kOmega, "kOmega", "Wilcox kernel controls");
             config.field_section(&T::sst, "sst", "Menter SST kernel controls");
@@ -54,7 +55,7 @@ namespace DNDS::Physics::RANS
     {
         Eigen::Matrix<real, 7, 1> state = Eigen::Matrix<real, 7, 1>::Zero();
         Eigen::Matrix<real, 3, 7> gradient = Eigen::Matrix<real, 3, 7>::Zero();
-        real molecularViscosity = 0, wallDistance = 1, cellLength = 1;
+        real molecularViscosity = 0, wallDistance = 1, cellLength = 0;
         real cp = 1, gamma = 1.4;
     };
     struct TurbulentTransport
@@ -65,7 +66,9 @@ namespace DNDS::Physics::RANS
     /// Setup-selected CPU closure. Calls the same source/diffusion functions as
     /// Euler, with no EOS, quadrature, wall search, MPI, clipping or allocation.
     /// Caller validates finite/admissible point inputs and positive molecular
-    /// viscosity, density, wall distance and cell length before kernel execution.
+    /// viscosity, density and wall distance before kernel execution. DES/SST
+    /// sources additionally require positive mesh cellLength; transport and
+    /// diffusion do not consume that metadata and permit zero for it.
     /// Numerical reconstruction, final state repair and wall BCs remain outside.
     /// This adapter is CPU-only; it is not an implicit device fallback.
     class Model

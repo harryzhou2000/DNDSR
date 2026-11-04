@@ -465,11 +465,13 @@ namespace DNDS::Cauchy
                         {
                             const auto &model = owner->equation.RANS();
                             const index iQ = sample.point - metric.FaceQuadratureBegin(sample.face);
-                            const auto ransPoint = RANSPoint(face, flowFirst, ransFirst, model, point, wallValues.faces(sample.face, iQ));
+                            // Transport does not consume the DES source length.
+                            const auto ransPoint = RANSPoint(face, flowFirst, ransFirst, model, point, wallValues.faces(sample.face, iQ), 0);
                             const auto turbulent = model.Transport(ransPoint);
                             transportOptions.turbulentViscosity = turbulent.viscosity;
                             transportOptions.turbulentConductivity = turbulent.conductivity;
                             transportOptions.turbulentSpeciesDiffusivity = turbulent.speciesDiffusivity;
+                            transportOptions.useQCR = model.Settings().useQCR;
                             const auto diffusionRANS = model.DiffusionFlux(ransPoint, Eigen::Vector3d{normal[0], normal[1], normal[2]}, turbulent.viscosity);
                             for (int j = 0; j < model.ComponentNumber(); ++j)
                                 flux[ransFirst + j] -= diffusionRANS[j];
@@ -559,6 +561,10 @@ namespace DNDS::Cauchy
             const auto walls = wallRead ? wallRead->HostView() : WallDistanceView{};
             const auto weightRead = sourceWeights.Read();
             const auto weights = weightRead.View<R::FixedRows<1>>();
+            std::optional<R::Array<real>::ReadLease> lengthRead;
+            if (ransFirst >= 0)
+                lengthRead.emplace(owner->ransCellLength.Read());
+            const auto lengths = lengthRead ? lengthRead->View<R::FixedRows<1>>() : R::ArrayView<const real, R::AccessBoundsChecks, R::FixedRows<1>>{};
             std::optional<EquationDofs::WriteScope> output;
             if (result)
                 output.emplace(result->WriteOwned());
@@ -606,7 +612,7 @@ namespace DNDS::Cauchy
                     if (ransFirst >= 0)
                     {
                         const auto &model = owner->equation.RANS();
-                        const auto input = RANSPoint(point, flowFirst, ransFirst, model, properties, walls.cells(iCell, iPoint - sourceOffsets[iCell]));
+                        const auto input = RANSPoint(point, flowFirst, ransFirst, model, properties, walls.cells(iCell, iPoint - sourceOffsets[iCell]), lengths(iCell, 0));
                         const auto diagonal = model.ImplicitSourceDiagonal(input);
                         const auto source = result ? model.Source(input) : std::array<real, 2>{};
                         for (int j = 0; j < model.ComponentNumber(); ++j)

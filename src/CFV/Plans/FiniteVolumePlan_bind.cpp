@@ -91,7 +91,9 @@ namespace DNDS::CFV
                  py::arg("prototype"), py::arg("device") = Runtime::Device::Host())
             .def("BindHalo", &FiniteVolumePlan::BindHalo, "Collective persistent direct MPI binding; explicitly begin/wait on each field stage.")
             .def("GetCellVol", &FiniteVolumePlan::GetCellVol)
-            .def("GetCellCent", &FiniteVolumePlan::GetCellCent);
+            .def("GetCellCent", &FiniteVolumePlan::GetCellCent)
+            .def("BuildCellMaxLenScale", &FiniteVolumePlan::BuildCellMaxLenScale,
+                 "CPU setup: derive Euler-compatible principal-axis maximum lengths for local metric rows; rebuild after mesh changes.");
         py::class_<ReconstructionBoundaryValues>(m, "ReconstructionBoundaryValues")
             .def_property_readonly("values", [](ReconstructionBoundaryValues &value)
                                    { return Runtime::PythonArray::Share(value.values); });

@@ -181,6 +181,12 @@ namespace DNDS::CFV
         MPI_Comm Communicator() const;
         real GetCellVol(index iCell) const;
         Geom::tPoint GetCellCent(index iCell) const;
+        /// Explicit CPU setup product: one maximum principal-axis cell extent
+        /// for every owned/ghost metric row. Shares GetCellMaxLenScale geometry
+        /// and its degeneracy-aware principal frame (relative gap 1e-8). No MPI or cache
+        /// mutation; the caller owns the returned buffer and must use it with
+        /// this validated metric/mesh generation. Build again after mesh edits.
+        Runtime::Array<real> BuildCellMaxLenScale() const;
     };
 
     /// Explicit Dirichlet values at the prepared boundary quadrature points.

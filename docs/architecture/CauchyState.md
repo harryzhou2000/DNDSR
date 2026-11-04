@@ -9,6 +9,17 @@ Initial, prescribed boundary and physical reference inputs share the
 [state-input conversion facility](CauchyStateInput.md). Unit-system reference
 scales and the resolved physical reference state have separate meanings.
 
+Current CPU scope (November 5): configured flow5, SA/Wilcox/SST/realizable-k-epsilon
+and optional ideal-mixture chemistry share logical DOF bindings, implicit time
+equations, native archives and observation. Extended profiles use Rusanov,
+polynomial viscosity, component WBAP and Euler-compatible implicit/rec PP;
+missing characteristic/LVR/p-FAS/interface and physical-step/explicit-PP adapters
+fail explicitly. QCR and the existing SA/SST DES formulas are connected below.
+The short flame comparison is a converged discrete sanity run; the NACA pair
+is capped and does not establish converged aerodynamics. CUDA remains deferred.
+Earlier implementation checkpoints in this document describe their then-current
+limits; they do not override the current profile summary or runtime guards.
+
 ```mermaid
 flowchart TD
     Domain --> Accepted[accepted EquationDofs]
@@ -39,8 +50,8 @@ updates are allowed.
 field names/order, component widths, device and row space must match, while
 individual AoS/SoA/AoSoA layouts may differ. It shares the immutable map and new
 field handles without copying or flattening their payload. Physical stage-solve
-and Jacobian preparation still need their extended profile adapters; this operation
-alone does not remove the current flow5 production restriction.
+and Jacobian preparation use their equation-aware adapters; rebinding alone
+does not enable a missing numerical/physical profile.
 
 `Domain::Dofs()` exposes the accepted semantic binding read-only. The existing
 `State()` physical-bundle access and `Flow()` flow5 field access remain available.
@@ -800,7 +811,7 @@ to detect stale values, and verify that inserting the RANS block changes only
 the index locations of mixture thermal references and chemical derivatives.
 
 The C++ full-state finite-volume operator accepts SA, Wilcox k-omega, SST and
-realizable k-epsilon without DES. It
+realizable k-epsilon, with the existing SA/SST DES formulas. It
 requires the mesh's published nodal wall field and samples it with the configured
 positive `numerics.wallDistanceFloor` (default `1e-10`). Sources and the positive
 implicit destruction diagonal are integrated on cell quadrature; viscous face
@@ -858,6 +869,9 @@ logical component schema. Readers reject changed closures even if the scalar
 names match, while physical array layouts may differ. Optional reconstruction
 and BDF history follow the existing full-state checkpoint protocol. Spatial
 output includes named RANS scalars and uses RANS-aware boundary states.
+Older configuration/model metadata without `useQCR` means false; semantic
+comparison removes that inactive default on both sides. An enabled value
+remains a physical model difference. Other model comparisons stay strict.
 
 This is a configured CPU RANS path with focused distributed correctness coverage,
 not completion of the matched Euler physical/performance studies. It currently
@@ -867,8 +881,15 @@ Scalar reconstruction fallback is applied independently at boundary, face and
 volume points, using the corresponding cell mean. This preserves Euler's
 model-specific fallback. Coefficient-level scalar PP and reference-order checks
 follow the separate Euler rules documented in [CauchyPositivity.md](CauchyPositivity.md).
-DES and QCR integration remain pending. Existing NS/mixture profiles retain
-their behavior.
+`equation.rans.useQCR` optionally applies Euler's shared QCR stress correction
+and its energy work (default false). DES sources and destruction diagonals use
+an explicit CFV buffer of principal-axis cell extents, including local ghosts,
+rather than a unit or volume-length placeholder. The immutable metric owner
+invalidates this derived buffer on geometry changes. Building it performs no
+new halo exchange. SA retains its existing mode selectors and SST its shielding;
+the inherited IDDES wall-normal-spacing limitation remains. These options have
+focused constitutive/source checks, not a validated DES flow campaign.
+Existing NS/mixture profiles retain their behavior.
 
 The shared boundary-point protocol now receives a `RANSBoundaryInput` with
 the model, logical scalar offset, a borrowed cell mean and its sampled mean

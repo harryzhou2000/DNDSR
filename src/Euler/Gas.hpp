@@ -20,6 +20,7 @@
 #pragma once
 #include "DNDS/Core/Defines.hpp"
 #include "DNDS/Physics/IdealGasPhysics.hpp"
+#include "Physics/Transport/QuadraticStress.hpp"
 #include "Euler/AUSM.hpp"
 
 #include "DNDS/Serializer/JsonUtil.hpp"
@@ -1970,23 +1971,7 @@ namespace DNDS::Euler::Gas
         Eigen::Matrix<real, dim, dim> vStress = (diffVelo + diffVelo.transpose()) * mu +
                                                 Eigen::Matrix<real, dim, dim>::Identity() * (lambda * mu * diffVelo.trace());
         if (mutQCRFix)
-        {
-            real b = std::sqrt((diffVelo.array() * diffVelo.array()).sum());
-            Eigen::Matrix<real, dim, dim> O = (diffVelo.transpose() - diffVelo) / (b + verySmallReal); // dU_i/dx_j-dU_j/dx_i
-            real ccr1 = 0.3;
-            Eigen::Matrix<real, dim, dim> vStressQCRFix;
-            vStressQCRFix.setZero();
-            vStressQCRFix.diagonal() = (vStress.array() * O.array()).rowwise().sum();
-            vStressQCRFix(0, 1) = O(0, 1) * (vStress(1, 1) - vStress(0, 0));
-            if constexpr (dim == 3)
-            {
-                vStressQCRFix(0, 1) += O(1, 2) * vStress(0, 2) + O(0, 2) * vStress(1, 2);
-                vStressQCRFix(0, 2) = O(0, 2) * (vStress(2, 2) - vStress(0, 0)) + O(0, 1) * vStress(2, 1) + O(2, 1) * vStress(0, 1);
-                vStressQCRFix(1, 2) = O(1, 2) * (vStress(2, 2) - vStress(1, 1)) + O(1, 0) * vStress(2, 0) + O(2, 0) * vStress(1, 0);
-            }
-            Eigen::Matrix<real, dim, dim> vStressQCRFixFull = vStressQCRFix + vStressQCRFix.transpose();
-            vStress -= ccr1 * mutRatio * vStressQCRFixFull;
-        }
+            Physics::Transport::ApplyQCRStress<dim>(vStress, diffVelo, mutRatio);
         Flux(0) = 0;
         Flux(Seq123) = vStress * norm;
         Flux(dim + 1) = (vStress * velo).dot(norm) + conductiveFlux;

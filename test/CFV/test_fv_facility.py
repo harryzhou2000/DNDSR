@@ -29,6 +29,9 @@ def function(point):
 def test_reconstruction_shared_buffers_explicit_halo_and_point_sampling(cache_enabled):
     grid = mesh()
     metrics = CFV.FiniteVolumePlan.ConstructMetrics(grid)
+    lengths = metrics.BuildCellMaxLenScale().numpy()
+    assert lengths.shape == (metrics.NumCellProc(), 1)
+    assert np.all(np.isfinite(lengths)) and np.all(lengths > 0)
     settings = CFV.ReconstructionSettings()
     assert settings.cacheDiffBaseOrder == 1
     settings.cacheDiffBase = cache_enabled

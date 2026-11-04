@@ -13,6 +13,22 @@ namespace DNDS::HardEigen
     // #define EIGEN_USE_LAPACKE
     namespace
     {
+        template <class Matrix>
+        Eigen::SelfAdjointEigenSolver<Matrix> PrincipalSpectrum(const Matrix &A, real tolerance)
+        {
+            DNDS_check_throw_info(A.allFinite() && std::isfinite(tolerance) && tolerance >= 0 && tolerance < 1,
+                                  "invalid symmetric principal-frame input or tolerance");
+            const real scale = A.cwiseAbs().maxCoeff();
+            const Matrix normalized = scale > 0 ? Matrix(A / scale) : A;
+            DNDS_check_throw_info((normalized - normalized.transpose()).cwiseAbs().maxCoeff() <= 64 * std::numeric_limits<real>::epsilon(),
+                                  "principal-frame input is not symmetric");
+            // The iterative self-adjoint solve avoids cancellation in the
+            // analytic cubic formula precisely where a spectral gap vanishes.
+            Eigen::SelfAdjointEigenSolver<Matrix> solver((normalized + normalized.transpose()) * .5);
+            DNDS_check_throw_info(solver.info() == Eigen::Success, "principal-frame eigensolve failed");
+            return solver;
+        }
+
         void DescribeInverse(const Eigen::VectorXd &singular, const Eigen::VectorXd &inverse,
                              real cutoff, SVDInverseDiagnostics *diagnostics)
         {
@@ -193,6 +209,61 @@ namespace DNDS::HardEigen
         // ret(EigenAll, 0) *= signP(ret(0, 0));
         // ret(EigenAll, 1) *= ret.determinant();
         return ret;
+    }
+
+    Eigen::Matrix2d Eigen2x2RealSymPrincipalFrame(const Eigen::Matrix2d &A, real relativeTolerance)
+    {
+        const auto solver = PrincipalSpectrum(A, relativeTolerance);
+        const auto &values = solver.eigenvalues();
+        if (values[1] - values[0] <= relativeTolerance * values.cwiseAbs().maxCoeff())
+            return Eigen::Matrix2d::Identity();
+        return Eigen2x2RealSymEigenDecompositionNormalized(A);
+    }
+
+    Eigen::Matrix3d Eigen3x3RealSymPrincipalFrame(const Eigen::Matrix3d &A, real relativeTolerance)
+    {
+        const auto solver = PrincipalSpectrum(A, relativeTolerance);
+        const auto &values = solver.eigenvalues();
+        const real tolerance = relativeTolerance * values.cwiseAbs().maxCoeff();
+        if (values[2] - values[0] <= tolerance)
+            return Eigen::Matrix3d::Identity();
+        const real lowerGap = values[1] - values[0], upperGap = values[2] - values[1];
+        const bool lowerPair = lowerGap <= tolerance && lowerGap <= upperGap;
+        if (!lowerPair && upperGap > tolerance)
+            return Eigen3x3RealSymEigenDecompositionNormalized(A);
+
+        Eigen::Vector3d normal = solver.eigenvectors().col(lowerPair ? 2 : 0);
+        const real largest = normal.cwiseAbs().maxCoeff();
+        int axis = 0;
+        while (std::abs(normal[axis]) < largest - relativeTolerance)
+            ++axis;
+        if (normal[axis] < 0)
+            normal = -normal;
+        const Eigen::Vector3d coordinate = Eigen::Vector3d::Unit(axis);
+        if ((normal - coordinate).norm() <= relativeTolerance)
+            normal = coordinate;
+
+        // Pick the most aligned coordinate projection. Tolerant lexicographic
+        // ties keep roundoff from choosing another direction in the same plane.
+        const real smallest = normal.cwiseAbs().minCoeff();
+        int tangentAxis = 0;
+        while (std::abs(normal[tangentAxis]) > smallest + relativeTolerance)
+            ++tangentAxis;
+        const Eigen::Vector3d tangent = (Eigen::Vector3d::Unit(tangentAxis) - normal[tangentAxis] * normal).normalized();
+        Eigen::Matrix3d frame;
+        if (lowerPair)
+        {
+            frame.col(0) = normal;
+            frame.col(1) = tangent;
+            frame.col(2) = normal.cross(tangent).normalized();
+        }
+        else
+        {
+            frame.col(0) = tangent;
+            frame.col(1) = normal.cross(tangent).normalized();
+            frame.col(2) = normal;
+        }
+        return frame;
     }
 
     Eigen::Index EigenLeastSquareSolve(const Eigen::MatrixXd &A, const Eigen::MatrixXd &B, Eigen::MatrixXd &AIB)

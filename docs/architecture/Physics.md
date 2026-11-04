@@ -34,6 +34,7 @@ flowchart TD
 | `Physics/Thermodynamics/IdealMixtureGradient.hpp` | Exact ideal-mixture temperature chain rule |
 | `Physics/Transport/MixtureAveragedDiffusion.hpp` | Conservative species-flux correction and full-enthalpy energy diffusion |
 | `Physics/Transport/NewtonianFourier.hpp` | Pure three-component Stokes stress, viscous work and Fourier normal heat flux |
+| `Physics/Transport/QuadraticStress.hpp` | Euler QCR tensor correction with an explicit velocity gradient and turbulent/total viscosity ratio |
 | `Physics/RANS/RANSModels.hpp` | Existing SA, Wilcox, SST and realizable k-epsilon constitutive/source kernels |
 | `Physics/RANS/Model.hpp` | CPU point adapter selecting those kernels, with conservative gradients, model settings and positive implicit destruction diagonals |
 
@@ -79,10 +80,12 @@ SA viscosity and diffusion formulas now have shared functions called by Euler
 as well, including the compile-time negative-SA convention.
 
 The caller must provide finite, admissible point values, positive molecular
-viscosity/density/wall distance/cell length, a unit normal, common code units
+viscosity/density/wall distance, a unit normal, common code units
 and a consistent Cartesian frame. Validate batches outside hot loops. The
 adapter does not clip solution values, apply wall BCs, infer reference scales,
-or silently fall back from a missing device implementation.
+or silently fall back from a missing device implementation. Source evaluation
+also needs a positive cell length for active SA DES and for SST. Transport and
+diffusion do not consume that length; their explicit unused value may be zero.
 
 `Cauchy::WallDistanceSamples` consumes Geom's completed nodal wall field. It
 interpolates **scalar nodal norms** with P1/P2 shape functions at cell and face
@@ -96,13 +99,32 @@ positive floor. Cell means use Euler's arithmetic quadrature-mean convention.
 versions before exposing plain CPU views. A wall rebuild invalidates samples
 even when coordinates have not changed. No separate Cauchy wall search exists.
 
-These are integration foundations, **not completed Cauchy RANS support**.
-The equation schema/configuration, spatial transport/source assembly, wall
-states, approximate matrix contributions and model-specific admissibility
-still need connection before a RANS profile may be enabled. Euler's DES
-length uses an inertia-aligned bounding box; the isotropic native FV scale
-must not silently replace it. QCR, eigenvalue and reconstruction/source-order
-options remain explicit integration work, as tracked in the plan51 ledger.
+The configured Cauchy CPU path connects these closures, wall states,
+quadrature sources, destruction diagonals and scalar admissibility; see
+[the supported equation profiles](CauchyState.md). This does not establish
+converged aerodynamic or DES flow validation.
+
+DES receives an explicit setup-time `FiniteVolumePlan::BuildCellMaxLenScale()`
+buffer. It shares Euler's inertia-aligned maximum extent, rather than substituting
+a unit value or volume length. Both CFV paths use the shared principal-frame
+rule: gaps within `1e-8*max(abs(eigenvalue))` are degenerate. A fully degenerate
+tensor uses coordinate axes exactly; a repeated pair uses coordinate projections
+in its plane while retaining the distinct principal direction. Inertia is no
+longer perturbed to manufacture a direction. Nondegenerate frames keep the
+existing normalized eigensolver. This deliberately changes near-degenerate
+legacy geometry setup, rather than promising byte-identical old frames.
+It contains owned and already-published ghost cells, with no extra MPI. Retain
+it with the metric plan; geometry changes invalidate that plan and require a
+new derived buffer. The existing SA DES97/DDES/IDDES/WMLES and SST shielding/
+source formulas are unchanged. The inherited IDDES path still lacks a separate
+wall-normal mesh spacing input.
+
+`ApplyQCRStress` is the shared Euler tensor formula. It receives total Newtonian
+stress, the primitive velocity gradient in `(direction,component)` order and
+`mu_t/(mu_total+eps)`, and applies `-0.3*ratio*(O*S-S*O)`. It looks up no model or
+geometry. Euler retains its prior arithmetic; Cauchy selects the same correction
+through `equation.rans.useQCR` (default false). The normal-flux kernel includes
+the corrected traction's energy work. This is not a new turbulence model.
 
 ## Ownership and use
 
@@ -315,8 +337,9 @@ independent sum; full species enthalpies contribute to energy diffusion. For
 `EquationTransportScratch` owns two full-species temporary vectors allocated
 once per CPU worker/tile. The caller serializes/reuses it and retains its
 point evaluator. `EquationTransportOptions` can add explicitly prepared scalar
-turbulent viscosity, conductivity and diffusivity. These inputs do not select
-or implement an SA/SST closure, isotropic turbulent stress or QCR correction.
+turbulent viscosity, conductivity and diffusivity, with a separate `useQCR`
+choice. These inputs do not select an SA/SST closure or supply the isotropic
+two-equation turbulent stress; those remain separate equation-level producers.
 Adiabatic mode suppresses conduction; impermeable mode suppresses species and
 its enthalpy flux. Neither discards viscous stress/work.
 

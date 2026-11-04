@@ -316,16 +316,35 @@ TEST_CASE("Configured RANS BDF2 restores all fields across layouts and rejects c
         source.Advance(2e-4);
         REQUIRE(!source.LastImplicitStages().empty());
         CHECK(source.LastImplicitStages().back().converged);
-        const C::Json metadata{{"test", "SA BDF history"}};
-        source.WriteCheckpoint(path, metadata, true);
+        const C::Json metadata = config.Root();
+        auto olderConfig = metadata;
+        olderConfig["domains"][0]["settings"]["equation"]["rans"].erase("useQCR");
+        source.WriteCheckpoint(path, olderConfig, true);
+        std::string olderModel;
         {
             auto file = std::make_shared<DNDS::Serializer::SerializerH5>(mpi);
             file->OpenFile(path, true);
             std::string text;
             file->ReadString("metadata_json", text);
-            CHECK(C::Json::parse(text).at("flow").at("rans").at("model") == settings.equation.rans.model);
+            auto description = C::Json::parse(text);
+            CHECK(description.at("flow").at("rans").at("model") == settings.equation.rans.model);
+            description["flow"]["rans"].erase("useQCR");
+            olderModel = description.dump();
             file->CloseFile();
         }
+        // Emulate the actual earlier on-disk model metadata, not just an old
+        // caller config. Write the shorter JSON into its fixed-size attribute.
+        DNDS::MPI::LocalStage(mpi, [&]
+                              {
+            if (mpi.rank != 0) return;
+            const auto file = H5Fopen(path.c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
+            DNDS_check_throw_info(file >= 0, "cannot edit checkpoint fixture metadata");
+            const auto attribute = H5Aopen(file, "metadata_json", H5P_DEFAULT), type = H5Aget_type(attribute);
+            const auto size = H5Tget_size(type);
+            DNDS_check_throw_info(H5Tis_variable_str(type) == 0 && olderModel.size() <= size, "fixture metadata string shape changed");
+            olderModel.resize(size, '\0');
+            CHECK(H5Awrite(attribute, type, olderModel.data()) >= 0);
+            H5Tclose(type); H5Aclose(attribute); H5Fclose(file); });
         settings.execution.layout = "aosoa32";
         C::Domain restored("sa", mesh, settings, time);
         restored.ReadCheckpoint(path, metadata);
@@ -345,7 +364,7 @@ TEST_CASE("Configured RANS BDF2 restores all fields across layouts and rejects c
         source.Advance(1.5e-4);
         restored.Advance(1.5e-4);
         compare(2e-12);
-        settings.equation.rans.turbulentPrandtl = .8;
+        settings.equation.rans.useQCR = true;
         C::Domain different("sa", mesh, settings, time);
         const C::EquationDofOperations::Binding before(different.Dofs());
         CHECK_THROWS(different.ReadCheckpoint(path, metadata));

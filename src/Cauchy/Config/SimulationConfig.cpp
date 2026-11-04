@@ -298,8 +298,7 @@ namespace DNDS::Cauchy
         if (rans)
         {
             require((s.equation.rans.model == "SA" || s.equation.rans.model == "KOmegaWilcox" ||
-                     s.equation.rans.model == "KOmegaSST" || s.equation.rans.model == "RealizableKE") &&
-                        s.equation.rans.desScale > 100,
+                     s.equation.rans.model == "KOmegaSST" || s.equation.rans.model == "RealizableKE"),
                     "RANS spatial profile " + s.equation.rans.model);
             require(s.equation.transport == "NewtonianFourier", "RANS requires viscous transport");
         }

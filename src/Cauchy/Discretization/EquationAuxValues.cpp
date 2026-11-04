@@ -434,7 +434,7 @@ namespace DNDS::Cauchy
             if (ransFirst >= 0 && turbulent)
             {
                 const auto &model = data->equation.RANS();
-                const auto transport = model.Transport(EquationFVDetail::RANSPoint(point, flowFirst, ransFirst, model, result, wallDistance));
+                const auto transport = model.Transport(EquationFVDetail::RANSPoint(point, flowFirst, ransFirst, model, result, wallDistance, 0));
                 diffusion = std::max({diffusion, real(4. / 3.) * (result.transport.viscosity + transport.viscosity) / flow[0],
                                       (result.transport.conductivity + transport.conductivity) / (flow[0] * result.thermo.cv)});
             }

@@ -3,6 +3,18 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("Configured RANS exposes Euler DES and QCR controls without a unit-length substitution")
+{
+    C::Json input{{"defaults", {{"equation", {{"transport", "NewtonianFourier"}, {"viscosity", .001}, {"rans", {{"model", "SA"}, {"desScale", .01}, {"desMode", 3}, {"useQCR", true}}}}}, {"numerics", {{"flux", "rusanov"}, {"faceFallback", false}, {"viscousGradient", "polynomial"}}}}}};
+    const auto config = C::SimulationConfig::Resolve(input, 1);
+    const auto &rans = config.Domains()[0].settings.equation.rans;
+    CHECK(rans.desScale == .01);
+    CHECK(rans.desMode == 3);
+    CHECK(rans.useQCR);
+    input["defaults"]["equation"]["rans"]["model"] = "none";
+    CHECK_THROWS(C::SimulationConfig::Resolve(input, 1));
+}
+
 TEST_CASE("Halo freshness audits are opt-in and the collective check switch overrides them")
 {
     const auto defaults = C::SimulationConfig::Resolve(C::Json::object(), 1);

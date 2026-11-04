@@ -2,6 +2,7 @@
 #include "CFV/Detail/ReconstructionData.hpp"
 #include "Geom/Quadratures/Quadrature.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include "DNDS/Math/HardEigen.hpp"
 
 namespace DNDS::CFV
 {
@@ -208,6 +209,45 @@ namespace DNDS::CFV
         Validate();
         auto read = _data->cell.Read();
         return read.View<R::FixedRows<8>, true>()(iCell, 0);
+    }
+    Runtime::Array<real> FiniteVolumePlan::BuildCellMaxLenScale() const
+    {
+        const auto geometry = AcquireRead();
+        const auto metric = geometry.HostView();
+        const auto access = _data->mesh->AcquireRead(MeshReadRequirements::Primary());
+        const auto mesh = access.HostView();
+        Runtime::Array<real> result(Runtime::RowLayout::Dense(NumCellProc(), 1));
+        auto write = result.Write();
+        const auto length = write.View<Runtime::FixedRows<1>>();
+        tSmallCoords coordinates;
+        for (index iCell = 0; iCell < NumCellProc(); ++iCell)
+        {
+            mesh.GetCoordsOnCell(iCell, coordinates);
+            const auto element = mesh.GetCellElement(iCell);
+            const Quadrature quadrature(element, INT_ORDER_MAX);
+            const tPoint bary = metric.GetCellBary(iCell);
+            tJacobi inertia = tJacobi::Zero();
+            for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
+            {
+                const auto &shape = Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(INT_ORDER_MAX).at(iQ);
+                const tPoint centered = PPhysicsCoordD01Nj(coordinates, shape) - bary;
+                // Legacy inertia uses the geometric Jacobian even in radial
+                // integration, with its metric volume and barycentre.
+                inertia += (centered * centered.transpose()) * CellJacobianDet(Dimension(), coordinates, shape) * quadrature.GetWeight(iQ);
+            }
+            inertia /= metric.GetCellVol(iCell);
+            tJacobi frame = tJacobi::Identity();
+            if (Dimension() == 3)
+                frame = HardEigen::Eigen3x3RealSymPrincipalFrame(inertia);
+            else
+                frame({0, 1}, {0, 1}) = HardEigen::Eigen2x2RealSymPrincipalFrame(inertia({0, 1}, {0, 1}));
+            const tSmallCoords centered = frame.transpose() * (coordinates.colwise() - bary);
+            const tPoint halfBox = centered.array().abs().rowwise().maxCoeff();
+            const real value = 2 * halfBox.head(Dimension()).maxCoeff();
+            DNDS_check_throw_info(std::isfinite(value) && value > 0, "invalid principal-axis cell length");
+            length(iCell, 0) = value;
+        }
+        return result;
     }
     tPoint FiniteVolumePlan::GetCellCent(index iCell) const
     {

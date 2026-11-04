@@ -2,6 +2,45 @@
 #include "doctest.h"
 #include "DNDS/Math/HardEigen.hpp"
 
+TEST_CASE("Degenerate inertia frames use coordinate axes and deterministic principal planes")
+{
+    namespace H = DNDS::HardEigen;
+    constexpr double tolerance = 1e-8;
+    Eigen::Matrix3d noise;
+    noise << .1, .2, -.1, .2, -.2, .3, -.1, .3, .1;
+    for (double scale : {1e-100, 1., 1e100})
+    {
+        const Eigen::Matrix3d isotropic = scale * (Eigen::Matrix3d::Identity() + tolerance * .1 * noise);
+        CHECK(H::Eigen3x3RealSymPrincipalFrame(isotropic, tolerance).isIdentity(0));
+        CHECK(H::Eigen2x2RealSymPrincipalFrame(isotropic.topLeftCorner<2, 2>(), tolerance).isIdentity(0));
+    }
+    CHECK(H::Eigen3x3RealSymPrincipalFrame(Eigen::Matrix3d::Zero()).isIdentity(0));
+    const Eigen::Vector3d normal = Eigen::Vector3d(1, 2, 3).normalized();
+    const Eigen::Vector3d tangent = (Eigen::Vector3d::UnitX() - normal[0] * normal).normalized();
+    for (bool lowerPair : {true, false})
+    {
+        const Eigen::Matrix3d inertia = lowerPair ? Eigen::Matrix3d(Eigen::Matrix3d::Identity() + 3 * normal * normal.transpose())
+                                                  : Eigen::Matrix3d(4 * Eigen::Matrix3d::Identity() - 3 * normal * normal.transpose());
+        const auto frame = H::Eigen3x3RealSymPrincipalFrame(inertia, tolerance);
+        CHECK(frame.col(lowerPair ? 0 : 2).isApprox(normal, 2e-14));
+        CHECK(frame.col(lowerPair ? 1 : 0).isApprox(tangent, 2e-14));
+        CHECK((frame.transpose() * frame).isIdentity(2e-14));
+        CHECK(frame.determinant() == doctest::Approx(1).epsilon(2e-14));
+        CHECK((frame.transpose() * inertia * frame).isDiagonal(2e-14));
+        const Eigen::Matrix3d perturbed = inertia + 1e-10 * (tangent * tangent.transpose());
+        CHECK(H::Eigen3x3RealSymPrincipalFrame(perturbed, tolerance).isApprox(frame, 2e-9));
+    }
+    const Eigen::Matrix3d axial = Eigen::Vector3d(4, 1, 1).asDiagonal();
+    CHECK(H::Eigen3x3RealSymPrincipalFrame(axial + 1e-12 * noise).isIdentity(0));
+    const Eigen::Matrix3d rotation = Eigen::AngleAxisd(.7, normal).toRotationMatrix();
+    const Eigen::Matrix3d resolved = rotation * Eigen::Vector3d(1, 2, 4).asDiagonal() * rotation.transpose();
+    const auto frame = H::Eigen3x3RealSymPrincipalFrame(resolved);
+    CHECK(frame.isApprox(H::Eigen3x3RealSymEigenDecompositionNormalized(resolved), 0));
+    CHECK((frame.transpose() * resolved * frame).isDiagonal(2e-14));
+    CHECK_FALSE(frame.cwiseAbs().isIdentity(.01));
+    CHECK_THROWS(H::Eigen3x3RealSymPrincipalFrame(resolved, -1));
+}
+
 TEST_CASE("SVD cutoff retains constrained modes and reports the actual rank")
 {
     Eigen::MatrixXd A = Eigen::Vector3d(1, 1e-8, 1e-14).asDiagonal();

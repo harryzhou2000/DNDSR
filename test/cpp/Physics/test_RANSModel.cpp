@@ -72,6 +72,12 @@ TEST_CASE("RANS adapter dispatch retains source and destruction diagonal convent
         settings.kOmega.productionLimit = 15;
         settings.sst.productionLimit = 10;
         const R::Model model(settings);
+        if (model.Kind() == R::ModelKind::KOmegaSST)
+        {
+            auto missingLength = point;
+            missingLength.cellLength = 0;
+            CHECK_THROWS(model.Source(missingLength));
+        }
         for (int mode = 0; mode < 2; ++mode)
         {
             Eigen::Matrix<double, 7, 1> expected = Eigen::Matrix<double, 7, 1>::Zero();

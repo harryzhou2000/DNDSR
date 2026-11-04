@@ -72,6 +72,14 @@ TEST_CASE("Runtime FV matches legacy VR sweeps and reproduces cell-average polyn
             }
             legacy.parseSettings(json);
             legacy.ConstructMetrics();
+            if (degree == 1 && !hqm)
+            {
+                const auto lengths = metrics.BuildCellMaxLenScale();
+                const auto read = lengths.Read();
+                const auto values = read.View<R::FixedRows<1>>();
+                for (DNDS::index iCell = 0; iCell < metrics.NumCellProc(); ++iCell)
+                    CHECK(values(iCell, 0) == doctest::Approx(legacy.GetCellMaxLenScale(iCell)).epsilon(2e-11));
+            }
             legacy.ConstructBaseAndWeight([](t_index, int order)
                                           { return order == 0 ? 1. : 0.; });
             legacy.ConstructRecCoeff();

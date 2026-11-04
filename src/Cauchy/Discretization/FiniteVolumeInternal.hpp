@@ -124,6 +124,7 @@ namespace DNDS::Cauchy
         std::vector<index> positivityOffsets;
         std::optional<ThermalBounds> thermalBounds;
         std::optional<WallDistanceSamples> wallDistance;
+        Runtime::Array<real> ransCellLength;
         const ThermalBounds &PerfectGasBounds() const
         {
             DNDS_check_throw_info(thermalBounds, "flow-only thermal policy is unavailable for this equation");

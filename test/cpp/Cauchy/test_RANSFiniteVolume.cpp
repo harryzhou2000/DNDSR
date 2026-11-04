@@ -38,7 +38,7 @@ namespace
         model.viscosityReference = .01;
         return C::EquationSystem::Resolve(settings.equation).WithRANS(model);
     }
-    void Fill(C::EquationDofs &state, const C::FiniteVolume &fv, bool nonconstant)
+    void Fill(C::EquationDofs &state, const C::FiniteVolume &fv, bool nonconstant, double omega = .1)
     {
         auto write = state.WriteOwned();
         const auto flow = write.Block("flow"), sa = write.Block("rans");
@@ -51,7 +51,7 @@ namespace
                 flow(iCell, j) = value[j];
             sa(iCell, 0) = nonconstant ? .02 * (1 + .1 * std::cos(6.283185307179586 * center[0])) : .02;
             if (sa.ComponentNumber() == 2)
-                sa(iCell, 1) = .1;
+                sa(iCell, 1) = omega;
         }
     }
     C::EquationDofs State(const C::FiniteVolume &fv, bool split)
@@ -123,6 +123,20 @@ TEST_CASE("RANS wall force uses the completed RHS momentum flux with the physica
 TEST_CASE("RANS FV integrates quadrature sources and their positive implicit destruction diagonal")
 {
     auto mesh = CFVTest::CartesianHexes(mpi, 2);
+    {
+        // Fully degenerate cube inertia must select global axes exactly,
+        // without amplifying quadrature roundoff into a rotated hMax.
+        const auto metrics = DNDS::CFV::FiniteVolumePlan::ConstructMetrics(mesh);
+        const auto lengths = metrics.BuildCellMaxLenScale();
+        const auto read = lengths.Read();
+        for (I iCell = 0; iCell < metrics.NumCellProc(); ++iCell)
+            CHECK(read.View<R::FixedRows<1>>()(iCell, 0) == doctest::Approx(.5).epsilon(2e-12));
+    }
+    // Distinct principal inertias give an independent, well-conditioned
+    // nonunit hMax oracle, in addition to the degenerate cube above.
+    const Eigen::Vector3d side{1, 2, 3};
+    mesh->TransformCoords([&](const auto &point) -> DNDS::Geom::tPoint
+                          { return point.cwiseProduct(side); });
     mesh->BuildNodeWallDist([](auto zone)
                             { return zone == 7; });
     for (const auto *name : {"SA", "KOmegaWilcox", "KOmegaSST", "RealizableKE"})
@@ -132,12 +146,27 @@ TEST_CASE("RANS FV integrates quadrature sources and their positive implicit des
         settings.mesh.dimension = 3;
         auto modelSettings = Equation(settings).RANS().Settings();
         modelSettings.model = name;
+        if (std::string(name) == "SA" || std::string(name) == "KOmegaSST")
+        {
+            modelSettings.desScale = .01;
+            modelSettings.desMode = 3;
+        }
         const auto equation = C::EquationSystem::Resolve(settings.equation).WithRANS(modelSettings);
         const int components = equation.RANS().ComponentNumber(), width = 5 + components;
         C::FiniteVolume fv(mesh, settings, equation);
+        const auto lengths = fv.Metrics().BuildCellMaxLenScale();
+        {
+            const auto read = lengths.Read();
+            const auto values = read.View<R::FixedRows<1>>();
+            for (I iCell = 0; iCell < fv.Metrics().NumCellProc(); ++iCell)
+                CHECK(values(iCell, 0) == doctest::Approx(1.5).epsilon(2e-12));
+        }
         auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(width));
         auto result = C::EquationDofOperations::NewVector(state);
-        Fill(state, fv, false);
+        // SST's F2 shielding must leave some off-wall quadrature points in
+        // DES mode, otherwise a wrong mesh length would be invisible here.
+        const double omega = std::string(name) == "KOmegaSST" ? 20 : .1;
+        Fill(state, fv, false, omega);
         auto work = fv.BuildEquationWorkspace(state);
         R::EagerEngine engine;
         const auto stream = engine.CreateCPUStream();
@@ -173,6 +202,7 @@ TEST_CASE("RANS FV integrates quadrature sources and their positive implicit des
             const auto rhs = rhsRead.Block("rans"), flowRHS = rhsRead.Block("flow");
             const auto diagonal = diagonalRead.View();
             const DNDS::Geom::Elem::Quadrature quadrature(DNDS::Geom::Elem::Element{DNDS::Geom::Elem::Hex8}, settings.numerics.cfv.intOrder);
+            int lengthChangesSource = 0;
             for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
             {
                 std::array<double, 2> expected{}, expectedDiagonal{};
@@ -180,16 +210,24 @@ TEST_CASE("RANS FV integrates quadrature sources and their positive implicit des
                 for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
                 {
                     const auto param = std::get<0>(quadrature.GetQuadraturePointInfo(iQ));
-                    const auto point = (center + .25 * param).eval();
+                    const auto point = (center + .25 * side.cwiseProduct(param)).eval();
                     double wall = .5;
                     for (int d = 0; d < 3; ++d)
-                        wall *= 1 - std::abs(2 * point[d] - 1);
+                        wall *= 1 - std::abs(2 * point[d] / side[d] - 1);
                     DNDS::Physics::RANS::Point value;
-                    value.state << 1, 0, 0, 0, 2.5, .02, components == 2 ? .1 : 0;
+                    value.state << 1, 0, 0, 0, 2.5, .02, components == 2 ? omega : 0;
                     value.wallDistance = std::max(settings.numerics.wallDistanceFloor, wall);
+                    value.cellLength = 1.5; // Independent maximum edge length, not a unit placeholder.
                     value.molecularViscosity = .001;
-                    const double weight = quadrature.GetWeight(iQ) / 64.;
+                    const double weight = quadrature.GetWeight(iQ) * 6 / 64.;
                     const auto source = equation.RANS().Source(value);
+                    if (modelSettings.desScale == .01)
+                    {
+                        auto wrong = value;
+                        wrong.cellLength = 1;
+                        const auto oldPlaceholder = equation.RANS().Source(wrong);
+                        lengthChangesSource |= std::abs(source[0] - oldPlaceholder[0]) > 1e-10;
+                    }
                     value.state[5] = meanSA;
                     const auto destruction = equation.RANS().ImplicitSourceDiagonal(value);
                     for (int j = 0; j < components; ++j)
@@ -206,11 +244,16 @@ TEST_CASE("RANS FV integrates quadrature sources and their positive implicit des
                 for (int j = 0; j < 5; ++j)
                     CHECK(std::abs(flowRHS(iCell, j)) < 1e-12);
             }
+            if (modelSettings.desScale == .01)
+            {
+                MPI_Allreduce(MPI_IN_PLACE, &lengthChangesSource, 1, MPI_INT, MPI_MAX, mpi.comm);
+                CHECK(lengthChangesSource == 1);
+            }
             const auto auxRead = aux.meanThermodynamics->Read();
             DNDS::Physics::RANS::Point point;
             point.state[0] = 1;
             point.state[5] = meanSA;
-            point.state[6] = components == 2 ? .1 : 0;
+            point.state[6] = components == 2 ? omega : 0;
             point.wallDistance = .5 / 8;
             point.molecularViscosity = .001;
             point.cp = 3.5;
@@ -375,6 +418,7 @@ TEST_CASE("RANS P3 residual and WBAP preserve split layout and core halo schedul
             settings.numerics.viscousLimited = true;
             auto modelSettings = Equation(settings).RANS().Settings();
             modelSettings.model = model;
+            modelSettings.useQCR = true;
             const auto equation = C::EquationSystem::Resolve(settings.equation).WithRANS(modelSettings);
             C::FiniteVolume fv(mesh, settings, equation);
             auto state = State(fv, variant);

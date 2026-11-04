@@ -110,4 +110,19 @@ namespace DNDS::HardEigen
     Eigen::Matrix3d Eigen3x3RealSymEigenDecompositionNormalized(const Eigen::Matrix3d &A);
     /// @brief 2x2 analogue of @ref Eigen3x3RealSymEigenDecompositionNormalized.
     Eigen::Matrix2d Eigen2x2RealSymEigenDecompositionNormalized(const Eigen::Matrix2d &A);
+
+    /// Principal frame for a real symmetric inertia tensor. Eigenvalue gaps
+    /// at most relativeTolerance*max(abs(lambda)) are treated as degenerate
+    /// (default 1e-8, independent of units). A fully degenerate spectrum uses
+    /// the coordinate axes exactly. In 3D, a repeated pair keeps the distinct
+    /// principal axis and chooses coordinate-aligned projections in its plane.
+    /// Near-coordinate distinct axes are snapped within the same angular
+    /// tolerance. In the degenerate branch, signs/ties are deterministic and
+    /// the completed frame is right-handed. Near-repeated modes need not
+    /// diagonalize A exactly: the residual is O(relativeTolerance*||A||),
+    /// accounting for both the spectral gap and angular snapping. The tensor is never
+    /// perturbed. Outside degeneracy, retain the existing normalized solver.
+    /// Finite symmetric input and relativeTolerance in [0,1) are required.
+    Eigen::Matrix3d Eigen3x3RealSymPrincipalFrame(const Eigen::Matrix3d &A, real relativeTolerance = 1e-8);
+    Eigen::Matrix2d Eigen2x2RealSymPrincipalFrame(const Eigen::Matrix2d &A, real relativeTolerance = 1e-8);
 }

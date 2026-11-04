@@ -27,6 +27,7 @@ namespace DNDS::Cauchy
         /// closures remain separate physical producers; no closure is selected
         /// by merely supplying these effective scalar transport contributions.
         real turbulentViscosity = 0, turbulentConductivity = 0, turbulentSpeciesDiffusivity = 0;
+        bool useQCR = false;
     };
     /// Positive viscous normal flux: total flux is convective minus viscous.
     /// Ready point must match the conservative state and retain its worker.
@@ -78,7 +79,8 @@ namespace DNDS::Cauchy
             const std::array<std::array<real, 3>, 3> &values;
             real operator()(int i, int j) const { return values[i][j]; }
         };
-        const auto flux = Physics::Transport::NewtonianFourierNormalFlux(velocity, VelocityGradient{gradientVelocity}, gradientTemperature, normal, viscosity, conductivity);
+        const auto flux = Physics::Transport::NewtonianFourierNormalFlux(velocity, VelocityGradient{gradientVelocity}, gradientTemperature, normal, viscosity, conductivity,
+                                                                         options.useQCR, options.turbulentViscosity / (viscosity + verySmallReal));
         FlowState result{};
         for (int i = 0; i < 3; ++i)
             result[1 + i] = flux.traction[i];

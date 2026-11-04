@@ -9,12 +9,71 @@
 #include "Cauchy/Physics/ReconstructionPositivity.hpp"
 #include "Cauchy/Physics/EquationPositivity.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
+#include "Cauchy/Physics/EquationTransport.hpp"
 #include "Cauchy/Discretization/ViscousFlux.hpp"
 #include "Euler/Gas.hpp"
 #include <limits>
 #include <vector>
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("QCR stress and energy work match an independent commutator and legacy Euler")
+{
+    C::EquationSettings settings;
+    settings.transport = "NewtonianFourier";
+    settings.viscosity = .03;
+    settings.gasConstant = 2.5;
+    const auto equation = C::EquationSystem::Resolve(settings);
+    auto evaluator = equation.MakePointEvaluator();
+    const auto state = equation.Gas().Conservative({1.2, .4, -.3, .2, 2.1});
+    const Eigen::Vector3d velocity{.4, -.3, .2}, normal = Eigen::Vector3d{1, -2, 3}.normalized();
+    Eigen::Matrix3d derivative;
+    derivative << .2, -.3, .1, .6, -.4, .25, -.15, .35, .1; // (component,direction)
+    C::FlowGradient gradient{};
+    Eigen::Matrix<double, 3, 5> primitive = Eigen::Matrix<double, 3, 5>::Zero();
+    for (int d = 0; d < 3; ++d)
+    {
+        for (int i = 0; i < 3; ++i)
+        {
+            gradient[1 + i][d] = state[0] * derivative(i, d);
+            primitive(d, 1 + i) = derivative(i, d);
+        }
+        gradient[4][d] = state[0] * velocity.dot(derivative.col(d)); // Constant T/rho.
+    }
+    const Eigen::Matrix3d rotation = (derivative - derivative.transpose()) / (derivative.norm() + DNDS::verySmallReal);
+    C::EquationTransportScratch scratch(0);
+    const auto point = evaluator.Evaluate(state);
+    Eigen::Matrix<double, 5, 1> oldState, oldFlux;
+    for (int j = 0; j < 5; ++j)
+        oldState[j] = state[j];
+    const auto noSpeciesGradient = [](int, int)
+    { return 0.; };
+    std::vector<double> noSpecies;
+    for (const double turbulent : {0., .04})
+    {
+        const double mu = settings.viscosity + turbulent, ratio = turbulent / (mu + DNDS::verySmallReal);
+        const Eigen::Matrix3d linear = mu * (derivative + derivative.transpose() - (2. / 3.) * derivative.trace() * Eigen::Matrix3d::Identity());
+        const Eigen::Matrix3d stress = linear - .3 * ratio * (rotation * linear - linear * rotation);
+        const Eigen::Vector3d traction = stress * normal;
+        C::EquationTransportOptions options;
+        options.adiabatic = true;
+        options.turbulentViscosity = turbulent;
+        options.useQCR = true;
+        const auto result = C::PrepareViscousFlux(state, gradient, point, noSpecies, noSpeciesGradient,
+                                                  {normal[0], normal[1], normal[2]}, noSpecies, scratch, options);
+        DNDS::Euler::Gas::ViscousFlux_IdealGas<3>(oldState, primitive, normal, true, settings.gamma, settings.gamma,
+                                                  mu, ratio, true, 0, point.thermo.cp, oldFlux);
+        for (int d = 0; d < 3; ++d)
+        {
+            CHECK(result[1 + d] == doctest::Approx(traction[d]).epsilon(2e-13));
+            CHECK(result[1 + d] == doctest::Approx(oldFlux[1 + d]).epsilon(2e-13));
+        }
+        CHECK(result[4] == doctest::Approx(velocity.dot(traction)).epsilon(2e-13));
+        CHECK(result[4] == doctest::Approx(oldFlux[4]).epsilon(2e-13));
+        if (turbulent > 0)
+            CHECK((stress - linear).norm() > 1e-4);
+    }
+}
+
 TEST_CASE("Equation thermal view preserves the established perfect-gas increment and quadrature rules")
 {
     C::EquationSettings settings;

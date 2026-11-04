@@ -11,6 +11,19 @@ namespace DNDS::Cauchy
 {
     namespace
     {
+        void RemoveInactiveQCR(Json &model)
+        {
+            // This optional switch did not exist in early RANS checkpoints.
+            // Only the inactive default normalizes away; true remains physical.
+            if (model.is_object() && !model.value("useQCR", false))
+                model.erase("useQCR");
+        }
+        nlohmann::json CompatibleEquationMetadata(Json value)
+        {
+            if (value.is_object() && value.contains("rans"))
+                RemoveInactiveQCR(value["rans"]);
+            return value;
+        }
         index CanonicalPeriodicZone(index zone)
         {
             if (zone == Geom::BC_ID_PERIODIC_1_DONOR)
@@ -79,6 +92,8 @@ namespace DNDS::Cauchy
                     settings.erase("initialMassFractions");
                 if (settings.contains("equation") && settings["equation"].value("eos", std::string("perfectGas")) == "perfectGas")
                     settings["equation"].erase("mixture");
+                if (settings.contains("equation") && settings["equation"].contains("rans"))
+                    RemoveInactiveQCR(settings["equation"]["rans"]);
                 settings.erase("execution");
                 settings.erase("implicit");
                 if (settings.contains("motion") && settings["motion"].value("angularVelocity", Vector3{}) == Vector3{} &&
@@ -524,7 +539,8 @@ namespace DNDS::Cauchy
         int valid = name == _name && !storedConfig.is_discarded() && CompatibleConfig(storedConfig) == CompatibleConfig(resolved) && std::isfinite(time) && time >= 0 && step >= 0 &&
                     (stateArchive ? bool(_equationWorkspace) && stateArchive->Compatible(_trial) && stateArchive->fields[0].RowCount() == ids.RowCount()
                                   : !_equationWorkspace && flow && flow->RowCount() == ids.RowCount() && flow->Layout().Width() == 5);
-        valid = valid && (version < 4 || (metadata.is_object() && metadata.value("schema_version", 0) == 1 && metadata.value("flow", Json()) == EquationMetadata(_equation)));
+        valid = valid && (version < 4 || (metadata.is_object() && metadata.value("schema_version", 0) == 1 &&
+                                          CompatibleEquationMetadata(metadata.value("flow", Json())) == CompatibleEquationMetadata(EquationMetadata(_equation))));
         valid = valid && CompatibleFrame(metadata, _fv, std::isfinite(time) ? time : 0);
         valid = valid && (!limitedVRHistory || (reconstruction && limitedVRHistory->RowCount() == ids.RowCount() &&
                                                 !limitedVRHistory->Layout().IsVariable() && limitedVRHistory->Layout().Width() == 2));

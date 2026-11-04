@@ -40,7 +40,8 @@ def test_configured_rans_fields_wall_setup_implicit_restart_and_output(tmp_path,
         "boundaries": {str(zone): {"kind": "noSlipWall"} for zone in zones},
     }, "time": {"method": "bdf1"}}
     initial = {"rhoNuTilde": .02} if model == "SA" else {"rhoK": .02, "rhoOmega": .1}
-    config["defaults"]["equation"]["rans"]["model"] = model
+    config["defaults"]["equation"]["rans"].update({
+        "model": model, "useQCR": True, "desScale": .65, "desMode": 3})
     config["defaults"]["initialRANS"] = initial
     config["defaults"]["numerics"]["ransState"] = {
         "referenceConservative": {"rho": config["defaults"]["initialPrimitive"][0], **initial}}

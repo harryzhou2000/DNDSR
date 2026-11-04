@@ -1,5 +1,11 @@
 # Cauchy solver: module contracts and implementation ledger
 
+For the current extended-physics capability summary, use
+[Cauchy equation state](CauchyState.md), [shared Physics](Physics.md) and
+[the PP policy](CauchyPositivity.md). The dated checkpoints below retain their
+historical scope and validation limits. Physical correctness and usable solver
+capabilities take priority over broad UT matrices or strict performance tuning.
+
 Status2026-11-04: foundation, optional checked eager execution and the
 single-domain CPU flow solver include native implicit linear/nonlinear solves,
 BDF/Trapz/ESDIRK/DITR, full/subset polynomial FAS and persistent-ID restart in focused tests.

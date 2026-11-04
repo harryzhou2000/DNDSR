@@ -15,6 +15,7 @@ namespace DNDS::Physics::RANS
             _kind = ModelKind::RealizableKE;
         else
             DNDS_check_throw_info(_settings.model == "none", "unknown RANS model: " + _settings.model);
+        DNDS_check_throw_info(_kind != ModelKind::None || !_settings.useQCR, "QCR requires a RANS closure");
         const auto positive = [](real value)
         { return std::isfinite(value) && value > 0; };
         const auto nonnegative = [](real value)
@@ -102,6 +103,9 @@ namespace DNDS::Physics::RANS
     }
     std::array<real, 2> Model::EvaluateSource(const Point &point, int mode) const
     {
+        if ((_kind == ModelKind::SA && _settings.desScale <= 100) || _kind == ModelKind::KOmegaSST)
+            DNDS_check_throw_info(std::isfinite(point.cellLength) && point.cellLength > 0,
+                                  "DES/SST source requires an explicit positive cell length");
         Eigen::Matrix<real, 7, 1> source = Eigen::Matrix<real, 7, 1>::Zero();
         switch (_kind)
         {
