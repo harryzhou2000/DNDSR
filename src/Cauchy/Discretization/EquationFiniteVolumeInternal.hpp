@@ -63,34 +63,15 @@ namespace DNDS::Cauchy::EquationFVDetail
             point.gradient.middleRows(first, 3) = (rotation * point.gradient.middleRows(first, 3)).eval();
         }
     }
-    inline void AdiabaticBoundary(PointScratch &point, index flowFirst, const FiniteVolumeDetail::Sample &sample,
-                                  const RigidFrame &frame, bool exterior)
+    inline void BoundaryValue(PointScratch &point, index flowFirst, index speciesFirst, int independent,
+                              const FiniteVolumeDetail::Sample &sample, EquationPointEvaluator &evaluator,
+                              const RigidFrame &frame, real time, bool exterior)
     {
-        if (sample.boundary.kind == BoundaryKind::Extrapolate)
-            return;
-        const auto wall = sample.boundary.WallVelocityAt({sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, &frame);
-        const auto flow = point.Flow(flowFirst);
-        const real rho = flow[0], factor = exterior ? 2 : 1;
-        DNDS_check_throw_info(rho > 0, "wall producer requires positive density");
-        Vector3 velocity{flow[1] / rho, flow[2] / rho, flow[3] / rho}, target = velocity;
-        if (sample.boundary.kind == BoundaryKind::SlipWall)
-        {
-            real speed = 0;
-            for (int d = 0; d < 3; ++d)
-                speed += (velocity[d] - wall[d]) * sample.normal[d];
-            for (int d = 0; d < 3; ++d)
-                target[d] -= factor * speed * sample.normal[d];
-        }
-        else
-            for (int d = 0; d < 3; ++d)
-                target[d] += factor * (wall[d] - velocity[d]);
-        real energy = flow[4];
-        for (int d = 0; d < 3; ++d)
-        {
-            point.values[flowFirst + 1 + d] = rho * target[d];
-            energy += .5 * rho * (target[d] * target[d] - velocity[d] * velocity[d]);
-        }
-        // Same full internal energy and composition, independent of EOS.
-        point.values[flowFirst + 4] = energy;
+        const Physics::Chemistry::SpeciesBufferView rhoY{independent ? point.values.data() + speciesFirst : nullptr, independent};
+        const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]}, location{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]};
+        const auto flow = exterior ? sample.boundary.Exterior(evaluator, point.Flow(flowFirst), rhoY, normal, location, time, &frame)
+                                   : sample.boundary.FaceValue(evaluator, point.Flow(flowFirst), rhoY, normal, location, time, &frame);
+        for (int j = 0; j < 5; ++j)
+            point.values[flowFirst + j] = flow[j];
     }
 }

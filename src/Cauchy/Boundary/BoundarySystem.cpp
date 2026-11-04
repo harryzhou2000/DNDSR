@@ -1,5 +1,6 @@
 #include "Cauchy/Boundary/BoundarySystem.hpp"
 #include "Cauchy/Physics/FlowProfile.hpp"
+#include "Cauchy/Physics/EquationSystem.hpp"
 #include <set>
 
 namespace DNDS::Cauchy
@@ -208,10 +209,23 @@ namespace DNDS::Cauchy
         : BoundarySystem(settings, &gas) {}
     BoundarySystem::BoundarySystem(const std::map<std::string, BoundarySettings> &settings)
         : BoundarySystem(settings, nullptr) {}
+    BoundarySystem::BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const EquationSystem &equation)
+        : BoundarySystem(settings, equation.HasMixture() ? nullptr : &equation.Gas())
+    {
+        for (const auto &[zone, source] : settings)
+        {
+            auto &condition = _conditions.at(std::stoi(zone));
+            const bool prescribed = condition.kind == BoundaryKind::Farfield || condition.kind == BoundaryKind::Analytic;
+            DNDS_check_throw_info(prescribed || source.massFractions.empty(), "mass fractions supplied to a non-prescribed boundary");
+            if (prescribed)
+                condition.prescribedFractions = equation.IndependentMassFractions(source.massFractions);
+        }
+    }
     BoundarySystem::BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const PerfectGas *gas)
     {
         for (const auto &[zone, source] : settings)
         {
+            DNDS_check_throw_info(!gas || source.massFractions.empty(), "perfect-gas boundary has unused mass fractions");
             BoundaryCondition condition;
             if (source.kind == "extrapolate")
                 condition.kind = BoundaryKind::Extrapolate;

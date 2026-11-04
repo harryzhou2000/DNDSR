@@ -305,7 +305,10 @@ Both ordinary mean thermodynamics and optional derived bundles are supported.
 A mixture uses one explicit matching chemistry worker at a time; no chemistry
 rates are requested for these face/mean properties. Pressure, acoustics and
 molecular/species diffusion bounds come from the actual EOS/transport provider.
-The initial equation boundary profile covers extrapolation and adiabatic walls.
+The equation boundary profile covers extrapolation, farfield, constant prescribed
+values and adiabatic/isothermal walls, using the same producer as reconstruction
+boundary buffers and the equation RHS. Interface packets and nonconstant analytic
+profiles still require their extended equation-state adapters.
 Wave/pressure statistics and cell spectral sums have the existing definitions;
 missing face outputs use private scratch only when a requested reduction needs
 it. An unused retained scratch allocation is neither acquired nor written.
@@ -565,11 +568,60 @@ actual pressure/acoustic values into the common numerical Riemann interface.
 It does no equivalent-gamma substitution.
 
 The mixture factory supplies the property/schema interface and equation-state
-FV profile above. The production JSON/domain
-capability plan remains flow5-only until its extended RHS, BC, Jacobian,
-physical stage/PP/checkpoint adapters are connected. Perfect-gas-only methods such
+FV profile above. The production JSON/Domain frontend remains flow5-only until
+its equation-state orchestration, configuration and checkpoint adapters are
+connected. Perfect-gas-only methods such
 as `Gas()` and the old flow-only Jacobian/characteristic producer reject a
 mixture explicitly. They cannot evaluate missing species through default gamma.
+
+### Primitive initialization and equation boundary values
+
+`EquationPointEvaluator::FromPrimitive([rho,u,v,w,p], rhoY, temperature)` produces
+flow5 through the actual material. Zero temperature selects pressure; a positive
+temperature overrides it. The result retains full thermochemical internal energy
+and all three kinetic-energy components. Input species are conservative Ns-1
+values and are not rewritten. Species result views from an earlier evaluator
+query expire at this call, just as at `Evaluate`.
+
+`EquationSystem::IndependentMassFractions` resolves named input once at setup.
+An omitted last species receives the remainder; an explicitly supplied last
+species must close the total to one. Empty input means pure dependent species.
+Unknown names, negative values and overfilled compositions fail. Only roundoff
+at a closed total is normalized. Perfect gas accepts no species input.
+
+`FiniteVolume::InitializeConstant` composes these producers with logical owned
+block writes, supporting coupled, split, permuted and strided fields. It performs
+EOS validation before acquiring writers, coordinates local failures across the
+mesh communicator, and transforms ground velocity into the initial mesh axes.
+It does not exchange ghosts, initialize coefficients or add nonconstant mixture
+profiles. The caller joins pending work and releases conflicting views first.
+
+`BoundarySystem(settings, equation)` resolves `massFractions` for farfield or
+constant prescribed (`kind="analytic", profile.kind="constant"`) inputs. The
+same `BoundaryCondition::FaceValue/Exterior` overloads take an explicit point
+evaluator and preallocated Ns-1 scratch. They retain no worker or Array. Validate
+the supported producer once with `ValidateEquationProducer` before a point loop;
+keep the evaluator exclusive and provide correctly sized ready point inputs.
+Copy/gather a mean or reconstructed state into scratch before calling: species
+may change with prescribed composition or wall density. No transfer is needed
+for these local physical boundary buffers.
+
+Farfield branches use actual interior acoustics and the mesh-relative normal
+speed. Subsonic outflow retains interior rho, velocity and composition while
+prescribing pressure; subsonic inflow supplies prescribed rho/velocity/composition
+with interior pressure. Supersonic inflow/outflow select all prescribed/interior
+data. Prescribed velocities use ground axes. Adiabatic reflection preserves full
+internal energy and composition while adjusting kinetic energy; an isothermal
+face preserves pressure and fractions at wall temperature. The convective wall
+exterior retains interior temperature. Polynomial viscous isothermal treatment
+uses the established flow5 wall-density/exterior-velocity construction; it
+enables Fourier heat conduction and suppresses species diffusion through the
+wall. This is the existing wall discretization, not a new boundary penalty.
+
+The approximate equation Jacobian retains Euler's scalar physical-BC diagonal
+contribution. This checkpoint does not introduce an exact boundary derivative
+or complete production Domain/restart integration. The established flow5
+boundary/Jacobian APIs and their larger analytic-profile set remain available.
 
 For an explicit mixture refresh, pass a worker lease:
 

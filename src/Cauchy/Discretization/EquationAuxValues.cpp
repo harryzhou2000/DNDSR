@@ -206,7 +206,7 @@ namespace DNDS::Cauchy
                     if (sample.other == UnInitIndex)
                     {
                         right.values = left.values;
-                        EquationFVDetail::AdiabaticBoundary(right, flowFirst, sample, frame, true);
+                        EquationFVDetail::BoundaryValue(right, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, true);
                     }
                     else
                     {
@@ -341,7 +341,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(_data->equation.HasMixture() == bool(workers), "equation auxiliary needs exactly its matching worker backend");
         for (const auto &sample : _data->samples)
             if (sample.other == UnInitIndex)
-                DNDS_check_throw_info(sample.boundary.kind == BoundaryKind::Extrapolate || ((sample.boundary.kind == BoundaryKind::SlipWall || sample.boundary.kind == BoundaryKind::NoSlipWall) && !sample.boundary.isothermal), "unsupported equation auxiliary boundary");
+                sample.boundary.ValidateEquationProducer();
         const auto arrays = EquationAuxiliaryArrays(output);
         const index faces = index(_data->stencilFaces.size());
         const index rows[9]{Metrics().NumCellProc(), faces, faces, faces, Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCellProc() - Metrics().NumCell()};

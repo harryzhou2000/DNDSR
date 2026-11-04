@@ -767,6 +767,9 @@ numerical configuration must still match. Time/output/execution choices and
 polynomial setup are excluded from the compatible-config comparison; ordinary
 Riemann/BC/physics changes are not silently accepted. Earlier archives missing
 the Riemann stencil flag retain its explicit manual interpretation.
+An absent or empty boundary `massFractions` map denotes the same inactive
+composition input; this preserves older flow5 files. Nonempty maps remain part
+of physical compatibility and are never erased by this normalization.
 
 BDF2 records previous accepted means and dt. Compatible history is remapped;
 absent/incompatible history uses BDF1 startup. A replacement time workspace and

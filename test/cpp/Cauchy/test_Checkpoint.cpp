@@ -3,6 +3,7 @@
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/Simulation.hpp"
 #include "CartesianFixture.hpp"
+#include "../CFV/ReconstructionFixture.hpp"
 #include "DNDS/Runtime/Array/ArrayIO.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
@@ -74,6 +75,25 @@ TEST_CASE("Older viscous archives retain primitive gradients and reject a silent
     const auto version = changed.Flow().Owned().Version();
     CHECK_THROWS(changed.ReadCheckpoint(path, polynomial.Root()));
     CHECK(changed.Flow().Owned().Version() == version);
+    Remove({path});
+}
+TEST_CASE("Older physical-boundary archives omit inactive composition without invalidating restart")
+{
+    const auto path = Path("cauchy-boundary-composition-");
+    const C::Json input{{"defaults", {{"mesh", {{"dimension", 3}}}, {"boundaries", {{"7", {{"kind", "extrapolate"}}}}}}}};
+    const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
+    const auto mesh = CFVTest::CartesianHexes(mpi, 1);
+    C::Domain source("flow", mesh, config.Domains()[0].settings);
+    auto old = config.Root();
+    old["domains"][0]["settings"]["boundaries"]["7"].erase("massFractions");
+    source.WriteCheckpoint(path, old);
+    C::Domain restored("flow", mesh, config.Domains()[0].settings);
+    CHECK_NOTHROW(restored.ReadCheckpoint(path, config.Root()));
+    const auto version = restored.Flow().Owned().Version();
+    auto changed = config.Root();
+    changed["domains"][0]["settings"]["boundaries"]["7"]["massFractions"] = C::Json{{"H2", .1}};
+    CHECK_THROWS(restored.ReadCheckpoint(path, changed));
+    CHECK(restored.Flow().Owned().Version() == version);
     Remove({path});
 }
 TEST_CASE("Checkpoint changes MPI partition and polynomial degree using persistent cell IDs with cold reconstruction")

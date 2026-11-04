@@ -144,6 +144,7 @@ namespace DNDS::Cauchy
         std::string wallVelocityFrame = "mesh";
         std::array<real, 5> primitive{1, 0, 0, 0, 1};
         std::array<real, 3> velocity{0, 0, 0};
+        std::map<std::string, real> massFractions;
         real temperature = 1;
         FlowProfileSettings profile;
         DNDS_DECLARE_CONFIG(BoundarySettings)
@@ -152,6 +153,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(thermal, "Wall thermal law: adiabatic or isothermal");
             DNDS_FIELD(wallVelocityFrame, "mesh: velocity relative to moving wall; ground: prescribed absolute ground velocity");
             DNDS_FIELD(primitive, "Farfield rho,u,v,w,p; three velocities on any geometry");
+            DNDS_FIELD(massFractions, "Prescribed species mass fractions; omitted last species fills the remainder");
             DNDS_FIELD(velocity, "Prescribed wall velocity in wallVelocityFrame; farfield/analytic data always use ground axes");
             DNDS_FIELD(temperature, "Positive isothermal wall temperature");
             config.field_section(&T::profile, "profile", "Space/time input for analytic boundary values");

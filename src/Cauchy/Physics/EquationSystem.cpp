@@ -39,6 +39,32 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(_mixture, "equation has no ideal-mixture material");
         return *_mixture;
     }
+    std::vector<real> EquationSystem::IndependentMassFractions(const std::map<std::string, real> &values) const
+    {
+        DNDS_check_throw_info(_mixture || values.empty(), "perfect gas has no species composition");
+        if (!_mixture)
+            return {};
+        const auto &names = _mixture->SpeciesNames();
+        std::vector<real> fractions(names.size(), 0);
+        real sum = 0;
+        for (const auto &[name, value] : values)
+        {
+            const auto found = std::find(names.begin(), names.end(), name);
+            DNDS_check_throw_info(found != names.end() && std::isfinite(value) && value >= 0,
+                                  "unknown species or invalid mass fraction: " + name);
+            fractions[found - names.begin()] = value;
+            sum += value;
+        }
+        DNDS_check_throw_info(sum <= 1 + 1e-14 && (!values.count(names.back()) || std::abs(sum - 1) <= 1e-14),
+                              "mass fractions do not leave a valid dependent species remainder");
+        // Permit only roundoff at a closed composition; never renormalize a
+        // genuinely overfilled or incomplete explicit composition silently.
+        if (sum > 1)
+            for (auto &fraction : fractions)
+                fraction /= sum;
+        fractions.pop_back();
+        return fractions;
+    }
     EquationPropertyKey EquationSystem::PropertyKey() const
     {
         if (_mixture)

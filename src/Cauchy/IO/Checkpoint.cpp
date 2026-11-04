@@ -59,8 +59,15 @@ namespace DNDS::Cauchy
                     settings.erase("motion"); // Old fixed-frame archives had no motion section.
                 if (settings.contains("boundaries") && settings["boundaries"].is_object())
                     for (auto &condition : settings["boundaries"])
+                    {
                         if (condition.value("wallVelocityFrame", std::string("mesh")) == "mesh")
                             condition.erase("wallVelocityFrame");
+                        // Old flow5 archives predate species boundary input.
+                        // An inactive default is compatible; prescribed
+                        // nonempty composition remains a physical difference.
+                        if (condition.contains("massFractions") && condition["massFractions"].is_object() && condition["massFractions"].empty())
+                            condition.erase("massFractions");
+                    }
                 if (settings.contains("mesh") && settings["mesh"].is_object())
                     settings["mesh"].erase("file");
                 if (settings.contains("numerics") && settings["numerics"].is_object())

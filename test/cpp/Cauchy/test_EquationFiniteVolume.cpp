@@ -182,34 +182,55 @@ TEST_CASE("Logical nonlinear flow5 retains native finite-sweep stage mathematics
 TEST_CASE("Equation wall values preserve internal energy and support empty owners on a physical 3D mesh")
 {
     const auto mesh = CFVTest::CartesianHexes(mpi, 1);
-    C::DomainSettings settings;
-    settings.mesh.dimension = 3;
-    settings.equation.transport = "NewtonianFourier";
-    settings.equation.viscosity = .002;
-    settings.numerics.viscousGradient = "polynomial";
-    settings.numerics.faceFallback = false;
-    settings.boundaries["7"].kind = "noSlipWall";
-    const auto equation = C::EquationSystem::Resolve(settings.equation);
-    C::FiniteVolume fv(mesh, settings, equation);
-    auto raw = fv.Metrics().BuildField(5);
+    for (int scenario = 0; scenario < 4; ++scenario)
     {
-        auto write = raw.Owned().Write();
-        const auto u = equation.Gas().Conservative({1, .1, .2, -.1, 1});
-        for (I iCell = 0; iCell < raw.Owned().RowCount(); ++iCell)
-            for (int j = 0; j < 5; ++j)
-                write.View()(iCell, j) = u[j];
+        C::DomainSettings settings;
+        settings.mesh.dimension = 3;
+        settings.equation.transport = "NewtonianFourier";
+        settings.equation.viscosity = .002;
+        settings.numerics.viscousGradient = "polynomial";
+        settings.numerics.faceFallback = false;
+        settings.boundaries["7"].kind = scenario < 2 ? "noSlipWall" : scenario == 2 ? "farfield"
+                                                                                    : "analytic";
+        settings.boundaries["7"].primitive = {.9, -.3, .1, .2, 1.2};
+        if (scenario >= 2)
+        {
+            settings.numerics.reconstruction = "variational";
+            settings.numerics.cfv.maxOrder = 3;
+        }
+        if (scenario == 1)
+        {
+            settings.boundaries["7"].thermal = "isothermal";
+            settings.boundaries["7"].temperature = .7;
+        }
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto raw = fv.Metrics().BuildField(5);
+        {
+            auto write = raw.Owned().Write();
+            const auto u = equation.Gas().Conservative({1, .1, .2, -.1, 1});
+            for (I iCell = 0; iCell < raw.Owned().RowCount(); ++iCell)
+                for (int j = 0; j < 5; ++j)
+                    write.View()(iCell, j) = u[j];
+        }
+        auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(5));
+        A::Copy(state.CoupledField(), raw);
+        auto expected = fv.Metrics().BuildField(5);
+        auto result = C::EquationDofOperations::NewVector(state);
+        auto rawWork = fv.BuildWorkspace(raw);
+        auto work = fv.BuildEquationWorkspace(state);
+        R::EagerEngine engine(2);
+        const auto stream = engine.CreateCPUStream();
+        fv.Evaluate(raw, expected, *rawWork, engine, stream);
+        fv.Evaluate(state, result, *work, engine, stream);
+        Compare(result, C::EquationDofs::Coupled(equation.Schema(), expected), 2e-12);
+        C::AuxiliaryRequest request;
+        request.meanThermodynamics = request.faceSpectralRadius = request.cellSpectralSum = true;
+        auto originalAux = fv.BuildAuxiliaryValues(request), equationAux = fv.BuildAuxiliaryValues(request);
+        fv.PrepareAuxValues(raw, originalAux);
+        fv.PrepareAuxValues(state, equationAux);
+        CompareAuxiliary(originalAux, equationAux);
     }
-    auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(5));
-    A::Copy(state.CoupledField(), raw);
-    auto expected = fv.Metrics().BuildField(5);
-    auto result = C::EquationDofOperations::NewVector(state);
-    auto rawWork = fv.BuildWorkspace(raw);
-    auto work = fv.BuildEquationWorkspace(state);
-    R::EagerEngine engine(2);
-    const auto stream = engine.CreateCPUStream();
-    fv.Evaluate(raw, expected, *rawWork, engine, stream);
-    fv.Evaluate(state, result, *work, engine, stream);
-    Compare(result, C::EquationDofs::Coupled(equation.Schema(), expected), 2e-12);
 }
 
 #ifdef DNDS_USE_CANTERA
@@ -326,6 +347,212 @@ namespace
             }
         }
     };
+}
+
+TEST_CASE("Distributed prescribed mixture boundaries match independent nonconstant FV fluxes across layouts and launchers")
+{
+    MixtureFixture mixture;
+    const auto equation = C::EquationSystem::FromIdealGasMixture(mixture.material, false);
+    const auto mesh = CFVTest::CartesianHexes(mpi, 4);
+    C::DomainSettings settings;
+    settings.mesh.dimension = 3;
+    settings.numerics.reconstruction = "constant";
+    settings.numerics.faceFallback = false;
+    auto &boundary = settings.boundaries["7"];
+    boundary.kind = "analytic";
+    std::vector<double> fractions(size_t(mixture.species), 0);
+    fractions[0] = .04;
+    fractions[3] = .21;
+    fractions[5] = .03;
+    fractions.back() = .72;
+    const P::Chemistry::ConstSpeciesBufferView Y{fractions.data(), mixture.species};
+    constexpr double density = .9, temperature = 1800;
+    const double pressureSI = density * mixture.scales.rho0 * mixture.prototype.mixtureR(Y) * temperature;
+    boundary.primitive = {density, -.2, .07, -.03, pressureSI / mixture.scales.Pressure()};
+    for (int k = 0; k < mixture.species - 1; ++k)
+        boundary.massFractions[mixture.material.SpeciesNames()[k]] = fractions[k];
+    std::vector<double> prescribed(size_t(mixture.species + 4), 0);
+    prescribed[0] = density;
+    for (int d = 0; d < 3; ++d)
+        prescribed[1 + d] = density * boundary.primitive[1 + d];
+    prescribed[4] = density * mixture.prototype.mixtureIntEnergy(temperature, Y, pressureSI) / mixture.scales.SpecificEnergy() +
+                    .5 * density * (.2 * .2 + .07 * .07 + .03 * .03);
+    for (int k = 0; k < mixture.species - 1; ++k)
+        prescribed[5 + k] = density * fractions[k];
+    std::optional<C::EquationDofs> baseline;
+    for (int scenario = 0; scenario < 2; ++scenario)
+    {
+        settings.execution.overlap = scenario;
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto state = mixture.State(fv.Metrics().Space(), scenario ? 2 : 1);
+        fv.InitializeConstant(state, boundary.primitive, boundary.massFractions, temperature / mixture.scales.T0, mixture.workers);
+        {
+            const auto initial = state.ReadOwned();
+            const auto flow = initial.Block("flow"), species = initial.Block("species");
+            for (I iCell = 0; iCell < flow.RowCount(); ++iCell)
+            {
+                for (int j = 0; j < 5; ++j)
+                    CHECK(flow(iCell, j) == doctest::Approx(prescribed[j]).epsilon(2e-12));
+                for (int k = 0; k < mixture.species - 1; ++k)
+                    CHECK(species(iCell, k) == doctest::Approx(prescribed[5 + k]).epsilon(2e-12));
+            }
+        }
+        mixture.Fill(state, fv.Metrics(), false);
+        auto result = C::EquationDofOperations::NewVector(state);
+        auto work = fv.BuildEquationWorkspace(state, mixture.workers);
+        R::EagerEngine engine(scenario ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateCPUStream();
+        fv.Evaluate(state, result, *work, engine, stream);
+        C::AuxiliaryRequest request;
+        request.faceSpectralRadius = request.cellSpectralSum = true;
+        auto auxiliary = fv.BuildAuxiliaryValues(request);
+        fv.PrepareAuxValues(state, auxiliary, 0, mixture.workers);
+        // Independent EOS backend and explicit face integration: no Cauchy
+        // boundary, point producer or Riemann flux is used by this oracle.
+        auto topologyRead = mesh->AcquireRead(DNDS::Geom::MeshReadRequirements::CellFlux());
+        auto metricRead = fv.Metrics().AcquireRead();
+        const auto topology = topologyRead.HostView();
+        const auto metric = metricRead.HostView();
+        const auto values = state.ReadWithGhost(), residual = result.ReadOwned();
+        const auto flow = values.Block("flow"), species = values.Block("species");
+        const auto outFlow = residual.Block("flow"), outSpecies = residual.Block("species");
+        std::vector<double> left(prescribed.size()), right(prescribed.size()), expected(prescribed.size());
+        const auto gather = [&](I iCell, auto &point)
+        {
+            for (int j = 0; j < 5; ++j)
+                point[j] = flow(iCell, j);
+            for (int k = 0; k < mixture.species - 1; ++k)
+                point[5 + k] = species(iCell, k);
+        };
+        const auto properties = [&](const auto &point)
+        {
+            double sum = 0, kinetic = 0;
+            for (int k = 0; k < mixture.species - 1; ++k)
+            {
+                fractions[k] = point[5 + k] / point[0];
+                sum += fractions[k];
+            }
+            fractions.back() = 1 - sum;
+            for (int d = 1; d <= 3; ++d)
+                kinetic += .5 * point[d] * point[d] / point[0];
+            const double T = mixture.prototype.temperatureFromUV((point[4] - kinetic) / point[0] * mixture.scales.SpecificEnergy(),
+                                                                 1 / (point[0] * mixture.scales.rho0), Y, 1400, 1e-12);
+            const double p = point[0] * mixture.scales.rho0 * mixture.prototype.mixtureR(Y) * T;
+            P::Thermodynamics::Properties thermo;
+            mixture.prototype.EvaluateProperties(T, p, Y, thermo);
+            return std::array<double, 2>{p / mixture.scales.Pressure(), thermo.soundSpeed / mixture.scales.U0};
+        };
+        for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+        {
+            std::fill(expected.begin(), expected.end(), 0);
+            gather(iCell, left);
+            const auto lp = properties(left);
+            const auto faces = topology.CellFaces(iCell);
+            for (DNDS::rowsize slot = 0; slot < DNDS::rowsize(faces.size()); ++slot)
+            {
+                const auto face = faces[slot], other = topology.CellFaceOther(iCell, face, slot);
+                const int side = topology.CellIsFaceBack(iCell, face, slot) ? 0 : 1;
+                if (other == DNDS::UnInitIndex)
+                    right = prescribed;
+                else
+                    gather(other, right);
+                const auto rp = properties(right);
+                for (I q = metric.FaceQuadratureBegin(face); q < metric.FaceQuadratureEnd(face); ++q)
+                {
+                    const auto normal = ((side ? -1 : 1) * metric.GetFaceNorm(q)).eval();
+                    double ul = 0, ur = 0;
+                    for (int d = 0; d < 3; ++d)
+                    {
+                        ul += left[1 + d] / left[0] * normal[d];
+                        ur += right[1 + d] / right[0] * normal[d];
+                    }
+                    const double alpha = std::max(std::abs(ul) + lp[1], std::abs(ur) + rp[1]);
+                    for (I j = 0; j < I(expected.size()); ++j)
+                    {
+                        double fl = left[j] * ul, fr = right[j] * ur;
+                        if (j >= 1 && j <= 3)
+                        {
+                            fl += lp[0] * normal[j - 1];
+                            fr += rp[0] * normal[j - 1];
+                        }
+                        if (j == 4)
+                        {
+                            fl += lp[0] * ul;
+                            fr += rp[0] * ur;
+                        }
+                        expected[j] -= metric.GetFaceWeight(q) * .5 * (fl + fr - alpha * (right[j] - left[j]));
+                    }
+                }
+            }
+            for (int j = 0; j < 5; ++j)
+                CHECK(outFlow(iCell, j) == doctest::Approx(expected[j]).epsilon(2e-10).scale(1e-10));
+            for (int k = 0; k < mixture.species - 1; ++k)
+                CHECK(outSpecies(iCell, k) == doctest::Approx(expected[5 + k]).epsilon(2e-10).scale(1e-10));
+        }
+        if (baseline)
+            Compare(result, *baseline, 2e-12);
+        else
+            baseline = result;
+    }
+}
+
+TEST_CASE("Mixture isothermal wall conducts the independent Fourier flux without species leakage")
+{
+    MixtureFixture mixture;
+    const auto mesh = CFVTest::CartesianHexes(mpi, 1);
+    C::DomainSettings settings;
+    settings.mesh.dimension = 3;
+    settings.numerics.reconstruction = "constant";
+    settings.numerics.faceFallback = false;
+    settings.numerics.viscousGradient = "polynomial";
+    auto &wall = settings.boundaries["7"];
+    wall.kind = "noSlipWall";
+    wall.thermal = "isothermal";
+    wall.temperature = 600 / mixture.scales.T0;
+    C::FiniteVolume fv(mesh, settings, mixture.equation);
+    auto state = mixture.State(fv.Metrics().Space(), 1), result = C::EquationDofOperations::NewVector(state);
+    std::vector<double> Y(size_t(mixture.species), 0);
+    Y[0] = .04;
+    Y[3] = .21;
+    Y[5] = .03;
+    Y.back() = .72;
+    std::map<std::string, double> composition;
+    for (int k = 0; k < mixture.species; ++k)
+        composition[mixture.material.SpeciesNames()[k]] = Y[k];
+    fv.InitializeConstant(state, {.8, 0, 0, 0, 1}, composition, 1400 / mixture.scales.T0, mixture.workers);
+    auto work = fv.BuildEquationWorkspace(state, mixture.workers);
+    R::EagerEngine engine(2);
+    const auto stream = engine.CreateCPUStream();
+    fv.Evaluate(state, result, *work, engine, stream);
+    const P::Chemistry::ConstSpeciesBufferView fractions{Y.data(), mixture.species};
+    const double r1 = .8, r2 = r1 * 1400 / 600;
+    const double p = r1 * mixture.scales.rho0 * mixture.prototype.mixtureR(fractions) * 1400;
+    const double e1 = mixture.prototype.mixtureIntEnergy(1400, fractions, p) / mixture.scales.SpecificEnergy();
+    const double e2 = mixture.prototype.mixtureIntEnergy(600, fractions, p) / mixture.scales.SpecificEnergy();
+    const double rho = .5 * (r1 + r2), energy = .5 * (r1 * e1 + r2 * e2) / rho;
+    const double temperature = mixture.prototype.temperatureFromUV(energy * mixture.scales.SpecificEnergy(), 1 / (rho * mixture.scales.rho0), fractions, 1000, 1e-12);
+    P::Thermodynamics::Properties thermo;
+    P::Transport::Properties transport;
+    mixture.prototype.EvaluateProperties(temperature, rho * mixture.scales.rho0 * mixture.prototype.mixtureR(fractions) * temperature, fractions, thermo, &transport);
+    // The unit cube's reflected cell-centroid separation is one; composition
+    // is constant, so the independent full-energy chain rule has no dY term.
+    const double gradient = (r2 * e2 - r1 * e1 - energy * (r2 - r1)) / (rho * thermo.cv / mixture.scales.HeatCapacity());
+    const double expected = 6 * transport.conductivity / mixture.scales.Conductivity() * gradient;
+    CHECK(expected < -1e-8);
+    double actual = 0;
+    {
+        const auto read = result.ReadOwned();
+        const auto flow = read.Block("flow"), species = read.Block("species");
+        for (I iCell = 0; iCell < flow.RowCount(); ++iCell)
+        {
+            actual += flow(iCell, 4);
+            CHECK(std::abs(flow(iCell, 0)) < 1e-12);
+            for (int k = 0; k < mixture.species - 1; ++k)
+                CHECK(std::abs(species(iCell, k)) < 1e-12);
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &actual, 1, MPI_DOUBLE, MPI_SUM, mpi.comm);
+    CHECK(actual == doctest::Approx(expected).epsilon(2e-10));
 }
 
 TEST_CASE("Physical mixture Jacobians match frozen-signal residual differences and solve through the logical driver")

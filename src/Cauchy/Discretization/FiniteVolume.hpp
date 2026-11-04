@@ -161,9 +161,10 @@ namespace DNDS::Cauchy
         /// requires a matching explicit worker pool, shared in capacity only.
         /// Initial equation-state profile: Rusanov, constant/gradient/VR,
         /// componentwise WBAP, Euler quadrature PP, polynomial Newtonian/Fourier
-        /// diffusion and optional mixture chemistry. Extrapolate/adiabatic walls
-        /// are available. Face fallback, characteristic WBAP, other flux preparations,
-        /// interface/farfield/analytic/isothermal producers are rejected here
+        /// diffusion and optional mixture chemistry. Extrapolate, farfield,
+        /// constant prescribed and adiabatic/isothermal wall producers use the
+        /// actual EOS. Face fallback, characteristic WBAP, other flux preparations,
+        /// interfaces and nonconstant analytic profiles are rejected here
         /// until their equation-state implementations are connected. Existing
         /// flow5 Workspace retains those established capabilities.
         std::shared_ptr<EquationWorkspace> BuildEquationWorkspace(EquationDofs &state,
@@ -442,6 +443,14 @@ namespace DNDS::Cauchy
         PhysicalStepLimit LimitPhysicalStep(const CFV::FVField &state, const CFV::FVField &meanResidual,
                                             real dt, real relax, real scale, int compressionPower = 1) const;
         void Initialize(CFV::FVField &state, const FlowProfileSettings &profile, const FlowState &primitive) const;
+        /// Collective error-coordinated constant initialization in ground axes.
+        /// Uses actual EOS/full thermochemical energy, resolves named species
+        /// once, and writes logical blocks through their native layout. Positive
+        /// temperature overrides primitive p. No ghost exchange or reconstruction
+        /// initialization; caller releases conflicting views/async work first.
+        /// Mixtures require an explicit matching worker pool.
+        void InitializeConstant(EquationDofs &state, const FlowState &primitive, const std::map<std::string, real> &massFractions = {},
+                                real temperature = 0, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt) const;
         /// Volume-normalized L1/L2/Linf error in conservative cell averages.
         std::array<FlowState, 3> Error(const CFV::FVField &state, const FlowProfileSettings &profile, const FlowState &primitive, real time) const;
         real StableStep(const CFV::FVField &state, real cfl) const;

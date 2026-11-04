@@ -157,6 +157,9 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(parsed == zone.size() && id >= INT_MIN && id <= INT_MAX && std::to_string(id) == zone,
                                       "boundary key must be a canonical integer zone ID");
                 PrimitiveValid(condition.primitive);
+                DNDS_check_throw_info(condition.massFractions.empty() ||
+                                          (equation.eos != "perfectGas" && (condition.kind == "farfield" || condition.kind == "analytic")),
+                                      "boundary mass fractions require a prescribed mixture state");
                 validateProfile(condition.profile);
                 if (condition.kind == "noSlipWall" && condition.thermal == "isothermal")
                     DNDS_check_throw_info(condition.temperature >= numerics.temperatureFloor, "wall temperature lies below the configured temperature floor");

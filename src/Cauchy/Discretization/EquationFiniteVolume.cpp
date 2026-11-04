@@ -241,7 +241,7 @@ namespace DNDS::Cauchy
             }
         }
 
-        void FillBoundary(const EquationDofs &state, bool polynomial, real time)
+        void FillBoundary(const EquationDofs &state, bool polynomial, real time, EquationPointEvaluator &evaluator)
         {
             const auto mean = state.ReadOwned(), rec = coefficients.ReadOwned();
             const auto meanBlocks = BlockViews(state, mean), recBlocks = BlockViews(coefficients, rec);
@@ -264,7 +264,8 @@ namespace DNDS::Cauchy
                                 for (int mode = 0; mode < modes; ++mode)
                                     point.values[logicalFirst[iBlock] + j] += recBlocks[iBlock](sample.cell, j * modes + mode) * basis(0, mode);
                     }
-                    AdiabaticBoundary(point, flowFirst, sample, frame, false);
+                    BoundaryValue(point, flowFirst, speciesFirst, owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() - 1 : 0,
+                                  sample, evaluator, frame, time, false);
                     for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
                     {
                         const auto target = output.Block(iBlock);
@@ -343,7 +344,7 @@ namespace DNDS::Cauchy
                     {
                         right.values = left.values;
                         right.gradient = left.gradient;
-                        AdiabaticBoundary(right, flowFirst, sample, frame, true);
+                        BoundaryValue(right, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, true);
                     }
                     const auto leftFlow = left.Flow(flowFirst), rightFlow = right.Flow(flowFirst);
                     const auto leftData = EquationPointEvaluator::FluxState(leftFlow, evaluator.Evaluate(leftFlow, left.Species(speciesFirst, independent), 0, {}));
@@ -365,6 +366,23 @@ namespace DNDS::Cauchy
                     const bool wall = sample.other == UnInitIndex && sample.boundary.kind == BoundaryKind::NoSlipWall;
                     if (viscous && (sample.other != UnInitIndex || wall))
                     {
+                        if (wall && sample.boundary.isothermal)
+                        {
+                            // Preserve the existing polynomial wall law: wall
+                            // rho,p/composition and reflected velocity form the
+                            // viscous exterior. Convective reflection above is
+                            // unchanged and cannot yield a negative exterior T.
+                            // Reuse the not-yet-filled face scratch here.
+                            face.values = left.values;
+                            BoundaryValue(face, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, false);
+                            const auto wallFlow = face.Flow(flowFirst);
+                            const real pressure = evaluator.Evaluate(wallFlow, face.Species(speciesFirst, independent), 0, {}).thermo.pressure;
+                            const auto value = evaluator.FromPrimitive({wallFlow[0], rightFlow[1] / rightFlow[0], rightFlow[2] / rightFlow[0], rightFlow[3] / rightFlow[0], pressure},
+                                                                       face.Species(speciesFirst, independent));
+                            right.values = face.values;
+                            for (int j = 0; j < 5; ++j)
+                                right.values[flowFirst + j] = value[j];
+                        }
                         const real inverseDistance = wall && owner->settings.numerics.noGRPOnWall ? 0 : 1 / sample.viscousDistance;
                         for (index j = 0; j < width; ++j)
                         {
@@ -382,7 +400,7 @@ namespace DNDS::Cauchy
                             real operator()(int k, int d) const { return point.gradient(first + k, d); }
                         };
                         const auto diffusion = PrepareViscousFlux(faceFlow, face.FlowDerivative(flowFirst), point, face.Species(speciesFirst, independent),
-                                                                  SpeciesGradient{face, speciesFirst}, normal, speciesFlux, transport, {wall, wall});
+                                                                  SpeciesGradient{face, speciesFirst}, normal, speciesFlux, transport, {wall && !sample.boundary.isothermal, wall});
                         for (int j = 0; j < 5; ++j)
                             flux[flowFirst + j] -= diffusion[j];
                         for (int k = 0; k < independent; ++k)
@@ -444,6 +462,34 @@ namespace DNDS::Cauchy
         }
     };
 
+    void FiniteVolume::InitializeConstant(EquationDofs &state, const FlowState &primitive,
+                                          const std::map<std::string, real> &massFractions, real temperature,
+                                          std::optional<Physics::Chemistry::ChemicalWorkerPool> workers) const
+    {
+        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                        {
+            Metrics().Validate();
+            _data->equation.ValidateStateSchema(state);
+            _data->equation.ResolveKernelProfile(state.Device());
+            DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && _data->equation.HasMixture() == bool(workers),
+                                  "equation initialization row space/worker profile differs");
+            auto fractions = _data->equation.IndependentMassFractions(massFractions);
+            for (auto &value : fractions) value *= primitive[0];
+            auto evaluator = _data->equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {});
+            const auto value = _data->motion.At(0).LocalState(evaluator.FromPrimitive(primitive, {fractions.data(), int(fractions.size())}, temperature));
+            // Resolve/validate EOS input before obtaining any state writer.
+            auto output = state.WriteOwned();
+            const auto flow = output.Block("flow");
+            for (index iCell = 0; iCell < flow.RowCount(); ++iCell)
+                for (int j = 0; j < 5; ++j) flow(iCell, j) = value[j];
+            if (!fractions.empty())
+            {
+                const auto species = output.Block("species");
+                for (index iCell = 0; iCell < species.RowCount(); ++iCell)
+                    for (index k = 0; k < index(fractions.size()); ++k) species(iCell, k) = fractions[k];
+            } });
+    }
+
     std::shared_ptr<FiniteVolume::EquationWorkspace> FiniteVolume::BuildEquationWorkspace(EquationDofs &state,
                                                                                           std::optional<Physics::Chemistry::ChemicalWorkerPool> workers) const
     {
@@ -468,9 +514,7 @@ namespace DNDS::Cauchy
                 (_data->settings.equation.source == "chemical" && _data->equation.HasMixture()), "unavailable equation volume source");
             for (const auto &sample : _data->samples)
                 if (sample.other == UnInitIndex)
-                    DNDS_check_throw_info(sample.boundary.kind == BoundaryKind::Extrapolate ||
-                        ((sample.boundary.kind == BoundaryKind::SlipWall || sample.boundary.kind == BoundaryKind::NoSlipWall) && !sample.boundary.isothermal),
-                        "requested equation boundary producer is not connected yet");
+                    sample.boundary.ValidateEquationProducer();
             if (_data->equation.HasMixture())
             {
                 DNDS_check_throw_info(workers, "mixture FV requires explicit chemistry workers");
@@ -478,7 +522,7 @@ namespace DNDS::Cauchy
             }
             else DNDS_check_throw_info(!workers, "perfect-gas FV does not require chemistry workers");
             operationControls = Json{{"numerics", _data->settings.numerics}, {"equation", _data->settings.equation},
-                {"motion", _data->settings.motion}, {"overlap", _data->settings.execution.overlap},
+                {"motion", _data->settings.motion}, {"boundaries", _data->settings.boundaries}, {"overlap", _data->settings.execution.overlap},
                 {"collectiveChecks", _data->settings.implicit.collectiveChecks}, {"properties", _data->equation.PropertyKey().parameters}}.dump(); });
         AgreeEquationBinding(state, mpi.comm, operationControls);
         std::shared_ptr<EquationWorkspace> result;
@@ -607,7 +651,7 @@ namespace DNDS::Cauchy
         if (firstSweep)
             firstCoefficients = begin(work.coefficientHalo);
         submit([&, variational]
-               { work.FillBoundary(state, variational && _data->settings.numerics.reconstructionBoundaryFromPolynomial, time); });
+               { work.FillBoundary(state, variational && _data->settings.numerics.reconstructionBoundaryFromPolynomial, time, *evaluator); });
         if (overlap && numerics.reconstruction == "gradient")
             submit([&]
                    { gradient(CFV::ReconstructionRegion::Core); });
@@ -639,7 +683,7 @@ namespace DNDS::Cauchy
                           { stream.Record().WaitHost(); });
                     if (numerics.reconstructionBoundaryFromPolynomial)
                         local([&]
-                              { work.FillBoundary(state, true, time); });
+                              { work.FillBoundary(state, true, time, *evaluator); });
                     operations = begin(work.coefficientHalo);
                     if (overlap)
                         submit([&]

@@ -2,10 +2,13 @@
 
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/Physics/PerfectGas.hpp"
+#include "Physics/Chemistry/ChemicalSource.hpp"
 #include <set>
 
 namespace DNDS::Cauchy
 {
+    class EquationSystem;
+    class EquationPointEvaluator;
     enum class BoundaryKind
     {
         Interior,
@@ -32,6 +35,22 @@ namespace DNDS::Cauchy
         /// Generic metadata resolves primitive inputs without inventing a
         /// perfect-gas conservative state. Historical PG methods reject it.
         bool hasPerfectGasState = true;
+        /// Resolved Ns-1 composition for prescribed states. Empty for a
+        /// species-free profile; never resolve names inside numerical loops.
+        std::vector<real> prescribedFractions;
+        /// Validate the equation-state producer at operator setup. The legacy
+        /// perfect-gas methods retain their existing larger profile set.
+        void ValidateEquationProducer() const;
+        /// EOS-aware face/exterior state. rhoY is preallocated Ns-1 point
+        /// scratch and is replaced only when the BC changes composition or
+        /// density. No exchange, Array access, worker acquisition or allocation.
+        /// Prescribed velocities use ground axes; results use mesh axes.
+        FlowState FaceValue(EquationPointEvaluator &evaluator, const FlowState &inside,
+                            Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
+                            const Vector3 &point = {}, real time = 0, const RigidFrame *frame = nullptr) const;
+        FlowState Exterior(EquationPointEvaluator &evaluator, const FlowState &inside,
+                           Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
+                           const Vector3 &point = {}, real time = 0, const RigidFrame *frame = nullptr) const;
         /// Resolved absolute wall velocity in the mesh-bound Cartesian frame.
         /// Shared kinematics for equation-specific adiabatic wall producers.
         Vector3 WallVelocityAt(const Vector3 &point, const RigidFrame *frame = nullptr) const;
@@ -55,6 +74,8 @@ namespace DNDS::Cauchy
 
     public:
         explicit BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const PerfectGas &gas);
+        /// Resolve equation-specific composition once; retains no worker.
+        explicit BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const EquationSystem &equation);
         /// Resolve metadata only; equation-specific operators prepare values.
         explicit BoundarySystem(const std::map<std::string, BoundarySettings> &settings);
         const BoundaryCondition &At(int zone) const;

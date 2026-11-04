@@ -7,6 +7,7 @@
 #include "Cauchy/State/EquationTimeStepper.hpp"
 #include "Cauchy/Physics/EquationPositivity.hpp"
 #include "Cauchy/Implicit/LinearSolver.hpp"
+#include "Cauchy/Boundary/BoundarySystem.hpp"
 #include "Euler/SourceTermContributor.hpp"
 #include <Eigen/LU>
 #include <cstdlib>
@@ -114,6 +115,91 @@ TEST_CASE("Shared transported species repair preserves Euler constants and strid
         for (int k : {0, 2, 4, 6, 7})
             CHECK(storage[k] == before[k]);
     }
+}
+TEST_CASE("Equation primitive and mixture boundary producers preserve full energy composition and moving axes")
+{
+    Fixture fixture;
+    auto evaluator = fixture.equation.MakePointEvaluator(fixture.workers.Acquire(), {});
+    const auto expected = fixture.Point(5, 2100);
+    const auto fractions = fixture.Fractions(5);
+    const double pressure = expected[0] * fixture.scales.rho0 * fixture.prototype.mixtureR({fractions.data(), fixture.species}) * 2100 / fixture.scales.Pressure();
+    const C::FlowState primitive{expected[0], .2, -.04, .03, pressure};
+    const auto fromPressure = evaluator.FromPrimitive(primitive, {expected.data() + 5, fixture.species - 1});
+    const auto fromTemperature = evaluator.FromPrimitive(primitive, {expected.data() + 5, fixture.species - 1}, 2100 / fixture.scales.T0);
+    for (int j = 0; j < 5; ++j)
+    {
+        CHECK(fromPressure[j] == doctest::Approx(expected[j]).epsilon(2e-12));
+        CHECK(fromTemperature[j] == doctest::Approx(expected[j]).epsilon(2e-12));
+    }
+    C::BoundarySettings input;
+    input.kind = "farfield";
+    input.primitive = primitive;
+    for (int k = 0; k < fixture.species; ++k)
+        input.massFractions[fixture.material.SpeciesNames()[k]] = fractions[k];
+    C::BoundarySystem boundaries({{"7", input}}, fixture.equation);
+    const auto &condition = boundaries.At(7);
+    condition.ValidateEquationProducer();
+    C::RigidMotionSettings motion;
+    motion.angularVelocity = {0, 0, .3};
+    motion.translationVelocity = {.07, -.02, .01};
+    const auto frame = C::RigidMotion(motion, 3).At(.4);
+    const C::Vector3 normal{.6, .8, 0}, location{.2, -.3, .1};
+    const auto grid = frame.GridVelocity(location);
+    for (const double mach : {-2., -.2, .2, 2.})
+    {
+        const auto initial = fixture.Point(0);
+        std::vector<double> rhoY(size_t(fixture.species - 1));
+        for (int k = 0; k < fixture.species - 1; ++k)
+            rhoY[k] = initial[5 + k];
+        C::FlowState inside;
+        for (int j = 0; j < 5; ++j)
+            inside[j] = initial[j];
+        const auto properties = evaluator.Evaluate(inside, {rhoY.data(), fixture.species - 1});
+        const double speed = mach * properties.thermo.soundSpeed;
+        // Retain the independent oracle's thermal energy while changing all
+        // momenta to force the chosen characteristic branch in moving axes.
+        inside[4] -= .5 * (inside[1] * inside[1] + inside[2] * inside[2] + inside[3] * inside[3]) / inside[0];
+        for (int d = 0; d < 3; ++d)
+        {
+            const double velocity = grid[d] + speed * normal[d];
+            inside[1 + d] = inside[0] * velocity;
+            inside[4] += .5 * inside[0] * velocity * velocity;
+        }
+        const auto value = condition.Exterior(evaluator, inside, {rhoY.data(), fixture.species - 1}, normal, location, .4, &frame);
+        const auto point = evaluator.Evaluate(value, {rhoY.data(), fixture.species - 1});
+        const bool inflow = mach < 0;
+        const double rho = inflow ? primitive[0] : inside[0];
+        const auto prescribedVelocity = frame.LocalVector({primitive[1], primitive[2], primitive[3]});
+        CHECK(value[0] == rho);
+        CHECK(point.thermo.pressure == doctest::Approx(mach < -1 || (mach > 0 && mach < 1) ? pressure : properties.thermo.pressure).epsilon(3e-12));
+        for (int d = 0; d < 3; ++d)
+            CHECK(value[1 + d] / rho == doctest::Approx(inflow ? prescribedVelocity[d] : inside[1 + d] / inside[0]).epsilon(3e-12));
+        for (int k = 0; k < fixture.species - 1; ++k)
+            CHECK(rhoY[k] / rho == doctest::Approx(inflow ? fractions[k] : initial[5 + k] / initial[0]).epsilon(3e-12));
+    }
+    input.kind = "noSlipWall";
+    input.massFractions.clear();
+    input.thermal = "isothermal";
+    input.temperature = 600 / fixture.scales.T0;
+    input.velocity = {.01, -.02, .03};
+    C::BoundarySystem walls({{"7", input}}, fixture.equation);
+    auto rhoY = std::vector<double>(expected.data() + 5, expected.data() + fixture.components);
+    const auto before = rhoY;
+    const auto face = walls.At(7).FaceValue(evaluator, fromPressure, {rhoY.data(), fixture.species - 1}, normal, location, .4, &frame);
+    const auto faceProperties = evaluator.Evaluate(face, {rhoY.data(), fixture.species - 1});
+    CHECK(faceProperties.thermo.temperature == doctest::Approx(input.temperature).epsilon(3e-12));
+    CHECK(faceProperties.thermo.pressure == doctest::Approx(pressure).epsilon(3e-12));
+    const auto wallVelocity = walls.At(7).WallVelocityAt(location, &frame);
+    for (int d = 0; d < 3; ++d)
+        CHECK(face[1 + d] / face[0] == doctest::Approx(wallVelocity[d]).epsilon(3e-12));
+    for (int k = 0; k < fixture.species - 1; ++k)
+        CHECK(rhoY[k] / face[0] == doctest::Approx(before[k] / expected[0]).epsilon(3e-12));
+    rhoY = before;
+    const auto exterior = walls.At(7).Exterior(evaluator, fromPressure, {rhoY.data(), fixture.species - 1}, normal, location, .4, &frame);
+    CHECK(evaluator.Evaluate(exterior, {rhoY.data(), fixture.species - 1}).thermo.temperature == doctest::Approx(2100 / fixture.scales.T0).epsilon(3e-12));
+    CHECK(rhoY == before);
+    CHECK_THROWS(fixture.equation.IndependentMassFractions({{"missing-species", .1}}));
+    CHECK_THROWS(fixture.equation.IndependentMassFractions({{fixture.material.SpeciesNames().back(), .2}}));
 }
 TEST_CASE("Mixture thermal references enforce a requested temperature through actual conservative energy")
 {

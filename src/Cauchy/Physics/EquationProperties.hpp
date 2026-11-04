@@ -81,6 +81,13 @@ namespace DNDS::Cauchy
         EquationPointEvaluator(EquationPointEvaluator &&) noexcept = default;
         EquationPointEvaluator &operator=(EquationPointEvaluator &&) noexcept = default;
         Physics::Chemistry::SpeciesBufferView SpeciesInput() const;
+        /// Construct flow5 from [rho,u,v,w,p] and Ns-1 conservative species.
+        /// A positive temperature overrides p; zero selects the pressure input.
+        /// Full thermochemical energy is retained for mixtures. The species
+        /// buffer is borrowed, never modified, and may be this worker's input
+        /// scratch. No new worker or point-time payload allocation is needed.
+        FlowState FromPrimitive(const FlowState &primitive, Physics::Chemistry::ConstSpeciesBufferView rhoY = {},
+                                real temperature = 0);
         /// Input flow is [rho,rhou,rhov,rhow,rhoE], with full thermal energy for
         /// mixtures. rhoY has Ns-1 independent conservative species; it may be
         /// worker scratch gathered from any physical layout or allocation.

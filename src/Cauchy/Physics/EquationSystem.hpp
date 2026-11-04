@@ -8,6 +8,7 @@
 #include "Physics/Thermodynamics/IdealGasMixture.hpp"
 #include <algorithm>
 #include <optional>
+#include <map>
 
 namespace DNDS::Cauchy
 {
@@ -82,6 +83,11 @@ namespace DNDS::Cauchy
         }
         bool HasMixture() const { return _mixture.has_value(); }
         const Physics::Thermodynamics::IdealGasMixture &Mixture() const;
+        /// Resolve named mass fractions once at setup. The last species is
+        /// dependent: omission fills its remainder; an explicit value must
+        /// close the total to one. Unknown, negative and overfilled inputs fail.
+        /// Empty input selects pure dependent species. Perfect gas accepts none.
+        std::vector<real> IndependentMassFractions(const std::map<std::string, real> &values) const;
         EquationPropertyKey PropertyKey() const;
         /// Reserve/validate one private worker outside a loop. Perfect gas
         /// requires no chemistry context. A mixture never falls back to gamma.

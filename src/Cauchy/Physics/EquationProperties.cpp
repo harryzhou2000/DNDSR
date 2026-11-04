@@ -29,6 +29,28 @@ namespace DNDS::Cauchy
     {
         return _mixture ? _mixture->SpeciesInput() : Physics::Chemistry::SpeciesBufferView{};
     }
+    FlowState EquationPointEvaluator::FromPrimitive(const FlowState &primitive,
+                                                    Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperature)
+    {
+        DNDS_check_throw_info(std::isfinite(temperature) && temperature >= 0 && primitive[0] > 0 &&
+                                  std::all_of(primitive.begin(), primitive.end(), [](real value)
+                                              { return std::isfinite(value); }) &&
+                                  (temperature > 0 || primitive[4] > 0),
+                              "invalid equation primitive input");
+        if (!_mixture)
+        {
+            DNDS_check_throw_info(!rhoY.nSpecies, "perfect-gas primitive input has species");
+            auto value = primitive;
+            if (temperature > 0)
+                value[4] = value[0] * _gas.gasConstant * temperature;
+            return _gas.Conservative(value);
+        }
+        const auto point = temperature > 0 ? _mixture->FromRhoT(primitive[0], temperature, rhoY)
+                                           : _mixture->FromRhoP(primitive[0], primitive[4], rhoY);
+        const Vector3 velocity{primitive[1], primitive[2], primitive[3]};
+        return {primitive[0], primitive[0] * velocity[0], primitive[0] * velocity[1], primitive[0] * velocity[2],
+                Physics::Thermodynamics::ConservativeTotalEnergyDensity<3>(primitive[0], velocity, point.thermo.internalEnergy)};
+    }
     EquationPointProperties EquationPointEvaluator::Evaluate(const FlowState &flow,
                                                              Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess)
     {
