@@ -260,6 +260,17 @@ target_compile_definitions(cauchy_experiment_multidomain_iv PRIVATE CGAL_CORE_US
 target_compile_definitions(dnds_test_cauchy_checkpoint PRIVATE DNDS_TEST_SOURCE_ROOT="${PROJECT_SOURCE_DIR}")
 dnds_add_mpi_test(cauchy_jacobian "Cauchy/test_Jacobian.cpp" "cauchy;cfv;geom;dnds")
 add_custom_target(cauchy_unit_tests)
+if(Python_EXECUTABLE)
+    add_dependencies(cauchy_unit_tests cauchy_solver)
+    foreach(NP 1 2)
+        add_test(NAME cauchy_frontend_np${NP}
+            COMMAND ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/Cauchy/frontend_smoke.py
+                --exe $<TARGET_FILE:cauchy_solver> --source ${PROJECT_SOURCE_DIR}
+                --mpi ${MPIEXEC_EXECUTABLE} --np ${NP})
+        set_tests_properties(cauchy_frontend_np${NP} PROPERTIES TIMEOUT 240
+            ENVIRONMENT "OMP_NUM_THREADS=1;OPENBLAS_NUM_THREADS=1;OMPI_MCA_rmaps_base_oversubscribe=1")
+    endforeach()
+endif()
 if(DNDS_USE_CANTERA)
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_equation_source)
 endif()

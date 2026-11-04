@@ -536,7 +536,12 @@ The limited equation-state FV profile above includes this source. The production
 Domain connects the extended BC/PP and checkpoint paths. The physical
 Jacobian and whole-equation nonlinear stage operator now compose with the logical
 linear/time drivers; see [CauchyImplicit.md](CauchyImplicit.md#whole-equation-cpu-nonlinear-adapter).
-The standardized production frontend remains separate work. The physical source/implicit-reactor fixtures do not qualify a full
+The single-domain production executable now uses DNDS MPI lifecycle helpers,
+the shared segmented CSV writer, and argparse overrides through the existing
+resolved-configuration/provenance API. See the [case guide](../../cases/cauchy/README.md)
+for override paths, restart and history segment conventions. Python Domain and
+Simulation use the same native operators; standalone operator-level Python
+coverage remains incomplete. The physical source/implicit-reactor fixtures do not qualify a full
 RANS/species spatial solver or the pending NACA/flame studies.
 
 `PreparePrimitiveDerivative` accepts one conservative flow direction and a

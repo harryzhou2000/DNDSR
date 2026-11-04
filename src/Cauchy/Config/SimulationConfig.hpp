@@ -399,6 +399,7 @@ namespace DNDS::Cauchy
         std::string prefix = "cauchy";
         index interval = 1;
         index historyInterval = 1;
+        index historySegmentRows = 10000;
         int hdfDeflateLevel = 0;
         bool checkpointReconstruction = false;
         std::vector<int> forceZones;
@@ -407,6 +408,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(prefix, "Output file prefix");
             DNDS_FIELD(interval, "Accepted-step snapshot interval; zero disables periodic output");
             DNDS_FIELD(historyInterval, "CSV diagnostics cadence in accepted steps");
+            DNDS_FIELD(historySegmentRows, "Maximum history rows per CSV segment; each segment has the same header");
             DNDS_FIELD(hdfDeflateLevel, "VTKHDF compression level 0..9; uncompressed is the initial portable baseline");
             DNDS_FIELD(checkpointReconstruction, "Store optional compatible polynomial warm guesses for exact finite-sweep continuation; default omits them");
             DNDS_FIELD(forceZones, "Boundary zones on which pressure and viscous body force are integrated");

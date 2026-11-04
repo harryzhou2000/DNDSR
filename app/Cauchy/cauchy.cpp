@@ -1,36 +1,61 @@
 #include "Cauchy/Core/Simulation.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include "DNDS/IO/CsvLog.hpp"
+#include "argparse.hpp"
 #include <fstream>
 #include <iostream>
 #include <iomanip>
 #include <filesystem>
 
-int main(int argc, char **argv)
+/// Keep every MPI-owning solver object inside this scope, before DNDS Finalize.
+static int Run(int argc, char **argv, double started)
 {
-    int provided = 0;
-    MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &provided);
-    // The external process budget includes mesh import/partition/setup. Start
-    // here so a costly setup cannot consume the reserve for final evidence.
-    const double started = MPI_Wtime();
     int status = 0;
     {
         const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
         try
         {
-            DNDS_check_throw_info(argc == 2 || argc == 3 || argc == 4, "usage: cauchy.exe config.json [--check-config | --restart checkpoint.h5]");
+            // Own help handling so argparse never exits before MPI finalization.
+            argparse::ArgumentParser arguments("cauchy.exe", "1.0", argparse::default_arguments::none);
+            arguments.add_argument("config").default_value(std::string{}).help("Cauchy JSON input; paths are relative to the working directory");
+            arguments.add_argument("-h", "--help").flag();
+            arguments.add_argument("--check-config").flag().help("Print resolved configuration without constructing a mesh");
+            arguments.add_argument("--restart").default_value(std::string{}).help("Restart from a Cauchy checkpoint");
+            arguments.add_argument("-k", "--overwrite_key").append().default_value<std::vector<std::string>>({}).help("Resolved-config JSON pointer to override; pair with -v, may repeat");
+            arguments.add_argument("-v", "--overwrite_value").append().default_value<std::vector<std::string>>({}).help("JSON value for the corresponding -k (quote JSON strings)");
+            DNDS::MPI::LocalStage(mpi, [&]
+                                  { arguments.parse_args(argc, argv); });
+            if (arguments.get<bool>("--help"))
+            {
+                if (mpi.rank == 0)
+                    std::cout << arguments;
+                return 0;
+            }
+            const auto configPath = arguments.get<std::string>("config");
+            const auto restartPath = arguments.get<std::string>("--restart");
+            const bool checkConfig = arguments.get<bool>("--check-config");
             DNDS::Cauchy::Json input;
+            std::vector<DNDS::Cauchy::ConfigOverride> overrides;
             DNDS::MPI::LocalStage(mpi, [&]
                                   {
-                std::ifstream stream(argv[1]);
+                DNDS_check_throw_info(!configPath.empty(), "provide a Cauchy config file or --help");
+                DNDS_check_throw_info(!checkConfig || restartPath.empty(), "--check-config and --restart are mutually exclusive");
+                std::ifstream stream(configPath);
                 DNDS_check_throw_info(bool(stream),"cannot open Cauchy config");
-                stream>>input; });
-            auto config = DNDS::Cauchy::SimulationConfig::ResolveCollective(input, mpi.comm);
-            if (argc == 3)
+                stream >> input;
+                const auto keys = arguments.get<std::vector<std::string>>("--overwrite_key");
+                const auto values = arguments.get<std::vector<std::string>>("--overwrite_value");
+                DNDS_check_throw_info(keys.size() == values.size(), "overwrite keys and values must be paired");
+                for (DNDS::index i = 0; i < DNDS::index(keys.size()); ++i)
+                {
+                    DNDS_check_throw_info(!keys[i].empty() && keys[i][0] == '/', "overwrite keys must be nonempty JSON pointers");
+                    overrides.push_back({keys[i], DNDS::Cauchy::Json::parse(values[i])});
+                } });
+            auto config = DNDS::Cauchy::SimulationConfig::ResolveCollective(input, mpi.comm, overrides);
+            if (checkConfig)
             {
-                DNDS_check_throw_info(std::string(argv[2]) == "--check-config", "expected --check-config");
                 if (mpi.rank == 0)
                     std::cout << config.Root().dump(2) << '\n';
-                MPI_Finalize();
                 return 0;
             }
             DNDS_check_throw_info(config.Domains().size() == 1, "Cauchy physical executable currently requires one domain");
@@ -38,24 +63,27 @@ int main(int argc, char **argv)
                                   "Cauchy physical executable currently requires its domain to include every simulation rank");
             DNDS::Cauchy::Simulation simulation(config, mpi.comm);
             auto &domain = simulation.GetDomain(0);
-            if (argc == 4)
-            {
-                DNDS_check_throw_info(std::string(argv[2]) == "--restart", "expected --restart checkpoint.h5");
-                simulation.ReadCheckpoint(argv[3]);
-            }
+            if (!restartPath.empty())
+                simulation.ReadCheckpoint(restartPath);
             const auto &output = config.Output();
             const auto &time = config.Time();
-            std::ofstream history;
+            const std::vector<std::string> columns{
+                "step", "time", "dt", "wall", "mass", "energy", "rho_min", "p_min", "residual_l2", "force_x", "force_y", "force_z",
+                "vr_sweeps", "vr_relative_update", "rho_error_l1", "rho_error_l2", "rho_error_linf", "temperature_min", "face_fallbacks", "retries",
+                "pp_rec_cells", "pp_beta_min", "pp_stage_cells", "pp_alpha_min", "characteristic_fallbacks", "implicit_stages",
+                "nonlinear_iterations", "linear_iterations", "implicit_residual_target_ratio", "coupled_iterations", "coupled_residual_target_ratio",
+                "implicit_final_vr_sweeps", "implicit_final_vr_update", "time_pp_cells", "time_pp_alpha", "time_growth_limited"};
+            std::unique_ptr<DNDS::CsvLog> history;
             DNDS::MPI::LocalStage(mpi, [&]
                                   {
                 if (mpi.rank == 0)
                 {
                     const auto parent = std::filesystem::path(output.prefix).parent_path();
                     if (!parent.empty()) std::filesystem::create_directories(parent);
-                    history.open(output.prefix + "_history.csv");
-                    DNDS_check_throw_info(bool(history), "cannot open Cauchy history");
-                    history << "step,time,dt,wall,mass,energy,rho_min,p_min,residual_l2,force_x,force_y,force_z,vr_sweeps,vr_relative_update,rho_error_l1,rho_error_l2,rho_error_linf,temperature_min,face_fallbacks,retries,pp_rec_cells,pp_beta_min,pp_stage_cells,pp_alpha_min,characteristic_fallbacks,implicit_stages,nonlinear_iterations,linear_iterations,implicit_residual_target_ratio,coupled_iterations,coupled_residual_target_ratio,implicit_final_vr_sweeps,implicit_final_vr_update,time_pp_cells,time_pp_alpha,time_growth_limited\n" << std::setprecision(17);
-                    std::ofstream resolved(output.prefix + "_resolved.json"); resolved << config.Root().dump(2) << '\n';
+                    history = std::make_unique<DNDS::CsvLog>(columns, output.prefix + "_history", ".csv", output.historySegmentRows);
+                    std::ofstream resolved(output.prefix + "_resolved.json");
+                    resolved << config.Root().dump(2) << '\n';
+                    DNDS_check_throw_info(bool(resolved), "cannot write resolved Cauchy configuration");
                 } });
             double baseline = 0;
             bool reached = false, wallStop = false;
@@ -77,25 +105,30 @@ int main(int argc, char **argv)
                     implicitFinalVRUpdate = std::max(implicitFinalVRUpdate, report.reconstructionRelativeUpdate);
                     implicitRatio = std::max(implicitRatio, report.residualTargetRatio);
                 }
+                // File rotation/open failures on the writer rank must not
+                // strand peers entering the next solver collective.
+                DNDS::MPI::LocalStage(mpi, [&]
+                                      {
                 if (mpi.rank == 0)
                 {
-                    history << domain.Epoch().acceptedStep << ',' << domain.Time() << ',' << dt << ',' << MPI_Wtime() - started;
-                    for (auto value : values)
-                        history << ',' << value;
-                    history << ',' << fallbacks << ',' << retries;
-                    for (auto value : domain.LastPositivity())
-                        history << ',' << value;
-                    history << ',' << domain.LastImplicitStages().size() << ',' << nonlinearIterations << ',' << linearIterations << ',' << implicitRatio
-                            << ',' << domain.LastCoupledIterations() << ',' << domain.LastCoupledTargetRatio()
-                            << ',' << implicitFinalVRSweeps << ',' << implicitFinalVRUpdate
-                            << ',' << limit.limitedCells << ',' << limit.minimumAlpha << ',' << limit.growthLimited;
-                    history << '\n';
-                    history.flush();
+                    DNDS::tLogSimpleDIValueMap row;
+                    DNDS::index column = 0;
+                    const auto append = [&](auto value) { row[columns.at(column++)] = value; };
+                    append(domain.Epoch().acceptedStep); append(domain.Time()); append(dt); append(MPI_Wtime() - started);
+                    for (auto value : values) append(value);
+                    append(fallbacks); append(retries);
+                    for (auto value : domain.LastPositivity()) append(value);
+                    append(domain.LastImplicitStages().size()); append(nonlinearIterations); append(linearIterations); append(implicitRatio);
+                    append(domain.LastCoupledIterations()); append(domain.LastCoupledTargetRatio());
+                    append(implicitFinalVRSweeps); append(implicitFinalVRUpdate);
+                    append(limit.limitedCells); append(limit.minimumAlpha); append(limit.growthLimited);
+                    DNDS_check_throw_info(column == DNDS::index(columns.size()), "Cauchy history field count differs from its header");
+                    history->WriteLine(row, 17);
                     std::cout << std::setprecision(12) << "Cauchy step " << domain.Epoch().acceptedStep << " time " << domain.Time() << " dt " << dt
                               << " residual " << values[4] << " rho_min " << values[2] << " p_min " << values[3] << " VR " << values[8] << ':' << values[9]
                               << " rho L1 " << values[10] << " face fallbacks " << fallbacks << " implicit " << nonlinearIterations << '/' << linearIterations
                               << " target ratio " << implicitRatio << " stage VR " << implicitFinalVRSweeps << ':' << implicitFinalVRUpdate << " wall " << MPI_Wtime() - started << std::endl;
-                }
+                } });
                 const bool outerTarget = time.steadyTolerance <= 0 || values[4] / baseline <= time.steadyTolerance;
                 if (time.steady)
                     return !domain.LastImplicitStages().empty() && std::all_of(domain.LastImplicitStages().begin(), domain.LastImplicitStages().end(), [](const auto &stage)
@@ -104,7 +137,7 @@ int main(int argc, char **argv)
                 return time.steadyTolerance > 0 && domain.Epoch().acceptedStep >= uint64_t(time.steadyMinSteps) && outerTarget;
             };
             record(0, 0);
-            for (DNDS::index step = 0; time.finalTime > 0 ? !DNDS::ODE::FieldTimeStepper::ReachedTimeTarget(simulation.Time(), time.finalTime) : step < time.steps; ++step)
+            for (DNDS::index step = 0; time.finalTime > 0 ? !DNDS::Cauchy::EquationTimeStepper::ReachedTimeTarget(simulation.Time(), time.finalTime) : step < time.steps; ++step)
             {
                 int stop = time.wallSeconds > 0 && MPI_Wtime() - started >= time.wallSeconds;
                 MPI_Allreduce(MPI_IN_PLACE, &stop, 1, MPI_INT, MPI_MAX, mpi.comm);
@@ -149,6 +182,8 @@ int main(int argc, char **argv)
             domain.WriteCheckpoint(output.prefix + "_final.h5", config.Root(), output.checkpointReconstruction);
             domain.WriteVisualization(output.prefix + "_final", output.hdfDeflateLevel);
             const bool stepStop = (time.steady || time.steadyTolerance > 0) && !reached && !wallStop;
+            DNDS::MPI::LocalStage(mpi, [&]
+                                  {
             if (mpi.rank == 0)
             {
                 DNDS::Cauchy::Json result{{"time", simulation.Time()}, {"steps", simulation.Step()}, {"wallSeconds", MPI_Wtime() - started}, {"status", wallStop ? "wall-capped" : stepStop ? "step-capped"
@@ -160,7 +195,8 @@ int main(int argc, char **argv)
                                           {"steadyTolerance", time.steadyTolerance}};
                 std::ofstream summary(output.prefix + "_summary.json");
                 summary << result.dump(2) << '\n';
-            }
+                DNDS_check_throw_info(bool(summary), "cannot write Cauchy summary");
+            } });
             if (wallStop || stepStop)
                 status = 2;
         }
@@ -171,6 +207,14 @@ int main(int argc, char **argv)
         }
         MPI_Allreduce(MPI_IN_PLACE, &status, 1, MPI_INT, MPI_MAX, mpi.comm);
     }
-    MPI_Finalize();
+    return status;
+}
+
+int main(int argc, char **argv)
+{
+    DNDS::MPI::Init_thread(&argc, &argv);
+    // Include import/partition/setup in the external wall-time budget.
+    const int status = Run(argc, argv, MPI_Wtime());
+    DNDS::MPI::Finalize();
     return status;
 }

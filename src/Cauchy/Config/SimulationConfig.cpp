@@ -488,7 +488,7 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(!data->time.positivity.enabled && !(data->time.method == "ssprk3" && domain.settings.numerics.positivity),
                                       "mixture physical-dt and explicit flux-blend PP adapters are not connected yet");
         }
-        DNDS_check_throw_info(data->output.interval >= 0 && data->output.historyInterval > 0 && !data->output.prefix.empty(), "invalid Cauchy output controls");
+        DNDS_check_throw_info(data->output.interval >= 0 && data->output.historyInterval > 0 && data->output.historySegmentRows > 0 && !data->output.prefix.empty(), "invalid Cauchy output controls");
         DNDS_check_throw_info(data->output.hdfDeflateLevel >= 0 && data->output.hdfDeflateLevel <= 9, "Cauchy output hdfDeflateLevel must be in [0,9]");
         return SimulationConfig(std::move(data));
     }

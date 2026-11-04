@@ -52,6 +52,32 @@ count, instead of clamping an outflow to the freestream.
 Output is a compact accepted-state history, native persistent-ID restart,
 parallel VTKHDF means and rank-local boundary quadrature CSVs. Histories/output
 use separate reconstruction scratch so cadence does not affect the trajectory.
+The C++ frontend uses DNDS MPI initialization/finalization and `argparse`:
+
+```sh
+# Invoke from the checkout root for these case-relative mesh paths.
+mpirun -np 4 build-refactor/app/cauchy.exe cases/cauchy/isentropic_vortex_20.json \
+  -k /time/method -v '"esdirk4"' -k /time/dt -v 0.01
+```
+
+`--check-config` prints the resolved configuration without mesh construction;
+`--restart <file>` resumes accepted state/history. They are mutually exclusive.
+Repeated `-k/--overwrite_key` and `-v/--overwrite_value` arguments pair in order,
+using JSON pointers into the resolved configuration and JSON values. They apply
+after profiles/defaults/domain settings, before final validation. For example,
+`-k /domains/0/settings/execution/overlap -v false` overrides that domain's
+file settings. Only existing resolved keys can be targeted; `--check-config`
+shows their paths.
+Quote string values as JSON, as above. Unknown or mistyped settings fail the
+same validation as file input. MPI cleanup runs on help, config-only and error
+paths as well as normal execution.
+
+History uses `DNDS::CsvLog`: `output.historySegmentRows` defaults to 10000.
+Segments are `<prefix>_history.csv`, `<prefix>_history_1.csv`, etc., each with
+the same header. Readers must concatenate segments in numeric order. As with
+the existing writer, rotation can create an empty trailing segment at an exact
+row limit. Use a fresh output prefix for a resumed run to preserve old evidence.
+
 Restart permits changed MPI ownership/order and polynomial degree. It omits
 reconstruction by default; missing or incompatible coefficients cold-start at
 zero. Set `output.checkpointReconstruction=true` for compatible finite-sweep
