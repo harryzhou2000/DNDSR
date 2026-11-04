@@ -118,8 +118,8 @@ namespace DNDS::Cauchy
             const auto &n = settings.numerics;
             _equationThermal.emplace(_equation, n.densityFloor, n.temperatureFloor, n.sensibleEnergyFloor, n.pressureFloor,
                                      _workers ? _workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{});
-            DNDS_check_throw_info(!time.positivity.enabled && !(time.method == "ssprk3" && n.positivity),
-                                  "extended equation physical-dt and explicit flux-blend PP adapters are not connected yet");
+            DNDS_check_throw_info(!(time.method == "ssprk3" && n.positivity),
+                                  "extended equation explicit flux-blend PP adapter is not connected yet");
         }
         if (_equation.HasRANS())
             _ransState.emplace(ResolveRANSStatePolicy(_equation, settings.numerics.ransState));

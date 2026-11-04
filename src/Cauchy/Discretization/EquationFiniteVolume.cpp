@@ -87,6 +87,7 @@ namespace DNDS::Cauchy
             std::vector<index> vectorStarts;
         };
         std::shared_ptr<const Data> owner;
+        const bool meanOnly;
         EquationDofs prototype;
         EquationDofOperations::Binding binding;
         std::vector<Field> fields, limited;
@@ -113,7 +114,7 @@ namespace DNDS::Cauchy
         std::optional<EquationDofOperations::Binding> sourceState, sourceCoefficients;
         real sourceTime = 0;
 
-        static std::vector<Field> BuildFields(const Data &data, const EquationDofs &state)
+        static std::vector<Field> BuildFields(const Data &data, const EquationDofs &state, bool meanOnly)
         {
             std::vector<Field> result;
             result.reserve(size_t(state.PhysicalFieldNumber()));
@@ -137,7 +138,7 @@ namespace DNDS::Cauchy
                             vectors};
                 Algebra::Fill(field.reconstruction.coefficients, 0.);
                 Algebra::Fill(field.reconstruction.temporary, 0.);
-                if (data.settings.numerics.reconstruction == "gradient")
+                if (!meanOnly && data.settings.numerics.reconstruction == "gradient")
                 {
                     field.gradient.emplace(data.metrics.BuildField(index(physical.Width()) * data.metrics.Dimension()));
                     field.gradientBoundary.emplace(data.gradient.BuildBoundaryValues(index(physical.Width())));
@@ -217,8 +218,8 @@ namespace DNDS::Cauchy
             return BindFields(state, std::move(bundle), 1);
         }
         EquationWorkspace(std::shared_ptr<const Data> data, EquationDofs &state,
-                          std::optional<Physics::Chemistry::ChemicalWorkerPool> pool)
-            : owner(std::move(data)), prototype(state), binding(state), fields(BuildFields(*owner, state)),
+                          std::optional<Physics::Chemistry::ChemicalWorkerPool> pool, bool meanTrial)
+            : owner(std::move(data)), meanOnly(meanTrial), prototype(state), binding(state), fields(BuildFields(*owner, state, meanOnly)),
               coefficients(BindCoefficients(state, fields, owner->reconstruction.NRecDOF())), fluxCoefficients(coefficients),
               boundary(BindBoundary(state, fields, owner->reconstruction.NumBoundaryQuadrature())), workers(std::move(pool)),
               boundaryMomentumFlux(R::RowLayout::Dense(owner->reconstruction.NumBoundaryQuadrature(), 3)),
@@ -238,14 +239,14 @@ namespace DNDS::Cauchy
                     vectorStarts.push_back(first + vector);
                 first += index(block.components.size());
             }
-            if (owner->settings.numerics.limiter == "WBAP" || owner->settings.numerics.positivity)
+            if (!meanOnly && (owner->settings.numerics.limiter == "WBAP" || owner->settings.numerics.positivity))
             {
                 limited = fields;
                 for (auto &field : limited)
                     field.reconstruction.coefficients = owner->metrics.BuildField(field.reconstruction.coefficients.Owned().Layout());
                 fluxCoefficients = BindCoefficients(state, limited, owner->reconstruction.NRecDOF());
             }
-            if (owner->settings.numerics.positivity)
+            if (!meanOnly && owner->settings.numerics.positivity)
                 positivity = std::make_shared<EquationPositivityWorkspace>(owner, state, fluxCoefficients, workers);
             if (ransFirst >= 0)
                 ransDestruction = R::Array<real>(R::RowLayout::Dense(owner->metrics.NumCell(), owner->equation.RANS().ComponentNumber()));
@@ -337,7 +338,7 @@ namespace DNDS::Cauchy
             for (index iBlock = 0; iBlock < result.BlockNumber(); ++iBlock)
                 outputs.push_back(output.Block(iBlock));
             const int modes = owner->reconstruction.NRecDOF(), dim = owner->metrics.Dimension();
-            const bool viscous = owner->equation.Viscous();
+            const bool viscous = !meanOnly && owner->equation.Viscous();
             const int species = owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() : 0;
             const int independent = std::max(0, species - 1);
             const index width = state.ComponentNumber();
@@ -627,6 +628,11 @@ namespace DNDS::Cauchy
         }
     };
 
+    struct FiniteVolume::EquationMeanWorkspace
+    {
+        std::shared_ptr<EquationWorkspace> work;
+    };
+
     void FiniteVolume::PrepareCorrectionAux(EquationDofs &state, EquationWorkspace &work, AuxiliaryValues &auxiliary,
                                             R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
@@ -748,6 +754,20 @@ namespace DNDS::Cauchy
     std::shared_ptr<FiniteVolume::EquationWorkspace> FiniteVolume::BuildEquationWorkspace(EquationDofs &state,
                                                                                           std::optional<Physics::Chemistry::ChemicalWorkerPool> workers) const
     {
+        return BuildEquationWorkspaceImpl(state, std::move(workers), false);
+    }
+    std::shared_ptr<FiniteVolume::EquationMeanWorkspace> FiniteVolume::BuildEquationMeanWorkspace(EquationDofs &state,
+                                                                                                  std::optional<Physics::Chemistry::ChemicalWorkerPool> workers) const
+    {
+        auto inner = BuildEquationWorkspaceImpl(state, std::move(workers), true);
+        std::shared_ptr<EquationMeanWorkspace> result;
+        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                        { result = std::make_shared<EquationMeanWorkspace>(EquationMeanWorkspace{std::move(inner)}); });
+        return result;
+    }
+    std::shared_ptr<FiniteVolume::EquationWorkspace> FiniteVolume::BuildEquationWorkspaceImpl(EquationDofs &state,
+                                                                                              std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, bool meanOnly) const
+    {
         const MPIInfo mpi(Metrics().Communicator());
         std::string operationControls;
         MPI::LocalStage(mpi, [&]
@@ -776,16 +796,16 @@ namespace DNDS::Cauchy
                 auto checked = _data->equation.MakePointEvaluator(workers->Acquire(), {});
             }
             else DNDS_check_throw_info(!workers, "perfect-gas FV does not require chemistry workers");
-            operationControls = Json{{"numerics", _data->settings.numerics}, {"equation", _data->settings.equation},
+            operationControls = Json{{"meanOnly", meanOnly}, {"numerics", _data->settings.numerics}, {"equation", _data->settings.equation},
                 {"motion", _data->settings.motion}, {"boundaries", _data->settings.boundaries}, {"overlap", _data->settings.execution.overlap},
                 {"collectiveChecks", _data->settings.implicit.collectiveChecks}, {"properties", _data->equation.PropertyKey().parameters},
                 {"rans", _data->equation.HasRANS() ? Json(_data->equation.RANS().Settings()) : Json()}}.dump(); });
         AgreeEquationBinding(state, mpi.comm, operationControls);
         std::shared_ptr<EquationWorkspace> result;
         MPI::LocalStage(mpi, [&]
-                        { result = std::make_shared<EquationWorkspace>(_data, state, std::move(workers)); });
+                        { result = std::make_shared<EquationWorkspace>(_data, state, std::move(workers), meanOnly); });
         result->BindHalos(state);
-        if (_data->equation.HasRANS() && _data->equation.RANS().ComponentNumber() == 2)
+        if (!meanOnly && _data->equation.HasRANS() && _data->equation.RANS().ComponentNumber() == 2)
             result->meanGradients.emplace(BuildMeanGradients(state));
         return result;
     }
@@ -876,9 +896,19 @@ namespace DNDS::Cauchy
     void FiniteVolume::Evaluate(EquationDofs &state, EquationDofs &residual, EquationWorkspace &work,
                                 R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
+        EvaluateEquationImpl(state, residual, work, engine, stream, time);
+    }
+    void FiniteVolume::EvaluateMean(EquationDofs &state, EquationDofs &residual, EquationMeanWorkspace &work,
+                                    R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
+    {
+        EvaluateEquationImpl(state, residual, *work.work, engine, stream, time);
+    }
+    void FiniteVolume::EvaluateEquationImpl(EquationDofs &state, EquationDofs &residual, EquationWorkspace &work,
+                                            R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
+    {
         work.sourceState.reset();
         work.sourceCoefficients.reset();
-        work.relativeUpdate = _data->settings.numerics.reconstruction == "variational" ? std::numeric_limits<real>::infinity() : 0;
+        work.relativeUpdate = !work.meanOnly && _data->settings.numerics.reconstruction == "variational" ? std::numeric_limits<real>::infinity() : 0;
         const MPIInfo mpi(Metrics().Communicator());
         // Observe only this lane's producer prefix. MPI remains on the caller's
         // controller thread, including when the CPU launcher uses worker threads.
@@ -899,10 +929,10 @@ namespace DNDS::Cauchy
             PreflightHalo(state); PreflightHalo(work.coefficients);
             if (!work.limited.empty()) PreflightHalo(work.fluxCoefficients);
             _data->partition.Validate();
-            const bool viscous = _data->equation.Viscous();
+            const bool viscous = !work.meanOnly && _data->equation.Viscous();
             work.boundaryMomentumCurrent = false;
             evaluator.emplace(_data->equation.MakePointEvaluator(work.workers ? work.workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{},
-                {viscous, viscous, viscous, work.chemical, false})); });
+                {viscous || _data->equation.HasRANS(), viscous, viscous, work.chemical, false})); });
         const auto local = [&](auto &&action)
         {
             if (_data->settings.implicit.collectiveChecks)
@@ -951,13 +981,13 @@ namespace DNDS::Cauchy
             meanOperations.push_back(halo.Begin(work.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));
         std::vector<R::TransferOperation> firstCoefficients;
         const auto &numerics = _data->settings.numerics;
-        const bool variational = numerics.reconstruction == "variational";
+        const bool variational = !work.meanOnly && numerics.reconstruction == "variational";
         const bool firstSweep = overlap && variational && numerics.reconstructionIterations > 0;
         if (firstSweep)
             firstCoefficients = begin(work.coefficientHalo);
         submit([&, variational]
                { work.FillBoundary(state, variational && _data->settings.numerics.reconstructionBoundaryFromPolynomial, time, *evaluator); });
-        if (overlap && numerics.reconstruction == "gradient")
+        if (!work.meanOnly && overlap && numerics.reconstruction == "gradient")
             submit([&]
                    { gradient(CFV::ReconstructionRegion::Core); });
         if (firstSweep)
@@ -969,7 +999,7 @@ namespace DNDS::Cauchy
                   {
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                 work.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), work.meanEpoch); });
-        if (numerics.reconstruction == "gradient")
+        if (!work.meanOnly && numerics.reconstruction == "gradient")
         {
             submit([&, rest]
                    { gradient(rest); });

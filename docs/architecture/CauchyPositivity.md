@@ -54,9 +54,26 @@ or nonfinite repair is an explicit failure, not a successful PP update.
 
 Thermal factors depend on species through energy, even though there is no
 additional minimum over individual species or RANS positivity ratios. A scalar
-time restriction naturally affects all coupled equations. Extended-state
-physical-dt PP remains an explicitly unsupported profile; this row describes
-the established flow5 path and the intended extension, not completed support.
+time restriction naturally affects all coupled equations. CPU physical-dt PP
+also accepts the logical extended state; it uses the same mixture reference
+energies and `compress=1`, with no independent species/RANS positivity minimum.
+This is a timestep proposal, not a proof that every explicit stage is positive.
+Extended explicit flux blending remains unavailable.
+
+The extended trial uses `EquationMeanWorkspace`, separate from the normal VR
+workspace, over the same FV plans and CPU engine. Its coefficients stay zero,
+VR/WBAP/rec-PP are skipped, and viscous face fluxes are ignored. Configured
+chemical/RANS volume sources and frame sources remain present, following
+Euler's mean-trial sequence. RANS source/wall producers still receive actual
+molecular properties and geometry; ignoring viscosity does not disable sources.
+No accepted owned values, warm polynomial, physical clock or history changes.
+
+`FiniteVolume::LimitPhysicalStep` reads ready, nonaliased owned logical rows;
+a mean ghost transfer may be active. Its caller retains the matching frozen
+thermal-policy buffers and coordinates the same model/policy on domain ranks.
+The wrapper validates schema/mapping and finite increments before the existing
+global minimum/count reductions. Domain lazily owns the independent trial
+workspace/residual and applies growth capping from the last committed dt.
 
 The relaxed density target is
 `rhoTarget = relax*densityFloor + (1-relax)*rho`. Density compression is applied

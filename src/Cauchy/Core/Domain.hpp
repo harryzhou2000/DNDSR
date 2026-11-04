@@ -72,6 +72,8 @@ namespace DNDS::Cauchy
         int _timeCompressionPower = 1;
         std::shared_ptr<FiniteVolume::MeanWorkspace> _timePPWorkspace;
         std::optional<CFV::FVField> _timePPResidual;
+        std::shared_ptr<FiniteVolume::EquationMeanWorkspace> _timeEquationPPWorkspace;
+        std::optional<EquationDofs> _timeEquationPPResidual;
         StateEpoch _epoch;
         StateEpoch _trialEpoch;
         uint64_t _nextTrial = 0;

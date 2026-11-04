@@ -1,6 +1,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/Core/Domain.hpp"
+#include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/EquationPositivity.hpp"
 #include "Euler/Gas.hpp"
 #include "CartesianFixture.hpp"
 #include <limits>
@@ -118,6 +120,197 @@ TEST_CASE("Physical timestep PP agrees with Euler global compress-one bounds acr
         CHECK(impossible.minimumAlpha == 0);
     }
 }
+#ifdef DNDS_USE_CANTERA
+TEST_CASE("Equation mean trial and thermal dt preserve all block layouts and the ordinary warm guess")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    mesh->BuildNodeWallDist([](auto)
+                            { return false; });
+    C::DomainSettings settings;
+    settings.equation.eos = "idealGasMixture";
+    settings.equation.transport = "NewtonianFourier";
+    settings.equation.source = "chemical";
+    settings.equation.mixture.mechanismFile = "h2o2.yaml";
+    settings.equation.mixture.rho0 = 2;
+    settings.equation.mixture.U0 = 200;
+    settings.equation.mixture.L0 = .04;
+    settings.equation.mixture.T0 = 300;
+    settings.equation.rans.model = "SA";
+    settings.equation.rans.viscosityReference = .01;
+    settings.numerics.faceFallback = false;
+    settings.numerics.reconstruction = "variational";
+    settings.numerics.cfv.maxOrder = 3;
+    settings.numerics.limiter = "WBAP";
+    settings.numerics.characteristicLimiter = false;
+    settings.numerics.viscousGradient = "polynomial";
+    settings.numerics.temperatureFloor = 1;
+    settings.numerics.densityFloor = .1;
+    const auto setup = C::EquationSetup::Resolve(settings.equation);
+    const auto &equation = setup.equation;
+    C::FiniteVolume fv(mesh, settings, equation);
+    A::DofBundle fields(fv.Metrics().Space());
+    fields.Add("flow", fv.Metrics().BuildField(R::RowLayout::ColMajor(0, 5, {8, 1})));
+    fields.Add("rans", fv.Metrics().BuildField(1));
+    fields.Add("species", fv.Metrics().BuildField(R::RowLayout::TiledColMajor(0, equation.Mixture().SpeciesNumber() - 1, 4)));
+    auto state = C::EquationDofs::Separate(equation.Schema(), std::move(fields));
+    fv.InitializeConstant(state, {1.3, .1, -.2, .05, 1}, {{"H2", .03}, {"O2", .23}}, 4, setup.workers, {{"rhoNuTilde", .02}});
+    {
+        auto evaluator = equation.MakePointEvaluator(setup.workers->Acquire(), {});
+        auto fractions = equation.IndependentMassFractions({{"H2", .03}, {"O2", .23}});
+        auto write = state.WriteOwned();
+        const auto flow = write.Block("flow"), species = write.Block("species");
+        for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+        {
+            const auto center = fv.Metrics().GetCellCent(iCell);
+            const double rho = 1.3 + .05 * std::sin(6.283185307179586 * center[0]);
+            const double temperature = 4 + .1 * std::cos(6.283185307179586 * center[1]);
+            auto rhoY = evaluator.SpeciesInput();
+            for (int k = 0; k < rhoY.nSpecies; ++k)
+                species(iCell, k) = rhoY[k] = rho * fractions[k];
+            const auto value = evaluator.FromPrimitive({rho, .1, -.2, .05, 1}, rhoY, temperature);
+            for (int j = 0; j < 5; ++j)
+                flow(iCell, j) = value[j];
+        }
+    }
+    auto rhs = C::EquationDofOperations::NewVector(state);
+    auto regular = fv.BuildEquationWorkspace(state, setup.workers);
+    const auto &guess = fv.ReconstructionGuess(*regular);
+    auto seed = C::EquationDofOperations::NewVector(guess);
+    C::EquationDofOperations::Fill(seed, .0001);
+    fv.RestoreReconstructionGuess(*regular, seed);
+    const C::EquationDofOperations::Binding before(state), warm(guess);
+    auto meanWork = fv.BuildEquationMeanWorkspace(state, setup.workers);
+    R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
+    const auto stream = engine.CreateCPUStream();
+    fv.EvaluateMean(state, rhs, *meanWork, engine, stream);
+    CHECK_NOTHROW(before.Check(state, true));
+    CHECK_NOTHROW(warm.Check(guess, true));
+    // Compare the mean trial against a separate inviscid constant operator,
+    // retaining the same material and chemistry. SA adds no isotropic stress.
+    auto referenceSettings = settings;
+    referenceSettings.equation.rans.model = "none";
+    referenceSettings.equation.transport = "inviscid";
+    referenceSettings.numerics.reconstruction = "constant";
+    referenceSettings.numerics.limiter = "none";
+    const auto referenceEquation = C::EquationSystem::FromIdealGasMixture(equation.Mixture(), false);
+    C::FiniteVolume reference(mesh, referenceSettings, referenceEquation);
+    auto referenceState = C::EquationDofs::Coupled(referenceEquation.Schema(), reference.Metrics().BuildField(4 + equation.Mixture().SpeciesNumber()));
+    {
+        const auto read = state.ReadOwned();
+        auto write = referenceState.WriteOwned();
+        for (const auto *name : {"flow", "species"})
+        {
+            const auto source = read.Block(name);
+            const auto destination = write.Block(name);
+            for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                for (DNDS::index j = 0; j < source.ComponentNumber(); ++j)
+                    destination(iCell, j) = source(iCell, j);
+        }
+    }
+    auto expected = C::EquationDofOperations::NewVector(referenceState);
+    auto referenceWork = reference.BuildEquationWorkspace(referenceState, setup.workers);
+    reference.Evaluate(referenceState, expected, *referenceWork, engine, stream);
+    {
+        const auto a = rhs.ReadOwned(), b = expected.ReadOwned();
+        for (const auto *name : {"flow", "species"})
+            for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                for (DNDS::index j = 0; j < a.Block(name).ComponentNumber(); ++j)
+                    CHECK(a.Block(name)(iCell, j) == doctest::Approx(b.Block(name)(iCell, j)).epsilon(1e-11).scale(1e-12));
+    }
+    fv.InitializeConstant(state, {1.3, .1, -.2, .05, 1}, {{"H2", .03}, {"O2", .23}}, 4, setup.workers, {{"rhoNuTilde", .02}});
+    const C::EquationDofOperations::Binding boundBefore(state);
+    const C::EquationThermalPolicy policy(equation, .1, 1, 0, 1e-12, setup.workers->Acquire());
+    const auto thermal = policy.View();
+    std::vector<double> old(size_t(state.ComponentNumber())), delta(old.size());
+    {
+        const auto read = state.ReadOwned();
+        if (fv.Metrics().NumCell())
+        {
+            const auto layout = read.ComponentLayout();
+            const auto values = layout.View();
+            for (DNDS::index j = 0; j < state.ComponentNumber(); ++j)
+                old[j] = values(0, j);
+        }
+    }
+    // This fixture has at least one owner per tested rank. All states are
+    // identical; known residual increments isolate density, energy, kinetic
+    // energy and a RANS-only change that must not limit the physical timestep.
+    REQUIRE(fv.Metrics().NumCell() > 0);
+    const double dt = .05, scale = 1.5, relax = .8;
+    double minimum = 1;
+    const auto referenceEnergy = [&](const auto &value, int c)
+    {
+        const auto *energy = thermal.speciesEnergies[c];
+        double result = value[0] * energy[thermal.independent];
+        for (DNDS::index k = 0; k < thermal.independent; ++k)
+            result += value[thermal.speciesFirst + k] * (energy[k] - energy[thermal.independent]);
+        return result;
+    };
+    {
+        auto write = rhs.WriteOwned();
+        const auto outputLayout = write.ComponentLayout();
+        const auto output = outputLayout.View();
+        for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+        {
+            const auto pattern = fv.Metrics().Cells().LocalToGlobal(iCell) % 4;
+            std::fill(delta.begin(), delta.end(), 0);
+            if (pattern == 0)
+                for (DNDS::index j = 0; j < state.ComponentNumber(); ++j)
+                    delta[j] = -2 * old[j];
+            if (pattern == 1)
+                delta[4] = -20 * (old[4] - referenceEnergy(old, 1));
+            if (pattern == 2)
+                delta[1] = 30;
+            if (pattern == 3)
+                delta[5] = -1e20; // SA, after flow5, outside thermal criteria.
+            for (DNDS::index j = 0; j < state.ComponentNumber(); ++j)
+                output(iCell, j) = delta[j] * fv.Metrics().GetCellVol(iCell) / (dt * scale);
+            const double density = delta[0] < 0 ? std::min(1., relax * (old[0] - thermal.densityFloor) / (-delta[0] * (1 + DNDS::smallReal))) : 1;
+            Eigen::Matrix<double, 5, 1> u, du;
+            std::vector<double> next = old;
+            for (DNDS::index j = 0; j < state.ComponentNumber(); ++j)
+                next[j] += density * delta[j];
+            for (int j = 0; j < 5; ++j)
+            {
+                u[j] = old[j];
+                du[j] = density * delta[j];
+            }
+            double energy = 1;
+            for (int c = 0; c < 2; ++c)
+            {
+                const double baseOld = referenceEnergy(old, c), baseNew = referenceEnergy(next, c);
+                const double a = u[4] - .5 * u.segment<3>(1).squaredNorm() / u[0] - baseOld;
+                const Eigen::Matrix<double, 5, 1> trial = u + du;
+                const double b = trial[4] - .5 * trial.segment<3>(1).squaredNorm() / trial[0] - baseNew;
+                const double target = b < a ? thermal.floors[c] + (a - thermal.floors[c]) * (1 - relax) : thermal.floors[c];
+                if (b < target)
+                    energy = std::min(energy, DNDS::Euler::Gas::IdealGasGetCompressionRatioPressure<3, 1, 5>(u, du, target, baseOld, baseNew));
+            }
+            const double fraction = density * energy;
+            minimum = std::min(minimum, fraction < 1 ? fraction * (1 - 1e-5) : 1);
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &minimum, 1, MPI_DOUBLE, MPI_MIN, mpi.comm);
+    std::vector<R::TransferOperation> halo;
+    for (DNDS::index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+        halo.push_back(fv.Metrics().BindHalo(state.PhysicalField(iField)).Begin());
+    const auto limit = fv.LimitPhysicalStep(state, rhs, thermal, dt, relax, scale);
+    for (auto &operation : halo)
+        operation.Wait();
+    CHECK(limit.minimumAlpha == doctest::Approx(minimum).epsilon(2e-12));
+    CHECK(limit.dt == doctest::Approx(dt * minimum).epsilon(2e-12));
+    CHECK(limit.limitedCells == 12);
+    CHECK_NOTHROW(boundBefore.Check(state, true));
+    CHECK_NOTHROW(warm.Check(guess, true));
+    auto wrong = thermal;
+    ++wrong.speciesFirst;
+    CHECK_THROWS(fv.LimitPhysicalStep(state, rhs, wrong, dt, relax, scale));
+    wrong = thermal;
+    wrong.speciesEnergies[0] = nullptr;
+    CHECK_THROWS(fv.LimitPhysicalStep(state, rhs, wrong, dt, relax, scale));
+}
+#endif
+
 TEST_CASE("Typed mean residual skips VR and filtering without modifying the normal warm guess")
 {
     for (int scenario = 0; scenario < 3; ++scenario)

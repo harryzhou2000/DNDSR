@@ -22,6 +22,7 @@ namespace DNDS::Geom
 
 namespace DNDS::Cauchy
 {
+    struct EquationThermalView;
     /// Persistent buffers/plans for explicit mean-gradient preparation. One
     /// field per physical equation allocation, columns component*dim+direction.
     /// Gradient values use the cell's mesh frame; periodic tensors are rotated
@@ -175,6 +176,7 @@ namespace DNDS::Cauchy
         struct Workspace;
         struct MeanWorkspace;
         struct EquationWorkspace;
+        struct EquationMeanWorkspace;
         /// Full logical-state CPU workspace on the same geometry/CFV plans.
         /// Each physical field keeps its layout and shared row routing; no
         /// whole-state packing is performed. Matching schema/physical grouping
@@ -190,6 +192,12 @@ namespace DNDS::Cauchy
         /// flow5 Workspace retains those established capabilities.
         std::shared_ptr<EquationWorkspace> BuildEquationWorkspace(EquationDofs &state,
                                                                   std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt) const;
+        /// Separate typed scratch for Euler's zero-reconstruction physical-dt
+        /// trial. Shares geometry and kernels, never the ordinary warm guess.
+        /// Includes configured volume/rotation sources, ignores viscous faces.
+        /// RANS sources still require their actual molecular properties.
+        std::shared_ptr<EquationMeanWorkspace> BuildEquationMeanWorkspace(EquationDofs &state,
+                                                                          std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt) const;
         /// Local preflight of owner and bound state allocations. No numerical
         /// access, property refresh or communication occurs here.
         void ValidateWorkspace(const EquationDofs &state, const EquationWorkspace &workspace) const;
@@ -203,6 +211,11 @@ namespace DNDS::Cauchy
         /// coordination to the caller; entry/binding preflights still agree.
         void Evaluate(EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace,
                       Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
+        /// Same synchronous collective/access contract as Evaluate. Only this
+        /// trial's private scratch and distinct residual are written; state
+        /// owned values and ordinary reconstruction are unchanged.
+        void EvaluateMean(EquationDofs &state, EquationDofs &residual, EquationMeanWorkspace &workspace,
+                          Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
         const EquationDofs &ReconstructionGuess(const EquationWorkspace &workspace) const;
         /// Collective transactional owned warm-guess restore: finite-value and
         /// lease preflight precedes every write. No halo transfer/mean mutation.
@@ -488,6 +501,13 @@ namespace DNDS::Cauchy
         /// and nonaliased with state. Uses the equation's thermal energy bounds.
         PhysicalStepLimit LimitPhysicalStep(const CFV::FVField &state, const CFV::FVField &meanResidual,
                                             real dt, real relax, real scale, int compressionPower = 1) const;
+        /// Whole-equation compress=1 bound with logical, strided owned inputs.
+        /// Caller supplies the matching model's frozen thermal policy and
+        /// retains its coefficient buffers. Species move with flow along the
+        /// thermal line; RANS positivity adds no separate dt ratio. Inputs must
+        /// be ready, distinct and admissible. No EOS, mutation or payload MPI.
+        PhysicalStepLimit LimitPhysicalStep(const EquationDofs &state, const EquationDofs &meanResidual,
+                                            const EquationThermalView &thermal, real dt, real relax, real scale, int compressionPower = 1) const;
         void Initialize(CFV::FVField &state, const FlowProfileSettings &profile, const FlowState &primitive) const;
         /// Fill exact code-unit conservative values in equation-schema order.
         /// Applies the initial rigid-frame rotation to flow momentum only.
@@ -562,6 +582,10 @@ namespace DNDS::Cauchy
                                 const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers) const;
 
     private:
+        std::shared_ptr<EquationWorkspace> BuildEquationWorkspaceImpl(EquationDofs &state,
+                                                                      std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, bool meanOnly) const;
+        void EvaluateEquationImpl(EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace,
+                                  Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time) const;
         void ValidateEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &workspace, real time) const;
         void AddEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &workspace,
                                        const Runtime::Array<real>::WriteLease &diagonal, DiagonalStorage storage,

@@ -38,7 +38,7 @@ def test_configured_rans_fields_wall_setup_implicit_restart_and_output(tmp_path,
                      "residualComponents": ["rho", "rhoNuTilde"],
                      "linear": {"method": "gmres", "preconditioner": "ilu"}},
         "boundaries": {str(zone): {"kind": "noSlipWall"} for zone in zones},
-    }, "time": {"method": "bdf1"}}
+    }, "time": {"method": "bdf1", "positivity": {"enabled": True}}}
     initial = {"rhoNuTilde": .02} if model == "SA" else {"rhoK": .02, "rhoOmega": .1}
     config["defaults"]["equation"]["rans"].update({
         "model": model, "useQCR": True, "desScale": .65, "desMode": 3})
@@ -52,6 +52,7 @@ def test_configured_rans_fields_wall_setup_implicit_restart_and_output(tmp_path,
     for column, value in enumerate(initial.values()):
         np.testing.assert_array_equal(fields["rans"].numpy()[:, column], value)
     assert domain.stable_step(.5) > 0
+    assert domain.limit_physical_step(1e-6).dt == 1e-6
     residual = domain.residual_fields()
     assert set(residual) == set(fields)
     assert all(np.all(np.isfinite(array.numpy())) for array in residual.values())
@@ -110,7 +111,7 @@ def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_p
                      "residualComponents": ["rhoY:H2", "rhoY:H2O"],
                      "linear": {"method": "ilu", "iterations": 6, "relativeTolerance": 0, "absoluteTolerance": 0}},
         "boundaries": {str(zone): {"kind": "extrapolate"} for zone in zones},
-    }, "time": {"method": "bdf1"}}
+    }, "time": {"method": "bdf1", "positivity": {"enabled": True}}}
     if rans:
         config["defaults"]["equation"].update({"transport": "NewtonianFourier", "rans": {"model": rans_model, "viscosityReference": .01}})
         initial_rans = {"rhoNuTilde": .02} if rans_model == "SA" else {"rhoK": .02, "rhoOmega": .1}
@@ -147,6 +148,9 @@ def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_p
     assert derived.refresh(domain)
     assert derived.current(domain)
     assert domain.stable_step(.5) > 0
+    assert domain.limit_physical_step(1e-6).dt == 1e-6
+    np.testing.assert_array_equal(fields["flow"].numpy(), before_flow)
+    np.testing.assert_array_equal(fields["species"].numpy(), before_species)
     domain.advance(1e-6)
     np.testing.assert_allclose(fields["flow"].numpy(), before_flow, rtol=1e-11, atol=1e-12)
     local_change = np.max(np.abs(fields["species"].numpy() - before_species), initial=0.)

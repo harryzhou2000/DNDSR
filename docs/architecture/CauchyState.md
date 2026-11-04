@@ -13,7 +13,7 @@ Current CPU scope (November 5): configured flow5, SA/Wilcox/SST/realizable-k-eps
 and optional ideal-mixture chemistry share logical DOF bindings, implicit time
 equations, native archives and observation. Extended profiles use Rusanov,
 polynomial viscosity, component WBAP and Euler-compatible implicit/rec PP;
-missing characteristic/LVR/p-FAS/interface and physical-step/explicit-PP adapters
+missing characteristic/LVR/p-FAS/interface and explicit-PP adapters
 fail explicitly. QCR and the existing SA/SST DES formulas are connected below.
 The short flame comparison is a converged discrete sanity run; the NACA pair
 is capped and does not establish converged aerodynamics. CUDA remains deferred.
@@ -147,7 +147,7 @@ output value changes.
 
 ## Current physical dispatch and explicit limits
 
-`FiniteVolume::BuildWorkspace(EquationDofs&, ...)` and `Evaluate(EquationDofs&,
+`FiniteVolume::BuildEquationWorkspace(EquationDofs&, ...)` and `Evaluate(EquationDofs&,
 ...)` validate exact semantic schema, native row/storage identity and backend
 outside cell loops. `EquationSystem::ResolveKernelProfile()` distinguishes
 perfect-gas and ideal-mixture CPU models; this key alone does not promise every
@@ -161,9 +161,11 @@ The raw-field overload remains the trusted compressible stage/scratch adapter.
 
 The Domain frontend uses the semantic binding. Perfect gas retains its established
 path. Configured ideal mixtures use separate flow/species arrays, whole-equation
-FV/implicit stages, dynamic reports and full-state publication. Checkpoint/output,
-p-FAS, interface packets and explicit/physical-dt PP still require their extended
-adapters and reject rather than processing flow5 alone. `CoupledField()` explicitly
+FV/implicit stages, dynamic reports and full-state publication. Native checkpoint
+and output preserve all logical components; the independent mean trial also
+supports whole-equation physical-dt PP. Extended p-FAS, interface packets and
+explicit flux blending still require adapters and reject rather than processing
+flow5 alone. `CoupledField()` explicitly
 refuses split or permuted physical segments instead of silently flattening them. Generic mock
 tests exercise 17/21-component coupled BDF/block solves and separate physical
 bindings; those tests are not RANS, species or incompressible implementations.
@@ -862,7 +864,9 @@ configured no-slip zones before constructing geometry-dependent operators.
 A caller-supplied wall field is retained. Release mesh read views before
 Domain construction; wall-field presence must agree across ranks.
 Implicit and explicit full-state updates apply the model scalar bounds;
-explicit flux-blend and physical-dt PP are still unavailable for this profile.
+explicit flux-blend PP remains unavailable for this profile. Physical-dt PP
+uses the separate logical-state mean trial described in
+[the positivity policy](CauchyPositivity.md).
 
 Restart metadata includes the complete physical RANS model settings and
 logical component schema. Readers reject changed closures even if the scalar

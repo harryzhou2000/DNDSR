@@ -527,8 +527,8 @@ namespace DNDS::Cauchy
         {
             DNDS_check_throw_info(data->time.method != "ssprk3" || !domain.settings.implicit.multigrid.levels, "polynomial FAS requires an implicit time method");
             if (domain.settings.equation.eos == "idealGasMixture" || domain.settings.equation.rans.model != "none")
-                DNDS_check_throw_info(!data->time.positivity.enabled && !(data->time.method == "ssprk3" && domain.settings.numerics.positivity),
-                                      "extended equation physical-dt and explicit flux-blend PP adapters are not connected yet");
+                DNDS_check_throw_info(!(data->time.method == "ssprk3" && domain.settings.numerics.positivity),
+                                      "extended equation explicit flux-blend PP adapter is not connected yet");
         }
         DNDS_check_throw_info(data->output.interval >= 0 && data->output.historyInterval > 0 && data->output.historySegmentRows > 0 && !data->output.prefix.empty(), "invalid Cauchy output controls");
         DNDS_check_throw_info(data->output.hdfDeflateLevel >= 0 && data->output.hdfDeflateLevel <= 9, "Cauchy output hdfDeflateLevel must be in [0,9]");
