@@ -11,6 +11,71 @@ namespace C = DNDS::Cauchy;
 namespace P = DNDS::Physics;
 namespace E = DNDS::Euler;
 
+TEST_CASE("Perfect gas molecular laws preserve Euler scaling and all property consumers")
+{
+    const P::ReferenceScales scales{1.7, 230, 3.2, 310};
+    for (const auto &entry : {std::pair<const char *, int>{"constant", 0}, {"sutherland", 1}, {"constantKinematic", 2}})
+    {
+        C::EquationSettings settings;
+        settings.transport = "NewtonianFourier";
+        settings.gasConstant = 287 / scales.HeatCapacity();
+        settings.viscosity = 1.8e-5 / scales.Viscosity();
+        settings.viscosityModel = entry.first;
+        if (entry.second == 1)
+        {
+            settings.viscosityReferenceTemperature = 273.15 / scales.T0;
+            settings.sutherlandConstant = 110.4 / scales.T0;
+        }
+        const auto equation = C::EquationSystem::Resolve(settings);
+        E::EulerEvaluatorSettings<E::NS_EX_3D>::IdealGasProperty gas;
+        gas.rho0 = scales.rho0;
+        gas.U0 = scales.U0;
+        gas.L0 = scales.L0;
+        gas.T0 = scales.T0;
+        gas.Rgas = 287;
+        gas.muGas = 1.8e-5;
+        gas.muModel = entry.second;
+        gas.TRef = 273.15;
+        gas.CSutherland = 110.4;
+        E::PhysicsProperties<E::NS_EX_3D> legacy(gas);
+        auto evaluator = equation.MakePointEvaluator({}, {true, false, false, false, false});
+        for (double rho : {.3, 1.7})
+            for (double temperature : {220., 273.15, 900.})
+            {
+                const double codeT = temperature / scales.T0;
+                const C::FlowState primitive{rho, .2, -.1, 0, rho * settings.gasConstant * codeT};
+                const auto state = equation.Gas().Conservative(primitive);
+                const auto point = evaluator.Evaluate(state);
+                double expected = settings.viscosity;
+                if (entry.second == 1)
+                    expected *= std::pow(temperature / 273.15, 1.5) * (273.15 + 110.4) / (temperature + 110.4);
+                if (entry.second == 2)
+                    expected *= rho;
+                E::PhysicsProperties<E::NS_EX_3D>::TU old(5);
+                for (int j = 0; j < 5; ++j)
+                    old[j] = state[j];
+                CHECK(point.transport.viscosity / expected == doctest::Approx(1).epsilon(3e-14));
+                CHECK(legacy.mixtureViscosity(codeT, primitive[4], old) / expected == doctest::Approx(1).epsilon(3e-14));
+                CHECK(point.transport.conductivity / (expected * point.thermo.cp / settings.prandtl) == doctest::Approx(1).epsilon(3e-14));
+                CHECK(equation.DiffusionScale(state) / point.diffusionBound == doctest::Approx(1).epsilon(3e-14));
+                C::FlowGradient gradient{};
+                gradient[1][1] = 2;
+                gradient[4][1] = 3;
+                const auto flux = equation.Gas().ViscousFlux(equation.Gas().Primitive(state), gradient, {0, 1, 0});
+                CHECK(flux[1] / (2 * expected) == doctest::Approx(1).epsilon(3e-14));
+                CHECK(flux[4] / (primitive[1] * 2 * expected + 3 * point.transport.conductivity) == doctest::Approx(1).epsilon(3e-14));
+            }
+        if (entry.second == 1)
+        {
+            auto changed = settings;
+            changed.sutherlandConstant *= 2;
+            CHECK(equation.PropertyKey().parameters != C::EquationSystem::Resolve(changed).PropertyKey().parameters);
+            changed.viscosityReferenceTemperature = 0;
+            CHECK_THROWS(C::EquationSystem::Resolve(changed));
+        }
+    }
+}
+
 TEST_CASE("Tagged physical state conversions preserve Euler variants and distinct RANS scales")
 {
     const P::ReferenceScales scales{1.7, 230, 3.2, 310};

@@ -4,6 +4,7 @@
 #include "DNDS/Core/Defines.hpp"
 #include "Cauchy/Physics/FlowState.hpp"
 #include "Physics/Transport/NewtonianFourier.hpp"
+#include "Physics/Transport/MolecularViscosity.hpp"
 #include <cmath>
 
 namespace DNDS::Cauchy
@@ -15,11 +16,25 @@ namespace DNDS::Cauchy
     struct PerfectGas
     {
         real gamma = 1.4, gasConstant = 1., viscosity = 0., prandtl = 0.72;
+        Physics::Transport::ViscosityModel viscosityModel = Physics::Transport::ViscosityModel::Constant;
+        real viscosityReferenceTemperature = 1., sutherlandConstant = 0.;
         void Validate() const
         {
             DNDS_check_throw_info(std::isfinite(gamma) && gamma > 1 && std::isfinite(gasConstant) && gasConstant > 0 &&
                                       std::isfinite(viscosity) && viscosity >= 0 && std::isfinite(prandtl) && prandtl > 0,
                                   "invalid perfect-gas parameters");
+            using Model = Physics::Transport::ViscosityModel;
+            DNDS_check_throw_info((viscosityModel == Model::Constant || viscosityModel == Model::Sutherland || viscosityModel == Model::ConstantKinematic) &&
+                                      std::isfinite(viscosityReferenceTemperature) && viscosityReferenceTemperature > 0 &&
+                                      std::isfinite(sutherlandConstant) && sutherlandConstant >= 0,
+                                  "invalid perfect-gas viscosity law");
+        }
+        /// Molecular coefficients use the actual point rho/T. Parameters are
+        /// resolved once; the shared law is allocation-free and device-callable.
+        DNDS_DEVICE_CALLABLE real MolecularViscosity(real density, real temperature) const
+        {
+            return Physics::Transport::MolecularViscosity(viscosityModel, viscosity, density, temperature,
+                                                          viscosityReferenceTemperature, sutherlandConstant);
         }
         DNDS_DEVICE_CALLABLE real Pressure(const FlowState &state) const
         {
@@ -121,7 +136,7 @@ namespace DNDS::Cauchy
             return result;
         }
         /// Positive viscous flux; FV residual is -div(F_inviscid)+div(F_viscous).
-        /// Stokes stress and Fourier heat conduction, with constant mu/Pr. The
+        /// Stokes stress and Fourier heat conduction, with point mu and fixed Pr. The
         /// energy component is u dot (tau*n) + k grad(T) dot n.
         DNDS_DEVICE_CALLABLE FlowState ViscousFlux(const PrimitiveState &state, const FlowGradient &gradient, const Vector3 &normal) const
         {
@@ -130,8 +145,9 @@ namespace DNDS::Cauchy
                 const FlowGradient &values;
                 DNDS_DEVICE_CALLABLE real operator()(int i, int j) const { return values[1 + i][j]; }
             };
-            const real conductivity = viscosity * gamma * gasConstant / ((gamma - 1) * prandtl);
-            const auto flux = Physics::Transport::NewtonianFourierNormalFlux(state.velocity, VelocityGradient{gradient}, gradient[4], normal, viscosity, conductivity);
+            const real mu = MolecularViscosity(state.density, state.temperature);
+            const real conductivity = mu * gamma * gasConstant / ((gamma - 1) * prandtl);
+            const auto flux = Physics::Transport::NewtonianFourierNormalFlux(state.velocity, VelocityGradient{gradient}, gradient[4], normal, mu, conductivity);
             FlowState result{};
             for (int i = 0; i < 3; ++i)
                 result[1 + i] = flux.traction[i];

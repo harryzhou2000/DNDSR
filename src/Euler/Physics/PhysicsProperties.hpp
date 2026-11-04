@@ -36,6 +36,7 @@
 #include "Physics/ReferenceScales.hpp"
 #include "Physics/Thermodynamics/IdealMixtureGradient.hpp"
 #include "Physics/Transport/MixtureAveragedDiffusion.hpp"
+#include "Physics/Transport/MolecularViscosity.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -1605,8 +1606,7 @@ namespace DNDS::Euler
             {
                 real TRefCode = toCodeT(igProp_->TRef);
                 real CSuthCode = toCodeT(igProp_->CSutherland);
-                real TRel = T / TRefCode;
-                return (igProp_->muGas / mu0()) * TRel * std::sqrt(TRel) * (TRefCode + CSuthCode) / (T + CSuthCode);
+                return Physics::Transport::SutherlandViscosity(igProp_->muGas / mu0(), T, TRefCode, CSuthCode);
             }
             case 2:
                 return (igProp_->muGas / mu0()) * U[0];

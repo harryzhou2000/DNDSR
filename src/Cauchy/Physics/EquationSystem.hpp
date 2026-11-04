@@ -34,7 +34,7 @@ namespace DNDS::Cauchy
     struct EquationPropertyKey
     {
         std::shared_ptr<const void> material;
-        std::array<real, 5> parameters{};
+        std::array<real, 8> parameters{};
         bool operator==(const EquationPropertyKey &other) const { return material == other.material && parameters == other.parameters; }
         bool operator!=(const EquationPropertyKey &other) const { return !(*this == other); }
     };
@@ -146,7 +146,10 @@ namespace DNDS::Cauchy
         real DiffusionScale(const FlowState &state) const
         {
             const auto &gas = Gas();
-            return _viscous ? gas.viscosity / state[0] * std::max(real(4. / 3), gas.gamma / gas.prandtl) : 0;
+            if (!_viscous)
+                return 0;
+            const auto primitive = gas.Primitive(state);
+            return gas.MolecularViscosity(state[0], primitive.temperature) / state[0] * std::max(real(4. / 3), gas.gamma / gas.prandtl);
         }
         /// Perfect-gas initial provider. General EOS must supply its own valid
         /// linearization, shock bounds and AUSM scale; gamma substitution inside

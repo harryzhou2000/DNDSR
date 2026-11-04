@@ -17,8 +17,16 @@ namespace DNDS::Cauchy
                                   (settings.transport == "inviscid" || settings.transport == "NewtonianFourier"),
                               "unavailable Cauchy equation profile");
         const bool viscous = settings.transport == "NewtonianFourier";
-        DNDS_check_throw_info(viscous || settings.viscosity == 0, "unused inviscid viscosity");
-        return EquationSystem({settings.gamma, settings.gasConstant, settings.viscosity, settings.prandtl}, viscous).WithRANS(settings.rans);
+        DNDS_check_throw_info(viscous || (settings.viscosity == 0 && settings.viscosityModel == "constant"), "unused inviscid viscosity");
+        using Model = Physics::Transport::ViscosityModel;
+        const auto model = settings.viscosityModel == "constant" ? Model::Constant : settings.viscosityModel == "sutherland" ? Model::Sutherland
+                                                                                                                             : Model::ConstantKinematic;
+        DNDS_check_throw_info(settings.viscosityModel == "constant" || settings.viscosityModel == "sutherland" || settings.viscosityModel == "constantKinematic", "unknown perfect-gas viscosity law");
+        DNDS_check_throw_info(model == Model::Sutherland || (settings.viscosityReferenceTemperature == 1 && settings.sutherlandConstant == 0), "unused Sutherland parameters");
+        return EquationSystem({settings.gamma, settings.gasConstant, settings.viscosity, settings.prandtl, model,
+                               settings.viscosityReferenceTemperature, settings.sutherlandConstant},
+                              viscous)
+            .WithRANS(settings.rans);
     }
     EquationSystem EquationSystem::FromIdealGasMixture(Physics::Thermodynamics::IdealGasMixture material, bool viscous)
     {
@@ -102,7 +110,7 @@ namespace DNDS::Cauchy
             const auto &scales = _mixture->Scales();
             return {_mixture->ModelIdentity(), {scales.rho0, scales.U0, scales.L0, scales.T0, _viscous ? 1. : 0.}};
         }
-        return {{}, {_gas.gamma, _gas.gasConstant, _gas.viscosity, _gas.prandtl, _viscous ? 1. : 0.}};
+        return {{}, {_gas.gamma, _gas.gasConstant, _gas.viscosity, _gas.prandtl, _viscous ? 1. : 0., real(_gas.viscosityModel), _gas.viscosityReferenceTemperature, _gas.sutherlandConstant}};
     }
     void EquationSystem::ValidateStateSchema(const Algebra::DofBundle &state) const
     {

@@ -43,6 +43,9 @@ TEST_CASE("Derived point refresh fills selected properties with lazy provenance 
             const auto sourceVersion = state.CoupledField().Owned().Version();
             CHECK_FALSE(derived.Current(state, equation));
             CHECK(C::RefreshDerivedFields(state, equation, derived));
+            auto changedLaw = settings.equation;
+            changedLaw.viscosityModel = "constantKinematic";
+            CHECK_FALSE(derived.Current(state, C::EquationSystem::Resolve(changedLaw)));
             CHECK(state.ComponentNumber() == 5);
             CHECK(state.CoupledField().Owned().Version() == sourceVersion);
             CHECK(derived.Values().Layout().Width() == 3);

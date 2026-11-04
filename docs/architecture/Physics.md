@@ -288,6 +288,15 @@ spatial/BC/implicit integration is connected.
 
 ## Constitutive normal-flux composition
 
+`Transport/MolecularViscosity.hpp` holds the shared scalar Sutherland formula
+and constant/Sutherland/constant-kinematic dispatch. Euler retains its existing
+configuration/scaling and delegates the same Sutherland arithmetic. Cauchy
+resolves the selected law before kernels; point properties, viscous fluxes,
+diffusion bounds and RANS use the same actual point rho/T. Molecular-law
+parameters participate in derived-property cache identity. Unit conversion is
+separate from physical-state/reference-state resolution; see
+[physical state input](CauchyStateInput.md).
+
 `NewtonianFourierNormalFlux` receives velocity, velocity/temperature gradients,
 normal and ready effective viscosity/conductivity. It computes traction and
 viscous-work/heat energy flux, without EOS or closure selection, allocation,

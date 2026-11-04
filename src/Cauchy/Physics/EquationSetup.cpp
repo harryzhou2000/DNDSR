@@ -17,7 +17,8 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(settings.system == "compressible" && settings.eos == "idealGasMixture" &&
                                   (settings.source == "none" || settings.source == "chemical") &&
                                   (settings.transport == "inviscid" || settings.transport == "NewtonianFourier") &&
-                                  settings.viscosity == 0 && workerNumber > 0 && !settings.mixture.mechanismFile.empty(),
+                                  settings.viscosity == 0 && settings.viscosityModel == "constant" &&
+                                  settings.viscosityReferenceTemperature == 1 && settings.sutherlandConstant == 0 && workerNumber > 0 && !settings.mixture.mechanismFile.empty(),
                               "invalid or unavailable mixture equation setup");
         const auto &input = settings.mixture;
         auto file = std::filesystem::path(input.mechanismFile);

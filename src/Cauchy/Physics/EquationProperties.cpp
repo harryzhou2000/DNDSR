@@ -75,9 +75,9 @@ namespace DNDS::Cauchy
             const real energy = primitive.pressure / (flow[0] * (_gas.gamma - 1));
             result.thermo = {flow[0], primitive.temperature, primitive.pressure, primitive.soundSpeed,
                              energy, energy + primitive.pressure / flow[0], cp, cv, _gas.gasConstant};
-            const real mu = _viscous ? _gas.viscosity : 0;
+            const real mu = _viscous ? _gas.MolecularViscosity(flow[0], primitive.temperature) : 0;
             result.transport = {mu, mu * cp / _gas.prandtl};
-            result.diffusionBound = _viscous ? _gas.viscosity / flow[0] * std::max(real(4. / 3), _gas.gamma / _gas.prandtl) : 0;
+            result.diffusionBound = mu / flow[0] * std::max(real(4. / 3), _gas.gamma / _gas.prandtl);
             return result;
         }
         for (const real value : flow)

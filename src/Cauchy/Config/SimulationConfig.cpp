@@ -145,6 +145,8 @@ namespace DNDS::Cauchy
                                       std::isfinite(equation.viscosity) && equation.viscosity >= 0 && std::isfinite(equation.prandtl) && equation.prandtl > 0,
                                   "invalid Cauchy constitutive constants");
             DNDS_check_throw_info(equation.transport != "inviscid" || equation.viscosity == 0, "inviscid configuration has unused nonzero viscosity");
+            if (equation.eos == "perfectGas")
+                EquationSystem::Resolve(equation);
             DNDS_check_throw_info(settings.mesh.dimension == 2 || settings.mesh.dimension == 3, "Cauchy geometric dimension must be 2 or 3");
             DNDS_check_throw_info(settings.execution.hostThreads >= 0 && settings.execution.hostThreads <= 1024, "invalid CPU worker count");
             const auto &numerics = settings.numerics;
@@ -314,7 +316,9 @@ namespace DNDS::Cauchy
             require(std::isfinite(material.rho0) && material.rho0 > 0 && std::isfinite(material.U0) && material.U0 > 0 &&
                         std::isfinite(material.L0) && material.L0 > 0 && std::isfinite(material.T0) && material.T0 > 0,
                     "mixture reference scales");
-            require(s.equation.viscosity == 0, "mixture transport uses its material, not constant viscosity");
+            require(s.equation.viscosity == 0 && s.equation.viscosityModel == "constant" &&
+                        s.equation.viscosityReferenceTemperature == 1 && s.equation.sutherlandConstant == 0,
+                    "mixture transport uses its material, not a perfect-gas viscosity law");
         }
         if (extended)
         {

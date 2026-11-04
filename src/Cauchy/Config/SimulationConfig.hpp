@@ -35,6 +35,8 @@ namespace DNDS::Cauchy
     {
         std::string system = "compressible", eos = "perfectGas", transport = "inviscid", source = "none";
         real gamma = 1.4, gasConstant = 1., viscosity = 0., prandtl = 0.72;
+        std::string viscosityModel = "constant";
+        real viscosityReferenceTemperature = 1., sutherlandConstant = 0.;
         MixtureSettings mixture;
         /// Null preserves existing mixture scale fields (including their
         /// configured unit-system defaults). An object requires all four scales.
@@ -48,7 +50,10 @@ namespace DNDS::Cauchy
             DNDS_FIELD(source, "Volume source family; none initially");
             DNDS_FIELD(gamma, "Perfect-gas heat capacity ratio");
             DNDS_FIELD(gasConstant, "Specific gas constant in the chosen units");
-            DNDS_FIELD(viscosity, "Constant dynamic viscosity");
+            DNDS_FIELD(viscosity, "Code-unit molecular viscosity coefficient; reference value for the selected perfect-gas law");
+            DNDS_FIELD(viscosityModel, "constant, sutherland, or constantKinematic; mixtures use material transport instead");
+            DNDS_FIELD(viscosityReferenceTemperature, "Sutherland reference temperature in code units, TRef_phys/T0");
+            DNDS_FIELD(sutherlandConstant, "Sutherland constant in code units, C_phys/T0");
             DNDS_FIELD(prandtl, "Molecular Prandtl number");
             config.field_section(&T::mixture, "mixture", "Ideal-gas mixture mechanism and reference scales");
             config.field_json_schema(&T::referenceScales, "referenceScales", "Unit scales, separate from physical referenceState", []

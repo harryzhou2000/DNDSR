@@ -53,6 +53,16 @@ epsilon U0³/L0. Conservative RANS adds rho0. Species Y is dimensionless and
 rhoY uses rho0. The configured perfect-gas gas constant remains in solver
 units; its physical conversion factor is U0²/T0.
 
+Perfect-gas molecular parameters are also supplied in code units, independently
+of a tagged state's `_phy` suffix. `viscosityModel` selects `constant`,
+`sutherland`, or `constantKinematic`. `viscosity` is the reference coefficient
+scaled by rho0*U0*L0; Sutherland additionally takes
+`viscosityReferenceTemperature=TRef_phys/T0` and
+`sutherlandConstant=C_phys/T0`. The constant-kinematic option preserves Euler's
+muModel=2 convention, `mu_code=viscosity*rho_code`, using the actual point
+density. No model obtains density from the unit scales or reference state.
+Mixtures use material transport and reject unused perfect-gas law parameters.
+
 For mixtures, sensible energy adds the species-weighted internal-energy
 reference supplied by the existing chemical backend. It is not merely a
 constant heat-capacity conversion or an arbitrary formation-energy shift.

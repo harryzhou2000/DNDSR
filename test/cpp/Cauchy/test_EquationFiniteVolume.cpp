@@ -99,6 +99,9 @@ TEST_CASE("Equation FV uses the established P3/gradient/WBAP flow5 kernels acros
         {
             settings.equation.transport = "NewtonianFourier";
             settings.equation.viscosity = .002;
+            settings.equation.viscosityModel = "sutherland";
+            settings.equation.viscosityReferenceTemperature = .8;
+            settings.equation.sutherlandConstant = .3;
         }
         const auto equation = C::EquationSystem::Resolve(settings.equation);
         C::FiniteVolume fv(mesh, settings, equation);
