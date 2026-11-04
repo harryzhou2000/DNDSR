@@ -152,7 +152,9 @@ transient with an outer residual stop is not this steady mode.
 `implicit.consoleInterval` enables rank-zero progress at selected nonlinear
 iterations; zero disables it. These norms are the uncompressed equation
 residual. Defaults use volume-weighted L2 and density-only convergence, tested
-against its initial stage norm and the absolute floor. Explicit controls are
+against its running maximum within the solve and the absolute floor. The
+running-maximum reference is Euler's default behavior; `initial` remains an
+explicit alternative. Explicit controls are
 `normOrder=1|2`, `residualReference="initial"|"runningMaximum"` and the distinct
 component names in `residualComponents` (default `["rho"]`; `[]` selects every
 resolved equation). Use names from the equation schema, e.g. `["rho", "rhou"]`
@@ -165,6 +167,18 @@ acceptance: all component norms are still computed and reported. Reference
 norms reset at solve entry and running maxima include the current evaluation.
 Single-level and finest p-FAS acceptance use the same small policy after the
 existing global norm reduction, with no additional collective.
+
+Euler's optional transient `resBaseType=1` additionally seeds the reference
+with the first spatial RHS norm, then still takes the running maximum of
+equation residual norms. Cauchy's `runningMaximum` implements the default
+unseeded behavior (`resBaseType=0`), not this extra RHS seed.
+
+Extended-state PP follow-up: flow5 compression must not scale RANS or species
+increments/reconstruction; their scalar limiters are separate. Physical-dt and
+pseudo-dTau PP restrictions use the flow5 scale. The current extended-state
+implementation still applies common scaling in several paths; its separation
+and composition-dependent thermal postchecks are pending correction. Passing
+homogeneous mixture tests do not validate this block-separation contract.
 
 Euler's density/L1/running-maximum criterion is selected with
 `normOrder=1`, `residualReference="runningMaximum"`, `residualComponents=["rho"]`

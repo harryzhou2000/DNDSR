@@ -46,6 +46,7 @@ TEST_CASE("Shared nonlinear controller observes coupled updates once and advance
 }
 TEST_CASE("Implicit convergence retains initial and running references without hiding unselected components")
 {
+    CHECK(C::ImplicitSettings{}.residualReference == "runningMaximum");
     const auto schema = C::EquationSystem::Resolve(C::EquationSettings{}).Schema();
     for (const auto *reference : {"initial", "runningMaximum"})
     {

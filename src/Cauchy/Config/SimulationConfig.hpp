@@ -278,7 +278,7 @@ namespace DNDS::Cauchy
         index consoleInterval = 0;
         real relativeTolerance = 1e-8, absoluteTolerance = 1e-11;
         int normOrder = 2;
-        std::string residualReference = "initial";
+        std::string residualReference = "runningMaximum";
         std::vector<std::string> residualComponents{"rho"};
         real pseudoCFL = 10, maxPseudoCFL = 1e4, pseudoGrowth = 1.3, relaxation = 1;
         bool roeDissipation = false, collectiveChecks = true;
@@ -304,7 +304,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(relativeTolerance, "Selected-component stage residual tolerance relative to its configured reference");
             DNDS_FIELD(absoluteTolerance, "Per-component absolute volume-weighted stage residual tolerance");
             DNDS_FIELD(normOrder, "Volume-weighted residual norm: 1 or 2");
-            DNDS_FIELD(residualReference, "initial or runningMaximum per-component reference within one solve");
+            DNDS_FIELD(residualReference, "runningMaximum (Euler default) or initial per-component reference within one solve; reset at solve entry");
             DNDS_FIELD(residualComponents, "Named nonlinear and DITR convergence components, e.g. rho, flow.rhou or rhoY:H2. Default [rho]; empty selects all. Names resolve against the equation schema");
             DNDS_FIELD(pseudoCFL, "Initial local pseudo-time CFL for each stage");
             DNDS_FIELD(maxPseudoCFL, "Maximum pseudo-time CFL");
