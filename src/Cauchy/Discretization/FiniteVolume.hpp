@@ -545,6 +545,12 @@ namespace DNDS::Cauchy
         index LastCharacteristicFallbacks(const Workspace &workspace) const;
         std::pair<index, real> PositivityReconstructionStats(const Workspace &workspace) const;
         Vector3 LastBoundaryForce(const Workspace &workspace, const std::vector<int> &zones) const;
+        /// Collective sum of the last completed equation RHS's wall momentum
+        /// flux, in mesh axes, with the same sign as pressure*n - traction.
+        /// Per-quadrature outputs include the actual numerical pressure, RANS
+        /// stress and viscous traction; no separate EOS/flux recomputation.
+        /// Workspace access is controller-serialized; do not read during Evaluate.
+        Vector3 LastBoundaryForce(const EquationWorkspace &workspace, const std::vector<int> &zones) const;
         /// Native parallel VTKHDF cell means and rank-local surface quadrature
         /// samples. Does not gather mesh/state to a serial rank.
         void WriteVisualization(const CFV::FVField &state, const Workspace &workspace, const std::string &prefix, real time, int hdfDeflateLevel = 0) const;

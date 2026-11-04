@@ -604,8 +604,13 @@ view blocks the entire publication. ResidualState returns every residual block;
 the historical Residual convenience still returns the flow residual. Observation
 has independent reconstruction scratch and restores the accepted warm guess, so
 diagnostics do not advance numerical state. Mixture diagnostics report actual EOS
-pressure/temperature and full-state residual norms; force integration remains
-unconnected. No full spatial-flame or RANS acceptance is implied.
+pressure/temperature and full-state residual norms. The equation RHS also
+publishes a boundary-quadrature momentum-flux array. `LastBoundaryForce` sums
+selected wall zones, then reduces across domain ranks, using the actual
+numerical pressure and viscous/RANS traction, in mesh axes. It reads only a
+completed observation workspace and rejects use before a successful RHS call.
+The sign is pressure times the outward fluid normal minus viscous traction,
+matching the flow5 diagnostic. No full spatial-flame or RANS acceptance is implied.
 
 ### Primitive initialization and equation boundary values
 

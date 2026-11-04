@@ -74,6 +74,52 @@ namespace
     }
 }
 
+TEST_CASE("RANS wall force uses the completed RHS momentum flux with the physical pressure sign")
+{
+    auto mesh = CFVTest::CartesianHexes(mpi, 2);
+    mesh->BuildNodeWallDist([](auto zone)
+                            { return zone == 7; });
+    auto settings = Settings();
+    settings.mesh.dimension = 3;
+    settings.boundaries["7"].kind = "noSlipWall";
+    const auto equation = Equation(settings);
+    C::FiniteVolume fv(mesh, settings, equation);
+    auto state = State(fv, true);
+    auto result = C::EquationDofOperations::NewVector(state);
+    {
+        auto write = state.WriteOwned();
+        const auto flow = write.Block("flow"), sa = write.Block("rans");
+        for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+        {
+            const double pressure = 1 + .2 * fv.Metrics().GetCellCent(iCell)[0];
+            for (int j = 0; j < 5; ++j)
+                flow(iCell, j) = j == 0 ? 1 : j == 4 ? pressure / .4
+                                                     : 0;
+            sa(iCell, 0) = .02;
+        }
+    }
+    auto work = fv.BuildEquationWorkspace(state);
+    CHECK_THROWS(fv.LastBoundaryForce(*work, {7}));
+    R::EagerEngine engine;
+    const auto stream = engine.CreateCPUStream();
+    fv.Evaluate(state, result, *work, engine, stream);
+    const auto force = fv.LastBoundaryForce(*work, {7});
+    // Piecewise-constant pressure on the two x-walls is 1.05 / 1.15.
+    // Each wall has area one, and the normal points out of the fluid.
+    CHECK(force[0] == doctest::Approx(.1).epsilon(2e-12));
+    CHECK(std::abs(force[1]) < 1e-12);
+    CHECK(std::abs(force[2]) < 1e-12);
+    auto read = result.ReadOwned();
+    const auto momentum = read.Block("flow");
+    std::array<double, 3> integral{};
+    for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+        for (int d = 0; d < 3; ++d)
+            integral[d] += momentum(iCell, 1 + d);
+    MPI_Allreduce(MPI_IN_PLACE, integral.data(), 3, MPI_DOUBLE, MPI_SUM, mpi.comm);
+    for (int d = 0; d < 3; ++d)
+        CHECK(integral[d] == doctest::Approx(-force[d]).epsilon(2e-12).scale(1));
+}
+
 TEST_CASE("RANS FV integrates quadrature sources and their positive implicit destruction diagonal")
 {
     auto mesh = CFVTest::CartesianHexes(mpi, 2);

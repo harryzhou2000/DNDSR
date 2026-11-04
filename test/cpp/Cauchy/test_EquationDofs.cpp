@@ -644,10 +644,11 @@ TEST_CASE("Coupled matrix action ILU SGS and left GMRES preserve separate and pe
         // Exercise the production controller, including every physical field's
         // canonical halo. The independent dense row oracles above and the known
         // exact solution remain separate from its matrix/SGS implementation.
-        for (int scenario = 0; scenario < 5; ++scenario)
+        for (int scenario = 0; scenario < 6; ++scenario)
         {
             C::LinearSolveSettings controls;
-            controls.method = scenario < 2 ? "sgs" : "gmres";
+            controls.method = scenario < 2 ? "sgs" : scenario == 5 ? "ilu"
+                                                                   : "gmres";
             controls.preconditioner = scenario < 3 ? "sgs" : "ilu";
             controls.sgsSweeps = 2;
             controls.exchangeBetweenSweeps = scenario == 1;
@@ -946,30 +947,52 @@ TEST_CASE("One time driver advances coupled and separate equation storage with i
         }
         return true;
     };
-    const auto converged = [&](const C::EquationDofs &h, const C::EquationDofs &i, I)
+    const auto converged = [&](const C::EquationDofs &residual)
     {
-        const auto rh = h.ReadOwned(), ri = i.ReadOwned();
+        const auto read = residual.ReadOwned();
         double error = 0;
         for (I iBlock = 0; iBlock < 3; ++iBlock)
         {
-            const auto hv = rh.Block(iBlock).owned, iv = ri.Block(iBlock).owned;
+            const auto values = read.Block(iBlock).owned;
             for (I iRow = 0; iRow < fixture.rows; ++iRow)
-                for (I j = 0; j < hv.ComponentNumber(); ++j)
-                    error = std::max({error, std::abs(hv(iRow, j)), std::abs(iv(iRow, j))});
+                for (I j = 0; j < values.ComponentNumber(); ++j)
+                    error = std::max(error, std::abs(values(iRow, j)));
         }
         MPI_Allreduce(MPI_IN_PLACE, &error, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
         return error < 1e-8;
     };
-    const auto nativeConverged = [&](const Field &h, const Field &i, I)
+    const auto nativeConverged = [&](const Field &residual)
     {
-        const auto rh = h.Owned().Read(), ri = i.Owned().Read();
+        const auto read = residual.Owned().Read();
         double error = 0;
-        const auto hv = rh.View<R::UniformTableRows>(), iv = ri.View<R::UniformTableRows>();
+        const auto values = read.View<R::UniformTableRows>();
         for (I iRow = 0; iRow < fixture.rows; ++iRow)
             for (I j = 0; j < nv; ++j)
-                error = std::max({error, std::abs(hv(iRow, j)), std::abs(iv(iRow, j))});
+                error = std::max(error, std::abs(values(iRow, j)));
         MPI_Allreduce(MPI_IN_PLACE, &error, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
         return error < 1e-8;
+    };
+    const auto coupled = [&](auto &definition, auto &endpoint, const auto &rate, const auto &update,
+                             const auto &operations, const auto &stopping)
+    {
+        auto residual = operations.NewVector(endpoint);
+        // One shared iteration visits both unknowns once, then observes the
+        // method-provided I+H defect. No nested full stage nonlinear solves.
+        for (int iteration = 0; iteration < 200; ++iteration)
+        {
+            for (int coupledStage = 0; coupledStage < 2; ++coupledStage)
+            {
+                const auto equation = definition.PrepareCoupledStage(endpoint, coupledStage);
+                const auto &c = equation.coefficients;
+                if (!update(equation.state, equation.resOther, c.inverseDt, c.rhsScale, c.time, coupledStage))
+                    return false;
+                definition.CompleteCoupledStage(endpoint, rate);
+            }
+            definition.AssembleStoppingResidual(endpoint, residual);
+            if (stopping(residual))
+                return true;
+        }
+        return false;
     };
     for (const std::string method : {"bdf1", "bdf2", "trapz", "esdirk2", "esdirk3", "esdirk4", "ditr"})
     {
@@ -984,10 +1007,8 @@ TEST_CASE("One time driver advances coupled and separate equation storage with i
         auto reference = fixture.Build(Schema(5), 0, false);
         Fill(reference);
         auto nativeCandidate = DNDS::ODE::FieldTimeOperations::NewVector(reference.CoupledField());
-        C::EquationTimeStepper driver(state, method, {}, {}, [&](auto &)
-                                      { return C::EquationDITR::StageOperator{evaluate, solve, {}}; });
-        DNDS::ODE::FieldTimeStepper oracle(reference.CoupledField(), method, {}, {}, [&](auto &)
-                                           { return DNDS::ODE::FieldDITR::StageOperator{nativeRate, nativeSolve, {}}; });
+        C::EquationTimeStepper driver(state, method);
+        DNDS::ODE::FieldTimeStepper oracle(reference.CoupledField(), method);
         const auto compare = [&]
         {
             const auto read = candidate.ReadOwned();
@@ -1006,14 +1027,18 @@ TEST_CASE("One time driver advances coupled and separate equation storage with i
         double time = 0;
         for (double dt : {.02, .03})
         {
-            REQUIRE(driver.Prepare(state, candidate, time, dt, evaluate, solve, converged));
-            REQUIRE(oracle.Prepare(reference.CoupledField(), nativeCandidate, time, dt, nativeRate, nativeSolve, nativeConverged));
+            REQUIRE(driver.Prepare(state, candidate, time, dt, evaluate, solve, [&](auto &definition, auto &endpoint)
+                                   { return coupled(definition, endpoint, evaluate, solve, C::EquationDofOperations{}, converged); }));
+            REQUIRE(oracle.Prepare(reference.CoupledField(), nativeCandidate, time, dt, nativeRate, nativeSolve, [&](auto &definition, auto &endpoint)
+                                   { return coupled(definition, endpoint, nativeRate, nativeSolve, DNDS::ODE::FieldTimeOperations{}, nativeConverged); }));
             compare();
             C::EquationDofOperations::Copy(state, candidate);
             driver.Commit();
             A::Copy(reference.CoupledField(), nativeCandidate);
             oracle.Commit();
-            CHECK(driver.PreviousDt() == dt);
+            // Only BDF owns previous-step history; DIRK/DITR are one-step
+            // methods and deliberately expose no previous-step dt cache.
+            CHECK(driver.PreviousDt() == (method == "bdf1" || method == "bdf2" ? dt : 0));
             time += dt;
         }
         if (method == "bdf2")

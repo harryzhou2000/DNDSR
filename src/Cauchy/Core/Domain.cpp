@@ -569,7 +569,6 @@ namespace DNDS::Cauchy
             const MPIInfo mpi(_fv.Metrics().Communicator());
             MPI::LocalStage(mpi, [&]
                             {
-            DNDS_check_throw_info(forceZones.empty(), "equation-state boundary force diagnostics are not connected yet");
             auto evaluator = _equation.MakePointEvaluator(_workers ? _workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {});
             const auto geometry = _fv.Metrics().AcquireRead(); const auto metric = geometry.HostView();
             const auto read = _accepted.ReadOwned(), residual = _observationState->ReadOwned();
@@ -601,6 +600,9 @@ namespace DNDS::Cauchy
             MPI_Allreduce(MPI_IN_PLACE, result.data() + 4, 1, MPI_DOUBLE, MPI_SUM, comm);
             MPI_Allreduce(MPI_IN_PLACE, result.data() + 13, 1, MPI_DOUBLE, MPI_MIN, comm);
             result[4] = std::sqrt(result[4]);
+            const auto force = _fv.LastBoundaryForce(*_equationObservationWorkspace, forceZones);
+            for (int d = 0; d < 3; ++d)
+                result[5 + d] = force[d];
             result[8] = _fv.LastReconstructionIterations(*_equationObservationWorkspace);
             result[9] = _fv.LastReconstructionUpdate(*_equationObservationWorkspace);
             return result;

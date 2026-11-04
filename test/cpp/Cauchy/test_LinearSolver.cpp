@@ -117,12 +117,13 @@ namespace
 }
 TEST_CASE("Cauchy coupled linear solvers match a global dense oracle with real persistent halos")
 {
-    for (int selection = 0; selection < 14; ++selection)
+    for (int selection = 0; selection < 16; ++selection)
     {
-        const int scenario = selection % 7;
-        Fixture fixture(scenario % 3, selection >= 7);
+        const int scenario = selection % 8;
+        Fixture fixture(scenario % 3, selection >= 8);
         C::LinearSolveSettings settings;
-        settings.method = scenario < 3 ? "sgs" : "gmres";
+        settings.method = scenario < 3 ? "sgs" : scenario == 7 ? "ilu"
+                                                               : "gmres";
         settings.preconditioner = scenario >= 5 ? "ilu" : "sgs";
         settings.exchangeBetweenSweeps = scenario == 2 || scenario == 4;
         settings.sgsSweeps = 2;

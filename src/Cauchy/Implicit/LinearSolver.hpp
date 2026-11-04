@@ -7,6 +7,10 @@
 namespace DNDS::Cauchy
 {
     /// Resolved numerical choices, independent of frontend configuration layout.
+    /// sgs and ilu are stationary iterations; only gmres constructs Krylov
+    /// history and uses preconditioner. ILU uses frozen rank-local factors and
+    /// x_next=x+M^-1(b-A*x), with a normal halo before evaluating A*x.
+    /// Norms are Euclidean on the integrated RHS, without volume normalization.
     struct LinearSolveSettings
     {
         std::string method = "sgs", preconditioner = "sgs";
@@ -42,7 +46,7 @@ namespace DNDS::Cauchy
         LinearSolver &operator=(const LinearSolver &) = delete;
         LinearSolver(LinearSolver &&) noexcept = default;
         LinearSolver &operator=(LinearSolver &&) noexcept = default;
-        /// Frozen matrix for this solve. Local SGS defaults to zero initial
+        /// Frozen matrix for this solve. Stationary methods default to zero initial
         /// iterate; a warm guess is explicit. Every GMRES preconditioner call
         /// resets its iterate to zero and uses a fixed number of SGS sweeps or
         /// the same local ILU factors. Standard GMRES must not vary that policy.

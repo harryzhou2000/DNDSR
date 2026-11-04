@@ -12,6 +12,10 @@ namespace DNDS::Cauchy
     namespace A = Algebra;
     namespace
     {
+        bool UsesILU(const LinearSolveSettings &settings)
+        {
+            return settings.method == "ilu" || (settings.method == "gmres" && settings.preconditioner == "ilu");
+        }
         struct FieldLinearOperations : Linear::FieldKrylovOperations
         {
             using State = Field;
@@ -255,7 +259,7 @@ namespace DNDS::Cauchy
             }
             diagonal.emplace(data.problem->Diagonal().Read());
             offDiagonal.emplace(data.problem->ReadOffDiagonal());
-            if (data.settings.method == "gmres" && data.settings.preconditioner == "ilu")
+            if (UsesILU(data.settings))
             {
                 if (!data.problem->ILUFactorsCurrent()) data.problem->FactorizeILU();
             }
@@ -287,7 +291,21 @@ namespace DNDS::Cauchy
                     report.initialTrueResidual = report.trueResidual = initialGuess ? residual() : normB;
                     while (std::isfinite(report.trueResidual) && report.trueResidual > target && report.iterations < data.settings.maxIterations)
                     {
-                        data.Sweep(rhs, x, data.next, !initialGuess && report.iterations == 0);
+                        if (data.settings.method == "ilu")
+                        {
+                            // Stationary defect correction, with frozen local
+                            // factors: x_next = x + M_local^-1 (b - A*x).
+                            // A*x establishes its halo; the triangular solve
+                            // itself has no communication or Krylov history.
+                            const auto &defect = !initialGuess && report.iterations == 0 ? rhs : data.residual;
+                            data.Stage([&]
+                                       {
+                                data.problem->ApplyILU(defect, data.forward, data.action);
+                                Ops::LinearCombination(data.next, real(1), x, real(1), data.action); });
+                            ++report.preconditionerApplications;
+                        }
+                        else
+                            data.Sweep(rhs, x, data.next, !initialGuess && report.iterations == 0);
                         data.Stage([&]
                                    { Ops::Copy(x, data.next); });
                         ++report.iterations;
@@ -324,15 +342,17 @@ namespace DNDS::Cauchy
             problem->Validate(); prototype.Validate();
             DNDS_check_throw_info(prototype.Space().Same(problem->Space()) && Ops::Width(prototype) == problem->Components() && prototype.Device() == R::Device::Host(),
                                   "linear solver prototype differs from its CPU problem");
-            DNDS_check_throw_info(bindHalo && (settings.method == "sgs" || settings.method == "gmres") &&
+            DNDS_check_throw_info(bindHalo && (settings.method == "sgs" || settings.method == "ilu" || settings.method == "gmres") &&
                                       (settings.preconditioner == "sgs" || settings.preconditioner == "ilu") && settings.maxIterations >= 0 &&
                                       settings.subspace > 0 && settings.subspace < INT_MAX && settings.sgsSweeps > 0 && settings.iluFill >= -1 && settings.iluFill <= 5 &&
                                       std::isfinite(settings.relativeTolerance) && settings.relativeTolerance >= 0 &&
                                       std::isfinite(settings.absoluteTolerance) && settings.absoluteTolerance >= 0,
                                   "invalid linear solver controls");
-            DNDS_check_throw_info(!(settings.method == "gmres" && settings.preconditioner == "ilu" && settings.exchangeBetweenSweeps),
+            DNDS_check_throw_info(!(UsesILU(settings) && settings.exchangeBetweenSweeps),
                                   "local ILU has no inter-scan exchange"); });
-            const std::array<int64_t, 12> integers{settings.method == "gmres", settings.preconditioner == "ilu", settings.maxIterations, settings.subspace,
+            const std::array<int64_t, 12> integers{settings.method == "gmres" ? 1 : settings.method == "ilu" ? 2
+                                                                                                             : 0,
+                                                   settings.preconditioner == "ilu", settings.maxIterations, settings.subspace,
                                                    settings.sgsSweeps, settings.iluFill, settings.iluCoreFirst, settings.exchangeBetweenSweeps,
                                                    execution.overlap, execution.collectiveChecks, problem->Components(), int(problem->OffDiagonalMode())};
             auto lowest = integers, highest = integers;
@@ -349,7 +369,7 @@ namespace DNDS::Cauchy
                             {
             data = std::make_shared<Data>(problem, prototype, settings, execution);
             data->inputs.reserve(size_t(settings.subspace) + 4);
-            if (settings.method == "gmres" && settings.preconditioner == "ilu") problem->PrepareILUStructure(settings.iluFill, settings.iluCoreFirst); });
+            if (UsesILU(settings)) problem->PrepareILUStructure(settings.iluFill, settings.iluCoreFirst); });
             const auto bind = [&](Field &field)
             {
                 typename Data::Input input{&field, {}};
@@ -366,7 +386,7 @@ namespace DNDS::Cauchy
                 data->gmres->VisitOperatorInputs(bind);
             else
                 bind(*data->solution);
-            if (settings.method != "gmres" || settings.preconditioner == "sgs")
+            if (settings.method == "sgs" || (settings.method == "gmres" && settings.preconditioner == "sgs"))
             {
                 bind(data->old);
                 bind(data->forward);

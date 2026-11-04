@@ -487,8 +487,17 @@ claim CUDA submission or graph support.
 
 `Implicit/LinearSolver` owns reusable native vectors and persistent input halo
 bindings, while `LinearProblemContext` owns coefficients and numerical kernels.
-It supports standalone SGS and restarted left-GMRES with a fixed SGS or local
-ILU preconditioner. Every SGS preconditioner application starts from zero and
+It supports standalone SGS, stationary rank-local ILU defect correction, and
+restarted left-GMRES with a fixed SGS or local ILU preconditioner. Select
+`implicit.linear.method="ilu"` for `x_next=x+M_local^-1*(b-A*x)` with frozen
+factors. The first zero-started correction solves the local RHS; later
+corrections refresh `x`'s halo before forming its global defect. `preconditioner`
+applies only to GMRES. Setting both linear tolerances to zero requests the fixed
+iteration count, unless the true residual becomes exactly zero. The norm is
+Euclidean on the cell-integrated defect, whereas nonlinear norms are volume
+normalized; an absolute cutoff must be chosen for that scale. For the transient
+flame comparison use standalone ILU, with no Krylov history. Every SGS
+preconditioner application starts from zero and
 uses the configured fixed number of sweeps. ILU never inserts a middle exchange;
 the optional SGS middle exchange is explicitly exposed. Matrix read scopes pin
 coefficients throughout a solve. Both overlapping core/dependent and unsplit
@@ -506,7 +515,7 @@ borrowed solution changes at the next solve; it cannot serve as that solve's RHS
 
 Distributed tests solve an independently assembled global block matrix, using
 real persistent ring transfers, both overlap policies, both SGS middle modes,
-SGS/GMRES+SGS/GMRES+ILU and AoS/SoA/AoSoA. They check warm/repeated solves,
+SGS/ILU/GMRES+SGS/GMRES+ILU and AoS/SoA/AoSoA. They check warm/repeated solves,
 unchanged RHS generations, rank-inconsistent controls and rank-local conflicting
 accesses. These gates validate linear orchestration, not nonlinear CFD acceptance.
 

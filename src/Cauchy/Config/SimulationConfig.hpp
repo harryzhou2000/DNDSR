@@ -226,12 +226,12 @@ namespace DNDS::Cauchy
         real relativeTolerance = .1, absoluteTolerance = 1e-12;
         DNDS_DECLARE_CONFIG(ImplicitLinearSettings)
         {
-            DNDS_FIELD(method, "sgs or restarted left-gmres");
-            DNDS_FIELD(preconditioner, "Fixed sgs or rank-local ilu for GMRES");
+            DNDS_FIELD(method, "sgs stationary sweeps, ilu stationary defect correction, or restarted left-gmres");
+            DNDS_FIELD(preconditioner, "Fixed sgs or rank-local ilu for GMRES; unused by stationary methods");
             DNDS_FIELD(iterations, "Maximum linear iterations per nonlinear correction");
             DNDS_FIELD(subspace, "Restarted GMRES subspace size");
             DNDS_FIELD(relativeTolerance, "Relative true-residual tolerance");
-            DNDS_FIELD(absoluteTolerance, "Absolute true-residual tolerance");
+            DNDS_FIELD(absoluteTolerance, "Euclidean tolerance on the cell-integrated true residual; zero disables the absolute cutoff, useful for small physical volumes");
         }
     };
     struct ImplicitSGSSettings

@@ -259,10 +259,10 @@ namespace DNDS::Cauchy
                                   std::isfinite(pseudoCFL) && pseudoCFL > 0 && std::isfinite(maxPseudoCFL) && maxPseudoCFL >= pseudoCFL &&
                                   std::isfinite(pseudoGrowth) && pseudoGrowth >= 1 && std::isfinite(relaxation) && relaxation > 0 && relaxation <= 1,
                               "invalid implicit nonlinear/diagonal/pseudo-time controls");
-        DNDS_check_throw_info((linear.method == "sgs" || linear.method == "gmres") && (linear.preconditioner == "sgs" || linear.preconditioner == "ilu") &&
+        DNDS_check_throw_info((linear.method == "sgs" || linear.method == "ilu" || linear.method == "gmres") && (linear.preconditioner == "sgs" || linear.preconditioner == "ilu") &&
                                   linear.iterations > 0 && linear.subspace > 0 && linear.subspace < INT_MAX &&
                                   nonnegative(linear.relativeTolerance) && nonnegative(linear.absoluteTolerance) && sgs.sweeps > 0 && ilu.fill >= -1 && ilu.fill <= 5 &&
-                                  !(linear.method == "gmres" && linear.preconditioner == "ilu" && sgs.exchangeBetweenSweeps),
+                                  !((linear.method == "ilu" || (linear.method == "gmres" && linear.preconditioner == "ilu")) && sgs.exchangeBetweenSweeps),
                               "invalid implicit linear/SGS/ILU controls");
         DNDS_check_throw_info((positivity.rhsMode == "none" || positivity.rhsMode == "rhs" || positivity.rhsMode == "dTau") &&
                                   (positivity.rhsReduction == "cell" || positivity.rhsReduction == "minimumLimited" || positivity.rhsReduction == "minimumAll") &&

@@ -104,6 +104,8 @@ namespace DNDS::Cauchy
         std::vector<R::Array<real>> sourceValues;
         std::vector<std::array<R::Array<real>, 3>> sourceGradients;
         R::Array<real> ransDestruction;
+        R::Array<real> boundaryMomentumFlux;
+        bool boundaryMomentumCurrent = false;
         std::optional<EquationMeanGradients> meanGradients;
         bool chemical;
         int iterations = 0;
@@ -219,6 +221,7 @@ namespace DNDS::Cauchy
             : owner(std::move(data)), prototype(state), binding(state), fields(BuildFields(*owner, state)),
               coefficients(BindCoefficients(state, fields, owner->reconstruction.NRecDOF())), fluxCoefficients(coefficients),
               boundary(BindBoundary(state, fields, owner->reconstruction.NumBoundaryQuadrature())), workers(std::move(pool)),
+              boundaryMomentumFlux(R::RowLayout::Dense(owner->reconstruction.NumBoundaryQuadrature(), 3)),
               chemical(owner->settings.equation.source == "chemical")
         {
             index first = 0;
@@ -328,6 +331,8 @@ namespace DNDS::Cauchy
             const auto rec = ghosts ? fluxCoefficients.ReadWithGhost() : fluxCoefficients.ReadOwned();
             const auto meanBlocks = BlockViews(state, mean), recBlocks = BlockViews(fluxCoefficients, rec);
             auto output = result.WriteOwned();
+            auto boundaryWrite = boundaryMomentumFlux.Write();
+            const auto wallFlux = boundaryWrite.View<R::FixedRows<3>>();
             std::vector<EquationBlockArrayView<real>> outputs;
             for (index iBlock = 0; iBlock < result.BlockNumber(); ++iBlock)
                 outputs.push_back(output.Block(iBlock));
@@ -476,6 +481,11 @@ namespace DNDS::Cauchy
                         for (int k = 0; k < independent; ++k)
                             flux[speciesFirst + k] -= speciesFlux[k];
                     }
+                    if (sample.boundaryPoint != UnInitIndex)
+                        for (int d = 0; d < 3; ++d)
+                            wallFlux(sample.boundaryPoint, d) = wall || sample.boundary.kind == BoundaryKind::SlipWall
+                                                                    ? metric.GetFaceWeight(sample.point) * flux[flowFirst + 1 + d]
+                                                                    : 0;
                     for (index j = 0; j < width; ++j)
                         integrated[j] -= metric.GetFaceWeight(sample.point) * flux[j];
                 }
@@ -884,6 +894,7 @@ namespace DNDS::Cauchy
             if (!work.limited.empty()) PreflightHalo(work.fluxCoefficients);
             _data->partition.Validate();
             const bool viscous = _data->equation.Viscous();
+            work.boundaryMomentumCurrent = false;
             evaluator.emplace(_data->equation.MakePointEvaluator(work.workers ? work.workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{},
                 {viscous, viscous, viscous, work.chemical, false})); });
         const auto local = [&](auto &&action)
@@ -1059,6 +1070,29 @@ namespace DNDS::Cauchy
         if ((work.chemical || work.ransFirst >= 0) && work.sourceSampling)
             local([&]
                   { work.PublishSourceState(state, time); });
+        work.boundaryMomentumCurrent = true;
+    }
+
+    Vector3 FiniteVolume::LastBoundaryForce(const EquationWorkspace &work, const std::vector<int> &zones) const
+    {
+        Vector3 force{};
+        const MPIInfo mpi(Metrics().Communicator());
+        MPI::LocalStage(mpi, [&]
+                        {
+            DNDS_check_throw_info(work.owner == _data && work.boundaryMomentumCurrent,
+                "equation boundary force requires a completed RHS evaluation");
+            for (const int zone : zones)
+                DNDS_check_throw_info(_data->settings.boundaries.count(std::to_string(zone)), "force zone has no boundary condition");
+            const auto read = work.boundaryMomentumFlux.Read();
+            const auto values = read.View<Runtime::FixedRows<3>>();
+            for (index iPoint = 0; iPoint < index(_data->boundaryEntries.size()); ++iPoint)
+            {
+                const auto &sample = _data->samples[_data->boundaryEntries[iPoint]];
+                if (std::find(zones.begin(), zones.end(), sample.zone) != zones.end())
+                    for (int d = 0; d < 3; ++d) force[d] += values(iPoint, d);
+            } });
+        MPI_Allreduce(MPI_IN_PLACE, force.data(), 3, MPI_DOUBLE, MPI_SUM, mpi.comm);
+        return force;
     }
 
     void FiniteVolume::ValidateEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &work, real time) const
