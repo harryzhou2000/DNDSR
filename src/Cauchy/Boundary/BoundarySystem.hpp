@@ -29,6 +29,12 @@ namespace DNDS::Cauchy
         bool wallMovesWithMesh = true;
         FlowProfileSettings profile;
         FlowState prescribedPrimitive{};
+        /// Generic metadata resolves primitive inputs without inventing a
+        /// perfect-gas conservative state. Historical PG methods reject it.
+        bool hasPerfectGasState = true;
+        /// Resolved absolute wall velocity in the mesh-bound Cartesian frame.
+        /// Shared kinematics for equation-specific adiabatic wall producers.
+        Vector3 WallVelocityAt(const Vector3 &point, const RigidFrame *frame = nullptr) const;
         /// Physical face value for reconstruction/gradient input. Wall normal
         /// is outward from the interior parent. Extrapolation leaves U unchanged.
         FlowState FaceValue(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0, const RigidFrame *frame = nullptr) const;
@@ -45,9 +51,12 @@ namespace DNDS::Cauchy
     class BoundarySystem
     {
         std::map<int, BoundaryCondition> _conditions;
+        BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const PerfectGas *gas);
 
     public:
         explicit BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const PerfectGas &gas);
+        /// Resolve metadata only; equation-specific operators prepare values.
+        explicit BoundarySystem(const std::map<std::string, BoundarySettings> &settings);
         const BoundaryCondition &At(int zone) const;
         void ValidateUsed(const std::set<int> &zones) const;
     };

@@ -48,6 +48,7 @@ namespace DNDS::Cauchy
         const auto metric = _read->geometry.HostView();
         const int modes = data->reconstruction.NRecDOF(), dim = data->metrics.Dimension();
         const auto &gas = data->equation.Gas();
+        const auto &thermalBounds = data->PerfectGasBounds();
         const auto frame = data->motion.At(time);
         DNDS_check_throw_info(!data->hasInterfaces || input.boundary, "RHS requires incoming interface values");
         const auto incoming = input.boundary.value_or(RHSScalarView{});
@@ -132,7 +133,7 @@ namespace DNDS::Cauchy
                         viscousState = state;
                     // Explicit local first-order fallback keeps the mean
                     // unchanged when a high-order face value is inadmissible.
-                    if (!ThermallyAdmissible(state, data->thermalBounds))
+                    if (!ThermallyAdmissible(state, thermalBounds))
                     {
                         if (diagnostics)
                             diagnostics->fetch_add(1, std::memory_order_relaxed);
@@ -210,7 +211,7 @@ namespace DNDS::Cauchy
                     FlowState faceMean{};
                     for (int j = 0; j < 5; ++j)
                         faceMean[j] = .5 * (left.state[j] + rightLinearization[j]);
-                    DNDS_check_throw_info(ThermallyAdmissible(faceMean, data->thermalBounds), "inadmissible polynomial viscous linearization");
+                    DNDS_check_throw_info(ThermallyAdmissible(faceMean, thermalBounds), "inadmissible polynomial viscous linearization");
                     const bool wall = sample.other == UnInitIndex && sample.boundary.kind == BoundaryKind::NoSlipWall;
                     const real inverseDistance = wall && data->settings.numerics.noGRPOnWall ? 0 : 1 / sample.viscousDistance;
                     const auto diffusion = PolynomialViscousFlux(data->equation, left.state, rightLinearization, left.viscousState, viscousRight,

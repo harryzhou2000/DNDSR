@@ -48,8 +48,13 @@ namespace DNDS::Cauchy
             return gas.Conservative({source.density, source.velocity[0], source.velocity[1], source.velocity[2], normalSpeed > 0 ? far.pressure : local.pressure});
         }
     }
+    Vector3 BoundaryCondition::WallVelocityAt(const Vector3 &point, const RigidFrame *frame) const
+    {
+        return WallVelocity(*this, point, frame);
+    }
     FlowState BoundaryCondition::FaceValue(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point, real time, const RigidFrame *frame) const
     {
+        DNDS_check_throw_info(hasPerfectGasState, "boundary needs its equation-specific value producer");
         DNDS_check_throw_info(kind != BoundaryKind::Interface, "interface boundary needs a ready incoming packet");
         if (kind == BoundaryKind::Analytic)
             return AnalyticValue(*this, gas, point, time, frame);
@@ -85,6 +90,7 @@ namespace DNDS::Cauchy
     }
     FlowState BoundaryCondition::Exterior(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point, real time, const RigidFrame *frame) const
     {
+        DNDS_check_throw_info(hasPerfectGasState, "boundary needs its equation-specific exterior producer");
         DNDS_check_throw_info(kind != BoundaryKind::Interface, "interface boundary needs a ready incoming packet");
         if (kind == BoundaryKind::Analytic)
             return AnalyticValue(*this, gas, point, time, frame);
@@ -120,6 +126,7 @@ namespace DNDS::Cauchy
     }
     std::array<real, 25> BoundaryCondition::ExteriorJacobian(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point, real time, const RigidFrame *frame) const
     {
+        DNDS_check_throw_info(hasPerfectGasState, "boundary needs its equation-specific derivative producer");
         DNDS_check_throw_info(kind != BoundaryKind::Interface, "interface boundary Jacobian needs a frozen incoming packet");
         std::array<real, 25> result{};
         if (kind == BoundaryKind::Analytic)
@@ -198,6 +205,10 @@ namespace DNDS::Cauchy
         return result;
     }
     BoundarySystem::BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const PerfectGas &gas)
+        : BoundarySystem(settings, &gas) {}
+    BoundarySystem::BoundarySystem(const std::map<std::string, BoundarySettings> &settings)
+        : BoundarySystem(settings, nullptr) {}
+    BoundarySystem::BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const PerfectGas *gas)
     {
         for (const auto &[zone, source] : settings)
         {
@@ -218,7 +229,9 @@ namespace DNDS::Cauchy
                 condition.kind = BoundaryKind::Interface;
             else
                 DNDS_check_throw_info(false, "unsupported boundary family " + source.kind);
-            condition.farfield = gas.Conservative(source.primitive);
+            condition.hasPerfectGasState = bool(gas);
+            if (gas)
+                condition.farfield = gas->Conservative(source.primitive);
             condition.prescribedPrimitive = source.primitive;
             condition.profile = source.profile;
             condition.velocity = source.velocity;

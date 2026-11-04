@@ -94,6 +94,9 @@ TEST_CASE("Mixture source point matches the Euler source and all conservative de
     Fixture fixture;
     auto evaluate = fixture.equation.MakePointEvaluator(fixture.workers.Acquire(), {false, false, false, true, true});
     const auto u = fixture.Point(2);
+    const auto acousticOnly = evaluate.Evaluate({u[0], u[1], u[2], u[3], u[4]}, {u.data() + 5, fixture.species - 1}, 0, {});
+    CHECK(acousticOnly.chemicalSource.nSpecies == 0);
+    CHECK(acousticOnly.sourceJacobian.data == nullptr);
     auto point = evaluate.Evaluate({u[0], u[1], u[2], u[3], u[4]}, {u.data() + 5, fixture.species - 1}, 900 / fixture.scales.T0);
     Eigen::MatrixXd derivative(fixture.species - 1, fixture.components);
     for (int k = 0; k < derivative.rows(); ++k)

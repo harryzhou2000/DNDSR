@@ -8,6 +8,14 @@
 
 namespace DNDS::Cauchy::FiniteVolumeDetail
 {
+    inline Runtime::RowLayout FieldLayout(const Runtime::RowLayout &prototype, index rows, index width)
+    {
+        if (prototype.Kind() == Runtime::RowLayoutKind::ColMajorTable)
+            return Runtime::RowLayout::ColMajor(rows, width, prototype.PaddingOptions());
+        if (prototype.Kind() == Runtime::RowLayoutKind::TiledColMajorTable)
+            return Runtime::RowLayout::TiledColMajor(rows, width, prototype.Stride());
+        return Runtime::RowLayout::Dense(rows, width);
+    }
     struct Sample
     {
         index cell, other, point;
@@ -93,13 +101,22 @@ namespace DNDS::Cauchy
         std::optional<CFV::PolynomialSamplingPlan> positivitySamples;
         std::shared_ptr<const LimitedVRGeometry> limitedVRGeometry;
         std::vector<index> positivityOffsets;
-        ThermalBounds thermalBounds;
+        std::optional<ThermalBounds> thermalBounds;
+        const ThermalBounds &PerfectGasBounds() const
+        {
+            DNDS_check_throw_info(thermalBounds, "flow-only thermal policy is unavailable for this equation");
+            return *thermalBounds;
+        }
         Data(ssp<Geom::UnstructuredMesh> source, DomainSettings controls, EquationSystem physics)
             : mesh(std::move(source)), settings(std::move(controls)), equation(std::move(physics)), motion(settings.motion, settings.mesh.dimension), flux(Riemann::RiemannFlux::Resolve(settings.numerics.flux)),
-              boundary(settings.boundaries, equation.Gas()), metrics(CFV::FiniteVolumePlan::ConstructMetrics(mesh, settings.numerics.cfv.intOrder)),
+              boundary(equation.HasMixture() ? BoundarySystem(settings.boundaries) : BoundarySystem(settings.boundaries, equation.Gas())), metrics(CFV::FiniteVolumePlan::ConstructMetrics(mesh, settings.numerics.cfv.intOrder)),
               reconstruction(CFV::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings.numerics.cfv)),
               gradient(CFV::GradientPlan::Prepare(*mesh, metrics, settings.numerics.gradient == "greenGauss" ? CFV::GradientMethod::GreenGauss : settings.numerics.gradient == "ggmp" ? CFV::GradientMethod::GGMP
                                                                                                                                                                                       : CFV::GradientMethod::LeastSquares)),
-              partition(metrics.CellWorkPartition()), thermalBounds(equation.PrepareThermalBounds(settings.numerics.densityFloor, settings.numerics.temperatureFloor, settings.numerics.pressureFloor)) {}
+              partition(metrics.CellWorkPartition())
+        {
+            if (!equation.HasMixture())
+                thermalBounds = equation.PrepareThermalBounds(settings.numerics.densityFloor, settings.numerics.temperatureFloor, settings.numerics.pressureFloor);
+        }
     };
 }

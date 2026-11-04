@@ -199,8 +199,73 @@ publication; Discard preserves accepted history. Callback exceptions can leave
 scratch partial, and DITR reconstructs failed intermediate workspace before a
 retry. The flow5 checkpoint keeps its existing `history_flow` representation
 through an explicit adapter; extended physical checkpoint sections are pending.
-Layout-independent time equations do not by themselves complete extended RHS,
-BC, PP, linear solves or RANS/species physical validation.
+Layout-independent time equations do not by themselves complete extended
+production BC, PP, linear solves or RANS/species physical validation.
+
+## Equation-state finite volume
+
+`FiniteVolume::BuildEquationWorkspace(state, optionalWorkers)` uses the same
+immutable metrics, geometry, face incidences, work partition, basis provider and
+CFV plans as the established flow5 workspace. Each physical input field gets
+its own reconstruction buffers and halo bindings; logical flow/species views
+retain their parent strides and physical offsets. No distributed state is
+flattened into a coupled temporary array. Coefficient block widths and physical
+offsets are multiplied by the number of nonconstant basis modes. Boundary
+values remain small local arrays in the canonical boundary-quadrature order.
+
+```text
+EquationDofs (logical flow + species)
+  -> physical fields (coupled, split or component-permuted)
+  -> per-field mean/coefficient halo + CFV workspace
+  -> ready point values/gradients in logical order
+  -> actual EOS acoustics / Newtonian-Fourier + species diffusion / chemistry
+  -> each logical residual block in the caller's output fields
+```
+
+The CPU profile currently supports Rusanov, constant/gradient/variational
+reconstruction, two-buffer Jacobi/SOR, componentwise WBAP and conservative
+polynomial viscous gradients. A compatible explicit chemistry worker pool is
+mandatory for ideal mixtures. Acoustic-only faces, viscous faces and chemical
+volume points select subsets of that evaluator's pre-reserved outputs. An
+acoustic query does not calculate rates or diffusivities. The request does not
+change the evaluator's default policy, acquire a second worker, or allocate
+point buffers. Scalar point scratch and gradients are private to one execution
+lane; returned property views are consumed before the worker's next point.
+
+Periodic transformations rotate vector values and both indices of vector
+gradients, while scalar gradients rotate once. Adiabatic slip/no-slip wall
+values preserve density, composition and full internal energy as momentum
+changes. Wall kinematics use the same rigid-frame producer as flow5. Chemistry
+uses cell volume quadrature and the shared polynomial sampler, following its
+optional cache policy. It adds independent mass rates and no full-energy source.
+
+The wrapper posts all physical-field halos before submitting owned-only core
+work, waits on the controller thread, then submits dependent work. First VR
+core work may overlap both the mean and coefficient exchanges. Ordered SOR
+uses the configured core-first logical order; WBAP exchanges after each
+descending-degree pass. Input coefficients stay immutable through direct MPI
+sends. CPU inline and worker launchers follow the same sequence; return joins
+only that lane. Worker resources are retained through exceptional exits too.
+
+The caller serializes each workspace and its bound handles, supplies distinct
+output storage, completes external producers before entry, and uses matching
+physics/units/numerical controls and the same collective schedule on every rank.
+The descriptor agreement proves the field map, not equality of separately
+loaded mechanism contents or model parameters. Entry preflights reserve every output before
+any field transfer. A collective exact descriptor check rejects inconsistent
+schema/physical grouping before constructing halo bindings; physical payload
+layouts may differ among ranks. Geometry versions, bindings and leases are
+checked outside point loops. Ghost updates are allowed; owned means do not
+change. Discard scratch after a failed evaluation. With
+`implicit.collectiveChecks=false`, the caller handles distributed failures
+between phases; entry/binding checks remain coordinated.
+
+This is a functional residual path, not a completed extended production Domain.
+It explicitly rejects PP/face fallback, characteristic WBAP, other prepared
+Riemann profiles, a distinct unlimited viscous polynomial, and non-wall/non-
+extrapolate BC producers until connected. The established flow5 path retains
+its existing capabilities. Extended stage/linear/PP/checkpoint/frontend adapters
+and physical RANS/flame acceptance remain separate work.
 
 ## Chemical source operator
 
@@ -268,7 +333,8 @@ last until its next point evaluation. `FluxState(flow, properties)` passes those
 actual pressure/acoustic values into the common numerical Riemann interface.
 It does no equivalent-gamma substitution.
 
-The mixture factory is a property/schema interface. The production JSON/domain
+The mixture factory supplies the property/schema interface and equation-state
+FV profile above. The production JSON/domain
 capability plan remains flow5-only until its extended RHS, BC, Jacobian,
 stage/linear/PP/checkpoint adapters are connected. Perfect-gas-only methods such
 as `Gas()` and the old flow-only Jacobian/characteristic producer reject a

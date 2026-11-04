@@ -68,7 +68,9 @@ namespace DNDS::Physics::Thermodynamics
             PointEvaluator(std::shared_ptr<const State> state, Chemistry::ChemicalWorkerPool::Lease worker,
                            MixturePropertyRequest request);
             void PrepareComposition(real rho, Chemistry::ConstSpeciesBufferView rhoY);
-            MixturePoint Evaluate(real rho, real temperature);
+            MixturePoint Evaluate(real rho, real temperature, MixturePropertyRequest request);
+            MixturePoint FromRhoEImpl(real rho, real internalEnergy, Chemistry::ConstSpeciesBufferView rhoY,
+                                      real temperatureGuess, real uvTolerance, MixturePropertyRequest request);
 
         public:
             PointEvaluator(const PointEvaluator &) = delete;
@@ -97,6 +99,13 @@ namespace DNDS::Physics::Thermodynamics
             /// at the next point evaluation or release of this worker.
             MixturePoint FromConservative(real rho, real rhoE, const std::array<real, 3> &momentum,
                                           Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess = 0);
+            /// Select a subset of the outputs reserved at construction. A face
+            /// acoustic query need not perform transport or chemistry, while a
+            /// source point need not perform transport. No default-policy
+            /// mutation, extra worker acquisition or point-time allocation.
+            MixturePoint FromConservative(real rho, real rhoE, const std::array<real, 3> &momentum,
+                                          Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess,
+                                          MixturePropertyRequest request);
         };
 
         /// Consumes a lease for one loop/tile. Checks material identity once;

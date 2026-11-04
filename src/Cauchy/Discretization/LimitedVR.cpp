@@ -133,14 +133,14 @@ namespace DNDS::Cauchy
             for (index iCell = 0; iCell < data.metrics.NumCell(); ++iCell)
             {
                 const auto value = Load(u, iCell);
-                DNDS_check_throw_info(ThermallyAdmissible(value, data.thermalBounds), "LVR O2 PP requires admissible means");
+                DNDS_check_throw_info(ThermallyAdmissible(value, data.PerfectGasBounds()), "LVR O2 PP requires admissible means");
                 struct MeanValues
                 {
                     FlowState value;
                     real operator()(index, int j) const { return value[j]; }
                 };
                 const real beta = ReconstructionFraction(value, MeanValues{value}, points, data.positivityOffsets[iCell], data.positivityOffsets[iCell + 1],
-                                                         data.thermalBounds, controls.positivityBetaPower, controls.positivityBetaCutoff);
+                                                         data.PerfectGasBounds(), controls.positivityBetaPower, controls.positivityBetaCutoff);
                 DNDS_check_throw_info(std::isfinite(beta) && beta >= 0 && beta <= 1, "invalid LVR O2 positivity fraction");
                 if (beta < 1)
                     for (index j = 0; j < coefficients.RowSize(iCell); ++j) coefficients(iCell, j) *= beta;
@@ -180,7 +180,7 @@ namespace DNDS::Cauchy
             {
                 const auto &face = geometry.faces[iFace];
                 const auto left = Load(samples, 2 * iFace), right = RotateState(Load(samples, 2 * iFace + 1), face.rotation);
-                DNDS_check_throw_info(ThermallyAdmissible(left, data.thermalBounds) && ThermallyAdmissible(right, data.thermalBounds),
+                DNDS_check_throw_info(ThermallyAdmissible(left, data.PerfectGasBounds()) && ThermallyAdmissible(right, data.PerfectGasBounds()),
                                       "LVR finalized O2 face center violates the thermal bound");
                 const auto l = gas.Primitive(left), r = gas.Primitive(right);
                 real unLeft = 0, unRight = 0;

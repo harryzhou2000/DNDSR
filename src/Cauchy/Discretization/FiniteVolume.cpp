@@ -23,6 +23,7 @@ namespace DNDS::Cauchy
     {
         using UniformView = R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>;
         using FieldView = R::PairReadView<real, R::AccessBoundsChecks, R::UniformTableRows>;
+        using FiniteVolumeDetail::FieldLayout;
         using FiniteVolumeDetail::Load;
         using FiniteVolumeDetail::RotateState;
         using FiniteVolumeDetail::Sample;
@@ -52,14 +53,6 @@ namespace DNDS::Cauchy
                     }
             }
         };
-        R::RowLayout FieldLayout(const R::RowLayout &prototype, index rows, index width)
-        {
-            if (prototype.Kind() == R::RowLayoutKind::ColMajorTable)
-                return R::RowLayout::ColMajor(rows, width, prototype.PaddingOptions());
-            if (prototype.Kind() == R::RowLayoutKind::TiledColMajorTable)
-                return R::RowLayout::TiledColMajor(rows, width, prototype.Stride());
-            return R::RowLayout::Dense(rows, width);
-        }
         void CopyOwned(const CFV::FVField &from, CFV::FVField &to)
         {
             DNDS_check_throw_info(from.Space().Same(to.Space()) && from.Width() == to.Width() &&
@@ -171,6 +164,8 @@ namespace DNDS::Cauchy
                         {
             settings.numerics.ValidatePositivity();
             settings.numerics.limitedVR.Validate();
+            DNDS_check_throw_info(!equation.HasMixture() || (!settings.numerics.positivity && settings.numerics.limiter != "LVR"),
+                                  "mixture PP/LVR policy is not connected yet");
             DNDS_check_throw_info(settings.numerics.limiter != "LVR" || (settings.numerics.reconstruction == "variational" && settings.numerics.cfv.maxOrder >= 2),
                                   "LVR requires degree2/3 variational reconstruction");
             DNDS_check_throw_info(settings.numerics.viscousGradient == "primitive" || settings.numerics.viscousGradient == "polynomial",
@@ -412,7 +407,7 @@ namespace DNDS::Cauchy
     std::shared_ptr<FiniteVolume::Workspace> FiniteVolume::BuildWorkspaceImpl(CFV::FVField &state, AuxiliaryRequest request, bool meanOnly) const
     {
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        { Metrics().ValidateField(state, 5); });
+                        { DNDS_check_throw_info(!_data->equation.HasMixture(), "flow-only workspace cannot bind a mixture state"); Metrics().ValidateField(state, 5); });
         request.meanThermodynamics = true;
         const bool wave = _data->settings.numerics.riemann.useStencil && _data->flux.UsesTransverseSignal();
         const bool pressure = _data->settings.numerics.riemann.useStencil && _data->flux.UsesPressureStencil();
@@ -1246,7 +1241,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(work.owner == _data.get() && work.auxiliary._origin, "auxiliary values require a completed preparation for this workspace");
         return work.auxiliary;
     }
-    const ThermalBounds &FiniteVolume::ThermalConstraints() const { return _data->thermalBounds; }
+    const ThermalBounds &FiniteVolume::ThermalConstraints() const { return _data->PerfectGasBounds(); }
     void FiniteVolume::LimitReconstructionPP(const CFV::FVField &state, Workspace &work) const
     {
         LimitReconstructionPPImpl(state, work, true);
@@ -1274,12 +1269,12 @@ namespace DNDS::Cauchy
                 {
                     const auto value = Load(p, iPoint);
                     for (auto component : value) DNDS_check_throw_info(std::isfinite(component), "nonfinite reconstruction in positivity input");
-                    if (admissible) DNDS_check_throw_info(ThermallyAdmissible(value, _data->thermalBounds), "reconstruction violates temperature/internal-energy bound");
+                    if (admissible) DNDS_check_throw_info(ThermallyAdmissible(value, _data->PerfectGasBounds()), "reconstruction violates temperature/internal-energy bound");
                 }
             };
             validatePoints(work.positivityValues, false);
             for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
-                DNDS_check_throw_info(ThermallyAdmissible(Load(u, iCell), _data->thermalBounds), "reconstruction PP requires admissible means");
+                DNDS_check_throw_info(ThermallyAdmissible(Load(u, iCell), _data->PerfectGasBounds()), "reconstruction PP requires admissible means");
             CopyOwned(flux.coefficients, flux.temporary);
             if (work.positivityReference)
             {
@@ -1291,7 +1286,7 @@ namespace DNDS::Cauchy
                     {
                         bool good = true;
                         for (index q = _data->positivityOffsets[iCell]; q < _data->positivityOffsets[iCell + 1]; ++q)
-                            good = good && ThermallyAdmissible(Load(p, q), _data->thermalBounds);
+                            good = good && ThermallyAdmissible(Load(p, q), _data->PerfectGasBounds());
                         d(iCell, 0) = good ? controls.cfv.maxOrder : -1;
                     }
                 }
@@ -1322,7 +1317,7 @@ namespace DNDS::Cauchy
                         {
                             bool good = true;
                             for (index q = _data->positivityOffsets[iCell]; q < _data->positivityOffsets[iCell + 1]; ++q)
-                                good = good && ThermallyAdmissible(Load(p, q), _data->thermalBounds);
+                                good = good && ThermallyAdmissible(Load(p, q), _data->PerfectGasBounds());
                             if (good) d(iCell, 0) = degree;
                             else for (index j = 0; j < c.RowSize(iCell); ++j) c(iCell, j) = r(iCell, j);
                         }
@@ -1352,13 +1347,13 @@ namespace DNDS::Cauchy
                 real beta = 1;
                 if (controls.positivityReconstruction == "Segment")
                 {
-                    for (index q = begin; q < end; ++q) beta = std::min(beta, AdmissibleFraction(base, Load(p, q), _data->thermalBounds));
+                    for (index q = begin; q < end; ++q) beta = std::min(beta, AdmissibleFraction(base, Load(p, q), _data->PerfectGasBounds()));
                     if (beta < controls.positivityBetaCutoff) beta = 0;
                 }
                 else if (referenceValues)
-                    beta = ReconstructionFraction(base, referenceValues->View<R::UniformTableRows>(), p, begin, end, _data->thermalBounds, controls.positivityBetaPower, controls.positivityBetaCutoff);
+                    beta = ReconstructionFraction(base, referenceValues->View<R::UniformTableRows>(), p, begin, end, _data->PerfectGasBounds(), controls.positivityBetaPower, controls.positivityBetaCutoff);
                 else
-                    beta = ReconstructionFraction(base, MeanValues{base}, p, begin, end, _data->thermalBounds, controls.positivityBetaPower, controls.positivityBetaCutoff);
+                    beta = ReconstructionFraction(base, MeanValues{base}, p, begin, end, _data->PerfectGasBounds(), controls.positivityBetaPower, controls.positivityBetaCutoff);
                 DNDS_check_throw_info(std::isfinite(beta) && beta >= 0 && beta <= 1, "invalid reconstruction positivity beta");
                 if (beta < 1)
                 {
@@ -1381,7 +1376,7 @@ namespace DNDS::Cauchy
             _data->positivitySamples->Evaluate(state, flux.coefficients, work.positivityValues);
             auto points = work.positivityValues.Read(); const auto p = points.View<R::UniformTableRows>();
             for (index q = 0; q < p.RowCount(); ++q)
-                DNDS_check_throw_info(ThermallyAdmissible(Load(p, q), _data->thermalBounds), "scaled reconstruction violates temperature/internal-energy bound"); });
+                DNDS_check_throw_info(ThermallyAdmissible(Load(p, q), _data->PerfectGasBounds()), "scaled reconstruction violates temperature/internal-energy bound"); });
     }
     index FiniteVolume::LastCharacteristicFallbacks(const Workspace &work) const
     {
@@ -1481,7 +1476,7 @@ namespace DNDS::Cauchy
             auto read = state.Owned().Read();
             const auto input = read.View<R::UniformTableRows>();
             for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
-                valid &= ThermallyAdmissible(Load(input, iCell), _data->thermalBounds); });
+                valid &= ThermallyAdmissible(Load(input, iCell), _data->PerfectGasBounds()); });
         MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, Metrics().Communicator());
         return valid;
     }

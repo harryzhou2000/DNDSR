@@ -74,7 +74,7 @@ namespace DNDS::Physics::Thermodynamics
         auto &fractions = _worker.Buffers().fractions;
         Chemistry::RepairMassFractions(rho, rhoY, {fractions.data(), int(fractions.size())});
     }
-    MixturePoint IdealGasMixture::PointEvaluator::Evaluate(real rho, real temperature)
+    MixturePoint IdealGasMixture::PointEvaluator::Evaluate(real rho, real temperature, MixturePropertyRequest request)
     {
         DNDS_check_throw_info(std::isfinite(temperature) && temperature > 0, "mixture temperature must be finite and positive");
         const auto &scales = _state->scales;
@@ -86,11 +86,11 @@ namespace DNDS::Physics::Thermodynamics
         const real p = rho * scales.rho0 * source.mixtureR(fractions) * T;
         MixturePoint result;
         Chemistry::SpeciesBufferView diffusion, enthalpy;
-        if (_request.diffusivity)
+        if (request.diffusivity)
             diffusion = {buffers.diffusivity.data(), species};
-        if (_request.speciesEnthalpy)
+        if (request.speciesEnthalpy)
             enthalpy = {buffers.enthalpy.data(), species};
-        source.EvaluateProperties(T, p, fractions, result.thermo, _request.transport ? &result.transport : nullptr,
+        source.EvaluateProperties(T, p, fractions, result.thermo, request.transport ? &result.transport : nullptr,
                                   diffusion, enthalpy);
         auto &thermo = result.thermo;
         thermo.density /= scales.rho0;
@@ -102,7 +102,7 @@ namespace DNDS::Physics::Thermodynamics
         thermo.cp /= scales.HeatCapacity();
         thermo.cv /= scales.HeatCapacity();
         thermo.gasConstant /= scales.HeatCapacity();
-        if (_request.transport)
+        if (request.transport)
         {
             result.transport.viscosity /= scales.Viscosity();
             result.transport.conductivity /= scales.Conductivity();
@@ -124,6 +124,12 @@ namespace DNDS::Physics::Thermodynamics
                                                            Chemistry::ConstSpeciesBufferView rhoY,
                                                            real temperatureGuess, real uvTolerance)
     {
+        return FromRhoEImpl(rho, internalEnergy, rhoY, temperatureGuess, uvTolerance, _request);
+    }
+    MixturePoint IdealGasMixture::PointEvaluator::FromRhoEImpl(real rho, real internalEnergy,
+                                                               Chemistry::ConstSpeciesBufferView rhoY,
+                                                               real temperatureGuess, real uvTolerance, MixturePropertyRequest request)
+    {
         DNDS_check_throw_info(std::isfinite(internalEnergy) && std::isfinite(uvTolerance) && uvTolerance > 0,
                               "mixture UV inversion requires finite energy and positive tolerance");
         PrepareComposition(rho, rhoY);
@@ -133,13 +139,13 @@ namespace DNDS::Physics::Thermodynamics
         const real temperature = _worker.Source().temperatureFromUV(internalEnergy * scales.SpecificEnergy(),
                                                                     1 / (rho * scales.rho0),
                                                                     {fractions.data(), int(fractions.size())}, guess, uvTolerance);
-        return Evaluate(rho, temperature / scales.T0);
+        return Evaluate(rho, temperature / scales.T0, request);
     }
     MixturePoint IdealGasMixture::PointEvaluator::FromRhoT(real rho, real temperature,
                                                            Chemistry::ConstSpeciesBufferView rhoY)
     {
         PrepareComposition(rho, rhoY);
-        return Evaluate(rho, temperature);
+        return Evaluate(rho, temperature, _request);
     }
     MixturePoint IdealGasMixture::PointEvaluator::FromRhoP(real rho, real pressure,
                                                            Chemistry::ConstSpeciesBufferView rhoY)
@@ -149,20 +155,31 @@ namespace DNDS::Physics::Thermodynamics
         const auto &fractions = _worker.Buffers().fractions;
         const auto &scales = _state->scales;
         const real R = _worker.Source().mixtureR({fractions.data(), int(fractions.size())});
-        return Evaluate(rho, pressure * scales.Pressure() / (rho * scales.rho0 * R * scales.T0));
+        return Evaluate(rho, pressure * scales.Pressure() / (rho * scales.rho0 * R * scales.T0), _request);
     }
     MixturePoint IdealGasMixture::PointEvaluator::FromConservative(real rho, real rhoE,
                                                                    const std::array<real, 3> &momentum,
                                                                    Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess)
     {
+        return FromConservative(rho, rhoE, momentum, rhoY, temperatureGuess, _request);
+    }
+    MixturePoint IdealGasMixture::PointEvaluator::FromConservative(real rho, real rhoE,
+                                                                   const std::array<real, 3> &momentum,
+                                                                   Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess,
+                                                                   MixturePropertyRequest request)
+    {
+        DNDS_check_throw_info((!request.transport || _request.transport) && (!request.diffusivity || _request.diffusivity) &&
+                                  (!request.speciesEnthalpy || _request.speciesEnthalpy) && (!request.sourceJacobian || _request.sourceJacobian) &&
+                                  (!(request.chemicalSource || request.sourceJacobian) || _request.chemicalSource || _request.sourceJacobian),
+                              "point output was not reserved by this evaluator");
         DNDS_check_throw_info(std::isfinite(rho) && rho > 0 && std::isfinite(rhoE), "chemical point needs finite energy and positive density");
         for (const auto value : momentum)
         {
             DNDS_check_throw_info(std::isfinite(value), "chemical point needs finite momentum");
         }
         const std::array<real, 5> conservative{rho, momentum[0], momentum[1], momentum[2], rhoE};
-        auto point = FromRhoE(rho, ConservativeSpecificInternalEnergy<3>(conservative), rhoY, temperatureGuess);
-        if (!_request.chemicalSource && !_request.sourceJacobian)
+        auto point = FromRhoEImpl(rho, ConservativeSpecificInternalEnergy<3>(conservative), rhoY, temperatureGuess, 1e-12, request);
+        if (!request.chemicalSource && !request.sourceJacobian)
             return point;
         auto &source = _worker.Source();
         auto &rates = _worker.Buffers().production;
@@ -172,7 +189,7 @@ namespace DNDS::Physics::Thermodynamics
         const real sourceT = std::max(physicalT, source.baseTemperature());
         const real sourceP = sourceT == physicalT ? point.thermo.pressure * scales.Pressure()
                                                   : rho * scales.rho0 * source.mixtureR(point.fractions) * sourceT;
-        if (_request.sourceJacobian)
+        if (request.sourceJacobian)
         {
             Chemistry::JacobianBufferView jacobian{_sourceJacobian.data(), species, components, species};
             source.productionRatesAndJacobian(sourceT, sourceP, rho, rhoE, momentum[0], momentum[1], momentum[2],

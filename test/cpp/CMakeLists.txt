@@ -223,6 +223,13 @@ dnds_add_mpi_test(cauchy_equation_dofs "Cauchy/test_EquationDofs.cpp" "cauchy;cf
 dnds_add_unit_test(cauchy_riemann "Cauchy/test_Riemann.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_unit_test(cauchy_riemann_legacy "Cauchy/test_RiemannLegacy.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_finite_volume "Cauchy/test_FiniteVolume.cpp" "cauchy;cfv;geom;dnds")
+dnds_add_mpi_test(cauchy_equation_finite_volume "Cauchy/test_EquationFiniteVolume.cpp" "cauchy;cfv;geom;dnds")
+if(DNDS_USE_CANTERA)
+    foreach(NP ${DNDS_TEST_NP_LIST})
+        set_property(TEST dnds_cauchy_equation_finite_volume_np${NP} APPEND PROPERTY ENVIRONMENT
+            "DNDS_MECH_PATH=${DNDS_CANTERA_DATA_DIR}" "CANTERA_DATA=${DNDS_CANTERA_DATA_DIR}")
+    endforeach()
+endif()
 dnds_add_mpi_test(cauchy_limited_vr "Cauchy/test_LimitedVR.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_limited_vr_checkpoint "Cauchy/test_LimitedVRCheckpoint.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_foundation "Cauchy/test_Foundation.cpp" "cauchy;cfv;geom;dnds")

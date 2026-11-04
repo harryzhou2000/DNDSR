@@ -61,7 +61,7 @@ namespace DNDS::Cauchy
                 FlowState state;
                 for (int j = 0; j < 5; ++j)
                     state[j] = values(iPoint, j);
-                DNDS_check_throw_info(ThermallyAdmissible(state, _data->thermalBounds), "interface update has missing, nonfinite or inadmissible flow rows");
+                DNDS_check_throw_info(ThermallyAdmissible(state, _data->PerfectGasBounds()), "interface update has missing, nonfinite or inadmissible flow rows");
             }
         input._publication = BoundaryInputs::Publication{time, epoch, input.flow.Version(), input.flow.ShapeVersion()};
         input._updating = false;
@@ -98,7 +98,7 @@ namespace DNDS::Cauchy
                     FlowState state;
                     for (int j = 0; j < 5; ++j)
                         state[j] = values(iPoint, j);
-                    DNDS_check_throw_info(ThermallyAdmissible(state, _data->thermalBounds), "aliased boundary state violates the target level's admissibility bounds");
+                    DNDS_check_throw_info(ThermallyAdmissible(state, _data->PerfectGasBounds()), "aliased boundary state violates the target level's admissibility bounds");
                 }
             }
         }

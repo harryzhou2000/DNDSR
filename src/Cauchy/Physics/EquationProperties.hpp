@@ -87,6 +87,10 @@ namespace DNDS::Cauchy
         /// A stale positive T guess seeds UV inversion, never its final answer.
         EquationPointProperties Evaluate(const FlowState &flow, Physics::Chemistry::ConstSpeciesBufferView rhoY = {},
                                          real temperatureGuess = 0);
+        /// Per-point subset of the reserved outputs; intended for fused FV
+        /// face/source phases sharing one explicit worker context.
+        EquationPointProperties Evaluate(const FlowState &flow, Physics::Chemistry::ConstSpeciesBufferView rhoY,
+                                         real temperatureGuess, Physics::Thermodynamics::MixturePropertyRequest request);
         /// Numerical fluxes consume these actual EOS values; no gamma closure.
         static Riemann::AcousticState FluxState(const FlowState &flow, const EquationPointProperties &point)
         {

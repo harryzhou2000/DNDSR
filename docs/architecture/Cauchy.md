@@ -518,9 +518,10 @@ remain equation-owned, BC values boundary-owned, and fluxes gas-agnostic.
 `AuxiliaryRequest::derived` selects an optional accompanying property bundle.
 `DerivedFields` stores only enabled scalar properties in a shared table, with
 separate owned/ghost instances. It is independent of the solved equation
-components and has no automatic transfer. The initial provider is perfect gas;
-future mixture providers must extend its model/units provenance and worker
-context before dispatch is enabled. A cheap perfect-gas workspace keeps its
+components and has no automatic transfer. Perfect-gas and ideal-mixture
+providers use exact model/units provenance; mixtures require an explicit
+compatible worker. See [equation state and property contracts](CauchyState.md).
+A cheap perfect-gas workspace keeps its
 existing combined thermodynamic table by default. When derived storage is
 requested together with mean thermodynamics, pressure, sound speed and diffusion
 bounds join that table instead: `MeanThermodynamicView` projects columns for

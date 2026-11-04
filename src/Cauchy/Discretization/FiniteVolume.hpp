@@ -149,6 +149,33 @@ namespace DNDS::Cauchy
     public:
         struct Workspace;
         struct MeanWorkspace;
+        struct EquationWorkspace;
+        /// Full logical-state CPU workspace on the same geometry/CFV plans.
+        /// Each physical field keeps its layout and shared row routing; no
+        /// whole-state packing is performed. Matching schema/physical grouping
+        /// is collective; payload layouts may differ across ranks. A mixture
+        /// requires a matching explicit worker pool, shared in capacity only.
+        /// Initial equation-state profile: Rusanov, constant/gradient/VR,
+        /// componentwise WBAP, polynomial Newtonian/Fourier diffusion and
+        /// optional mixture chemistry. Extrapolate/adiabatic walls are available.
+        /// PP, face fallback, characteristic WBAP, other flux preparations,
+        /// interface/farfield/analytic/isothermal producers are rejected here
+        /// until their equation-state implementations are connected. Existing
+        /// flow5 Workspace retains those established capabilities.
+        std::shared_ptr<EquationWorkspace> BuildEquationWorkspace(EquationDofs &state,
+                                                                  std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt) const;
+        /// Integrated residual for every logical equation block. CPU controller
+        /// entry is synchronous; mean/coefficient transfers overlap owned-only
+        /// core work when configured. Caller serializes workspace/state handles
+        /// and coordinates collective call order. Failed scratch is discarded.
+        /// This updates state ghosts and reconstruction scratch, never owned
+        /// means. Each output physical allocation must be distinct from inputs.
+        /// implicit.collectiveChecks=false delegates distributed failure
+        /// coordination to the caller; entry/binding preflights still agree.
+        void Evaluate(EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace,
+                      Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
+        const EquationDofs &ReconstructionGuess(const EquationWorkspace &workspace) const;
+        const EquationDofs &FluxReconstruction(const EquationWorkspace &workspace) const;
         /// Copyable immutable read scope for RHS geometry/basis data. Apply is
         /// stateless: no MPI, reconstruction, cache update or hidden counters.
         /// Raw input/output views require retained/declared Array leases and

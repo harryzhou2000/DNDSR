@@ -32,6 +32,18 @@ namespace DNDS::Cauchy
     EquationPointProperties EquationPointEvaluator::Evaluate(const FlowState &flow,
                                                              Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess)
     {
+        return Evaluate(flow, rhoY, temperatureGuess, _request);
+    }
+    EquationPointProperties EquationPointEvaluator::Evaluate(const FlowState &flow,
+                                                             Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess,
+                                                             Physics::Thermodynamics::MixturePropertyRequest request)
+    {
+        request.diffusivity = _viscous && request.diffusivity;
+        request.transport = _viscous && (request.transport || request.diffusivity);
+        DNDS_check_throw_info((!request.transport || _request.transport) && (!request.diffusivity || _request.diffusivity) &&
+                                  (!request.speciesEnthalpy || _request.speciesEnthalpy) && (!request.sourceJacobian || _request.sourceJacobian) &&
+                                  (!(request.chemicalSource || request.sourceJacobian) || _request.chemicalSource || _request.sourceJacobian),
+                              "point output was not reserved by this equation evaluator");
         EquationPointProperties result;
         if (!_mixture)
         {
@@ -49,7 +61,7 @@ namespace DNDS::Cauchy
         for (const real value : flow)
             DNDS_check_throw_info(std::isfinite(value), "mixture property evaluation requires finite conservative values");
         DNDS_check_throw_info(flow[0] > 0, "mixture property evaluation requires positive density");
-        const auto point = _mixture->FromConservative(flow[0], flow[4], {flow[1], flow[2], flow[3]}, rhoY, temperatureGuess);
+        const auto point = _mixture->FromConservative(flow[0], flow[4], {flow[1], flow[2], flow[3]}, rhoY, temperatureGuess, request);
         result.thermo = point.thermo;
         result.transport = _viscous ? point.transport : Physics::Transport::Properties{0, 0};
         result.fractions = point.fractions;
@@ -60,7 +72,7 @@ namespace DNDS::Cauchy
         result.sourceJacobian = point.sourceJacobian;
         if (!_viscous)
             result.diffusionBound = 0;
-        if (_viscous && _request.diffusivity)
+        if (_viscous && request.diffusivity)
         {
             result.diffusionBound = std::max(real(4. / 3) * result.transport.viscosity / flow[0],
                                              result.transport.conductivity / (flow[0] * result.thermo.cv));

@@ -82,8 +82,9 @@ namespace DNDS::Cauchy
     /// owned values; callers refresh ghosts afterwards. Replacing allocations,
     /// row shapes or row order requires an explicit new binding.
     ///
-    /// This is not a physical-model implementation. Current production dispatch
-    /// remains compressible flow5; mock and future operators can use other schemas.
+    /// This is not a physical-model implementation. The established production
+    /// Domain remains flow5; the equation-state FV profile also handles ideal
+    /// mixtures explicitly. Other schemas need a matching physical operator.
     class EquationDofs
     {
         struct Definition;
