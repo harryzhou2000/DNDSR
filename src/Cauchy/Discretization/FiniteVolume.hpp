@@ -455,7 +455,9 @@ namespace DNDS::Cauchy
         /// once, and writes logical blocks through their native layout. Positive
         /// temperature overrides primitive p. No ghost exchange or reconstruction
         /// initialization; caller releases conflicting views/async work first.
-        /// Mixtures require an explicit matching worker pool.
+        /// Mixtures require an explicit matching worker pool. RANS currently
+        /// requires an explicit caller initialization of all logical blocks;
+        /// this initializer rejects it rather than leaving scalars untouched.
         void InitializeConstant(EquationDofs &state, const FlowState &primitive, const std::map<std::string, real> &massFractions = {},
                                 real temperature = 0, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt) const;
         /// Volume-normalized L1/L2/Linf error in conservative cell averages.
@@ -477,6 +479,9 @@ namespace DNDS::Cauchy
         /// Input halo may be stale. Retain this bound workspace through return.
         void PrepareCorrectionAux(CFV::FVField &state, Workspace &workspace, Runtime::EagerEngine &engine,
                                   const Runtime::ExecutionStream &stream, real time) const;
+        /// Full-state variant also refreshes sampled source state and RANS
+        /// destruction from the retained polynomial, before publishing its
+        /// Jacobian provenance. No chemical rates or physical RHS are evaluated.
         void PrepareCorrectionAux(EquationDofs &state, EquationWorkspace &workspace, AuxiliaryValues &auxiliary,
                                   Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time) const;
         const ThermalBounds &ThermalConstraints() const;

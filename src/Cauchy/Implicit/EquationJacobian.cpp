@@ -194,11 +194,12 @@ namespace DNDS::Cauchy
             if (input)
                 checkAlias(*input);
         const bool chemical = _data->settings.equation.source == "chemical";
+        const bool rans = _data->equation.HasRANS();
         DNDS_check_throw_info(_data->settings.equation.source == "none" || (chemical && _data->equation.HasMixture()), "unsupported equation Jacobian source");
-        if (chemical)
+        if (chemical || rans)
         {
-            DNDS_check_throw_info(sourceReconstruction || _data->settings.numerics.reconstruction == "constant" || _data->equation.Mixture().SpeciesNumber() == 1,
-                                  "nonconstant chemical Jacobian requires current RHS source reconstruction");
+            DNDS_check_throw_info(sourceReconstruction || (!rans && (_data->settings.numerics.reconstruction == "constant" || _data->equation.Mixture().SpeciesNumber() == 1)),
+                                  "RANS or nonconstant chemical Jacobian requires current RHS source reconstruction");
             if (sourceReconstruction)
                 ValidateEquationSourceJacobian(state, *sourceReconstruction, time);
         }
@@ -299,7 +300,7 @@ namespace DNDS::Cauchy
                 for (index j = 0; j < (output.DiagonalMode() == DiagonalStorage::Block ? nv * nv : nv); ++j)
                     d(iCell, j) = output.DiagonalMode() == DiagonalStorage::Block ? own.data()[j] : own(j, j);
             }
-            if (chemical && sourceReconstruction)
+            if ((chemical || rans) && sourceReconstruction)
                 AddEquationSourceJacobian(state, *sourceReconstruction, *diagonal, output.DiagonalMode(), controls.residualScale, evaluator);
             for (index iCell = 0; iCell < owned; ++iCell)
             {

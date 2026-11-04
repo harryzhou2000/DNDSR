@@ -38,6 +38,7 @@ namespace DNDS::Cauchy
         /// Resolved Ns-1 composition for prescribed states. Empty for a
         /// species-free profile; never resolve names inside numerical loops.
         std::vector<real> prescribedFractions;
+        std::array<real, 2> prescribedRANS{};
         /// Validate the equation-state producer at operator setup. The legacy
         /// perfect-gas methods retain their existing larger profile set.
         void ValidateEquationProducer() const;

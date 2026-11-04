@@ -1,4 +1,5 @@
 #include "Cauchy/Boundary/BoundarySystem.hpp"
+#include "Physics/RANS/Model.hpp"
 #include "Cauchy/Physics/FlowProfile.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include <set>
@@ -219,6 +220,20 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(prescribed || source.massFractions.empty(), "mass fractions supplied to a non-prescribed boundary");
             if (prescribed)
                 condition.prescribedFractions = equation.IndependentMassFractions(source.massFractions);
+            DNDS_check_throw_info((equation.HasRANS() && prescribed) || source.ransConservative.empty(),
+                                  "RANS values require a prescribed RANS boundary");
+            if (equation.HasRANS() && prescribed)
+            {
+                const auto &model = equation.RANS();
+                DNDS_check_throw_info(source.ransConservative.size() == size_t(model.ComponentNumber()), "prescribed boundary needs all named RANS values");
+                for (int j = 0; j < model.ComponentNumber(); ++j)
+                {
+                    const auto found = source.ransConservative.find(model.ComponentNames()[j]);
+                    DNDS_check_throw_info(found != source.ransConservative.end() && std::isfinite(found->second) && found->second >= 0,
+                                          "invalid prescribed RANS component");
+                    condition.prescribedRANS[j] = found->second;
+                }
+            }
         }
     }
     BoundarySystem::BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const PerfectGas *gas)

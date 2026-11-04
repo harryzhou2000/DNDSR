@@ -4,6 +4,8 @@
 // Workspace/AuxiliaryValues owners; this header is not a mesh or solver API.
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
+#include "Cauchy/Discretization/WallDistanceSamples.hpp"
+#include "Cauchy/Physics/EquationRANS.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 
 namespace DNDS::Cauchy::FiniteVolumeDetail
@@ -121,6 +123,7 @@ namespace DNDS::Cauchy
         std::shared_ptr<const LimitedVRGeometry> limitedVRGeometry;
         std::vector<index> positivityOffsets;
         std::optional<ThermalBounds> thermalBounds;
+        std::optional<WallDistanceSamples> wallDistance;
         const ThermalBounds &PerfectGasBounds() const
         {
             DNDS_check_throw_info(thermalBounds, "flow-only thermal policy is unavailable for this equation");

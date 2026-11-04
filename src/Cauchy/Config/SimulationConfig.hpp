@@ -113,6 +113,7 @@ namespace DNDS::Cauchy
         int positivityBetaPower = 1;
         real densityFloor = 1e-12, pressureFloor = 1e-12;
         real sensibleEnergyFloor = 1e-12;
+        real wallDistanceFloor = 1e-10;
         CFV::ReconstructionSettings cfv;
         CFV::LimitedVRSettings limitedVR;
         RiemannSettings riemann;
@@ -141,6 +142,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(densityFloor, "Positive inclusive density admissibility floor");
             DNDS_FIELD(pressureFloor, "Positive inclusive pressure admissibility floor for the initial perfect-gas equation");
             DNDS_FIELD(sensibleEnergyFloor, "Mixture internal-energy density margin above its backend reference temperature; no gamma conversion");
+            DNDS_FIELD(wallDistanceFloor, "Positive floor for nodal wall-distance quadrature samples used by RANS");
             config.field_section(&T::cfv, "cfv", "Independent mathematical CFV configuration");
             config.field_section(&T::limitedVR, "limitedVR", "Native v2/v3 target-penalty controls");
             config.field_section(&T::riemann, "riemann", "Numerical flux correction controls, independent of EOS");
@@ -168,6 +170,7 @@ namespace DNDS::Cauchy
         std::array<real, 5> primitive{1, 0, 0, 0, 1};
         std::array<real, 3> velocity{0, 0, 0};
         std::map<std::string, real> massFractions;
+        std::map<std::string, real> ransConservative;
         real temperature = 1;
         FlowProfileSettings profile;
         DNDS_DECLARE_CONFIG(BoundarySettings)
@@ -177,6 +180,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(wallVelocityFrame, "mesh: velocity relative to moving wall; ground: prescribed absolute ground velocity");
             DNDS_FIELD(primitive, "Farfield rho,u,v,w,p; three velocities on any geometry");
             config.field_schema(&T::massFractions, "massFractions", "Prescribed species mass fractions; omitted last species fills the remainder", SpeciesMassFractionsSchema);
+            config.field_schema(&T::ransConservative, "ransConservative", "Named conservative RANS values in code units for prescribed boundaries", SpeciesMassFractionsSchema);
             DNDS_FIELD(velocity, "Prescribed wall velocity in wallVelocityFrame; farfield/analytic data always use ground axes");
             DNDS_FIELD(temperature, "Positive isothermal wall temperature");
             config.field_section(&T::profile, "profile", "Space/time input for analytic boundary values");

@@ -97,11 +97,13 @@ namespace DNDS::Cauchy
         std::shared_ptr<EquationPositivityWorkspace> positivity;
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
         std::vector<index> logicalFirst, vectorStarts;
-        index flowFirst = -1, speciesFirst = -1;
+        index flowFirst = -1, speciesFirst = -1, ransFirst = -1;
         std::vector<index> sourceOffsets;
         R::Array<real> sourceWeights;
         std::optional<CFV::PolynomialSamplingPlan> sourceSampling;
         std::vector<R::Array<real>> sourceValues;
+        std::vector<std::array<R::Array<real>, 3>> sourceGradients;
+        R::Array<real> ransDestruction;
         bool chemical;
         int iterations = 0;
         real relativeUpdate = 0;
@@ -143,7 +145,7 @@ namespace DNDS::Cauchy
         }
         void BuildSourceSampling()
         {
-            if (!chemical || owner->equation.Mixture().SpeciesNumber() == 1)
+            if (!owner->equation.HasRANS() && (!chemical || owner->equation.Mixture().SpeciesNumber() == 1))
                 return;
             auto read = owner->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
             const auto mesh = read.HostView();
@@ -182,10 +184,18 @@ namespace DNDS::Cauchy
                     }
                 }
             }
-            sourceSampling.emplace(owner->reconstruction, cells, points, false);
+            sourceSampling.emplace(owner->reconstruction, cells, points, owner->equation.HasRANS());
             for (index iField = 0; iField < prototype.PhysicalFieldNumber(); ++iField)
+            {
                 sourceValues.emplace_back(FiniteVolumeDetail::FieldLayout(prototype.PhysicalField(iField).Owned().Layout(), count,
                                                                           index(prototype.PhysicalField(iField).Width())));
+                if (owner->equation.HasRANS())
+                {
+                    sourceGradients.emplace_back();
+                    for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                        sourceGradients.back()[d] = R::Array<real>(sourceValues.back().Layout());
+                }
+            }
         }
         static EquationDofs BindCoefficients(const EquationDofs &state, const std::vector<Field> &fields, index modes)
         {
@@ -218,6 +228,8 @@ namespace DNDS::Cauchy
                     flowFirst = first;
                 if (block.name == "species")
                     speciesFirst = first;
+                if (block.name == "rans")
+                    ransFirst = first;
                 for (const auto vector : block.vectorStarts)
                     vectorStarts.push_back(first + vector);
                 first += index(block.components.size());
@@ -231,6 +243,8 @@ namespace DNDS::Cauchy
             }
             if (owner->settings.numerics.positivity)
                 positivity = std::make_shared<EquationPositivityWorkspace>(owner, state, fluxCoefficients, workers);
+            if (ransFirst >= 0)
+                ransDestruction = R::Array<real>(R::RowLayout::Dense(owner->metrics.NumCell(), owner->equation.RANS().ComponentNumber()));
             BuildSourceSampling();
         }
         void BindHalos(EquationDofs &state)
@@ -268,7 +282,7 @@ namespace DNDS::Cauchy
                                     point.values[logicalFirst[iBlock] + j] += recBlocks[iBlock](sample.cell, j * modes + mode) * basis(0, mode);
                     }
                     BoundaryValue(point, flowFirst, speciesFirst, owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() - 1 : 0,
-                                  sample, evaluator, frame, time, false);
+                                  sample, evaluator, frame, time, false, ransFirst);
                     for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
                     {
                         const auto target = output.Block(iBlock);
@@ -314,6 +328,10 @@ namespace DNDS::Cauchy
             PointScratch left(width), right(width), face(width);
             std::vector<real> integrated(size_t(width), 0), flux(size_t(width), 0), speciesFlux(size_t(independent), 0);
             EquationTransportScratch transport(species);
+            std::optional<WallDistanceRead> wallRead;
+            if (owner->wallDistance)
+                wallRead.emplace(owner->wallDistance->AcquireRead());
+            const auto wallValues = wallRead ? wallRead->HostView() : WallDistanceView{};
             CFV::Math::SmallMatrix basisScratch;
             const auto reconstruct = [&](index iCell, const FiniteVolumeDetail::Sample &sample, int side, PointScratch &point)
             {
@@ -347,7 +365,11 @@ namespace DNDS::Cauchy
                     {
                         right.values = left.values;
                         right.gradient = left.gradient;
-                        BoundaryValue(right, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, true);
+                        BoundaryValue(right, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, true, ransFirst);
+#ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
+                        if (ransFirst >= 0 && sample.boundary.kind == BoundaryKind::NoSlipWall)
+                            left.values[ransFirst] = right.values[ransFirst] = 0;
+#endif
                     }
                     const auto leftFlow = left.Flow(flowFirst), rightFlow = right.Flow(flowFirst);
                     const auto leftData = EquationPointEvaluator::FluxState(leftFlow, evaluator.Evaluate(leftFlow, left.Species(speciesFirst, independent), 0, {}));
@@ -377,7 +399,7 @@ namespace DNDS::Cauchy
                             // unchanged and cannot yield a negative exterior T.
                             // Reuse the not-yet-filled face scratch here.
                             face.values = left.values;
-                            BoundaryValue(face, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, false);
+                            BoundaryValue(face, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, false, ransFirst);
                             const auto wallFlow = face.Flow(flowFirst);
                             const real pressure = evaluator.Evaluate(wallFlow, face.Species(speciesFirst, independent), 0, {}).thermo.pressure;
                             const auto value = evaluator.FromPrimitive({wallFlow[0], rightFlow[1] / rightFlow[0], rightFlow[2] / rightFlow[0], rightFlow[3] / rightFlow[0], pressure},
@@ -402,8 +424,22 @@ namespace DNDS::Cauchy
                             index first;
                             real operator()(int k, int d) const { return point.gradient(first + k, d); }
                         };
+                        EquationTransportOptions transportOptions{wall && !sample.boundary.isothermal, wall};
+                        if (ransFirst >= 0)
+                        {
+                            const auto &model = owner->equation.RANS();
+                            const index iQ = sample.point - metric.FaceQuadratureBegin(sample.face);
+                            const auto ransPoint = RANSPoint(face, flowFirst, ransFirst, model, point, wallValues.faces(sample.face, iQ));
+                            const auto turbulent = model.Transport(ransPoint);
+                            transportOptions.turbulentViscosity = turbulent.viscosity;
+                            transportOptions.turbulentConductivity = turbulent.conductivity;
+                            transportOptions.turbulentSpeciesDiffusivity = turbulent.speciesDiffusivity;
+                            const auto diffusionRANS = model.DiffusionFlux(ransPoint, Eigen::Vector3d{normal[0], normal[1], normal[2]}, turbulent.viscosity);
+                            for (int j = 0; j < model.ComponentNumber(); ++j)
+                                flux[ransFirst + j] -= diffusionRANS[j];
+                        }
                         const auto diffusion = PrepareViscousFlux(faceFlow, face.FlowDerivative(flowFirst), point, face.Species(speciesFirst, independent),
-                                                                  SpeciesGradient{face, speciesFirst}, normal, speciesFlux, transport, {wall && !sample.boundary.isothermal, wall});
+                                                                  SpeciesGradient{face, speciesFirst}, normal, speciesFlux, transport, transportOptions);
                         for (int j = 0; j < 5; ++j)
                             flux[flowFirst + j] -= diffusion[j];
                         for (int k = 0; k < independent; ++k)
@@ -430,16 +466,21 @@ namespace DNDS::Cauchy
                 for (const auto iCell : region == CFV::ReconstructionRegion::Core ? owner->partition.Core() : owner->partition.HaloDependent())
                     compute(iCell);
         }
-        void SampleChemicalState(const EquationDofs &state)
+        void SampleSourceState(const EquationDofs &state)
         {
             sourceState.reset();
             sourceCoefficients.reset();
             if (!sourceSampling)
                 return;
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+            {
                 sourceSampling->Evaluate(state.PhysicalField(iField), fluxCoefficients.PhysicalField(iField), sourceValues[iField]);
+                if (ransFirst >= 0)
+                    for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                        sourceSampling->Evaluate(state.PhysicalField(iField), fluxCoefficients.PhysicalField(iField), sourceGradients[iField][d], 1 + d);
+            }
         }
-        void PublishChemicalState(const EquationDofs &state, real time)
+        void PublishSourceState(const EquationDofs &state, real time)
         {
             if (!sourceSampling)
                 return;
@@ -447,19 +488,50 @@ namespace DNDS::Cauchy
             sourceCoefficients.emplace(fluxCoefficients.NumericAlias());
             sourceTime = time;
         }
-        void AddChemicalSource(const EquationDofs &state, EquationDofs &result, EquationPointEvaluator &evaluator)
+        /// Refresh quadrature state and RANS destruction together. A null
+        /// result prepares the correction Jacobian without changing the RHS
+        /// or evaluating chemical rates.
+        void PrepareVolumeSource(const EquationDofs &state, EquationDofs *result, EquationPointEvaluator &evaluator)
         {
             if (!sourceSampling)
                 return;
-            SampleChemicalState(state);
+            SampleSourceState(state);
             std::vector<R::Array<real>::ReadLease> sources;
             for (const auto &field : sourceValues)
                 sources.push_back(field.Read());
+            std::vector<std::array<std::optional<R::Array<real>::ReadLease>, 3>> derivatives(sourceGradients.size());
+            for (index iField = 0; iField < index(sourceGradients.size()); ++iField)
+                for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                    derivatives[iField][d].emplace(sourceGradients[iField][d].Read());
+            // Resolve physical layouts once, outside the quadrature loop.
+            using SampleView = R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>;
+            std::vector<SampleView> samples;
+            std::vector<std::array<SampleView, 3>> gradients(derivatives.size());
+            for (const auto &read : sources)
+                samples.push_back(read.View<R::UniformTableRows>());
+            for (index iField = 0; iField < index(derivatives.size()); ++iField)
+                for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                    gradients[iField][d] = derivatives[iField][d]->View<R::UniformTableRows>();
+            std::optional<WallDistanceRead> wallRead;
+            if (owner->wallDistance)
+                wallRead.emplace(owner->wallDistance->AcquireRead());
+            const auto walls = wallRead ? wallRead->HostView() : WallDistanceView{};
             const auto weightRead = sourceWeights.Read();
             const auto weights = weightRead.View<R::FixedRows<1>>();
-            auto output = result.WriteOwned();
-            const auto speciesOutput = output.Block("species");
-            const int independent = owner->equation.Mixture().SpeciesNumber() - 1;
+            std::optional<EquationDofs::WriteScope> output;
+            if (result)
+                output.emplace(result->WriteOwned());
+            const auto speciesOutput = result && speciesFirst >= 0 ? output->Block("species") : EquationBlockArrayView<real>{};
+            const auto ransOutput = result && ransFirst >= 0 ? output->Block("rans") : EquationBlockArrayView<real>{};
+            std::optional<R::Array<real>::WriteLease> destructionWrite;
+            if (ransFirst >= 0)
+                destructionWrite.emplace(ransDestruction.Write());
+            const auto destruction = destructionWrite ? destructionWrite->View<R::TableRows>() : R::ArrayView<real, R::AccessBoundsChecks, R::TableRows>{};
+            if (ransFirst >= 0)
+                for (index iCell = 0; iCell < owner->metrics.NumCell(); ++iCell)
+                    for (int j = 0; j < owner->equation.RANS().ComponentNumber(); ++j)
+                        destruction(iCell, j) = 0;
+            const int independent = owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() - 1 : 0;
             PointScratch point(state.ComponentNumber());
             std::vector<EquationBlockLocation> locations;
             for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
@@ -470,13 +542,33 @@ namespace DNDS::Cauchy
                     for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
                     {
                         const auto location = locations[iBlock];
-                        const auto values = sources[location.physicalField].View<R::UniformTableRows>();
+                        const auto values = samples[location.physicalField];
                         for (index j = 0; j < location.componentNumber; ++j)
+                        {
                             point.values[logicalFirst[iBlock] + j] = values(iPoint, location.firstComponent + j);
+                            if (ransFirst >= 0)
+                                for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                                    point.gradient(logicalFirst[iBlock] + j, d) = gradients[location.physicalField][d](iPoint, location.firstComponent + j);
+                        }
                     }
-                    const auto properties = evaluator.Evaluate(point.Flow(flowFirst), point.Species(speciesFirst, independent), 0, {false, false, false, true, false});
-                    for (int k = 0; k < independent; ++k)
-                        speciesOutput(iCell, k) += weights(iPoint, 0) * properties.chemicalSource[k];
+                    const auto properties = evaluator.Evaluate(point.Flow(flowFirst), point.Species(speciesFirst, independent), 0, {ransFirst >= 0, false, false, chemical && result, false});
+                    if (chemical && result)
+                        for (int k = 0; k < independent; ++k)
+                            speciesOutput(iCell, k) += weights(iPoint, 0) * properties.chemicalSource[k];
+                    if (ransFirst >= 0)
+                    {
+                        const auto &model = owner->equation.RANS();
+                        const auto input = RANSPoint(point, flowFirst, ransFirst, model, properties, walls.cells(iCell, iPoint - sourceOffsets[iCell]));
+                        const auto diagonal = model.ImplicitSourceDiagonal(input);
+                        const auto source = result ? model.Source(input) : std::array<real, 2>{};
+                        for (int j = 0; j < model.ComponentNumber(); ++j)
+                        {
+                            DNDS_check_throw_info(std::isfinite(source[j]) && std::isfinite(diagonal[j]), "nonfinite RANS source or destruction diagonal");
+                            if (result)
+                                ransOutput(iCell, j) += weights(iPoint, 0) * source[j];
+                            destruction(iCell, j) += weights(iPoint, 0) * diagonal[j];
+                        }
+                    }
                 }
         }
     };
@@ -512,10 +604,17 @@ namespace DNDS::Cauchy
             {
                 preparation->Apply(_data->settings.execution.overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
                 preparation->Finish(auxiliary);
-                // Source Jacobians use the retained current polynomial. No VR
-                // sweep or chemical-rate evaluation is hidden in this refresh.
-                work.SampleChemicalState(state);
-                work.PublishChemicalState(state, time);
+                // Source Jacobians use the retained current polynomial. RANS
+                // destruction must be refreshed before publishing these samples.
+                // No VR sweep or chemical-rate evaluation is hidden here.
+                if (_data->equation.HasRANS())
+                {
+                    auto evaluator = _data->equation.MakePointEvaluator(work.workers ? work.workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{},
+                                                                        {true, false, false, false, false});
+                    work.PrepareVolumeSource(state, nullptr, evaluator);
+                }
+                else work.SampleSourceState(state);
+                work.PublishSourceState(state, time);
             });
             stream.Record().WaitHost(); });
     }
@@ -528,6 +627,7 @@ namespace DNDS::Cauchy
             Metrics().Validate();
             _data->equation.ValidateStateSchema(state);
             _data->equation.ResolveKernelProfile(state.Device());
+            DNDS_check_throw_info(!_data->equation.HasRANS(), "constant RANS initialization requires an explicit scalar initializer; initialize all logical blocks before evaluation");
             DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && _data->equation.HasMixture() == bool(workers),
                                   "equation initialization row space/worker profile differs");
             auto fractions = _data->equation.IndependentMassFractions(massFractions);
@@ -580,7 +680,8 @@ namespace DNDS::Cauchy
             else DNDS_check_throw_info(!workers, "perfect-gas FV does not require chemistry workers");
             operationControls = Json{{"numerics", _data->settings.numerics}, {"equation", _data->settings.equation},
                 {"motion", _data->settings.motion}, {"boundaries", _data->settings.boundaries}, {"overlap", _data->settings.execution.overlap},
-                {"collectiveChecks", _data->settings.implicit.collectiveChecks}, {"properties", _data->equation.PropertyKey().parameters}}.dump(); });
+                {"collectiveChecks", _data->settings.implicit.collectiveChecks}, {"properties", _data->equation.PropertyKey().parameters},
+                {"rans", _data->equation.HasRANS() ? Json(_data->equation.RANS().Settings()) : Json()}}.dump(); });
         AgreeEquationBinding(state, mpi.comm, operationControls);
         std::shared_ptr<EquationWorkspace> result;
         MPI::LocalStage(mpi, [&]
@@ -868,18 +969,18 @@ namespace DNDS::Cauchy
         submit([&, rest]
                { work.ApplyRHS(state, residual, rest, *evaluator, time); });
         submit([&]
-               { work.AddChemicalSource(state, residual, *evaluator); });
+               { work.PrepareVolumeSource(state, &residual, *evaluator); });
         local([&]
               { stream.Record().WaitHost(); });
-        if (work.chemical && work.sourceSampling)
+        if ((work.chemical || work.ransFirst >= 0) && work.sourceSampling)
             local([&]
-                  { work.PublishChemicalState(state, time); });
+                  { work.PublishSourceState(state, time); });
     }
 
     void FiniteVolume::ValidateEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &work, real time) const
     {
-        DNDS_check_throw_info(work.owner == _data && work.chemical, "foreign or nonchemical source reconstruction");
-        if (_data->equation.Mixture().SpeciesNumber() == 1)
+        DNDS_check_throw_info(work.owner == _data && (work.chemical || work.ransFirst >= 0), "foreign or source-free reconstruction");
+        if (!work.sourceSampling)
             return;
         DNDS_check_throw_info(work.sourceState && work.sourceCoefficients && work.sourceTime == time, "source quadrature requires a current completed sample publication");
         work.sourceState->Check(state, true);
@@ -889,6 +990,21 @@ namespace DNDS::Cauchy
                                                  const R::Array<real>::WriteLease &diagonal, DiagonalStorage storage, real scale, EquationPointEvaluator &evaluator) const
     {
         if (!work.sourceSampling)
+            return;
+        const index components = state.ComponentNumber();
+        if (work.ransFirst >= 0)
+        {
+            const auto read = work.ransDestruction.Read();
+            const auto source = read.View<R::TableRows>();
+            const auto output = diagonal.View<R::TableRows>();
+            for (index iCell = 0; iCell < _data->metrics.NumCell(); ++iCell)
+                for (int j = 0; j < _data->equation.RANS().ComponentNumber(); ++j)
+                {
+                    const index row = work.ransFirst + j;
+                    output(iCell, storage == DiagonalStorage::Block ? row + components * row : row) += scale * source(iCell, j);
+                }
+        }
+        if (!work.chemical)
             return;
         std::vector<R::Array<real>::ReadLease> sources;
         for (const auto &field : work.sourceValues)

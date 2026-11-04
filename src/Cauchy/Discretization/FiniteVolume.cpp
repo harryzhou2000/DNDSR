@@ -166,7 +166,10 @@ namespace DNDS::Cauchy
         MPI::LocalStage(mesh->getMPI(), [&]
                         {
             settings.numerics.ValidatePositivity();
-            DNDS_check_throw_info(!equation.HasRANS(), "Cauchy RANS spatial operators are not connected yet");
+            if (equation.HasRANS())
+                DNDS_check_throw_info(equation.RANS().Kind() == Physics::RANS::ModelKind::SA && equation.RANS().Settings().desScale > 100 &&
+                                          std::isfinite(settings.numerics.wallDistanceFloor) && settings.numerics.wallDistanceFloor > 0 && mesh->HasNodeWallDist(),
+                                      "RANS FV currently requires SA without DES and a published nodal wall field with a positive sampling floor");
             settings.numerics.limitedVR.Validate();
             DNDS_check_throw_info(!equation.HasMixture() || settings.numerics.limiter != "LVR",
                                   "mixture LVR policy is not connected yet");
@@ -175,6 +178,9 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(settings.numerics.viscousGradient == "primitive" || settings.numerics.viscousGradient == "polynomial",
                                   "unknown Cauchy viscous gradient scheme"); });
         auto data = std::make_shared<Data>(std::move(mesh), ResolveSweepOrdering(settings), equation);
+        if (equation.HasRANS())
+            MPI::LocalStage(data->mesh->getMPI(), [&]
+                            { data->wallDistance.emplace(WallDistanceSamples::Construct(data->mesh, settings.numerics.cfv.intOrder, settings.numerics.wallDistanceFloor)); });
         const bool limitedVR = settings.numerics.limiter == "LVR" && (settings.numerics.limitedVR.alphaMax > 0 || settings.numerics.limitedVR.contactAlphaMax > 0);
         auto meshRead = data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto topology = meshRead.HostView();
@@ -327,7 +333,7 @@ namespace DNDS::Cauchy
         {
             std::vector<int> volumeOrders;
             if (settings.numerics.positivityVolumePoints) volumeOrders.push_back(Geom::Elem::INT_ORDER_MAX);
-            if (settings.equation.source == "chemical" && std::find(volumeOrders.begin(), volumeOrders.end(), settings.numerics.cfv.intOrder) == volumeOrders.end())
+            if ((settings.equation.source == "chemical" || equation.HasRANS()) && std::find(volumeOrders.begin(), volumeOrders.end(), settings.numerics.cfv.intOrder) == volumeOrders.end())
                 volumeOrders.push_back(settings.numerics.cfv.intOrder);
             data->positivityOffsets.resize(size_t(data->metrics.NumCell()) + 1, 0);
             for (index iCell = 0; iCell < data->metrics.NumCell(); ++iCell)
@@ -419,7 +425,7 @@ namespace DNDS::Cauchy
     std::shared_ptr<FiniteVolume::Workspace> FiniteVolume::BuildWorkspaceImpl(CFV::FVField &state, AuxiliaryRequest request, bool meanOnly) const
     {
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        { DNDS_check_throw_info(!_data->equation.HasMixture(), "flow-only workspace cannot bind a mixture state"); Metrics().ValidateField(state, 5); });
+                        { DNDS_check_throw_info(!_data->equation.HasMixture() && !_data->equation.HasRANS(), "flow-only workspace cannot bind an extended equation state"); Metrics().ValidateField(state, 5); });
         request.meanThermodynamics = true;
         const bool wave = _data->settings.numerics.riemann.useStencil && _data->flux.UsesTransverseSignal();
         const bool pressure = _data->settings.numerics.riemann.useStencil && _data->flux.UsesPressureStencil();

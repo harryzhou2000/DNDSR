@@ -790,8 +790,27 @@ independent source contributions explicitly. Tests seed a nonzero RANS output
 to detect stale values, and verify that inserting the RANS block changes only
 the index locations of mixture thermal references and chemical derivatives.
 
-This descriptor/policy work does not yet enable production RANS. FiniteVolume
-explicitly rejects the descriptor until transport, source quadrature, auxiliary
-bounds, BC and implicit/PP wiring are complete. Root configuration, initializer,
-Python model construction and restart model metadata must land with that
-connection. Existing NS/mixture profiles retain their behavior.
+The C++ full-state finite-volume operator now accepts SA without DES. It
+requires the mesh's published nodal wall field and samples it with the configured
+positive `numerics.wallDistanceFloor` (default `1e-10`). Sources and the positive
+implicit destruction diagonal are integrated on cell quadrature; viscous face
+fluxes add turbulent stress/heat/species transport and SA diffusion. Aux
+diffusion bounds include SA turbulent transport, with no hidden gradient solve.
+All physical blocks retain their own Array layouts and halo plans.
+
+SA no-slip quadrature values use zero physical face value and reflected exterior
+value, including Euler's compile-time zero-interior wall convention for the
+flux. Prescribed boundaries require `ransConservative.rhoNuTilde`; inflow/outflow
+uses velocity relative to the moving boundary. Correction preparation refreshes
+RANS destruction together with sampled source state; publication cannot pair a
+new mean with an old destruction diagonal. Chemical rates and the existing RHS
+remain untouched by this refresh.
+
+This is operator-level support, not a production RANS Domain profile. Root
+configuration, named scalar initialization, Python model construction, restart
+model metadata and scalar repair in the nonlinear loop remain to be connected.
+The existing constant initializer explicitly rejects RANS. Two-equation models
+remain rejected by finite-volume construction until their turbulent kinetic
+pressure, gradient-dependent aux bounds and wall/Jacobian terms are wired.
+DES and QCR integration remain pending. Existing NS/mixture profiles retain
+their behavior.

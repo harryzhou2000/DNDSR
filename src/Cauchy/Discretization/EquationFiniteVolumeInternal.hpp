@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
+#include "Cauchy/Physics/EquationProperties.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
 
 namespace DNDS::Cauchy::EquationFVDetail
@@ -12,7 +13,7 @@ namespace DNDS::Cauchy::EquationFVDetail
     {
         std::vector<real> values;
         Eigen::Matrix<real, Eigen::Dynamic, 3, Eigen::RowMajor> gradient;
-        explicit PointScratch(index width) : values(size_t(width)), gradient(width, 3) {}
+        explicit PointScratch(index width) : values(size_t(width)), gradient(width, 3) { gradient.setZero(); }
         FlowState Flow(index first) const
         {
             FlowState result{};
@@ -65,13 +66,43 @@ namespace DNDS::Cauchy::EquationFVDetail
     }
     inline void BoundaryValue(PointScratch &point, index flowFirst, index speciesFirst, int independent,
                               const FiniteVolumeDetail::Sample &sample, EquationPointEvaluator &evaluator,
-                              const RigidFrame &frame, real time, bool exterior)
+                              const RigidFrame &frame, real time, bool exterior, index saFirst = -1)
     {
         const Physics::Chemistry::SpeciesBufferView rhoY{independent ? point.values.data() + speciesFirst : nullptr, independent};
         const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]}, location{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]};
+        const auto inside = point.Flow(flowFirst);
         const auto flow = exterior ? sample.boundary.Exterior(evaluator, point.Flow(flowFirst), rhoY, normal, location, time, &frame)
                                    : sample.boundary.FaceValue(evaluator, point.Flow(flowFirst), rhoY, normal, location, time, &frame);
         for (int j = 0; j < 5; ++j)
             point.values[flowFirst + j] = flow[j];
+        if (saFirst >= 0)
+        {
+            if (sample.boundary.kind == BoundaryKind::NoSlipWall)
+                point.values[saFirst] = exterior ? -point.values[saFirst] : 0;
+            else if (sample.boundary.kind == BoundaryKind::Farfield || sample.boundary.kind == BoundaryKind::Analytic)
+            {
+                const auto grid = frame.GridVelocity(location);
+                real speed = 0;
+                for (int d = 0; d < 3; ++d)
+                    speed += (inside[1 + d] / inside[0] - grid[d]) * normal[d];
+                if (sample.boundary.kind == BoundaryKind::Analytic || speed <= 0)
+                    point.values[saFirst] = sample.boundary.prescribedRANS[0];
+            }
+        }
+    }
+    inline Physics::RANS::Point RANSPoint(const PointScratch &point, index flowFirst, index ransFirst,
+                                          const Physics::RANS::Model &model, const EquationPointProperties &properties,
+                                          real wallDistance)
+    {
+        struct Gradient
+        {
+            const PointScratch &point;
+            index first;
+            real operator()(int j, int d) const { return point.gradient(first + j, d); }
+        };
+        const RANSStateView policy{model.Kind(), model.ComponentNumber()};
+        return PrepareRANSPoint(policy, point.values.data() + flowFirst, point.values.data() + ransFirst,
+                                Gradient{point, flowFirst}, Gradient{point, ransFirst}, properties.transport.viscosity,
+                                properties.thermo.cp, properties.thermo.cp / properties.thermo.cv, wallDistance, 1.);
     }
 }

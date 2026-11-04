@@ -83,7 +83,7 @@ namespace DNDS::Cauchy
         std::array<RHSOutputView, 7> values;
         std::optional<R::Array<real>::WriteLease> scratchWrite;
         RHSOutputView scratch;
-        index flowFirst = -1, speciesFirst = -1;
+        index flowFirst = -1, speciesFirst = -1, ransFirst = -1;
         int independent;
         std::vector<index> vectorStarts;
         real time;
@@ -105,6 +105,8 @@ namespace DNDS::Cauchy
                     flowFirst = first;
                 if (block.name == "species")
                     speciesFirst = first;
+                if (block.name == "rans")
+                    ransFirst = first;
                 for (const auto vector : block.vectorStarts)
                     vectorStarts.push_back(first + vector);
                 first += index(block.components.size());
@@ -178,7 +180,17 @@ namespace DNDS::Cauchy
         {
             const auto flow = point.Flow(flowFirst);
             const auto result = evaluator.Evaluate(flow, point.Species(speciesFirst, independent));
-            return {result.thermo.pressure, result.thermo.soundSpeed, result.diffusionBound};
+            real diffusion = result.diffusionBound;
+            if (ransFirst >= 0)
+            {
+                // The enabled SA viscosity depends only on mean state and mu.
+                // No reconstruction or gradient exchange is hidden in aux.
+                const auto &model = data->equation.RANS();
+                const auto turbulent = model.Transport(EquationFVDetail::RANSPoint(point, flowFirst, ransFirst, model, result, 1.));
+                diffusion = std::max({diffusion, real(4. / 3.) * (result.transport.viscosity + turbulent.viscosity) / flow[0],
+                                      (result.transport.conductivity + turbulent.conductivity) / (flow[0] * result.thermo.cv)});
+            }
+            return {result.thermo.pressure, result.thermo.soundSpeed, diffusion};
         }
         void Means(const std::vector<EquationBlockReadView> &blocks, index first, index last, EquationPointEvaluator &evaluator)
         {
@@ -205,7 +217,7 @@ namespace DNDS::Cauchy
             EquationFVDetail::PointScratch left(source.ComponentNumber()), right(source.ComponentNumber());
             const auto prepared = [&](index iCell, auto &point)
             {
-                if (derived)
+                if (derived && ransFirst < 0)
                     return std::array<real, 3>{(*derived)(iCell, 0), (*derived)(iCell, 1), (*derived)(iCell, 2)};
                 if (writes[0])
                     return std::array<real, 3>{values[0](iCell, 0), values[0](iCell, 1), values[0](iCell, 2)};
@@ -226,7 +238,7 @@ namespace DNDS::Cauchy
                     if (sample.other == UnInitIndex)
                     {
                         right.values = left.values;
-                        EquationFVDetail::BoundaryValue(right, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, true);
+                        EquationFVDetail::BoundaryValue(right, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, true, ransFirst);
                     }
                     else
                     {
