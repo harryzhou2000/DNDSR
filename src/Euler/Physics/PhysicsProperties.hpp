@@ -1135,6 +1135,11 @@ namespace DNDS::Euler
          *  Multispecies flow delegates stress and viscous work with zero thermal
          *  conductivity, then adds exact mixture heat conduction, species diffusion,
          *  and species-enthalpy transport here.
+         *  The caller supplies total molecular+turbulent viscosity and ready
+         *  total conductivity. turbulentViscosityRatio only controls the QCR
+         *  correction; it does not augment viscosity here. Flow slots overwrite,
+         *  while species contributions are additive: initialize those slots
+         *  before calling, as the production face evaluator does.
          */
         template <class TGradU, class TGradUPrim, class TNorm, class TFlux>
         void viscousFluxIdealGas(real T, real p, const TU &U,

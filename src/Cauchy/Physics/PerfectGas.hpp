@@ -3,6 +3,7 @@
 #include "DNDS/Core/Errors.hpp"
 #include "DNDS/Core/Defines.hpp"
 #include "Cauchy/Physics/FlowState.hpp"
+#include "Physics/Transport/NewtonianFourier.hpp"
 #include <cmath>
 
 namespace DNDS::Cauchy
@@ -124,19 +125,17 @@ namespace DNDS::Cauchy
         /// energy component is u dot (tau*n) + k grad(T) dot n.
         DNDS_DEVICE_CALLABLE FlowState ViscousFlux(const PrimitiveState &state, const FlowGradient &gradient, const Vector3 &normal) const
         {
-            real divergence = 0;
-            for (int d = 0; d < 3; ++d)
-                divergence += gradient[1 + d][d];
+            struct VelocityGradient
+            {
+                const FlowGradient &values;
+                DNDS_DEVICE_CALLABLE real operator()(int i, int j) const { return values[1 + i][j]; }
+            };
+            const real conductivity = viscosity * gamma * gasConstant / ((gamma - 1) * prandtl);
+            const auto flux = Physics::Transport::NewtonianFourierNormalFlux(state.velocity, VelocityGradient{gradient}, gradient[4], normal, viscosity, conductivity);
             FlowState result{};
             for (int i = 0; i < 3; ++i)
-            {
-                for (int j = 0; j < 3; ++j)
-                    result[1 + i] += viscosity * (gradient[1 + i][j] + gradient[1 + j][i] - (i == j ? (2. / 3) * divergence : 0)) * normal[j];
-                result[4] += state.velocity[i] * result[1 + i];
-            }
-            const real conductivity = viscosity * gamma * gasConstant / ((gamma - 1) * prandtl);
-            for (int d = 0; d < 3; ++d)
-                result[4] += conductivity * gradient[4][d] * normal[d];
+                result[1 + i] = flux.traction[i];
+            result[4] = flux.energy;
             return result;
         }
     };

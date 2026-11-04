@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "Cauchy/Physics/EquationSource.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/EquationTransport.hpp"
 #include "Cauchy/State/EquationTimeStepper.hpp"
 #include "Euler/SourceTermContributor.hpp"
 #include <Eigen/LU>
@@ -27,9 +28,10 @@ namespace
         const P::ReferenceScales scales{1.225, 340, 2, 288.15};
         P::Chemistry::ChemicalSource prototype{Mechanism(), "", scales.U0, scales.rho0};
         P::Thermodynamics::IdealGasMixture material{prototype, scales};
-        C::EquationSystem equation = C::EquationSystem::FromIdealGasMixture(material, false);
+        C::EquationSystem equation;
         P::Chemistry::ChemicalWorkerPool workers{prototype, 1};
         const int species = prototype.nSpecies(), components = species + 4;
+        explicit Fixture(bool viscous = false) : equation(C::EquationSystem::FromIdealGasMixture(material, viscous)) {}
         std::vector<double> Fractions(int sample) const
         {
             std::vector<double> fractions(species, 1e-6);
@@ -294,6 +296,98 @@ TEST_CASE("Mixture primitive and conservative gradients include composition ener
         for (int j = 0; j < 5; ++j)
             CHECK(derivative.rhoVelocityTemperature[j] == doctest::Approx((plus[j] - minus[j]) / (2 * step)).epsilon(3e-6).scale(1e-6));
         CHECK(derivative.pressure == doctest::Approx((plus[5] - minus[5]) / (2 * step)).epsilon(3e-6).scale(1e-6));
+    }
+}
+
+TEST_CASE("Mixture viscous transport matches Euler heat and species enthalpy flux with effective coefficients")
+{
+    Fixture fixture(true);
+    const auto u = fixture.Point(1);
+    const C::FlowState flow{u[0], u[1], u[2], u[3], u[4]};
+    auto evaluator = fixture.equation.MakePointEvaluator(fixture.workers.Acquire(), {true, true, true});
+    const auto point = evaluator.Evaluate(flow, {u.data() + 5, fixture.species - 1});
+    C::FlowGradient gradient;
+    Eigen::MatrixXd speciesGradient(fixture.species - 1, 3);
+    Eigen::Matrix<double, 3, Eigen::Dynamic> oldGradient(3, fixture.components);
+    for (int d = 0; d < 3; ++d)
+    {
+        for (int j = 0; j < 5; ++j)
+            oldGradient(d, j) = gradient[j][d] = .002 * (j + 1) * (d + 1);
+        for (int k = 0; k < fixture.species - 1; ++k)
+            oldGradient(d, 5 + k) = speciesGradient(k, d) = .0001 * (k - 4) * (d + 1);
+    }
+    auto legacyPool = std::make_shared<std::vector<P::Chemistry::ChemicalSource>>();
+    legacyPool->push_back(std::move(*fixture.prototype.clone()));
+    DNDS::Euler::EulerEvaluatorSettings<DNDS::Euler::NS_EX_3D>::IdealGasProperty settings;
+    settings.rho0 = fixture.scales.rho0;
+    settings.U0 = fixture.scales.U0;
+    settings.L0 = fixture.scales.L0;
+    settings.T0 = fixture.scales.T0;
+    DNDS::Euler::PhysicsProperties<DNDS::Euler::NS_EX_3D> legacy(settings);
+    legacy.setChemicalSourcePool(legacyPool);
+    const auto thermal = legacy.conservativeThermal(u, point.thermo.temperature, 1e-12);
+    Eigen::Matrix<double, 3, Eigen::Dynamic> primitiveGradient;
+    DNDS::Euler::Gas::GradientCons2Prim_IdealGas<3>(u, oldGradient, primitiveGradient, thermal.gammaEq, legacy.mixtureBaseInternalRhoESpecies());
+    C::EquationTransportScratch scratch(fixture.species);
+    const C::Vector3 normal{2. / 3, -1. / 3, 2. / 3};
+    for (bool wall : {false, true})
+    {
+        CAPTURE(wall);
+        C::EquationTransportOptions options;
+        options.adiabatic = options.impermeable = wall;
+        options.turbulentViscosity = .3 * point.transport.viscosity;
+        options.turbulentConductivity = .2 * point.transport.conductivity;
+        options.turbulentSpeciesDiffusivity = 1e-7;
+        std::vector<double> output(size_t(2 * (fixture.species - 1)), 777);
+        R::RowSpan<double> speciesFlux{output.data(), fixture.species - 1, 2};
+        const P::Chemistry::ConstSpeciesBufferView rawRhoY{u.data() + 5, fixture.species - 1};
+        const auto flux = C::PrepareViscousFlux(flow, gradient, point, rawRhoY, speciesGradient, normal, speciesFlux, scratch, options);
+        // Legacy flow slots overwrite, but species diffusion is additive;
+        // its production caller zeroes those slots before invoking the helper.
+        Eigen::VectorXd expected = Eigen::VectorXd::Zero(fixture.components);
+        DNDS::Euler::PhysicsProperties<DNDS::Euler::NS_EX_3D>::MixtureAveragedDiffusionBuffers buffers;
+        const Eigen::Vector3d oldNormal(normal[0], normal[1], normal[2]);
+        const double totalViscosity = point.transport.viscosity + options.turbulentViscosity;
+        legacy.viscousFluxIdealGas(thermal.T, thermal.p, u, oldGradient, primitiveGradient, oldNormal, wall, wall,
+                                   thermal.gammaEq, thermal.gamma, totalViscosity, options.turbulentViscosity / totalViscosity, false,
+                                   point.transport.conductivity + options.turbulentConductivity, point.thermo.cp,
+                                   options.turbulentSpeciesDiffusivity, buffers, expected);
+        for (int j = 0; j < 5; ++j)
+            CHECK(flux[j] == doctest::Approx(expected[j]).epsilon(3e-10).scale(1e-20));
+        for (int k = 0; k < fixture.species - 1; ++k)
+        {
+            CHECK(speciesFlux[k] == doctest::Approx(expected[5 + k]).epsilon(3e-10).scale(1e-20));
+            CHECK(output[2 * k + 1] == 777);
+            if (wall)
+                CHECK(speciesFlux[k] == 0);
+        }
+        if (!wall)
+        {
+            // Independently include the dependent species to test total mass
+            // balance, rather than defining its flux as minus the output sum.
+            double sumRaw = 0, sumGradient = 0, sumFractions = 0;
+            for (int k = 0; k < fixture.species - 1; ++k)
+            {
+                const double Y = u[5 + k] / u[0];
+                double normalDerivative = 0;
+                for (int d = 0; d < 3; ++d)
+                    normalDerivative += (speciesGradient(k, d) - Y * gradient[0][d]) / u[0] * normal[d];
+                sumRaw -= u[0] * (point.diffusivity[k] + options.turbulentSpeciesDiffusivity) * normalDerivative;
+                sumGradient += normalDerivative;
+                sumFractions += Y;
+            }
+            const double lastRaw = u[0] * (point.diffusivity[fixture.species - 1] + options.turbulentSpeciesDiffusivity) * sumGradient;
+            sumRaw += lastRaw;
+            const double lastFlux = -(lastRaw - (1 - sumFractions) * sumRaw);
+            double total = lastFlux, scale = std::abs(lastFlux);
+            for (int k = 0; k < fixture.species - 1; ++k)
+            {
+                total += speciesFlux[k];
+                scale += std::abs(speciesFlux[k]);
+            }
+            CHECK(scale > 0);
+            CHECK(std::abs(total) < 1e-12 * scale);
+        }
     }
 }
 

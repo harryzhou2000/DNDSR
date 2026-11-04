@@ -31,6 +31,7 @@ flowchart TD
 | `Physics/Thermodynamics/ConservativeConversion.hpp` | EOS-independent velocity/internal-energy conversion and conservative directional kinematics |
 | `Physics/Thermodynamics/IdealMixtureGradient.hpp` | Exact ideal-mixture temperature chain rule |
 | `Physics/Transport/MixtureAveragedDiffusion.hpp` | Conservative species-flux correction and full-enthalpy energy diffusion |
+| `Physics/Transport/NewtonianFourier.hpp` | Pure three-component Stokes stress, viscous work and Fourier normal heat flux |
 | `Physics/RANS/RANSModels.hpp` | Existing SA, Wilcox, SST and realizable k-epsilon constitutive/source kernels |
 
 `Euler/Chemistry/ChemicalSource.hpp` and `Euler/RANS_ke.hpp` forward to the
@@ -227,3 +228,44 @@ valid derivative extent, and consumes borrowed views before the next point.
 Repair/clipping derivatives are not silently substituted for the raw transported
 gradients. The current mixture FV profile still fails explicitly until its full
 spatial/BC/implicit integration is connected.
+
+## Constitutive normal-flux composition
+
+`NewtonianFourierNormalFlux` receives velocity, velocity/temperature gradients,
+normal and ready effective viscosity/conductivity. It computes traction and
+viscous-work/heat energy flux, without EOS or closure selection, allocation,
+communication or normal normalization. The kernel is device-callable; using it
+does not establish a complete Cauchy CUDA path. Existing perfect-gas Cauchy
+viscous flux delegates this same mathematics.
+
+`Cauchy/Physics/EquationTransport.hpp` composes the shared constitutive kernel,
+actual mixture primitive derivatives and the existing conservative diffusion
+correction. It takes raw transported rhoY/gradients separately from repaired
+property composition. The dependent last-species gradient is minus the
+independent sum; full species enthalpies contribute to energy diffusion. For
+`F_total=F_convective-F_viscous`, the stored independent species fluxes are
+`-J_k` and the energy contribution is `-sum(h_k*J_k)`.
+
+`EquationTransportScratch` owns two full-species temporary vectors allocated
+once per CPU worker/tile. The caller serializes/reuses it and retains its
+point evaluator. `EquationTransportOptions` can add explicitly prepared scalar
+turbulent viscosity, conductivity and diffusivity. These inputs do not select
+or implement an SA/SST closure, isotropic turbulent stress or QCR correction.
+Adiabatic mode suppresses conduction; impermeable mode suppresses species and
+its enthalpy flux. Neither discards viscous stress/work.
+
+```text
+ready EOS/transport point + raw conservative gradients
+       |                              |
+primitive T/velocity chain rule     raw Y / grad(Y)
+       |                              |
+Newtonian/Fourier stress/work     Fick + zero-net-mass correction
+       |                              |
+       +---------- full-enthalpy viscous flux ----------+
+```
+
+The caller validates model/backend, dimensions, effective coefficients and
+nonaliasing, supplies all requested transport/enthalpy point outputs, and keeps
+scratch private through actual CPU execution. The point function is local and
+has no mesh, quadrature weighting, persistent cache, transfer or time history.
+Production extended FV reconstruction/BC/PP/linear wiring remains separate.

@@ -247,6 +247,14 @@ substitution; spatial gradients of RANS/specific scalars use the same shared
 in [shared Physics](Physics.md). The existing flow-only FV gradient signature
 continues to reject a mixture, rather than using the perfect-gas formula.
 
+The local `PrepareViscousFlux` kernel now consumes these point derivatives,
+actual molecular transport and optional prepared scalar turbulence additions.
+It combines shared Newtonian/Fourier traction/work with corrected species and
+full-enthalpy diffusion. Its separate raw species views and private fixed-size
+worker scratch preserve physical layouts and the property/transport boundary.
+Adiabatic and impermeable options are distinct. This is a point-kernel interface;
+it does not add a production RANS closure or complete the extended FV profile.
+
 ## Mixture point properties and derived refresh
 
 `EquationSystem::FromIdealGasMixture(material, viscous)` constructs an explicit
