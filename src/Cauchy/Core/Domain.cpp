@@ -47,6 +47,7 @@ namespace DNDS::Cauchy
                     discrete.InitializeConservative(state, initialConservative);
                 else
                     discrete.InitializeConstant(state, settings.initialPrimitive, settings.initialMassFractions, settings.initialTemperature, workers, settings.initialRANS);
+                discrete.InitializeField(state, workers);
                 return state;
             }
             auto field = fv.BuildField(FlowLayout(settings));
@@ -54,13 +55,16 @@ namespace DNDS::Cauchy
             {
                 auto state = EquationDofs::Coupled(equation.Schema(), std::move(field));
                 discrete.InitializeConservative(state, initialConservative);
+                discrete.InitializeField(state, workers);
                 return state;
             }
             auto primitive = settings.initialPrimitive;
             if (settings.initialTemperature > 0)
                 primitive[4] = primitive[0] * equation.Gas().gasConstant * settings.initialTemperature;
             discrete.Initialize(field, settings.initialProfile, primitive);
-            return EquationDofs::Coupled(equation.Schema(), std::move(field));
+            auto state = EquationDofs::Coupled(equation.Schema(), std::move(field));
+            discrete.InitializeField(state, workers);
+            return state;
         }
         EquationSetup ResolveEquation(const std::string &name, const DomainSettings &settings, const MPIInfo &mpi)
         {

@@ -182,7 +182,7 @@ def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_p
         assert np.all(np.isfinite(values["T"][:]))
 
 
-def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=False, time_pp=False, lvr_variant=None, tagged=False):
+def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=False, time_pp=False, lvr_variant=None, tagged=False, initial_field=None):
     mpi = DNDS.MPIInfo()
     mpi.setWorld()
     path = Path(__file__).resolve().parents[2] / "data/mesh/Uniform_3x3_wall.cgns"
@@ -207,6 +207,8 @@ def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=Fa
         config["defaults"]["referenceState"] = state
         config["defaults"]["boundaries"] = {
             str(zone): {"kind": "farfield", "state": state} for zone in zones}
+    if initial_field is not None:
+        config["defaults"]["initialField"] = initial_field
     if method == "ditr":
         config["time"]["ditr"] = {"minIterations": 1}
     if lvr_variant is not None:
@@ -226,6 +228,19 @@ def test_tagged_physical_inputs_match_code_unit_frontend():
     physical.advance(.001)
     code.advance(.001)
     np.testing.assert_allclose(physical.flow.numpy(), code.flow.numpy(), rtol=2e-14, atol=2e-14)
+
+
+@pytest.mark.mpi
+def test_spatial_expression_uses_physical_state_units_and_conservative_output():
+    field = {"exprtkInitializers": [{"stateType": "primRhoP_phy", "exprs": [
+        "inRegion := 1; UExprtk[1] := UExprtk[1] + 0.3; 0;"
+    ]}]}
+    domain, primitive = build_domain(layout="aosoa32", tagged=True, initial_field=field)
+    rho, u, v, w, p = primitive
+    u += .1  # Physical velocity increment .3 / U0=3.
+    expected = np.array([rho, rho*u, rho*v, rho*w, p/.4 + .5*rho*(u*u+v*v+w*w)])
+    values = domain.flow.numpy()
+    np.testing.assert_allclose(values, np.broadcast_to(expected, values.shape), rtol=2e-13, atol=2e-13)
 
 
 @pytest.mark.mpi

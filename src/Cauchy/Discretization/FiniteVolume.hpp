@@ -489,6 +489,10 @@ namespace DNDS::Cauchy
         PhysicalStepLimit LimitPhysicalStep(const CFV::FVField &state, const CFV::FVField &meanResidual,
                                             real dt, real relax, real scale, int compressionPower = 1) const;
         void Initialize(CFV::FVField &state, const FlowProfileSettings &profile, const FlowState &primitive) const;
+        /// Fill exact code-unit conservative values in equation-schema order.
+        /// Applies the initial rigid-frame rotation to flow momentum only.
+        /// Caller resolves/validates physical input with ResolvePhysicalState.
+        void InitializeConservative(EquationDofs &state, const std::vector<real> &values) const;
         /// Collective error-coordinated constant initialization in ground axes.
         /// Uses actual EOS/full thermochemical energy, resolves named species
         /// once, and writes logical blocks through their native layout. Positive
@@ -497,13 +501,15 @@ namespace DNDS::Cauchy
         /// Mixtures require an explicit matching worker pool. RANS requires
         /// every named conservative scalar; all inputs are validated before
         /// writing any block. Does not infer turbulence values from flow.
-        /// Fill exact code-unit conservative values in equation-schema order.
-        /// Applies the initial rigid-frame rotation to flow momentum only.
-        /// Caller resolves/validates physical input with ResolvePhysicalState.
-        void InitializeConservative(EquationDofs &state, const std::vector<real> &values) const;
         void InitializeConstant(EquationDofs &state, const FlowState &primitive, const std::map<std::string, real> &massFractions = {},
                                 real temperature = 0, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
                                 const std::map<std::string, real> &ransConservative = {}) const;
+        /// Setup-only, collective error guard. Apply configured spatial
+        /// overrides to the initialized constant background and conservatively
+        /// average cell quadrature states. Writes owned values; no halo refresh.
+        /// One serial expression/EOS context is retained for the whole pass.
+        /// A point failure can leave partial setup output; discard it on error.
+        void InitializeField(EquationDofs &state, const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers = {}) const;
         /// Volume-normalized L1/L2/Linf error in conservative cell averages.
         std::array<FlowState, 3> Error(const CFV::FVField &state, const FlowProfileSettings &profile, const FlowState &primitive, real time) const;
         real StableStep(const CFV::FVField &state, real cfl) const;

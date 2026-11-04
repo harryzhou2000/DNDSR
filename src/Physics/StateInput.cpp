@@ -64,4 +64,18 @@ namespace DNDS::Physics
         }
         physical = false;
     }
+    void StateInput::ToPhysicalUnits(const ReferenceScales &scales, const std::vector<real> &scalarScales)
+    {
+        scales.Validate();
+        DNDS_check_throw_info(values.size() == 5 + scalarScales.size(), "state input component count differs from equation");
+        if (physical)
+            return;
+        // Use the same factors as input conversion, without duplicating the
+        // dimensional policy for each form and appended equation component.
+        StateInput factors{form, true, std::vector<real>(values.size(), 1)};
+        factors.ToCodeUnits(scales, scalarScales);
+        for (index j = 0; j < index(values.size()); ++j)
+            values[j] /= factors.values[j];
+        physical = true;
+    }
 }

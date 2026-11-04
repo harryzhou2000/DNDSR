@@ -325,6 +325,7 @@ namespace DNDS::Cauchy
             require(s.equation.transport != "NewtonianFourier" || s.numerics.viscousGradient == "polynomial", "extended equation viscous gradient");
             require(!s.implicit.multigrid.levels && !s.implicit.roeDissipation, "extended equation p-FAS/Roe Jacobian");
         }
+        require(s.initialField.Empty() || s.initialProfile.kind == "constant", "spatial overrides require a constant background profile");
         require(Riemann::RiemannFlux::Available(s.numerics.flux), "numerical flux " + s.numerics.flux);
         require(s.numerics.reconstruction == "constant" || s.numerics.reconstruction == "gradient" || s.numerics.reconstruction == "variational", "reconstruction " + s.numerics.reconstruction);
         require(s.numerics.gradient == "leastSquares" || s.numerics.gradient == "greenGauss" || s.numerics.gradient == "ggmp", "gradient " + s.numerics.gradient);

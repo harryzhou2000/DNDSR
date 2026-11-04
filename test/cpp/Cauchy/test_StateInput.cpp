@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 #include "Cauchy/Physics/StateInput.hpp"
+#include "Cauchy/Physics/InitialField.hpp"
 #include "Cauchy/Physics/EquationSetup.hpp"
 #include "Cauchy/Physics/EquationRANS.hpp"
 #include "Euler/Physics/PhysicsProperties.hpp"
@@ -50,8 +51,14 @@ TEST_CASE("Tagged physical state conversions preserve Euler variants and distinc
             legacy.conservativeToStateValueOrigin(expected, input, E::StateValueOriginFromName(type));
             const C::Json tagged{{"type", type}, {"state", std::vector<double>(input.data(), input.data() + input.size())}};
             const auto actual = C::ResolvePhysicalState(tagged, equation, scales);
+            C::PhysicalStateConverter converter(equation, scales);
+            const auto descriptor = P::StateInput::Parse(tagged);
+            const auto represented = converter.Represent(actual.conservative, descriptor.form, descriptor.physical);
             for (DNDS::index j = 0; j < expected.size(); ++j)
+            {
                 CHECK(actual.conservative[j] == doctest::Approx(expected[j]).epsilon(2e-12));
+                CHECK(represented.values[j] == doctest::Approx(input[j]).epsilon(2e-12).scale(1));
+            }
             CHECK(actual.primitive[0] == doctest::Approx(.43));
             if (std::string(type) == "consSensible")
                 CHECK(C::ResolvePhysicalState(tagged["state"], equation, scales).conservative == actual.conservative);
@@ -126,9 +133,54 @@ TEST_CASE("Mixture state inputs match Euler total and sensible energies with non
         E::PhysicsProperties<E::NS_EX_3D>::TU input;
         legacy.conservativeToStateValueOrigin(expected, input, E::StateValueOriginFromName(type));
         const auto actual = C::ResolvePhysicalState({{"type", type}, {"state", std::vector<double>(input.data(), input.data() + input.size())}}, equation, scales, workers.Acquire());
+        C::PhysicalStateConverter converter(equation, scales, workers.Acquire());
+        const auto descriptor = P::StateInput::Parse({{"type", type}, {"state", std::vector<double>(input.data(), input.data() + input.size())}});
+        const auto represented = converter.Represent(actual.conservative, descriptor.form, descriptor.physical);
         for (DNDS::index j = 0; j < expected.size(); ++j)
+        {
             CHECK(actual.conservative[j] == doctest::Approx(expected[j]).epsilon(3e-11).scale(1));
+            CHECK(represented.values[j] == doctest::Approx(input[j]).epsilon(3e-11).scale(1));
+        }
         CHECK(actual.temperature == doctest::Approx(1400 / scales.T0).epsilon(3e-11));
+    }
+    C::InitialFieldSettings field;
+    field.exprtkInitializers.push_back({{"inRegion := 1; UExprtk[4] := 1400 + 100*x[0]; 0;"}, "primRhoT_phy"});
+    C::InitialFieldEvaluator initializer(field, equation, scales, workers.Acquire());
+    const std::vector<double> background(expected.data(), expected.data() + expected.size());
+    for (const double x : {0., .25, 1.})
+    {
+        primitive[4] = (1400 + 100 * x) / scales.T0;
+        legacy.primRhoTToConservative(primitive, expected);
+        const auto actual = initializer.Evaluate({x, 0, 0}, 0, 0, background);
+        for (DNDS::index j = 0; j < expected.size(); ++j)
+            CHECK(actual[j] == doctest::Approx(expected[j]).epsilon(3e-11).scale(1));
     }
 }
 #endif
+
+TEST_CASE("Spatial state overrides preserve precedence plane sign and physical expression seeds")
+{
+    C::InitialFieldSettings field;
+    const auto state = [](double rho)
+    { return C::Json{{"type", "primRhoP"}, {"state", {rho, .2, 0, 0, 1}}}; };
+    field.boxInitializers.push_back({0, 1, -1, 1, -1, 1, state(2)});
+    field.boxInitializers.push_back({.25, .75, -1, 1, -1, 1, state(3)});
+    field.planeInitializers.push_back({1, 0, 0, -.5, state(4)});
+    field.exprtkInitializers.push_back({{"if (x[0] > 0.6) { inRegion := 1; UExprtk[0] := UExprtk[0] + 2; };", "0;"}, "primRhoP_phy"});
+    const P::ReferenceScales scales{2, 3, 4, 5};
+    const auto equation = C::EquationSystem::Resolve(C::EquationSettings{});
+    const auto background = C::ResolvePhysicalState(state(1), equation, scales).conservative;
+    C::InitialFieldEvaluator evaluator(field, equation, scales);
+    for (const auto entry : {std::pair<double, double>{-.1, 1}, {0, 1}, {.1, 2}, {.3, 3}, {.5, 3}, {.6, 4}, {.7, 5}, {-.1, 1}})
+    {
+        const auto actual = evaluator.Evaluate({entry.first, 0, 0}, 0, 0, background);
+        CHECK(actual[0] == doctest::Approx(entry.second));
+        CHECK(actual[1] == doctest::Approx(.2 * entry.second));
+        CHECK(actual[4] == doctest::Approx(2.5 + .02 * entry.second));
+    }
+    // The descriptor can be valid while a selected program produces an
+    // invalid physical state. Do not silently fill or clamp density.
+    field.exprtkInitializers = {{{"inRegion := 1; UExprtk[0] := 0; 0;"}, "primRhoP"}};
+    C::InitialFieldEvaluator bad(field, equation, scales);
+    CHECK_THROWS(bad.Evaluate({.2, 0, 0}, 0, 0, background));
+}

@@ -21,28 +21,36 @@ namespace DNDS::Cauchy
         result.Validate("equation.referenceScales");
         return result;
     }
-    ResolvedPhysicalState ResolvePhysicalState(const Json &input, const EquationSystem &equation,
-                                               const Physics::ReferenceScales &scales, Physics::Chemistry::ChemicalWorkerPool::Lease worker)
+    PhysicalStateConverter::PhysicalStateConverter(const EquationSystem &equation, const Physics::ReferenceScales &scales,
+                                                   Physics::Chemistry::ChemicalWorkerPool::Lease worker)
+        : _equation(equation), _scales(scales), _evaluator(equation.MakePointEvaluator(std::move(worker), {})),
+          _rans(equation.HasRANS() ? equation.RANS().ComponentNumber() : 0),
+          _species(equation.HasMixture() ? equation.Mixture().SpeciesNumber() : 0)
     {
-        using Form = Physics::StateInput::Form;
-        auto parsed = Physics::StateInput::Parse(input);
-        const int nr = equation.HasRANS() ? equation.RANS().ComponentNumber() : 0;
-        const int ns = equation.HasMixture() ? equation.Mixture().SpeciesNumber() : 0;
-        const int ni = ns ? ns - 1 : 0;
-        std::vector<real> scalarScales(nr + ni, 1);
-        if (nr == 2)
+        scales.Validate();
+        _scalarScales.assign(_rans + (_species ? _species - 1 : 0), 1);
+        if (_rans == 2)
         {
-            scalarScales[0] = scales.SpecificEnergy();
-            scalarScales[1] = (equation.RANS().Kind() == Physics::RANS::ModelKind::RealizableKE ? scales.SpecificEnergy() : 1) / scales.Time();
+            _scalarScales[0] = scales.SpecificEnergy();
+            _scalarScales[1] = (equation.RANS().Kind() == Physics::RANS::ModelKind::RealizableKE ? scales.SpecificEnergy() : 1) / scales.Time();
         }
-        if (equation.HasMixture())
+        if (_species)
         {
             const auto &material = equation.Mixture().Scales();
             DNDS_check_throw_info(scales.rho0 == material.rho0 && scales.U0 == material.U0 && scales.L0 == material.L0 && scales.T0 == material.T0,
                                   "state input scales differ from equation material");
         }
-        parsed.ToCodeUnits(scales, scalarScales);
+    }
+    std::vector<real> PhysicalStateConverter::Conservative(Physics::StateInput parsed)
+    {
+        using Form = Physics::StateInput::Form;
+        const auto &equation = _equation;
+        const int nr = _rans, ns = _species, ni = ns ? ns - 1 : 0;
+        parsed.ToCodeUnits(_scales, _scalarScales);
         auto &u = parsed.values;
+        DNDS_check_throw_info(std::all_of(u.begin(), u.end(), [](real v)
+                                          { return std::isfinite(v); }),
+                              "physical state input is not finite");
         const bool conservative = parsed.form == Form::Conservative || parsed.form == Form::Sensible;
         DNDS_check_throw_info(u[0] > 0, "physical state requires positive rho (or T for primTP)");
         std::vector<real> fractions(ns), rhoY(ni);
@@ -66,12 +74,11 @@ namespace DNDS::Cauchy
         }
         for (int k = 0; k < ni; ++k)
             rhoY[k] = u[5 + nr + k];
-        auto evaluator = equation.MakePointEvaluator(std::move(worker), {});
         FlowState flow;
         std::copy_n(u.begin(), 5, flow.begin());
         if (!conservative)
         {
-            flow = evaluator.FromPrimitive(flow, {rhoY.data(), ni}, parsed.form == Form::RhoT ? u[4] : 0);
+            flow = _evaluator.FromPrimitive(flow, {rhoY.data(), ni}, parsed.form == Form::RhoT ? u[4] : 0);
             for (int j = 0; j < nr; ++j)
                 u[5 + j] *= flow[0];
         }
@@ -83,17 +90,64 @@ namespace DNDS::Cauchy
                 flow[4] += flow[0] * fractions[k] * equation.Mixture().BaseSpecificInternalEnergies()[k];
         }
         std::copy(flow.begin(), flow.end(), u.begin());
-        const auto properties = evaluator.Evaluate(flow, {rhoY.data(), ni});
-        ResolvedPhysicalState result{u, {flow[0], flow[1] / flow[0], flow[2] / flow[0], flow[3] / flow[0], properties.thermo.pressure}, properties.thermo.temperature, {}, {}};
-        for (int k = 0; k < ni; ++k)
-            result.massFractions[equation.Mixture().SpeciesNames()[k]] = fractions[k];
-        for (int j = 0; j < nr; ++j)
-            result.ransConservative[equation.RANS().ComponentNames()[j]] = u[5 + j];
-        ResolveRANSValues(equation, result.ransConservative);
-        DNDS_check_throw_info(std::isfinite(result.temperature) && result.temperature > 0 && std::isfinite(result.primitive[4]) && result.primitive[4] > 0 &&
+        const auto properties = _evaluator.Evaluate(flow, {rhoY.data(), ni});
+        DNDS_check_throw_info(std::isfinite(properties.thermo.temperature) && properties.thermo.temperature > 0 &&
+                                  std::isfinite(properties.thermo.pressure) && properties.thermo.pressure > 0 &&
                                   std::all_of(u.begin(), u.end(), [](real v)
                                               { return std::isfinite(v); }),
                               "resolved physical state is not finite and thermodynamically admissible");
+        return std::move(u);
+    }
+    Physics::StateInput PhysicalStateConverter::Represent(const std::vector<real> &conservative, Physics::StateInput::Form form, bool physical)
+    {
+        using Form = Physics::StateInput::Form;
+        DNDS_check_throw_info(conservative.size() == 5 + _scalarScales.size() && conservative[0] > 0 &&
+                                  std::all_of(conservative.begin(), conservative.end(), [](real v)
+                                              { return std::isfinite(v); }),
+                              "state representation requires a finite complete conservative row with positive density");
+        Physics::StateInput result{form, false, conservative};
+        const int ni = _species ? _species - 1 : 0;
+        FlowState flow;
+        std::copy_n(conservative.begin(), 5, flow.begin());
+        const auto point = _evaluator.Evaluate(flow, {conservative.data() + 5 + _rans, ni});
+        auto &values = result.values;
+        if (form == Form::Sensible && _species)
+            for (int k = 0; k < _species; ++k)
+                values[4] -= flow[0] * point.fractions[k] * _equation.Mixture().BaseSpecificInternalEnergies()[k];
+        if (form != Form::Conservative && form != Form::Sensible)
+        {
+            for (index j = 1; j < index(values.size()); ++j)
+                values[j] /= flow[0];
+            values[4] = form == Form::RhoT ? point.thermo.temperature : point.thermo.pressure;
+            if (form == Form::TP)
+                values[0] = point.thermo.temperature;
+        }
+        if (physical)
+            result.ToPhysicalUnits(_scales, _scalarScales);
+        return result;
+    }
+    ResolvedPhysicalState ResolvePhysicalState(const Json &input, const EquationSystem &equation,
+                                               const Physics::ReferenceScales &scales, Physics::Chemistry::ChemicalWorkerPool::Lease worker)
+    {
+        PhysicalStateConverter converter(equation, scales, std::move(worker));
+        auto u = converter.Conservative(Physics::StateInput::Parse(input));
+        const auto primitive = converter.Represent(u, Physics::StateInput::Form::RhoP, false);
+        const auto temperature = converter.Represent(u, Physics::StateInput::Form::RhoT, false).values[4];
+        FlowState flow;
+        std::copy_n(primitive.values.begin(), 5, flow.begin());
+        ResolvedPhysicalState result{u, flow, temperature, {}, {}};
+        const int nr = equation.HasRANS() ? equation.RANS().ComponentNumber() : 0;
+        const int ns = equation.HasMixture() ? equation.Mixture().SpeciesNumber() : 0;
+        if (ns)
+        {
+            std::vector<real> fractions(ns);
+            Physics::Chemistry::RepairMassFractions(u[0], {u.data() + 5 + nr, ns - 1}, {fractions.data(), ns});
+            for (int k = 0; k < ns - 1; ++k)
+                result.massFractions[equation.Mixture().SpeciesNames()[k]] = fractions[k];
+        }
+        for (int j = 0; j < nr; ++j)
+            result.ransConservative[equation.RANS().ComponentNames()[j]] = u[5 + j];
+        ResolveRANSValues(equation, result.ransConservative);
         return result;
     }
     ResolvedPhysicalInputs ResolvePhysicalStateInputs(const DomainSettings &settings, const EquationSystem &equation,

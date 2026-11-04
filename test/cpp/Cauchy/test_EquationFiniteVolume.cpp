@@ -261,6 +261,37 @@ TEST_CASE("Equation wall values preserve internal energy and support empty owner
     }
 }
 
+TEST_CASE("Spatial initial input averages conservative polynomials on distributed native layouts")
+{
+    C::DomainSettings settings;
+    settings.numerics.reconstruction = "constant";
+    settings.equation.referenceScales = {{"rho0", 2}, {"U0", 3}, {"L0", 4}, {"T0", 5}};
+    settings.initialField.exprtkInitializers.push_back({{"inRegion := 1; UExprtk[0] := 2*(1+x[0]); UExprtk[1] := 3*(2+x[0]);",
+                                                         "UExprtk[4] := 18*(1+x[0]^2); 0;"},
+                                                        "primRhoP_phy"});
+    const auto parsed = C::SimulationConfig::ResolveCollective({{"defaults", C::Json(settings)}}, mpi.comm);
+    for (const auto *layout : {"aos", "soa", "aosoa32"})
+    {
+        settings = parsed.Domains()[0].settings;
+        settings.execution.layout = layout;
+        C::Domain domain("spatial", CauchyTest::PeriodicQuads(mpi, 4), settings);
+        const auto read = domain.Dofs().ReadOwned();
+        const auto flow = read.Block("flow");
+        std::array<double, 5> integral{};
+        for (I iCell = 0; iCell < flow.RowCount(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+                integral[j] += flow(iCell, j) / 16;
+        MPI_Allreduce(MPI_IN_PLACE, integral.data(), 5, MPI_DOUBLE, MPI_SUM, mpi.comm);
+        // Exact integrals on [0,1]^2: rho=1+x, u=2+x, p=1+x^2.
+        // Energy must average rho*u^2/2, not use kinetic energy of the mean.
+        CHECK(integral[0] == doctest::Approx(1.5).epsilon(2e-13));
+        CHECK(integral[1] == doctest::Approx(23. / 6).epsilon(2e-13));
+        CHECK(integral[2] == doctest::Approx(0).epsilon(2e-13));
+        CHECK(integral[3] == doctest::Approx(0).epsilon(2e-13));
+        CHECK(integral[4] == doctest::Approx(199. / 24).epsilon(2e-13));
+    }
+}
+
 #ifdef DNDS_USE_CANTERA
 TEST_CASE("A single-species material uses empty independent composition and no chemical equation")
 {

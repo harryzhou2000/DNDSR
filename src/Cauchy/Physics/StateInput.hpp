@@ -2,6 +2,7 @@
 
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
+#include "Cauchy/Physics/EquationProperties.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -9,6 +10,28 @@ namespace DNDS::Cauchy
     /// L0/T0; legacy mixture fields remain a compatibility input. Conflicting
     /// nondefault old/new scale specifications fail before backend creation.
     Physics::ReferenceScales ResolveReferenceScales(const EquationSettings &settings);
+
+    /// Serial setup context. Owns one EOS worker across all spatial points;
+    /// each concurrent initialization worker needs its own converter. No
+    /// hidden worker acquisition, collectives or global expression state.
+    class PhysicalStateConverter
+    {
+        EquationSystem _equation;
+        Physics::ReferenceScales _scales;
+        EquationPointEvaluator _evaluator;
+        std::vector<real> _scalarScales;
+        int _rans, _species;
+
+    public:
+        PhysicalStateConverter(const EquationSystem &equation, const Physics::ReferenceScales &scales,
+                               Physics::Chemistry::ChemicalWorkerPool::Lease worker = {});
+        /// Complete schema-order state, in code units with total energy.
+        std::vector<real> Conservative(Physics::StateInput input);
+        /// Seed an expression in any Euler input representation. Conservative
+        /// species stay raw; primitive scalars divide by the actual density,
+        /// while thermodynamic queries use repaired composition, as in Euler.
+        Physics::StateInput Represent(const std::vector<real> &conservative, Physics::StateInput::Form form, bool physical);
+    };
 
     struct ResolvedPhysicalState
     {

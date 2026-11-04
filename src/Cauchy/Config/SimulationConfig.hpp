@@ -332,6 +332,57 @@ namespace DNDS::Cauchy
             config.field_section(&T::multigrid, "multigrid", "Same-cell polynomial FAS hierarchy");
         }
     };
+    struct BoxInitializer
+    {
+        real x0 = 0, x1 = 0, y0 = 0, y1 = 0, z0 = 0, z1 = 0;
+        Json v = nullptr;
+        DNDS_DECLARE_CONFIG(BoxInitializer)
+        {
+            DNDS_FIELD(x0, "Strict lower x bound in ground-frame code coordinates");
+            DNDS_FIELD(x1, "Strict upper x bound");
+            DNDS_FIELD(y0, "Strict lower y bound");
+            DNDS_FIELD(y1, "Strict upper y bound");
+            DNDS_FIELD(z0, "Strict lower z bound, including for 2D geometry");
+            DNDS_FIELD(z1, "Strict upper z bound");
+            config.field_json_schema(&T::v, "v", "Required complete physical state", Physics::StateInput::Schema);
+        }
+    };
+    struct PlaneInitializer
+    {
+        real a = 0, b = 0, c = 0, h = 0;
+        Json v = nullptr;
+        DNDS_DECLARE_CONFIG(PlaneInitializer)
+        {
+            DNDS_FIELD(a, "x coefficient in a*x+b*y+c*z+h>0, ground-frame code coordinates");
+            DNDS_FIELD(b, "y coefficient");
+            DNDS_FIELD(c, "z coefficient");
+            DNDS_FIELD(h, "Additive plane offset, preserving Euler implementation sign");
+            config.field_json_schema(&T::v, "v", "Required complete physical state", Physics::StateInput::Schema);
+        }
+    };
+    struct ExprtkInitializer
+    {
+        std::vector<std::string> exprs;
+        std::string stateType = "primRhoP";
+        DNDS_DECLARE_CONFIG(ExprtkInitializer)
+        {
+            DNDS_FIELD(exprs, "Ordered program lines; x[3], t, iCell, inRegion, UExprtk; return zero");
+            DNDS_FIELD(stateType, "Euler state input type, optionally physical _phy units");
+        }
+    };
+    struct InitialFieldSettings
+    {
+        std::vector<BoxInitializer> boxInitializers;
+        std::vector<PlaneInitializer> planeInitializers;
+        std::vector<ExprtkInitializer> exprtkInitializers;
+        bool Empty() const { return boxInitializers.empty() && planeInitializers.empty() && exprtkInitializers.empty(); }
+        DNDS_DECLARE_CONFIG(InitialFieldSettings)
+        {
+            config.field_array_of<BoxInitializer>(&T::boxInitializers, "boxInitializers", "Ordered quadrature-point overrides; later matches win");
+            config.field_array_of<PlaneInitializer>(&T::planeInitializers, "planeInitializers", "Applied after boxes, in list order");
+            config.field_array_of<ExprtkInitializer>(&T::exprtkInitializers, "exprtkInitializers", "Applied after planes; inRegion selects the updated point state");
+        }
+    };
     struct DomainSettings
     {
         EquationSettings equation;
@@ -346,6 +397,7 @@ namespace DNDS::Cauchy
         std::map<std::string, real> initialRANS;
         real initialTemperature = 0;
         FlowProfileSettings initialProfile;
+        InitialFieldSettings initialField;
         std::map<std::string, BoundarySettings> boundaries;
         /// Extra halo audits are opt-in and respect the umbrella check switch.
         bool CheckHaloFreshness() const { return execution.haloFreshnessChecks && implicit.collectiveChecks; }
@@ -364,6 +416,7 @@ namespace DNDS::Cauchy
             config.field_schema(&T::initialRANS, "initialRANS", "Complete named conservative RANS initial values in code units", SpeciesMassFractionsSchema);
             DNDS_FIELD(initialTemperature, "Positive constant initial temperature overrides initialPrimitive pressure; zero uses pressure");
             config.field_section(&T::initialProfile, "initialProfile", "Quadrature-averaged initial physical field");
+            config.field_section(&T::initialField, "initialField", "Ordered spatial overrides of a constant background; conservatively averaged at cell quadrature");
             config.field_map_of<BoundarySettings>(&T::boundaries, "boundaries", "Boundary-zone ID to condition");
         }
     };

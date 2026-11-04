@@ -28,5 +28,8 @@ namespace DNDS::Physics
         /// primitive RANS scales followed by 1 for each mass fraction. Neither
         /// this operation nor the scales supply a physical reference state.
         void ToCodeUnits(const ReferenceScales &scales, const std::vector<real> &scalarScales);
+        /// Inverse unit conversion for expression seeds/output adapters. A
+        /// state already in physical units is unchanged. No EOS conversion.
+        void ToPhysicalUnits(const ReferenceScales &scales, const std::vector<real> &scalarScales);
     };
 }

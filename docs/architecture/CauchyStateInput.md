@@ -86,6 +86,73 @@ partial `numerics.ransState.referenceConservative` record. Direct low-level FV
 or boundary construction must normalize tagged inputs first; otherwise it fails
 instead of silently ignoring them.
 
-Tagged initial states currently require the constant profile. Ordered box/plane
-and expression initialization are separate follow-up work. This implementation
-does not change wall-temperature/velocity input units or introduce new BC laws.
+Tagged initial states require the constant background profile. Spatial overrides
+below can then produce a nonuniform field. This implementation does not change
+wall-temperature/velocity input units or introduce new BC laws.
+
+## Spatial initial fields
+
+`initialField` contains `boxInitializers`, `planeInitializers` and
+`exprtkInitializers`. They apply in that order, and in list order within each
+category; later matching entries override earlier point values. The background
+is the resolved `initialState` or the existing constant initial inputs. Combining
+these overrides with a nonconstant built-in `initialProfile` fails explicitly.
+
+```json
+{
+  "initialField": {
+    "boxInitializers": [{
+      "x0": 0, "x1": 0.4, "y0": -1, "y1": 1, "z0": -1, "z1": 1,
+      "v": {"type": "primRhoP", "state": [2, 0, 0, 0, 1]}
+    }],
+    "planeInitializers": [{
+      "a": 1, "b": 0, "c": 0, "h": -0.6,
+      "v": {"type": "primRhoP", "state": [1, 0, 0, 0, 2]}
+    }],
+    "exprtkInitializers": [{
+      "stateType": "primRhoT",
+      "exprs": ["inRegion := 1; UExprtk[4] := 1 + 0.1*x[0]; 0;"]
+    }]
+  }
+}
+```
+
+This example is flow5 only. Every box/plane `v` requires a complete state,
+including RANS/species when active. Bounds are strict: `x0<x<x1`, similarly for
+y and z. Even 2D configurations must give a nonempty z interval containing their
+geometry. The plane test is **`a*x+b*y+c*z+h>0`**, matching Euler's implemented
+sign (some legacy descriptions instead say `dot(normal,x)>=h`). Zero normals
+and invalid bounds are errors.
+
+Expressions receive `x[3]` in **ground-frame code-length units**, `t=0` in code
+time, and a rank-local `iCell` for diagnostics. Do not use `iCell` to define a
+partition-independent field. Velocity is absolute in ground axes. `stateType`
+selects only the state representation/units, never coordinates or time. Thus
+`primRhoT_phy` receives physical temperature but `x` still uses code coordinates.
+All ten state types are supported. `UExprtk` is fully seeded from the current
+point state in the selected representation; `inRegion` resets to zero before
+each call. Set it nonzero to accept the edited vector, and return zero. The
+converted state must be finite with positive physical density and temperature;
+missing or zero density is never repaired by a unit fallback.
+
+The spatial field is evaluated at the highest supported cell quadrature and
+**conservative values** are volume-averaged. It does not average temperature or
+primitive velocity and then convert. Momentum is finally rotated into mesh axes.
+This deliberately differs from Euler's centroid selection for boxes/planes and
+its per-expression cell-mean reseeding: Cauchy composes all overrides at a point
+before averaging. A cut discontinuity has quadrature accuracy, not an exact
+geometric cut-volume calculation. Smooth polynomial tests verify the conservative
+integral independently.
+
+`PhysicalStateConverter` owns one reusable EOS worker. `InitialFieldEvaluator`
+owns that converter and compiled ExprTk programs for the entire serial setup
+pass. Concurrent callers must create separate evaluators/workers. No worker is
+acquired per point and no expression state is global. The convenience
+`ResolvePhysicalState` uses the same converter. `FiniteVolume::InitializeField`
+accepts all native CPU DOF layouts and writes owned rows without exchanging
+ghosts. It is a setup operation: if point evaluation fails, output may be
+partially filled and must be discarded. Domain construction enforces that rule
+through its collective error guard and final admissibility check.
+
+These are initial-field programs, not time-dependent BC expressions. Prescribed
+BC tagged states and existing analytic profiles retain their existing scope.
