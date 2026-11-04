@@ -357,8 +357,123 @@ using LVRCellKey = std::array<long long, 2>;
 using LVRCellValues = std::vector<DNDS::real>;
 using LVRCells = std::map<LVRCellKey, LVRCellValues>;
 
+TEST_CASE("Euler gradients: EvaluateDt prepares limited buffers and direct FV explicitly reuses them")
+{
+    using Eval = EulerEvaluator<NS>;
+    const auto root = projectRoot();
+    const auto path = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json", "gradient_reuse",
+                                          {{"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}}},
+                                           {"dataIOControl", {{"meshDirectBisect", 0}, {"meshFile", root + "/data/mesh/UniformSquare_10.cgns"}}}});
+    EulerSolver<NS> solver(g_mpi);
+    solver.ConfigureFromJson(path, true);
+    solver.ReadMeshAndInitialize();
+    auto &eval = solver.getEval();
+    auto &u = solver.getU();
+    auto mesh = solver.getMesh();
+    auto vr = solver.getVFV();
+    // Physical, time-dependent boundaries: the vortex center passes this unit box.
+    for (DNDS::index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
+        if (mesh->face2cell(iFace, 1) == UnInitIndex)
+            mesh->faceElemInfo(iFace, 0).zone = Geom::BC_ID_DEFAULT_SPECIAL_IV_FAR;
+    for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+    {
+        const auto x = vr->GetCellQuadraturePPhys(iCell, -1);
+        const real rho = x(0) < .5 ? 1 : 2;
+        u[iCell] << rho, .2 * rho, .1 * rho, 0, 2.5 + .025 * rho;
+    }
+    u.trans.startPersistentPull();
+    u.trans.waitPersistentPull();
+    ArrayGRADV<5, 2> unlimited, limited;
+    vr->BuildUGrad(unlimited, 5);
+    vr->BuildUGrad(limited, 5);
+    ArrayDOFV<5> expectedRHS, reusedRHS;
+    ArrayDOFV<1> dt, alpha;
+    vr->BuildUDof(expectedRHS, 5);
+    vr->BuildUDof(reusedRHS, 5);
+    vr->BuildUDof(dt, 1);
+    vr->BuildUDof(alpha, 1);
+    alpha.setConstant(1);
+    solver.getBetaPP().setConstant(1);
+    auto compare = [](const auto &a, const auto &b)
+    {
+        REQUIRE(a.Size() == b.Size());
+        for (DNDS::index iCell = 0; iCell < a.Size(); ++iCell)
+            CHECK((a[iCell] - b[iCell]).norm() <= 1e-12 * (1 + b[iCell].norm()));
+    };
+    const real stageTime = -4.5;
+    real minDt = 0;
+    const uint64_t both = Eval::RHS_Direct_2nd_Rec_already_have_uGradBufNoLim |
+                          Eval::RHS_Direct_2nd_Rec_already_have_uGradBuf;
+    for (bool shockLimiter : {false, true})
+    {
+        CAPTURE(shockLimiter);
+        CFV::VariationalReconstruction<2>::TFBoundary<5> boundary =
+            [&](const Eval::TU &ul, const Eval::TU &mean, DNDS::index iCell, DNDS::index iFace, int q,
+                const Geom::tPoint &n, const Geom::tPoint &x, Geom::t_index zone) -> Eval::TU
+        {
+            bool compressed = false;
+            Eval::TU fixed = eval.CompressRecPart(mean, ul - mean, compressed);
+            const auto basis = Geom::NormBuildLocalBaseV<3>(n);
+            return eval.generateBoundaryValue(fixed, mean, iCell, iFace, q, n, basis, x, stageTime, zone, true, 1);
+        };
+        // Independent operator sequence is the oracle, including owned/ghost rows.
+        vr->DoReconstruction2ndGrad(unlimited, u, boundary, eval.settings.direct2ndRecMethod);
+        eval.LimiterUGrad(u, unlimited, limited, shockLimiter ? Eval::LIMITER_UGRAD_No_Flags : Eval::LIMITER_UGRAD_Disable_Shock_Limiter);
+        unlimited.trans.startPersistentPull();
+        limited.trans.startPersistentPull();
+        unlimited.trans.waitPersistentPull();
+        limited.trans.waitPersistentPull();
+        eval.uGradBufNoLim.setConstant(real(17));
+        eval.uGradBuf.setConstant(real(-23));
+        const auto dtFlags = shockLimiter ? Eval::DT_No_Flags : Eval::DT_Disable_Gradient_Shock_Limiter;
+        eval.EvaluateDt(dt, u, solver.getURec(), 1, minDt, 1e100, true, stageTime, dtFlags);
+        compare(eval.uGradBufNoLim, unlimited);
+        compare(eval.uGradBuf, limited);
+        if (shockLimiter)
+        {
+            real localDifference = 0, globalDifference = 0;
+            for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                localDifference += (limited[iCell] - unlimited[iCell]).squaredNorm();
+            MPI::Allreduce(&localDifference, &globalDifference, 1, DNDS_MPI_REAL, MPI_SUM, g_mpi.comm);
+            CHECK(globalDifference > 1e-6); // The fixture really exercises limiting.
+        }
+        const auto rhsFlags = Eval::RHS_Direct_2nd_Rec | Eval::RHS_Dont_Update_Integration | Eval::RHS_Dont_Record_Bud_Flux |
+                              (shockLimiter ? Eval::RHS_Direct_2nd_Rec_use_limiter : Eval::RHS_No_Flags);
+        auto rhs = [&](auto &output, real t, uint64_t reuse, bool firstOrderConvection = false)
+        {
+            eval.EvaluateRHS(output, solver.getJSource(), u, solver.getURec(), solver.getURec(),
+                             solver.getBetaPP(), alpha, false, t, rhsFlags | reuse | (firstOrderConvection ? Eval::RHS_Direct_2nd_Rec_1st_Conv : Eval::RHS_No_Flags));
+        };
+        rhs(reusedRHS, stageTime, both);
+        compare(eval.uGradBufNoLim, unlimited);
+        compare(eval.uGradBuf, limited);
+        rhs(expectedRHS, stageTime, 0);
+        compare(reusedRHS, expectedRHS);
+        eval.EvaluateDt(dt, u, solver.getURec(), 1, minDt, 1e100, true, stageTime, dtFlags);
+        rhs(reusedRHS, stageTime, Eval::RHS_Direct_2nd_Rec_already_have_uGradBufNoLim);
+        compare(reusedRHS, expectedRHS);
+        // After a boundary-time change omit reuse, even with unchanged U.
+        eval.EvaluateDt(dt, u, solver.getURec(), 1, minDt, 1e100, true, stageTime, dtFlags);
+        rhs(reusedRHS, -4, 0);
+        real localDifference = 0, globalDifference = 0;
+        for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+            localDifference += (eval.uGradBufNoLim[iCell] - unlimited[iCell]).squaredNorm();
+        MPI::Allreduce(&localDifference, &globalDifference, 1, DNDS_MPI_REAL, MPI_SUM, g_mpi.comm);
+        CHECK(globalDifference > 1e-6);
+        rhs(expectedRHS, -4, 0);
+        compare(reusedRHS, expectedRHS);
+        // The pMG first-order-convection branch still copies unlimited gradients.
+        rhs(expectedRHS, stageTime, 0, true);
+        eval.EvaluateDt(dt, u, solver.getURec(), 1, minDt, 1e100, true, stageTime, dtFlags);
+        rhs(reusedRHS, stageTime, both, true);
+        compare(eval.uGradBuf, unlimited);
+        compare(reusedRHS, expectedRHS);
+    }
+}
+
 static LVRCells runLVRFixture(const std::string &cfgPath, const MPIInfo &mpi,
-                              const std::string &state, O2ReferenceLimiter referenceLimiter, int extraShockLayers)
+                              const std::string &state, O2ReferenceLimiter referenceLimiter, int extraShockLayers,
+                              uint64_t reuseFlags = 0)
 {
     EulerSolver<NS> solver(mpi);
     solver.ConfigureFromJson(cfgPath, true, "",
@@ -409,10 +524,17 @@ static LVRCells runLVRFixture(const std::string &cfgPath, const MPIInfo &mpi,
         [](const TU &ul, const TU &, DNDS::index, DNDS::index, int,
            const Geom::tPoint &, const Geom::tPoint &, Geom::t_index)
     { return ul; };
+    if (reuseFlags)
+    {
+        ArrayDOFV<1> dt;
+        vfv->BuildUDof(dt, 1);
+        real minDt = 0;
+        solver.getEval().EvaluateDt(dt, u, solver.getURec(), 1, minDt, 1e100, true, 0);
+    }
     solver.getEval().BuildLimitedVRO2(
         u, target, solver.getURecLimited(), solver.getURecNew(), indicator,
         data.lvrO2Beta, data.lvrAlpha, data.lvrBranchAlpha, data.lvrDensityJump,
-        data.lvrPressureJump, data.lvrCompression, settings, true, true, boundary);
+        data.lvrPressureJump, data.lvrCompression, settings, true, true, boundary, {}, reuseFlags);
     LVRCells cells;
     // Total alpha, shock, contact, weak, and contact halo beyond the base gate.
     std::array<DNDS::real, 5> totals{};
@@ -555,6 +677,33 @@ TEST_CASE("LVR target and branch halos agree across 2-D MPI partitions")
                         CHECK(values[i] == doctest::Approx(expected[i]).epsilon(2e-10).scale(1));
                 }
             }
+}
+
+TEST_CASE("LVR explicit gradient reuse matches a fresh Barth or WBAP reference")
+{
+    using Eval = EulerEvaluator<NS>;
+    const auto root = projectRoot();
+    const auto cfg = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json", "lvr_gradient_reuse",
+                                         {{"vfvSettings", {{"maxOrder", 3}, {"intOrder", 5}, {"subs2ndOrder", 1}}},
+                                          {"limiterControl", {{"useLimiter", true}, {"limiterProcedure", "LVR"}}},
+                                          {"dataIOControl", {{"meshDirectBisect", 0}, {"meshFile", root + "/data/mesh/IV10_10.cgns"}}}});
+    for (auto limiter : {O2ReferenceLimiter::Barth, O2ReferenceLimiter::WBAP})
+    {
+        const auto expected = runLVRFixture(cfg, g_mpi, "shock", limiter, 2);
+        for (auto flags : {Eval::LVR_Already_Have_UGradBufNoLim,
+                           Eval::LVR_Already_Have_UGradBufNoLim | Eval::LVR_Already_Have_UGradBuf})
+        {
+            const auto reused = runLVRFixture(cfg, g_mpi, "shock", limiter, 2, flags);
+            REQUIRE(reused.size() == expected.size());
+            for (const auto &[key, values] : reused)
+            {
+                const auto &reference = expected.at(key);
+                REQUIRE(values.size() == reference.size());
+                for (DNDS::index j = 0; j < static_cast<DNDS::index>(values.size()); ++j)
+                    CHECK(values[j] == doctest::Approx(reference[j]).epsilon(2e-10).scale(1));
+            }
+        }
+    }
 }
 
 TEST_CASE("EulerSolver static reconstruction mask owns selectors and setup storage")

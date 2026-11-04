@@ -860,7 +860,9 @@ namespace DNDS::Euler
 
         bool dont_update_lambda01234 = flags & DT_Dont_update_lambda01234;
 
-        { // 2nd order reconstruction
+        { // Prepare both buffers: the face estimate below consumes the limited one.
+            // Previously only uGradBufNoLim was refreshed here, leaving uGradBuf
+            // from a preceding RHS/LVR call (or initialization).
             typename TVFV::template TFBoundary<nVarsFixed>
                 FBoundary = [&](const TU &UL, const TU &UMean, index iCell, index iFace, int ig,
                                 const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
@@ -876,7 +878,16 @@ namespace DNDS::Euler
             };
             vfv->DoReconstruction2ndGrad(uGradBufNoLim, u, FBoundary, settings.direct2ndRecMethod, reconstructionMask);
             uGradBufNoLim.trans.startPersistentPull();
+            // Limit owned rows while the unlimited halo is in flight. LimiterUGrad
+            // reads neighbour means, but only the current cell's gradient.
+            LimiterUGrad(u, uGradBufNoLim, uGradBuf,
+                         flags & DT_Disable_Gradient_Shock_Limiter
+                             ? LIMITER_UGRAD_Disable_Shock_Limiter
+                             : LIMITER_UGRAD_No_Flags);
+            reconstructionMask.Apply(uGradBuf);
+            uGradBuf.trans.startPersistentPull();
             uGradBufNoLim.trans.waitPersistentPull();
+            uGradBuf.trans.waitPersistentPull();
         }
         TDiffU GradULxy, GradURxy;
 #if defined(DNDS_DIST_MT_USE_OMP)

@@ -11,6 +11,9 @@ small-mode cutoff change, setup diagnostics and affected nonzero-tolerance cases
 The [2026-11-03 extended Euler rotation correction](dev/euler_extended_rotation_2026-11-03.md)
 records the NS_EX/NS_EX_3D absolute-velocity source convention and focused tests.
 
+The [2026-11-05 Euler gradient correction](dev/euler_gradient_buffers_2026-11-05.md)
+documents limited-gradient preparation, explicit reuse and boundary-stage timing.
+
 ## Core Modules
 
 | Module     | Directory    | Description                                              |

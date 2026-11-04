@@ -86,11 +86,13 @@ namespace DNDS::Euler
         const bool direct2ndRec1stConv = flags & RHS_Direct_2nd_Rec_1st_Conv;
         const bool direct2ndUseLimiter = flags & RHS_Direct_2nd_Rec_use_limiter;
         const bool direct2ndRec_already_have_uGradBufNoLim = flags & RHS_Direct_2nd_Rec_already_have_uGradBufNoLim;
+        const bool direct2ndRec_already_have_uGradBuf = flags & RHS_Direct_2nd_Rec_already_have_uGradBuf;
         const bool recoverIncFScale = flags & RHS_Recover_IncFScale;
         const bool ignoreReactiveSource = (flags & RHS_Ignore_Reactive_Source) && Traits::isExtended;
         const bool ignoreReactiveSourceJacobian = (flags & RHS_Ignore_Reactive_Source_Jacobian) && Traits::isExtended;
 
         DNDS_assert(direct2ndRec1stConv ? direct2ndRec : true);
+        DNDS_assert(!direct2ndRec_already_have_uGradBuf || (direct2ndRec && direct2ndRec_already_have_uGradBufNoLim));
         auto rsType = settings.rsType;
 
         // recover the upwind factor if using direct2ndRec
@@ -144,19 +146,19 @@ namespace DNDS::Euler
                 uGradBufNoLim.trans.startPersistentPull(); // this can be safely put before LimiterUGradCall
             }
             // uGradBuf = uGradBufNoLim;
-            if (!direct2ndRec1stConv)
+            if (!direct2ndRec1stConv && !direct2ndRec_already_have_uGradBuf)
             {
                 this->LimiterUGrad(u, uGradBufNoLim, uGradBuf, direct2ndUseLimiter ? LIMITER_UGRAD_No_Flags : LIMITER_UGRAD_Disable_Shock_Limiter);
                 reconstructionMask.Apply(uGradBuf);
             }
-            if (!direct2ndRec1stConv)
+            if (!direct2ndRec1stConv && !direct2ndRec_already_have_uGradBuf)
                 uGradBuf.trans.startPersistentPull();
             if (!direct2ndRec_already_have_uGradBufNoLim)
                 uGradBufNoLim.trans.waitPersistentPull(); // todo: utilize the uGradBufNoLim to match the implicit reconstruction's "useViscousLimited": false
-            if (!direct2ndRec1stConv)
-                uGradBuf.trans.waitPersistentPull();
-            else
+            if (direct2ndRec1stConv)
                 uGradBuf = uGradBufNoLim;
+            else if (!direct2ndRec_already_have_uGradBuf)
+                uGradBuf.trans.waitPersistentPull();
         }
 
 #if defined(DNDS_DIST_MT_USE_OMP)

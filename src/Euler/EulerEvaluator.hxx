@@ -2564,13 +2564,16 @@ namespace DNDS::Euler
         bool refreshWeakAlpha,
         bool resetWeakAlpha,
         const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary,
-        CFV::ReconstructionMaskView reconstructionMask)
+        CFV::ReconstructionMaskView reconstructionMask, uint64_t flags)
     {
         DNDS_FV_EULEREVALUATOR_GET_FIXED_EIGEN_SEQS
         static constexpr int iShockAlpha = 0;
         static constexpr int iContactAlpha = 1;
         static constexpr int iContactSupportAlpha = 2;
         static constexpr int iWeakAlpha = 3;
+        const bool reuseUnlimited = flags & LVR_Already_Have_UGradBufNoLim;
+        const bool reuseLimited = flags & LVR_Already_Have_UGradBuf;
+        DNDS_assert(!reuseLimited || reuseUnlimited);
 
         if (limitedVRSettings.alphaMax == 0 && limitedVRSettings.contactAlphaMax == 0 &&
             limitedVRSettings.weakAlphaMax == 0)
@@ -2586,9 +2589,10 @@ namespace DNDS::Euler
             return;
         }
 
-        vfv->DoReconstruction2ndGrad(uGradBufNoLim, u, FBoundary, settings.direct2ndRecMethod, reconstructionMask);
+        if (!reuseUnlimited)
+            vfv->DoReconstruction2ndGrad(uGradBufNoLim, u, FBoundary, settings.direct2ndRecMethod, reconstructionMask);
         // Only the weak branch reads unrestricted gradients of ghost cells.
-        if (limitedVRSettings.weakAlphaMax > 0 && refreshWeakAlpha)
+        if (!reuseUnlimited && limitedVRSettings.weakAlphaMax > 0 && refreshWeakAlpha)
         {
             uGradBufNoLim.trans.startPersistentPull();
             uGradBufNoLim.trans.waitPersistentPull();
@@ -2596,7 +2600,8 @@ namespace DNDS::Euler
 
         if (limitedVRSettings.o2ReferenceLimiter == O2ReferenceLimiter::Barth)
         {
-            LimiterUGrad(u, uGradBufNoLim, uGradBuf, LIMITER_UGRAD_No_Flags);
+            if (!reuseLimited)
+                LimiterUGrad(u, uGradBufNoLim, uGradBuf, LIMITER_UGRAD_No_Flags);
             vfv->ConvertUGradToURec(uRecO2, uGradBuf, {}, reconstructionMask);
         }
         else
