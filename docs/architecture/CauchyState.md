@@ -790,12 +790,14 @@ independent source contributions explicitly. Tests seed a nonzero RANS output
 to detect stale values, and verify that inserting the RANS block changes only
 the index locations of mixture thermal references and chemical derivatives.
 
-The C++ full-state finite-volume operator now accepts SA without DES. It
+The C++ full-state finite-volume operator accepts SA, Wilcox k-omega, SST and
+realizable k-epsilon without DES. It
 requires the mesh's published nodal wall field and samples it with the configured
 positive `numerics.wallDistanceFloor` (default `1e-10`). Sources and the positive
 implicit destruction diagonal are integrated on cell quadrature; viscous face
-fluxes add turbulent stress/heat/species transport and SA diffusion. Aux
-diffusion bounds include SA turbulent transport, with no hidden gradient solve.
+fluxes add turbulent stress/heat/species transport and model scalar diffusion.
+Aux diffusion bounds include turbulent transport. Two-equation viscosity uses
+an explicit conservative mean-gradient input, described below.
 All physical blocks retain their own Array layouts and halo plans.
 
 SA no-slip quadrature values use zero physical face value and reflected exterior
@@ -826,9 +828,11 @@ requires a complete named `referenceConservative` map (the prescribed farfield
 reference). No boundary or initial state is implicitly chosen for that purpose.
 The numerical reference is separate from the immutable shared physical model.
 
-The configured C++ and Python Domain accepts `equation.rans.model="SA"` with
+The configured Domain accepts the four shared RANS models with
 Newtonian/Fourier transport and a complete `initialRANS` map, for example
-`{"rhoNuTilde":0.02}`. Perfect gas requires positive molecular viscosity;
+`{"rhoNuTilde":0.02}` for SA, `{"rhoK":0.02,"rhoOmega":0.1}` for Wilcox/SST,
+or `{"rhoK":0.02,"rhoEpsilon":0.1}` for realizable k-epsilon. Omega's floor
+also requires the explicit numerical reference described above. Perfect gas requires positive molecular viscosity;
 mixtures use their material transport. Domain stores flow, RANS and species
 in separate arrays, with the selected AoS/SoA/AoSoA layout for each. Python
 `fields` and `residual_fields()` expose all named blocks through the same API.
@@ -846,13 +850,13 @@ names match, while physical array layouts may differ. Optional reconstruction
 and BDF history follow the existing full-state checkpoint protocol. Spatial
 output includes named RANS scalars and uses RANS-aware boundary states.
 
-This is a configured SA path with focused distributed correctness coverage,
+This is a configured CPU RANS path with focused distributed correctness coverage,
 not completion of the matched Euler physical/performance studies. It currently
 uses Rusanov, constant or polynomial reconstruction, and no limiter or
 non-characteristic WBAP; viscous reconstruction uses polynomial gradients.
-Two-equation models remain rejected by finite-volume construction until
-gradient-dependent aux preparation and high-order scalar admissibility are
-connected and the complete spatial path is tested.
+Scalar reconstruction fallback is applied independently at boundary, face and
+volume points, using the corresponding cell mean. This preserves Euler's
+model-specific fallback; additional coefficient-level scalar PP remains pending.
 DES and QCR integration remain pending. Existing NS/mixture profiles retain
 their behavior.
 
@@ -874,6 +878,54 @@ absolute normal velocity in the mesh-bound frame, including ALE. It is added
 outside the Riemann solver, without altering EOS pressure or sound speed.
 Its conservative directional derivative supplies the corresponding neighbor
 coupling in the approximate Jacobian. Point-level finite-difference checks
-cover density, all momenta, energy and both turbulence directions. These tests
-do not establish a complete two-equation FV solve: gradient-dependent aux
-preparation and high-order scalar admissibility remain activation gates.
+cover density, all momenta, energy and both turbulence directions.
+
+### Explicit mean gradients for auxiliary transport
+
+`BuildMeanGradients(state)` allocates persistent fields and transfer bindings;
+it does not evaluate gradients. Each physical DOF allocation has a corresponding
+gradient field with columns `component*dimension+direction`. AoS, SoA and tiled
+column-major grouping remain intact. CFV's configured Green-Gauss, least-squares
+or GGMP plan supplies gradients from means and physical boundary values.
+Periodic scalar gradients and vector-gradient tensors rotate at consumption.
+
+The collective `PrepareAuxValues(state, aux, gradients, engine, stream, ...)`
+overload orchestrates the following schedule on either an inline or worker CPU
+stream; MPI remains on the controller thread:
+
+```text
+mean halo  ------------------ wait
+             boundary + gradient core
+                                 gradient dependent
+gradient halo ------------------------------------- wait
+                                   auxiliary core
+                                                       auxiliary dependent -> publish
+```
+
+The unsplit mode uses the same kernels after each exchange. Mean gradients
+are separate from reconstruction coefficients and are refreshed for the current
+mean state. The low-level `BeginAuxValues`/preparation scope consumes an explicit
+`EquationAuxiliaryInputs` bundle and never launches a gradient solve or MPI.
+Its core acquires only owned gradient views; the dependent phase acquires ghosts
+after their exchange. Boundary generation releases its chemistry worker before
+auxiliary preparation acquires one, so a single-worker pool remains valid.
+
+Publication retains state allocation/order/owned versions, mean-halo versions,
+gradient allocation/shape/value versions, plan identity and evaluation time.
+Caller mutation invalidates the retained input; auxiliary validation also rejects
+subsequent gradient changes. Callers must release conflicting leases and serialize
+uses of workspace copies. These are local version checks, not a new freshness
+allreduce. Transfer preflight and the configured collective error policy remain
+responsible for MPI agreement. A current local stamp alone cannot detect an
+unannounced mutation on a different rank.
+
+`StableStep` and nonlinear correction preparation use this orchestration for
+two-equation models. The quadrature RHS/source still uses reconstructed gradients;
+auxiliary mean-gradient preparation does not replace or change those coefficients.
+
+Legacy comparison note: Euler's `EvaluateDt` computes/exchanges `uGradBufNoLim`
+but reads the separate `uGradBuf` for turbulent viscosity. This mismatch originated
+in `e5b00928cc97` (2025-06-15), “EvaluateDt now does not rely on uRec (for getting
+gradient)”, and entered modern history through squash `90490801` (“Initial
+Release (#1)”). Cauchy's explicit-current input avoids reproducing that stale
+buffer behavior. The legacy implementation is unchanged by this work.

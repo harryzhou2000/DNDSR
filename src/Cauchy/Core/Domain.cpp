@@ -180,6 +180,14 @@ namespace DNDS::Cauchy
             _timeMeanHalo = std::move(halos);
             _timeAuxiliary = std::move(prepared);
         }
+        if (_equation.HasRANS() && _equation.RANS().ComponentNumber() == 2)
+        {
+            auto state = _accepted.NumericAlias();
+            if (!_timeMeanGradients)
+                _timeMeanGradients.emplace(_fv.BuildMeanGradients(state));
+            _fv.PrepareAuxValues(state, *_timeAuxiliary, *_timeMeanGradients, _engine, _stream, _time, _workers);
+            return _fv.StableStep(state, *_timeAuxiliary, cfl, _time);
+        }
         std::vector<R::TransferOperation> transfers;
         for (const auto &halo : _timeMeanHalo)
             transfers.push_back(_engine.ChecksAccess() ? halo.BeginChecked(_stream) : halo.BeginScheduled(_stream.Context()));

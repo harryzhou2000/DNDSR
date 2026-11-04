@@ -50,110 +50,130 @@ namespace
             for (int j = 0; j < 5; ++j)
                 flow(iCell, j) = value[j];
             sa(iCell, 0) = nonconstant ? .02 * (1 + .1 * std::cos(6.283185307179586 * center[0])) : .02;
+            if (sa.ComponentNumber() == 2)
+                sa(iCell, 1) = .1;
         }
     }
     C::EquationDofs State(const C::FiniteVolume &fv, bool split)
     {
+        const I components = fv.Equation().RANS().ComponentNumber();
         A::DofBundle fields(fv.Metrics().Space());
         std::vector<C::EquationDofBinding> bindings;
         if (split)
         {
             fields.Add("flow", fv.Metrics().BuildField(R::RowLayout::ColMajor(0, 5, {16, 1})));
-            fields.Add("rans", fv.Metrics().BuildField(R::RowLayout::TiledColMajor(0, 1, 32)));
+            fields.Add("rans", fv.Metrics().BuildField(R::RowLayout::TiledColMajor(0, components, 32)));
             bindings = {{"flow", "flow", 0}, {"rans", "rans", 0}};
         }
         else
         {
-            fields.Add("coupled", fv.Metrics().BuildField(6));
-            bindings = {{"flow", "coupled", 1}, {"rans", "coupled", 0}};
+            fields.Add("coupled", fv.Metrics().BuildField(5 + components));
+            bindings = {{"flow", "coupled", components}, {"rans", "coupled", 0}};
         }
         return {fv.Equation().Schema(), std::move(fields), std::move(bindings)};
     }
 }
 
-TEST_CASE("SA FV integrates quadrature sources and their positive implicit destruction diagonal")
+TEST_CASE("RANS FV integrates quadrature sources and their positive implicit destruction diagonal")
 {
     auto mesh = CFVTest::CartesianHexes(mpi, 2);
     mesh->BuildNodeWallDist([](auto zone)
                             { return zone == 7; });
-    auto settings = Settings();
-    settings.mesh.dimension = 3;
-    const auto equation = Equation(settings);
-    C::FiniteVolume fv(mesh, settings, equation);
-    auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(6));
-    auto result = C::EquationDofOperations::NewVector(state);
-    Fill(state, fv, false);
-    auto work = fv.BuildEquationWorkspace(state);
-    R::EagerEngine engine;
-    const auto stream = engine.CreateCPUStream();
-    fv.Evaluate(state, result, *work, engine, stream);
-    auto aux = fv.BuildAuxiliaryValues({true, true});
-    fv.PrepareAuxValues(state, aux);
-    R::Array<double> tau(R::RowLayout::Dense(fv.Metrics().NumCell(), 1));
+    for (const auto *name : {"SA", "KOmegaWilcox", "KOmegaSST", "RealizableKE"})
     {
-        auto write = tau.Write();
-        for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
-            write.View()(iCell, 0) = 2;
-    }
-    auto matrix = fv.BuildLinearProblem(state, C::DiagonalStorage::Block);
-    C::JacobianPreparation controls{3, .7, false};
-    for (int refresh = 0; refresh < 2; ++refresh)
-    {
-        const double meanSA = refresh ? .03 : .02;
-        if (refresh)
+        CAPTURE(name);
+        auto settings = Settings();
+        settings.mesh.dimension = 3;
+        auto modelSettings = Equation(settings).RANS().Settings();
+        modelSettings.model = name;
+        const auto equation = C::EquationSystem::Resolve(settings.equation).WithRANS(modelSettings);
+        const int components = equation.RANS().ComponentNumber(), width = 5 + components;
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(width));
+        auto result = C::EquationDofOperations::NewVector(state);
+        Fill(state, fv, false);
+        auto work = fv.BuildEquationWorkspace(state);
+        R::EagerEngine engine;
+        const auto stream = engine.CreateCPUStream();
+        fv.Evaluate(state, result, *work, engine, stream);
+        auto aux = fv.BuildAuxiliaryValues({true, true});
+        fv.PrepareCorrectionAux(state, *work, aux, engine, stream, 0);
+        R::Array<double> tau(R::RowLayout::Dense(fv.Metrics().NumCell(), 1));
         {
-            {
-                auto write = state.WriteOwned();
-                const auto sa = write.Block("rans");
-                for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
-                    sa(iCell, 0) = meanSA;
-            }
-            // Correction preparation must update destruction from the new mean,
-            // while retaining the polynomial and leaving the prior RHS untouched.
-            fv.PrepareCorrectionAux(state, *work, aux, engine, stream, 0);
+            auto write = tau.Write();
+            for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                write.View()(iCell, 0) = 2;
         }
-        fv.PrepareJacobian(state, aux, tau, *matrix, controls, 0, {}, work.get());
-        const auto rhsRead = result.ReadOwned();
-        const auto diagonalRead = matrix->Diagonal().Read();
-        const auto rhs = rhsRead.Block("rans"), flowRHS = rhsRead.Block("flow");
-        const auto diagonal = diagonalRead.View();
-        const DNDS::Geom::Elem::Quadrature quadrature(DNDS::Geom::Elem::Element{DNDS::Geom::Elem::Hex8}, settings.numerics.cfv.intOrder);
-        for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+        auto matrix = fv.BuildLinearProblem(state, C::DiagonalStorage::Block);
+        C::JacobianPreparation controls{3, .7, false};
+        for (int refresh = 0; refresh < 2; ++refresh)
         {
-            double expected = 0, expectedDiagonal = 0;
-            const auto center = fv.Metrics().GetCellCent(iCell);
-            for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
+            const double meanSA = refresh ? .03 : .02;
+            if (refresh)
             {
-                const auto param = std::get<0>(quadrature.GetQuadraturePointInfo(iQ));
-                const auto point = (center + .25 * param).eval();
-                double wall = .5;
-                for (int d = 0; d < 3; ++d)
-                    wall *= 1 - std::abs(2 * point[d] - 1);
-                DNDS::Physics::RANS::Point value;
-                value.state << 1, 0, 0, 0, 2.5, .02, 0;
-                value.wallDistance = std::max(settings.numerics.wallDistanceFloor, wall);
-                value.molecularViscosity = .001;
-                const double weight = quadrature.GetWeight(iQ) / 64.;
-                expected += weight * equation.RANS().Source(value)[0];
-                value.state[5] = meanSA;
-                expectedDiagonal += weight * equation.RANS().ImplicitSourceDiagonal(value)[0];
+                {
+                    auto write = state.WriteOwned();
+                    const auto sa = write.Block("rans");
+                    for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                        sa(iCell, 0) = meanSA;
+                }
+                // Correction preparation must update destruction from the new mean,
+                // while retaining the polynomial and leaving the prior RHS untouched.
+                fv.PrepareCorrectionAux(state, *work, aux, engine, stream, 0);
             }
-            CHECK(rhs(iCell, 0) == doctest::Approx(expected).epsilon(1e-10).scale(1e-12));
-            CHECK(diagonal(iCell, 35) - diagonal(iCell, 0) == doctest::Approx(.7 * expectedDiagonal).epsilon(1e-9).scale(1e-12));
-            for (int j = 0; j < 5; ++j)
-                CHECK(std::abs(flowRHS(iCell, j)) < 1e-12);
+            fv.PrepareJacobian(state, aux, tau, *matrix, controls, 0, {}, work.get());
+            const auto rhsRead = result.ReadOwned();
+            const auto diagonalRead = matrix->Diagonal().Read();
+            const auto rhs = rhsRead.Block("rans"), flowRHS = rhsRead.Block("flow");
+            const auto diagonal = diagonalRead.View();
+            const DNDS::Geom::Elem::Quadrature quadrature(DNDS::Geom::Elem::Element{DNDS::Geom::Elem::Hex8}, settings.numerics.cfv.intOrder);
+            for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            {
+                std::array<double, 2> expected{}, expectedDiagonal{};
+                const auto center = fv.Metrics().GetCellCent(iCell);
+                for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
+                {
+                    const auto param = std::get<0>(quadrature.GetQuadraturePointInfo(iQ));
+                    const auto point = (center + .25 * param).eval();
+                    double wall = .5;
+                    for (int d = 0; d < 3; ++d)
+                        wall *= 1 - std::abs(2 * point[d] - 1);
+                    DNDS::Physics::RANS::Point value;
+                    value.state << 1, 0, 0, 0, 2.5, .02, components == 2 ? .1 : 0;
+                    value.wallDistance = std::max(settings.numerics.wallDistanceFloor, wall);
+                    value.molecularViscosity = .001;
+                    const double weight = quadrature.GetWeight(iQ) / 64.;
+                    const auto source = equation.RANS().Source(value);
+                    value.state[5] = meanSA;
+                    const auto destruction = equation.RANS().ImplicitSourceDiagonal(value);
+                    for (int j = 0; j < components; ++j)
+                    {
+                        expected[j] += weight * source[j];
+                        expectedDiagonal[j] += weight * destruction[j];
+                    }
+                }
+                for (int j = 0; j < components; ++j)
+                {
+                    CHECK(rhs(iCell, j) == doctest::Approx(expected[j]).epsilon(1e-10).scale(1e-12));
+                    CHECK(diagonal(iCell, (5 + j) * (width + 1)) - diagonal(iCell, 0) == doctest::Approx(.7 * expectedDiagonal[j]).epsilon(1e-9).scale(1e-12));
+                }
+                for (int j = 0; j < 5; ++j)
+                    CHECK(std::abs(flowRHS(iCell, j)) < 1e-12);
+            }
+            const auto auxRead = aux.meanThermodynamics->Read();
+            DNDS::Physics::RANS::Point point;
+            point.state[0] = 1;
+            point.state[5] = meanSA;
+            point.state[6] = components == 2 ? .1 : 0;
+            point.wallDistance = .5 / 8;
+            point.molecularViscosity = .001;
+            point.cp = 3.5;
+            const auto turbulent = equation.RANS().Transport(point);
+            const double expectedDiffusion = std::max(4. / 3. * (.001 + turbulent.viscosity),
+                                                      (.001 * 3.5 / settings.equation.prandtl + turbulent.conductivity) / 2.5);
+            for (I iCell = 0; iCell < fv.Metrics().NumCellProc(); ++iCell)
+                CHECK(auxRead.View()(iCell, 2) == doctest::Approx(expectedDiffusion).epsilon(1e-12));
         }
-        const auto auxRead = aux.meanThermodynamics->Read();
-        DNDS::Physics::RANS::Point point;
-        point.state[0] = 1;
-        point.state[5] = meanSA;
-        point.molecularViscosity = .001;
-        point.cp = 3.5;
-        const auto turbulent = equation.RANS().Transport(point);
-        const double expectedDiffusion = std::max(4. / 3. * (.001 + turbulent.viscosity),
-                                                  (.001 * 3.5 / settings.equation.prandtl + turbulent.conductivity) / 2.5);
-        for (I iCell = 0; iCell < fv.Metrics().NumCellProc(); ++iCell)
-            CHECK(auxRead.View()(iCell, 2) == doctest::Approx(expectedDiffusion).epsilon(1e-12));
     }
 }
 
@@ -289,64 +309,197 @@ TEST_CASE("Two-equation boundary points use mean wall distance and the correct t
         }
 }
 
-TEST_CASE("SA P3 residual and WBAP preserve split layout and core halo scheduling semantics")
+TEST_CASE("RANS P3 residual and WBAP preserve split layout and core halo scheduling semantics")
 {
     auto mesh = CauchyTest::PeriodicQuads(mpi, 8);
     mesh->BuildNodeWallDist([](auto)
                             { return false; });
-    std::vector<double> reference;
+    for (const auto *model : {"SA", "KOmegaWilcox", "KOmegaSST", "RealizableKE"})
+    {
+        std::vector<double> reference;
+        for (int variant = 0; variant < 2; ++variant)
+        {
+            auto settings = Settings();
+            settings.boundaries.clear();
+            settings.execution.overlap = variant == 1;
+            settings.numerics.reconstruction = "variational";
+            settings.numerics.cfv.maxOrder = 3;
+            settings.numerics.reconstructionIterations = 4;
+            settings.numerics.limiter = "WBAP";
+            settings.numerics.viscousLimited = true;
+            auto modelSettings = Equation(settings).RANS().Settings();
+            modelSettings.model = model;
+            const auto equation = C::EquationSystem::Resolve(settings.equation).WithRANS(modelSettings);
+            C::FiniteVolume fv(mesh, settings, equation);
+            auto state = State(fv, variant);
+            Fill(state, fv, true);
+            auto result = C::EquationDofOperations::NewVector(state);
+            auto work = fv.BuildEquationWorkspace(state);
+            R::EagerEngine engine(variant ? 2 : 0);
+            const auto stream = engine.CreateCPUStream();
+            fv.Evaluate(state, result, *work, engine, stream);
+            const auto read = result.ReadOwned();
+            I position = 0;
+            double magnitude = 0;
+            for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                for (const auto *block : {"flow", "rans"})
+                {
+                    const auto values = read.Block(block);
+                    for (I j = 0; j < values.ComponentNumber(); ++j, ++position)
+                    {
+                        CHECK(std::isfinite(values(iCell, j)));
+                        magnitude += std::abs(values(iCell, j));
+                        if (!variant)
+                            reference.push_back(values(iCell, j));
+                        else
+                            CHECK(values(iCell, j) == doctest::Approx(reference[size_t(position)]).epsilon(2e-11).scale(1e-12));
+                    }
+                }
+            MPI_Allreduce(MPI_IN_PLACE, &magnitude, 1, MPI_DOUBLE, MPI_SUM, mpi.comm);
+            CHECK(magnitude > 1e-5);
+        }
+    }
+}
+
+TEST_CASE("Explicit mean gradients exchange current values across layouts and CPU launchers")
+{
+    auto mesh = CauchyTest::PeriodicQuads(mpi, 8);
+    mesh->BuildNodeWallDist([](auto)
+                            { return false; });
+    constexpr double pi = 3.14159265358979323846, h = 1. / 8.;
     for (int variant = 0; variant < 2; ++variant)
     {
         auto settings = Settings();
         settings.boundaries.clear();
         settings.execution.overlap = variant == 1;
-        settings.numerics.reconstruction = "variational";
-        settings.numerics.cfv.maxOrder = 3;
-        settings.numerics.reconstructionIterations = 4;
-        settings.numerics.limiter = "WBAP";
-        settings.numerics.viscousLimited = true;
+        settings.numerics.gradient = "leastSquares";
         const auto equation = Equation(settings);
         C::FiniteVolume fv(mesh, settings, equation);
-        A::DofBundle fields(fv.Metrics().Space());
-        std::vector<C::EquationDofBinding> binding;
-        if (variant == 0)
-        {
-            fields.Add("coupled", fv.Metrics().BuildField(6));
-            binding = {{"flow", "coupled", 1}, {"rans", "coupled", 0}};
-        }
-        else
-        {
-            fields.Add("flow", fv.Metrics().BuildField(R::RowLayout::ColMajor(0, 5, {16, 1})));
-            fields.Add("rans", fv.Metrics().BuildField(R::RowLayout::TiledColMajor(0, 1, 32)));
-            binding = {{"flow", "flow", 0}, {"rans", "rans", 0}};
-        }
-        C::EquationDofs state(equation.Schema(), std::move(fields), std::move(binding));
-        Fill(state, fv, true);
-        auto result = C::EquationDofOperations::NewVector(state);
-        auto work = fv.BuildEquationWorkspace(state);
+        auto state = State(fv, variant == 1);
+        auto gradients = fv.BuildMeanGradients(state);
+        auto aux = fv.BuildAuxiliaryValues({true, true, false, false, true});
         R::EagerEngine engine(variant ? 2 : 0);
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(state, result, *work, engine, stream);
-        const auto read = result.ReadOwned();
-        I position = 0;
-        double magnitude = 0;
-        for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
-            for (const auto *block : {"flow", "rans"})
+        for (int refresh = 0; refresh < 2; ++refresh)
+        {
+            const double amplitude = refresh ? .2 : .1;
             {
-                const auto values = read.Block(block);
-                for (I j = 0; j < values.ComponentNumber(); ++j, ++position)
+                auto write = state.WriteOwned();
+                const auto flow = write.Block("flow"), sa = write.Block("rans");
+                for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
                 {
-                    CHECK(std::isfinite(values(iCell, j)));
-                    magnitude += std::abs(values(iCell, j));
-                    if (!variant)
-                        reference.push_back(values(iCell, j));
-                    else
-                        CHECK(values(iCell, j) == doctest::Approx(reference[size_t(position)]).epsilon(2e-11).scale(1e-12));
+                    const auto center = fv.Metrics().GetCellCent(iCell);
+                    for (I j = 0; j < 5; ++j)
+                        flow(iCell, j) = 0;
+                    flow(iCell, 0) = 1;
+                    flow(iCell, 2) = amplitude * std::sin(2 * pi * center[0]);
+                    flow(iCell, 4) = 3;
+                    sa(iCell, 0) = .02;
                 }
             }
-        MPI_Allreduce(MPI_IN_PLACE, &magnitude, 1, MPI_DOUBLE, MPI_SUM, mpi.comm);
-        CHECK(magnitude > 1e-5);
+            fv.PrepareAuxValues(state, aux, gradients, engine, stream);
+            // Independent discrete centered-difference oracle on this torus;
+            // checks both owned and received gradients, including block offsets.
+            const auto location = state.LocateBlock(0);
+            const auto &field = gradients.fields[location.physicalField];
+            const auto owned = field.Owned().Read(), ghost = field.Ghost().Read();
+            const C::RHSFieldView values{owned.View<R::UniformTableRows>(), ghost.View<R::UniformTableRows>()};
+            for (I iCell = 0; iCell < fv.Metrics().NumCellProc(); ++iCell)
+            {
+                const double x = fv.Metrics().GetCellCent(iCell)[0];
+                const double expected = amplitude * std::cos(2 * pi * x) * std::sin(2 * pi * h) / h;
+                for (I j = 0; j < 5; ++j)
+                    for (I d = 0; d < 2; ++d)
+                        CHECK(values(iCell, (location.firstComponent + j) * 2 + d) ==
+                              doctest::Approx(j == 2 && d == 0 ? expected : 0.).epsilon(2e-11).scale(1));
+            }
+            CHECK(std::isfinite(fv.StableStep(state, aux, .5)));
+        }
+        // A retained handle cannot silently supply gradients for a newer state.
+        {
+            auto write = state.WriteOwned();
+            if (fv.Metrics().NumCell())
+                write.Block("flow")(0, 2) += .01;
+        }
+        CHECK_THROWS(fv.PrepareAuxValues(state, aux, 0, {}, {&gradients}));
+        fv.PrepareAuxValues(state, aux, gradients, engine, stream);
+        {
+            auto write = gradients.fields[0].Owned().Write();
+            if (fv.Metrics().NumCell())
+                write.View()(0, 0) += .01;
+        }
+        CHECK_THROWS(fv.ValidateAuxValues(state, aux));
     }
+}
+
+TEST_CASE("Two-equation auxiliary viscosity consumes current conservative mean gradients")
+{
+    auto mesh = CFVTest::CartesianHexes(mpi, 2);
+    mesh->BuildNodeWallDist([](auto zone)
+                            { return zone == 7; });
+    for (const auto *name : {"KOmegaWilcox", "KOmegaSST", "RealizableKE"})
+        for (int variant = 0; variant < 2; ++variant)
+        {
+            CAPTURE(name);
+            CAPTURE(variant);
+            auto settings = Settings();
+            settings.mesh.dimension = 3;
+            settings.execution.overlap = variant;
+            settings.numerics.gradient = "leastSquares";
+            auto modelSettings = Equation(settings).RANS().Settings();
+            modelSettings.model = name;
+            const auto equation = C::EquationSystem::Resolve(settings.equation).WithRANS(modelSettings);
+            C::FiniteVolume fv(mesh, settings, equation);
+            auto state = State(fv, variant);
+            auto gradients = fv.BuildMeanGradients(state);
+            auto aux = fv.BuildAuxiliaryValues({true, true, false, false, true});
+            R::EagerEngine engine(variant ? 2 : 0);
+            const auto stream = engine.CreateCPUStream();
+            for (int refresh = 0; refresh < 2; ++refresh)
+            {
+                const double shear = refresh ? 2 : 1;
+                {
+                    auto write = state.WriteOwned();
+                    const auto flow = write.Block("flow"), rans = write.Block("rans");
+                    for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                    {
+                        for (int j = 0; j < 5; ++j)
+                            flow(iCell, j) = 0;
+                        flow(iCell, 0) = 1;
+                        flow(iCell, 2) = shear * fv.Metrics().GetCellCent(iCell)[0];
+                        flow(iCell, 4) = 3;
+                        rans(iCell, 0) = .02;
+                        rans(iCell, 1) = 1e-4;
+                    }
+                }
+                if (!refresh)
+                    CHECK_THROWS(fv.PrepareAuxValues(state, aux));
+                fv.PrepareAuxValues(state, aux, gradients, engine, stream);
+                const auto read = aux.meanThermodynamics->Read();
+                for (I iCell = 0; iCell < fv.Metrics().NumCellProc(); ++iCell)
+                {
+                    DNDS::Physics::RANS::Point point;
+                    point.state << 1, 0, shear * fv.Metrics().GetCellCent(iCell)[0], 0, 3, .02, 1e-4;
+                    // Two cells per axis with extrapolated boundary values: LS
+                    // averages the interior slope and the zero boundary slope.
+                    point.gradient(0, 2) = shear / 2;
+                    // Hex P1 nodal wall values: one center node at .5, seven zero.
+                    point.wallDistance = .5 / 8;
+                    point.molecularViscosity = .001;
+                    point.cp = 3.5;
+                    const auto transport = equation.RANS().Transport(point);
+                    const double expected = std::max(4. / 3. * (.001 + transport.viscosity),
+                                                     (.001 * 3.5 / settings.equation.prandtl + transport.conductivity) / 2.5);
+                    CHECK(read.View()(iCell, 2) == doctest::Approx(expected).epsilon(2e-11));
+                    if (equation.RANS().Kind() != DNDS::Physics::RANS::ModelKind::KOmegaWilcox)
+                    {
+                        point.gradient.setZero();
+                        CHECK(equation.RANS().Transport(point).viscosity > 2 * transport.viscosity);
+                    }
+                }
+                CHECK(std::isfinite(fv.StableStep(state, aux, .5)));
+            }
+        }
 }
 
 TEST_CASE("SA implicit updates repair scalars after flow compression without unfreezing masked components")
@@ -438,67 +591,78 @@ TEST_CASE("SA implicit updates repair scalars after flow compression without unf
     }
 }
 
-TEST_CASE("SA nonlinear stage recovers a manufactured viscous source balance")
+TEST_CASE("RANS nonlinear stages recover a manufactured viscous source balance")
 {
     auto mesh = CFVTest::CartesianHexes(mpi, 2);
     mesh->BuildNodeWallDist([](auto zone)
                             { return zone == 7; });
-    for (int variant = 0; variant < 2; ++variant)
-    {
-        auto settings = Settings();
-        settings.mesh.dimension = 3;
-        settings.numerics.positivity = true;
-        settings.execution.overlap = variant;
-        settings.implicit.collectiveChecks = variant;
-        settings.implicit.diagonal = "block";
-        settings.implicit.jacobianAction = variant ? "semiMatrixFree" : "assembled";
-        settings.implicit.linear.method = "gmres";
-        settings.implicit.linear.preconditioner = variant ? "sgs" : "ilu";
-        settings.implicit.linear.relativeTolerance = 1e-5;
-        settings.implicit.absoluteTolerance = 1e-11;
-        C::FiniteVolume fv(mesh, settings, Equation(settings));
-        auto target = State(fv, variant);
-        fv.InitializeConstant(target, {1, 0, 0, 0, 1}, {}, 0, {}, {{"rhoNuTilde", .02}});
-        auto state = C::EquationDofOperations::NewVector(target);
-        auto source = C::EquationDofOperations::NewVector(target);
-        auto rhs = C::EquationDofOperations::NewVector(target);
-        C::EquationDofOperations::Copy(state, target);
-        R::EagerEngine engine(variant ? 2 : 0);
-        const auto stream = engine.CreateCPUStream();
-        auto targetWork = fv.BuildEquationWorkspace(target);
-        fv.Evaluate(target, rhs, *targetWork, engine, stream);
+    for (const auto *model : {"SA", "KOmegaWilcox", "KOmegaSST", "RealizableKE"})
+        for (int variant = 0; variant < 2; ++variant)
         {
-            const auto read = target.ReadOwned(), rhsRead = rhs.ReadOwned();
-            auto write = source.WriteOwned(), stateWrite = state.WriteOwned();
+            auto settings = Settings();
+            settings.mesh.dimension = 3;
+            settings.numerics.positivity = true;
+            settings.execution.overlap = variant;
+            settings.implicit.collectiveChecks = variant;
+            settings.implicit.diagonal = "block";
+            settings.implicit.jacobianAction = variant ? "semiMatrixFree" : "assembled";
+            settings.implicit.linear.method = "gmres";
+            settings.implicit.linear.preconditioner = variant ? "sgs" : "ilu";
+            settings.implicit.linear.relativeTolerance = 1e-5;
+            settings.implicit.absoluteTolerance = 1e-11;
+            auto modelSettings = Equation(settings).RANS().Settings();
+            modelSettings.model = model;
+            const auto equation = C::EquationSystem::Resolve(settings.equation).WithRANS(modelSettings);
+            const auto &rans = equation.RANS();
+            std::map<std::string, double> initial{{rans.ComponentNames()[0], .02}};
+            if (rans.ComponentNumber() == 2)
+                initial[rans.ComponentNames()[1]] = .1;
+            settings.numerics.ransState.referenceConservative = initial;
+            C::FiniteVolume fv(mesh, settings, equation);
+            auto target = State(fv, variant);
+            fv.InitializeConstant(target, {1, 0, 0, 0, 1}, {}, 0, {}, initial);
+            auto state = C::EquationDofOperations::NewVector(target);
+            auto source = C::EquationDofOperations::NewVector(target);
+            auto rhs = C::EquationDofOperations::NewVector(target);
+            C::EquationDofOperations::Copy(state, target);
+            R::EagerEngine engine(variant ? 2 : 0);
+            const auto stream = engine.CreateCPUStream();
+            auto targetWork = fv.BuildEquationWorkspace(target);
+            fv.Evaluate(target, rhs, *targetWork, engine, stream);
+            {
+                const auto read = target.ReadOwned(), rhsRead = rhs.ReadOwned();
+                auto write = source.WriteOwned(), stateWrite = state.WriteOwned();
+                for (const auto *block : {"flow", "rans"})
+                {
+                    const auto u = read.Block(block), r = rhsRead.Block(block);
+                    const auto b = write.Block(block), trial = stateWrite.Block(block);
+                    for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                        for (I j = 0; j < u.ComponentNumber(); ++j)
+                        {
+                            b(iCell, j) = 20 * u(iCell, j) - r(iCell, j) / fv.Metrics().GetCellVol(iCell);
+                            trial(iCell, j) *= 1 + .005 * std::sin(fv.Metrics().Cells().LocalToGlobal(iCell) + 2 * j + 1);
+                        }
+                }
+            }
+            C::EquationNonlinearSolver solver(fv, state, fv.BuildEquationWorkspace(state), engine, stream, settings, A::ComponentSelection(state.ComponentNumber()));
+            const auto report = solver.Solve(state, source, 20, 1, 0);
+            CAPTURE(variant);
+            CAPTURE(model);
+            CAPTURE(report.iterations);
+            CAPTURE(report.residualTargetRatio);
+            REQUIRE(report.converged);
+            CHECK(report.linearIterations > 0);
+            for (int j = 0; j < rans.ComponentNumber(); ++j)
+                CHECK(report.residual[5 + j] < 1e-8);
+            const auto actual = state.ReadOwned(), expected = target.ReadOwned();
             for (const auto *block : {"flow", "rans"})
             {
-                const auto u = read.Block(block), r = rhsRead.Block(block);
-                const auto b = write.Block(block), trial = stateWrite.Block(block);
+                const auto a = actual.Block(block), b = expected.Block(block);
                 for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
-                    for (I j = 0; j < u.ComponentNumber(); ++j)
-                    {
-                        b(iCell, j) = 20 * u(iCell, j) - r(iCell, j) / fv.Metrics().GetCellVol(iCell);
-                        trial(iCell, j) *= 1 + .005 * std::sin(fv.Metrics().Cells().LocalToGlobal(iCell) + 2 * j + 1);
-                    }
+                    for (I j = 0; j < a.ComponentNumber(); ++j)
+                        CHECK(std::abs(a(iCell, j) - b(iCell, j)) <= 2e-10 + 2e-8 * std::abs(b(iCell, j)));
             }
         }
-        C::EquationNonlinearSolver solver(fv, state, fv.BuildEquationWorkspace(state), engine, stream, settings, A::ComponentSelection(6));
-        const auto report = solver.Solve(state, source, 20, 1, 0);
-        CAPTURE(variant);
-        CAPTURE(report.iterations);
-        CAPTURE(report.residualTargetRatio);
-        REQUIRE(report.converged);
-        CHECK(report.linearIterations > 0);
-        CHECK(report.residual[5] < 1e-8);
-        const auto actual = state.ReadOwned(), expected = target.ReadOwned();
-        for (const auto *block : {"flow", "rans"})
-        {
-            const auto a = actual.Block(block), b = expected.Block(block);
-            for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
-                for (I j = 0; j < a.ComponentNumber(); ++j)
-                    CHECK(std::abs(a(iCell, j) - b(iCell, j)) <= 2e-10 + 2e-8 * std::abs(b(iCell, j)));
-        }
-    }
 }
 
 int main(int argc, char **argv)

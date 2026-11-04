@@ -93,6 +93,7 @@ namespace DNDS::Cauchy
             const int modes = _data->reconstruction.NRecDOF();
             const auto frame = _data->motion.At(time);
             const auto *ransModel = equation.HasRANS() ? &equation.RANS() : nullptr;
+            const auto ransMean = ransModel ? means.Block("rans") : EquationBlockReadView{};
             PointScratch cellMean(state.ComponentNumber());
             std::optional<WallDistanceRead> wallRead;
             if (ransModel && ransModel->ComponentNumber() == 2) wallRead.emplace(_data->wallDistance->AcquireRead());
@@ -107,6 +108,8 @@ namespace DNDS::Cauchy
                         for (int mode = 0; mode < modes; ++mode)
                             point.values[first[iBlock] + j] += recBlocks[iBlock](sample.cell, j * modes + mode) * b(0, mode);
                 if (!thermal->View().Admissible(point.values)) Gather(blocks, sample.cell, point);
+                if (ransModel)
+                    RANSStateView{ransModel->Kind(), ransModel->ComponentNumber()}.RepairReconstruction(ransMean[sample.cell], point.values.data() + ransFirst);
                 if (wallRead) Gather(blocks, sample.cell, cellMean);
                 BoundaryValue(point, flowFirst, speciesFirst, independent, sample, *evaluator, frame, time, false,
                               {ransModel, ransFirst, &cellMean, wallRead ? walls.cellMean(sample.cell, 0) : 0});

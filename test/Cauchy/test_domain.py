@@ -15,7 +15,8 @@ from DNDSR.Cauchy import Domain, Simulation, PhysicalStepLimit, DerivedQuantity
 
 
 @pytest.mark.mpi
-def test_configured_sa_fields_wall_setup_implicit_restart_and_output(tmp_path):
+@pytest.mark.parametrize("model", ["SA", "KOmegaSST"])
+def test_configured_rans_fields_wall_setup_implicit_restart_and_output(tmp_path, model):
     mpi = DNDS.MPIInfo()
     mpi.setWorld()
     root = Path(__file__).resolve().parents[2]
@@ -30,23 +31,35 @@ def test_configured_sa_fields_wall_setup_implicit_restart_and_output(tmp_path):
         "execution": {"layout": "soa", "hostThreads": 2, "overlap": True},
         "numerics": {"reconstruction": "constant", "limiter": "none", "faceFallback": False,
                      "viscousGradient": "polynomial", "positivity": True},
-        "implicit": {"diagonal": "block", "residualComponents": ["rho", "rhoNuTilde"],
+        # Unit-density BDF residual subtracts O(1/dt)=1e6 terms: allow a
+        # few ulps of that arithmetic, while requiring every selected scalar.
+        "implicit": {"diagonal": "block", "absoluteTolerance": 1e-9,
+                     "residualComponents": ["rho", "rhoNuTilde"],
                      "linear": {"method": "gmres", "preconditioner": "ilu"}},
         "boundaries": {str(zone): {"kind": "noSlipWall"} for zone in zones},
     }, "time": {"method": "bdf1"}}
+    initial = {"rhoNuTilde": .02} if model == "SA" else {"rhoK": .02, "rhoOmega": .1}
+    config["defaults"]["equation"]["rans"]["model"] = model
+    config["defaults"]["initialRANS"] = initial
+    config["defaults"]["numerics"]["ransState"] = {"referenceConservative": initial}
+    config["defaults"]["implicit"]["residualComponents"] = ["rho", *initial]
     domain = Domain(mesh, json.dumps(config))
     fields = domain.fields
     assert set(fields) == {"flow", "rans"}
-    np.testing.assert_array_equal(fields["rans"].numpy(), .02)
+    for column, value in enumerate(initial.values()):
+        np.testing.assert_array_equal(fields["rans"].numpy()[:, column], value)
     assert domain.stable_step(.5) > 0
     residual = domain.residual_fields()
     assert set(residual) == set(fields)
     assert all(np.all(np.isfinite(array.numpy())) for array in residual.values())
     domain.advance(1e-6)
-    assert all(report.converged and len(report.residual) == 6 for report in domain.implicit_stages)
+    for report in domain.implicit_stages:
+        assert len(report.residual) == 5 + len(initial)
+        assert report.converged, (report.iterations, report.residual_target_ratio,
+                                  report.initial_residual, report.residual)
     values = fields["rans"].numpy()
     assert np.all(values >= 0)
-    changed = np.max(np.abs(values - .02), initial=0.)
+    changed = np.max(np.abs(values - np.array(list(initial.values()))), initial=0.)
     assert MPI.COMM_WORLD.allreduce(changed, op=MPI.MAX) > 0
     saved = {name: array.numpy().copy() for name, array in fields.items()}
     path = MPI.COMM_WORLD.bcast(str(tmp_path / "sa.h5") if MPI.COMM_WORLD.rank == 0 else None, root=0)
@@ -59,15 +72,17 @@ def test_configured_sa_fields_wall_setup_implicit_restart_and_output(tmp_path):
     import h5py
 
     with h5py.File(path + ".output.vtkhdf", "r") as output:
-        assert "rhoNuTilde" in output["VTKHDF/CellData"]
-        assert np.all(np.isfinite(output["VTKHDF/CellData/rhoNuTilde"][:]))
+        for component in initial:
+            assert component in output["VTKHDF/CellData"]
+            assert np.all(np.isfinite(output[f"VTKHDF/CellData/{component}"][:]))
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("rans", [False, True])
-def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_path, rans):
+@pytest.mark.parametrize("rans_model", ["none", "SA", "KOmegaSST"])
+def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_path, rans_model):
     import os
 
+    rans = rans_model != "none"
     mpi = DNDS.MPIInfo()
     mpi.setWorld()
     root = Path(__file__).resolve().parents[2]
@@ -85,14 +100,19 @@ def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_p
         "initialMassFractions": {"H2": .027, "O2": .22, "H2O": .02},
         "execution": {"layout": "soa", "hostThreads": 2, "overlap": True},
         "numerics": {"reconstruction": "constant", "faceFallback": False, "positivity": True},
-        "implicit": {"diagonal": "block", "pseudoCFL": 1e4, "maxPseudoCFL": 1e8, "absoluteTolerance": 1e-8,
+        # RHS PP tests residual*dTau, as in Euler. A huge pseudo-CFL makes
+        # that hypothetical explicit chemistry update inadmissible even when
+        # the physical implicit step is tiny; use the ordinary CFL ramp here.
+        "implicit": {"diagonal": "block", "pseudoCFL": 10, "maxPseudoCFL": 1e4, "absoluteTolerance": 1e-8,
                      "residualComponents": ["rhoY:H2", "rhoY:H2O"],
                      "linear": {"method": "gmres", "preconditioner": "ilu"}},
         "boundaries": {str(zone): {"kind": "extrapolate"} for zone in zones},
     }, "time": {"method": "bdf1"}}
     if rans:
-        config["defaults"]["equation"].update({"transport": "NewtonianFourier", "rans": {"model": "SA", "viscosityReference": .01}})
-        config["defaults"]["initialRANS"] = {"rhoNuTilde": .02}
+        config["defaults"]["equation"].update({"transport": "NewtonianFourier", "rans": {"model": rans_model, "viscosityReference": .01}})
+        initial_rans = {"rhoNuTilde": .02} if rans_model == "SA" else {"rhoK": .02, "rhoOmega": .1}
+        config["defaults"]["initialRANS"] = initial_rans
+        config["defaults"]["numerics"]["ransState"] = {"referenceConservative": initial_rans}
         config["defaults"]["numerics"]["viscousGradient"] = "polynomial"
     try:
         domain = Domain(mesh, json.dumps(config))
@@ -113,9 +133,18 @@ def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_p
     np.testing.assert_allclose(fields["flow"].numpy(), before_flow, rtol=1e-11, atol=1e-12)
     local_change = np.max(np.abs(fields["species"].numpy() - before_species), initial=0.)
     assert MPI.COMM_WORLD.allreduce(local_change, op=MPI.MAX) > 1e-10
-    assert all(len(report.residual) == 14 + int(rans) for report in domain.implicit_stages)
-    if rans:
+    for report in domain.implicit_stages:
+        assert len(report.residual) == 14 + (len(initial_rans) if rans else 0)
+        if not report.converged:
+            print("mixture stage", report.iterations, report.linear_iterations, report.residual_target_ratio,
+                  report.rhs_limited, report.increment_limited, report.initial_residual, report.residual)
+        assert report.converged, (report.iterations, report.residual_target_ratio,
+                                  report.initial_residual, report.residual)
+    if rans_model == "SA":
         np.testing.assert_allclose(fields["rans"].numpy(), .02, rtol=1e-11, atol=1e-12)
+    elif rans:
+        assert np.all(np.isfinite(fields["rans"].numpy()))
+        assert np.all(fields["rans"].numpy() >= 0)
     assert not derived.current(domain)
     assert derived.refresh(domain)
     assert derived.current(domain)

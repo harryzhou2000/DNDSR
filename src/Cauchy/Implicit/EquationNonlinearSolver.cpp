@@ -21,6 +21,7 @@ namespace DNDS::Cauchy
         EquationDofs spatial, defect, candidate;
         R::Array<real> inversePseudoTime;
         AuxiliaryValues auxiliary;
+        std::optional<EquationMeanGradients> meanGradients;
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
         std::shared_ptr<LinearProblemContext> problem;
         std::unique_ptr<EquationLinearSolver> linear;
@@ -47,6 +48,8 @@ namespace DNDS::Cauchy
             AuxiliaryRequest request;
             request.faceSpectralRadius = request.cellSpectralSum = true;
             auxiliary = fv.BuildAuxiliaryValues(request);
+            if (fv.Equation().HasRANS() && fv.Equation().RANS().ComponentNumber() == 2)
+                meanGradients.emplace(fv.BuildMeanGradients(state));
             if (positivity)
                 thermal.emplace(fv.Equation(), densityFloor, temperatureFloor, controls.numerics.sensibleEnergyFloor, pressureFloor,
                                 workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{});
@@ -273,7 +276,11 @@ namespace DNDS::Cauchy
                     const NonlinearDetail::PhaseTimer timer(control.profile, NonlinearProfile::PseudoTimePP);
                     data.Stage([&]
                     {
-                        if (!cachedRate) data.discrete.PrepareAuxValues(state, data.auxiliary, time, data.workers);
+                        if (!cachedRate)
+                        {
+                            if (data.meanGradients) data.discrete.PrepareAuxValues(state, data.auxiliary, *data.meanGradients, *data.engine, data.stream, time, data.workers);
+                            else data.discrete.PrepareAuxValues(state, data.auxiliary, time, data.workers);
+                        }
                         const auto read = data.auxiliary.cellSpectralSum->Owned().Read();
                         const auto meanRead = state.ReadOwned(); const auto meanLayout = meanRead.ComponentLayout(); const auto means = meanLayout.View();
                         auto residualWrite = data.defect.WriteOwned(); const auto residualLayout = residualWrite.ComponentLayout(); const auto defect = residualLayout.View();

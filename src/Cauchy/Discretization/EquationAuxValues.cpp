@@ -6,6 +6,218 @@
 namespace DNDS::Cauchy
 {
     namespace R = Runtime;
+    struct EquationMeanGradients::Data
+    {
+        std::weak_ptr<const void> owner;
+        EquationDofOperations::Binding binding;
+        std::optional<EquationDofOperations::Binding> origin;
+        std::vector<CFV::FVField> fields;
+        std::vector<R::Array<real>> boundary;
+        std::vector<std::vector<index>> vectors;
+        std::vector<R::TransferBinding> meanHalo, gradientHalo;
+        std::vector<uint64_t> sourceGhost, ownedVersion, ghostVersion, ownedShape, ghostShape;
+        real time = 0;
+        bool ghostsReady = false;
+        Data(std::weak_ptr<const void> plan, const EquationDofs &state) : owner(std::move(plan)), binding(state) {}
+        void Check(const EquationDofs &state, const std::vector<CFV::FVField> &values,
+                   const std::shared_ptr<const void> &plan, real atTime, bool ghosts) const
+        {
+            DNDS_check_throw_info(owner.lock() == plan && origin && time == atTime && values.size() == fields.size(), "mean gradient publication is missing or belongs to another plan/time");
+            origin->Check(state, true);
+            DNDS_check_throw_info(!ghosts || ghostsReady, "mean gradient halo is not published");
+            for (index iField = 0; iField < index(values.size()); ++iField)
+            {
+                const auto &a = values[iField], &b = fields[iField];
+                DNDS_check_throw_info(a.Space().Same(b.Space()) && a.Owned().SharedStorage() == b.Owned().SharedStorage() &&
+                                          a.Ghost().SharedStorage() == b.Ghost().SharedStorage() && a.Owned().Version() == ownedVersion[iField] &&
+                                          a.Owned().ShapeVersion() == ownedShape[iField] && a.Ghost().ShapeVersion() == ghostShape[iField] &&
+                                          state.PhysicalField(iField).Ghost().Version() == sourceGhost[iField] &&
+                                          (!ghosts || a.Ghost().Version() == ghostVersion[iField]),
+                                      "mean gradient source or output changed");
+            }
+        }
+    };
+    EquationMeanGradients FiniteVolume::BuildMeanGradients(EquationDofs &state) const
+    {
+        EquationMeanGradients result;
+        const MPIInfo mpi(Metrics().Communicator());
+        MPI::LocalStage(mpi, [&]
+                        {
+            _data->equation.ValidateStateSchema(state);
+            DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && state.Device() == R::Device::Host(), "mean gradient state space/backend differs");
+            result._data = std::make_shared<EquationMeanGradients::Data>(_data, state);
+            auto &work = *result._data;
+            for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+            {
+                const auto &field = state.PhysicalField(iField);
+                result.fields.push_back(Metrics().BuildField(FiniteVolumeDetail::FieldLayout(field.Owned().Layout(), Metrics().NumCell(), field.Width() * Metrics().Dimension())));
+                work.boundary.push_back(_data->gradient.BuildBoundaryValues(field.Width()));
+                work.vectors.emplace_back();
+                for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+                {
+                    const auto location = state.LocateBlock(iBlock);
+                    if (location.physicalField == iField)
+                        for (auto first : state.Schema().blocks[iBlock].vectorStarts)
+                            work.vectors.back().push_back(location.firstComponent + first);
+                }
+            }
+            work.fields = result.fields; });
+        for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+        {
+            result._data->meanHalo.push_back(Metrics().BindHalo(state.PhysicalField(iField)));
+            result._data->gradientHalo.push_back(Metrics().BindHalo(result.fields[iField]));
+        }
+        return result;
+    }
+    void FiniteVolume::PrepareAuxValues(EquationDofs &state, AuxiliaryValues &output, EquationMeanGradients &gradients,
+                                        R::EagerEngine &engine, const R::ExecutionStream &stream, real time,
+                                        std::optional<Physics::Chemistry::ChemicalWorkerPool> workers) const
+    {
+        using namespace EquationFVDetail;
+        const MPIInfo mpi(Metrics().Communicator());
+        const bool overlap = _data->settings.execution.overlap;
+        std::optional<EquationPointEvaluator> evaluator;
+        MPI::LocalStage(mpi, [&]
+                        {
+            stream.Record().WaitHost();
+            DNDS_check_throw_info(gradients._data && gradients._data->owner.lock() == _data && stream.Context().device == R::Device::Host(), "foreign mean gradient workspace or non-CPU stream");
+            gradients._data->binding.Check(state);
+            _data->equation.ValidateStateSchema(state);
+            DNDS_check_throw_info(gradients.fields.size() == gradients._data->fields.size(), "mean gradient fields replaced");
+            for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+            {
+                const auto &a = gradients.fields[iField], &b = gradients._data->fields[iField];
+                Metrics().ValidateField(a, state.PhysicalField(iField).Width() * Metrics().Dimension());
+                DNDS_check_throw_info(a.Owned().SharedStorage() == b.Owned().SharedStorage() && a.Ghost().SharedStorage() == b.Ghost().SharedStorage(), "mean gradient binding changed");
+            }
+            evaluator.emplace(_data->equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {true})); });
+        auto &work = *gradients._data;
+        work.origin.reset();
+        work.ghostsReady = false;
+        const auto stage = [&](auto &&action)
+        {
+            if (_data->settings.implicit.collectiveChecks)
+                MPI::LocalStage(mpi, action);
+            else
+                action();
+        };
+        const auto begin = [&](const auto &bindings)
+        {
+            std::vector<R::TransferOperation> operations;
+            for (const auto &binding : bindings)
+                operations.push_back(engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream.Context()));
+            return operations;
+        };
+        const auto fillBoundary = [&]
+        {
+            const auto read = state.ReadOwned();
+            const auto blocks = BlockViews(state, read);
+            std::vector<R::Array<real>::WriteLease> writes;
+            std::vector<RHSOutputView> values;
+            for (auto &array : work.boundary)
+                writes.push_back(array.Write());
+            for (const auto &write : writes)
+                values.push_back(write.View<R::UniformTableRows>());
+            index first = 0, flowFirst = -1, speciesFirst = -1, ransFirst = -1;
+            for (const auto &block : state.Schema().blocks)
+            {
+                if (block.name == "flow")
+                    flowFirst = first;
+                if (block.name == "species")
+                    speciesFirst = first;
+                if (block.name == "rans")
+                    ransFirst = first;
+                first += index(block.components.size());
+            }
+            const int independent = _data->equation.HasMixture() ? _data->equation.Mixture().SpeciesNumber() - 1 : 0;
+            const auto *model = _data->equation.HasRANS() ? &_data->equation.RANS() : nullptr;
+            std::optional<WallDistanceRead> walls;
+            if (model && model->ComponentNumber() == 2)
+                walls.emplace(_data->wallDistance->AcquireRead());
+            const auto wall = walls ? walls->HostView() : WallDistanceView{};
+            PointScratch mean(state.ComponentNumber()), point(state.ComponentNumber());
+            const auto frame = _data->motion.At(time);
+            for (index iPoint = 0; iPoint < _data->gradient.NumBoundaryQuadrature(); ++iPoint)
+            {
+                const auto &sample = _data->samples[_data->boundaryEntries[_data->gradientBoundaryPoints[iPoint]]];
+                Gather(blocks, sample.cell, mean);
+                point.values = mean.values;
+                BoundaryValue(point, flowFirst, speciesFirst, independent, sample, *evaluator, frame, time, false,
+                              {model, ransFirst, &mean, walls ? wall.cellMean(sample.cell, 0) : 0});
+                first = 0;
+                for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+                {
+                    const auto location = state.LocateBlock(iBlock);
+                    for (index j = 0; j < location.componentNumber; ++j)
+                        values[location.physicalField](iPoint, location.firstComponent + j) = point.values[first++];
+                }
+            }
+        };
+        const auto gradient = [&](CFV::ReconstructionRegion region)
+        {
+            for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+                _data->gradient.Evaluate(state.PhysicalField(iField), work.boundary[iField], gradients.fields[iField], work.vectors[iField], region);
+        };
+        std::optional<EquationAuxiliaryPreparation> preparation;
+        try
+        {
+            auto means = begin(work.meanHalo);
+            engine.Submit(stream, [&](auto)
+                          {
+                fillBoundary();
+                if (overlap) gradient(CFV::ReconstructionRegion::Core); });
+            for (auto &operation : means)
+                operation.Wait();
+            engine.Submit(stream, [&](auto)
+                          { gradient(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All); });
+            stage([&]
+                  { stream.Record().WaitHost(); });
+            stage([&]
+                  {
+                work.origin.emplace(state.NumericAlias()); work.time = time;
+                work.sourceGhost.clear(); work.ownedVersion.clear(); work.ghostVersion.clear(); work.ownedShape.clear(); work.ghostShape.clear();
+                for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+                {
+                    const auto &field = gradients.fields[iField];
+                    work.sourceGhost.push_back(state.PhysicalField(iField).Ghost().Version());
+                    work.ownedVersion.push_back(field.Owned().Version()); work.ownedShape.push_back(field.Owned().ShapeVersion());
+                    work.ghostShape.push_back(field.Ghost().ShapeVersion());
+                } });
+            // Release the boundary worker before auxiliary preparation acquires
+            // its own worker; a one-worker pool is a supported configuration.
+            evaluator.reset();
+            auto halos = begin(work.gradientHalo);
+            stage([&]
+                  { preparation.emplace(BeginAuxValues(state, output, time, workers, {&gradients})); });
+            if (overlap)
+                engine.Submit(stream, [&](auto)
+                              { preparation->Apply(CFV::ReconstructionRegion::Core); });
+            for (auto &operation : halos)
+                operation.Wait();
+            for (const auto &field : gradients.fields)
+                work.ghostVersion.push_back(field.Ghost().Version());
+            work.ghostsReady = true;
+            engine.Submit(stream, [&](auto)
+                          {
+                preparation->Apply(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
+                preparation->Finish(output); });
+            stage([&]
+                  { stream.Record().WaitHost(); });
+        }
+        catch (...)
+        {
+            try
+            {
+                stream.Record().WaitHost();
+            }
+            catch (...)
+            {
+            }
+            work.origin.reset();
+            work.ghostsReady = false;
+            throw;
+        }
+    }
     real FiniteVolume::StableStep(const EquationDofs &state, const AuxiliaryValues &values, real cfl, real time) const
     {
         real dt = std::numeric_limits<real>::max();
@@ -53,6 +265,8 @@ namespace DNDS::Cauchy
         std::vector<uint64_t> ghostVersions;
         std::array<Stamp, 9> outputs;
         std::array<R::ArrayStorage::Shared, 3> ghosts;
+        std::vector<R::Array<real>> gradientInputs;
+        std::vector<std::array<uint64_t, 2>> gradientVersions;
         real time;
         EquationOrigin(std::weak_ptr<const void> plan, const EquationDofs &state, const AuxiliaryValues &values, real atTime)
             : owner(std::move(plan)), source(state.NumericAlias()), time(atTime)
@@ -78,6 +292,12 @@ namespace DNDS::Cauchy
         CFV::FiniteVolumeRead geometry;
         EquationDofs::ReadScope owned;
         std::optional<EquationDofs::ReadScope> complete;
+        std::optional<EquationMeanGradients> gradients;
+        std::vector<R::Array<real>::ReadLease> gradientOwned, gradientGhost;
+        std::vector<RHSFieldView> gradientViews;
+        std::vector<EquationBlockLocation> locations;
+        std::optional<WallDistanceRead> walls;
+        WallDistanceView wallValues;
         std::optional<DerivedFields::ReadScope> derivedOwned, derivedGhost;
         std::array<std::optional<R::Array<real>::WriteLease>, 7> writes;
         std::array<RHSOutputView, 7> values;
@@ -92,13 +312,31 @@ namespace DNDS::Cauchy
         bool started = false;
 
         State(std::shared_ptr<const Data> plan, const EquationDofs &state, const AuxiliaryValues &output, real atTime,
-              std::optional<Physics::Chemistry::ChemicalWorkerPool> pool)
+              std::optional<Physics::Chemistry::ChemicalWorkerPool> pool, EquationAuxiliaryInputs inputs)
             : data(std::move(plan)), source(state.NumericAlias()), buffers(output), workers(std::move(pool)),
               geometry(data->metrics.AcquireRead()), owned(source.ReadOwned()),
               independent(data->equation.HasMixture() ? data->equation.Mixture().SpeciesNumber() - 1 : 0),
               time(atTime), frame(data->motion.At(time))
         {
+            if (inputs.meanGradients)
+            {
+                gradients = *inputs.meanGradients;
+                DNDS_check_throw_info(gradients->_data, "mean gradient input is uninitialized");
+                gradients->_data->Check(source, gradients->fields, data, time, false);
+                for (const auto &field : gradients->fields)
+                    gradientOwned.push_back(field.Owned().Read());
+                for (const auto &read : gradientOwned)
+                    gradientViews.push_back({read.View<R::UniformTableRows>(), {}});
+            }
+            if (data->equation.HasRANS() && data->equation.RANS().ComponentNumber() == 2)
+            {
+                DNDS_check_throw_info(gradients, "two-equation auxiliary transport requires explicit mean gradients");
+                walls.emplace(data->wallDistance->AcquireRead());
+                wallValues = walls->HostView();
+            }
             index first = 0;
+            for (index iBlock = 0; iBlock < source.BlockNumber(); ++iBlock)
+                locations.push_back(source.LocateBlock(iBlock));
             for (const auto &block : source.Schema().blocks)
             {
                 if (block.name == "flow")
@@ -176,19 +414,29 @@ namespace DNDS::Cauchy
                 RefreshDerivedFields(source, data->equation, *field, true);
             (ghost ? derivedGhost : derivedOwned).emplace(field->ReadCurrent(source, data->equation));
         }
-        std::array<real, 3> Properties(EquationFVDetail::PointScratch &point, EquationPointEvaluator &evaluator) const
+        void LoadGradients(index iCell, EquationFVDetail::PointScratch &point) const
+        {
+            if (!gradients)
+                return;
+            index first = 0;
+            const int dim = data->metrics.Dimension();
+            for (const auto &location : locations)
+                for (index j = 0; j < location.componentNumber; ++j, ++first)
+                    for (int d = 0; d < dim; ++d)
+                        point.gradient(first, d) = gradientViews[location.physicalField](iCell, (location.firstComponent + j) * dim + d);
+        }
+        std::array<real, 3> Properties(EquationFVDetail::PointScratch &point, EquationPointEvaluator &evaluator,
+                                       real wallDistance = 1, bool turbulent = true) const
         {
             const auto flow = point.Flow(flowFirst);
             const auto result = evaluator.Evaluate(flow, point.Species(speciesFirst, independent));
             real diffusion = result.diffusionBound;
-            if (ransFirst >= 0)
+            if (ransFirst >= 0 && turbulent)
             {
-                // The enabled SA viscosity depends only on mean state and mu.
-                // No reconstruction or gradient exchange is hidden in aux.
                 const auto &model = data->equation.RANS();
-                const auto turbulent = model.Transport(EquationFVDetail::RANSPoint(point, flowFirst, ransFirst, model, result, 1.));
-                diffusion = std::max({diffusion, real(4. / 3.) * (result.transport.viscosity + turbulent.viscosity) / flow[0],
-                                      (result.transport.conductivity + turbulent.conductivity) / (flow[0] * result.thermo.cv)});
+                const auto transport = model.Transport(EquationFVDetail::RANSPoint(point, flowFirst, ransFirst, model, result, wallDistance));
+                diffusion = std::max({diffusion, real(4. / 3.) * (result.transport.viscosity + transport.viscosity) / flow[0],
+                                      (result.transport.conductivity + transport.conductivity) / (flow[0] * result.thermo.cv)});
             }
             return {result.thermo.pressure, result.thermo.soundSpeed, diffusion};
         }
@@ -200,7 +448,8 @@ namespace DNDS::Cauchy
             for (index iCell = first; iCell < last; ++iCell)
             {
                 EquationFVDetail::Gather(blocks, iCell, point);
-                const auto result = Properties(point, evaluator);
+                LoadGradients(iCell, point);
+                const auto result = Properties(point, evaluator, walls ? wallValues.cellMean(iCell, 0) : 1);
                 for (int j = 0; j < 3; ++j)
                     values[0](iCell, j) = result[j];
             }
@@ -214,25 +463,22 @@ namespace DNDS::Cauchy
             std::optional<MeanThermodynamicView> derived;
             if (buffers._derivedThermodynamics)
                 derived.emplace(MeanThermodynamicView::Derived(*derivedOwned, derivedGhost ? &*derivedGhost : nullptr));
-            EquationFVDetail::PointScratch left(source.ComponentNumber()), right(source.ComponentNumber());
+            EquationFVDetail::PointScratch left(source.ComponentNumber()), right(source.ComponentNumber()), face(source.ComponentNumber());
             const auto *ransModel = data->equation.HasRANS() ? &data->equation.RANS() : nullptr;
-            std::optional<WallDistanceRead> wallRead;
-            if (ransModel && ransModel->ComponentNumber() == 2)
-                wallRead.emplace(data->wallDistance->AcquireRead());
-            const auto walls = wallRead ? wallRead->HostView() : WallDistanceView{};
             const auto prepared = [&](index iCell, auto &point)
             {
                 if (derived && ransFirst < 0)
                     return std::array<real, 3>{(*derived)(iCell, 0), (*derived)(iCell, 1), (*derived)(iCell, 2)};
                 if (writes[0])
                     return std::array<real, 3>{values[0](iCell, 0), values[0](iCell, 1), values[0](iCell, 2)};
-                return Properties(point, evaluator);
+                return Properties(point, evaluator, walls ? wallValues.cellMean(iCell, 0) : 1);
             };
             for (const auto iAux : faces)
             {
                 const auto iFace = data->stencilFaces[iAux], first = data->faceEntries[iAux];
                 const auto &anchor = data->samples[first];
                 EquationFVDetail::Gather(blocks, anchor.cell, left);
+                LoadGradients(anchor.cell, left);
                 const auto leftProperties = prepared(anchor.cell, left);
                 const Riemann::AcousticState leftData{{left.Flow(flowFirst), leftProperties[0]}, leftProperties[1]};
                 real convection = 0, diffusion = 0, jump = 0, minimum = leftProperties[0];
@@ -243,22 +489,40 @@ namespace DNDS::Cauchy
                     if (sample.other == UnInitIndex)
                     {
                         right.values = left.values;
+                        right.gradient = left.gradient;
                         EquationFVDetail::BoundaryValue(right, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, true,
-                                                        {ransModel, ransFirst, &left, wallRead ? walls.cellMean(sample.cell, 0) : 0});
+                                                        {ransModel, ransFirst, &left, walls ? wallValues.cellMean(sample.cell, 0) : 0});
                     }
                     else
                     {
                         EquationFVDetail::Gather(blocks, sample.other, right);
+                        LoadGradients(sample.other, right);
                         EquationFVDetail::RotatePoint(right, sample.rotation, vectorStarts);
                     }
-                    const auto rightProperties = sample.other == UnInitIndex ? Properties(right, evaluator) : prepared(sample.other, right);
+                    // A reflected two-equation wall state may have negative k;
+                    // evaluate its thermodynamics, not its turbulence closure.
+                    const auto rightProperties = sample.other == UnInitIndex ? Properties(right, evaluator, 1, !walls) : prepared(sample.other, right);
                     const Riemann::AcousticState rightData{{right.Flow(flowFirst), rightProperties[0]}, rightProperties[1]};
                     const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
                     const auto grid = frame.GridVelocity({sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]});
                     if (spectral)
                     {
                         convection = std::max({convection, Riemann::SignalSpeed(leftData, normal, grid), Riemann::SignalSpeed(rightData, normal, grid)});
-                        diffusion = std::max(diffusion, std::max(leftProperties[2], rightProperties[2]) * data->auxiliaryFaceArea[iAux] *
+                        real bound = std::max(leftProperties[2], rightProperties[2]);
+                        if (walls)
+                        {
+                            for (index j = 0; j < source.ComponentNumber(); ++j)
+                                face.values[j] = .5 * (left.values[j] + right.values[j]);
+                            face.gradient = .5 * (left.gradient + right.gradient);
+                            if (sample.other == UnInitIndex)
+                            {
+                                face.values = left.values;
+                                EquationFVDetail::BoundaryValue(face, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, false,
+                                                                {ransModel, ransFirst, &left, wallValues.cellMean(sample.cell, 0)});
+                            }
+                            bound = std::max(bound, Properties(face, evaluator, wallValues.faces(sample.face, q))[2]);
+                        }
+                        diffusion = std::max(diffusion, bound * data->auxiliaryFaceArea[iAux] *
                                                             (1 / metric.GetCellVol(sample.cell) + 1 / metric.GetCellVol(sample.other == UnInitIndex ? sample.cell : sample.other)));
                     }
                     if (wave)
@@ -326,6 +590,14 @@ namespace DNDS::Cauchy
         {
             DNDS_check_throw_info(phase == 1, "equation auxiliary dependent phase requires core");
             complete.emplace(source.ReadWithGhost()); // An unfinished halo is retriable before any dependent write.
+            if (gradients)
+            {
+                gradients->_data->Check(source, gradients->fields, data, time, true);
+                for (const auto &field : gradients->fields)
+                    gradientGhost.push_back(field.Ghost().Read());
+                for (index iField = 0; iField < index(gradientViews.size()); ++iField)
+                    gradientViews[iField].ghost = gradientGhost[iField].View<R::UniformTableRows>();
+            }
             RefreshDerived(true);
             auto evaluator = Evaluator();
             const auto blocks = EquationFVDetail::BlockViews(source, *complete);
@@ -364,12 +636,20 @@ namespace DNDS::Cauchy
         for (auto &write : _state->writes)
             write.reset();
         _state->scratchWrite.reset();
-        output._equationOrigin = std::make_shared<AuxiliaryValues::EquationOrigin>(_state->data, _state->source, output, _state->time);
+        auto origin = std::make_shared<AuxiliaryValues::EquationOrigin>(_state->data, _state->source, output, _state->time);
+        if (_state->gradients)
+            for (const auto &field : _state->gradients->fields)
+                for (const auto *array : {&field.Owned(), &field.Ghost()})
+                {
+                    origin->gradientInputs.push_back(*array);
+                    origin->gradientVersions.push_back({array->Version(), array->ShapeVersion()});
+                }
+        output._equationOrigin = std::move(origin);
         output._origin.reset();
         _state.reset();
     }
     FiniteVolume::EquationAuxiliaryPreparation FiniteVolume::BeginAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time,
-                                                                            std::optional<Physics::Chemistry::ChemicalWorkerPool> workers) const
+                                                                            std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, EquationAuxiliaryInputs inputs) const
     {
         Metrics().Validate();
         _data->partition.Validate();
@@ -391,6 +671,10 @@ namespace DNDS::Cauchy
                 for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                     for (const auto *input : {&state.PhysicalField(iField).Owned(), &state.PhysicalField(iField).Ghost()})
                         DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), arrays[k]->Storage()), "equation auxiliary output aliases state");
+                if (inputs.meanGradients)
+                    for (const auto &field : inputs.meanGradients->fields)
+                        for (const auto *input : {&field.Owned(), &field.Ghost()})
+                            DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), arrays[k]->Storage()), "equation auxiliary output aliases mean gradients");
                 for (int j = 0; j < k; ++j)
                     if (arrays[j])
                         DNDS_check_throw_info(!Algebra::Detail::Overlaps(arrays[k]->Storage(), arrays[j]->Storage()), "equation auxiliary outputs overlap");
@@ -417,15 +701,15 @@ namespace DNDS::Cauchy
         const bool needScratch = (arrays[4] && !arrays[1]) || (arrays[5] && !arrays[2]) || (arrays[6] && !arrays[3]);
         if (needScratch && (!output._faceScratch || output._faceScratch->RowCount() != faces))
             output._faceScratch.emplace(R::RowLayout::Dense(faces, 3));
-        auto prepared = std::make_unique<EquationAuxiliaryPreparation::State>(_data, state, output, time, std::move(workers));
+        auto prepared = std::make_unique<EquationAuxiliaryPreparation::State>(_data, state, output, time, std::move(workers), inputs);
         output._equationOrigin.reset();
         output._origin.reset();
         return EquationAuxiliaryPreparation(std::move(prepared));
     }
     void FiniteVolume::PrepareAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time,
-                                        std::optional<Physics::Chemistry::ChemicalWorkerPool> workers) const
+                                        std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, EquationAuxiliaryInputs inputs) const
     {
-        auto scope = BeginAuxValues(state, output, time, std::move(workers));
+        auto scope = BeginAuxValues(state, output, time, std::move(workers), inputs);
         scope.Apply();
         scope.Finish(output);
     }
@@ -438,6 +722,13 @@ namespace DNDS::Cauchy
         const auto &origin = *values._equationOrigin;
         DNDS_check_throw_info(origin.owner.lock().get() == _data.get() && origin.time == time, "equation auxiliary plan/time is stale");
         origin.source.Check(state, true);
+        for (index k = 0; k < index(origin.gradientInputs.size()); ++k)
+        {
+            const auto read = origin.gradientInputs[k].Read();
+            DNDS_check_throw_info(origin.gradientInputs[k].Version() == origin.gradientVersions[k][0] &&
+                                      origin.gradientInputs[k].ShapeVersion() == origin.gradientVersions[k][1],
+                                  "equation auxiliary gradient input changed");
+        }
         for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             DNDS_check_throw_info(origin.ghostVersions[iField] == state.PhysicalField(iField).Ghost().Version(), "equation auxiliary ghosts changed");
         const auto arrays = EquationAuxiliaryArrays(values);

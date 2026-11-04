@@ -167,9 +167,9 @@ namespace DNDS::Cauchy
                         {
             settings.numerics.ValidatePositivity();
             if (equation.HasRANS())
-                DNDS_check_throw_info(equation.RANS().Kind() == Physics::RANS::ModelKind::SA && equation.RANS().Settings().desScale > 100 &&
+                DNDS_check_throw_info(equation.RANS().Settings().desScale > 100 &&
                                           std::isfinite(settings.numerics.wallDistanceFloor) && settings.numerics.wallDistanceFloor > 0 && mesh->HasNodeWallDist(),
-                                      "RANS FV currently requires SA without DES and a published nodal wall field with a positive sampling floor");
+                                      "RANS FV requires DES disabled and a published nodal wall field with a positive sampling floor");
             settings.numerics.limitedVR.Validate();
             DNDS_check_throw_info(!equation.HasMixture() || settings.numerics.limiter != "LVR",
                                   "mixture LVR policy is not connected yet");

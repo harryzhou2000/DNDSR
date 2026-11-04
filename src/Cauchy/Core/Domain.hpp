@@ -36,7 +36,8 @@ namespace DNDS::Cauchy
         std::optional<RANSStateView> _ransState;
         std::shared_ptr<FiniteVolume::Workspace> _observationWorkspace;
         std::optional<CFV::FVField> _observationResidual;
-        Runtime::EagerEngine _engine;
+        /// Logical-const diagnostics may enqueue work on the domain stream.
+        mutable Runtime::EagerEngine _engine;
         Runtime::ExecutionStream _stream;
         std::unique_ptr<NonlinearSolver> _implicit;
         std::unique_ptr<EquationNonlinearSolver> _equationImplicit;
@@ -64,6 +65,7 @@ namespace DNDS::Cauchy
         std::optional<Runtime::Array<real>> _limitedVRBackup;
         bool _restoreReconstruction = false;
         mutable std::optional<AuxiliaryValues> _timeAuxiliary;
+        mutable std::optional<EquationMeanGradients> _timeMeanGradients;
         mutable std::vector<Runtime::TransferBinding> _timeMeanHalo;
         PhysicalTimePositivitySettings _timePP;
         int _timeCompressionPower = 1;

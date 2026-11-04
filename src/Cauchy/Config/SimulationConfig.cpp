@@ -270,7 +270,10 @@ namespace DNDS::Cauchy
         require(rans || s.initialRANS.empty(), "initialRANS without a RANS model");
         if (rans)
         {
-            require(s.equation.rans.model == "SA" && s.equation.rans.desScale > 100, "RANS spatial profile " + s.equation.rans.model);
+            require((s.equation.rans.model == "SA" || s.equation.rans.model == "KOmegaWilcox" ||
+                     s.equation.rans.model == "KOmegaSST" || s.equation.rans.model == "RealizableKE") &&
+                        s.equation.rans.desScale > 100,
+                    "RANS spatial profile " + s.equation.rans.model);
             require(s.equation.transport == "NewtonianFourier", "RANS requires viscous transport");
         }
         require(s.equation.eos == "perfectGas" || mixture, "EOS " + s.equation.eos);

@@ -22,6 +22,27 @@ namespace DNDS::Geom
 
 namespace DNDS::Cauchy
 {
+    /// Persistent buffers/plans for explicit mean-gradient preparation. One
+    /// field per physical equation allocation, columns component*dim+direction.
+    /// Gradient values use the cell's mesh frame; periodic tensors are rotated
+    /// at stencil consumption. Copies share buffers and must not execute at
+    /// the same time. Build for the exact state binding used by the caller.
+    struct EquationMeanGradients
+    {
+        std::vector<CFV::FVField> fields;
+
+    private:
+        friend class FiniteVolume;
+        struct Data;
+        std::shared_ptr<Data> _data;
+    };
+    /// Optional prepared inputs to the stateless auxiliary property kernels.
+    /// Two-equation RANS requires meanGradients. No implicit gradient solve or
+    /// exchange is performed by BeginAuxValues/EquationAuxiliaryPreparation.
+    struct EquationAuxiliaryInputs
+    {
+        const EquationMeanGradients *meanGradients = nullptr;
+    };
     /// Explicit result of physical-step selection. Alpha/count describe the PP
     /// bound before any independent growth cap or subsequent retry halving.
     struct PhysicalStepLimit
@@ -226,11 +247,29 @@ namespace DNDS::Cauchy
         };
         /// Synchronous CPU property preparation with explicit mixture workers.
         /// The caller owns collective order/error handling and halo completion;
-        /// even an empty rank uses the same outer schedule. Initial boundary
-        /// support matches EquationWorkspace: extrapolate and adiabatic walls.
+        /// even an empty rank uses the same outer schedule. Boundary producers
+        /// match EquationWorkspace. Two-equation closures require a current
+        /// explicit mean-gradient publication; neither overload exchanges data.
         EquationAuxiliaryPreparation BeginAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time = 0,
-                                                    std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt) const;
+                                                    std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
+                                                    EquationAuxiliaryInputs inputs = {}) const;
         void PrepareAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time = 0,
+                              std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
+                              EquationAuxiliaryInputs inputs = {}) const;
+        /// Collective allocation/binding only, not a gradient evaluation. The
+        /// returned workspace is tied to these physical allocations and row
+        /// spaces; rebuild after rebinding/redistributing the equation state.
+        EquationMeanGradients BuildMeanGradients(EquationDofs &state) const;
+        /// Collective CPU orchestration: mean halo + gradient core, dependent
+        /// gradients, then gradient halo + auxiliary core, and auxiliary rest.
+        /// Uses persistent scratch and explicit workers. No VR coefficients are
+        /// read or changed. Inline/worker and overlap/unsplit share the kernels.
+        /// Release conflicting views first. All ranks enter with the same
+        /// physical grouping; no simultaneous use of shared workspace copies.
+        /// Returns with CPU-visible outputs. Mutating state or gradients makes
+        /// a retained auxiliary publication stale and validation rejects it.
+        void PrepareAuxValues(EquationDofs &state, AuxiliaryValues &output, EquationMeanGradients &gradients,
+                              Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0,
                               std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt) const;
         void ValidateAuxValues(const EquationDofs &state, const AuxiliaryValues &values, real time = 0) const;
         /// Copyable immutable read scope for RHS geometry/basis data. Apply is

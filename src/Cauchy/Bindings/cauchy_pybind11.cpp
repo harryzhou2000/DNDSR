@@ -59,7 +59,7 @@ PYBIND11_MODULE(cauchy_pybind11, m)
         .def_readonly("residual", &C::EquationNonlinearIterationReport::residual)
         .def_readonly("rhs_limited", &C::EquationNonlinearIterationReport::rhsLimited)
         .def_readonly("increment_limited", &C::EquationNonlinearIterationReport::incrementLimited);
-    py::class_<C::Domain>(m, "Domain", "CPU perfect-gas or ideal-mixture domain with optional configured SA. Collective methods use the mesh communicator. Missing RANS wall distance is built by Geom from no-slip zones. Release all debug views before construction/stepping; no CUDA fallback.")
+    py::class_<C::Domain>(m, "Domain", "CPU perfect-gas or ideal-mixture domain with optional SA, Wilcox/SST or realizable k-epsilon. Collective methods use the mesh communicator. Missing RANS wall distance is built by Geom from no-slip zones. Release all debug views before construction/stepping; no CUDA fallback.")
         .def(py::init([](std::shared_ptr<DNDS::Geom::UnstructuredMesh> mesh, const std::string &json, const std::string &name)
                       {
             const auto mpi=mesh->getMPI();

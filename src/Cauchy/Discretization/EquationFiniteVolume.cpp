@@ -104,6 +104,7 @@ namespace DNDS::Cauchy
         std::vector<R::Array<real>> sourceValues;
         std::vector<std::array<R::Array<real>, 3>> sourceGradients;
         R::Array<real> ransDestruction;
+        std::optional<EquationMeanGradients> meanGradients;
         bool chemical;
         int iterations = 0;
         real relativeUpdate = 0;
@@ -266,6 +267,7 @@ namespace DNDS::Cauchy
             CFV::Math::SmallMatrix scratch;
             PointScratch point(state.ComponentNumber()), cellMean(state.ComponentNumber());
             const auto *ransModel = owner->equation.HasRANS() ? &owner->equation.RANS() : nullptr;
+            const auto ransMean = ransModel ? mean.Block("rans") : EquationBlockReadView{};
             std::optional<WallDistanceRead> wallRead;
             if (ransModel && ransModel->ComponentNumber() == 2)
                 wallRead.emplace(owner->wallDistance->AcquireRead());
@@ -288,6 +290,8 @@ namespace DNDS::Cauchy
                                 for (int mode = 0; mode < modes; ++mode)
                                     point.values[logicalFirst[iBlock] + j] += recBlocks[iBlock](sample.cell, j * modes + mode) * basis(0, mode);
                     }
+                    if (ransModel)
+                        RANSStateView{ransModel->Kind(), ransModel->ComponentNumber()}.RepairReconstruction(ransMean[sample.cell], point.values.data() + ransFirst);
                     BoundaryValue(point, flowFirst, speciesFirst, owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() - 1 : 0,
                                   sample, evaluator, frame, time, false,
                                   {ransModel, ransFirst, &cellMean, wallRead ? wallValues.cellMean(sample.cell, 0) : 0});
@@ -335,6 +339,7 @@ namespace DNDS::Cauchy
             const auto frame = owner->motion.At(time);
             PointScratch left(width), right(width), face(width), cellMean(width);
             const auto *ransModel = owner->equation.HasRANS() ? &owner->equation.RANS() : nullptr;
+            const auto ransMean = ransModel ? mean.Block("rans") : EquationBlockReadView{};
             std::vector<real> integrated(size_t(width), 0), flux(size_t(width), 0), speciesFlux(size_t(independent), 0);
             EquationTransportScratch transport(species);
             std::optional<WallDistanceRead> wallRead;
@@ -363,6 +368,8 @@ namespace DNDS::Cauchy
                                 for (int d = 0; d < dim; ++d)
                                     point.gradient(logical, d) += value * basis(1 + d, mode);
                         }
+                if (ransModel)
+                    RANSStateView{ransModel->Kind(), ransModel->ComponentNumber()}.RepairReconstruction(ransMean[iCell], point.values.data() + ransFirst);
             };
             const auto compute = [&](index iCell)
             {
@@ -557,6 +564,8 @@ namespace DNDS::Cauchy
                         destruction(iCell, j) = 0;
             const int independent = owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() - 1 : 0;
             PointScratch point(state.ComponentNumber());
+            const auto mean = state.ReadOwned();
+            const auto ransMean = ransFirst >= 0 ? mean.Block("rans") : EquationBlockReadView{};
             std::vector<EquationBlockLocation> locations;
             for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
                 locations.push_back(state.LocateBlock(iBlock));
@@ -574,6 +583,11 @@ namespace DNDS::Cauchy
                                 for (int d = 0; d < owner->metrics.Dimension(); ++d)
                                     point.gradient(logicalFirst[iBlock] + j, d) = gradients[location.physicalField][d](iPoint, location.firstComponent + j);
                         }
+                    }
+                    if (ransFirst >= 0)
+                    {
+                        const auto &model = owner->equation.RANS();
+                        RANSStateView{model.Kind(), model.ComponentNumber()}.RepairReconstruction(ransMean[iCell], point.values.data() + ransFirst);
                     }
                     const auto properties = evaluator.Evaluate(point.Flow(flowFirst), point.Species(speciesFirst, independent), 0, {ransFirst >= 0, false, false, chemical && result, false});
                     if (chemical && result)
@@ -601,6 +615,17 @@ namespace DNDS::Cauchy
                                             R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
         const MPIInfo mpi(Metrics().Communicator());
+        if (work.meanGradients)
+        {
+            ValidateWorkspace(state, work);
+            PrepareAuxValues(state, auxiliary, *work.meanGradients, engine, stream, time, work.workers);
+            MPI::LocalStage(mpi, [&]
+                            {
+                auto evaluator = _data->equation.MakePointEvaluator(work.workers ? work.workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {true});
+                work.PrepareVolumeSource(state, nullptr, evaluator);
+                work.PublishSourceState(state, time); });
+            return;
+        }
         std::optional<EquationAuxiliaryPreparation> preparation;
         MPI::LocalStage(mpi, [&]
                         {
@@ -718,6 +743,8 @@ namespace DNDS::Cauchy
         MPI::LocalStage(mpi, [&]
                         { result = std::make_shared<EquationWorkspace>(_data, state, std::move(workers)); });
         result->BindHalos(state);
+        if (_data->equation.HasRANS() && _data->equation.RANS().ComponentNumber() == 2)
+            result->meanGradients.emplace(BuildMeanGradients(state));
         return result;
     }
     const EquationDofs &FiniteVolume::ReconstructionGuess(const EquationWorkspace &work) const
