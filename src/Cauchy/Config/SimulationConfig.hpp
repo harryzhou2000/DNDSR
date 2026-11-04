@@ -89,6 +89,7 @@ namespace DNDS::Cauchy
         bool positivityCompressToMean = true, positivityVolumePoints = true;
         int positivityBetaPower = 1;
         real densityFloor = 1e-12, pressureFloor = 1e-12;
+        real sensibleEnergyFloor = 1e-12;
         CFV::ReconstructionSettings cfv;
         CFV::LimitedVRSettings limitedVR;
         RiemannSettings riemann;
@@ -107,15 +108,16 @@ namespace DNDS::Cauchy
             DNDS_FIELD(viscousGradient, "primitive retains the cell-gradient scheme; polynomial uses cached polynomial derivatives and Euler's normal face-jump penalty");
             DNDS_FIELD(viscousLimited, "Use the filtered flux polynomial for polynomial viscosity; false uses the unlimited VR guess");
             DNDS_FIELD(noGRPOnWall, "Disable the polynomial normal jump penalty on no-slip walls, retaining the polynomial gradient");
-            DNDS_FIELD(positivity, "Mean-preserving reconstruction and conservative SSPRK flux-blend PP");
+            DNDS_FIELD(positivity, "Mean-preserving reconstruction and implicit correction PP; flow5 SSPRK also uses conservative flux blending");
             DNDS_FIELD(temperatureFloor, "Minimum temperature enforced through the equation's internal-energy bound");
             DNDS_FIELD(positivityBetaCutoff, "Set numerically tiny reconstruction beta to zero; matches legacy's mean fallback");
             DNDS_FIELD(positivityReconstruction, "Euler common quadrature beta or Segment for reproducing earlier Cauchy archives");
             DNDS_FIELD(positivityCompressToMean, "Euler reference is the mean; false uses legacy progressive order reduction");
-            DNDS_FIELD(positivityVolumePoints, "Check volume as well as face quadrature points; future source models may require volume points");
+            DNDS_FIELD(positivityVolumePoints, "Add the maximum-order volume grid to face PP checks; chemical source quadrature is always protected");
             DNDS_FIELD(positivityBetaPower, "Euler extra beta exponent, so the total exponent is 1+power");
             DNDS_FIELD(densityFloor, "Positive inclusive density admissibility floor");
             DNDS_FIELD(pressureFloor, "Positive inclusive pressure admissibility floor for the initial perfect-gas equation");
+            DNDS_FIELD(sensibleEnergyFloor, "Mixture internal-energy density margin above its backend reference temperature; no gamma conversion");
             config.field_section(&T::cfv, "cfv", "Independent mathematical CFV configuration");
             config.field_section(&T::limitedVR, "limitedVR", "Native v2/v3 target-penalty controls");
             config.field_section(&T::riemann, "riemann", "Numerical flux correction controls, independent of EOS");

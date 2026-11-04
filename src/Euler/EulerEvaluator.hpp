@@ -31,6 +31,7 @@
 // #endif
 
 #include "Euler/Gas.hpp"
+#include "Physics/Chemistry/SpeciesAdmissibility.hpp"
 #include "Geom/Compat/LegacyMeshRead.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "CFV/Legacy/VariationalReconstruction.hpp"
@@ -2104,23 +2105,7 @@ namespace DNDS::Euler
 
             const int Ns1 = phys_.nSpecies() - 1;
             const int Isp = static_cast<int>(uCell.size()) - Ns1;
-            constexpr real rhoYFloor = 1e-30;
-            constexpr real dependentSpeciesFractionFloor = 1e-14;
-
-            for (int k = 0; k < Ns1; ++k)
-                uCell(Isp + k) = std::max(uCell(Isp + k), rhoYFloor);
-
-            real sumRhoY = 0;
-            for (int k = 0; k < Ns1; ++k)
-                sumRhoY += uCell(Isp + k);
-
-            const real sumRhoYMax = uCell(0) * (1.0 - dependentSpeciesFractionFloor);
-            if (sumRhoY > sumRhoYMax)
-            {
-                const real scale = sumRhoYMax / sumRhoY;
-                for (int k = 0; k < Ns1; ++k)
-                    uCell(Isp + k) *= scale;
-            }
+            DNDS::Physics::Chemistry::RepairSpeciesDensities(uCell(0), uCell.segment(Isp, Ns1), Ns1);
         }
 
     public:

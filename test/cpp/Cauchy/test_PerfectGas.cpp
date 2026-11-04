@@ -7,6 +7,7 @@
 #include "Cauchy/Physics/Positivity.hpp"
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
 #include "Cauchy/Physics/ReconstructionPositivity.hpp"
+#include "Cauchy/Physics/EquationPositivity.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/Discretization/ViscousFlux.hpp"
 #include "Euler/Gas.hpp"
@@ -14,6 +15,33 @@
 #include <vector>
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("Equation thermal view preserves the established perfect-gas increment and quadrature rules")
+{
+    C::EquationSettings settings;
+    settings.gasConstant = 2.5;
+    const auto equation = C::EquationSystem::Resolve(settings);
+    const auto bounds = equation.PrepareThermalBounds(1e-8, .2, 1e-7);
+    const C::EquationThermalPolicy policy(equation, bounds.densityFloor, .2, 0, 1e-7);
+    const auto thermal = policy.View();
+    const auto mean = equation.Gas().Conservative({1.2, .4, -.3, .2, 2.1});
+    for (const C::FlowState delta : {C::FlowState{-.5, .1, -.2, .3, -40}, C::FlowState{-2, 0, 0, 0, -2}, C::FlowState{.1, 0, 0, 0, 1}})
+    {
+        CHECK(thermal.IncrementFraction(mean, delta, .5, 2, 1) == doctest::Approx(C::FlowIncrementFraction(mean, delta, bounds, .5, 2, 1)).epsilon(1e-14));
+        const auto fixed = C::FixFlowIncrement(mean, delta, bounds);
+        const auto fraction = thermal.FixFraction(mean, delta);
+        for (int j = 0; j < 5; ++j)
+            CHECK(fraction * delta[j] == doctest::Approx(fixed[j]).epsilon(1e-14).scale(1));
+    }
+    struct Points
+    {
+        std::array<C::FlowState, 2> values;
+        double operator()(DNDS::index q, DNDS::index j) const { return values[q][j]; }
+    } base{{mean, mean}}, high = base;
+    high.values[0][4] -= 20;
+    high.values[1][0] -= 2;
+    CHECK(thermal.ReconstructionFraction(mean, base, high, 0, 2, 1, 1e-3) ==
+          doctest::Approx(C::ReconstructionFraction(mean, base, high, 0, 2, bounds, 1, 1e-3)).epsilon(1e-14));
+}
 TEST_CASE("Polynomial viscous flux reproduces Euler conservative gradient and face-jump formulas")
 {
     C::EquationSettings settings;

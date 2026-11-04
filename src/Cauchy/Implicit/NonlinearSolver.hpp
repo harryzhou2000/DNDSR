@@ -110,7 +110,7 @@ namespace DNDS::Cauchy
     /// the historical flow5 defaults for a larger system. Every component's
     /// norm is reported. Storage grouping/layout may differ between operands.
     ///
-    /// Initial equation profile matches EquationWorkspace: no PP, Roe or p-FAS
+    /// Initial equation profile matches EquationWorkspace: no Roe or p-FAS
     /// fallback. Missing profiles reject at construction. A capped finite solve
     /// remains unconverged and leaves acceptance to the time orchestrator.
     /// Callers serialize bound state/workspace/engine access, coordinate all
@@ -132,7 +132,9 @@ namespace DNDS::Cauchy
         void EvaluateEquation(EquationDofs &state, EquationDofs &value, real mass, real rhsScale, real time);
         /// Caller agrees scale/selection and releases conflicting views before
         /// entry. Candidate EOS/raw-species checks precede any state mutation.
-        /// No extended compression/repair is applied in this initial profile.
+        /// With PP enabled, use Euler relaxed/common increment compression,
+        /// final energy repair and transported mean-species repair. A repair
+        /// which would alter a frozen component rejects instead of unfreezing.
         std::pair<index, real> ApplyCorrection(EquationDofs &state, const EquationDofs &correction, real scale = 1,
                                                const std::vector<index> &updateComponents = {});
         std::pair<int, real> ReconstructionStats() const;

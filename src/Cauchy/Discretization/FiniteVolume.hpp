@@ -146,6 +146,7 @@ namespace DNDS::Cauchy
         struct LimitedVRWorkspace;
         struct MatrixFreeJacobian;
         struct EquationJacobian;
+        struct EquationPositivityWorkspace;
         std::shared_ptr<const Data> _data;
         void ValidateBoundaryLayout(const BoundaryInputs &input) const;
 
@@ -159,9 +160,9 @@ namespace DNDS::Cauchy
         /// is collective; payload layouts may differ across ranks. A mixture
         /// requires a matching explicit worker pool, shared in capacity only.
         /// Initial equation-state profile: Rusanov, constant/gradient/VR,
-        /// componentwise WBAP, polynomial Newtonian/Fourier diffusion and
-        /// optional mixture chemistry. Extrapolate/adiabatic walls are available.
-        /// PP, face fallback, characteristic WBAP, other flux preparations,
+        /// componentwise WBAP, Euler quadrature PP, polynomial Newtonian/Fourier
+        /// diffusion and optional mixture chemistry. Extrapolate/adiabatic walls
+        /// are available. Face fallback, characteristic WBAP, other flux preparations,
         /// interface/farfield/analytic/isothermal producers are rejected here
         /// until their equation-state implementations are connected. Existing
         /// flow5 Workspace retains those established capabilities.
@@ -188,6 +189,12 @@ namespace DNDS::Cauchy
         /// (infinity); constant/gradient reconstruction reports zero.
         int LastReconstructionIterations(const EquationWorkspace &workspace) const;
         real LastReconstructionUpdate(const EquationWorkspace &workspace) const;
+        /// Owned-only polynomial projection. Standalone use starts from the
+        /// unlimited guess; Evaluate preserves its preceding WBAP result.
+        /// No halo transfer occurs here. Caller serializes workspace/state.
+        void LimitReconstructionPP(const EquationDofs &state, EquationWorkspace &workspace) const;
+        /// Collective count/min snapshot; no implicit refresh or mutation.
+        std::pair<index, real> PositivityReconstructionStats(const EquationWorkspace &workspace) const;
         /// Whole-equation counterpart of AuxiliaryPreparation. Holds numeric
         /// input scopes and reserves optional output arrays before writing.
         /// Core reads owned inputs only; complete every input field's halo

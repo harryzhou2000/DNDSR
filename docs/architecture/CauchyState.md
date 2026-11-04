@@ -264,8 +264,9 @@ only that lane. Worker resources are retained through exceptional exits too.
 The caller serializes each workspace and its bound handles, supplies distinct
 output storage, completes external producers before entry, and uses matching
 physics/units/numerical controls and the same collective schedule on every rank.
-The descriptor agreement proves the field map, not equality of separately
-loaded mechanism contents or model parameters. Entry preflights reserve every output before
+The descriptor agreement proves the field map, numerical schedule controls and
+physical scalar parameters, not equality of separately loaded mechanism contents.
+Entry preflights reserve every output before
 any field transfer. A collective exact descriptor check rejects inconsistent
 schema/physical grouping before constructing halo bindings; physical payload
 layouts may differ among ranks. Geometry versions, bindings and leases are
@@ -275,10 +276,13 @@ change. Discard scratch after a failed evaluation. With
 between phases; entry/binding checks remain coordinated.
 
 This is a functional residual path, not a completed extended production Domain.
-It explicitly rejects PP/face fallback, characteristic WBAP, other prepared
+It explicitly rejects face fallback, characteristic WBAP, other prepared
 Riemann profiles, a distinct unlimited viscous polynomial, and non-wall/non-
 extrapolate BC producers until connected. The established flow5 path retains
-its existing capabilities. Extended physical stage/PP/checkpoint/frontend adapters
+its existing capabilities. Euler-style thermal/species PP now composes with the
+equation-state residual and nonlinear stages; see
+[CauchyImplicit.md](CauchyImplicit.md#equation-state-thermal-and-species-pp).
+Extended checkpoint/frontend adapters
 and physical RANS/flame acceptance remain separate work.
 
 ## Logical rows in coupled linear algebra

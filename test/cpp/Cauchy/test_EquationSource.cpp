@@ -5,6 +5,7 @@
 #include "Cauchy/Physics/EquationTransport.hpp"
 #include "Cauchy/Physics/EquationFlux.hpp"
 #include "Cauchy/State/EquationTimeStepper.hpp"
+#include "Cauchy/Physics/EquationPositivity.hpp"
 #include "Cauchy/Implicit/LinearSolver.hpp"
 #include "Euler/SourceTermContributor.hpp"
 #include <Eigen/LU>
@@ -91,6 +92,67 @@ namespace
     };
 }
 
+TEST_CASE("Shared transported species repair preserves Euler constants and strided neighbors")
+{
+    for (const std::array<double, 3> values : {std::array<double, 3>{-.01, .1, .2}, std::array<double, 3>{-.01, 2, 3}})
+    {
+        std::array<double, 8> storage{9, values[0], 8, values[1], 7, values[2], 6, 5};
+        const auto before = storage;
+        auto expected = values;
+        for (auto &value : expected)
+            value = std::max(value, 1e-30);
+        double sum = 0;
+        for (auto value : expected)
+            sum += value;
+        if (sum > 1 - 1e-14)
+            for (auto &value : expected)
+                value *= (1 - 1e-14) / sum;
+        const R::RowSpan<double> row{storage.data() + 1, 3, 2};
+        CHECK(P::Chemistry::RepairSpeciesDensities(1, row, 3));
+        for (int k = 0; k < 3; ++k)
+            CHECK(storage[2 * k + 1] == expected[k]);
+        for (int k : {0, 2, 4, 6, 7})
+            CHECK(storage[k] == before[k]);
+    }
+}
+TEST_CASE("Mixture thermal references enforce a requested temperature through actual conservative energy")
+{
+    Fixture fixture;
+    constexpr double temperature = 900;
+    const double codeTemperature = temperature / fixture.scales.T0;
+    const C::EquationThermalPolicy policy(fixture.equation, 1e-12, codeTemperature, 1e-12, 1e-12, fixture.workers.Acquire());
+    const auto bounds = policy.View();
+    for (int sample : {0, 5})
+    {
+        const auto cold = fixture.Point(sample, temperature), hot = fixture.Point(sample, 1400);
+        C::FlowState flow;
+        for (int j = 0; j < 5; ++j)
+            flow[j] = cold[j];
+        CHECK(bounds.Reference(cold, 1) == doctest::Approx(C::PositivityDetail::InternalEnergy(flow)).epsilon(1e-12));
+        CHECK(bounds.Reference(hot, 0) == doctest::Approx(fixture.material.BaseInternalEnergy(hot[0], {hot.data() + 5, fixture.species - 1})).epsilon(1e-14));
+        Eigen::VectorXd delta = Eigen::VectorXd::Zero(fixture.components);
+        delta[0] = -.2 * hot[0];
+        delta[4] = -3 * (hot[4] - cold[4]);
+        delta[5] = .005;
+        const double alpha = bounds.IncrementFraction(hot, delta, .5, 2, 1);
+        CHECK(alpha > 0);
+        CHECK(alpha < 1);
+        delta *= alpha;
+        const double fix = bounds.FixFraction(hot, delta);
+        CHECK(std::isfinite(fix));
+        const Eigen::VectorXd candidate = hot + fix * delta;
+        CHECK(bounds.Admissible(candidate));
+        auto evaluator = fixture.equation.MakePointEvaluator(fixture.workers.Acquire(), {});
+        for (int j = 0; j < 5; ++j)
+            flow[j] = candidate[j];
+        const auto point = evaluator.Evaluate(flow, {candidate.data() + 5, fixture.species - 1});
+        CHECK(point.thermo.temperature >= codeTemperature);
+    }
+    auto one = fixture.Point(0), two = fixture.Point(5);
+    const Eigen::VectorXd middle = .3 * one + .7 * two;
+    for (int c = 0; c < 2; ++c)
+        CHECK(bounds.Reference(middle, c) == doctest::Approx(.3 * bounds.Reference(one, c) + .7 * bounds.Reference(two, c)).epsilon(1e-14));
+}
 TEST_CASE("Mixture source point matches the Euler source and all conservative derivative columns")
 {
     Fixture fixture;

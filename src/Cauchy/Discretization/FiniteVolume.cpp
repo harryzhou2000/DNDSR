@@ -164,8 +164,8 @@ namespace DNDS::Cauchy
                         {
             settings.numerics.ValidatePositivity();
             settings.numerics.limitedVR.Validate();
-            DNDS_check_throw_info(!equation.HasMixture() || (!settings.numerics.positivity && settings.numerics.limiter != "LVR"),
-                                  "mixture PP/LVR policy is not connected yet");
+            DNDS_check_throw_info(!equation.HasMixture() || settings.numerics.limiter != "LVR",
+                                  "mixture LVR policy is not connected yet");
             DNDS_check_throw_info(settings.numerics.limiter != "LVR" || (settings.numerics.reconstruction == "variational" && settings.numerics.cfv.maxOrder >= 2),
                                   "LVR requires degree2/3 variational reconstruction");
             DNDS_check_throw_info(settings.numerics.viscousGradient == "primitive" || settings.numerics.viscousGradient == "polynomial",
@@ -321,10 +321,17 @@ namespace DNDS::Cauchy
         }
         if (settings.numerics.positivity || limitedVR)
         {
+            std::vector<int> volumeOrders;
+            if (settings.numerics.positivityVolumePoints) volumeOrders.push_back(Geom::Elem::INT_ORDER_MAX);
+            if (settings.equation.source == "chemical" && std::find(volumeOrders.begin(), volumeOrders.end(), settings.numerics.cfv.intOrder) == volumeOrders.end())
+                volumeOrders.push_back(settings.numerics.cfv.intOrder);
             data->positivityOffsets.resize(size_t(data->metrics.NumCell()) + 1, 0);
             for (index iCell = 0; iCell < data->metrics.NumCell(); ++iCell)
-                data->positivityOffsets[iCell + 1] = data->positivityOffsets[iCell] + data->offsets[iCell + 1] - data->offsets[iCell] +
-                    (settings.numerics.positivityVolumePoints ? Geom::Elem::Quadrature(topology.GetCellElement(iCell), Geom::Elem::INT_ORDER_MAX).GetNumPoints() : 0);
+            {
+                data->positivityOffsets[iCell + 1] = data->positivityOffsets[iCell] + data->offsets[iCell + 1] - data->offsets[iCell];
+                for (auto order : volumeOrders)
+                    data->positivityOffsets[iCell + 1] += Geom::Elem::Quadrature(topology.GetCellElement(iCell), order).GetNumPoints();
+            }
             const auto count = data->positivityOffsets.back();
             R::Array<index> cells(R::RowLayout::Dense(count, 1));
             R::Array<real> points(R::RowLayout::Dense(count, 3));
@@ -338,13 +345,13 @@ namespace DNDS::Cauchy
                     const auto append = [&](const Geom::tPoint &point)
                     { c(iPoint, 0) = iCell; for (int d = 0; d < 3; ++d) p(iPoint, d) = point[d]; ++iPoint; };
                     for (index entry = data->offsets[iCell]; entry < data->offsets[iCell + 1]; ++entry) append(data->samples[entry].ownPoint);
-                    if (settings.numerics.positivityVolumePoints)
+                    for (auto order : volumeOrders)
                     {
                         topology.GetCoordsOnCell(iCell, coords);
                         const auto element = topology.GetCellElement(iCell);
-                        const Geom::Elem::Quadrature quadrature(element, Geom::Elem::INT_ORDER_MAX);
+                        const Geom::Elem::Quadrature quadrature(element, order);
                         for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
-                            append(Geom::Elem::PPhysicsCoordD01Nj(coords, Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(Geom::Elem::INT_ORDER_MAX).at(iQ)));
+                            append(Geom::Elem::PPhysicsCoordD01Nj(coords, Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(order).at(iQ)));
                     }
                 }
             }

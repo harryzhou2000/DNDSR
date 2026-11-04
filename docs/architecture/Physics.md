@@ -27,6 +27,7 @@ flowchart TD
 | `Physics/ReferenceScales.hpp` | SI reference values and code-unit conversion factors |
 | `Physics/Chemistry/ChemicalSource` | Existing PIMPL backend, property queries, UV solve, rates/Jacobians and reactors |
 | `Physics/Chemistry/ChemicalWorker` | Exclusive worker contexts and bounded reusable species buffers |
+| `Physics/Chemistry/SpeciesAdmissibility.hpp` | Euler-compatible transported mean-species repair on strided rows |
 | `Physics/Thermodynamics/IdealGasMixture` | Immutable material descriptor and solver-independent code-scaled point evaluation |
 | `Physics/Thermodynamics/ConservativeConversion.hpp` | EOS-independent velocity/internal-energy conversion and conservative directional kinematics |
 | `Physics/Thermodynamics/IdealMixtureGradient.hpp` | Exact ideal-mixture temperature chain rule |
@@ -113,6 +114,12 @@ can have negative full internal energy at positive temperature. The separate
 base-energy function is linear in raw transported rhoY and supports Euler's
 existing thermal-bound bookkeeping; never subtract it from full species
 enthalpy in diffusion.
+
+`SpecificInternalEnergies(T, worker)` prepares full ideal-gas e_k(T) coefficients
+in code units for an affine minimum-temperature bound. A compatible worker is
+consumed at setup; returned values own their storage. Cached backend-reference
+coefficients are also available without a property query. They are parameters
+for Cauchy's thermal policy, not a new EOS or a pressure/gamma approximation.
 
 Property evaluation repairs a temporary composition as Euler does. It does not
 modify conservative inputs, transported fractions or their derivatives. The

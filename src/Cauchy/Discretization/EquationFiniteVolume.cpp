@@ -91,6 +91,7 @@ namespace DNDS::Cauchy
         std::vector<Field> fields, limited;
         EquationDofs coefficients, fluxCoefficients, boundary;
         std::vector<R::TransferBinding> meanHalo, coefficientHalo, fluxHalo;
+        std::shared_ptr<EquationPositivityWorkspace> positivity;
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
         std::vector<index> logicalFirst, vectorStarts;
         index flowFirst = -1, speciesFirst = -1;
@@ -218,13 +219,15 @@ namespace DNDS::Cauchy
                     vectorStarts.push_back(first + vector);
                 first += index(block.components.size());
             }
-            if (owner->settings.numerics.limiter == "WBAP")
+            if (owner->settings.numerics.limiter == "WBAP" || owner->settings.numerics.positivity)
             {
                 limited = fields;
                 for (auto &field : limited)
                     field.reconstruction.coefficients = owner->metrics.BuildField(field.reconstruction.coefficients.Owned().Layout());
                 fluxCoefficients = BindCoefficients(state, limited, owner->reconstruction.NRecDOF());
             }
+            if (owner->settings.numerics.positivity)
+                positivity = std::make_shared<EquationPositivityWorkspace>(owner, state, fluxCoefficients, workers);
             BuildSourceSampling();
         }
         void BindHalos(EquationDofs &state)
@@ -445,6 +448,7 @@ namespace DNDS::Cauchy
                                                                                           std::optional<Physics::Chemistry::ChemicalWorkerPool> workers) const
     {
         const MPIInfo mpi(Metrics().Communicator());
+        std::string operationControls;
         MPI::LocalStage(mpi, [&]
                         {
             _data->equation.ValidateStateSchema(state);
@@ -453,9 +457,10 @@ namespace DNDS::Cauchy
             const auto &n = _data->settings.numerics;
             DNDS_check_throw_info((n.reconstruction == "constant" || n.reconstruction == "gradient" || n.reconstruction == "variational") &&
                                   n.reconstructionIterations >= 0, "invalid equation reconstruction controls");
-            DNDS_check_throw_info(_data->flux.Kind() == Riemann::Solver::Rusanov && !n.positivity && !n.faceFallback &&
+            DNDS_check_throw_info(_data->flux.Kind() == Riemann::Solver::Rusanov && !n.faceFallback &&
                 (n.limiter == "none" || (n.limiter == "WBAP" && !n.characteristicLimiter)),
                 "requested extended FV flux/PP/limiter profile is not connected yet");
+            DNDS_check_throw_info(!n.positivity || n.positivityReconstruction == "Euler", "equation PP uses the Euler reconstruction rule; archive Segment mode remains in the flow5 adapter");
             DNDS_check_throw_info(!_data->equation.Viscous() || n.viscousGradient == "polynomial", "extended viscosity requires the conservative polynomial gradient");
             DNDS_check_throw_info(!(_data->equation.Viscous() && n.limiter == "WBAP") || n.viscousLimited,
                                   "separate unlimited viscous polynomial is not connected in the equation workspace");
@@ -471,8 +476,11 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(workers, "mixture FV requires explicit chemistry workers");
                 auto checked = _data->equation.MakePointEvaluator(workers->Acquire(), {});
             }
-            else DNDS_check_throw_info(!workers, "perfect-gas FV does not require chemistry workers"); });
-        AgreeEquationBinding(state, mpi.comm);
+            else DNDS_check_throw_info(!workers, "perfect-gas FV does not require chemistry workers");
+            operationControls = Json{{"numerics", _data->settings.numerics}, {"equation", _data->settings.equation},
+                {"motion", _data->settings.motion}, {"overlap", _data->settings.execution.overlap},
+                {"collectiveChecks", _data->settings.implicit.collectiveChecks}, {"properties", _data->equation.PropertyKey().parameters}}.dump(); });
+        AgreeEquationBinding(state, mpi.comm, operationControls);
         std::shared_ptr<EquationWorkspace> result;
         MPI::LocalStage(mpi, [&]
                         { result = std::make_shared<EquationWorkspace>(_data, state, std::move(workers)); });
@@ -503,6 +511,22 @@ namespace DNDS::Cauchy
     {
         DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
         return work.relativeUpdate;
+    }
+    void FiniteVolume::LimitReconstructionPP(const EquationDofs &state, EquationWorkspace &work) const
+    {
+        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                        {
+            ValidateWorkspace(state, work);
+            DNDS_check_throw_info(work.positivity, "equation reconstruction PP was not requested");
+            work.positivity->Apply(state, work.coefficients, work.fluxCoefficients, true); });
+    }
+    std::pair<index, real> FiniteVolume::PositivityReconstructionStats(const EquationWorkspace &work) const
+    {
+        DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
+        auto result = work.positivity ? work.positivity->LocalStatistics() : std::pair<index, real>{0, 1};
+        MPI_Allreduce(MPI_IN_PLACE, &result.first, 1, MPI_INT64_T, MPI_SUM, Metrics().Communicator());
+        MPI_Allreduce(MPI_IN_PLACE, &result.second, 1, MPI_DOUBLE, MPI_MIN, Metrics().Communicator());
+        return result;
     }
 
     void FiniteVolume::Evaluate(EquationDofs &state, EquationDofs &residual, EquationWorkspace &work,
@@ -663,23 +687,27 @@ namespace DNDS::Cauchy
         {
             local([&]
                   { EquationDofOperations::Copy(work.fluxCoefficients, work.coefficients); });
-            for (int order = numerics.cfv.maxOrder; order >= 1; --order)
-            {
-                auto operations = begin(work.fluxHalo);
-                const auto limit = [&, order](CFV::ReconstructionRegion region)
-                { for (auto &field : work.limited) _data->reconstruction.DoLimiterWBAP_3OrderTo(field.reconstruction, order, nullptr, region); };
-                if (overlap)
-                    submit([limit]
-                           { limit(CFV::ReconstructionRegion::Core); });
-                wait(operations);
-                submit([limit, rest]
-                       { limit(rest); });
-                local([&]
-                      { stream.Record().WaitHost(); });
-                local([&]
-                      { for (auto &field : work.limited) _data->reconstruction.CommitReconstruction(field.reconstruction); });
-            }
+            if (numerics.limiter == "WBAP")
+                for (int order = numerics.cfv.maxOrder; order >= 1; --order)
+                {
+                    auto operations = begin(work.fluxHalo);
+                    const auto limit = [&, order](CFV::ReconstructionRegion region)
+                    { for (auto &field : work.limited) _data->reconstruction.DoLimiterWBAP_3OrderTo(field.reconstruction, order, nullptr, region); };
+                    if (overlap)
+                        submit([limit]
+                               { limit(CFV::ReconstructionRegion::Core); });
+                    wait(operations);
+                    submit([limit, rest]
+                           { limit(rest); });
+                    local([&]
+                          { stream.Record().WaitHost(); });
+                    local([&]
+                          { for (auto &field : work.limited) _data->reconstruction.CommitReconstruction(field.reconstruction); });
+                }
         }
+        if (work.positivity)
+            local([&]
+                  { work.positivity->Apply(state, work.coefficients, work.fluxCoefficients, false); });
         auto operations = begin(work.limited.empty() ? work.coefficientHalo : work.fluxHalo);
         if (overlap)
             submit([&]

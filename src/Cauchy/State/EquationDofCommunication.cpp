@@ -5,7 +5,7 @@
 
 namespace DNDS::Cauchy
 {
-    void AgreeEquationBinding(const EquationDofs &state, MPI_Comm communicator)
+    void AgreeEquationBinding(const EquationDofs &state, MPI_Comm communicator, const std::string &operationControls)
     {
         const MPIInfo mpi(communicator);
         std::string descriptor, reference;
@@ -15,6 +15,7 @@ namespace DNDS::Cauchy
             using Json = nlohmann::ordered_json;
             Json value{{"family", state.Schema().family}, {"energy", state.Schema().energyConvention}, {"mass", state.Schema().physicalAccumulation}};
             value["fields"] = Json::array(); value["blocks"] = Json::array();
+            value["operationControls"] = operationControls;
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                 value["fields"].push_back({state.Fields().Name(iField), state.PhysicalField(iField).Width()});
             for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
@@ -33,6 +34,6 @@ namespace DNDS::Cauchy
         MPI_Bcast(reference.data(), count, MPI_CHAR, 0, communicator);
         int match = descriptor == reference;
         MPI_Allreduce(MPI_IN_PLACE, &match, 1, MPI_INT, MPI_MIN, communicator);
-        DNDS_check_throw_info(match, "equation physical grouping/schema differs across ranks");
+        DNDS_check_throw_info(match, "equation physical grouping/schema/operation controls differ across ranks");
     }
 }

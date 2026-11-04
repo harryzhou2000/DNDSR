@@ -835,7 +835,7 @@ exactly. Norm formulas, initial/running-maximum reference, pseudo-CFL growth,
 fixed correction cap and optional profiling use the shared iteration policy.
 
 The equation adapter initially requires the implemented EquationWorkspace
-profile and rejects PP, Roe dissipation and p-FAS. It retains actual mean halos
+profile and rejects Roe dissipation and p-FAS. It retains actual mean halos
 and high-order source samples from each residual evaluation. Subsequent aux
 preparation is stateless with explicit outputs; the source Jacobian consumes
 the current reconstruction publication rather than evaluating only the mean.
@@ -856,17 +856,18 @@ Construction and Solve join their supplied CPU lane's incoming prefix before
 reading means. Dependencies on other lanes remain the caller's responsibility.
 
 Correction is prepared in a separate candidate. All values must be finite;
-raw independent species must be nonnegative and sum to at most density. The
-actual EOS validates temperature and pressure, including the configured floors,
+raw independent species must be nonnegative and sum to at most density. With
+PP enabled, Euler's thermal increment compression and mean-species repair run
+first. The actual EOS then validates temperature and positive pressure, including
+the perfect-gas pressure floor and the model's internal-energy constraints,
 before any bound-state writer is acquired. Rejection by these candidate checks
-preserves owned state and its generations. This is an admissibility check, not a new compression,
-line search or rollback algorithm. Euler-derived extended PP and mean-species
-repair remain separate integration work. A finite correction-capped report is
+preserves owned state and its generations. No new line search or rollback
+algorithm is introduced. A finite correction-capped report is
 unconverged; the time orchestrator retains the Euler default acceptance policy
 unless rejection is explicitly requested.
 
 This is a usable full-equation stage operator, not yet the production extended
-Domain frontend. Boundary/PP/checkpoint/frontend/RANS adapters and the requested
+Domain frontend. Boundary/checkpoint/frontend/RANS adapters and the requested
 NACA0012/flame studies remain required. CUDA kernels remain deferred.
 
 Focused tests compare finite-sweep flow5 corrections/norms against the existing
@@ -876,6 +877,77 @@ BDF drivers toward an independent Cantera reactor trajectory. The latter
 checks temporal refinement and preserved full-energy flow components; it is
 not the pending spatial flame sanity study. Critical errors cover aliasing and
 negative-species candidate rejection without changing input generations.
+
+### Equation-state thermal and species PP
+
+`Physics/Chemistry/SpeciesAdmissibility.hpp` contains the transported mean
+repair shared with Euler. It floors independent species densities at 1e-30
+in the caller's code units, then rescales them if their sum exceeds
+`rho*(1-1e-14)`. Density, momentum and full total energy do not change. This is
+distinct from the clipped/normalized temporary composition used for properties.
+
+`EquationThermalPolicy` prepares two energy references outside point loops.
+For ideal mixtures, one is the backend's cached reference-temperature energy
+with `numerics.sensibleEnergyFloor` above it. The other uses full species
+internal energies at `max(numerics.temperatureFloor, material.BaseTemperature())`.
+For each reference, the raw volumetric form is affine:
+
+```text
+B(U) = rho*e_last + sum_k rhoY_k*(e_k-e_last)
+constraint: rhoE - |rho*u|^2/(2*rho) - B(U) >= margin
+```
+
+The temperature reference has zero margin. This enforces a temperature bound
+without a gamma-equivalent substitution, including mixtures with negative
+formation energies. Perfect gas retains its existing temperature and pressure
+energy constraints; `pressureFloor` is a perfect-gas control, not a gamma-based
+mixture conversion. Mixtures still require a positive actual EOS pressure.
+`IdealGasMixture::SpecificInternalEnergies` consumes a compatible worker only
+at preparation; policy views retain no worker or EOS callback. The coefficient
+owner must outlive its borrowed view. CUDA would require uploading coefficients
+and replacing the host pointers; no Cauchy CUDA kernel is claimed here.
+
+The pure view implements Euler's density relaxation, scheme-one energy ratio,
+power/safety compression, .99 final repair and .9 pull-up. RHS and dTau modes
+use the same cell/minimumLimited/minimumAll reduction policy as flow5. Norms
+always use the uncompressed defect. Final correction scales the complete
+logical increment, then applies transported species repair and validates the
+actual candidate before copying means. Masks remain exact: a required species
+repair that would change a frozen component rejects. Limited-cell statistics
+count the original relaxed-alpha triggers; species-floor adjustments do not
+inflate that counter. PP disabled retains explicit rejection of bad candidates.
+
+`EquationReconstruction.cpp` composes owned-only polynomial sampling, reference
+selection and coefficient projection. Unlimited iteration guesses stay intact;
+filtered coefficients occupy distinct per-field arrays. Default reference is
+the mean. Progressive degree reduction is available when
+`positivityCompressToMean=false`, preserving Euler's reference-order logic.
+The same beta acts on flow/species coefficients across their physical fields.
+Point buffers are allocated at workspace construction and retain each field's
+physical layout. No per-cell full-state array staging occurs. The wrapper has
+no hidden halo exchange; the subsequent canonical coefficient transfer publishes
+the resulting ghost values. Statistics are reduced only when requested.
+
+Protected points include face quadrature and the optional maximum-order volume
+grid. Chemistry always adds its actual source quadrature, because quadrature
+rules need not be nested. Published coefficients are resampled and checked,
+not accepted solely from an algebraic blend. Raw affine energies determine the
+Euler ratio; its legacy property-repaired energy postcheck may force fallback
+to the validated reference. As in Euler, this is **not a guarantee that every
+raw reconstructed species is nonnegative**: reference checks require the raw
+simplex, while final thermal checks also account for the repaired property
+composition. Mean species are repaired separately. Strict additional species
+quadrature compression would be a numerical-method change and is not added.
+Archive `Segment` reconstruction remains in the existing flow5 adapter; the
+equation-state workspace explicitly requires the Euler rule.
+
+Workspace setup agrees numerical/physical scalar controls together with its
+field descriptor before binding conditional halo sequences. This prevents a
+rank-dependent PP setting from changing the number of transfer plans. The
+caller still ensures separately loaded mechanism contents match. The operation
+views retain ordinary Array leases; validation and descriptor construction stay
+outside point loops. Failure can leave scratch partial; retain the input means
+and discard the failed workspace outputs rather than publishing them.
 
 ```sh
 cmake --build build --target dnds_test_cauchy_equation_finite_volume dnds_test_cauchy_nonlinear -j8

@@ -175,7 +175,8 @@ namespace DNDS::Cauchy
     void NumericsSettings::ValidatePositivity() const
     {
         DNDS_check_throw_info(std::isfinite(temperatureFloor) && temperatureFloor > 0 && std::isfinite(densityFloor) && densityFloor > 0 &&
-                                  std::isfinite(pressureFloor) && pressureFloor > 0 && std::isfinite(positivityBetaCutoff) && positivityBetaCutoff >= 0 && positivityBetaCutoff < 1 &&
+                                  std::isfinite(pressureFloor) && pressureFloor > 0 && std::isfinite(sensibleEnergyFloor) && sensibleEnergyFloor >= 0 &&
+                                  std::isfinite(positivityBetaCutoff) && positivityBetaCutoff >= 0 && positivityBetaCutoff < 1 &&
                                   (positivityReconstruction == "Euler" || positivityReconstruction == "Segment") && positivityBetaPower >= 0 && positivityBetaPower < INT_MAX,
                               "invalid reconstruction positivity controls");
         DNDS_check_throw_info(!positivity || positivityReconstruction != "Segment" || (positivityCompressToMean && positivityBetaPower == 1),

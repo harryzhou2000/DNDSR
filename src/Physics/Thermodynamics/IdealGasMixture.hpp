@@ -57,6 +57,14 @@ namespace DNDS::Physics::Thermodynamics
         /// Uses raw transported rhoY (including the dependent species), without
         /// repairing composition. This preserves Euler's base-energy/PP algebra.
         real BaseInternalEnergy(real rho, Chemistry::ConstSpeciesBufferView rhoY) const;
+        /// Immutable code-scaled coefficients of BaseInternalEnergy. Retain
+        /// the material while borrowing this reference; no worker is needed.
+        const std::vector<real> &BaseSpecificInternalEnergies() const;
+        /// Setup-only ideal-gas coefficients e_k(T), in code energy/mass.
+        /// Consumes one compatible worker; returned values own their storage.
+        /// Their raw composition-weighted sum is affine in rho and rhoY and
+        /// supplies an exact temperature-floor energy bound without gamma.
+        std::vector<real> SpecificInternalEnergies(real temperature, Chemistry::ChemicalWorkerPool::Lease worker) const;
 
         class PointEvaluator
         {

@@ -2,6 +2,8 @@
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/EquationPositivity.hpp"
+#include "Cauchy/Implicit/PositivityReduction.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -21,6 +23,10 @@ namespace DNDS::Cauchy
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
         std::shared_ptr<LinearProblemContext> problem;
         std::unique_ptr<EquationLinearSolver> linear;
+        bool positivity;
+        std::optional<EquationThermalPolicy> thermal;
+        AlphaReduction rhsReduction = AlphaReduction::Cell;
+        std::optional<R::Array<real>> cellRHSAlpha;
         real reconstructionTolerance, densityFloor, temperatureFloor, pressureFloor;
         index flowFirst = -1, speciesFirst = -1;
 
@@ -33,12 +39,19 @@ namespace DNDS::Cauchy
               inversePseudoTime(R::RowLayout::Dense(fv.Metrics().NumCell(), 1)), workers(std::move(pool)),
               problem(fv.BuildLinearProblem(state, settings.diagonal == "block" ? DiagonalStorage::Block : DiagonalStorage::Entries,
                                             settings.jacobianAction == "semiMatrixFree" ? OffDiagonalStorage::SemiMatrixFree : OffDiagonalStorage::Assembled)),
-              reconstructionTolerance(settings.requireConvergedReconstruction && controls.numerics.reconstruction == "variational" ? controls.numerics.reconstructionTolerance : 0),
+              positivity(controls.numerics.positivity), reconstructionTolerance(settings.requireConvergedReconstruction && controls.numerics.reconstruction == "variational" ? controls.numerics.reconstructionTolerance : 0),
               densityFloor(controls.numerics.densityFloor), temperatureFloor(controls.numerics.temperatureFloor), pressureFloor(controls.numerics.pressureFloor)
         {
             AuxiliaryRequest request;
             request.faceSpectralRadius = request.cellSpectralSum = true;
             auxiliary = fv.BuildAuxiliaryValues(request);
+            if (positivity)
+                thermal.emplace(fv.Equation(), densityFloor, temperatureFloor, controls.numerics.sensibleEnergyFloor, pressureFloor,
+                                workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{});
+            rhsReduction = settings.positivity.rhsReduction == "cell" ? AlphaReduction::Cell : settings.positivity.rhsReduction == "minimumLimited" ? AlphaReduction::MinimumLimited
+                                                                                                                                                    : AlphaReduction::MinimumAll;
+            if (positivity && settings.positivity.rhsMode != "none" && rhsReduction != AlphaReduction::Cell)
+                cellRHSAlpha.emplace(R::RowLayout::Dense(fv.Metrics().NumCell(), 1));
             index first = 0;
             for (const auto &block : state.Schema().blocks)
             {
@@ -71,8 +84,11 @@ namespace DNDS::Cauchy
             const auto values = layout.View();
             const int independent = equation.HasMixture() ? equation.Mixture().SpeciesNumber() - 1 : 0;
             auto rhoY = evaluator.SpeciesInput();
+            const auto bounds = thermal ? thermal->View() : EquationThermalView{};
             for (index iCell = 0; iCell < values.RowCount(); ++iCell)
             {
+                if (thermal)
+                    DNDS_check_throw_info(bounds.Admissible(EquationPositivityDetail::PointRow<decltype(values)>{values, iCell}), "implicit equation mean violates its thermal/species bounds");
                 for (index j = 0; j < values.ComponentNumber(); ++j)
                     DNDS_check_throw_info(std::isfinite(values(iCell, j)), "nonfinite implicit equation mean");
                 FlowState flow;
@@ -90,7 +106,7 @@ namespace DNDS::Cauchy
                 if (!equation.HasMixture())
                     DNDS_check_throw_info(ThermallyAdmissible(flow, discrete.ThermalConstraints()), "inadmissible implicit flow mean");
                 const auto point = evaluator.Evaluate(flow, {independent ? rhoY.data : nullptr, independent});
-                DNDS_check_throw_info(point.thermo.temperature >= temperatureFloor && point.thermo.pressure >= pressureFloor,
+                DNDS_check_throw_info(point.thermo.temperature >= temperatureFloor && point.thermo.pressure > 0 && (equation.HasMixture() || point.thermo.pressure >= pressureFloor),
                                       "implicit equation mean violates temperature or pressure floor");
             }
         }
@@ -112,8 +128,8 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(residualSelection.All() || residualSelection.Indices().back() < state.ComponentNumber(), "equation residual selection exceeds its dimension");
             implicit.ValidateComponents(state.ComponentNumber());
             settings.numerics.ValidatePositivity();
-            DNDS_check_throw_info(!settings.numerics.positivity && !implicit.roeDissipation && implicit.multigrid.levels == 0,
-                                  "equation nonlinear PP/Roe/pMG profile is not connected yet");
+            DNDS_check_throw_info(!implicit.roeDissipation && implicit.multigrid.levels == 0,
+                                  "equation nonlinear Roe/pMG profile is not connected yet");
             DNDS_check_throw_info(!implicit.requireConvergedReconstruction || settings.numerics.reconstruction != "variational" || settings.numerics.reconstructionTolerance > 0,
                                   "strict implicit VR acceptance requires a positive reconstructionTolerance");
             DNDS_check_throw_info(workspace && stream.Context().device == R::Device::Host(), "equation implicit stage needs a CPU workspace and stream");
@@ -198,22 +214,62 @@ namespace DNDS::Cauchy
                 } }, [&]
                                         { return ReconstructionStats(); }, [&](auto &report)
                                         {
+                index rhsLimited = 0;
+                real rhsAlpha = 1;
                 {
                     const NonlinearDetail::PhaseTimer timer(control.profile, NonlinearProfile::PseudoTimePP);
                     data.Stage([&]
                     {
                         data.discrete.PrepareAuxValues(state, data.auxiliary, time, data.workers);
                         const auto read = data.auxiliary.cellSpectralSum->Owned().Read();
+                        const auto meanRead = state.ReadOwned(); const auto meanLayout = meanRead.ComponentLayout(); const auto means = meanLayout.View();
+                        auto residualWrite = data.defect.WriteOwned(); const auto residualLayout = residualWrite.ComponentLayout(); const auto defect = residualLayout.View();
                         auto write = data.inversePseudoTime.Write();
+                        std::optional<R::Array<real>::WriteLease> alphaWrite;
+                        if (data.cellRHSAlpha) alphaWrite.emplace(data.cellRHSAlpha->Write());
                         const auto spectral = read.View<R::UniformTableRows>();
                         const auto inverse = write.View<R::UniformTableRows>();
+                        const auto bounds = data.thermal ? data.thermal->View() : EquationThermalView{};
                         for (index iCell = 0; iCell < inverse.RowCount(); ++iCell)
                         {
-                            const real value = spectral(iCell, 0) / (report.pseudoCFL * metric.GetCellVol(iCell));
+                            const real volume = metric.GetCellVol(iCell);
+                            real value = spectral(iCell, 0) / (report.pseudoCFL * volume);
                             DNDS_check_throw_info(std::isfinite(value) && value > 0, "invalid equation pseudo-time spectral sum");
+                            if (data.positivity && data.settings.positivity.rhsMode != "none")
+                            {
+                                const EquationPositivityDetail::PointRow<decltype(means)> mean{means, iCell};
+                                struct TrialIncrement
+                                {
+                                    decltype(defect) values; index row; real factor;
+                                    real operator[](index j) const { return values(row, j) * factor; }
+                                } delta{defect, iCell, data.settings.positivity.rhsScale / (value * volume)};
+                                const real alpha = bounds.IncrementFraction(mean, delta, data.settings.positivity.rhsRelax, 2, data.settings.positivity.compressionPower);
+                                DNDS_check_throw_info(std::isfinite(alpha) && alpha >= 0 && alpha <= 1, "invalid equation RHS PP fraction");
+                                if (alpha < 1) { ++rhsLimited; rhsAlpha = std::min(rhsAlpha, alpha); }
+                                if (alphaWrite) alphaWrite->View<R::UniformTableRows>()(iCell, 0) = alpha;
+                                else if (data.settings.positivity.rhsMode == "rhs") for (index j = 0; j < nv; ++j) defect(iCell, j) *= alpha;
+                                else value /= std::max(alpha, smallReal);
+                            }
                             inverse(iCell, 0) = value;
                         }
                     });
+                    if (data.positivity && data.settings.positivity.rhsMode != "none")
+                    {
+                        const auto global = AgreeAlphaStatistics(rhsLimited, rhsAlpha, data.rhsReduction, data.mpi.comm);
+                        rhsLimited = global.limited; rhsAlpha = global.minimum;
+                        if (data.cellRHSAlpha && rhsAlpha < 1) data.Stage([&]
+                        {
+                            const auto read = data.cellRHSAlpha->Read(); const auto local = read.View<R::UniformTableRows>();
+                            auto inverseWrite = data.inversePseudoTime.Write(); const auto inverse = inverseWrite.View<R::UniformTableRows>();
+                            auto residualWrite = data.defect.WriteOwned(); const auto layout = residualWrite.ComponentLayout(); const auto defect = layout.View();
+                            for (index iCell = 0; iCell < local.RowCount(); ++iCell)
+                            {
+                                const real alpha = SelectAlpha(local(iCell, 0), rhsAlpha, data.rhsReduction);
+                                if (data.settings.positivity.rhsMode == "rhs") for (index j = 0; j < nv; ++j) defect(iCell, j) *= alpha;
+                                else inverse(iCell, 0) /= std::max(alpha, smallReal);
+                            }
+                        });
+                    }
                 }
                 {
                     const NonlinearDetail::PhaseTimer timer(control.profile, NonlinearProfile::Jacobian);
@@ -227,7 +283,12 @@ namespace DNDS::Cauchy
                     DNDS_check_throw_info(report.lastLinear.usable, "equation implicit linear correction is unusable");
                 }
                 const NonlinearDetail::PhaseTimer timer(control.profile, NonlinearProfile::Correction);
-                ApplyCorrection(state, data.linear->Solution(), data.settings.relaxation, selection.Indices()); });
+                const auto result = ApplyCorrection(state, data.linear->Solution(), data.settings.relaxation, selection.Indices());
+                if (data.positivity)
+                {
+                    report.rhsLimited += rhsLimited; report.minimumRHSAlpha = std::min(report.minimumRHSAlpha, rhsAlpha);
+                    report.incrementLimited += result.first; report.minimumIncrementAlpha = std::min(report.minimumIncrementAlpha, result.second);
+                } });
     }
     std::pair<int, real> EquationNonlinearSolver::ReconstructionStats() const
     {
@@ -241,6 +302,9 @@ namespace DNDS::Cauchy
                                                                     const std::vector<index> &updateComponents)
     {
         auto &data = *_data;
+        index limited = 0;
+        real minimum = 1;
+        bool frozen = true;
         data.Stage([&]
                    {
             data.binding.Check(state);
@@ -248,22 +312,69 @@ namespace DNDS::Cauchy
             EquationDofOperations::RequireDistinct(state, increment);
             DNDS_check_throw_info(std::isfinite(scale) && scale > 0 && scale <= 1, "invalid equation correction scale");
             const Algebra::ComponentSelection selection(state.ComponentNumber(), updateComponents);
+            std::vector<uint8_t> active;
+            if (!selection.All())
+            {
+                active.resize(size_t(state.ComponentNumber()));
+                for (index j = 0; j < state.ComponentNumber(); ++j) active[j] = selection.Includes(j);
+            }
             const auto u = state.ReadOwned(), d = increment.ReadOwned();
             auto write = data.candidate.WriteOwned();
-            const auto ul = u.ComponentLayout(), dl = d.ComponentLayout();
-            const auto wl = write.ComponentLayout();
-            const auto mean = ul.View(), delta = dl.View();
-            const auto candidate = wl.View();
+            const auto ul = u.ComponentLayout(), dl = d.ComponentLayout(); const auto wl = write.ComponentLayout();
+            const auto mean = ul.View(), delta = dl.View(); const auto candidate = wl.View();
+            const auto bounds = data.thermal ? data.thermal->View() : EquationThermalView{};
+            const int independent = data.discrete.Equation().HasMixture() ? data.discrete.Equation().Mixture().SpeciesNumber() - 1 : 0;
             for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
+            {
+                const EquationPositivityDetail::PointRow<decltype(mean)> old{mean, iCell};
+                struct SelectedIncrement
+                {
+                    decltype(delta) values; index row; real scale; const uint8_t *active;
+                    real operator[](index j) const { return !active || active[j] ? scale * values(row, j) : 0; }
+                } change{delta, iCell, scale, active.empty() ? nullptr : active.data()};
+                real fraction = 1;
+                if (data.positivity)
+                {
+                    const real alpha = bounds.IncrementFraction(old, change, data.settings.positivity.incrementRelax, 2, data.settings.positivity.compressionPower);
+                    DNDS_check_throw_info(std::isfinite(alpha) && alpha >= 0 && alpha <= 1, "invalid equation increment PP fraction");
+                    if (alpha < 1) { ++limited; minimum = std::min(minimum, alpha); }
+                    struct LimitedIncrement
+                    {
+                        const SelectedIncrement &values; real factor;
+                        real operator[](index j) const { return factor * values[j]; }
+                    } limitedChange{change, alpha};
+                    const real fix = bounds.FixFraction(old, limitedChange);
+                    DNDS_check_throw_info(std::isfinite(fix) && fix >= 0 && fix <= 1, "invalid equation final increment repair");
+                    fraction = alpha * fix;
+                }
                 for (index j = 0; j < mean.ComponentNumber(); ++j)
-                    candidate(iCell, j) = selection.Includes(j) ? mean(iCell, j) + scale * delta(iCell, j) : mean(iCell, j); });
-        // Validate globally before acquiring any input-state writer. This is
-        // admissibility checking, not a new line search or rollback policy.
+                    candidate(iCell, j) = selection.Includes(j) ? mean(iCell, j) + fraction * change[j] : mean(iCell, j);
+                if (data.positivity && independent)
+                {
+                    struct SpeciesRow
+                    {
+                        decltype(candidate) values; index row, first;
+                        real &operator[](index k) const { return values(row, first + k); }
+                    } species{candidate, iCell, data.speciesFirst};
+                    Physics::Chemistry::RepairSpeciesDensities(candidate(iCell, data.flowFirst), species, independent);
+                    for (index j = 0; j < mean.ComponentNumber(); ++j)
+                        if (!selection.Includes(j)) frozen = frozen && candidate(iCell, j) == mean(iCell, j);
+                }
+            } });
+        // Candidate checks precede all state writers. Species repair may not
+        // silently unfreeze a masked component, even when density changed.
         MPI::LocalStage(data.mpi, [&]
-                        { data.ValidateMeans(data.candidate); });
+                        {
+            DNDS_check_throw_info(frozen, "equation species repair would change a frozen component");
+            data.ValidateMeans(data.candidate); });
         data.Stage([&]
                    { EquationDofOperations::Copy(state, data.candidate); });
-        return {0, 1};
+        if (data.positivity)
+        {
+            MPI_Allreduce(MPI_IN_PLACE, &limited, 1, MPI_INT64_T, MPI_SUM, data.mpi.comm);
+            MPI_Allreduce(MPI_IN_PLACE, &minimum, 1, MPI_DOUBLE, MPI_MIN, data.mpi.comm);
+        }
+        return {limited, minimum};
     }
     void EquationNonlinearSolver::EvaluateEquation(EquationDofs &state, EquationDofs &value, real mass, real rhsScale, real time)
     {

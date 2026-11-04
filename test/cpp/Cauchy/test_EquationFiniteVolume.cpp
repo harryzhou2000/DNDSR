@@ -7,6 +7,7 @@
 #include "Cauchy/State/EquationTimeStepper.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/Physics/EquationSource.hpp"
+#include "Cauchy/Physics/EquationPositivity.hpp"
 #include "CartesianFixture.hpp"
 #include "../CFV/ReconstructionFixture.hpp"
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
@@ -899,6 +900,231 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
     }
     CHECK_THROWS(withSource.PrepareJacobian(b, auxiliaryB, inverseTau, *matrixB, controls, 0, mixture.workers, wb.get()));
     CHECK(matrixB->Diagonal().Version() == version);
+}
+TEST_CASE("Equation P3 positivity protects actual EOS samples and preserves unlimited guesses in split and permuted layouts")
+{
+    MixtureFixture mixture;
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    for (int scenario = 0; scenario < 2; ++scenario)
+    {
+        C::DomainSettings settings;
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.cfv.intOrder = 4;
+        settings.numerics.viscousGradient = "polynomial";
+        settings.numerics.faceFallback = false;
+        settings.numerics.positivity = true;
+        settings.numerics.temperatureFloor = 900 / mixture.scales.T0;
+        settings.numerics.positivityCompressToMean = !scenario;
+        settings.numerics.positivityVolumePoints = !scenario;
+        settings.equation.source = "chemical"; // Its quadrature is mandatory even when the optional volume grid is off.
+        C::FiniteVolume fv(mesh, settings, mixture.equation);
+        auto state = mixture.State(fv.Metrics().Space(), scenario + 1);
+        mixture.Fill(state, fv.Metrics(), true);
+        auto work = fv.BuildEquationWorkspace(state, mixture.workers);
+        auto guess = fv.ReconstructionGuess(*work);
+        const int modes = fv.Reconstruction().NRecDOF();
+        {
+            auto write = guess.WriteOwned();
+            const auto flow = write.Block("flow");
+            for (I iCell = 0; iCell < flow.RowCount(); ++iCell)
+            {
+                flow(iCell, 4 * modes) = scenario ? .002 : 300;
+                if (scenario)
+                {
+                    flow(iCell, 4 * modes + 2) = -300;
+                    flow(iCell, 4 * modes + 5) = 100;
+                }
+            }
+        }
+        const C::EquationDofOperations::Binding meansBefore(state), guessBefore(guess);
+        fv.LimitReconstructionPP(state, *work);
+        CHECK_NOTHROW(meansBefore.Check(state, true));
+        CHECK_NOTHROW(guessBefore.Check(guess, true));
+        const auto statistics = fv.PositivityReconstructionStats(*work);
+        CHECK(statistics.first > 0);
+        CHECK(statistics.second == 0);
+        {
+            const auto read = fv.FluxReconstruction(*work).ReadOwned();
+            const auto flow = read.Block("flow");
+            for (I iCell = 0; iCell < flow.owned.RowCount(); ++iCell)
+            {
+                CHECK(flow(iCell, 4 * modes) == (scenario ? .002 : 0));
+                for (int mode = 2; mode < modes; ++mode)
+                    CHECK(flow(iCell, 4 * modes + mode) == 0);
+            }
+        }
+        // Independently query centers and the chemical integration points,
+        // then recover T with the actual EOS, not the limiter's bound checker.
+        const I count = fv.Metrics().NumCell() * 9;
+        R::Array<I> cells(R::RowLayout::Dense(count, 1));
+        R::Array<double> points(R::RowLayout::Dense(count, 3));
+        {
+            auto cw = cells.Write();
+            auto pw = points.Write();
+            const auto c = cw.View();
+            const auto p = pw.View();
+            for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            {
+                const auto center = fv.Metrics().GetCellCent(iCell);
+                for (int k = 0; k < 9; ++k)
+                {
+                    const I q = 9 * iCell + k;
+                    c(q, 0) = iCell;
+                    p(q, 0) = center[0] + (k % 3 - 1) * .25 * .5 * std::sqrt(.6);
+                    p(q, 1) = center[1] + (k / 3 - 1) * .25 * .5 * std::sqrt(.6);
+                    p(q, 2) = center[2];
+                }
+            }
+        }
+        DNDS::CFV::PolynomialSamplingPlan sampler(fv.Reconstruction(), cells, points, false);
+        std::vector<R::Array<double>> values;
+        for (I f = 0; f < state.PhysicalFieldNumber(); ++f)
+        {
+            values.emplace_back(R::RowLayout::Dense(count, I(state.PhysicalField(f).Width())));
+            sampler.Evaluate(state.PhysicalField(f), fv.FluxReconstruction(*work).PhysicalField(f), values.back());
+        }
+        std::vector<R::Array<double>::ReadLease> leases;
+        for (const auto &value : values)
+            leases.emplace_back(value.Read());
+        const auto fl = state.LocateBlock("flow"), sp = state.LocateBlock("species");
+        const auto flow = leases[fl.physicalField].View(), species = leases[sp.physicalField].View();
+        {
+            auto evaluator = mixture.equation.MakePointEvaluator(mixture.workers.Acquire(), {});
+            auto rhoY = evaluator.SpeciesInput();
+            for (I q = 0; q < count; ++q)
+            {
+                C::FlowState u;
+                for (int j = 0; j < 5; ++j)
+                    u[j] = flow(q, fl.firstComponent + j);
+                for (int k = 0; k < mixture.species - 1; ++k)
+                    rhoY[k] = species(q, sp.firstComponent + k);
+                CHECK(evaluator.Evaluate(u, rhoY).thermo.temperature > settings.numerics.temperatureFloor);
+            }
+        }
+        // Run the full P3 PP/source orchestration from a cold uniform guess.
+        // A uniform periodic state has zero flux divergence, leaving V*S(U).
+        C::EquationDofOperations::Fill(guess, 0);
+        auto residual = C::EquationDofOperations::NewVector(state), rates = C::EquationDofOperations::NewVector(state);
+        R::EagerEngine engine(2);
+        const auto stream = engine.CreateCPUStream();
+        fv.Evaluate(state, residual, *work, engine, stream);
+        C::EvaluateChemicalSource(mixture.equation, state, rates, mixture.workers.Acquire());
+        const auto rr = residual.ReadOwned(), sr = rates.ReadOwned();
+        const auto rl = rr.ComponentLayout(), sl = sr.ComponentLayout();
+        const auto r = rl.View(), source = sl.View();
+        for (I iCell = 0; iCell < r.RowCount(); ++iCell)
+            for (I j = 0; j < r.ComponentNumber(); ++j)
+                CHECK(r(iCell, j) == doctest::Approx(fv.Metrics().GetCellVol(iCell) * source(iCell, j)).epsilon(1e-10).scale(1));
+        CHECK_NOTHROW(meansBefore.Check(state, true));
+    }
+}
+TEST_CASE("Equation workspace agrees PP controls before binding conditional halo fields")
+{
+    if (mpi.size < 2)
+        return;
+    MixtureFixture mixture;
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    C::DomainSettings settings;
+    settings.numerics.reconstruction = "constant";
+    settings.numerics.viscousGradient = "polynomial";
+    settings.numerics.faceFallback = false;
+    settings.numerics.positivity = mpi.rank == 0;
+    C::FiniteVolume fv(mesh, settings, mixture.equation);
+    auto state = mixture.State(fv.Metrics().Space(), 1);
+    mixture.Fill(state, fv.Metrics(), true);
+    CHECK_THROWS_WITH(fv.BuildEquationWorkspace(state, mixture.workers), doctest::Contains("operation controls"));
+}
+TEST_CASE("Equation implicit PP compresses RHS or pseudo-time and repairs species without changing flow")
+{
+    MixtureFixture mixture;
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    for (int scenario = 0; scenario < 2; ++scenario)
+    {
+        C::DomainSettings settings;
+        settings.numerics.reconstruction = "constant";
+        settings.numerics.viscousGradient = "polynomial";
+        settings.numerics.faceFallback = false;
+        settings.numerics.positivity = true;
+        settings.numerics.temperatureFloor = 300 / mixture.scales.T0;
+        settings.implicit.iterations = 1;
+        settings.implicit.relativeTolerance = settings.implicit.absoluteTolerance = 0;
+        settings.implicit.positivity.rhsMode = scenario ? "dTau" : "rhs";
+        settings.implicit.positivity.rhsReduction = scenario ? "minimumAll" : "cell";
+        C::FiniteVolume fv(mesh, settings, mixture.equation);
+        auto state = mixture.State(fv.Metrics().Space(), scenario + 1);
+        mixture.Fill(state, fv.Metrics(), true);
+        auto source = C::EquationDofOperations::NewVector(state);
+        C::EquationDofOperations::Copy(source, state);
+        C::EquationDofOperations::Scale(source, 20);
+        {
+            auto write = source.WriteOwned();
+            const auto flow = write.Block("flow");
+            for (I iCell = 0; iCell < flow.RowCount(); ++iCell)
+                if (fv.Metrics().Cells().LocalToGlobal(iCell) == 0)
+                    flow(iCell, 0) = -1e8;
+        }
+        R::EagerEngine engine(2);
+        const auto stream = engine.CreateCPUStream();
+        C::EquationNonlinearSolver solver(fv, state, fv.BuildEquationWorkspace(state, mixture.workers), engine, stream,
+                                          settings, A::ComponentSelection(state.ComponentNumber()), mixture.workers);
+        const auto report = solver.Solve(state, source, 20, 1, .1);
+        CHECK(report.iterations == 1);
+        CHECK_FALSE(report.converged);
+        CHECK(report.rhsLimited == 1);
+        CHECK(report.minimumRHSAlpha > 0);
+        CHECK(report.minimumRHSAlpha < 1);
+        auto old = C::EquationDofOperations::NewVector(state);
+        C::EquationDofOperations::Copy(old, state);
+        auto increment = C::EquationDofOperations::NewVector(state);
+        C::EquationDofOperations::Fill(increment, 0);
+        {
+            auto write = increment.WriteOwned();
+            const auto species = write.Block("species");
+            for (I iCell = 0; iCell < species.RowCount(); ++iCell)
+                species(iCell, 0) = -100;
+        }
+        CHECK_NOTHROW(solver.ApplyCorrection(state, increment));
+        {
+            const auto read = state.ReadOwned(), before = old.ReadOwned();
+            const auto flow = read.Block("flow"), prior = before.Block("flow"), species = read.Block("species");
+            for (I iCell = 0; iCell < flow.owned.RowCount(); ++iCell)
+            {
+                for (int j = 0; j < 5; ++j)
+                    CHECK(flow(iCell, j) == prior(iCell, j));
+                CHECK(species(iCell, 0) >= 1e-30);
+                double sum = 0;
+                for (int k = 0; k < mixture.species - 1; ++k)
+                    sum += species(iCell, k);
+                CHECK(sum <= flow(iCell, 0));
+            }
+        }
+        // A masked flow correction may not silently repair frozen species.
+        // Remove kinetic-energy protection: a density-only trial can then
+        // reach the simplex boundary while its thermal energy stays safe.
+        {
+            auto write = state.WriteOwned();
+            const auto flow = write.Block("flow");
+            for (I iCell = 0; iCell < flow.RowCount(); ++iCell)
+                for (int d = 1; d <= 3; ++d)
+                    flow(iCell, d) = 0;
+        }
+        C::EquationDofOperations::Fill(increment, 0);
+        {
+            const auto read = state.ReadOwned();
+            const auto mean = read.Block("flow");
+            auto write = increment.WriteOwned();
+            const auto flow = write.Block("flow");
+            // The power-two Euler compression makes an arbitrarily huge
+            // increment almost vanish. A 1.01*rho decrement instead reaches
+            // about .01*rho while retaining safe internal energy here.
+            for (I iCell = 0; iCell < flow.RowCount(); ++iCell)
+                flow(iCell, 0) = -1.01 * mean(iCell, 0);
+        }
+        const C::EquationDofOperations::Binding before(state);
+        CHECK_THROWS(solver.ApplyCorrection(state, increment, 1, {0}));
+        CHECK_NOTHROW(before.Check(state, true));
+    }
 }
 TEST_CASE("Coupled mixture nonlinear stage recovers a manufactured target through separate or permuted arrays")
 {

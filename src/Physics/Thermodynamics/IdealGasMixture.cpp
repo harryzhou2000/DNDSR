@@ -44,6 +44,25 @@ namespace DNDS::Physics::Thermodynamics
             result += rhoY[k] * (base[k] - base.back());
         return result;
     }
+    const std::vector<real> &IdealGasMixture::BaseSpecificInternalEnergies() const { return _state->baseEnergy; }
+    std::vector<real> IdealGasMixture::SpecificInternalEnergies(real temperature, Chemistry::ChemicalWorkerPool::Lease worker) const
+    {
+        DNDS_check_throw_info(std::isfinite(temperature) && temperature > 0, "thermal reference temperature must be finite and positive");
+        auto evaluator = Borrow(std::move(worker), {false, false, true});
+        if (temperature == BaseTemperature())
+            return _state->baseEnergy;
+        auto rhoY = evaluator.SpeciesInput();
+        for (int k = 0; k < rhoY.nSpecies; ++k)
+            rhoY[k] = 0;
+        const auto point = evaluator.FromRhoT(1, temperature, rhoY);
+        std::vector<real> result(static_cast<size_t>(SpeciesNumber()));
+        for (int k = 0; k < SpeciesNumber(); ++k)
+        {
+            result[k] = point.speciesEnthalpy[k] - _state->gasConstants[k] * temperature;
+            DNDS_check_throw_info(std::isfinite(result[k]), "nonfinite thermal energy reference");
+        }
+        return result;
+    }
     IdealGasMixture::PointEvaluator IdealGasMixture::Borrow(Chemistry::ChemicalWorkerPool::Lease worker,
                                                             MixturePropertyRequest request) const
     {
