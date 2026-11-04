@@ -10,13 +10,19 @@ compute node or losing source provenance on a slow shared filesystem.
 
 ## Routing Boundary
 
-For DNDSR execution, locate the helper repository at `running/clusters` and
-read its `AGENTS.md` and selected `cluster-<ssh-alias>/` profile, including
-environment, build and launcher notes. If the helper is absent, obtain its
-location from the operator. Treat it as a read-only reference. Ordinary
+For DNDSR execution, use the helper repository at `running/clusters` when
+available, or an operator-supplied helper location. Read its `AGENTS.md` and
+selected `cluster-<ssh-alias>/` profile, including environment, build and
+launcher notes. The helper is optional: if it or a matching profile is absent,
+establish the same cluster contract from operator instructions, existing
+verified environment/launcher scripts, and live read-only inspection. Ask only
+for unresolved facts needed for the next action; absence of the helper alone
+does not block execution or authorize provisioning. Treat available helper
+profiles as read-only references. Ordinary
 execution does not authorize editing helper profiles or provisioning shell,
-SSH, tools, or environments. Requested provisioning belongs to the helper
-repository's `.agents/skills/cluster-setup/SKILL.md` and `setup/` protocol.
+SSH, tools, or environments. Provisioning is a separately authorized task;
+when using the helper, follow its `.agents/skills/cluster-setup/SKILL.md` and
+`setup/` protocol.
 Resolve the user-supplied canonical root independently for each login; two SSH
 aliases on the same hardware can have separate homes and Slurm associations.
 
@@ -180,11 +186,13 @@ so a standalone build cannot silently import the canonical checkout's modules.
 
 ## Cluster Profiles
 
-- Use the selected `running/clusters/cluster-<ssh-alias>/` profile for current
-  build policy and compute allocation. Avoid computation on login nodes;
-  compilation there is allowed when the profile permits it.
+- Use an available `running/clusters/cluster-<ssh-alias>/` profile for current
+  build policy and compute allocation. Without one, establish those policies
+  from operator instructions and verified site documentation or scripts.
+  Avoid computation on login nodes; compilation there is allowed when the
+  established cluster policy permits it.
 - For `ssh thtj1`, [references/thtj1.md](references/thtj1.md) retains historical
-  operational evidence. Reconcile it with the current helper profile rather
+  operational evidence. Reconcile it with the current cluster contract rather
   than treating its older build policy as a universal requirement.
 - Report profile corrections to the operator. Editing helper profiles or
   provisioning environments requires a separately authorized maintenance task;
