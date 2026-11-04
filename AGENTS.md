@@ -9,6 +9,26 @@
 DNDSR is a C++17 / Python CFD (Computational Fluid Dynamics) research code implementing
 Compact Finite Volume methods with MPI parallelism and optional CUDA GPU support.
 
+## Temporary Source Trees and Cleanup
+
+By default, put task-specific DNDSR worktrees, standalone source checkouts,
+and source-transfer bundles under the canonical checkout's
+`workspace/worktrees/`, with a descriptive task name. Do not create temporary
+`DNDSR-*` or `dndsr-*` siblings in `~/projects/`. An explicit user-selected
+location takes precedence. Existing active session workspaces stay where they
+are unless the user requests migration.
+
+Create an isolated source tree only when the task needs it, and keep its build
+directory paired with that source tree. Reuse verified canonical dependencies
+rather than duplicating them. Record the source revision and purpose.
+
+Before retiring a tree, check for active users/processes, unique commits,
+uncommitted changes, and untracked or ignored research artifacts. Preserve
+necessary patches, base revisions, logs and evidence under
+`workspace/worktrees/archives/` or the relevant study. Verify transfer archives
+before removing unpacked duplicates. Remove linked worktrees through Git;
+never discard changes or remove a tree without the required user authorization.
+
 ## CodeGraph in Separate Checkouts
 
 When working in a standalone checkout or linked Git worktree, an agent may
