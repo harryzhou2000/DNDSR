@@ -10,6 +10,16 @@ compute node or losing source provenance on a slow shared filesystem.
 
 ## Routing Boundary
 
+For DNDSR execution, locate the helper repository at `running/clusters` and
+read its `AGENTS.md` and selected `cluster-<ssh-alias>/` profile, including
+environment, build and launcher notes. If the helper is absent, obtain its
+location from the operator. Treat it as a read-only reference. Ordinary
+execution does not authorize editing helper profiles or provisioning shell,
+SSH, tools, or environments. Requested provisioning belongs to the helper
+repository's `.agents/skills/cluster-setup/SKILL.md` and `setup/` protocol.
+Resolve the user-supplied canonical root independently for each login; two SSH
+aliases on the same hardware can have separate homes and Slurm associations.
+
 Use this skill when the machine requires `sbatch`, `srun`, `salloc`, or an
 equivalent scheduler. Use `numerical-experiment` for local or direct-SSH
 execution. For scheduled numerical experiments, use both skills: this skill
@@ -109,6 +119,13 @@ or other external side effects by itself.
    reconfiguration is demonstrably necessary.
 6. Compile only where the cluster contract allows it. If compute allocation is
    required, compile inside `srun` or `salloc`, never on the login node.
+   Use the same profile environment for compilation and execution. Check the
+   underlying compiler selected by both MPI wrappers: `CC=mpicc CXX=mpicxx`
+   alone does not select it. For AOCC-default Open MPI with GCC, preserve the
+   profile's `OMPI_CC=gcc OMPI_CXX=g++` overrides and GCC runtime library paths.
+   Follow the profile's build parallelism and generator choices; preserve an
+   existing build's generator. Record wrapper versions and library resolution,
+   and print runtime modules and threading in the job log.
 7. Materialize a run-specific submission script and config record. Print the
    absolute log directory, exact command, source commit, and scheduler request
    before submission. For a multi-job campaign, submit and confirm one
@@ -163,8 +180,15 @@ so a standalone build cannot silently import the canonical checkout's modules.
 
 ## Cluster Profiles
 
-- For `ssh thtj1`, read [references/thtj1.md](references/thtj1.md). Its DNDSR
-  compilation must use `srun` on `debug6`; do not compile on the login node.
+- Use the selected `running/clusters/cluster-<ssh-alias>/` profile for current
+  build policy and compute allocation. Avoid computation on login nodes;
+  compilation there is allowed when the profile permits it.
+- For `ssh thtj1`, [references/thtj1.md](references/thtj1.md) retains historical
+  operational evidence. Reconcile it with the current helper profile rather
+  than treating its older build policy as a universal requirement.
+- Report profile corrections to the operator. Editing helper profiles or
+  provisioning environments requires a separately authorized maintenance task;
+  ordinary execution does not authorize those changes.
 
 ## Safety
 
