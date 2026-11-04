@@ -25,7 +25,7 @@ namespace DNDS::Cauchy
             std::vector<std::vector<std::vector<Point>>> rows;
         };
         std::shared_ptr<const Geometry> geometry;
-        index components, flowFirst = -1, speciesFirst = -1;
+        index components, flowFirst = -1, speciesFirst = -1, kineticFirst = -1;
         int independent;
         Eigen::MatrixXd means, pressureDerivative;
         std::vector<real> pressure;
@@ -48,6 +48,8 @@ namespace DNDS::Cauchy
                     flowFirst = first;
                 if (block.name == "species")
                     speciesFirst = first;
+                if (block.name == "rans" && fv._data->equation.RANS().ComponentNumber() == 2)
+                    kineticFirst = first;
                 first += index(block.components.size());
             }
             if (output.HasAssembledOffDiagonal())
@@ -119,7 +121,13 @@ namespace DNDS::Cauchy
                 }
                 // dp/dU is frozen in the stored neighbor's frame. Applying
                 // its rotated direction to the flux directly composes J*R.
-                const auto derivative = PrepareCompressibleFluxDerivative(flow, direction, pressure[point.other], pressureDerivative(column, point.other), point.normal, grid);
+                auto derivative = PrepareCompressibleFluxDerivative(flow, direction, pressure[point.other], pressureDerivative(column, point.other), point.normal, grid);
+                if (kineticFirst >= 0)
+                {
+                    const auto stress = TurbulentNormalFluxDerivative(flow, direction, values(point.other, kineticFirst), real(column == kineticFirst), point.normal);
+                    for (int j = 0; j < 5; ++j)
+                        derivative[j] += stress[j];
+                }
                 real deltaSpeed = 0;
                 for (int d = 0; d < 3; ++d)
                     deltaSpeed += (direction[1 + d] - flow[1 + d] / flow[0] * direction[0]) / flow[0] * point.normal[d];

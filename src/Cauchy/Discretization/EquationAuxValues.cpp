@@ -215,6 +215,11 @@ namespace DNDS::Cauchy
             if (buffers._derivedThermodynamics)
                 derived.emplace(MeanThermodynamicView::Derived(*derivedOwned, derivedGhost ? &*derivedGhost : nullptr));
             EquationFVDetail::PointScratch left(source.ComponentNumber()), right(source.ComponentNumber());
+            const auto *ransModel = data->equation.HasRANS() ? &data->equation.RANS() : nullptr;
+            std::optional<WallDistanceRead> wallRead;
+            if (ransModel && ransModel->ComponentNumber() == 2)
+                wallRead.emplace(data->wallDistance->AcquireRead());
+            const auto walls = wallRead ? wallRead->HostView() : WallDistanceView{};
             const auto prepared = [&](index iCell, auto &point)
             {
                 if (derived && ransFirst < 0)
@@ -238,7 +243,8 @@ namespace DNDS::Cauchy
                     if (sample.other == UnInitIndex)
                     {
                         right.values = left.values;
-                        EquationFVDetail::BoundaryValue(right, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, true, ransFirst);
+                        EquationFVDetail::BoundaryValue(right, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, true,
+                                                        {ransModel, ransFirst, &left, wallRead ? walls.cellMean(sample.cell, 0) : 0});
                     }
                     else
                     {

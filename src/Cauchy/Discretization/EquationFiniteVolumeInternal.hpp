@@ -64,10 +64,27 @@ namespace DNDS::Cauchy::EquationFVDetail
             point.gradient.middleRows(first, 3) = (rotation * point.gradient.middleRows(first, 3)).eval();
         }
     }
+    /// Explicit inputs for the RANS part of a boundary point. Two-equation
+    /// no-slip targets use the cell mean and its mean wall distance, not the
+    /// reconstructed point or the face distance. The pointers are borrowed for
+    /// this call only. An evaluator with transport reserved is required for
+    /// two-equation walls. SA requires neither an extra property call nor mean.
+    struct RANSBoundaryInput
+    {
+        const Physics::RANS::Model *model = nullptr;
+        index first = -1;
+        const PointScratch *mean = nullptr;
+        real meanWallDistance = 0;
+    };
     inline void BoundaryValue(PointScratch &point, index flowFirst, index speciesFirst, int independent,
                               const FiniteVolumeDetail::Sample &sample, EquationPointEvaluator &evaluator,
-                              const RigidFrame &frame, real time, bool exterior, index saFirst = -1)
+                              const RigidFrame &frame, real time, bool exterior, RANSBoundaryInput rans = {})
     {
+        const int components = rans.model ? rans.model->ComponentNumber() : 0;
+        DNDS_check_throw_info((rans.first >= 0) == bool(components), "boundary RANS block/model differs");
+        const bool twoEquationWall = components == 2 && sample.boundary.kind == BoundaryKind::NoSlipWall;
+        DNDS_check_throw_info(!twoEquationWall || (rans.mean && std::isfinite(rans.meanWallDistance) && rans.meanWallDistance > 0),
+                              "two-equation wall needs cell mean and positive mean wall distance");
         const Physics::Chemistry::SpeciesBufferView rhoY{independent ? point.values.data() + speciesFirst : nullptr, independent};
         const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]}, location{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]};
         const auto inside = point.Flow(flowFirst);
@@ -75,10 +92,44 @@ namespace DNDS::Cauchy::EquationFVDetail
                                    : sample.boundary.FaceValue(evaluator, point.Flow(flowFirst), rhoY, normal, location, time, &frame);
         for (int j = 0; j < 5; ++j)
             point.values[flowFirst + j] = flow[j];
-        if (saFirst >= 0)
+        if (components)
         {
             if (sample.boundary.kind == BoundaryKind::NoSlipWall)
-                point.values[saFirst] = exterior ? -point.values[saFirst] : 0;
+            {
+                std::array<real, 2> target{};
+                if (twoEquationWall)
+                {
+                    // Isothermal viscosity uses the physical wall state. The
+                    // convective exterior deliberately retains interior T, so
+                    // it cannot be used as the transport property input.
+                    FlowState viscosityFlow = rans.mean->Flow(flowFirst);
+                    auto viscositySpecies = rans.mean->Species(speciesFirst, independent);
+                    if (sample.boundary.isothermal)
+                    {
+                        viscosityFlow = flow;
+                        viscositySpecies = {rhoY.data, rhoY.nSpecies};
+                        if (exterior)
+                        {
+                            auto scratch = evaluator.SpeciesInput();
+                            for (int k = 0; k < independent; ++k)
+                                scratch[k] = rhoY[k];
+                            viscosityFlow = sample.boundary.FaceValue(evaluator, inside, scratch, normal, location, time, &frame);
+                            viscositySpecies = {scratch.data, scratch.nSpecies};
+                        }
+                    }
+                    const auto properties = evaluator.Evaluate(viscosityFlow, viscositySpecies, 0, {true});
+                    Physics::RANS::Point mean;
+                    for (int j = 0; j < 5; ++j)
+                        mean.state[j] = rans.mean->values[flowFirst + j];
+                    for (int j = 0; j < components; ++j)
+                        mean.state[5 + j] = rans.mean->values[rans.first + j];
+                    mean.molecularViscosity = properties.transport.viscosity;
+                    mean.wallDistance = rans.meanWallDistance;
+                    target = RANSWallTarget(*rans.model, mean, inside[0]);
+                }
+                for (int j = 0; j < components; ++j)
+                    point.values[rans.first + j] = exterior ? 2 * target[j] - point.values[rans.first + j] : target[j];
+            }
             else if (sample.boundary.kind == BoundaryKind::Farfield || sample.boundary.kind == BoundaryKind::Analytic)
             {
                 const auto grid = frame.GridVelocity(location);
@@ -86,7 +137,8 @@ namespace DNDS::Cauchy::EquationFVDetail
                 for (int d = 0; d < 3; ++d)
                     speed += (inside[1 + d] / inside[0] - grid[d]) * normal[d];
                 if (sample.boundary.kind == BoundaryKind::Analytic || speed <= 0)
-                    point.values[saFirst] = sample.boundary.prescribedRANS[0];
+                    for (int j = 0; j < components; ++j)
+                        point.values[rans.first + j] = sample.boundary.prescribedRANS[j];
             }
         }
     }

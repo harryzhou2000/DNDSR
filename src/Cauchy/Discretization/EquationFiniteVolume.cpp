@@ -264,7 +264,12 @@ namespace DNDS::Cauchy
             const auto meanBlocks = BlockViews(state, mean), recBlocks = BlockViews(coefficients, rec);
             auto basisRead = owner->reconstruction.AcquireBasisRead();
             CFV::Math::SmallMatrix scratch;
-            PointScratch point(state.ComponentNumber());
+            PointScratch point(state.ComponentNumber()), cellMean(state.ComponentNumber());
+            const auto *ransModel = owner->equation.HasRANS() ? &owner->equation.RANS() : nullptr;
+            std::optional<WallDistanceRead> wallRead;
+            if (ransModel && ransModel->ComponentNumber() == 2)
+                wallRead.emplace(owner->wallDistance->AcquireRead());
+            const auto wallValues = wallRead ? wallRead->HostView() : WallDistanceView{};
             const auto frame = owner->motion.At(time);
             const int modes = owner->reconstruction.NRecDOF();
             {
@@ -273,6 +278,8 @@ namespace DNDS::Cauchy
                 {
                     const auto &sample = owner->samples[owner->boundaryEntries[iPoint]];
                     Gather(meanBlocks, sample.cell, point);
+                    if (wallRead)
+                        Gather(meanBlocks, sample.cell, cellMean);
                     if (polynomial)
                     {
                         const auto basis = basisRead.FaceBasis(sample.face, sample.side, sample.point, 0, scratch);
@@ -282,7 +289,8 @@ namespace DNDS::Cauchy
                                     point.values[logicalFirst[iBlock] + j] += recBlocks[iBlock](sample.cell, j * modes + mode) * basis(0, mode);
                     }
                     BoundaryValue(point, flowFirst, speciesFirst, owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() - 1 : 0,
-                                  sample, evaluator, frame, time, false, ransFirst);
+                                  sample, evaluator, frame, time, false,
+                                  {ransModel, ransFirst, &cellMean, wallRead ? wallValues.cellMean(sample.cell, 0) : 0});
                     for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
                     {
                         const auto target = output.Block(iBlock);
@@ -325,13 +333,20 @@ namespace DNDS::Cauchy
             const int independent = std::max(0, species - 1);
             const index width = state.ComponentNumber();
             const auto frame = owner->motion.At(time);
-            PointScratch left(width), right(width), face(width);
+            PointScratch left(width), right(width), face(width), cellMean(width);
+            const auto *ransModel = owner->equation.HasRANS() ? &owner->equation.RANS() : nullptr;
             std::vector<real> integrated(size_t(width), 0), flux(size_t(width), 0), speciesFlux(size_t(independent), 0);
             EquationTransportScratch transport(species);
             std::optional<WallDistanceRead> wallRead;
             if (owner->wallDistance)
                 wallRead.emplace(owner->wallDistance->AcquireRead());
             const auto wallValues = wallRead ? wallRead->HostView() : WallDistanceView{};
+            const auto boundaryInput = [&](const FiniteVolumeDetail::Sample &sample)
+            {
+                if (ransModel && ransModel->ComponentNumber() == 2)
+                    Gather(meanBlocks, sample.cell, cellMean);
+                return RANSBoundaryInput{ransModel, ransFirst, &cellMean, wallRead ? wallValues.cellMean(sample.cell, 0) : 0};
+            };
             CFV::Math::SmallMatrix basisScratch;
             const auto reconstruct = [&](index iCell, const FiniteVolumeDetail::Sample &sample, int side, PointScratch &point)
             {
@@ -365,9 +380,9 @@ namespace DNDS::Cauchy
                     {
                         right.values = left.values;
                         right.gradient = left.gradient;
-                        BoundaryValue(right, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, true, ransFirst);
+                        BoundaryValue(right, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, true, boundaryInput(sample));
 #ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
-                        if (ransFirst >= 0 && sample.boundary.kind == BoundaryKind::NoSlipWall)
+                        if (ransModel && ransModel->Kind() == Physics::RANS::ModelKind::SA && sample.boundary.kind == BoundaryKind::NoSlipWall)
                             left.values[ransFirst] = right.values[ransFirst] = 0;
 #endif
                     }
@@ -388,6 +403,15 @@ namespace DNDS::Cauchy
                         flux[j] = .5 * (left.values[j] * speedLeft + right.values[j] * speedRight - alpha * (right.values[j] - left.values[j]));
                     for (int j = 0; j < 5; ++j)
                         flux[flowFirst + j] = flowFlux[j];
+                    if (ransModel && ransModel->ComponentNumber() == 2)
+                    {
+                        FlowState average;
+                        for (int j = 0; j < 5; ++j)
+                            average[j] = .5 * (leftFlow[j] + rightFlow[j]);
+                        const auto stress = TurbulentNormalFlux(average, .5 * (left.values[ransFirst] + right.values[ransFirst]), normal);
+                        for (int j = 0; j < 5; ++j)
+                            flux[flowFirst + j] += stress[j];
+                    }
                     const bool wall = sample.other == UnInitIndex && sample.boundary.kind == BoundaryKind::NoSlipWall;
                     if (viscous && (sample.other != UnInitIndex || wall))
                     {
@@ -399,7 +423,7 @@ namespace DNDS::Cauchy
                             // unchanged and cannot yield a negative exterior T.
                             // Reuse the not-yet-filled face scratch here.
                             face.values = left.values;
-                            BoundaryValue(face, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, false, ransFirst);
+                            BoundaryValue(face, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, false, boundaryInput(sample));
                             const auto wallFlow = face.Flow(flowFirst);
                             const real pressure = evaluator.Evaluate(wallFlow, face.Species(speciesFirst, independent), 0, {}).thermo.pressure;
                             const auto value = evaluator.FromPrimitive({wallFlow[0], rightFlow[1] / rightFlow[0], rightFlow[2] / rightFlow[0], rightFlow[3] / rightFlow[0], pressure},

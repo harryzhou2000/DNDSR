@@ -850,8 +850,30 @@ This is a configured SA path with focused distributed correctness coverage,
 not completion of the matched Euler physical/performance studies. It currently
 uses Rusanov, constant or polynomial reconstruction, and no limiter or
 non-characteristic WBAP; viscous reconstruction uses polynomial gradients.
-Two-equation models
-remain rejected by finite-volume construction until their turbulent kinetic
-pressure, gradient-dependent aux bounds and wall/Jacobian terms are wired.
+Two-equation models remain rejected by finite-volume construction until
+gradient-dependent aux preparation and high-order scalar admissibility are
+connected and the complete spatial path is tested.
 DES and QCR integration remain pending. Existing NS/mixture profiles retain
 their behavior.
+
+The shared boundary-point protocol now receives a `RANSBoundaryInput` with
+the model, logical scalar offset, a borrowed cell mean and its sampled mean
+wall distance. It handles all scalars for inflow and wall reflection. For
+Wilcox/SST/realizable k-epsilon walls, the caller reserves transport in the
+point evaluator: adiabatic viscosity is evaluated at the cell mean, while
+isothermal viscosity uses the physical wall state even when producing a
+convective exterior. The exterior retains interior temperature and therefore
+cannot supply the isothermal viscosity. Epsilon retains interior reconstructed
+density in its target. These point protocols are tested for both perfect gas
+and temperature-dependent mixture viscosity, independently of spatial model
+activation. The SA zero-interior compile-time wall fix applies only to SA.
+
+`TurbulentNormalFlux` provides Euler's two-equation `2*rhoK/3` isotropic stress
+and pressure work at the arithmetic conservative face state. Energy work uses
+absolute normal velocity in the mesh-bound frame, including ALE. It is added
+outside the Riemann solver, without altering EOS pressure or sound speed.
+Its conservative directional derivative supplies the corresponding neighbor
+coupling in the approximate Jacobian. Point-level finite-difference checks
+cover density, all momenta, energy and both turbulence directions. These tests
+do not establish a complete two-equation FV solve: gradient-dependent aux
+preparation and high-order scalar admissibility remain activation gates.

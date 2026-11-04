@@ -42,7 +42,7 @@ namespace DNDS::Cauchy
             const auto &limits = _data->settings.numerics;
             thermal.emplace(equation, limits.densityFloor, limits.temperatureFloor, 0, limits.pressureFloor,
                 workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{});
-            evaluator.emplace(equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {}));
+            evaluator.emplace(equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {equation.HasRANS()}));
             derived = Runtime::Array<real>(Runtime::RowLayout::Dense(Metrics().NumCell(), 6 + species)); });
         const auto means = state.ReadOwned();
         const auto blocks = BlockViews(state, means);
@@ -92,6 +92,11 @@ namespace DNDS::Cauchy
             CFV::Math::SmallMatrix scratch;
             const int modes = _data->reconstruction.NRecDOF();
             const auto frame = _data->motion.At(time);
+            const auto *ransModel = equation.HasRANS() ? &equation.RANS() : nullptr;
+            PointScratch cellMean(state.ComponentNumber());
+            std::optional<WallDistanceRead> wallRead;
+            if (ransModel && ransModel->ComponentNumber() == 2) wallRead.emplace(_data->wallDistance->AcquireRead());
+            const auto walls = wallRead ? wallRead->HostView() : WallDistanceView{};
             for (const auto &sample : _data->samples)
             {
                 if (sample.other != UnInitIndex) continue;
@@ -102,7 +107,9 @@ namespace DNDS::Cauchy
                         for (int mode = 0; mode < modes; ++mode)
                             point.values[first[iBlock] + j] += recBlocks[iBlock](sample.cell, j * modes + mode) * b(0, mode);
                 if (!thermal->View().Admissible(point.values)) Gather(blocks, sample.cell, point);
-                BoundaryValue(point, flowFirst, speciesFirst, independent, sample, *evaluator, frame, time, false, ransFirst);
+                if (wallRead) Gather(blocks, sample.cell, cellMean);
+                BoundaryValue(point, flowFirst, speciesFirst, independent, sample, *evaluator, frame, time, false,
+                              {ransModel, ransFirst, &cellMean, wallRead ? walls.cellMean(sample.cell, 0) : 0});
                 const auto flow = point.Flow(flowFirst);
                 const auto properties = evaluator->Evaluate(flow, point.Species(speciesFirst, independent));
                 surface << Mesh().OriginalEntityId(Geom::EntityKind::Cell, sample.cell) << ',' << sample.zone;

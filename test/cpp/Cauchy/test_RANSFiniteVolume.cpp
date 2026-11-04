@@ -3,6 +3,7 @@
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Discretization/EquationFiniteVolumeInternal.hpp"
 #include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/Physics/EquationSetup.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/Implicit/LinearProblem.hpp"
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
@@ -179,23 +180,113 @@ TEST_CASE("SA boundary samples use wall reflection and frame-relative incoming f
     C::RigidFrame frame;
     sample.boundary = boundaries.At(7);
     reset();
-    C::EquationFVDetail::BoundaryValue(point, 0, -1, 0, sample, evaluator, frame, 0, true, 5);
+    C::EquationFVDetail::BoundaryValue(point, 0, -1, 0, sample, evaluator, frame, 0, true, {&equation.RANS(), 5});
     CHECK(point.values[5] == -.02);
     reset();
-    C::EquationFVDetail::BoundaryValue(point, 0, -1, 0, sample, evaluator, frame, 0, false, 5);
+    C::EquationFVDetail::BoundaryValue(point, 0, -1, 0, sample, evaluator, frame, 0, false, {&equation.RANS(), 5});
     CHECK(point.values[5] == 0);
     sample.boundary = boundaries.At(8);
     reset();
-    C::EquationFVDetail::BoundaryValue(point, 0, -1, 0, sample, evaluator, frame, 0, true, 5);
+    C::EquationFVDetail::BoundaryValue(point, 0, -1, 0, sample, evaluator, frame, 0, true, {&equation.RANS(), 5});
     CHECK(point.values[5] == .02);
     // The same absolute flow becomes inflow when the boundary moves faster.
     frame.moving = true;
     frame.centerVelocity = {.2, 0, 0};
     reset();
-    C::EquationFVDetail::BoundaryValue(point, 0, -1, 0, sample, evaluator, frame, 0, true, 5);
+    C::EquationFVDetail::BoundaryValue(point, 0, -1, 0, sample, evaluator, frame, 0, true, {&equation.RANS(), 5});
     CHECK(point.values[5] == .07);
     settings.boundaries["8"].ransConservative.clear();
     CHECK_THROWS(C::BoundarySystem(settings.boundaries, equation));
+}
+
+TEST_CASE("Two-equation boundary points use mean wall distance and the correct thermal viscosity")
+{
+    int materials = 1;
+#ifdef DNDS_USE_CANTERA
+    materials = 2;
+#endif
+    for (int material = 0; material < materials; ++material)
+        for (const auto *name : {"KOmegaWilcox", "KOmegaSST", "RealizableKE"})
+        {
+            auto settings = Settings();
+            settings.equation.rans.model = name;
+            if (material)
+            {
+                settings.equation.eos = "idealGasMixture";
+                settings.equation.viscosity = 0;
+                settings.equation.mixture.mechanismFile = "h2o2.yaml";
+            }
+            auto setup = C::EquationSetup::Resolve(settings.equation);
+            const auto &equation = setup.equation;
+            const auto &model = equation.RANS();
+            auto evaluator = equation.MakePointEvaluator(setup.workers ? setup.workers->Acquire() : DNDS::Physics::Chemistry::ChemicalWorkerPool::Lease{}, {true});
+            const int ns = material ? equation.Mixture().SpeciesNumber() - 1 : 0;
+            C::EquationFVDetail::PointScratch mean(7 + ns), inside(7 + ns);
+            const auto fractions = material ? equation.IndependentMassFractions({{"H2", .03}, {"O2", .23}}) : std::vector<double>{};
+            const auto fill = [&](auto &point, double rho, double temperature)
+            {
+                for (int k = 0; k < ns; ++k)
+                    point.values[7 + k] = rho * fractions[k];
+                const auto flow = evaluator.FromPrimitive({rho, .1, .02, 0, 1}, point.Species(7, ns), temperature);
+                for (int j = 0; j < 5; ++j)
+                    point.values[j] = flow[j];
+            };
+            fill(mean, 2, 2);
+            fill(inside, 1.5, 3);
+            mean.values[5] = .07;
+            mean.values[6] = 1.1;
+            inside.values[5] = .03;
+            inside.values[6] = .4;
+            const double distance = .17;
+            C::FiniteVolumeDetail::Sample sample{};
+            sample.normal = {1, 0, 0};
+            sample.ownPoint.setZero();
+            C::RigidFrame frame;
+            for (bool isothermal : {false, true})
+            {
+                settings.boundaries["7"].kind = "noSlipWall";
+                settings.boundaries["7"].thermal = isothermal ? "isothermal" : "adiabatic";
+                settings.boundaries["7"].temperature = 4;
+                sample.boundary = C::BoundarySystem(settings.boundaries, equation).At(7);
+                auto viscosityPoint = isothermal ? inside : mean;
+                if (isothermal)
+                {
+                    // Independent property oracle at p_inside,T_wall,Y_inside.
+                    const auto thermal = evaluator.Evaluate(inside.Flow(0), inside.Species(7, ns), 0, {}).thermo;
+                    const double rhoWall = thermal.pressure / (thermal.gasConstant * 4);
+                    fill(viscosityPoint, rhoWall, 4);
+                }
+                const double mu = evaluator.Evaluate(viscosityPoint.Flow(0), viscosityPoint.Species(7, ns), 0, {true}).transport.viscosity;
+                if (material && isothermal)
+                    CHECK(std::abs(mu - evaluator.Evaluate(mean.Flow(0), mean.Species(7, ns), 0, {true}).transport.viscosity) > mu * .1);
+                const double target = model.Kind() == DNDS::Physics::RANS::ModelKind::RealizableKE
+                                          ? 2 * mu / 2 * (.07 / 2) / (distance * distance) * 1.5
+                                          : 800 * mu / (distance * distance);
+                for (bool exterior : {false, true})
+                {
+                    auto point = inside;
+                    C::EquationFVDetail::BoundaryValue(point, 0, 7, ns, sample, evaluator, frame, 0, exterior,
+                                                       {&model, 5, &mean, distance});
+                    CHECK(point.values[5] == doctest::Approx(exterior ? -.03 : 0));
+                    CHECK(point.values[6] == doctest::Approx(exterior ? 2 * target - .4 : target).epsilon(2e-11));
+                    CHECK(mean.values[0] == 2);
+                    for (int k = 0; k < ns; ++k)
+                        CHECK(point.values[7 + k] / point.values[0] == doctest::Approx(fractions[k]));
+                }
+            }
+            auto point = inside;
+            CHECK_THROWS(C::EquationFVDetail::BoundaryValue(point, 0, 7, ns, sample, evaluator, frame, 0, true, {&model, 5}));
+            CHECK(point.values == inside.values);
+            settings.boundaries["7"].kind = "farfield";
+            settings.boundaries["7"].massFractions = material ? std::map<std::string, double>{{"H2", .03}, {"O2", .23}} : std::map<std::string, double>{};
+            settings.boundaries["7"].ransConservative = {{model.ComponentNames()[0], .11}, {model.ComponentNames()[1], 2.3}};
+            sample.boundary = C::BoundarySystem(settings.boundaries, equation).At(7);
+            frame.moving = true;
+            frame.centerVelocity = {.2, 0, 0};
+            C::EquationFVDetail::BoundaryValue(point, 0, 7, ns, sample, evaluator, frame, 0, true, {&model, 5});
+            CHECK(point.values[5] == .11);
+            CHECK(point.values[6] == 2.3);
+        }
 }
 
 TEST_CASE("SA P3 residual and WBAP preserve split layout and core halo scheduling semantics")
