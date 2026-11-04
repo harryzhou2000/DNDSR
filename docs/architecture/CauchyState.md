@@ -202,6 +202,51 @@ through an explicit adapter; extended physical checkpoint sections are pending.
 Layout-independent time equations do not by themselves complete extended RHS,
 BC, PP, linear solves or RANS/species physical validation.
 
+## Chemical source operator
+
+`EvaluateChemicalSource(equation, state, values, worker, jacobian, scale,
+temperatureGuess)` is an owned-only, synchronous CPU operator on logical
+equation states. It replaces its output with positive source rates per code
+volume/time. Flow mass/momentum/full thermochemical energy rows are zero;
+independent species receive the existing Cantera rates. The optional matrix
+has N*N logical columns per owned row, with column-major dense block indexing,
+and stores positive `dS/dU`. An implicit residual subtracts this derivative.
+Cell/source-quadrature volume weighting remains the discretization's task.
+
+The point evaluator owns an exclusive worker and optional derivative scratch
+outside the cell loop. Its named input/output block views preserve each
+parent's AoS/SoA/AoSoA layout and physical component offsets. Allocation/shape,
+schema, row-space and alias checks occur before writes. Every output allocation
+is reserved before any numerical value changes; an unavailable later output
+cancels earlier unchanged reservations. Inputs stay immutable. A failed point
+evaluation can leave scratch partial: discard that failed result. No implicit
+payload exchange, device fallback or time-advance policy is hidden in this call.
+
+An optional compatible published derived-temperature bundle can be stale; it
+only seeds the actual UV inversion. Input ghosts are not read, and an ongoing
+write to their separate allocations is allowed. Owned source arrays and the
+Jacobian must be distinct from input/output equation storage. The caller
+serializes operator/workspace access and moves the worker lease into CPU work
+that outlives submission.
+
+The source follows the active Euler repair, temperature-floor, units and
+unfiltered-Jacobian conventions described in [shared Physics](Physics.md).
+This operator is available independently; the production FV residual,
+nonlinear/linear adapters, BC/PP and extended checkpoint path are not yet
+connected. Its physical source/implicit-reactor fixtures do not qualify a full
+RANS/species spatial solver or the pending NACA/flame studies.
+
+`PreparePrimitiveDerivative` accepts one conservative flow direction and a
+strided Ns-1 species direction. Its result is `[d(rho),d(u),d(v),d(w),d(T)]`
+plus `d(p)`, using actual EOS cv, full species enthalpies and immutable species
+gas constants. Both the kinetic derivative and composition-energy terms are
+retained. Full energy may be negative at a positive temperature. This point
+entry supports primitive-gradient consumers without a gamma-equivalent
+substitution; spatial gradients of RANS/specific scalars use the same shared
+`ConservativeSpecificDerivative`. See the equations and ownership requirements
+in [shared Physics](Physics.md). The existing flow-only FV gradient signature
+continues to reject a mixture, rather than using the perfect-gas formula.
+
 ## Mixture point properties and derived refresh
 
 `EquationSystem::FromIdealGasMixture(material, viscous)` constructs an explicit

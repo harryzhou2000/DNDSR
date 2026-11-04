@@ -168,6 +168,15 @@ namespace DNDS::Physics::Chemistry
         double operator()(int i, int j) const { return data[i + j * ld]; }
     };
 
+    /// Borrowed read-only dense derivative table. The leading dimension can
+    /// exceed rows; retain its producer/worker until the last table access.
+    struct ConstJacobianBufferView
+    {
+        const double *data = nullptr;
+        int rows = 0, cols = 0, ld = 0;
+        double operator()(int i, int j) const { return data[i + j * ld]; }
+    };
+
     /**
      * @brief PIMPL wrapper around Cantera (thermo + kinetics + transport).
      *

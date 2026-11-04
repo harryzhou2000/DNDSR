@@ -354,6 +354,12 @@ Lightweight test entry points: `test/cpp/Euler/test_ReactiveSplitIndicator.cpp:7
 and `test/cpp/Euler/test_EulerEvaluatorReactive.cpp:75`. Existing chemistry
 directional-difference coverage starts at `test/cpp/Euler/test_SourceChemical.cpp:181`.
 
+In the later shared-Physics refactor, that unchanged low-level fixture moves to
+`test/cpp/Physics/test_ChemicalSource.cpp` and the backend to
+`src/Physics/Chemistry/ChemicalSource.cpp`. Paths/line numbers above describe
+the audit snapshot; the historical CTest name is retained. Current conversion,
+gradient and ownership contracts are in [shared Physics](../architecture/Physics.md).
+
 ## Supporting gradient/output audit and immediate performance review
 
 Scope: current feature source versus `dev/harry`, including the multispecies

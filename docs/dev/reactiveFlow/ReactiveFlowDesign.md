@@ -1234,6 +1234,11 @@ expensive (nVars+1 RHS evaluations) and noisy near equilibrium.
 | `Euler.hpp` | `TU<TModel>`/`TJacobianU<TModel>`/`TDiffU<TModel>` aliases, `isReactive` trait | +20 |
 | `EulerJacobian.hpp` | No changes (existing Mode 1 full-block storage is sufficient) | 0 |
 
+The table records the original change locations. The shared-Physics refactor
+later moves the low-level chemistry fixture to
+`test/cpp/Physics/test_ChemicalSource.cpp`, preserving its test bodies and
+historical target/CTest name. See [current shared Physics](../../architecture/Physics.md).
+
 ### Where changes were NOT needed
 
 | Component | Reason |

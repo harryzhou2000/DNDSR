@@ -1,4 +1,6 @@
 #include "Physics/Thermodynamics/IdealGasMixture.hpp"
+#include "Physics/Thermodynamics/ConservativeConversion.hpp"
+#include <limits>
 
 namespace DNDS::Physics::Thermodynamics
 {
@@ -7,7 +9,7 @@ namespace DNDS::Physics::Thermodynamics
         ReferenceScales scales;
         std::shared_ptr<const void> identity;
         std::vector<std::string> species;
-        std::vector<real> baseEnergy;
+        std::vector<real> baseEnergy, gasConstants;
         real temperatureFloor;
         State(const Chemistry::ChemicalSource &prototype, ReferenceScales reference)
             : scales(reference), identity(prototype.ModelIdentity())
@@ -20,6 +22,9 @@ namespace DNDS::Physics::Thermodynamics
             species = prototype.speciesNames();
             auto base = prototype.mixtureBaseInternalRhoESpecies();
             baseEnergy.assign(base.data, base.data + base.nSpecies);
+            gasConstants = prototype.speciesGasConstants();
+            for (auto &value : gasConstants)
+                value /= scales.HeatCapacity();
             temperatureFloor = prototype.baseTemperature() / scales.T0;
         }
     };
@@ -49,7 +54,16 @@ namespace DNDS::Physics::Thermodynamics
     IdealGasMixture::PointEvaluator::PointEvaluator(std::shared_ptr<const State> state,
                                                     Chemistry::ChemicalWorkerPool::Lease worker,
                                                     MixturePropertyRequest request)
-        : _state(std::move(state)), _worker(std::move(worker)), _request(request) {}
+        : _state(std::move(state)), _worker(std::move(worker)), _request(request)
+    {
+        if (_request.sourceJacobian)
+        {
+            const size_t species = _state->species.size();
+            DNDS_check_throw_info(species <= size_t(std::numeric_limits<int>::max() - 4), "chemical point Jacobian width overflows");
+            DNDS_check_throw_info(species && species + 4 <= _sourceJacobian.max_size() / species, "chemical point Jacobian allocation overflows");
+            _sourceJacobian.resize(species * (species + 4));
+        }
+    }
     Chemistry::SpeciesBufferView IdealGasMixture::PointEvaluator::SpeciesInput() const
     {
         auto &input = _worker.Buffers().rhoY;
@@ -103,6 +117,7 @@ namespace DNDS::Physics::Thermodynamics
         result.fractions = fractions;
         result.diffusivity = diffusion;
         result.speciesEnthalpy = enthalpy;
+        result.speciesGasConstant = {_state->gasConstants.data(), species};
         return result;
     }
     MixturePoint IdealGasMixture::PointEvaluator::FromRhoE(real rho, real internalEnergy,
@@ -135,5 +150,49 @@ namespace DNDS::Physics::Thermodynamics
         const auto &scales = _state->scales;
         const real R = _worker.Source().mixtureR({fractions.data(), int(fractions.size())});
         return Evaluate(rho, pressure * scales.Pressure() / (rho * scales.rho0 * R * scales.T0));
+    }
+    MixturePoint IdealGasMixture::PointEvaluator::FromConservative(real rho, real rhoE,
+                                                                   const std::array<real, 3> &momentum,
+                                                                   Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess)
+    {
+        DNDS_check_throw_info(std::isfinite(rho) && rho > 0 && std::isfinite(rhoE), "chemical point needs finite energy and positive density");
+        for (const auto value : momentum)
+        {
+            DNDS_check_throw_info(std::isfinite(value), "chemical point needs finite momentum");
+        }
+        const std::array<real, 5> conservative{rho, momentum[0], momentum[1], momentum[2], rhoE};
+        auto point = FromRhoE(rho, ConservativeSpecificInternalEnergy<3>(conservative), rhoY, temperatureGuess);
+        if (!_request.chemicalSource && !_request.sourceJacobian)
+            return point;
+        auto &source = _worker.Source();
+        auto &rates = _worker.Buffers().production;
+        const auto &scales = _state->scales;
+        const int species = int(rates.size()), components = 5 + species - 1;
+        const real physicalT = point.thermo.temperature * scales.T0;
+        const real sourceT = std::max(physicalT, source.baseTemperature());
+        const real sourceP = sourceT == physicalT ? point.thermo.pressure * scales.Pressure()
+                                                  : rho * scales.rho0 * source.mixtureR(point.fractions) * sourceT;
+        if (_request.sourceJacobian)
+        {
+            Chemistry::JacobianBufferView jacobian{_sourceJacobian.data(), species, components, species};
+            source.productionRatesAndJacobian(sourceT, sourceP, rho, rhoE, momentum[0], momentum[1], momentum[2],
+                                              4, point.fractions, {rates.data(), species}, jacobian, Chemistry::ChemicalSource::JAC_DEFAULT);
+            for (int k = 0; k < species - 1; ++k)
+                for (int j = 0; j < components; ++j)
+                {
+                    jacobian(k, j) *= source.molecularWeights()[k] / scales.SourceRate();
+                    DNDS_check_throw_info(std::isfinite(jacobian(k, j)), "nonfinite chemical source Jacobian");
+                }
+            point.sourceJacobian = {_sourceJacobian.data(), species - 1, components, species};
+        }
+        else
+            source.productionRates(sourceT, sourceP, point.fractions, {rates.data(), species});
+        for (int k = 0; k < species - 1; ++k)
+        {
+            rates[k] *= source.molecularWeights()[k] / scales.SourceRate();
+            DNDS_check_throw_info(std::isfinite(rates[k]), "nonfinite chemical source rate");
+        }
+        point.chemicalSource = {rates.data(), species - 1};
+        return point;
     }
 }

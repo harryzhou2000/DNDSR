@@ -28,6 +28,7 @@ flowchart TD
 | `Physics/Chemistry/ChemicalSource` | Existing PIMPL backend, property queries, UV solve, rates/Jacobians and reactors |
 | `Physics/Chemistry/ChemicalWorker` | Exclusive worker contexts and bounded reusable species buffers |
 | `Physics/Thermodynamics/IdealGasMixture` | Immutable material descriptor and solver-independent code-scaled point evaluation |
+| `Physics/Thermodynamics/ConservativeConversion.hpp` | EOS-independent velocity/internal-energy conversion and conservative directional kinematics |
 | `Physics/Thermodynamics/IdealMixtureGradient.hpp` | Exact ideal-mixture temperature chain rule |
 | `Physics/Transport/MixtureAveragedDiffusion.hpp` | Conservative species-flux correction and full-enthalpy energy diffusion |
 | `Physics/RANS/RANSModels.hpp` | Existing SA, Wilcox, SST and realizable k-epsilon constitutive/source kernels |
@@ -88,9 +89,13 @@ global synchronization or accelerator fallback is added.
 `MixturePoint` owns its scalar properties. Species fractions, diffusivities and
 enthalpies are borrowed views into reusable worker buffers: copy needed values
 before the next point evaluation or lease destruction. Disabled species outputs
-are empty and disabled scalar transport outputs are NaN. The evaluator performs
-no wrapper-owned per-point allocation; Cantera retains control of its internal
-caches. It is a CPU backend. This is separate from the frozen device-callable
+are empty and disabled scalar transport outputs are NaN. Ordinary property
+evaluation performs no wrapper-owned per-point allocation; Cantera retains
+control of its internal caches. Optional source derivatives allocate their
+point matrix once at evaluator construction. The existing ChemicalSource
+Jacobian backend still owns some per-query derivative scratch; this is not an
+allocation-free chemistry performance claim. It is a CPU backend. This is
+separate from the frozen device-callable
 EquationDofs views described in [Cauchy state](CauchyState.md).
 
 ## Physical conventions
@@ -125,6 +130,37 @@ RHS/stage/linear/BC/PP/checkpoint integration is separate. These point facilitie
 do not by themselves implement a RANS/species solver or change current flow5
 frontend dispatch.
 
+## Conservative chemical point source
+
+`MixturePropertyRequest::chemicalSource` and `sourceJacobian` are independent of
+transport selection. `FromConservative(rho, rhoE, momentum3, rhoY, Tguess)` adds
+code-scaled independent-species mass rates and optional positive `dS/dU` to the
+point result. The derivative has Ns-1 rows, with explicit point columns
+`[rho,rhou,rhov,rhow,rhoE,rhoY0,...,rhoY(Ns-2)]`; it is not an index into a solver
+array. Returned source views share the evaluator's ordinary borrowed lifetime.
+`FromRhoE`, `FromRhoT` and `FromRhoP` remain property-only queries: their arguments
+do not provide a complete conservative linearization point.
+
+The wrapper uses the existing backend's ideal-mixture UV solve and conservative
+rate derivative. It scales molar rates by molecular weight and
+`1/ReferenceScales::SourceRate()`. Only independent species receive sources;
+density, momentum and full thermochemical total energy have no chemical source.
+Heat release therefore changes temperature at constant energy through changing
+composition, rather than adding an enthalpy source a second time.
+
+As in Euler, a temporary composition is repaired, and source temperature is
+floored at the mechanism's base temperature; pressure is recomputed at that
+floor. The implicit derivative is the existing approximation at that point,
+not a derivative through repair/clipping. No spectrum filter is applied,
+matching the active Euler contributor's `kDebugEigenFilter=0` branch. Nonfinite
+rates or derivatives fail explicitly in the new caller. Euler's historical
+contributor, including its dormant diagnostic/filter branches, is unchanged.
+
+`Cauchy/Physics/EquationSource` supplies the owned-array adapter. It maps this
+point convention into the named logical flow/species blocks and optional dense
+logical block-Jacobian rows, without inferring offsets from physical grouping.
+See [Cauchy state](CauchyState.md) for reservation, failure and integration scope.
+
 ## Focused validation
 
 `euler_test_shared_physics` checks fused properties and nontrivial reference
@@ -136,3 +172,58 @@ oracles. The reactive evaluator tests exercise the compiled legacy consumer.
 RANS testing also compares an explicit frame-vorticity correction with the
 equivalent corrected velocity gradient. These gates do not qualify new Cauchy
 physical profiles or CUDA execution.
+
+The low-level chemistry fixtures now live in `test/cpp/Physics/test_ChemicalSource.cpp`
+and directly include the canonical Physics header. Their five test bodies and
+purposes are preserved; the historical `euler_test_source_chemical` target and
+`euler_source_chemical` CTest name remain for existing runners. Euler's
+`test_PhysicsProperties.cpp` remains an adapter/integration test, including the
+reactive heat-conduction gradient check. Cauchy's equation-source fixture adds
+Euler contributor parity, conservative finite differences, distributed physical
+layout checks and an actual homogeneous implicit-reactor comparison.
+
+## Primitive values and gradients
+
+For mixtures, use actual EOS properties, with full thermochemical internal
+energy. Primitive rho/T or rho/p construction goes through `FromRhoT` or
+`FromRhoP`, then `ConservativeTotalEnergyDensity` adds kinetic energy. In the
+other direction, `ConservativeVelocity` and `ConservativeSpecificInternalEnergy`
+prepare the UV query. A TP input first obtains rho from the EOS. The existing
+Euler value-conversion/IO adapter retains its historical signatures and policies;
+its equivalent-gamma compatibility representation is not a Cauchy conversion API.
+
+Given conservative directional derivatives, the shared kinematic helper forms
+
+```text
+d(rho*e) = d(rho*E) - velocity . d(momentum) + |velocity|^2/2 * d(rho)
+d(Y_k)  = [d(rho*Y_k) - Y_k*d(rho)] / rho
+```
+
+The dependent last species is included through energy differences:
+
+```text
+d(T) = [d(rho*e) - e*d(rho)
+        - sum_{k<Ns-1}(e_k-e_last)*[d(rho*Y_k)-Y_k*d(rho)]] / (rho*cv)
+d(p) = R*T*d(rho) + rho*R*d(T)
+       + T*sum_{k<Ns-1}(R_k-R_last)*[d(rho*Y_k)-Y_k*d(rho)]
+e_k = h_k - R_k*T
+```
+
+These are `IdealMixtureTemperatureDerivative` and
+`IdealMixturePressureDerivative`, with code-scaled full species energies and
+gas constants. Omitting the composition term or treating gamma-equivalent as
+constant is incorrect in a reacting flame. The actual chemical source Jacobian,
+including conservative T/p chain rules, remains canonical in
+`Physics/Chemistry/ChemicalSource.cpp`; the Euler wrapper only supplies its
+legacy model layout, scaling/sign and source-integration policy.
+
+Cauchy's pure `PreparePrimitiveDerivative` consumes ready point properties and
+strided raw species derivatives. It returns derivatives of rho/velocity/T plus
+pressure. Request full species enthalpies when constructing a mixture point
+evaluator; immutable code-scaled species gas constants accompany the point.
+No species derivative buffer or property refresh is hidden in the chain rule.
+The caller retains the worker/material, supplies the matching state/point and
+valid derivative extent, and consumes borrowed views before the next point.
+Repair/clipping derivatives are not silently substituted for the raw transported
+gradients. The current mixture FV profile still fails explicitly until its full
+spatial/BC/implicit integration is connected.

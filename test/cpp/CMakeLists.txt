@@ -205,6 +205,11 @@ dnds_add_unit_test(cauchy_derived_fields "Cauchy/test_DerivedFields.cpp" "cauchy
 if(DNDS_USE_CANTERA)
     set_property(TEST dnds_cauchy_derived_fields APPEND PROPERTY ENVIRONMENT
         "DNDS_MECH_PATH=${DNDS_CANTERA_DATA_DIR}" "CANTERA_DATA=${DNDS_CANTERA_DATA_DIR}")
+    dnds_add_mpi_test(cauchy_equation_source "Cauchy/test_EquationSource.cpp" "cauchy;physics;cfv;geom;dnds")
+    foreach(NP ${DNDS_TEST_NP_LIST})
+        set_property(TEST dnds_cauchy_equation_source_np${NP} APPEND PROPERTY ENVIRONMENT
+            "DNDS_MECH_PATH=${DNDS_CANTERA_DATA_DIR}" "CANTERA_DATA=${DNDS_CANTERA_DATA_DIR}")
+    endforeach()
 endif()
 dnds_add_unit_test(cauchy_rigid_motion "Cauchy/test_RigidMotion.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_boundary_inputs "Cauchy/test_BoundaryInputs.cpp" "cauchy;cfv;geom;dnds")
@@ -241,6 +246,9 @@ target_compile_definitions(cauchy_experiment_multidomain_iv PRIVATE CGAL_CORE_US
 target_compile_definitions(dnds_test_cauchy_checkpoint PRIVATE DNDS_TEST_SOURCE_ROOT="${PROJECT_SOURCE_DIR}")
 dnds_add_mpi_test(cauchy_jacobian "Cauchy/test_Jacobian.cpp" "cauchy;cfv;geom;dnds")
 add_custom_target(cauchy_unit_tests)
+if(DNDS_USE_CANTERA)
+    add_dependencies(cauchy_unit_tests dnds_test_cauchy_equation_source)
+endif()
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_equation_dofs)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_interface_iteration)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_limited_vr dnds_test_cauchy_limited_vr_checkpoint)
@@ -724,7 +732,9 @@ euler_add_unit_test(rotating_frame "Euler/test_RotatingFrame.cpp" "cfv;geom;dnds
 euler_add_unit_test(limited_vr "Euler/test_LimitedVR.cpp" "cfv;geom;dnds")
 if(DNDS_USE_CANTERA)
     euler_add_unit_test(shared_physics "Physics/test_Properties.cpp" "physics;cfv;geom;dnds")
-    euler_add_unit_test(source_chemical "Euler/test_SourceChemical.cpp" "euler_library_chemical;cfv;geom;dnds")
+    # Keep the historical target/CTest name for existing test runners; the
+    # unchanged physical backend fixtures now use the canonical shared module.
+    euler_add_unit_test(source_chemical "Physics/test_ChemicalSource.cpp" "physics;cfv;geom;dnds")
     euler_add_unit_test(reactive_split_indicator "Euler/test_ReactiveSplitIndicator.cpp" "euler_library_NS_EX;euler_library_fast_NS_EX;cfv;geom;dnds")
     euler_add_unit_test(uv "Euler/test_UV.cpp" "euler_library_chemical;cfv;geom;dnds")
     euler_add_unit_test(physics_properties "Euler/test_PhysicsProperties.cpp" "euler_library_chemical;cfv;geom;dnds")

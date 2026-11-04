@@ -2,6 +2,7 @@
 
 #include "Physics/ReferenceScales.hpp"
 #include "Physics/Chemistry/ChemicalWorker.hpp"
+#include <array>
 
 namespace DNDS::Physics::Thermodynamics
 {
@@ -9,6 +10,8 @@ namespace DNDS::Physics::Thermodynamics
     struct MixturePropertyRequest
     {
         bool transport = false, diffusivity = false, speciesEnthalpy = false;
+        /// Applied by FromConservative only. A Jacobian also requests rates.
+        bool chemicalSource = false, sourceJacobian = false;
     };
 
     /// Code-scaled thermodynamics and optional molecular transport. Species
@@ -18,7 +21,14 @@ namespace DNDS::Physics::Thermodynamics
     {
         Properties thermo;
         Transport::Properties transport;
-        Chemistry::ConstSpeciesBufferView fractions, diffusivity, speciesEnthalpy;
+        Chemistry::ConstSpeciesBufferView fractions, diffusivity, speciesEnthalpy, speciesGasConstant;
+        /// Ns-1 independent mass production rates in code mass/volume/time.
+        /// No energy source: total energy includes chemical formation energy.
+        Chemistry::ConstSpeciesBufferView chemicalSource;
+        /// Positive dS/dU, Ns-1 rows by (flow5 + Ns-1) columns, in code units.
+        /// Columns have this explicit point convention, independent of the
+        /// caller's physical allocation and logical equation ordering.
+        Chemistry::ConstJacobianBufferView sourceJacobian;
     };
 
     /// Immutable ideal-gas-mixture metadata, independent of any solver, mesh,
@@ -54,6 +64,7 @@ namespace DNDS::Physics::Thermodynamics
             std::shared_ptr<const State> _state;
             Chemistry::ChemicalWorkerPool::Lease _worker;
             MixturePropertyRequest _request;
+            std::vector<real> _sourceJacobian;
             PointEvaluator(std::shared_ptr<const State> state, Chemistry::ChemicalWorkerPool::Lease worker,
                            MixturePropertyRequest request);
             void PrepareComposition(real rho, Chemistry::ConstSpeciesBufferView rhoY);
@@ -77,6 +88,15 @@ namespace DNDS::Physics::Thermodynamics
                                   real temperatureGuess = 0, real uvTolerance = 1e-12);
             MixturePoint FromRhoT(real rho, real temperature, Chemistry::ConstSpeciesBufferView rhoY);
             MixturePoint FromRhoP(real rho, real pressure, Chemistry::ConstSpeciesBufferView rhoY);
+            /// Full thermochemical conservative point, in code units. Momentum
+            /// always has three Cartesian components. Optional rates/Jacobian
+            /// use Euler's repaired temporary composition and source-temperature
+            /// floor, leaving transported values unchanged. The derivative is
+            /// the existing implicit chemistry approximation at that point,
+            /// not a derivative through clipping/repair. Returned views expire
+            /// at the next point evaluation or release of this worker.
+            MixturePoint FromConservative(real rho, real rhoE, const std::array<real, 3> &momentum,
+                                          Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess = 0);
         };
 
         /// Consumes a lease for one loop/tile. Checks material identity once;

@@ -24,4 +24,20 @@ namespace DNDS::Physics::Thermodynamics
         }
         return (internalEnergyDensityDerivative - internalEnergy * densityDerivative - compositionTerm) / (rho * cv);
     }
+
+    /// Ideal-mixture p=rho*R(Y)*T chain rule, with dependent last species.
+    /// Inputs use one unit system. Conservative species derivatives are raw;
+    /// this is not a derivative through any composition repair or PP clipping.
+    template <class TY, class TR, class TDY>
+    real IdealMixturePressureDerivative(real rho, real temperature, real gasConstant,
+                                        real densityDerivative, real temperatureDerivative,
+                                        const TY &fractions, const TR &speciesGasConstant,
+                                        const TDY &speciesDensityDerivative, int species)
+    {
+        real compositionTerm = 0;
+        for (int k = 0; k < species - 1; ++k)
+            compositionTerm += (speciesGasConstant[k] - speciesGasConstant[species - 1]) *
+                               (speciesDensityDerivative[k] - fractions[k] * densityDerivative);
+        return gasConstant * temperature * densityDerivative + rho * gasConstant * temperatureDerivative + temperature * compositionTerm;
+    }
 }

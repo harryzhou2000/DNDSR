@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 
-#include "Euler/Chemistry/ChemicalSource.hpp"
+#include "Physics/Chemistry/ChemicalSource.hpp"
 
 #include <cmath>
 #include <cstdlib>
@@ -9,7 +9,7 @@
 #include <vector>
 #include <string>
 
-using namespace DNDS::Euler::Chemistry;
+using namespace DNDS::Physics::Chemistry;
 
 static std::string mechFile()
 {

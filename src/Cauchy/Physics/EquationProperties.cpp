@@ -21,6 +21,7 @@ namespace DNDS::Cauchy
         else
         {
             DNDS_check_throw_info(!worker, "perfect gas requires no chemistry worker");
+            DNDS_check_throw_info(!request.chemicalSource && !request.sourceJacobian, "perfect gas has no chemical source profile");
             _gas = equation.Gas();
         }
     }
@@ -48,15 +49,15 @@ namespace DNDS::Cauchy
         for (const real value : flow)
             DNDS_check_throw_info(std::isfinite(value), "mixture property evaluation requires finite conservative values");
         DNDS_check_throw_info(flow[0] > 0, "mixture property evaluation requires positive density");
-        real speedSquared = 0;
-        for (int d = 0; d < 3; ++d)
-            speedSquared += sqr(flow[1 + d] / flow[0]);
-        const auto point = _mixture->FromRhoE(flow[0], flow[4] / flow[0] - .5 * speedSquared, rhoY, temperatureGuess);
+        const auto point = _mixture->FromConservative(flow[0], flow[4], {flow[1], flow[2], flow[3]}, rhoY, temperatureGuess);
         result.thermo = point.thermo;
         result.transport = _viscous ? point.transport : Physics::Transport::Properties{0, 0};
         result.fractions = point.fractions;
         result.diffusivity = point.diffusivity;
         result.speciesEnthalpy = point.speciesEnthalpy;
+        result.speciesGasConstant = point.speciesGasConstant;
+        result.chemicalSource = point.chemicalSource;
+        result.sourceJacobian = point.sourceJacobian;
         if (!_viscous)
             result.diffusionBound = 0;
         if (_viscous && _request.diffusivity)
