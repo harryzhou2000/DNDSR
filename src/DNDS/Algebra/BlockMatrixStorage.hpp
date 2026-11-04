@@ -78,6 +78,10 @@ namespace DNDS::Algebra
                 return BlockMatrixView<real>(_lease.View<Runtime::TableRows>(), _layout->offsets.data(),
                                              index(_layout->offsets.size()) - 1, _layout->blockSize);
             }
+            /// Match Array write transactions: cancel only before mutation;
+            /// fail a partially filled matrix rather than publishing its values.
+            void CancelUnmodified() { _lease.CancelUnmodified(); }
+            void Fail() { _lease.Fail(); }
         };
 
         BlockMatrixStorage(const std::vector<index> &blocksPerRow, index blockSize)

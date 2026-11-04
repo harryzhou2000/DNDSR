@@ -320,8 +320,8 @@ producer. Scalar conservative transport uses the same relative normal velocity.
 The ideal-mixture primitive chain rule supplies composition/thermal derivatives;
 no equivalent-gamma closure is added. These point derivatives are independently
 checked by conservative perturbations, including all species columns and moving
-grid velocity. Connecting them to the extended FV matrix producer is the next
-integration step; this does not claim that producer is implemented already.
+grid velocity. The whole-equation physical Jacobian producer uses them with
+scalar dissipation; its source and snapshot contracts are described below.
 
 `ReadScope::ComponentLayout()` and `WriteScope::ComponentLayout()` resolve
 logical components to physical parents once. The returned
@@ -422,12 +422,75 @@ LinearProblemContext -----------> matrix action / ordered SGS / local ILU
                                   (numeric kernels, no halo orchestration)
 ```
 
-The logical driver is exercised by the distributed known-solution matrix fixture
-and the actual conservative chemical-reactor Newton test. Nonlinear/physical
-Jacobian preparation and checkpoint adapters remain separate. Matrix dimensions
+The logical driver is exercised by the distributed known-solution matrix fixture,
+the actual conservative chemical-reactor Newton test and a coupled physical
+mixture matrix. Nonlinear/frontend and checkpoint adapters remain separate. Matrix dimensions
 alone do not validate a physical model.
 The source/flux producer must supply the matching logical derivative ordering;
 physical RANS/species acceptance remains separately gated.
+
+## Whole-equation physical Jacobian
+
+The `EquationDofs` overloads of `BuildLinearProblem`/`PrepareJacobian` use the
+same canonical cell-face-cell stencil, conservative node-star core and native
+matrix context as flow5. Both scalar-entry and full-block diagonals are
+available, with assembled or frozen evaluated off-diagonals. Physical source
+and flux producers use logical component locations, independently of physical
+field grouping or layout. The established raw-field API remains available.
+
+The integrated convention remains
+`A = V*(1/dTau + physicalMass)*I - residualScale*J_R_approx`.
+Scalar face dissipation uses the prepared convection-plus-diffusion radius.
+Neighbor blocks differentiate the actual EOS physical ALE flux and compose
+the periodic transformation on increment columns. Self-periodic incidences
+fold into the diagonal. Boundary terms retain Euler's scalar spectral diagonal
+approximation. Viscous derivatives use its scalar molecular/species bound,
+not differentiation through gradient reconstruction. Full blocks retain the
+negative rotation-source derivative; scalar entries use the existing flow5
+angular-speed bound. No equivalent gamma is substituted. Roe characteristics
+are explicitly unavailable in this whole-equation producer.
+
+Chemical Jacobians preserve Euler's volume integration of derivatives at the
+reconstructed source quadrature values. For nonconstant chemistry, pass the
+`sourceReconstruction` workspace from a successful current `Evaluate`. Its
+mean/coefficient binding, generations and time must match; missing/stale input
+fails before matrix writes. The producer reads the RHS's already sampled source
+values and weights, uses the explicit chemistry worker and adds the negative
+integrated derivative in logical order. Coefficients are frozen for this
+approximation; it does not differentiate the reconstruction solve. Constant
+reconstruction may omit the workspace and use the equivalent mean/volume term.
+The empty independent-species case has no chemical derivative. Changes confined
+to coefficients invalidate source sampling even if the mean auxiliaries remain
+current. A new RHS attempt invalidates the previous source publication.
+
+```text
+PrepareJacobian
+  -> leased means + prepared face signals + explicit EOS/chemistry worker
+  -> cell pressure derivatives + mass/rotation/source diagonal
+  -> assembled blocks directly from logical views
+     OR frozen means + pressure derivatives + immutable incidence geometry
+        -> evaluated blocks (no EOS, MPI, live state or worker)
+```
+
+Assembled filling does not copy the complete mean payload. The evaluated path
+copies its required numeric snapshot and reuses immutable geometry; neither
+its geometry nor its scalar/array snapshots retain an FV/MPI owner. A worker
+may evaluate blocks after the original means change. Component selections
+project after periodic transformation, with inactive rows/columns zero and
+inactive diagonal one. Fill coefficients before using the numerical context;
+diagonal inversion/ILU factorization is explicit. All output writers are
+reserved before filling. A late reservation conflict cancels untouched
+writers; a later numerical failure poisons incomplete outputs through the
+same `CancelUnmodified`/`Fail` contract exposed by block-matrix write scopes.
+Callers serialize preparation and input/matrix rebinding and coordinate MPI
+failures; the numerical producer itself communicates nothing.
+
+Tests compare this approximation to flow5 on translated/self/rotated periodic
+and moving-wall meshes, both diagonal kinds and storage modes. A nonconstant
+mixture action is checked against independent frozen-signal residual differences
+and solved through GMRES/ILU on separate/permuted fields. Independent Cartesian
+Gauss integration with direct backend source derivatives checks the high-order
+source diagonal and requires a measurable difference from a mean-only result.
 
 ## Chemical source operator
 

@@ -46,8 +46,9 @@ namespace DNDS::Cauchy
     {
         real physicalMass = 0, residualScale = 1;
         bool roeDissipation = false;
-        /// Empty means full flow5. A subset embeds its principal matrix in
-        /// flow5 storage: unselected rows/columns are zero, diagonal is one.
+        /// Empty means the complete logical state (flow5 for the field adapter).
+        /// A subset embeds its principal matrix in that complete storage:
+        /// unselected rows/columns are zero, diagonal is one.
         /// The matching RHS must be zero in those unselected equations.
         std::vector<index> updateComponents;
     };

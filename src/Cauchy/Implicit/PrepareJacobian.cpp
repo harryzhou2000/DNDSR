@@ -116,19 +116,7 @@ namespace DNDS::Cauchy
     {
         Metrics().ValidateField(prototype, 5);
         _data->partition.Validate();
-        std::vector<std::vector<index>> columns(Metrics().NumCell());
-        for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
-        {
-            auto &row = columns[iCell];
-            for (index entry = _data->offsets[iCell]; entry < _data->offsets[iCell + 1]; ++entry)
-            {
-                const auto other = _data->samples[entry].other;
-                if (other != UnInitIndex && other != iCell)
-                    row.push_back(other);
-            }
-            std::sort(row.begin(), row.end());
-            row.erase(std::unique(row.begin(), row.end()), row.end());
-        }
+        auto columns = FiniteVolumeDetail::JacobianColumns(_data->offsets, _data->samples);
         return std::make_shared<LinearProblemContext>(prototype.Space(), 5, std::move(columns), _data->partition.Core(), diagonal, offDiagonal);
     }
     void FiniteVolume::PrepareJacobian(const CFV::FVField &state, const AuxiliaryValues &auxiliary,

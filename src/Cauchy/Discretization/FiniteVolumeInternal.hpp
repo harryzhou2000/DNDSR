@@ -45,6 +45,25 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
             state[1 + d] = rotated[d];
         return state;
     }
+    /// Canonical rank-owned cell-face-cell columns, retaining remote columns
+    /// and folding self-periodic incidences into the eventual diagonal.
+    inline std::vector<std::vector<index>> JacobianColumns(const std::vector<index> &offsets, const std::vector<Sample> &samples)
+    {
+        std::vector<std::vector<index>> columns(offsets.size() - 1);
+        for (index iCell = 0; iCell < index(columns.size()); ++iCell)
+        {
+            auto &row = columns[iCell];
+            for (index entry = offsets[iCell]; entry < offsets[iCell + 1]; ++entry)
+            {
+                const auto other = samples[entry].other;
+                if (other != UnInitIndex && other != iCell)
+                    row.push_back(other);
+            }
+            std::sort(row.begin(), row.end());
+            row.erase(std::unique(row.begin(), row.end()), row.end());
+        }
+        return columns;
+    }
     inline FlowState BoundaryFaceValue(const Sample &sample, const PerfectGas &gas, const FlowState &inside,
                                        real time, const RigidFrame &frame, RHSScalarView incoming)
     {

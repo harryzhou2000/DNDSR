@@ -145,6 +145,7 @@ namespace DNDS::Cauchy
         struct LimitedVRGeometry;
         struct LimitedVRWorkspace;
         struct MatrixFreeJacobian;
+        struct EquationJacobian;
         std::shared_ptr<const Data> _data;
         void ValidateBoundaryLayout(const BoundaryInputs &input) const;
 
@@ -232,6 +233,8 @@ namespace DNDS::Cauchy
         /// physical snapshot. Both modes retain explicit diagonal storage.
         std::shared_ptr<LinearProblemContext> BuildLinearProblem(const CFV::FVField &prototype, DiagonalStorage diagonal,
                                                                  OffDiagonalStorage offDiagonal = OffDiagonalStorage::Assembled) const;
+        std::shared_ptr<LinearProblemContext> BuildLinearProblem(const EquationDofs &prototype, DiagonalStorage diagonal,
+                                                                 OffDiagonalStorage offDiagonal = OffDiagonalStorage::Assembled) const;
         /// Prepare integrated approximate-Jacobian coefficients from
         /// frozen means and prepared face signals. No input mutation, MPI or
         /// inverse/factor preparation occurs here. inversePseudoTime is an
@@ -242,6 +245,26 @@ namespace DNDS::Cauchy
         void PrepareJacobian(const CFV::FVField &state, const AuxiliaryValues &auxiliary,
                              const Runtime::Array<real> &inversePseudoTime, LinearProblemContext &output,
                              JacobianPreparation controls = {}, real time = 0) const;
+        /// Whole-equation CPU approximation with the same integrated/scalar
+        /// dissipation convention. Uses actual conservative EOS derivatives,
+        /// ALE/rotation terms, chemical source derivatives at the RHS volume
+        /// quadrature points and scalar molecular/species diffusion bounds. This is not a
+        /// derivative of the complete reconstructed viscous/source residual.
+        /// Roe characteristics are not connected for this profile and reject.
+        /// Frozen evaluated blocks retain numeric snapshots/geometry only;
+        /// they perform no EOS calls, MPI or live-state/cache access.
+        /// The caller completes halos, serializes matrix/input bindings and
+        /// coordinates failures. No inverses/factors are updated implicitly.
+        /// Output writers are reserved together; partial failure poisons them.
+        /// Nonconstant chemical reconstruction requires sourceReconstruction
+        /// from a successful Evaluate at this state/time. Values/coefficients
+        /// must remain unchanged. Source derivatives freeze that reconstruction,
+        /// as in Euler; constant reconstruction may omit this workspace.
+        void PrepareJacobian(const EquationDofs &state, const AuxiliaryValues &auxiliary,
+                             const Runtime::Array<real> &inversePseudoTime, LinearProblemContext &output,
+                             JacobianPreparation controls = {}, real time = 0,
+                             std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
+                             const EquationWorkspace *sourceReconstruction = nullptr) const;
         FiniteVolume(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const EquationSystem &equation);
         const CFV::FiniteVolumePlan &Metrics() const;
         const CFV::VariationalReconstructionPlan &Reconstruction() const;
@@ -431,6 +454,10 @@ namespace DNDS::Cauchy
         void WriteVisualization(const CFV::FVField &state, const Workspace &workspace, const std::string &prefix, real time, int hdfDeflateLevel = 0) const;
 
     private:
+        void ValidateEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &workspace, real time) const;
+        void AddEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &workspace,
+                                       const Runtime::Array<real>::WriteLease &diagonal, DiagonalStorage storage,
+                                       real scale, EquationPointEvaluator &evaluator) const;
         CFV::FVField &RequireState(EquationDofs &state) const;
         index PrepareFaceCharacteristics(const CFV::FVField &state, CFV::FaceCharacteristicTransform &transform) const;
         std::shared_ptr<Workspace> BuildWorkspaceImpl(CFV::FVField &state, AuxiliaryRequest request, bool meanOnly) const;

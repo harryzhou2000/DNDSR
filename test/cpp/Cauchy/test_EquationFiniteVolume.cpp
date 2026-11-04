@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
+#include "Cauchy/Implicit/LinearSolver.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/Physics/EquationSource.hpp"
 #include "CartesianFixture.hpp"
@@ -271,6 +272,166 @@ namespace
             }
         }
     };
+}
+
+TEST_CASE("Physical mixture Jacobians match frozen-signal residual differences and solve through the logical driver")
+{
+    MixtureFixture mixture;
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 6);
+    C::DomainSettings settings;
+    settings.numerics.reconstruction = "constant";
+    settings.numerics.cfv.maxOrder = 1;
+    settings.numerics.faceFallback = false;
+    settings.equation.source = "chemical";
+    C::FiniteVolume fv(mesh, settings, mixture.equation);
+    auto state = mixture.State(fv.Metrics().Space(), 1), direction = mixture.State(fv.Metrics().Space(), 2);
+    mixture.Fill(state, fv.Metrics(), false);
+    const I nv = state.ComponentNumber();
+    R::Array<double> inverseTau(R::RowLayout::Dense(fv.Metrics().NumCell(), 1));
+    {
+        const auto read = state.ReadOwned();
+        const auto input = read.ComponentLayout();
+        auto write = direction.WriteOwned();
+        const auto output = write.ComponentLayout();
+        auto pseudo = inverseTau.Write();
+        for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+        {
+            const auto center = fv.Metrics().GetCellCent(iCell);
+            for (I j = 0; j < nv; ++j)
+                output.View()(iCell, j) = j < 5 ? .02 * (j + 1) * std::cos(2 * center[0] + center[1]) : .03 * input.View()(iCell, j) * std::cos(center[0] + 2 * center[1]);
+            pseudo.View()(iCell, 0) = 2 + center[0];
+        }
+    }
+    for (auto *field : {&state, &direction})
+    {
+        std::vector<R::TransferBinding> bindings;
+        for (I iField = 0; iField < field->PhysicalFieldNumber(); ++iField)
+            bindings.push_back(fv.Metrics().BindHalo(field->PhysicalField(iField)));
+        std::vector<R::TransferOperation> active;
+        for (auto &binding : bindings)
+            active.push_back(binding.Begin());
+        for (auto &operation : active)
+            operation.Wait();
+    }
+    auto auxiliary = fv.BuildAuxiliaryValues({true, true});
+    fv.PrepareAuxValues(state, auxiliary, 0, mixture.workers);
+    C::JacobianPreparation controls{3, .7, false};
+    auto assembled = fv.BuildLinearProblem(state, C::DiagonalStorage::Block);
+    auto evaluated = fv.BuildLinearProblem(state, C::DiagonalStorage::Block, C::OffDiagonalStorage::SemiMatrixFree);
+    fv.PrepareJacobian(state, auxiliary, inverseTau, *assembled, controls, 0, mixture.workers);
+    fv.PrepareJacobian(state, auxiliary, inverseTau, *evaluated, controls, 0, mixture.workers);
+    auto action = C::EquationDofOperations::NewVector(state), other = C::EquationDofOperations::NewVector(direction);
+    assembled->Apply(direction, action);
+    evaluated->Apply(direction, other);
+    Compare(action, other, 2e-12);
+    {
+        const auto version = assembled->Diagonal().Version();
+        const auto pin = assembled->OffDiagonal().Read();
+        CHECK_THROWS(fv.PrepareJacobian(state, auxiliary, inverseTau, *assembled, controls, 0, mixture.workers));
+        CHECK(assembled->Diagonal().Version() == version);
+    }
+    {
+        auto topologyRead = mesh->AcquireRead(DNDS::Geom::MeshReadRequirements::CellFlux());
+        const auto topology = topologyRead.HostView();
+        auto geometry = fv.Metrics().AcquireRead();
+        const auto metric = geometry.HostView();
+        const auto meanRead = state.ReadWithGhost(), deltaRead = direction.ReadWithGhost();
+        const auto mean = meanRead.ComponentLayout(), delta = deltaRead.ComponentLayout();
+        const auto resultRead = action.ReadOwned();
+        const auto result = resultRead.ComponentLayout();
+        const auto faceRead = auxiliary.faceSpectralRadius->Read(), pseudo = inverseTau.Read();
+        const auto radius = faceRead.View();
+        auto evaluator = mixture.equation.MakePointEvaluator(mixture.workers.Acquire(), {false, false, false, true, false});
+        const auto point = [&](I iCell, double h)
+        {
+            Eigen::VectorXd value(nv);
+            for (I j = 0; j < nv; ++j)
+                value[j] = mean.View()(iCell, j) + h * delta.View()(iCell, j);
+            return value;
+        };
+        const auto physicalFlux = [&](const Eigen::VectorXd &value, const C::Vector3 &normal)
+        {
+            const C::FlowState flow{value[0], value[1], value[2], value[3], value[4]};
+            const auto properties = evaluator.Evaluate(flow, {value.data() + 5, mixture.species - 1}, 0, {});
+            const auto first = C::Riemann::PhysicalFlux({flow, properties.thermo.pressure}, normal);
+            Eigen::VectorXd flux(nv);
+            double speed = 0;
+            for (int d = 0; d < 3; ++d)
+                speed += flow[1 + d] / flow[0] * normal[d];
+            for (I j = 0; j < nv; ++j)
+                flux[j] = j < 5 ? first[j] : value[j] * speed;
+            return flux;
+        };
+        const auto residual = [&](I iCell, double h)
+        {
+            const auto left = point(iCell, h);
+            Eigen::VectorXd value = Eigen::VectorXd::Zero(nv);
+            const auto source = evaluator.Evaluate({left[0], left[1], left[2], left[3], left[4]}, {left.data() + 5, mixture.species - 1}, 0, {false, false, false, true, false});
+            for (int k = 0; k < mixture.species - 1; ++k)
+                value[5 + k] = metric.GetCellVol(iCell) * source.chemicalSource[k];
+            const auto faces = topology.CellFaces(iCell);
+            for (DNDS::rowsize slot = 0; slot < DNDS::rowsize(faces.size()); ++slot)
+            {
+                const auto iFace = faces[slot], neighbor = topology.CellFaceOther(iCell, iFace, slot);
+                REQUIRE(neighbor != DNDS::UnInitIndex);
+                const auto right = point(neighbor, h);
+                const auto found = std::lower_bound(fv.AuxiliaryFaces().begin(), fv.AuxiliaryFaces().end(), iFace);
+                REQUIRE(found != fv.AuxiliaryFaces().end());
+                const auto iAux = found - fv.AuxiliaryFaces().begin();
+                const int sign = topology.CellIsFaceBack(iCell, iFace, slot) ? 1 : -1;
+                for (I q = metric.FaceQuadratureBegin(iFace); q < metric.FaceQuadratureEnd(iFace); ++q)
+                {
+                    const DNDS::Geom::tPoint normal = sign * metric.GetFaceNorm(q);
+                    const C::Vector3 n{normal[0], normal[1], normal[2]};
+                    const auto a = physicalFlux(left, n), b = physicalFlux(right, n);
+                    const double lambda = radius(iAux, 0) + radius(iAux, 1);
+                    value.noalias() -= .5 * metric.GetFaceWeight(q) * (a + b - lambda * (right - left));
+                }
+            }
+            return value;
+        };
+        constexpr double h = 2e-6;
+        double signal = 0;
+        for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+        {
+            const Eigen::VectorXd derivative = (residual(iCell, h) - residual(iCell, -h)) / (2 * h);
+            Eigen::VectorXd expected(nv), actual(nv);
+            for (I j = 0; j < nv; ++j)
+            {
+                expected[j] = metric.GetCellVol(iCell) * (pseudo.View()(iCell, 0) + controls.physicalMass) * delta.View()(iCell, j) - controls.residualScale * derivative[j];
+                actual[j] = result.View()(iCell, j);
+            }
+            signal = std::max(signal, actual.lpNorm<Eigen::Infinity>());
+            CHECK((actual - expected).lpNorm<Eigen::Infinity>() < 3e-5 * std::max(1., expected.lpNorm<Eigen::Infinity>()));
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &signal, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+        CHECK(signal > .01);
+    }
+    C::LinearSolveSettings linear;
+    linear.method = "gmres";
+    linear.preconditioner = "ilu";
+    linear.subspace = 20;
+    linear.maxIterations = 100;
+    linear.relativeTolerance = 1e-10;
+    linear.absoluteTolerance = 1e-12;
+    C::EquationLinearSolver solver(evaluated, direction, [&](auto &field)
+                                   { return fv.Metrics().BindHalo(field); }, linear);
+    const auto report = solver.Solve(action);
+    CHECK(report.converged);
+    CHECK(report.usable);
+    Compare(direction, solver.Solution(), 1e-8);
+    const auto generation = evaluated->OffDiagonalGeneration(), diagonalVersion = evaluated->Diagonal().Version();
+    {
+        auto write = state.WriteOwned();
+        const auto species = write.Block("species");
+        if (species.RowCount())
+            species(0, 0) += 1e-8;
+    }
+    CHECK_THROWS(fv.PrepareJacobian(state, auxiliary, inverseTau, *evaluated, controls, 0, mixture.workers));
+    CHECK(evaluated->OffDiagonalGeneration() == generation);
+    CHECK(evaluated->Diagonal().Version() == diagonalVersion);
+    evaluated->Apply(direction, other); // The already-frozen operator remains unchanged.
+    Compare(action, other, 2e-12);
 }
 
 TEST_CASE("Actual mixture FV residual preserves separate/permuted fields and core overlap without chemistry in face queries")
@@ -565,6 +726,23 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
     withoutSource.Evaluate(a, ra, *wa, engine, stream);
     withSource.Evaluate(b, rb, *wb, engine, stream);
     const I rows = withSource.Metrics().NumCell(), count = rows * 9;
+    auto auxiliaryA = withoutSource.BuildAuxiliaryValues({false, true}), auxiliaryB = withSource.BuildAuxiliaryValues({false, true});
+    withoutSource.PrepareAuxValues(a, auxiliaryA, 0, mixture.workers);
+    withSource.PrepareAuxValues(b, auxiliaryB, 0, mixture.workers);
+    R::Array<double> inverseTau(R::RowLayout::Dense(rows, 1));
+    {
+        auto write = inverseTau.Write();
+        for (I iCell = 0; iCell < rows; ++iCell)
+            write.View()(iCell, 0) = 0;
+    }
+    auto matrixA = withoutSource.BuildLinearProblem(a, C::DiagonalStorage::Block), matrixB = withSource.BuildLinearProblem(b, C::DiagonalStorage::Block);
+    C::JacobianPreparation controls;
+    withoutSource.PrepareJacobian(a, auxiliaryA, inverseTau, *matrixA, controls, 0, mixture.workers);
+    const auto unpreparedVersion = matrixB->Diagonal().Version();
+    CHECK_THROWS(withSource.PrepareJacobian(b, auxiliaryB, inverseTau, *matrixB, controls, 0, mixture.workers));
+    CHECK(matrixB->Diagonal().Version() == unpreparedVersion);
+    withSource.PrepareJacobian(b, auxiliaryB, inverseTau, *matrixB, controls, 0, mixture.workers, wb.get());
+
     R::Array<I> cells(R::RowLayout::Dense(count, 1));
     R::Array<double> points(R::RowLayout::Dense(count, 3));
     const double location[3]{-std::sqrt(3. / 5), 0, std::sqrt(3. / 5)}, weights[3]{5. / 9, 8. / 9, 5. / 9};
@@ -591,6 +769,9 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
     const auto lhs = ra.ReadOwned(), rhs = rb.ReadOwned();
     const auto x = lhs.Block("species"), y = rhs.Block("species");
     std::vector<double> fractions(size_t(mixture.species)), rates(size_t(mixture.species)), expected(size_t(mixture.species - 1));
+    const int nv = mixture.species + 4;
+    std::vector<double> rawJacobian(size_t(mixture.species * nv));
+    Eigen::MatrixXd expectedJacobian(nv, nv);
     const auto rateAt = [&](const auto &input, I row)
     {
         double sum = 0, kinetic = 0;
@@ -605,33 +786,66 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
         const P::Chemistry::ConstSpeciesBufferView Y{fractions.data(), mixture.species};
         const double T = mixture.prototype.temperatureFromUV((input(row, 4) - kinetic) / input(row, 0) * mixture.scales.SpecificEnergy(), 1 / (input(row, 0) * mixture.scales.rho0), Y, 1400, 1e-12);
         const double p = input(row, 0) * mixture.scales.rho0 * mixture.prototype.mixtureR(Y) * T;
-        mixture.prototype.productionRates(T, p, Y, {rates.data(), mixture.species});
+        mixture.prototype.productionRatesAndJacobian(T, p, input(row, 0), input(row, 4), input(row, 1), input(row, 2), input(row, 3), 4, Y,
+                                                     {rates.data(), mixture.species}, {rawJacobian.data(), mixture.species, nv, mixture.species});
         for (int k = 0; k < mixture.species - 1; ++k)
             rates[k] *= mixture.prototype.molecularWeights()[k] / mixture.scales.SourceRate();
     };
-    double signal[2]{};
-    for (I iCell = 0; iCell < rows; ++iCell)
+    double signal[4]{};
     {
-        std::fill(expected.begin(), expected.end(), 0);
-        for (int j = 0; j < 3; ++j)
-            for (int i = 0; i < 3; ++i)
-            {
-                rateAt(values, iCell * 9 + j * 3 + i);
-                for (int k = 0; k < mixture.species - 1; ++k)
-                    expected[k] += h * h * .25 * weights[i] * weights[j] * rates[k];
-            }
-        rateAt(means, iCell);
-        for (int k = 0; k < mixture.species - 1; ++k)
+        const auto da = matrixA->Diagonal().Read(), db = matrixB->Diagonal().Read();
+        for (I iCell = 0; iCell < rows; ++iCell)
         {
-            const double observed = y(iCell, k) - x(iCell, k);
-            CHECK(observed == doctest::Approx(expected[k]).epsilon(1e-8).scale(1e-9));
-            signal[0] = std::max(signal[0], std::abs(expected[k]));
-            signal[1] = std::max(signal[1], std::abs(expected[k] - h * h * rates[k]));
+            std::fill(expected.begin(), expected.end(), 0);
+            expectedJacobian.setZero();
+            for (int j = 0; j < 3; ++j)
+                for (int i = 0; i < 3; ++i)
+                {
+                    rateAt(values, iCell * 9 + j * 3 + i);
+                    for (int k = 0; k < mixture.species - 1; ++k)
+                    {
+                        expected[k] += h * h * .25 * weights[i] * weights[j] * rates[k];
+                        for (int column = 0; column < nv; ++column)
+                            expectedJacobian(5 + k, column) += h * h * .25 * weights[i] * weights[j] * mixture.prototype.molecularWeights()[k] / mixture.scales.SourceRate() * rawJacobian[k + mixture.species * column];
+                    }
+                }
+            rateAt(means, iCell);
+            for (int column = 0; column < nv; ++column)
+                for (int row = 0; row < nv; ++row)
+                {
+                    const double observed = db.View()(iCell, row + nv * column) - da.View()(iCell, row + nv * column);
+                    CHECK(observed == doctest::Approx(-expectedJacobian(row, column)).epsilon(1e-6).scale(1e-8));
+                    signal[2] = std::max(signal[2], std::abs(expectedJacobian(row, column)));
+                    if (row >= 5)
+                    {
+                        const double meanOnly = h * h * mixture.prototype.molecularWeights()[row - 5] / mixture.scales.SourceRate() * rawJacobian[row - 5 + mixture.species * column];
+                        signal[3] = std::max(signal[3], std::abs(expectedJacobian(row, column) - meanOnly));
+                    }
+                }
+            for (int k = 0; k < mixture.species - 1; ++k)
+            {
+                const double observed = y(iCell, k) - x(iCell, k);
+                CHECK(observed == doctest::Approx(expected[k]).epsilon(1e-8).scale(1e-9));
+                signal[0] = std::max(signal[0], std::abs(expected[k]));
+                signal[1] = std::max(signal[1], std::abs(expected[k] - h * h * rates[k]));
+            }
         }
     }
-    MPI_Allreduce(MPI_IN_PLACE, signal, 2, MPI_DOUBLE, MPI_MAX, mpi.comm);
+    MPI_Allreduce(MPI_IN_PLACE, signal, 4, MPI_DOUBLE, MPI_MAX, mpi.comm);
     CHECK(signal[0] > 1e-10);
     CHECK(signal[1] > 1e-6 * signal[0]); // A mean/centroid-only source must fail this gate.
+    CHECK(signal[2] > 1e-8);
+    CHECK(signal[3] > 1e-6 * signal[2]); // The same guard applies to the source Jacobian.
+    const auto version = matrixB->Diagonal().Version();
+    {
+        auto changed = withSource.FluxReconstruction(*wb).PhysicalField(0).Owned();
+        auto write = changed.Write();
+        const auto coefficients = write.View<R::UniformTableRows>();
+        if (coefficients.RowCount())
+            coefficients(0, 4 * withSource.Reconstruction().NRecDOF()) += 1e-8;
+    }
+    CHECK_THROWS(withSource.PrepareJacobian(b, auxiliaryB, inverseTau, *matrixB, controls, 0, mixture.workers, wb.get()));
+    CHECK(matrixB->Diagonal().Version() == version);
 }
 #endif
 

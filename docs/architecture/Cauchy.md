@@ -193,6 +193,29 @@ cover shared meshes and reversed split communicators; the geometric rotating-IV
 fixture is in the C++ suite. The production executable still has the single-
 domain output/restart frontend restriction described below.
 
+Python `Domain.advance`/`Simulation.advance` use the same C++ engine and release
+the GIL. `defaults.execution.overlap=true` enables native halo/core overlap;
+`hostThreads=0` runs CPU work inline and positive counts enable workers. The
+Python call returns after native work is joined. Retained array debug views
+still obey the normal lease contract and must be released before conflicting
+stepping or publication. Domain tests cover inline/worker execution and shared/
+split simulation ownership. This is CPU flow5 support, not RANS/species or CUDA
+production acceptance.
+
+Runtime arrays, transfers, streams/events and native CFV reconstruction,
+gradient, limiter and sampling APIs are exposed separately. CFV has All/Core/
+HaloDependent calls for explicitly ordered halo/core/wait/dependent sequences.
+Some synchronous CPU wrappers retain the GIL; these are not a complete Python
+CPU-worker enqueue API. Cauchy's standalone equation-state/auxiliary/RHS/Jacobian/
+SGS/ILU/FAS and visualization bindings remain incomplete. Their future Python
+frontend should call the same C++ operators and retain their owners, never
+duplicate numerical algorithms or infer missing stream dependencies.
+
+The current executable remains a development frontend. Production integration
+will replace its raw MPI lifecycle, manual history stream and positional CLI
+with DNDS MPI initialization/finalization, segmented `CsvLog`, and `argparse`
+with typed JSON overrides and recorded effective configuration.
+
 `CoordinatedSchedule` is a scalar mock of the frozen-trace contract, not a fluid
 integrator. All domains read the same old trace snapshot for a round. Only each
 domain root publishes its candidate to the control communicator. Failure leaves

@@ -188,7 +188,11 @@ TEST_CASE("Frozen physical semi-matrix-free blocks agree with assembled action, 
         settings.equation.transport = "NewtonianFourier";
         settings.equation.viscosity = .03;
         if (meshKind == 1)
+        {
             settings.boundaries["7"].kind = "noSlipWall";
+            settings.motion.angularVelocity = {.2, -.1, .3};
+            settings.motion.translationVelocity = {.07, -.03, .02};
+        }
         if (meshKind == 2)
             settings.boundaries["12"].kind = settings.boundaries["13"].kind = "slipWall";
         const auto equation = C::EquationSystem::Resolve(settings.equation);
@@ -237,6 +241,43 @@ TEST_CASE("Frozen physical semi-matrix-free blocks agree with assembled action, 
                 C::JacobianPreparation controls{3, .7, approximation == 2};
                 fv.PrepareJacobian(state, auxiliary, inverseTau, *a, controls);
                 fv.PrepareJacobian(state, auxiliary, inverseTau, *m, controls);
+                if (layout == 1 && approximation < 2)
+                {
+                    // Compare the logical physical producer with the established
+                    // flow5 approximation, including periodic images, self
+                    // incidences, moving-frame sources and both storage modes.
+                    auto semantic = C::EquationDofs::Coupled(equation.Schema(), state);
+                    auto packet = fv.BuildAuxiliaryValues(request);
+                    fv.PrepareAuxValues(semantic, packet);
+                    for (auto storage : {C::OffDiagonalStorage::Assembled, C::OffDiagonalStorage::SemiMatrixFree})
+                    {
+                        auto logical = fv.BuildLinearProblem(semantic, mode, storage);
+                        fv.PrepareJacobian(semantic, packet, inverseTau, *logical, controls);
+                        if (meshKind == 0 && approximation == 0 && storage == C::OffDiagonalStorage::Assembled)
+                        {
+                            auto unsupported = controls;
+                            unsupported.roeDissipation = true;
+                            const auto version = logical->Diagonal().Version();
+                            CHECK_THROWS(fv.PrepareJacobian(semantic, packet, inverseTau, *logical, unsupported));
+                            CHECK(logical->Diagonal().Version() == version);
+                        }
+                        const auto oldD = a->Diagonal().Read(), newD = logical->Diagonal().Read();
+                        for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                            for (DNDS::index j = 0; j < oldD.View().RowSize(iCell); ++j)
+                                CHECK(newD.View()(iCell, j) == doctest::Approx(oldD.View()(iCell, j)).epsilon(3e-12).scale(1));
+                        const auto expected = a->ReadOffDiagonal(), actual = logical->ReadOffDiagonal();
+                        expected.WithBlocks([&](const auto &x)
+                                            { actual.WithBlocks([&](const auto &y)
+                                                                {
+                                for (DNDS::index iCell=0;iCell<fv.Metrics().NumCell();++iCell)
+                                    for (DNDS::index k=0;k<DNDS::index(a->Columns()[iCell].size());++k)
+                                    {
+                                        const auto first=x(iCell,k);
+                                        const auto second=y(iCell,k);
+                                        CHECK((first-second).cwiseAbs().maxCoeff()<3e-12*std::max(1.,first.cwiseAbs().maxCoeff()));
+                                    } }); });
+                    }
+                }
                 a->InvertDiagonal();
                 m->InvertDiagonal();
                 a->Apply(delta, assembled);
@@ -365,10 +406,30 @@ TEST_CASE("Selected physical Jacobians are principal matrices after periodic fra
             for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
                 write.View()(iCell, 0) = 3;
         }
+        auto semantic = C::EquationDofs::Coupled(C::EquationSystem::Resolve(settings.equation).Schema(), state);
+        auto packet = fv.BuildAuxiliaryValues(request);
+        fv.PrepareAuxValues(semantic, packet);
         for (auto diagonal : {C::DiagonalStorage::Entries, C::DiagonalStorage::Block})
             for (auto storage : {C::OffDiagonalStorage::Assembled, C::OffDiagonalStorage::SemiMatrixFree})
             {
                 auto full = fv.BuildLinearProblem(state, diagonal, storage), subset = fv.BuildLinearProblem(state, diagonal, storage);
+                // The logical producer's scalar approximation must project
+                // after periodic transformation in both diagonal layouts.
+                auto logicalFull = fv.BuildLinearProblem(semantic, diagonal, storage), logicalSubset = fv.BuildLinearProblem(semantic, diagonal, storage);
+                C::JacobianPreparation logicalControls{2, .7, false};
+                fv.PrepareJacobian(semantic, packet, inverseTau, *logicalFull, logicalControls);
+                logicalControls.updateComponents = {4, 1};
+                fv.PrepareJacobian(semantic, packet, inverseTau, *logicalSubset, logicalControls);
+                auto reference = C::EquationDofs::Coupled(semantic.Schema(), fv.Metrics().BuildField(5));
+                auto result = C::EquationDofs::Coupled(semantic.Schema(), fv.Metrics().BuildField(5));
+                logicalFull->Apply(C::EquationDofs::Coupled(semantic.Schema(), projected), reference);
+                logicalSubset->Apply(C::EquationDofs::Coupled(semantic.Schema(), direction), result);
+                {
+                    const auto x = direction.Owned().Read(), a = result.CoupledField().Owned().Read(), b = reference.CoupledField().Owned().Read();
+                    for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                        for (int j = 0; j < 5; ++j)
+                            CHECK(a.View()(iCell, j) == doctest::Approx(j == 1 || j == 4 ? b.View()(iCell, j) : x.View()(iCell, j)).epsilon(3e-12).scale(1));
+                }
                 C::JacobianPreparation controls{2, .7, diagonal == C::DiagonalStorage::Block};
                 fv.PrepareJacobian(state, auxiliary, inverseTau, *full, controls);
                 controls.updateComponents = {4, 1};

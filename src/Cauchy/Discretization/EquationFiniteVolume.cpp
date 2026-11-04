@@ -100,6 +100,8 @@ namespace DNDS::Cauchy
         std::vector<R::Array<real>> sourceValues;
         bool chemical;
         int iterations = 0;
+        std::optional<EquationDofOperations::Binding> sourceState, sourceCoefficients;
+        real sourceTime = 0;
 
         static std::vector<Field> BuildFields(const Data &data, const EquationDofs &state)
         {
@@ -490,6 +492,8 @@ namespace DNDS::Cauchy
     void FiniteVolume::Evaluate(EquationDofs &state, EquationDofs &residual, EquationWorkspace &work,
                                 R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
+        work.sourceState.reset();
+        work.sourceCoefficients.reset();
         const MPIInfo mpi(Metrics().Communicator());
         // Observe only this lane's producer prefix. MPI remains on the caller's
         // controller thread, including when the CPU launcher uses worker threads.
@@ -669,5 +673,63 @@ namespace DNDS::Cauchy
                { work.AddChemicalSource(state, residual, *evaluator); });
         local([&]
               { stream.Record().WaitHost(); });
+        if (work.chemical && work.sourceSampling)
+            local([&]
+                  {
+                work.sourceState.emplace(state.NumericAlias());
+                work.sourceCoefficients.emplace(work.fluxCoefficients.NumericAlias());
+                work.sourceTime=time; });
+    }
+
+    void FiniteVolume::ValidateEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &work, real time) const
+    {
+        DNDS_check_throw_info(work.owner == _data && work.chemical, "foreign or nonchemical source reconstruction");
+        if (_data->equation.Mixture().SpeciesNumber() == 1)
+            return;
+        DNDS_check_throw_info(work.sourceState && work.sourceCoefficients && work.sourceTime == time, "source quadrature requires a successful current RHS evaluation");
+        work.sourceState->Check(state, true);
+        work.sourceCoefficients->Check(work.fluxCoefficients, true);
+    }
+    void FiniteVolume::AddEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &work,
+                                                 const R::Array<real>::WriteLease &diagonal, DiagonalStorage storage, real scale, EquationPointEvaluator &evaluator) const
+    {
+        if (!work.sourceSampling)
+            return;
+        std::vector<R::Array<real>::ReadLease> sources;
+        for (const auto &field : work.sourceValues)
+            sources.push_back(field.Read());
+        const auto weightRead = work.sourceWeights.Read();
+        const auto weights = weightRead.View<R::FixedRows<1>>();
+        const auto matrix = diagonal.View<R::TableRows>();
+        const index nv = state.ComponentNumber();
+        const int independent = _data->equation.Mixture().SpeciesNumber() - 1;
+        PointScratch point(nv);
+        std::vector<EquationBlockLocation> locations;
+        for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+            locations.push_back(state.LocateBlock(iBlock));
+        for (index iCell = 0; iCell < _data->metrics.NumCell(); ++iCell)
+            for (index iPoint = work.sourceOffsets[iCell]; iPoint < work.sourceOffsets[iCell + 1]; ++iPoint)
+            {
+                for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+                {
+                    const auto location = locations[iBlock];
+                    const auto values = sources[location.physicalField].View<R::UniformTableRows>();
+                    for (index j = 0; j < location.componentNumber; ++j)
+                        point.values[work.logicalFirst[iBlock] + j] = values(iPoint, location.firstComponent + j);
+                }
+                const auto properties = evaluator.Evaluate(point.Flow(work.flowFirst), point.Species(work.speciesFirst, independent), 0, {false, false, false, true, true});
+                for (int j = 0; j < 5 + independent; ++j)
+                {
+                    const index column = j < 5 ? work.flowFirst + j : work.speciesFirst + j - 5;
+                    for (int k = 0; k < independent; ++k)
+                    {
+                        const index row = work.speciesFirst + k;
+                        const real derivative = properties.sourceJacobian(k, j);
+                        DNDS_check_throw_info(std::isfinite(derivative), "nonfinite quadrature source derivative");
+                        if (storage == DiagonalStorage::Block || row == column)
+                            matrix(iCell, storage == DiagonalStorage::Block ? row + nv * column : row) -= scale * weights(iPoint, 0) * derivative;
+                    }
+                }
+            }
     }
 }
