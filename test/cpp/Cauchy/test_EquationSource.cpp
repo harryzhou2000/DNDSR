@@ -6,6 +6,7 @@
 #include "Cauchy/Physics/EquationFlux.hpp"
 #include "Cauchy/State/EquationTimeStepper.hpp"
 #include "Cauchy/Physics/EquationPositivity.hpp"
+#include "Cauchy/Physics/EquationRANS.hpp"
 #include "Cauchy/Implicit/LinearSolver.hpp"
 #include "Cauchy/Boundary/BoundarySystem.hpp"
 #include "Euler/SourceTermContributor.hpp"
@@ -239,6 +240,72 @@ TEST_CASE("Mixture thermal references enforce a requested temperature through ac
     for (int c = 0; c < 2; ++c)
         CHECK(bounds.Reference(middle, c) == doctest::Approx(.3 * bounds.Reference(one, c) + .7 * bounds.Reference(two, c)).epsilon(1e-14));
 }
+TEST_CASE("Attached RANS leaves mixture thermal bounds and chemical Jacobian columns unchanged")
+{
+    Fixture fixture(true);
+    P::RANS::ModelSettings model;
+    model.model = "KOmegaSST";
+    const auto equation = fixture.equation.WithRANS(model);
+    CHECK(equation.Schema().blocks[1].name == "rans");
+    CHECK(equation.Schema().blocks[2].name == "species");
+    const I rows = mpi.rank == 0 ? 2 : 0;
+    A::DofSpace space(size_t(rows), 0, "RANS plus chemical point source");
+    auto base = fixture.State(space, 1), baseSource = fixture.State(space, 1);
+    fixture.Fill(base);
+    A::DofBundle fields(space);
+    fields.Add("flow", A::DofField<double>(space, R::RowLayout::ColMajor(0, 5, {16, 1})));
+    fields.Add("rans", A::DofField<double>(space, R::RowLayout::Dense(0, 2)));
+    fields.Add("species", A::DofField<double>(space, R::RowLayout::TiledColMajor(0, fixture.species - 1, 32)));
+    auto state = C::EquationDofs::Separate(equation.Schema(), std::move(fields));
+    fixture.Fill(state);
+    {
+        auto write = state.WriteOwned();
+        const auto rans = write.Block("rans");
+        for (I iCell = 0; iCell < rows; ++iCell)
+        {
+            rans(iCell, 0) = .03;
+            rans(iCell, 1) = 2.;
+        }
+    }
+    auto source = state.Clone();
+    const I width = state.ComponentNumber();
+    R::Array<double> jac(R::RowLayout::Dense(rows, width * width));
+    R::Array<double> baseJac(R::RowLayout::Dense(rows, fixture.components * fixture.components));
+    C::EvaluateChemicalSource(fixture.equation, base, baseSource, fixture.workers.Acquire(), &baseJac);
+    C::EvaluateChemicalSource(equation, state, source, fixture.workers.Acquire(), &jac);
+    C::EquationThermalPolicy bounds(equation, 1e-10, .5, 0., 1e-10, fixture.workers.Acquire());
+    C::EquationThermalPolicy baseBounds(fixture.equation, 1e-10, .5, 0., 1e-10, fixture.workers.Acquire());
+    const auto input = state.ReadOwned(), output = source.ReadOwned(), baseInput = base.ReadOwned(), baseOutput = baseSource.ReadOwned();
+    const auto inputLayout = input.ComponentLayout(), outputLayout = output.ComponentLayout(),
+               baseInputLayout = baseInput.ComponentLayout(), baseOutputLayout = baseOutput.ComponentLayout();
+    const auto u = inputLayout.View(), s = outputLayout.View(), ub = baseInputLayout.View(), sb = baseOutputLayout.View();
+    const auto matrixRead = jac.Read(), baseMatrixRead = baseJac.Read();
+    const auto m = matrixRead.View(), mb = baseMatrixRead.View();
+    const auto mapped = [](I j)
+    { return j < 5 ? j : j + 2; };
+    for (I iCell = 0; iCell < rows; ++iCell)
+    {
+        for (int constraint = 0; constraint < 2; ++constraint)
+            CHECK(bounds.View().Sensible(C::EquationPositivityDetail::PointRow<decltype(u)>{u, iCell}, constraint) ==
+                  doctest::Approx(baseBounds.View().Sensible(C::EquationPositivityDetail::PointRow<decltype(ub)>{ub, iCell}, constraint)).epsilon(1e-13));
+        for (I j = 0; j < fixture.components; ++j)
+        {
+            CHECK(s(iCell, mapped(j)) == doctest::Approx(sb(iCell, j)).epsilon(1e-11));
+            for (I k = 0; k < fixture.components; ++k)
+                CHECK(m(iCell, mapped(j) + width * mapped(k)) == doctest::Approx(mb(iCell, j + fixture.components * k)).epsilon(1e-8).scale(1e-10));
+        }
+        for (I j : {I(5), I(6)})
+        {
+            CHECK(s(iCell, j) == 0);
+            for (I k = 0; k < width; ++k)
+            {
+                CHECK(m(iCell, j + width * k) == 0);
+                CHECK(m(iCell, k + width * j) == 0);
+            }
+        }
+    }
+}
+
 TEST_CASE("Mixture source point matches the Euler source and all conservative derivative columns")
 {
     Fixture fixture;

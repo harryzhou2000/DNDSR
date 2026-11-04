@@ -68,7 +68,13 @@ namespace DNDS::Cauchy
             throw;
         }
         const auto matrix = jacobianWrite ? jacobianWrite->View<Runtime::UniformTableRows>() : Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>{};
-        const auto sourceFlow = output->Block("flow");
+        // This operator replaces the full source, not just its chemical block.
+        // Resolve nonchemical outputs once; future RANS/other blocks must not
+        // retain values from a previous use of this scratch allocation.
+        std::vector<EquationBlockArrayView<real>> nonchemical;
+        for (index iBlock = 0; iBlock < values.BlockNumber(); ++iBlock)
+            if (values.Schema().blocks[iBlock].name != "species")
+                nonchemical.push_back(output->Block(iBlock));
         const auto sourceSpecies = species ? output->Block("species") : EquationBlockArrayView<real>{};
         const auto oldT = guess ? guess->Field(DerivedQuantity::Temperature) : EquationBlockArrayView<const real>{};
         auto composition = evaluator.SpeciesInput();
@@ -76,8 +82,9 @@ namespace DNDS::Cauchy
         // leases or publish that failed call as a valid physical result.
         for (index iCell = 0; iCell < flow.RowCount(); ++iCell)
         {
-            for (index j = 0; j < 5; ++j)
-                sourceFlow(iCell, j) = 0;
+            for (const auto &block : nonchemical)
+                for (index j = 0; j < block.ComponentNumber(); ++j)
+                    block(iCell, j) = 0;
             if (jacobian)
                 for (index j = 0; j < components * components; ++j)
                     matrix(iCell, j) = 0;

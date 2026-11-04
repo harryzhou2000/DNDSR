@@ -1,6 +1,7 @@
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/State/EquationDofs.hpp"
+#include "Physics/RANS/Model.hpp"
 #include <Eigen/LU>
 
 namespace DNDS::Cauchy
@@ -38,6 +39,34 @@ namespace DNDS::Cauchy
     {
         DNDS_check_throw_info(_mixture, "equation has no ideal-mixture material");
         return *_mixture;
+    }
+    EquationSystem EquationSystem::WithRANS(const Physics::RANS::ModelSettings &settings) const
+    {
+        DNDS_check_throw_info(!HasRANS(), "RANS is already attached to this equation");
+        auto result = *this;
+        auto model = std::make_shared<const Physics::RANS::Model>(settings);
+        if (!model->ComponentNumber())
+            return result;
+        DNDS_check_throw_info(_viscous, "RANS requires molecular viscous transport");
+        EquationBlockSchema block{"rans", {}, {}};
+        const auto names = model->ComponentNames();
+        if (model->ComponentNumber() == 1)
+            block.components.push_back({names[0], "mass/volume", "scaled-turbulent-viscosity"});
+        else
+        {
+            block.components.push_back({names[0], "energy/volume", "turbulent-kinetic-energy"});
+            const bool epsilon = model->Kind() == Physics::RANS::ModelKind::RealizableKE;
+            block.components.push_back({names[1], epsilon ? "energy/(volume*time)" : "mass/(volume*time)",
+                                        epsilon ? "turbulent-dissipation" : "specific-turbulent-dissipation"});
+        }
+        result._schema.blocks.insert(result._schema.blocks.begin() + 1, std::move(block));
+        result._rans = std::move(model);
+        return result;
+    }
+    const Physics::RANS::Model &EquationSystem::RANS() const
+    {
+        DNDS_check_throw_info(_rans, "equation has no RANS closure");
+        return *_rans;
     }
     std::vector<real> EquationSystem::IndependentMassFractions(const std::map<std::string, real> &values) const
     {

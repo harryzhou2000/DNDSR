@@ -740,3 +740,58 @@ the equation boundary-value producer; their columns include temperature and
 full species fractions. An inadmissible reconstructed trace falls back to its
 cell mean before applying the BC, as in the existing flow output path.
 Accepted means and the production reconstruction remain unchanged.
+
+## RANS equation descriptor and scalar policy
+
+`EquationSystem::WithRANS` returns a new immutable descriptor with the shared
+SA, Wilcox, SST or realizable k-epsilon closure and a named `rans` block between
+`flow` and `species`. It requires viscous transport and rejects attaching a
+second RANS model. It does not alter the original descriptor or allocate DOFs.
+The logical names are `rhoNuTilde`, `rhoK`, `rhoOmega` and `rhoEpsilon`; named
+convergence selections use the same schema resolver as flow and species.
+The default convergence selection remains density.
+
+```mermaid
+flowchart LR
+    Equation[EquationSystem] --> Thermo[Perfect gas or shared mixture material]
+    Equation --> Model[Shared immutable RANS closure]
+    Equation --> Schema[flow / rans / species schema]
+    Schema --> Dofs[EquationDofs logical bindings]
+    Dofs --> Separate[Separate arrays]
+    Dofs --> Coupled[One array with explicit block offsets]
+    Dofs --> Point[PrepareRANSPoint: bounded flow5 plus RANS scratch]
+    Point --> Model
+```
+
+`EquationRANS.hpp` contains the scalar policies used when wiring numerical
+operators. It gathers conservative values and gradients from logical strided
+rows into the shared point representation. It neither allocates a distributed
+array nor infers species offsets from the physical storage tail. SA's extra
+scratch slot is initialized to zero. CPU AoS/SoA/AoSoA and separate/coupled
+bindings use the same entry; no CUDA implementation is claimed.
+
+Scalar reconstruction repair follows Euler: negative two-equation samples
+revert **component by component** to their means; SA uses its existing
+compile-time reduced-order switch. Update repair follows the common flow5
+compression, then applies Euler's exponential scalar rule. Only SA has the
+1e-6 repaired-value floor. Final mean repair retains the SA density-proportional
+upper bound and the k-omega lower bound based on the far-field conservative
+omega value. These policies do not replace thermal/species admissibility.
+
+The no-slip target helper retains zero SA/k, `800*mu/d_mean^2` for rho-omega,
+and Euler's cell-mean-k epsilon formula. Epsilon uses reconstructed **interior**
+density, including on an isothermal wall. The caller supplies viscosity from
+the correct wall/mean-temperature producer, and converts targets to physical
+face values or reflected exterior values. Wall searching remains in Geom.
+
+`EvaluateChemicalSource` replaces its complete output: all nonchemical blocks,
+including RANS, are zero, as are their Jacobian rows and columns. Callers sum
+independent source contributions explicitly. Tests seed a nonzero RANS output
+to detect stale values, and verify that inserting the RANS block changes only
+the index locations of mixture thermal references and chemical derivatives.
+
+This descriptor/policy work does not yet enable production RANS. FiniteVolume
+explicitly rejects the descriptor until transport, source quadrature, auxiliary
+bounds, BC and implicit/PP wiring are complete. Root configuration, initializer,
+Python model construction and restart model metadata must land with that
+connection. Existing NS/mixture profiles retain their behavior.

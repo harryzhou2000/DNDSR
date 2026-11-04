@@ -166,6 +166,7 @@ namespace DNDS::Cauchy
         MPI::LocalStage(mesh->getMPI(), [&]
                         {
             settings.numerics.ValidatePositivity();
+            DNDS_check_throw_info(!equation.HasRANS(), "Cauchy RANS spatial operators are not connected yet");
             settings.numerics.limitedVR.Validate();
             DNDS_check_throw_info(!equation.HasMixture() || settings.numerics.limiter != "LVR",
                                   "mixture LVR policy is not connected yet");

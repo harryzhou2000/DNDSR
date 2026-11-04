@@ -7,7 +7,9 @@ namespace DNDS::Cauchy
     /// Synchronous owned-only CPU point-source operator. Replaces values with
     /// positive dU/dt per code volume; no volume weighting, transport, MPI or
     /// integration policy. Flow mass/momentum/full thermochemical energy sources
-    /// are zero; chemistry fills the named independent species block.
+    /// and any nonchemical blocks (including RANS) are zero; chemistry fills
+    /// the named independent species block. This replaces, rather than adds to,
+    /// the complete output. Sum separate physical source contributions outside.
     ///
     /// Optional Jacobian rows have N*N logical columns, column-major within
     /// each row, storing positive dS/dU. An implicit residual subtracts this

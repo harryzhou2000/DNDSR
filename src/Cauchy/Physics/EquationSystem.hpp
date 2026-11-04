@@ -10,6 +10,12 @@
 #include <optional>
 #include <map>
 
+namespace DNDS::Physics::RANS
+{
+    class Model;
+    struct ModelSettings;
+}
+
 namespace DNDS::Cauchy
 {
     struct EquationSettings;
@@ -66,6 +72,7 @@ namespace DNDS::Cauchy
         EquationSchema _schema;
         PerfectGas _gas;
         std::optional<Physics::Thermodynamics::IdealGasMixture> _mixture;
+        std::shared_ptr<const Physics::RANS::Model> _rans;
         bool _viscous;
         explicit EquationSystem(PerfectGas gas, bool viscous);
 
@@ -75,6 +82,13 @@ namespace DNDS::Cauchy
         /// still rejects missing spatial/time profiles until they are connected.
         /// Material metadata is shared; mutable chemistry workers are external.
         static EquationSystem FromIdealGasMixture(Physics::Thermodynamics::IdealGasMixture material, bool viscous);
+        /// Return an independent equation descriptor with a logical RANS block
+        /// between flow and species. Copies share the immutable closure, never
+        /// a mesh, worker or allocation. Spatial support must still be resolved
+        /// explicitly; attaching metadata does not enable an absent FV kernel.
+        EquationSystem WithRANS(const Physics::RANS::ModelSettings &settings) const;
+        bool HasRANS() const { return bool(_rans); }
+        const Physics::RANS::Model &RANS() const;
         const EquationSchema &Schema() const { return _schema; }
         const PerfectGas &Gas() const
         {
