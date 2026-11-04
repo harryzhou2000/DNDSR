@@ -168,6 +168,12 @@ PYBIND11_MODULE(cauchy_pybind11, m)
         .def("domain", static_cast<C::Domain &(C::Simulation::*)(DNDS::index)>(&C::Simulation::GetDomain), py::arg("domain"), py::return_value_policy::reference_internal,
              "Borrow a local domain, retaining Simulation. Advance through Simulation to keep clocks and interface snapshots coordinated.")
         .def("advance", &C::Simulation::Advance, py::arg("dt"), py::call_guard<py::gil_scoped_release>())
+        .def("write_checkpoint", &C::Simulation::WriteCheckpoint, py::arg("path"), py::arg("reconstruction") = false,
+             py::call_guard<py::gil_scoped_release>(), "Collective coordinated checkpoint; multi-domain manifests retain per-domain native archives. All ranks use the same path and release conflicting views.")
+        .def("read_checkpoint", &C::Simulation::ReadCheckpoint, py::arg("path"), py::call_guard<py::gil_scoped_release>(),
+             "Collectively validate and reserve all domains before restoring accepted states, clocks and compatible history. Release debug views and serialize external mutation.")
+        .def("write_visualization", &C::Simulation::WriteVisualization, py::arg("prefix"), py::arg("hdf_deflate_level") = 0,
+             py::call_guard<py::gil_scoped_release>(), "Collective native domain output; multiple domains append _domainN to the prefix.")
         .def("interface_diagnostics", &C::Simulation::GetInterfaceDiagnostics, py::call_guard<py::gil_scoped_release>(), "Collective query/rematch/map counts and maximum physical projection gap. Does not change the solution or traces.")
         .def_property_readonly("resolved_json", [](const C::Simulation &simulation)
                                { return simulation.Config().Root().dump(); });

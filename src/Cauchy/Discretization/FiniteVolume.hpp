@@ -177,6 +177,41 @@ namespace DNDS::Cauchy
         struct MeanWorkspace;
         struct EquationWorkspace;
         struct EquationMeanWorkspace;
+        /// Reserved synchronous warm-guess publication. Construction validates
+        /// every input and retains its reads, destination writes and workspace.
+        /// Commit performs only prevalidated copies; abandonment cancels the
+        /// untouched writers. Caller serializes workspace use until retirement.
+        /// This permits several domains to reserve before any one publishes.
+        class ReconstructionRestore
+        {
+            friend class FiniteVolume;
+            std::function<void()> _commit;
+            explicit ReconstructionRestore(std::function<void()> commit) : _commit(std::move(commit)) {}
+
+        public:
+            ReconstructionRestore(ReconstructionRestore &&other) noexcept { _commit.swap(other._commit); }
+            ReconstructionRestore &operator=(ReconstructionRestore &&other) noexcept
+            {
+                if (this != &other)
+                {
+                    _commit = nullptr;
+                    _commit.swap(other._commit);
+                }
+                return *this;
+            }
+            ReconstructionRestore(const ReconstructionRestore &) = delete;
+            ReconstructionRestore &operator=(const ReconstructionRestore &) = delete;
+            void Commit()
+            {
+                DNDS_check_throw_info(bool(_commit), "reconstruction restore was already committed or moved");
+                auto commit = std::move(_commit);
+                _commit = nullptr;
+                commit();
+            }
+        };
+        ReconstructionRestore ReserveReconstructionRestore(std::shared_ptr<Workspace> workspace, const Runtime::Array<real> &coefficients,
+                                                           const Runtime::Array<real> *limitedVRHistory = nullptr) const;
+        ReconstructionRestore ReserveReconstructionRestore(std::shared_ptr<EquationWorkspace> workspace, const EquationDofs &guess) const;
         /// Full logical-state CPU workspace on the same geometry/CFV plans.
         /// Each physical field keeps its layout and shared row routing; no
         /// whole-state packing is performed. Matching schema/physical grouping
@@ -582,6 +617,10 @@ namespace DNDS::Cauchy
                                 const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers) const;
 
     private:
+        ReconstructionRestore ReserveReconstructionRestoreImpl(Workspace &workspace, const Runtime::Array<real> &coefficients,
+                                                               const Runtime::Array<real> *limitedVRHistory, std::shared_ptr<Workspace> retained) const;
+        ReconstructionRestore ReserveReconstructionRestoreImpl(EquationWorkspace &workspace, const EquationDofs &guess,
+                                                               std::shared_ptr<EquationWorkspace> retained) const;
         std::shared_ptr<EquationWorkspace> BuildEquationWorkspaceImpl(EquationDofs &state,
                                                                       std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, bool meanOnly) const;
         void EvaluateEquationImpl(EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace,

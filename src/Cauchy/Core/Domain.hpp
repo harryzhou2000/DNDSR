@@ -85,8 +85,7 @@ namespace DNDS::Cauchy
         index _lastAlphaCells = 0, _lastBetaCells = 0;
         index _lastCharacteristicFallbacks = 0;
         void UpdateStage(real dt, real historyWeight, real stageWeight, real stageTime);
-        void PublishTrial(real time, StateEpoch epoch, const Runtime::Array<real> *reconstructionGuess = nullptr,
-                          const Runtime::Array<real> *limitedVRHistory = nullptr, const EquationDofs *equationGuess = nullptr);
+        void PublishTrial(real time, StateEpoch epoch);
         void EvaluateObservation();
         void InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh);
         void ConfigureTimeStep(const TimeSettings &time, int compressionPower);
@@ -119,6 +118,30 @@ namespace DNDS::Cauchy
         std::optional<BoundaryInputs> _interfaceInputs;
         void BindInterfaceInputs(const BoundaryInputs &input);
         void CommitReserved(EquationDofs::WriteScope &destination, EquationDofs::ReadScope &source);
+        /// Detached checkpoint candidate. Reads may use trial scratch but
+        /// accepted means/history/guesses change only after all reservations.
+        struct CheckpointRead
+        {
+            real time = 0, lastDt = 0;
+            StateEpoch epoch;
+            std::unique_ptr<EquationTimeStepper> stepper;
+            std::optional<Runtime::Array<real>> guess, limitedVRHistory;
+            std::optional<EquationDofs> equationGuess;
+            std::optional<EquationDofs::ReadScope> source;
+            std::optional<EquationDofs::WriteScope> destination;
+            std::vector<EquationBlockArrayView<const real>> input;
+            std::vector<EquationBlockArrayView<real>> output;
+            std::optional<FiniteVolume::ReconstructionRestore> reconstruction;
+            bool committed = false;
+            ~CheckpointRead()
+            {
+                if (!committed && destination)
+                    destination->CancelUnmodified();
+            }
+        };
+        std::unique_ptr<CheckpointRead> PrepareCheckpointRead(const std::string &path, const Json &resolved);
+        void ReserveCheckpointRead(CheckpointRead &checkpoint);
+        void CommitCheckpointRead(CheckpointRead &checkpoint);
 
     public:
         Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time = {});

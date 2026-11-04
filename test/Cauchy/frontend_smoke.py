@@ -79,7 +79,32 @@ def main():
         resumed = json.loads((folder / "resumed_summary.json").read_text())
         assert resumed["steps"] == 3 and math.isclose(resumed["time"], 3e-5)
         assert resumed["status"] == "target-reached"
-    print(f"Cauchy frontend np={args.np}: CLI, history rotation, output and restart passed")
+        # Exercise the same physical frontend with all-rank sharing followed by
+        # disjoint rank groups. The existing single-domain files remain valid.
+        multi = json.loads(config.read_text())
+        multi["domains"] = [{"name": "left"}, {"name": "right"}]
+        multi["time"]["method"] = "bdf2"
+        multi["time"]["steps"] = 1
+        multi["output"]["prefix"] = str(folder / "multi")
+        multi_config = folder / "multi.json"
+        multi_config.write_text(json.dumps(multi))
+        run(multi_config)
+        for i_domain in range(2):
+            assert (folder / f"multi_final_domain{i_domain}.vtkhdf").exists()
+            with (folder / f"multi_domain{i_domain}_history.csv").open() as stream:
+                assert len(list(csv.DictReader(stream))) == 2
+        if args.np > 1:
+            multi["domains"][0]["ranks"] = list(range(0, args.np, 2))
+            multi["domains"][1]["ranks"] = list(range(1, args.np, 2))
+        multi["output"]["prefix"] = str(folder / "multi_resumed")
+        multi_config.write_text(json.dumps(multi))
+        run(multi_config, "--restart", folder / "multi_final.h5")
+        continued = json.loads((folder / "multi_resumed_summary.json").read_text())
+        assert continued["steps"] == 2 and math.isclose(continued["time"], 2e-5)
+        assert continued["status"] == "target-reached"
+        for i_domain in range(2):
+            assert (folder / f"multi_resumed_final_domain{i_domain}.vtkhdf").exists()
+    print(f"Cauchy frontend np={args.np}: CLI, histories, output and single/multi-domain restart passed")
 
 
 if __name__ == "__main__":

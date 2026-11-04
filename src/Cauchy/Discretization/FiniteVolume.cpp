@@ -566,6 +566,21 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::RestoreReconstructionGuess(Workspace &workspace, const R::Array<real> &coefficients, const R::Array<real> *limitedVRHistory) const
     {
+        // The borrowed workspace cannot escape this synchronous call.
+        auto restore = ReserveReconstructionRestoreImpl(workspace, coefficients, limitedVRHistory, {});
+        restore.Commit();
+    }
+    FiniteVolume::ReconstructionRestore FiniteVolume::ReserveReconstructionRestore(std::shared_ptr<Workspace> workspace, const R::Array<real> &coefficients,
+                                                                                   const R::Array<real> *limitedVRHistory) const
+    {
+        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                        { DNDS_check_throw_info(bool(workspace), "null reconstruction workspace"); });
+        auto &reference = *workspace;
+        return ReserveReconstructionRestoreImpl(reference, coefficients, limitedVRHistory, std::move(workspace));
+    }
+    FiniteVolume::ReconstructionRestore FiniteVolume::ReserveReconstructionRestoreImpl(Workspace &workspace, const R::Array<real> &coefficients,
+                                                                                       const R::Array<real> *limitedVRHistory, std::shared_ptr<Workspace> retained) const
+    {
         MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
                         {
             DNDS_check_throw_info(workspace.owner == _data.get() && coefficients.GetDevice() == R::Device::Host() &&
@@ -592,43 +607,51 @@ namespace DNDS::Cauchy
                     for (int j = 0; j < 2; ++j)
                         DNDS_check_throw_info(std::isfinite(h(iCell, j)) && h(iCell, j) >= 0 && h(iCell, j) <= caps[j], "LVR history exceeds its valid branch cap");
             } });
-        std::optional<R::Array<real>::ReadLease> source;
-        std::optional<R::Array<real>::WriteLease> destination;
-        std::optional<R::Array<real>::ReadLease> historySource;
-        std::optional<R::Array<real>::WriteLease> historyDestination;
-        try
+        struct Reservation
         {
-            MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                            {
-                source.emplace(coefficients.Read());
-                if (limitedVRHistory) historySource.emplace(limitedVRHistory->Read());
-                destination.emplace(workspace.reconstruction.coefficients.Owned().Write());
-                if (workspace.limitedVR) historyDestination.emplace(workspace.limitedVR->previous.Write()); });
-        }
-        catch (...)
-        {
-            if (destination)
-                destination->CancelUnmodified();
-            if (historyDestination)
-                historyDestination->CancelUnmodified();
-            if (source)
-                source->CancelUnmodified();
-            throw;
-        }
-        const auto input = source->View<R::UniformTableRows>();
-        const auto output = destination->View<R::UniformTableRows>();
-        for (index iCell = 0; iCell < output.RowCount(); ++iCell)
-            for (index j = 0; j < output.RowSize(iCell); ++j)
-                output(iCell, j) = input(iCell, j);
-        if (historyDestination)
-        {
-            const auto to = historyDestination->View<R::FixedRows<2>>();
-            const auto from = historySource ? historySource->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{};
+            std::shared_ptr<Workspace> owner;
+            std::optional<R::Array<real>::ReadLease> source, historySource;
+            std::optional<R::Array<real>::WriteLease> destination, historyDestination;
+            bool started = false;
+            ~Reservation()
+            {
+                if (!started)
+                {
+                    if (destination)
+                        destination->CancelUnmodified();
+                    if (historyDestination)
+                        historyDestination->CancelUnmodified();
+                }
+            }
+        };
+        std::shared_ptr<Reservation> reservation;
+        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                        {
+            reservation = std::make_shared<Reservation>();
+            reservation->owner = std::move(retained);
+            reservation->source.emplace(coefficients.Read());
+            if (limitedVRHistory) reservation->historySource.emplace(limitedVRHistory->Read());
+            reservation->destination.emplace(workspace.reconstruction.coefficients.Owned().Write());
+            if (workspace.limitedVR) reservation->historyDestination.emplace(workspace.limitedVR->previous.Write()); });
+        using ReadView = R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>;
+        using WriteView = R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows>;
+        const auto input = reservation->source->View<R::UniformTableRows>();
+        const auto output = reservation->destination->View<R::UniformTableRows>();
+        const auto from = reservation->historySource ? reservation->historySource->View<R::UniformTableRows>() : ReadView{};
+        const auto to = reservation->historyDestination ? reservation->historyDestination->View<R::UniformTableRows>() : WriteView{};
+        std::optional<ReconstructionRestore> restore;
+        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                        { restore.emplace(ReconstructionRestore([reservation, &workspace, input, output, from, to]() noexcept
+                                                                {
+            reservation->started = true;
+            for (index iCell = 0; iCell < output.RowCount(); ++iCell)
+                for (index j = 0; j < output.RowSize(iCell); ++j)
+                    output(iCell, j) = input(iCell, j);
             for (index iCell = 0; iCell < to.RowCount(); ++iCell)
                 for (int j = 0; j < 2; ++j)
-                    to(iCell, j) = historySource ? from(iCell, j) : 0;
-        }
-        workspace.fluxReady = false;
+                    to(iCell, j) = reservation->historySource ? from(iCell, j) : 0;
+            workspace.fluxReady = false; })); });
+        return std::move(*restore);
     }
     void FiniteVolume::Evaluate(CFV::FVField &state, CFV::FVField &residual, Workspace &work,
                                 R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const

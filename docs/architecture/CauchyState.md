@@ -554,7 +554,7 @@ The limited equation-state FV profile above includes this source. The production
 Domain connects the extended BC/PP and checkpoint paths. The physical
 Jacobian and whole-equation nonlinear stage operator now compose with the logical
 linear/time drivers; see [CauchyImplicit.md](CauchyImplicit.md#whole-equation-cpu-nonlinear-adapter).
-The single-domain production executable now uses DNDS MPI lifecycle helpers,
+The production executable now uses DNDS MPI lifecycle helpers,
 the shared segmented CSV writer, and argparse overrides through the existing
 resolved-configuration/provenance API. See the [case guide](../../cases/cauchy/README.md)
 for override paths, restart and history segment conventions. Python Domain and
@@ -750,6 +750,48 @@ Clones share the original description rather than adding parameter-round-trip
 noise to provenance. Strict comparison deliberately does not promise restart
 compatibility between different Cantera serialization versions. Filenames or
 matching species counts alone cannot authorize a restart with changed chemistry.
+
+### Coordinated multi-domain publication
+
+`Simulation::WriteCheckpoint` preserves the existing domain archive for one
+full-control domain. For several domains (or a domain on a subset of control
+ranks), it writes one native HDF5 child on each domain communicator, then a
+small control-communicator HDF5 manifest with `cauchy_simulation_format=1`,
+`domains_json`, `accepted_time` and `accepted_step`. Domain entries retain their
+configuration order and names. Child paths are relative to the manifest and
+use a fresh `.parts/<generation>/domainN.h5` directory. Only after all children
+close successfully is the new manifest renamed into place. Rewriting a manifest
+therefore does not overwrite the children of its previous generation. This
+does not implement crash recovery, fsync durability or automatic generation
+garbage collection; copying an archive requires its referenced children too.
+
+Reading separates preparation, reservation and publication:
+
+```text
+manifest + each child -> validate metadata/mesh/IDs, remap into trial scratch
+                     -> prepare compatible BDF/polynomial history separately
+                     -> rebuild rigid-interface packets at the stored time
+all domain/rank checks -> reserve all accepted + reconstruction writes
+control agreement     -> publish all states/history/clock and accept packets
+```
+
+`Domain::CheckpointRead` owns each candidate and its reserved scopes. Its
+uncommitted destructor cancels untouched writers. `FiniteVolume` uses the same
+`ReconstructionRestore` preparation for immediate restoration and multi-domain
+reservation, keeping its schema/finite-value rules in one implementation.
+The public reserved handle retains the workspace, source reads and destination
+writes; committing consumes it once and executes prevalidated scalar copies.
+A held debug/Python reader on a later domain rejects the coordinated restore
+before any domain's means, history, warm guess or accepted version changes.
+Accepted allocations and `Domain` objects remain the same, preserving aliases.
+
+All control ranks call Simulation I/O with the same arguments/order, including domain
+nonmembers. Each rank finishes the global domain order before control-level
+error agreement, so a failed earlier domain cannot strand a later overlapping
+communicator. The caller serializes mutation and joins outstanding work first.
+The C++ and Python frontends share these methods. Several domains have separate
+histories and `_domainN` visualization prefixes; timestep selection uses their
+minimum and steady termination requires every domain to meet its criterion.
 
 `WriteVisualization` uses a separate observation reconstruction, so output
 cadence does not overwrite the production warm-start guess. Volume VTKHDF

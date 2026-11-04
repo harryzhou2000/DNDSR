@@ -78,11 +78,28 @@ the same header. Readers must concatenate segments in numeric order. As with
 the existing writer, rotation can create an empty trailing segment at an exact
 row limit. Use a fresh output prefix for a resumed run to preserve old evidence.
 
+The same executable accepts several domains, sharing ranks or using disjoint
+rank groups. It selects the minimum stable/physical step across domains and
+requires every domain's configured convergence condition for convergence termination.
+Each domain keeps its own history, named `<prefix>_domainN_history.csv` (plus
+segments), and volume/surface output, named `<prefix>_final_domainN...`.
+Domain ordinals follow the configuration; their names and rank lists are
+recorded in the resolved JSON. The single-domain filenames remain unchanged.
+
 Restart permits changed MPI ownership/order and polynomial degree. It omits
 reconstruction by default; missing or incompatible coefficients cold-start at
 zero. Set `output.checkpointReconstruction=true` for compatible finite-sweep
 continuation. BDF2 includes its accepted previous state/timestep. File metadata
 and physical mesh records validate interpretation before accepted publication.
+For multiple domains, `<prefix>_final.h5` is an HDF5 manifest. Its relative child
+paths refer to native archives below `<prefix>_final.h5.parts/<generation>/`.
+Copy the manifest and its `.parts` directory together. A write publishes the
+manifest after every domain succeeds; old generations are retained and may be
+removed explicitly when their manifests/evidence are no longer needed. Reading
+validates all children and reserves all state/reconstruction destinations before
+changing any accepted state. Rigid-interface packets are rebuilt at the stored
+time. This is coordinated application-level publication, without process-crash
+recovery or a filesystem durability guarantee.
 Body force is the integrated wall momentum flux; Cd/Cl use `.5*rho*U^2*D`.
 For the upper half body, pressure drag must be doubled for a full-body Cd.
 

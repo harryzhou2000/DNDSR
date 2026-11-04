@@ -3,6 +3,8 @@
 #include "Cauchy/Core/Simulation.hpp"
 #include "CartesianFixture.hpp"
 #include "RotatingVortexFixture.hpp"
+#include <filesystem>
+#include <unistd.h>
 #include <iostream>
 
 namespace C = DNDS::Cauchy;
@@ -54,6 +56,96 @@ namespace
             }
         MPI_Allreduce(MPI_IN_PLACE, value.data(), 2, MPI_DOUBLE, MPI_SUM, mpi.comm);
         return value;
+    }
+    std::string CheckpointPath(const std::string &label)
+    {
+        int pid = int(getpid());
+        MPI_Bcast(&pid, 1, MPI_INT, 0, mpi.comm);
+        return (std::filesystem::temp_directory_path() / ("cauchy-multidomain-" + label + std::to_string(pid) + ".h5")).string();
+    }
+    void RemoveCheckpoint(const std::string &path)
+    {
+        MPI_Barrier(mpi.comm);
+        if (mpi.rank == 0)
+        {
+            CHECK(std::filesystem::remove(path));
+            std::filesystem::remove_all(path + ".parts");
+        }
+        MPI_Barrier(mpi.comm);
+    }
+    // Independent fixture-coordinate oracle for a 4x4 torus. Dense global
+    // storage is confined to this 160-value test snapshot, never mesh setup.
+    std::vector<double> TorusValues(const C::Simulation &simulation)
+    {
+        std::vector<double> result(2 * 16 * 5, 0);
+        for (I iDomain = 0; iDomain < 2; ++iDomain)
+            if (simulation.Local(iDomain))
+            {
+                const auto &domain = simulation.GetDomain(iDomain);
+                const auto read = domain.Flow().Owned().Read();
+                for (I iCell = 0; iCell < domain.Discretization().Metrics().NumCell(); ++iCell)
+                {
+                    const auto point = domain.Discretization().Metrics().GetCellCent(iCell);
+                    const I global = I(std::floor(point[0] * .4)) + 4 * I(std::floor(point[1] * .4));
+                    for (int j = 0; j < 5; ++j)
+                        result[(iDomain * 16 + global) * 5 + j] = read.View()(iCell, j);
+                }
+            }
+        MPI_Allreduce(MPI_IN_PLACE, result.data(), int(result.size()), MPI_DOUBLE, MPI_SUM, mpi.comm);
+        return result;
+    }
+}
+TEST_CASE("Multi-domain BDF2 restart reserves every domain and redistributes by persistent IDs")
+{
+    const auto factory = [](I, const auto &, const auto &domainMPI)
+    { return CauchyTest::PeriodicQuads(domainMPI, 4, 10); };
+    for (bool split : {false, true})
+    {
+        if (split && mpi.size == 1)
+            continue;
+        CAPTURE(split);
+        const auto path = CheckpointPath(split ? "split-" : "shared-");
+        C::Json input{{"domains", Domains(split)}, {"time", {{"method", "bdf2"}}}, {"defaults", {{"initialPrimitive", {1, .1, .2, .03, 1}}, {"initialProfile", {{"kind", "isentropicVortex"}, {"strength", .2}, {"period", 10}}}, {"numerics", {{"reconstruction", "variational"}, {"limiter", "none"}, {"reconstructionIterations", 4}, {"cfv", {{"maxOrder", 2}}}}}, {"implicit", {{"iterations", 30}, {"absoluteTolerance", 1e-12}}}}}};
+        C::Simulation source(C::SimulationConfig::ResolveCollective(input, mpi.comm), mpi.comm, factory);
+        source.Advance(.001);
+        source.Advance(.002);
+        const auto saved = TorusValues(source);
+        source.WriteCheckpoint(path, true);
+        source.Advance(.0015);
+        const auto continuation = TorusValues(source);
+        std::array<uint64_t, 2> versions{};
+        for (I iDomain = 0; iDomain < 2; ++iDomain)
+            if (source.Local(iDomain))
+                versions[iDomain] = source.GetDomain(iDomain).Flow().Owned().Version();
+        std::optional<R::Array<double>::ReadLease> held;
+        if (source.Placement().DomainRank(1) == 0)
+            held.emplace(source.GetDomain(1).Flow().Owned().Read());
+        CHECK_THROWS(source.ReadCheckpoint(path));
+        held.reset();
+        CHECK(source.Step() == 3);
+        CHECK(TorusValues(source) == continuation);
+        for (I iDomain = 0; iDomain < 2; ++iDomain)
+            if (source.Local(iDomain))
+                CHECK(source.GetDomain(iDomain).Flow().Owned().Version() == versions[iDomain]);
+        source.ReadCheckpoint(path);
+        CHECK(source.Step() == 2);
+        CHECK(source.Time() == .003);
+        CHECK(TorusValues(source) == saved);
+        source.Advance(.0015);
+        CHECK(TorusValues(source) == continuation);
+        // Republishing uses a new child generation. Reverse sharing and use
+        // SoA/P3 to exercise actual redistribution and intentional cold VR.
+        source.WriteCheckpoint(path, true);
+        input["domains"] = Domains(!split && mpi.size > 1);
+        input["defaults"]["execution"]["layout"] = "soa";
+        input["defaults"]["numerics"]["cfv"]["maxOrder"] = 3;
+        C::Simulation redistributed(C::SimulationConfig::ResolveCollective(input, mpi.comm), mpi.comm, factory);
+        redistributed.ReadCheckpoint(path);
+        CHECK(redistributed.Step() == source.Step());
+        CHECK(redistributed.Time() == source.Time());
+        CHECK(TorusValues(redistributed) == continuation);
+        CHECK_NOTHROW(redistributed.Advance(.0005));
+        RemoveCheckpoint(path);
     }
 }
 TEST_CASE("Coordinated domains retain single-domain time equations and atomic publication")
@@ -172,6 +264,17 @@ TEST_CASE("P3 flow5 crosses a posed disk interface with dense and sparse distrib
                 CHECK(Values(sparse.GetDomain(0)) == old);
                 CHECK(sparse.GetDomain(0).StableStep(.2) > 0);
                 CHECK_NOTHROW(sparse.GetDomain(0).Diagnostics(sparseConfig.Domains()[0].settings, {}));
+                const auto path = CheckpointPath("rotating-");
+                sparse.WriteCheckpoint(path, true);
+                sparse.Advance(.001);
+                const std::array<std::vector<double>, 2> continuation{Values(sparse.GetDomain(0)), Values(sparse.GetDomain(1))};
+                sparse.ReadCheckpoint(path);
+                CHECK(sparse.Step() == 3);
+                CHECK(sparse.GetDomain(0).StableStep(.2) > 0);
+                sparse.Advance(.001);
+                for (I iDomain = 0; iDomain < 2; ++iDomain)
+                    CHECK(Values(sparse.GetDomain(iDomain)) == continuation[iDomain]);
+                RemoveCheckpoint(path);
             }
         }
     }

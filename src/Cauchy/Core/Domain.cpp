@@ -495,7 +495,7 @@ namespace DNDS::Cauchy
             _timeStepper->Commit();
         _lastAcceptedDt = _trialDt;
     }
-    void Domain::PublishTrial(real time, StateEpoch epoch, const R::Array<real> *reconstructionGuess, const R::Array<real> *limitedVRHistory, const EquationDofs *equationGuess)
+    void Domain::PublishTrial(real time, StateEpoch epoch)
     {
         // Agree local immediate-access availability before any accepted values
         // change. A retained debug/Python view must not allow a partial commit
@@ -508,13 +508,6 @@ namespace DNDS::Cauchy
         {
             MPI::LocalStage(mpi, [&]
                             { destination.emplace(_accepted.WriteOwned()); source.emplace(_trial.ReadOwned()); });
-            // Restore only after accepted-state publication is known to be
-            // available. A retained debug reader must not change the future
-            // polynomial guess when it rejects the accompanying state load.
-            if (reconstructionGuess)
-                _fv.RestoreReconstructionGuess(*_workspace, *reconstructionGuess, limitedVRHistory);
-            if (equationGuess)
-                _fv.RestoreReconstructionGuess(*_equationWorkspace, *equationGuess);
         }
         catch (...)
         {

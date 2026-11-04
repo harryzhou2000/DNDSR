@@ -826,36 +826,69 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::RestoreReconstructionGuess(EquationWorkspace &work, const EquationDofs &guess) const
     {
-        std::optional<EquationDofs::ReadScope> source;
-        std::optional<EquationDofs::WriteScope> destination;
-        try
+        auto restore = ReserveReconstructionRestoreImpl(work, guess, {});
+        restore.Commit();
+    }
+    FiniteVolume::ReconstructionRestore FiniteVolume::ReserveReconstructionRestore(std::shared_ptr<EquationWorkspace> work, const EquationDofs &guess) const
+    {
+        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                        { DNDS_check_throw_info(bool(work), "null equation reconstruction workspace"); });
+        auto &reference = *work;
+        return ReserveReconstructionRestoreImpl(reference, guess, std::move(work));
+    }
+    FiniteVolume::ReconstructionRestore FiniteVolume::ReserveReconstructionRestoreImpl(EquationWorkspace &work, const EquationDofs &guess,
+                                                                                       std::shared_ptr<EquationWorkspace> retained) const
+    {
+        struct Reservation
         {
-            MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                            {
+            std::shared_ptr<EquationWorkspace> owner;
+            std::optional<EquationDofs::ReadScope> source;
+            std::optional<EquationDofs::WriteScope> destination;
+            std::vector<EquationBlockArrayView<const real>> input;
+            std::vector<EquationBlockArrayView<real>> output;
+            bool started = false;
+            ~Reservation()
+            {
+                if (!started && destination)
+                    destination->CancelUnmodified();
+            }
+        };
+        std::shared_ptr<Reservation> reservation;
+        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                        {
+                reservation = std::make_shared<Reservation>();
+                reservation->owner = std::move(retained);
                 DNDS_check_throw_info(work.owner == _data, "foreign equation reconstruction workspace");
                 work.coefficients.RequireCompatible(guess);
                 EquationDofOperations::RequireDistinct(work.coefficients, guess);
-                source.emplace(guess.ReadOwned());
+                reservation->source.emplace(guess.ReadOwned());
                 for (index iBlock = 0; iBlock < guess.BlockNumber(); ++iBlock)
                 {
-                    const auto input = source->Block(iBlock);
+                    const auto input = reservation->source->Block(iBlock);
                     for (index iCell = 0; iCell < input.owned.RowCount(); ++iCell)
                         for (index j = 0; j < input.ComponentNumber(); ++j)
                             DNDS_check_throw_info(std::isfinite(input(iCell, j)), "nonfinite equation reconstruction guess");
+                    reservation->input.push_back(input.owned);
                 }
-                destination.emplace(work.coefficients.WriteOwned()); });
-        }
-        catch (...)
-        {
-            if (destination)
-                destination->CancelUnmodified();
-            throw;
-        }
-        for (index iBlock = 0; iBlock < guess.BlockNumber(); ++iBlock)
-            Algebra::ApplyHostRows(Algebra::PointwiseOperation::Copy, destination->Block(iBlock), source->Block(iBlock).owned,
-                                   EquationBlockArrayView<const real>{}, real(0), real(0));
-        work.sourceState.reset();
-        work.sourceCoefficients.reset();
+                reservation->destination.emplace(work.coefficients.WriteOwned());
+                for (index iBlock = 0; iBlock < guess.BlockNumber(); ++iBlock)
+                    reservation->output.push_back(reservation->destination->Block(iBlock)); });
+        std::optional<ReconstructionRestore> restore;
+        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                        { restore.emplace(ReconstructionRestore([reservation, &work]() noexcept
+                                                                {
+            reservation->started = true;
+            for (index iBlock = 0; iBlock < index(reservation->input.size()); ++iBlock)
+            {
+                const auto input = reservation->input[iBlock];
+                const auto output = reservation->output[iBlock];
+                for (index iCell = 0; iCell < output.RowCount(); ++iCell)
+                    for (index j = 0; j < output.ComponentNumber(); ++j)
+                        output(iCell, j) = input(iCell, j);
+            }
+            work.sourceState.reset();
+            work.sourceCoefficients.reset(); })); });
+        return std::move(*restore);
     }
     void FiniteVolume::ResetReconstruction(EquationWorkspace &work) const
     {

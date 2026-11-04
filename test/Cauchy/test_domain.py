@@ -258,7 +258,7 @@ def test_spatial_expression_uses_physical_state_units_and_conservative_output():
 
 @pytest.mark.mpi
 @pytest.mark.parametrize("split", [False, True])
-def test_coordinated_simulation_python_owners_and_reversed_subgroups(split):
+def test_coordinated_simulation_python_owners_and_reversed_subgroups(split, tmp_path):
     import gc
 
     world = MPI.COMM_WORLD
@@ -288,6 +288,21 @@ def test_coordinated_simulation_python_owners_and_reversed_subgroups(split):
     assert simulation.local(local)
     domain = simulation.domain(local)
     assert domain.time == simulation.time
+    archive = world.bcast(str(tmp_path / "simulation.h5") if world.rank == 0 else None, root=0)
+    shared_flow = domain.flow
+    simulation.write_checkpoint(archive, reconstruction=True)
+    simulation.advance(.001)
+    simulation.read_checkpoint(archive)
+    assert simulation.step == domain.step == 2
+    assert simulation.time == domain.time == .002
+    # Restoring preserves the original Domain/accepted allocation, including
+    # handles retained across read. The C++ test uses nonconstant BDF states.
+    np.testing.assert_array_equal(shared_flow.numpy(), domain.flow.numpy())
+    simulation.write_visualization(str(Path(archive).with_suffix("")))
+    if world.rank == 0:
+        for i_domain in range(2):
+            assert Path(archive).with_suffix("").with_name(f"simulation_domain{i_domain}.vtkhdf").is_file()
+    del shared_flow
     # The receiver zone exists, but the donor selection does not. This reaches
     # the patch guard rather than the earlier unused-BC configuration check.
     bad = json.loads(json.dumps(config))

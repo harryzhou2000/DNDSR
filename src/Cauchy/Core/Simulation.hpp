@@ -37,8 +37,20 @@ namespace DNDS::Cauchy
         /// publishes. Process failure recovery is unsupported. DITR currently
         /// retains its single-domain coupled-iteration driver.
         void Advance(real dt);
-        /// Initial single-domain matching-partition restart. Restore the
-        /// simulation clock together with the domain's accepted state.
+        /// Parallel persistent-ID checkpoint on each domain communicator.
+        /// A multi-domain HDF5 manifest references immutable child files and
+        /// is published only after every domain write succeeds. Existing
+        /// single-domain archives retain their format and filename.
+        void WriteCheckpoint(const std::string &path, bool includeReconstruction = false) const;
+        /// Restore the coordinated clock, all means and compatible method/
+        /// reconstruction history. Every domain validates and reserves before
+        /// any accepted state changes. Placement may differ; names/order and
+        /// physical metadata must match. Interface traces are refreshed at the
+        /// stored time from restored polynomials. Process-failure recovery is
+        /// unsupported. Caller joins work and releases conflicting views.
         void ReadCheckpoint(const std::string &path);
+        /// One native parallel output per domain, named prefix_domainN for
+        /// several domains. The single-domain output name is unchanged.
+        void WriteVisualization(const std::string &prefix, int hdfDeflateLevel = 0);
     };
 }

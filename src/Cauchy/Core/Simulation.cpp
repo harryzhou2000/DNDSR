@@ -297,13 +297,4 @@ namespace DNDS::Cauchy
             _time += dt;
         ++_step;
     }
-    void Simulation::ReadCheckpoint(const std::string &path)
-    {
-        DNDS_check_throw_info(_placement.DomainNumber() == 1 && _placement.Group(0).ranks.size() == size_t(_placement.Size()),
-                              "initial Simulation restart requires one domain spanning all control ranks");
-        auto &domain = GetDomain(0);
-        domain.ReadCheckpoint(path, _config.Root());
-        _time = domain.Time();
-        _step = domain.Epoch().acceptedStep;
-    }
 }

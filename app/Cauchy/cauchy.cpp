@@ -58,40 +58,67 @@ static int Run(int argc, char **argv, double started)
                     std::cout << config.Root().dump(2) << '\n';
                 return 0;
             }
-            DNDS_check_throw_info(config.Domains().size() == 1, "Cauchy physical executable currently requires one domain");
-            DNDS_check_throw_info(config.Domains()[0].placement.ranks.size() == size_t(mpi.size),
-                                  "Cauchy physical executable currently requires its domain to include every simulation rank");
             DNDS::Cauchy::Simulation simulation(config, mpi.comm);
-            auto &domain = simulation.GetDomain(0);
             if (!restartPath.empty())
                 simulation.ReadCheckpoint(restartPath);
             const auto &output = config.Output();
             const auto &time = config.Time();
+            const auto domainCount = DNDS::index(config.Domains().size());
+            // Finish the global domain order even after one local failure:
+            // later domains may share ranks with a successful communicator.
+            const auto visitDomains = [&](const auto &action)
+            {
+                std::exception_ptr failure;
+                for (DNDS::index iDomain = 0; iDomain < domainCount; ++iDomain)
+                    if (simulation.Local(iDomain))
+                        try
+                        {
+                            action(iDomain, simulation.GetDomain(iDomain));
+                        }
+                        catch (...)
+                        {
+                            if (!failure)
+                                failure = std::current_exception();
+                        }
+                DNDS::MPI::LocalStage(mpi, [&]
+                                      { if (failure) std::rethrow_exception(failure); }, "Cauchy frontend failed in another domain");
+            };
+            const auto domainPrefix = [&](DNDS::index iDomain)
+            { return output.prefix + (domainCount == 1 ? "" : "_domain" + std::to_string(iDomain)); };
             const std::vector<std::string> columns{
                 "step", "time", "dt", "wall", "mass", "energy", "rho_min", "p_min", "residual_l2", "force_x", "force_y", "force_z",
                 "vr_sweeps", "vr_relative_update", "rho_error_l1", "rho_error_l2", "rho_error_linf", "temperature_min", "face_fallbacks", "retries",
                 "pp_rec_cells", "pp_beta_min", "pp_stage_cells", "pp_alpha_min", "characteristic_fallbacks", "implicit_stages",
                 "nonlinear_iterations", "linear_iterations", "implicit_residual_target_ratio", "coupled_iterations", "coupled_residual_target_ratio",
                 "implicit_final_vr_sweeps", "implicit_final_vr_update", "time_pp_cells", "time_pp_alpha", "time_growth_limited"};
-            std::unique_ptr<DNDS::CsvLog> history;
+            std::vector<std::unique_ptr<DNDS::CsvLog>> histories(static_cast<size_t>(domainCount));
             DNDS::MPI::LocalStage(mpi, [&]
                                   {
                 if (mpi.rank == 0)
                 {
                     const auto parent = std::filesystem::path(output.prefix).parent_path();
                     if (!parent.empty()) std::filesystem::create_directories(parent);
-                    history = std::make_unique<DNDS::CsvLog>(columns, output.prefix + "_history", ".csv", output.historySegmentRows);
                     std::ofstream resolved(output.prefix + "_resolved.json");
                     resolved << config.Root().dump(2) << '\n';
                     DNDS_check_throw_info(bool(resolved), "cannot write resolved Cauchy configuration");
                 } });
-            double baseline = 0;
+            visitDomains([&](DNDS::index iDomain, auto &domain)
+                         { DNDS::MPI::LocalStage(DNDS::MPIInfo(domain.Discretization().Metrics().Communicator()), [&]
+                                                 {
+                if (simulation.Placement().DomainRank(iDomain) == 0)
+                    histories[iDomain] = std::make_unique<DNDS::CsvLog>(columns, domainPrefix(iDomain) + "_history", ".csv", output.historySegmentRows); }); });
+            std::vector<double> baselines(size_t(domainCount), 0);
             bool reached = false, wallStop = false;
-            const auto record = [&](DNDS::real dt, int retries, DNDS::Cauchy::PhysicalStepLimit limit = {})
+            std::vector<DNDS::Cauchy::PhysicalStepLimit> limits(static_cast<size_t>(domainCount));
+            const auto record = [&](DNDS::real dt, int retries, bool useLimits = false)
             {
-                const auto values = domain.Diagnostics(config.Domains()[0].settings, output.forceZones);
-                if (baseline == 0)
-                    baseline = std::max(values[4], DNDS::real(1e-300));
+                int allReached = 1;
+                visitDomains([&](DNDS::index iDomain, auto &domain)
+                             {
+                const auto values = domain.Diagnostics(config.Domains()[iDomain].settings, output.forceZones);
+                auto &baseline = baselines[iDomain];
+                if (baseline == 0) baseline = std::max(values[4], DNDS::real(1e-300));
+                const auto limit = useLimits ? limits[iDomain] : DNDS::Cauchy::PhysicalStepLimit{};
                 const auto fallbacks = domain.LastFaceFallbacks();
                 DNDS::index nonlinearIterations = 0, linearIterations = 0;
                 DNDS::real implicitRatio = 0;
@@ -107,9 +134,9 @@ static int Run(int argc, char **argv, double started)
                 }
                 // File rotation/open failures on the writer rank must not
                 // strand peers entering the next solver collective.
-                DNDS::MPI::LocalStage(mpi, [&]
+                DNDS::MPI::LocalStage(DNDS::MPIInfo(domain.Discretization().Metrics().Communicator()), [&]
                                       {
-                if (mpi.rank == 0)
+                if (simulation.Placement().DomainRank(iDomain) == 0)
                 {
                     DNDS::tLogSimpleDIValueMap row;
                     DNDS::index column = 0;
@@ -123,18 +150,21 @@ static int Run(int argc, char **argv, double started)
                     append(implicitFinalVRSweeps); append(implicitFinalVRUpdate);
                     append(limit.limitedCells); append(limit.minimumAlpha); append(limit.growthLimited);
                     DNDS_check_throw_info(column == DNDS::index(columns.size()), "Cauchy history field count differs from its header");
-                    history->WriteLine(row, 17);
-                    std::cout << std::setprecision(12) << "Cauchy step " << domain.Epoch().acceptedStep << " time " << domain.Time() << " dt " << dt
+                    histories[iDomain]->WriteLine(row, 17);
+                    std::cout << std::setprecision(12) << "Cauchy " << (domainCount == 1 ? "" : domain.Name() + " ") << "step " << domain.Epoch().acceptedStep << " time " << domain.Time() << " dt " << dt
                               << " residual " << values[4] << " rho_min " << values[2] << " p_min " << values[3] << " VR " << values[8] << ':' << values[9]
                               << " rho L1 " << values[10] << " face fallbacks " << fallbacks << " implicit " << nonlinearIterations << '/' << linearIterations
                               << " target ratio " << implicitRatio << " stage VR " << implicitFinalVRSweeps << ':' << implicitFinalVRUpdate << " wall " << MPI_Wtime() - started << std::endl;
                 } });
                 const bool outerTarget = time.steadyTolerance <= 0 || values[4] / baseline <= time.steadyTolerance;
                 if (time.steady)
-                    return !domain.LastImplicitStages().empty() && std::all_of(domain.LastImplicitStages().begin(), domain.LastImplicitStages().end(), [](const auto &stage)
+                    allReached &= !domain.LastImplicitStages().empty() && std::all_of(domain.LastImplicitStages().begin(), domain.LastImplicitStages().end(), [](const auto &stage)
                                                                                { return stage.converged; }) &&
                            outerTarget;
-                return time.steadyTolerance > 0 && domain.Epoch().acceptedStep >= uint64_t(time.steadyMinSteps) && outerTarget;
+                else
+                    allReached &= time.steadyTolerance > 0 && domain.Epoch().acceptedStep >= uint64_t(time.steadyMinSteps) && outerTarget; });
+                MPI_Allreduce(MPI_IN_PLACE, &allReached, 1, MPI_INT, MPI_MIN, mpi.comm);
+                return bool(allReached);
             };
             record(0, 0);
             for (DNDS::index step = 0; time.finalTime > 0 ? !DNDS::Cauchy::EquationTimeStepper::ReachedTimeTarget(simulation.Time(), time.finalTime) : step < time.steps; ++step)
@@ -146,11 +176,22 @@ static int Run(int argc, char **argv, double started)
                     wallStop = true;
                     break;
                 }
-                DNDS::real dt = time.cfl > 0 ? std::min(time.dt, domain.StableStep(time.cfl)) : time.dt;
+                DNDS::real dt = time.dt;
+                if (time.cfl > 0)
+                    visitDomains([&](DNDS::index, auto &domain)
+                                 { dt = std::min(dt, domain.StableStep(time.cfl)); });
+                MPI_Allreduce(MPI_IN_PLACE, &dt, 1, MPI_DOUBLE, MPI_MIN, mpi.comm);
                 if (time.finalTime > 0)
                     dt = std::min(dt, time.finalTime - simulation.Time());
-                const auto limit = time.positivity.enabled ? domain.LimitPhysicalStep(dt) : DNDS::Cauchy::PhysicalStepLimit{dt};
-                dt = limit.dt;
+                if (time.positivity.enabled)
+                {
+                    visitDomains([&](DNDS::index iDomain, auto &domain)
+                                 { limits[iDomain] = domain.LimitPhysicalStep(dt); });
+                    for (DNDS::index iDomain = 0; iDomain < domainCount; ++iDomain)
+                        if (simulation.Local(iDomain))
+                            dt = std::min(dt, limits[iDomain].dt);
+                    MPI_Allreduce(MPI_IN_PLACE, &dt, 1, MPI_DOUBLE, MPI_MIN, mpi.comm);
+                }
                 int retries = 0;
                 for (;;)
                 {
@@ -168,19 +209,19 @@ static int Run(int argc, char **argv, double started)
                         dt *= .5;
                     }
                 }
-                if (time.steady || domain.Epoch().acceptedStep % uint64_t(output.historyInterval) == 0)
-                    reached = record(time.steady ? 0 : dt, retries, limit);
-                if (output.interval && domain.Epoch().acceptedStep % uint64_t(output.interval) == 0)
+                if (time.steady || simulation.Step() % uint64_t(output.historyInterval) == 0)
+                    reached = record(time.steady ? 0 : dt, retries, time.positivity.enabled);
+                if (output.interval && simulation.Step() % uint64_t(output.interval) == 0)
                 {
-                    domain.WriteCheckpoint(output.prefix + "_" + std::to_string(domain.Epoch().acceptedStep) + ".h5", config.Root(), output.checkpointReconstruction);
-                    domain.WriteVisualization(output.prefix + "_" + std::to_string(domain.Epoch().acceptedStep), output.hdfDeflateLevel);
+                    simulation.WriteCheckpoint(output.prefix + "_" + std::to_string(simulation.Step()) + ".h5", output.checkpointReconstruction);
+                    simulation.WriteVisualization(output.prefix + "_" + std::to_string(simulation.Step()), output.hdfDeflateLevel);
                 }
                 if (reached)
                     break;
             }
             reached = record(0, 0) || reached;
-            domain.WriteCheckpoint(output.prefix + "_final.h5", config.Root(), output.checkpointReconstruction);
-            domain.WriteVisualization(output.prefix + "_final", output.hdfDeflateLevel);
+            simulation.WriteCheckpoint(output.prefix + "_final.h5", output.checkpointReconstruction);
+            simulation.WriteVisualization(output.prefix + "_final", output.hdfDeflateLevel);
             const bool stepStop = (time.steady || time.steadyTolerance > 0) && !reached && !wallStop;
             DNDS::MPI::LocalStage(mpi, [&]
                                   {

@@ -467,7 +467,16 @@ namespace DNDS::Cauchy
     }
     void Domain::ReadCheckpoint(const std::string &path, const Json &resolved)
     {
+        auto checkpoint = PrepareCheckpointRead(path, resolved);
+        ReserveCheckpointRead(*checkpoint);
+        CommitCheckpointRead(*checkpoint);
+    }
+    std::unique_ptr<Domain::CheckpointRead> Domain::PrepareCheckpointRead(const std::string &path, const Json &resolved)
+    {
         const MPIInfo mpi(_fv.Metrics().Communicator());
+        std::unique_ptr<CheckpointRead> checkpoint;
+        MPI::LocalStage(mpi, [&]
+                        { checkpoint = std::make_unique<CheckpointRead>(); });
         auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
         serializer->OpenFile(path, true);
         int version = 0;
@@ -620,14 +629,12 @@ namespace DNDS::Cauchy
                                     { restoredStepper->RestoreHistory(*previous, historyDt); });
                 }
             }
-            StateEpoch epoch;
-            epoch.acceptedStep = uint64_t(step);
-            PublishTrial(time, epoch, nullptr, nullptr, &*guess);
-            if (restoredStepper)
-                _timeStepper.swap(restoredStepper);
-            _lastAcceptedDt = lastDt;
-            _nextTrial = 0;
-            return;
+            checkpoint->time = time;
+            checkpoint->lastDt = lastDt;
+            checkpoint->epoch.acceptedStep = uint64_t(step);
+            checkpoint->stepper = std::move(restoredStepper);
+            checkpoint->equationGuess = std::move(guess);
+            return checkpoint;
         }
         // Existing trial allocations and binding identities remain stable.
         auto &trial = _trial.CoupledField();
@@ -662,8 +669,6 @@ namespace DNDS::Cauchy
                 for (index j = 0; j < output.RowSize(iCell); ++j)
                     output(iCell, j) = 0;
         }
-        StateEpoch epoch;
-        epoch.acceptedStep = uint64_t(step);
         std::unique_ptr<EquationTimeStepper> restoredStepper;
         std::optional<CFV::FVField> restoredHistory;
         if (_timeStepper)
@@ -682,10 +687,54 @@ namespace DNDS::Cauchy
                                 { restoredStepper->RestoreHistory(_trial.RebindCoupled(*restoredHistory), historyDt); });
             }
         }
-        PublishTrial(time, epoch, &guess, mappedLimitedVRHistory ? &*mappedLimitedVRHistory : nullptr);
-        if (restoredStepper)
-            _timeStepper.swap(restoredStepper);
-        _lastAcceptedDt = lastDt;
+        checkpoint->time = time;
+        checkpoint->lastDt = lastDt;
+        checkpoint->epoch.acceptedStep = uint64_t(step);
+        checkpoint->stepper = std::move(restoredStepper);
+        checkpoint->guess = std::move(guess);
+        checkpoint->limitedVRHistory = std::move(mappedLimitedVRHistory);
+        return checkpoint;
+    }
+    void Domain::ReserveCheckpointRead(CheckpointRead &checkpoint)
+    {
+        MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
+                        {
+            DNDS_check_throw_info(!checkpoint.committed && !checkpoint.destination, "checkpoint publication was already reserved or committed");
+            checkpoint.source.emplace(_trial.ReadOwned());
+            checkpoint.destination.emplace(_accepted.WriteOwned());
+            for (index iBlock = 0; iBlock < _accepted.BlockNumber(); ++iBlock)
+            {
+                checkpoint.input.push_back(checkpoint.source->Block(iBlock).owned);
+                checkpoint.output.push_back(checkpoint.destination->Block(iBlock));
+            } });
+        if (checkpoint.equationGuess)
+            checkpoint.reconstruction.emplace(_fv.ReserveReconstructionRestore(_equationWorkspace, *checkpoint.equationGuess));
+        else
+            checkpoint.reconstruction.emplace(_fv.ReserveReconstructionRestore(_workspace, *checkpoint.guess,
+                                                                               checkpoint.limitedVRHistory ? &*checkpoint.limitedVRHistory : nullptr));
+    }
+    void Domain::CommitCheckpointRead(CheckpointRead &checkpoint)
+    {
+        // Every participating domain/rank has reserved before this point.
+        // The retained views and finite scalar copies need no allocation, MPI
+        // or further user-input validation during publication.
+        checkpoint.reconstruction->Commit();
+        checkpoint.committed = true;
+        for (index iBlock = 0; iBlock < index(checkpoint.input.size()); ++iBlock)
+        {
+            const auto input = checkpoint.input[iBlock];
+            const auto output = checkpoint.output[iBlock];
+            for (index iCell = 0; iCell < output.RowCount(); ++iCell)
+                for (index j = 0; j < output.ComponentNumber(); ++j)
+                    output(iCell, j) = input(iCell, j);
+        }
+        _time = checkpoint.time;
+        _epoch = checkpoint.epoch;
+        _trialReady = _restoreReconstruction = _coordinatedPrepared = false;
+        _stageEquation.reset();
+        if (checkpoint.stepper)
+            _timeStepper.swap(checkpoint.stepper);
+        _lastAcceptedDt = checkpoint.lastDt;
         _nextTrial = 0;
     }
 }
