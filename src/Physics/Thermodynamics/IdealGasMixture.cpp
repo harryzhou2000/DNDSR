@@ -1,5 +1,6 @@
 #include "Physics/Thermodynamics/IdealGasMixture.hpp"
 #include "Physics/Thermodynamics/ConservativeConversion.hpp"
+#include "Physics/Chemistry/ReactorStepSettings.hpp"
 #include <limits>
 
 namespace DNDS::Physics::Thermodynamics
@@ -179,6 +180,45 @@ namespace DNDS::Physics::Thermodynamics
         const auto &scales = _state->scales;
         const real R = _worker.Source().mixtureR({fractions.data(), int(fractions.size())});
         return Evaluate(rho, pressure * scales.Pressure() / (rho * scales.rho0 * R * scales.T0), _request);
+    }
+    ConstantVolumeResult IdealGasMixture::PointEvaluator::AdvanceConstVolume(real rho, real internalEnergy,
+                                                                             Chemistry::ConstSpeciesBufferView rhoY, real dt,
+                                                                             const Chemistry::ReactorStepSettings &controls,
+                                                                             real sourceScale, real temperatureGuess)
+    {
+        controls.Validate();
+        DNDS_check_throw_info(std::isfinite(dt) && dt >= 0 && std::isfinite(sourceScale) && sourceScale >= 0,
+                              "constant-volume source duration/scale must be finite and nonnegative");
+        auto point = FromRhoEImpl(rho, internalEnergy, rhoY, temperatureGuess, 1e-12, {});
+        auto &buffers = _worker.Buffers();
+        const int independent = int(buffers.fractions.size()) - 1;
+        // Retain raw independent values separately from the repaired temporary
+        // composition used by the thermodynamic and reactor backends.
+        for (int k = 0; k < independent; ++k)
+            buffers.rhoY[k] = rhoY[k];
+        if (dt == 0 || sourceScale == 0)
+            return {point.thermo, {buffers.rhoY.data(), independent}};
+        const auto &scales = _state->scales;
+        real temperature = point.thermo.temperature * scales.T0;
+        _worker.Source().advanceConstVolume(temperature, rho * scales.rho0,
+                                            {buffers.fractions.data(), int(buffers.fractions.size())}, sourceScale,
+                                            dt * scales.Time(), controls.rtol, controls.atol, controls.maxOrder, controls.maxSteps);
+        real sum = 0;
+        for (int k = 0; k < independent; ++k)
+        {
+            const real fraction = std::max(real(0), buffers.fractions[k]);
+            sum += fraction;
+            buffers.rhoY[k] = rho * fraction;
+        }
+        if (sum >= 1)
+            for (int k = 0; k < independent; ++k)
+                buffers.rhoY[k] *= (1 - 1e-14) / sum;
+        const Chemistry::ConstSpeciesBufferView updated{buffers.rhoY.data(), independent};
+        point = FromRhoEImpl(rho, internalEnergy, updated, temperature / scales.T0, 1e-12, {});
+        DNDS_check_throw_info(std::isfinite(point.thermo.temperature) && point.thermo.temperature >= _state->temperatureFloor &&
+                                  std::isfinite(point.thermo.pressure) && point.thermo.pressure > 0,
+                              "constant-volume source produced an invalid thermal state");
+        return {point.thermo, updated};
     }
     MixturePoint IdealGasMixture::PointEvaluator::FromConservative(real rho, real rhoE,
                                                                    const std::array<real, 3> &momentum,

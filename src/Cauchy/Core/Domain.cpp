@@ -3,12 +3,21 @@
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/Physics/StateInput.hpp"
+#include "Cauchy/Physics/EquationSource.hpp"
 
 namespace DNDS::Cauchy
 {
     namespace R = Runtime;
     namespace
     {
+        DomainSettings SpatialSettings(const DomainSettings &settings, const TimeSettings &time)
+        {
+            time.ValidateSourceIntegration();
+            auto result = settings;
+            if (time.sourceSplitting == "strang" && settings.equation.source == "chemical")
+                result.equation.source = "none";
+            return result;
+        }
         ssp<Geom::UnstructuredMesh> PrepareWallField(ssp<Geom::UnstructuredMesh> mesh, const EquationSystem &equation,
                                                      const DomainSettings &settings)
         {
@@ -101,7 +110,7 @@ namespace DNDS::Cauchy
     Domain::Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time, EquationSetup setup)
         : Domain(name, mesh, ResolveInputs(settings, setup, mesh->getMPI()), time, setup) {}
     Domain::Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const ResolvedPhysicalInputs &inputs, const TimeSettings &time, EquationSetup setup)
-        : _name(std::move(name)), _equation(std::move(setup.equation)), _workers(std::move(setup.workers)), _fv(PrepareWallField(mesh, _equation, inputs.settings), inputs.settings, _equation),
+        : _name(std::move(name)), _equation(std::move(setup.equation)), _workers(std::move(setup.workers)), _fv(PrepareWallField(mesh, _equation, inputs.settings), SpatialSettings(inputs.settings, time), _equation),
           _accepted(BuildState(_fv, _equation, inputs.settings, _workers, inputs.initialConservative)), _trial(_accepted.Clone()),
           _residualState(EquationDofOperations::NewVector(_accepted)), _residual(FlowField(_residualState)), _initial(EquationDofOperations::NewVector(_accepted)),
           _workspace(_equation.HasMixture() || _equation.HasRANS() ? nullptr : _fv.BuildWorkspace(_trial, TimeAuxiliary(time))),
@@ -109,7 +118,12 @@ namespace DNDS::Cauchy
           _engine(size_t(inputs.settings.execution.hostThreads), inputs.settings.execution.checkAccess ? std::make_shared<R::AccessTrackingContext>() : nullptr),
           _stream(_engine.CreateCPUStream())
     {
-        const auto &settings = inputs.settings;
+        // All spatial operators, including coarse FAS and approximate
+        // Jacobians, see the same source-free transport profile when splitting.
+        // Physical config/material metadata still describe the chemical PDE.
+        const auto settings = SpatialSettings(inputs.settings, time);
+        _sourceStrang = time.sourceSplitting == "strang" && inputs.settings.equation.source == "chemical";
+        _reactorControls = time.reactor;
         _positivity = settings.numerics.positivity;
         _equation.ValidateStateSchema(_accepted);
         DNDS_check_throw_info(_fv.Metrics().Dimension() == settings.mesh.dimension, "Cauchy config/mesh dimension differs");
@@ -362,6 +376,35 @@ namespace DNDS::Cauchy
         // The polynomial guess is numerical state for explicit fixed-sweep VR
         // too. Preserve it before either time driver can overwrite the trial.
         PreserveReconstructionGuess();
+        if (_sourceStrang)
+        {
+            ChemicalHalfStep(_accepted, _trial, .5 * dt);
+            MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
+                            { EquationDofOperations::Copy(_initial, _trial); });
+            // Euler's physical split does not reuse multistep transport
+            // history across source jumps. Accepted split history is empty.
+            if (_timeStepper)
+                _timeStepper->ResetHistory();
+        }
+    }
+    void Domain::ChemicalHalfStep(const EquationDofs &input, EquationDofs &output, real dt)
+    {
+        MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
+                        {
+            _stream.Record().WaitHost();
+            DNDS_check_throw_info(_equation.HasMixture() && _workers, "chemical source step requires its explicit mixture worker");
+            AdvanceChemicalSource(_equation, input, output, _workers->Acquire(), dt, _reactorControls); });
+    }
+    void Domain::FinishChemicalStep()
+    {
+        if (!_sourceStrang)
+            return;
+        // The transport method has finished using its initial state. Reuse
+        // that allocation as a distinct source output, then copy into trial.
+        ChemicalHalfStep(_trial, _initial, .5 * _trialDt);
+        MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
+                        { EquationDofOperations::Copy(_trial, _initial); });
+        DNDS_check_throw_info(Admissible(_trial), "chemical source candidate is inadmissible; accepted state unchanged");
     }
     void Domain::PrepareStep(real dt)
     {
@@ -370,18 +413,19 @@ namespace DNDS::Cauchy
         if (_timeStepper)
         {
             PrepareImplicitStep(dt);
-            _trialTime = _steady ? _time : _time + dt;
-            _trialReady = true;
-            return;
         }
-        // Shu-Osher SSPRK(3,3), including its non-monotone physical stage times.
-        _trialEpoch.stage = 0;
-        UpdateStage(dt, 0, 1, _time);
-        _trialEpoch.stage = 1;
-        UpdateStage(dt, .75, .25, _time + dt);
-        _trialEpoch.stage = 2;
-        UpdateStage(dt, 1. / 3, 2. / 3, _time + .5 * dt);
-        _trialTime = _time + dt;
+        else
+        {
+            // Shu-Osher SSPRK(3,3), including its non-monotone physical stage times.
+            _trialEpoch.stage = 0;
+            UpdateStage(dt, 0, 1, _time);
+            _trialEpoch.stage = 1;
+            UpdateStage(dt, .75, .25, _time + dt);
+            _trialEpoch.stage = 2;
+            UpdateStage(dt, 1. / 3, 2. / 3, _time + .5 * dt);
+        }
+        FinishChemicalStep();
+        _trialTime = _steady ? _time : _time + dt;
         _trialReady = true;
     }
     int Domain::CoordinatedStageNumber() const { return _timeStepper ? _timeStepper->StageNumber() : 3; }
@@ -455,6 +499,7 @@ namespace DNDS::Cauchy
         _stageEquation.reset();
         if (++_coordinatedStage == CoordinatedStageNumber())
         {
+            FinishChemicalStep();
             DNDS_check_throw_info(Admissible(_trial), "coordinated candidate is inadmissible");
             _trialTime = _steady ? _time : _time + _trialDt;
             _trialReady = true;
@@ -470,7 +515,11 @@ namespace DNDS::Cauchy
         epoch.coupledStage = 0;
         PublishTrial(_trialTime, epoch);
         if (_timeStepper)
+        {
             _timeStepper->Commit();
+            if (_sourceStrang)
+                _timeStepper->ResetHistory();
+        }
         _lastAcceptedDt = _trialDt;
     }
     void Domain::CommitReserved(EquationDofs::WriteScope &destination, EquationDofs::ReadScope &source)
@@ -492,7 +541,11 @@ namespace DNDS::Cauchy
         _epoch.coupledStage = 0;
         _trialReady = _restoreReconstruction = false;
         if (_timeStepper)
+        {
             _timeStepper->Commit();
+            if (_sourceStrang)
+                _timeStepper->ResetHistory();
+        }
         _lastAcceptedDt = _trialDt;
     }
     void Domain::PublishTrial(real time, StateEpoch epoch)

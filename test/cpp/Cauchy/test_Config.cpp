@@ -3,6 +3,24 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("Chemical source splitting is explicit and keeps Euler reactor defaults")
+{
+    CHECK(C::TimeSettings{}.sourceSplitting == "coupled");
+    CHECK(C::TimeSettings{}.reactor.rtol == 1e-10);
+    CHECK(C::TimeSettings{}.reactor.atol == 1e-18);
+#ifdef DNDS_USE_CANTERA
+    C::Json input{{"defaults", {{"equation", {{"eos", "idealGasMixture"}, {"source", "chemical"}, {"mixture", {{"mechanismFile", "h2o2.yaml"}}}}}, {"numerics", {{"flux", "rusanov"}, {"faceFallback", false}}}}},
+                  {"time", {{"method", "esdirk2"}, {"sourceSplitting", "strang"}, {"reactor", {{"maxOrder", 2}}}}}};
+    const auto config = C::SimulationConfig::Resolve(input, 1);
+    CHECK(config.Time().sourceSplitting == "strang");
+    CHECK(config.Time().reactor.maxOrder == 2);
+    input["time"]["steady"] = true;
+    CHECK_THROWS(C::SimulationConfig::Resolve(input, 1));
+    input["time"]["steady"] = false;
+    input["time"]["reactor"]["maxSteps"] = 0;
+    CHECK_THROWS(C::SimulationConfig::Resolve(input, 1));
+#endif
+}
 TEST_CASE("Configured RANS exposes Euler DES and QCR controls without a unit-length substitution")
 {
     C::Json input{{"defaults", {{"equation", {{"transport", "NewtonianFourier"}, {"viscosity", .001}, {"rans", {{"model", "SA"}, {"desScale", .01}, {"desMode", 3}, {"useQCR", true}}}}}, {"numerics", {{"flux", "rusanov"}, {"faceFallback", false}, {"viscousGradient", "polynomial"}}}}}};

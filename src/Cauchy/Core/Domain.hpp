@@ -81,10 +81,14 @@ namespace DNDS::Cauchy
         bool _trialReady = false;
         index _lastFallbacks = 0;
         bool _positivity = false, _steady = false, _rejectUnconvergedStages = false;
+        bool _sourceStrang = false;
+        Physics::Chemistry::ReactorStepSettings _reactorControls;
         real _lastAlpha = 1, _lastBeta = 1;
         index _lastAlphaCells = 0, _lastBetaCells = 0;
         index _lastCharacteristicFallbacks = 0;
         void UpdateStage(real dt, real historyWeight, real stageWeight, real stageTime);
+        void ChemicalHalfStep(const EquationDofs &input, EquationDofs &output, real dt);
+        void FinishChemicalStep();
         void PublishTrial(real time, StateEpoch epoch);
         void EvaluateObservation();
         void InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh);
@@ -162,6 +166,9 @@ namespace DNDS::Cauchy
         /// for steady/fresh state or an older restart without this information.
         real PreviousTimeStep() const { return _lastAcceptedDt; }
         bool Steady() const { return _steady; }
+        /// Actual domain policy: inert domains remain unsplit even when the
+        /// simulation selects Strang for its chemical domains.
+        bool UsesStrangSource() const { return _sourceStrang; }
         const StateEpoch &Epoch() const { return _epoch; }
         const std::vector<EquationNonlinearIterationReport> &LastImplicitStages() const { return _lastImplicit; }
         index LastCoupledIterations() const { return _lastCoupledIterations; }
@@ -186,7 +193,12 @@ namespace DNDS::Cauchy
         /// and physical time is frozen. By default an iteration cap advances
         /// the final admissible iterate like Euler; LastImplicitStages retains
         /// its actual convergence result. implicit.rejectUnconvergedStages
-        /// enables rejection on inner/FAS/DITR outer caps for steady or transient.
+        /// enables rejection on inner/FAS/coupled-stage caps for steady or transient.
+        /// Physical Strang applies constant-volume species half-steps around
+        /// the same transport driver, retaining VR and resetting method history
+        /// across source jumps. LastImplicitStages reports transport solves.
+        /// Backend/allocation failure may poison private scratch; reconstruct
+        /// the Domain before retrying such failures. Accepted state is retained.
         void PrepareStep(real dt);
         void CommitStep();
         void DiscardStep() noexcept

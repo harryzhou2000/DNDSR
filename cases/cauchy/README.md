@@ -103,6 +103,17 @@ recovery or a filesystem durability guarantee.
 Body force is the integrated wall momentum flux; Cd/Cl use `.5*rho*U^2*D`.
 For the upper half body, pressure drag must be doubled for a full-body Cd.
 
+For reactive transient runs, `time.sourceSplitting` defaults to `"coupled"`.
+Set it to `"strang"` for Euler's constant-volume CVODE half-step, source-free
+transport step, then another source half-step. Controls are `time.reactor`
+(`rtol=1e-10`, `atol=1e-18`, `maxOrder=0`, `maxSteps=10000000`). Density,
+momentum, total energy and RANS stay fixed during each source half-step. The
+source duration is in code time; shared Physics applies the reference scales.
+Reconstruction is retained, but multistep transport history resets across source
+jumps as in Euler. This means split BDF2 takes its BDF1 startup equation each
+step. Split diagnostics are flow-only; split steady mode is rejected. Use a
+standalone SGS/LU-SGS/ILU solve when matching the Euler transient flame cases.
+
 The dedicated campaign enforces aggregate <=256 ranks, OMP=1, one hour per
 ordinary row and eight hours for DMR. A graceful wall/step cap returns 2;
 process timeout returns 124. Both require further work before numerical

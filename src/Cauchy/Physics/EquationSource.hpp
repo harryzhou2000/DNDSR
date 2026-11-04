@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cauchy/State/DerivedFields.hpp"
+#include "Physics/Chemistry/ReactorStepSettings.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -27,4 +28,15 @@ namespace DNDS::Cauchy
                                 EquationDofs &values, Physics::Chemistry::ChemicalWorkerPool::Lease worker,
                                 Runtime::Array<real> *jacobian = nullptr, real sourceScale = 1,
                                 const DerivedFields *temperatureGuess = nullptr);
+    /// Existing Euler constant-volume CVODE step on owned logical rows, with
+    /// distinct input/output allocations and any uniform physical layouts.
+    /// Replaces every output component: flow5 and nonchemical blocks are copied
+    /// exactly; independent species follow the shared fixed-energy reactor.
+    /// dt is code time. Zero duration/scale is an exact copy. No halo exchange,
+    /// reconstruction mutation, time history or global reduction is performed.
+    /// Caller joins work and coordinates failures before consuming output;
+    /// discard partially written output after a point/backend failure.
+    void AdvanceChemicalSource(const EquationSystem &equation, const EquationDofs &state, EquationDofs &values,
+                               Physics::Chemistry::ChemicalWorkerPool::Lease worker, real dt,
+                               const Physics::Chemistry::ReactorStepSettings &controls = {}, real sourceScale = 1);
 }

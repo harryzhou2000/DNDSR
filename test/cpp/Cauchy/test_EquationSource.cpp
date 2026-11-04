@@ -117,6 +117,66 @@ TEST_CASE("Shared transported species repair preserves Euler constants and strid
             CHECK(storage[k] == before[k]);
     }
 }
+
+TEST_CASE("Constant-volume source preserves frozen blocks and matches the SI reactor at nonunit scales")
+{
+    Fixture fixture(true);
+    P::RANS::ModelSettings model;
+    model.model = "SA";
+    const auto equation = fixture.equation.WithRANS(model);
+    const I rows = mpi.rank == 0 ? 2 : 0;
+    const A::DofSpace space(size_t(rows), 2, "constant-volume source with frozen RANS");
+    A::DofBundle fields(space);
+    fields.Add("packed", A::DofField<double>(space, R::RowLayout::TiledColMajor(0, 6, 32)));
+    fields.Add("species", A::DofField<double>(space, R::RowLayout::ColMajor(0, fixture.species - 1, {16, 1})));
+    C::EquationDofs state(equation.Schema(), std::move(fields), {{"flow", "packed", 1}, {"rans", "packed", 0}, {"species", "species", 0}});
+    fixture.Fill(state);
+    {
+        auto write = state.WriteOwned();
+        for (I iCell = 0; iCell < rows; ++iCell)
+            write.Block("rans")(iCell, 0) = .013 + .001 * iCell;
+    }
+    auto result = state.Clone();
+    constexpr double dt = .0003;
+    const P::Chemistry::ReactorStepSettings controls;
+    auto ghostWrite = state.PhysicalField(0).Ghost().Write();
+    C::AdvanceChemicalSource(equation, state, result, fixture.workers.Acquire(), dt, controls, .7);
+    ghostWrite.CancelUnmodified();
+    {
+        const auto read = state.ReadOwned(), output = result.ReadOwned();
+        for (I iCell = 0; iCell < rows; ++iCell)
+        {
+            const auto point = fixture.Point(int(iCell) + mpi.rank, 1300 + iCell * 2);
+            auto fractions = fixture.Fractions(int(iCell) + mpi.rank);
+            const P::Chemistry::ConstSpeciesBufferView Y{fractions.data(), fixture.species};
+            const double internal = (point[4] / point[0] - .5 * point.segment<3>(1).squaredNorm() / (point[0] * point[0])) * fixture.scales.SpecificEnergy();
+            double temperature = fixture.prototype.temperatureFromUV(internal, 1 / (point[0] * fixture.scales.rho0), Y);
+            // Independent SI conversion, not the new model's code-unit adapter.
+            fixture.prototype.advanceConstVolume(temperature, point[0] * fixture.scales.rho0, {fractions.data(), fixture.species}, .7,
+                                                 dt * fixture.scales.L0 / fixture.scales.U0,
+                                                 controls.rtol, controls.atol, controls.maxOrder, controls.maxSteps);
+            double change = 0;
+            for (int k = 0; k < fixture.species - 1; ++k)
+            {
+                CHECK(output.Block("species")(iCell, k) == doctest::Approx(point[0] * fractions[k]).epsilon(2e-9).scale(1e-13));
+                change += std::abs(output.Block("species")(iCell, k) - read.Block("species")(iCell, k));
+            }
+            CHECK(change > 1e-8);
+            for (const std::string name : {"flow", "rans"})
+                for (I j = 0; j < read.Block(name).ComponentNumber(); ++j)
+                    CHECK(output.Block(name)(iCell, j) == read.Block(name)(iCell, j));
+        }
+    }
+    C::AdvanceChemicalSource(equation, state, result, fixture.workers.Acquire(), dt, controls, 0);
+    {
+        const auto read = state.ReadOwned(), output = result.ReadOwned();
+        for (I iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+            for (I iCell = 0; iCell < rows; ++iCell)
+                for (I j = 0; j < read.Block(iBlock).ComponentNumber(); ++j)
+                    CHECK(read.Block(iBlock)(iCell, j) == output.Block(iBlock)(iCell, j));
+    }
+    CHECK_THROWS(C::AdvanceChemicalSource(equation, state, state, fixture.workers.Acquire(), dt, controls));
+}
 TEST_CASE("Equation primitive and mixture boundary producers preserve full energy composition and moving axes")
 {
     Fixture fixture;

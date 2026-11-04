@@ -7,6 +7,7 @@
 #include "Cauchy/Motion/RigidMotion.hpp"
 #include "Physics/RANS/Model.hpp"
 #include "Physics/StateInput.hpp"
+#include "Physics/Chemistry/ReactorStepSettings.hpp"
 #include <map>
 
 namespace DNDS::Cauchy
@@ -47,7 +48,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(system, "Coupled equation family");
             DNDS_FIELD(eos, "Thermodynamic closure");
             DNDS_FIELD(transport, "inviscid or NewtonianFourier");
-            DNDS_FIELD(source, "Volume source family; none initially");
+            DNDS_FIELD(source, "none or chemical reactive volume source; attached RANS sources are independent");
             DNDS_FIELD(gamma, "Perfect-gas heat capacity ratio");
             DNDS_FIELD(gasConstant, "Specific gas constant in the chosen units");
             DNDS_FIELD(viscosity, "Code-unit molecular viscosity coefficient; reference value for the selected perfect-gas law");
@@ -463,6 +464,7 @@ namespace DNDS::Cauchy
     struct TimeSettings
     {
         std::string method = "ssprk3";
+        std::string sourceSplitting = "coupled";
         bool steady = false;
         real dt = 1e-3;
         index steps = 1;
@@ -472,9 +474,17 @@ namespace DNDS::Cauchy
         int maxRetries = 0;
         DITRTimeSettings ditr;
         PhysicalTimePositivitySettings positivity;
+        Physics::Chemistry::ReactorStepSettings reactor;
+        void ValidateSourceIntegration() const
+        {
+            DNDS_check_throw_info(sourceSplitting == "coupled" || sourceSplitting == "strang", "unknown chemical source splitting method");
+            DNDS_check_throw_info(sourceSplitting != "strang" || !steady, "Strang source splitting requires physical transient time");
+            reactor.Validate();
+        }
         DNDS_DECLARE_CONFIG(TimeSettings)
         {
             DNDS_FIELD(method, "Coordinated physical-time method");
+            DNDS_FIELD(sourceSplitting, "Chemical source integration: coupled, or strang constant-volume half-steps around source-free transport; inert domains are unchanged");
             DNDS_FIELD(steady, "Euler steady override: BDF1 infinite-dt limit, one outer solve and frozen physical time");
             DNDS_FIELD(dt, "Fixed positive physical timestep");
             DNDS_FIELD(steps, "Nonnegative accepted step target");
@@ -486,6 +496,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(steadyMinSteps, "Minimum accepted steps before a steady stop");
             config.field_section(&T::ditr, "ditr", "Coupled U2R2/U2R1 time equations");
             config.field_section(&T::positivity, "positivity", "Euler physical timestep positivity/growth policy");
+            config.field_section(&T::reactor, "reactor", "Existing Euler constant-volume source-step controls");
         }
     };
     struct OutputSettings

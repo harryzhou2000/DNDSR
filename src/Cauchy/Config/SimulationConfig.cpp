@@ -502,6 +502,11 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(std::isfinite(data->time.steadyTolerance) && data->time.steadyTolerance >= 0 && data->time.steadyMinSteps >= 0, "invalid steady stopping controls");
         data->time.ditr.Validate();
         data->time.positivity.Validate();
+        data->time.ValidateSourceIntegration();
+        if (data->time.sourceSplitting == "strang")
+            DNDS_check_throw_info(std::any_of(data->domains.begin(), data->domains.end(), [](const auto &domain)
+                                              { return domain.settings.equation.source == "chemical"; }),
+                                  "Strang source splitting requires a configured chemical source");
         if (data->time.steady)
         {
             if (data->time.positivity.enabled)

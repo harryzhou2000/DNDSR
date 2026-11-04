@@ -193,6 +193,29 @@ def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_p
         values = output["VTKHDF/CellData"]
         assert "rhoY:H2" in values and "Y:N2" in values and "T" in values
         assert np.all(np.isfinite(values["T"][:]))
+    if rans_model == "none":
+        # Exercise the same chemistry through physical Strang and CPU workers.
+        # The C++ test supplies the independent nonconstant composition oracle.
+        split_config = json.loads(json.dumps(config))
+        split_config["time"].update({"method": "esdirk2", "sourceSplitting": "strang"})
+        split = Domain(mesh, json.dumps(split_config))
+        assert split.uses_strang_source
+        split_fields = split.fields
+        initial_split_flow = split_fields["flow"].numpy()
+        initial_split_species = split_fields["species"].numpy()
+        split.advance(1e-6)
+        np.testing.assert_allclose(split_fields["flow"].numpy(), initial_split_flow, rtol=1e-11, atol=1e-12)
+        change = np.max(np.abs(split_fields["species"].numpy() - initial_split_species), initial=0.)
+        assert MPI.COMM_WORLD.allreduce(change, op=MPI.MAX) > 1e-10
+        assert all(report.converged for report in split.implicit_stages)
+        split_path = path + ".strang"
+        split.write_checkpoint(split_path, json.dumps(split_config))
+        split.advance(1e-6)
+        expected = {name: array.numpy() for name, array in split_fields.items()}
+        split.read_checkpoint(split_path, json.dumps(split_config))
+        split.advance(1e-6)
+        for name, array in split_fields.items():
+            np.testing.assert_array_equal(array.numpy(), expected[name])
 
 
 def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=False, time_pp=False, lvr_variant=None, tagged=False, initial_field=None):

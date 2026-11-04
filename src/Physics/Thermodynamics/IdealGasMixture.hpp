@@ -4,6 +4,11 @@
 #include "Physics/Chemistry/ChemicalWorker.hpp"
 #include <array>
 
+namespace DNDS::Physics::Chemistry
+{
+    struct ReactorStepSettings;
+}
+
 namespace DNDS::Physics::Thermodynamics
 {
     /// Optional point outputs, resolved once when borrowing a worker for a loop.
@@ -29,6 +34,13 @@ namespace DNDS::Physics::Thermodynamics
         /// Columns have this explicit point convention, independent of the
         /// caller's physical allocation and logical equation ordering.
         Chemistry::ConstJacobianBufferView sourceJacobian;
+    };
+    /// Fixed-density/internal-energy source result in code units. The species
+    /// view borrows this evaluator's input scratch until its next use/release.
+    struct ConstantVolumeResult
+    {
+        Properties thermo;
+        Chemistry::ConstSpeciesBufferView rhoY;
     };
 
     /// Immutable ideal-gas-mixture metadata, independent of any solver, mesh,
@@ -102,6 +114,15 @@ namespace DNDS::Physics::Thermodynamics
                                   real temperatureGuess = 0, real uvTolerance = 1e-12);
             MixturePoint FromRhoT(real rho, real temperature, Chemistry::ConstSpeciesBufferView rhoY);
             MixturePoint FromRhoP(real rho, real pressure, Chemistry::ConstSpeciesBufferView rhoY);
+            /// Existing Euler constant-volume CVODE source step. Density and
+            /// full specific internal energy remain fixed; only independent
+            /// rhoY changes. Units convert to SI here, never in solver kernels.
+            /// Euler's clipping/remainder rule is followed, then UV is solved
+            /// again at the unchanged energy. A CVODE temperature is only that
+            /// final solve's guess. Zero duration/scale preserves raw rhoY.
+            ConstantVolumeResult AdvanceConstVolume(real rho, real internalEnergy, Chemistry::ConstSpeciesBufferView rhoY,
+                                                    real dt, const Chemistry::ReactorStepSettings &controls,
+                                                    real sourceScale = 1, real temperatureGuess = 0);
             /// Full thermochemical conservative point, in code units. Momentum
             /// always has three Cartesian components. Optional rates/Jacobian
             /// use Euler's repaired temporary composition and source-temperature

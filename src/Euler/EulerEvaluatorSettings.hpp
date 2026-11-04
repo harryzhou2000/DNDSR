@@ -20,6 +20,7 @@
 #pragma once
 #include "DNDS/Serializer/JsonUtil.hpp"
 #include "DNDS/Config/ConfigParam.hpp"
+#include "Physics/Chemistry/ReactorStepSettings.hpp"
 
 #include "Euler/Euler.hpp"
 #include "Euler/Gas.hpp"
@@ -440,23 +441,8 @@ namespace DNDS::Euler
         int nCentralSmoothStep = 0;           ///< Number of central-difference smoothing steps.
         real centralSmoothEps = 0.5;          ///< Epsilon for central smoothing.
         int pointImplicitSourceUpdateOut = 0; ///< Print point-implicit source-update Newton residual ratios.
-        struct ReactorStepSettings
-        {
-            real rtol = 1e-10;       ///< Cantera reactor relative tolerance.
-            real atol = 1e-18;       ///< Cantera reactor absolute tolerance.
-            int maxOrder = 0;        ///< CVODE max order; <=0 leaves Cantera default.
-            int maxSteps = 10000000; ///< CVODE max internal steps.
-
-            DNDS_DECLARE_CONFIG(ReactorStepSettings)
-            {
-                // clang-format off
-                DNDS_FIELD(rtol,     "Cantera reactor relative tolerance", DNDS::Config::range(0.0));
-                DNDS_FIELD(atol,     "Cantera reactor absolute tolerance", DNDS::Config::range(0.0));
-                DNDS_FIELD(maxOrder, "Cantera reactor max order; <=0 leaves default");
-                DNDS_FIELD(maxSteps, "Cantera reactor max internal steps", DNDS::Config::range(1));
-                // clang-format on
-            }
-        } reactorStepSettings;                                                   ///< Settings for direct Cantera source substeps.
+        using ReactorStepSettings = DNDS::Physics::Chemistry::ReactorStepSettings;
+        ReactorStepSettings reactorStepSettings;                                 ///< Settings for direct Cantera source substeps.
         ReactiveSplitIndicatorSettings reactiveSplitIndicator;                   ///< RRI settings for @f$a_i,b_i,h_i,C_i,\chi_i@f$.
         real reactiveSourceScale = 1.0;                                          ///< Multiplier for reactive source RHS and Jacobian.
         Eigen::Vector<real, 3> constMassForce = Eigen::Vector<real, 3>{0, 0, 0}; ///< Constant body force vector [fx, fy, fz].

@@ -241,6 +241,25 @@ point convention into the named logical flow/species blocks and optional dense
 logical block-Jacobian rows, without inferring offsets from physical grouping.
 See [Cauchy state](CauchyState.md) for reservation, failure and integration scope.
 
+### Constant-volume source integration
+
+`IdealGasMixture::PointEvaluator::AdvanceConstVolume` adapts the existing
+`ChemicalSource::advanceConstVolume` CVODE reactor to code units. It holds one
+compatible worker and reuses its full-species composition and independent-rhoY
+scratch. Density and full specific internal energy are fixed. Temperature is
+recovered from that energy before the reactor; the backend receives SI density,
+temperature and duration (`dt*L0/U0`). Euler's independent-species clipping and
+dependent-remainder rule follow the reactor. A final UV solve uses the unchanged
+energy, with the reactor's temperature as a guess rather than an energy override.
+The result's rhoY view borrows the evaluator until its next use/release.
+
+`Physics/Chemistry/ReactorStepSettings.hpp` owns the existing Euler defaults and
+configuration fields. Euler retains its nested spelling as an alias. The
+thermodynamic header only forward-declares this control type; it does not need
+the configuration implementation. Cantera headers remain inside its PIMPL.
+This source integrator is distinct from an implicit source/Jacobian evaluation
+and from any solver's temporal splitting policy.
+
 ## Focused validation
 
 `euler_test_shared_physics` checks fused properties and nontrivial reference

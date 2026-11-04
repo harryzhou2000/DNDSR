@@ -5,6 +5,59 @@
 
 namespace DNDS::Cauchy
 {
+    void AdvanceChemicalSource(const EquationSystem &equation, const EquationDofs &state, EquationDofs &values,
+                               Physics::Chemistry::ChemicalWorkerPool::Lease worker, real dt,
+                               const Physics::Chemistry::ReactorStepSettings &controls, real sourceScale)
+    {
+        equation.ValidateStateSchema(state);
+        state.RequireCompatible(values);
+        EquationDofOperations::RequireDistinct(state, values);
+        controls.Validate();
+        DNDS_check_throw_info(equation.HasMixture() && state.Device() == Runtime::Device::Host() &&
+                                  std::isfinite(dt) && dt >= 0 && std::isfinite(sourceScale) && sourceScale >= 0,
+                              "unavailable or invalid constant-volume chemical step");
+        auto evaluator = equation.Mixture().Borrow(std::move(worker));
+        const auto input = state.ReadOwned();
+        std::vector<EquationBlockArrayView<const real>> from;
+        std::vector<EquationBlockArrayView<real>> to;
+        for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+            from.push_back(input.Block(iBlock).owned);
+        std::optional<EquationDofs::WriteScope> output;
+        try
+        {
+            output.emplace(values.WriteOwned());
+            for (index iBlock = 0; iBlock < values.BlockNumber(); ++iBlock)
+                to.push_back(output->Block(iBlock));
+        }
+        catch (...)
+        {
+            if (output)
+                output->CancelUnmodified();
+            throw;
+        }
+        const auto flow = input.Block("flow").owned;
+        const int independent = equation.Mixture().SpeciesNumber() - 1;
+        const auto species = independent ? input.Block("species").owned : EquationBlockArrayView<const real>{};
+        const auto target = independent ? output->Block("species") : EquationBlockArrayView<real>{};
+        auto rhoY = evaluator.SpeciesInput();
+        for (index iCell = 0; iCell < flow.RowCount(); ++iCell)
+        {
+            for (index iBlock = 0; iBlock < index(from.size()); ++iBlock)
+                for (index j = 0; j < from[iBlock].ComponentNumber(); ++j)
+                    to[iBlock](iCell, j) = from[iBlock](iCell, j);
+            if (dt == 0 || sourceScale == 0)
+                continue;
+            FlowState stateFlow;
+            for (int j = 0; j < 5; ++j)
+                stateFlow[j] = flow(iCell, j);
+            for (int k = 0; k < independent; ++k)
+                rhoY[k] = species(iCell, k);
+            const auto updated = evaluator.AdvanceConstVolume(stateFlow[0], Physics::Thermodynamics::ConservativeSpecificInternalEnergy<3>(stateFlow),
+                                                              {rhoY.data, independent}, dt, controls, sourceScale);
+            for (int k = 0; k < independent; ++k)
+                target(iCell, k) = updated.rhoY[k];
+        }
+    }
     void EvaluateChemicalSource(const EquationSystem &equation, const EquationDofs &state,
                                 EquationDofs &values, Physics::Chemistry::ChemicalWorkerPool::Lease worker,
                                 Runtime::Array<real> *jacobian, real sourceScale, const DerivedFields *temperatureGuess)

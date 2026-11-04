@@ -17,6 +17,8 @@ missing characteristic/LVR/interface and explicit-PP adapters
 fail explicitly. QCR and the existing SA/SST DES formulas are connected below.
 The short flame comparison is a converged discrete sanity run; the NACA pair
 is capped and does not establish converged aerodynamics. CUDA remains deferred.
+Both coupled chemistry and Euler's physical Strang/CVODE composition have
+focused distributed gates and short matched spatial flame checks.
 Earlier implementation checkpoints in this document describe their then-current
 limits; they do not override the current profile summary or runtime guards.
 
@@ -547,6 +549,46 @@ write to their separate allocations is allowed. Owned source arrays and the
 Jacobian must be distinct from input/output equation storage. The caller
 serializes operator/workspace access and moves the worker lease into CPU work
 that outlives submission.
+
+`AdvanceChemicalSource` is the separate constant-volume owned CPU update. It
+copies flow5 and all nonchemical blocks exactly, then replaces independent
+species through the shared reactor adapter. Input/output states are distinct;
+all physical destination writers are reserved before the first copy. Source
+halos may be stale or under communication because only owned inputs are read.
+Zero duration or source scale gives an exact copy. No exchange, reconstruction
+or time history is hidden inside this point operator.
+
+`time.sourceSplitting="strang"` selects Euler's physical composition
+`B_S(dt/2) A_F(dt) B_S(dt/2)`; the default is `coupled`. Only configured chemical
+domains split. The Domain constructs one source-free spatial profile, also used
+by its approximate Jacobians, coarse FAS, physical-dt trial and diagnostics.
+It retains the physical mixture/configuration and explicit reactor controls
+under `time.reactor`. Source-free diagnostics report transport/RANS/rotation,
+matching Euler's split output convention. Steady splitting is rejected.
+The source composition is second order; using a higher-order transport tableau
+does not increase the Strang splitting order.
+
+The first half-step writes trial from accepted state, then prepares the existing
+time-method initial buffer. After the transport method finishes, that same
+initial allocation becomes the distinct output of the final source half-step.
+No extra full-state source scratch is needed. Reconstruction guesses are
+retained, as in Euler. The public method owner resets history before transport
+and after successful commit; BDF2 therefore uses its BDF1 startup equation on
+each split step. Discard/retry leaves accepted means/history unchanged. All
+domains use the same standalone/coordinated stage infrastructure.
+
+A point/backend exception after writing may poison the private source output,
+as for other Runtime operators. Accepted state remains untouched, but this is
+not an ordinary admissibility/convergence rejection: replace the failed scratch
+or reconstruct the Domain before trying again. A smaller dt alone cannot make
+a failed allocation usable. The focused discard/retry check covers an otherwise
+successful prepared trial, not recovery from a backend failure.
+
+Checkpoint metadata records `source_integration`. A split checkpoint has no
+transport BDF history, and a split reader does not import one from another time
+policy. Changing source integration on read is a numerical-method choice like
+changing BDF to DIRK; validated physical means and compatible polynomials remain
+readable. Derived properties stay unpersisted and refresh by normal versions.
 
 The source follows the active Euler repair, temperature-floor, units and
 unfiltered-Jacobian conventions described in [shared Physics](Physics.md).

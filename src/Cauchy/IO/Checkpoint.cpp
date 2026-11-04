@@ -425,6 +425,7 @@ namespace DNDS::Cauchy
             if (includeReconstruction)
                 metadata["reconstruction_storage"] = DescribeEquationStorage(_fv.ReconstructionGuess(*_equationWorkspace));
         }
+        metadata["source_integration"] = _sourceStrang ? "strang" : "coupled";
         auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
         serializer->OpenFile(path, false);
         serializer->WriteInt("cauchy_format", _equationWorkspace ? 5 : 4);
@@ -616,7 +617,7 @@ namespace DNDS::Cauchy
             {
                 MPI::LocalStage(mpi, [&]
                                 { restoredStepper = _timeStepper->Fresh(); });
-                if (historyArchive && metadata.value("time_method", std::string{}) == restoredStepper->Method() && restoredStepper->Method() == "bdf2")
+                if (!_sourceStrang && historyArchive && metadata.value("time_method", std::string{}) == restoredStepper->Method() && restoredStepper->Method() == "bdf2")
                 {
                     std::optional<EquationDofs> previous;
                     MPI::LocalStage(mpi, [&]

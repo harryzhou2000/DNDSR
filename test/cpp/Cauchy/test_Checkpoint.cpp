@@ -4,6 +4,7 @@
 #include "Cauchy/Core/Simulation.hpp"
 #include "Cauchy/IO/EquationArchive.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
+#include "Physics/Thermodynamics/ConservativeConversion.hpp"
 #include "CartesianFixture.hpp"
 #include "../CFV/ReconstructionFixture.hpp"
 #include "DNDS/Runtime/Array/ArrayIO.hpp"
@@ -214,6 +215,111 @@ TEST_CASE("Mixture BDF2 restart restores species history and warm reconstruction
     restored.Advance(1.5e-5);
     CompareEquation(restored.Dofs(), source.Dofs(), 2e-13);
     Remove({path});
+}
+TEST_CASE("Physical Strang source composes with transport and preserves retry and restart history semantics")
+{
+    for (const std::string method : {"esdirk2", "bdf2"})
+    {
+        CAPTURE(method);
+        auto settings = MixtureSettings();
+        settings.equation.source = "chemical";
+        settings.numerics.positivity = true;
+        settings.implicit.linear.method = "ilu";
+        settings.implicit.multigrid.levels = method == "esdirk2" ? 1 : 0;
+        C::TimeSettings time;
+        time.method = method;
+        time.sourceSplitting = "strang";
+        const auto mesh = CauchyTest::PeriodicQuads(mpi, 3);
+        C::Domain source("mixture", mesh, settings, time);
+        CHECK(source.UsesStrangSource());
+        InitializeMixtureWave(source);
+        auto transportSettings = settings;
+        transportSettings.equation.source = "none";
+        auto transportTime = time;
+        transportTime.sourceSplitting = "coupled";
+        // Euler resets BDF history around each source jump: its BDF2
+        // transport takes the startup BDF1 equation on every split step.
+        if (method == "bdf2")
+            transportTime.method = "bdf1";
+        C::Domain reference("mixture", mesh, transportSettings, transportTime);
+        InitializeMixtureWave(reference);
+        auto firstStep = source.Dofs().Clone();
+        const auto scales = source.Equation().Mixture().Scales();
+        const auto *directory = std::getenv("DNDS_MECH_PATH");
+        const auto mechanism = directory ? std::string(directory) + "/h2o2.yaml" : "h2o2.yaml";
+        DNDS::Physics::Chemistry::ChemicalSource oracle(mechanism, "", scales.U0, scales.rho0);
+        const auto halfStep = [&](C::Domain &domain, double duration)
+        {
+            auto state = domain.Dofs();
+            auto write = state.WriteOwned();
+            const auto flow = write.Block("flow"), rhoY = write.Block("species");
+            std::vector<double> fractions(size_t(oracle.nSpecies()));
+            for (DNDS::index iCell = 0; iCell < flow.RowCount(); ++iCell)
+            {
+                double sum = 0;
+                for (int k = 0; k < oracle.nSpecies() - 1; ++k)
+                    sum += fractions[k] = std::max(0., rhoY(iCell, k) / flow(iCell, 0));
+                fractions.back() = std::max(0., 1 - sum);
+                sum += fractions.back();
+                for (auto &value : fractions)
+                    value /= sum;
+                C::FlowState u;
+                for (int j = 0; j < 5; ++j)
+                    u[j] = flow(iCell, j);
+                const double energy = DNDS::Physics::Thermodynamics::ConservativeSpecificInternalEnergy<3>(u) * scales.SpecificEnergy();
+                double temperature = oracle.temperatureFromUV(energy, 1 / (u[0] * scales.rho0), {fractions.data(), oracle.nSpecies()});
+                oracle.advanceConstVolume(temperature, u[0] * scales.rho0, {fractions.data(), oracle.nSpecies()}, 1,
+                                          duration * scales.Time(), time.reactor.rtol, time.reactor.atol, time.reactor.maxOrder, time.reactor.maxSteps);
+                sum = 0;
+                for (int k = 0; k < oracle.nSpecies() - 1; ++k)
+                    sum += fractions[k] = std::max(0., fractions[k]);
+                for (int k = 0; k < oracle.nSpecies() - 1; ++k)
+                    rhoY(iCell, k) = u[0] * fractions[k] * (sum >= 1 ? (1 - 1e-14) / sum : 1);
+            }
+        };
+        for (const double dt : {1e-5, 1.5e-5})
+        {
+            source.Advance(dt);
+            halfStep(reference, .5 * dt);
+            reference.Advance(dt);
+            halfStep(reference, .5 * dt);
+            CompareEquation(source.Dofs(), reference.Dofs(), 3e-10);
+            if (dt == 1e-5)
+                C::EquationDofOperations::Copy(firstStep, source.Dofs());
+        }
+        if (method == "esdirk2")
+        {
+            const C::Json config{{"defaults", C::Json(settings)}, {"time", C::Json(time)}, {"domains", C::Json::array({{{"name", "a"}}, {{"name", "b"}}})}};
+            C::Simulation coordinated(C::SimulationConfig::ResolveCollective(config, mpi.comm), mpi.comm,
+                                      [](DNDS::index, const auto &, const auto &domainMPI)
+                                      { return CauchyTest::PeriodicQuads(domainMPI, 3); });
+            for (DNDS::index iDomain = 0; iDomain < 2; ++iDomain)
+                InitializeMixtureWave(coordinated.GetDomain(iDomain));
+            coordinated.Advance(1e-5);
+            for (DNDS::index iDomain = 0; iDomain < 2; ++iDomain)
+                CompareEquation(coordinated.GetDomain(iDomain).Dofs(), firstStep, 3e-10);
+        }
+        const auto path = Path("cauchy-strang-" + method);
+        const C::Json metadata{{"test", "physical Strang source"}};
+        source.WriteCheckpoint(path, metadata, true);
+        auto file = std::make_shared<DNDS::Serializer::SerializerH5>(mpi);
+        file->OpenFile(path, true);
+        std::string serialized;
+        file->ReadString("metadata_json", serialized);
+        CHECK(C::Json::parse(serialized)["source_integration"] == "strang");
+        CHECK_FALSE(C::Json::parse(serialized)["history"].get<bool>());
+        file->CloseFile();
+        C::Domain restored("mixture", mesh, settings, time);
+        restored.ReadCheckpoint(path, metadata);
+        const auto accepted = source.Dofs().Clone();
+        source.PrepareStep(1.2e-5);
+        source.DiscardStep();
+        CompareEquation(source.Dofs(), accepted);
+        source.Advance(1.2e-5);
+        restored.Advance(1.2e-5);
+        CompareEquation(source.Dofs(), restored.Dofs(), 2e-13);
+        Remove({path});
+    }
 }
 TEST_CASE("Mixture visualization writes conservative species and physical boundary traces")
 {
