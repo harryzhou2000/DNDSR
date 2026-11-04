@@ -1604,8 +1604,11 @@ namespace DNDS::Euler
                 ((vnL * ULxy(I4 + 2, EigenAll).array() + vnR * URxy(I4 + 2, EigenAll).array()) -
                  (URxy(I4 + 2, EigenAll).array() - ULxy(I4 + 2, EigenAll).array()) * lambdaFaceCC.array()) *
                 0.5;
-            finc(1, EigenAll).array() += UMeanXy(I4 + 1, EigenAll).array() * (2. / 3.); //! k's normal stress
-            finc(I4, EigenAll).array() += UMeanXy(I4 + 1, EigenAll).array() * (2. / 3.) * UMeanXy(1, EigenAll).array() / UMeanXy(0, EigenAll).array();
+            // finc is already in global coordinates: contract k's isotropic stress
+            // with each physical normal. Stress work uses fluid velocity, also in ALE.
+            finc(Seq123, EigenAll).array() += unitNorm.array().rowwise() * (UMeanXy(I4 + 1, EigenAll).array() * (2. / 3.));
+            finc(I4, EigenAll).array() += UMeanXy(I4 + 1, EigenAll).array() * (2. / 3.) *
+                (UMeanXy(Seq123, EigenAll).array() * unitNorm.array()).colwise().sum() / UMeanXy(0, EigenAll).array();
         }
         if constexpr (Traits::isExtended)
         {

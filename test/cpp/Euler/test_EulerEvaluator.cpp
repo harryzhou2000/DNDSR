@@ -357,6 +357,68 @@ using LVRCellKey = std::array<long long, 2>;
 using LVRCellValues = std::vector<DNDS::real>;
 using LVRCells = std::map<LVRCellKey, LVRCellValues>;
 
+TEST_CASE("Euler two-equation turbulent normal stress follows the physical face normal")
+{
+    using Eval = EulerEvaluator<NS_2EQ>;
+    const auto root = projectRoot();
+    const auto path = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json", "rans_normal_stress",
+                                          {{"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}}},
+                                           {"dataIOControl", {{"meshDirectBisect", 0}, {"meshFile", root + "/data/mesh/IV10_10.cgns"}}}});
+    EulerSolver<NS> fixture(g_mpi);
+    fixture.ConfigureFromJson(path, true);
+    fixture.ReadMeshAndInitialize();
+    EulerEvaluatorSettings<NS_2EQ> settings(7);
+    auto bc = std::make_shared<BoundaryHandler<NS_2EQ>>(7);
+    Eval eval(fixture.getMesh(), fixture.getVFV(), bc, settings);
+    constexpr int nPoints = 6;
+    Eval::TVec_Batch normals, gridVelocity;
+    normals.resize(3, nPoints);
+    normals << 1, 0, 0, -1, .6, 2. / 3.,
+        0, 1, 0, 0, -.8, -1. / 3.,
+        0, 0, 1, 0, 0, 2. / 3.;
+    gridVelocity.setZero(3, nPoints);
+    Eval::TDiffU_Batch gradient, primitiveGradient;
+    gradient.setZero(3 * nPoints, 7);
+    primitiveGradient.setZero(3 * nPoints, 7);
+    for (auto rans : {RANSModel::RANS_KOWilcox, RANSModel::RANS_KOSST, RANSModel::RANS_RKE})
+        for (bool moving : {false, true})
+        {
+            CAPTURE(rans);
+            CAPTURE(moving);
+            eval.settings.ransModel = rans;
+            Eval::TU_Batch left, right, leftFix, rightFix, flux;
+            left.resize(7, nPoints);
+            const Eigen::Vector3d velocity = moving ? Eigen::Vector3d(.4, -.3, .2) : Eigen::Vector3d::Zero();
+            for (int q = 0; q < nPoints; ++q)
+            {
+                const real rho = 1 + .1 * q;
+                left.col(q) << rho, rho * velocity, 1 / .4 + .5 * rho * velocity.squaredNorm(), .1 + .01 * q, 1;
+                gridVelocity.col(q) = moving ? Eigen::Vector3d(.1, .2, -.05) : Eigen::Vector3d::Zero();
+            }
+            right = left;
+            Eval::TU meanLeft = left.col(0), meanRight = right.col(0);
+            Eval::TVec meanNormal = normals.col(0), meanGridVelocity = gridVelocity.col(0);
+            Eval::TReal_Batch lam0, lam123, lam4;
+            lam0.resize(nPoints), lam123.resize(nPoints), lam4.resize(nPoints);
+            eval.fluxFace(left, right, meanLeft, meanRight, gradient, primitiveGradient,
+                          normals, gridVelocity, meanNormal, meanGridVelocity, leftFix, rightFix, flux,
+                          lam0, lam123, lam4, Geom::BC_ID_INTERNAL, Gas::Roe_M1, 0, true);
+            for (int q = 0; q < nPoints; ++q)
+            {
+                const real rho = left(0, q), turbulentPressure = (2. / 3.) * left(5, q);
+                const real normalVelocity = velocity.dot(normals.col(q));
+                const real relativeNormalVelocity = (velocity - gridVelocity.col(q)).dot(normals.col(q));
+                Eval::TU expected;
+                expected << rho * relativeNormalVelocity,
+                    rho * velocity * relativeNormalVelocity + (1 + turbulentPressure) * normals.col(q),
+                    left(4, q) * relativeNormalVelocity + (1 + turbulentPressure) * normalVelocity,
+                    left(5, q) * relativeNormalVelocity, left(6, q) * relativeNormalVelocity;
+                // fluxFace returns a negative physical flux increment.
+                CHECK((-flux.col(q) - expected).norm() < 1e-11);
+            }
+        }
+}
+
 TEST_CASE("Euler gradients: EvaluateDt prepares limited buffers and direct FV explicitly reuses them")
 {
     using Eval = EulerEvaluator<NS>;
