@@ -24,6 +24,8 @@ distributed gates and the measured gains and regressions by shape.
 Cauchy development starts at the [solver contracts and ledger](architecture/Cauchy.md).
 The [equation-state contract](architecture/CauchyState.md) documents semantic
 segments, shared storage, leases and explicit physical/backend dispatch.
+The [physical state input guide](architecture/CauchyStateInput.md) specifies
+Euler-compatible tagged inputs, unit scales and physical reference states.
 The [native LVR guide](architecture/CauchyLimitedVR.md) documents penalty
 ownership, sensor ordering, halo phases and warm-state restart semantics.
 Native linear operators, Jacobian assembly, staged SGS and local ILU are described

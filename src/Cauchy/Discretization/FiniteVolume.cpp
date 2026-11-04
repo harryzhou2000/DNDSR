@@ -166,6 +166,8 @@ namespace DNDS::Cauchy
         MPI::LocalStage(mesh->getMPI(), [&]
                         {
             settings.numerics.ValidatePositivity();
+            DNDS_check_throw_info(settings.initialState.is_null() && settings.referenceState.is_null(),
+                                  "resolve tagged physical inputs before constructing FiniteVolume directly");
             if (equation.HasRANS())
                 DNDS_check_throw_info(equation.RANS().Settings().desScale > 100 &&
                                           std::isfinite(settings.numerics.wallDistanceFloor) && settings.numerics.wallDistanceFloor > 0 && mesh->HasNodeWallDist(),

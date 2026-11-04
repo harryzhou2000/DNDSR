@@ -5,6 +5,10 @@ energy convention and physical accumulation. `EquationDofs` binds that schema
 to native `Algebra::DofField` allocations. It adds no payload copy or alternate
 allocator. DNDS algebra remains independent of the physical equations.
 
+Initial, prescribed boundary and physical reference inputs share the
+[state-input conversion facility](CauchyStateInput.md). Unit-system reference
+scales and the resolved physical reference state have separate meanings.
+
 ```mermaid
 flowchart TD
     Domain --> Accepted[accepted EquationDofs]
@@ -856,7 +860,8 @@ uses Rusanov, constant or polynomial reconstruction, and no limiter or
 non-characteristic WBAP; viscous reconstruction uses polynomial gradients.
 Scalar reconstruction fallback is applied independently at boundary, face and
 volume points, using the corresponding cell mean. This preserves Euler's
-model-specific fallback; additional coefficient-level scalar PP remains pending.
+model-specific fallback. Coefficient-level scalar PP and reference-order checks
+follow the separate Euler rules documented in [CauchyPositivity.md](CauchyPositivity.md).
 DES and QCR integration remain pending. Existing NS/mixture profiles retain
 their behavior.
 

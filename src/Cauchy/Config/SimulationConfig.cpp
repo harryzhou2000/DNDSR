@@ -1,4 +1,5 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
+#include "Cauchy/Physics/StateInput.hpp"
 #include <set>
 #include <numeric>
 #include <optional>
@@ -15,14 +16,37 @@ namespace DNDS::Cauchy
                                                      : std::string(1, c);
             return result;
         }
+        bool MatchesType(const Json &value, const std::string &type)
+        {
+            return type.empty() || (type == "null" && value.is_null()) || (type == "object" && value.is_object()) ||
+                   (type == "array" && value.is_array()) || (type == "string" && value.is_string()) ||
+                   (type == "boolean" && value.is_boolean()) || (type == "integer" && value.is_number_integer()) ||
+                   (type == "number" && value.is_number() && std::isfinite(value.get<real>()));
+        }
         void Keys(const Json &value, const Json &schema, const std::string &path)
         {
+            if (schema.contains("oneOf"))
+            {
+                // Input unions distinguish null/array/object. Select by JSON
+                // type without raising diagnostic exceptions on valid input.
+                const Json *selected = nullptr;
+                for (const auto &variant : schema["oneOf"])
+                    if (MatchesType(value, variant.value("type", std::string{})))
+                    {
+                        DNDS_check_throw_info(!selected, "ambiguous Cauchy configuration variant at " + path);
+                        selected = &variant;
+                    }
+                DNDS_check_throw_info(selected, "Cauchy configuration does not match an input variant at " + path);
+                Keys(value, *selected, path);
+                return;
+            }
             const auto type = schema.value("type", std::string{});
-            bool valid = type.empty() || (type == "object" && value.is_object()) ||
-                         (type == "array" && value.is_array()) || (type == "string" && value.is_string()) ||
-                         (type == "boolean" && value.is_boolean()) || (type == "integer" && value.is_number_integer()) ||
-                         (type == "number" && value.is_number() && std::isfinite(value.get<real>()));
-            DNDS_check_throw_info(valid, "Cauchy configuration type mismatch at " + path);
+            DNDS_check_throw_info(MatchesType(value, type), "Cauchy configuration type mismatch at " + path);
+            if (schema.contains("enum"))
+                DNDS_check_throw_info(std::find(schema["enum"].begin(), schema["enum"].end(), value) != schema["enum"].end(), "unknown Cauchy enum value at " + path);
+            if (schema.contains("required"))
+                for (const auto &key : schema["required"])
+                    DNDS_check_throw_info(value.contains(key.get<std::string>()), "missing Cauchy configuration field at " + path + "/" + key.get<std::string>());
             if (value.is_object())
                 for (const auto &[key, child] : value.items())
                 {
@@ -116,6 +140,7 @@ namespace DNDS::Cauchy
             for (int rank : domain.placement.ranks)
                 DNDS_check_throw_info(rank >= 0 && rank < size && ranks.insert(rank).second, "invalid/duplicate Cauchy domain rank");
             const auto &equation = settings.equation;
+            ResolveReferenceScales(equation);
             DNDS_check_throw_info(std::isfinite(equation.gamma) && equation.gamma > 1 && std::isfinite(equation.gasConstant) && equation.gasConstant > 0 &&
                                       std::isfinite(equation.viscosity) && equation.viscosity >= 0 && std::isfinite(equation.prandtl) && equation.prandtl > 0,
                                   "invalid Cauchy constitutive constants");
@@ -166,7 +191,7 @@ namespace DNDS::Cauchy
                 validateProfile(condition.profile);
                 if (condition.kind == "noSlipWall" && condition.thermal == "isothermal")
                     DNDS_check_throw_info(condition.temperature >= numerics.temperatureFloor, "wall temperature lies below the configured temperature floor");
-                if (condition.kind == "farfield" && equation.eos == "perfectGas")
+                if (condition.kind == "farfield" && equation.eos == "perfectGas" && condition.state.is_null())
                     DNDS_check_throw_info(condition.primitive[4] / (condition.primitive[0] * equation.gasConstant) >= numerics.temperatureFloor,
                                           "farfield temperature lies below the configured temperature floor");
                 DNDS_check_throw_info(std::isfinite(condition.temperature) && condition.temperature > 0 &&

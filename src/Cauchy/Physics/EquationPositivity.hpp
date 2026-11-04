@@ -207,20 +207,22 @@ namespace DNDS::Cauchy
         /// Euler flow/species quadrature beta. Apply only to components selected
         /// by CompressesReconstructionComponent(), relative to the supplied
         /// admissible base. This differs from whole-vector increment repair.
+        /// densityLimit is an optional SA reduced-order ratio in [0,1], merged
+        /// into the density stage before the energy test and beta power.
         /// Raw affine references determine the
         /// concave energy ratio; a failed property-repaired postcheck falls
         /// back to the validated reference, as in the legacy species path.
         template <class Row, class BaseValues, class HigherValues>
         DNDS_DEVICE_CALLABLE real ReconstructionFraction(const Row &mean, const BaseValues &baseValues, const HigherValues &higherValues,
-                                                         index begin, index end, int power, real cutoff) const
+                                                         index begin, index end, int power, real cutoff, real densityLimit = 1) const
         {
             using namespace EquationPositivityDetail;
             bool good = true;
             for (index q = begin; q < end; ++q)
                 good = good && Admissible(PointRow<HigherValues>{higherValues, q});
-            if (good)
+            if (good && densityLimit == 1)
                 return 1;
-            real density = 1;
+            real density = densityLimit;
             for (index q = begin; q < end; ++q)
             {
                 const real base = baseValues(q, flowFirst), delta = higherValues(q, flowFirst) - base;

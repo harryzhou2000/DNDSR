@@ -27,6 +27,7 @@ def test_configured_rans_fields_wall_setup_implicit_restart_and_output(tmp_path,
     config = {"defaults": {
         "equation": {"transport": "NewtonianFourier", "viscosity": .001,
                      "rans": {"model": "SA", "viscosityReference": .01}},
+        "initialPrimitive": [1, 0, 0, 0, 1],
         "initialRANS": {"rhoNuTilde": .02},
         "execution": {"layout": "soa", "hostThreads": 2, "overlap": True},
         "numerics": {"reconstruction": "constant", "limiter": "none", "faceFallback": False,
@@ -41,7 +42,8 @@ def test_configured_rans_fields_wall_setup_implicit_restart_and_output(tmp_path,
     initial = {"rhoNuTilde": .02} if model == "SA" else {"rhoK": .02, "rhoOmega": .1}
     config["defaults"]["equation"]["rans"]["model"] = model
     config["defaults"]["initialRANS"] = initial
-    config["defaults"]["numerics"]["ransState"] = {"referenceConservative": initial}
+    config["defaults"]["numerics"]["ransState"] = {
+        "referenceConservative": {"rho": config["defaults"]["initialPrimitive"][0], **initial}}
     config["defaults"]["implicit"]["residualComponents"] = ["rho", *initial]
     domain = Domain(mesh, json.dumps(config))
     fields = domain.fields
@@ -112,8 +114,23 @@ def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_p
         config["defaults"]["equation"].update({"transport": "NewtonianFourier", "rans": {"model": rans_model, "viscosityReference": .01}})
         initial_rans = {"rhoNuTilde": .02} if rans_model == "SA" else {"rhoK": .02, "rhoOmega": .1}
         config["defaults"]["initialRANS"] = initial_rans
-        config["defaults"]["numerics"]["ransState"] = {"referenceConservative": initial_rans}
+        config["defaults"]["numerics"]["ransState"] = {
+            "referenceConservative": {"rho": config["defaults"]["initialPrimitive"][0], **initial_rans}}
         config["defaults"]["numerics"]["viscousGradient"] = "polynomial"
+    if rans_model == "KOmegaSST":
+        # Exercise the combined flow/RANS/species physical input and full
+        # reference through production PP; other cases retain old input forms.
+        settings = config["defaults"]
+        rho = settings["initialPrimitive"][0]
+        physical = [rho * 1.225, 0, 0, 0, 1400,
+                    initial_rans["rhoK"] / rho * 340**2,
+                    initial_rans["rhoOmega"] / rho * 340 / 2,
+                    .027, 0, 0, .22, 0, .02, 0, 0, 0]
+        settings["initialState"] = {"type": "primRhoT_phy", "state": physical}
+        settings["referenceState"] = settings["initialState"]
+        for key in ("initialPrimitive", "initialTemperature", "initialRANS", "initialMassFractions"):
+            del settings[key]
+        del settings["numerics"]["ransState"]
     try:
         domain = Domain(mesh, json.dumps(config))
     except RuntimeError as error:
@@ -165,7 +182,7 @@ def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_p
         assert np.all(np.isfinite(values["T"][:]))
 
 
-def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=False, time_pp=False, lvr_variant=None):
+def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=False, time_pp=False, lvr_variant=None, tagged=False):
     mpi = DNDS.MPIInfo()
     mpi.setWorld()
     path = Path(__file__).resolve().parents[2] / "data/mesh/Uniform_3x3_wall.cgns"
@@ -181,6 +198,15 @@ def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=Fa
         "initialPrimitive": primitive,
         "boundaries": {str(zone): {"kind": "farfield", "primitive": primitive} for zone in zones},
     }, "time": {"method": method, "steady": steady, "positivity": {"enabled": time_pp}}}
+    if tagged:
+        config["defaults"].pop("initialPrimitive")
+        config["defaults"]["equation"] = {
+            "referenceScales": {"rho0": 2, "U0": 3, "L0": 4, "T0": 5}}
+        state = {"type": "primRhoP_phy", "state": [2.4, .9, -.6, 1.2, 19.8]}
+        config["defaults"]["initialState"] = state
+        config["defaults"]["referenceState"] = state
+        config["defaults"]["boundaries"] = {
+            str(zone): {"kind": "farfield", "state": state} for zone in zones}
     if method == "ditr":
         config["time"]["ditr"] = {"minIterations": 1}
     if lvr_variant is not None:
@@ -190,6 +216,16 @@ def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=Fa
             "positivity": True, "faceFallback": False,
         })
     return Domain(mesh, json.dumps(config)), primitive
+
+
+@pytest.mark.mpi
+def test_tagged_physical_inputs_match_code_unit_frontend():
+    physical, _ = build_domain(layout="soa", workers=2, tagged=True)
+    code, _ = build_domain(layout="soa", workers=2)
+    np.testing.assert_allclose(physical.flow.numpy(), code.flow.numpy(), rtol=2e-14, atol=2e-14)
+    physical.advance(.001)
+    code.advance(.001)
+    np.testing.assert_allclose(physical.flow.numpy(), code.flow.numpy(), rtol=2e-14, atol=2e-14)
 
 
 @pytest.mark.mpi

@@ -25,6 +25,7 @@ flowchart TD
 | Source | Responsibility |
 | --- | --- |
 | `Physics/ReferenceScales.hpp` | SI reference values and code-unit conversion factors |
+| `Physics/StateInput` | Euler-compatible input tags and component-aware unit conversion; no missing-state fallback |
 | `Physics/Chemistry/ChemicalSource` | Existing PIMPL backend, property queries, UV solve, rates/Jacobians and reactors |
 | `Physics/Chemistry/ChemicalWorker` | Exclusive worker contexts and bounded reusable species buffers |
 | `Physics/Chemistry/SpeciesAdmissibility.hpp` | Euler-compatible transported mean-species repair on strided rows |

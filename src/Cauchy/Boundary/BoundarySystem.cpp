@@ -231,6 +231,7 @@ namespace DNDS::Cauchy
         for (const auto &[zone, source] : settings)
         {
             DNDS_check_throw_info(!gas || source.massFractions.empty(), "perfect-gas boundary has unused mass fractions");
+            DNDS_check_throw_info(source.state.is_null(), "resolve tagged boundary state before constructing BoundarySystem directly");
             BoundaryCondition condition;
             if (source.kind == "extrapolate")
                 condition.kind = BoundaryKind::Extrapolate;

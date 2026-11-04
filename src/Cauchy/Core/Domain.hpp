@@ -11,6 +11,7 @@
 
 namespace DNDS::Cauchy
 {
+    struct ResolvedPhysicalInputs;
     /// One participating domain. Placement/context ownership belongs to the
     /// simulation; this object owns only local mesh, equation, fields and
     /// numerical workspace. Simulation coordinates its accepted clock;
@@ -100,6 +101,7 @@ namespace DNDS::Cauchy
         static CFV::FVField &FlowField(EquationDofs &state);
         static const CFV::FVField &FlowField(const EquationDofs &state);
         Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time, EquationSetup setup);
+        Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const ResolvedPhysicalInputs &inputs, const TimeSettings &time, EquationSetup setup);
         void BeginTrial(real dt);
         /// Simulation alone interleaves these serialized domain-local phases.
         /// Boundary exchanges happen between preparation and solve, outside

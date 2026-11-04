@@ -520,6 +520,7 @@ TEST_CASE("RANS final thermal increment compression retains Euler whole-vector s
             if (equation.RANS().ComponentNumber() == 2)
                 initial[equation.RANS().ComponentNames()[1]] = .1;
             settings.numerics.ransState.referenceConservative = initial;
+            settings.numerics.ransState.referenceConservative["rho"] = 1;
             C::FiniteVolume fv(mesh, settings, equation);
             auto state = State(fv, split);
             fv.InitializeConstant(state, {1, 0, 0, 0, 1}, {}, 0, {}, initial);
@@ -579,6 +580,7 @@ TEST_CASE("P3 thermal reconstruction compression preserves admissible RANS linea
             if (equation.RANS().ComponentNumber() == 2)
                 initial[equation.RANS().ComponentNames()[1]] = .1;
             settings.numerics.ransState.referenceConservative = initial;
+            settings.numerics.ransState.referenceConservative["rho"] = 1;
             C::FiniteVolume fv(mesh, settings, equation);
             auto state = State(fv, reference);
             fv.InitializeConstant(state, {1, 0, 0, 0, 1}, {}, 0, {}, initial);
@@ -618,6 +620,113 @@ TEST_CASE("P3 thermal reconstruction compression preserves admissible RANS linea
         }
 }
 
+TEST_CASE("Two-equation PP damps scalar coefficient pairs and rejects scalar-invalid reference polynomials")
+{
+    auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    mesh->BuildNodeWallDist([](auto)
+                            { return false; });
+    for (int reference = 0; reference < 2; ++reference)
+    {
+        auto settings = Settings();
+        settings.boundaries.clear();
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.cfv.intOrder = 4;
+        settings.numerics.positivity = true;
+        settings.numerics.positivityCompressToMean = !reference;
+        settings.numerics.ransState.referenceConservative = {{"rho", .5}, {"rhoK", .02}, {"rhoOmega", .1}};
+        auto model = Equation(settings).RANS().Settings();
+        model.model = "KOmegaSST";
+        const auto equation = C::EquationSystem::Resolve(settings.equation).WithRANS(model);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto state = State(fv, reference);
+        fv.InitializeConstant(state, {1, 0, 0, 0, 1}, {}, 0, {}, {{"rhoK", .02}, {"rhoOmega", .1}});
+        auto work = fv.BuildEquationWorkspace(state);
+        auto guess = fv.ReconstructionGuess(*work);
+        C::EquationDofOperations::Fill(guess, 0);
+        const int modes = fv.Reconstruction().NRecDOF();
+        const I cells = fv.Metrics().NumCell();
+        {
+            auto write = guess.WriteOwned();
+            const auto flow = write.Block("flow"), rans = write.Block("rans");
+            for (I iCell = 0; iCell < cells; ++iCell)
+            {
+                flow(iCell, 4 * modes) = .001;
+                rans(iCell, 0) = 1;
+                rans(iCell, modes) = .001;
+            }
+        }
+        // On these width-1/4 Cartesian cells the four face midpoints include
+        // the extrema of every linear polynomial; interior quadrature cannot
+        // be more restrictive. Sample the intentionally linear oracle before
+        // adding modes which the reference-order fallback must remove.
+        R::Array<I> pointCells(R::RowLayout::Dense(4 * cells, 1));
+        R::Array<double> points(R::RowLayout::Dense(4 * cells, 3));
+        {
+            auto cw = pointCells.Write();
+            auto pw = points.Write();
+            const auto c = cw.View();
+            const auto p = pw.View();
+            for (I iCell = 0; iCell < cells; ++iCell)
+                for (int side = 0; side < 4; ++side)
+                {
+                    const auto center = fv.Metrics().GetCellCent(iCell);
+                    const I q = 4 * iCell + side;
+                    c(q, 0) = iCell;
+                    for (int d = 0; d < 3; ++d)
+                        p(q, d) = center[d] + (d == side / 2 ? (side % 2 ? .125 : -.125) : 0);
+                }
+        }
+        const auto location = state.LocateBlock("rans");
+        DNDS::CFV::PolynomialSamplingPlan sampler(fv.Reconstruction(), pointCells, points, false);
+        R::Array<double> values(R::RowLayout::Dense(4 * cells, I(state.PhysicalField(location.physicalField).Width())));
+        sampler.Evaluate(state.PhysicalField(location.physicalField), guess.PhysicalField(location.physicalField), values);
+        std::vector<double> expected(size_t(cells), 1);
+        {
+            const auto read = values.Read();
+            const auto v = read.View();
+            for (I iCell = 0; iCell < cells; ++iCell)
+            {
+                double minimum = .02;
+                for (int side = 0; side < 4; ++side)
+                    minimum = std::min(minimum, v(4 * iCell + side, location.firstComponent));
+                REQUIRE(minimum < 0);
+                expected[iCell] = .9 * (.02 - DNDS::smallReal * .02 / .5) / (.02 - minimum + DNDS::verySmallReal);
+            }
+        }
+        if (reference)
+        {
+            auto write = guess.WriteOwned();
+            const auto flow = write.Block("flow"), rans = write.Block("rans");
+            for (I iCell = 0; iCell < cells; ++iCell)
+            {
+                flow(iCell, 4 * modes + 2) = .002;
+                rans(iCell, 2) = 10;
+                rans(iCell, modes + 2) = .002;
+            }
+        }
+        const C::EquationDofOperations::Binding meanBefore(state), guessBefore(guess);
+        fv.LimitReconstructionPP(state, *work);
+        CHECK_NOTHROW(meanBefore.Check(state, true));
+        CHECK_NOTHROW(guessBefore.Check(guess, true));
+        CHECK(fv.PositivityReconstructionStats(*work).first == 0); // Reports thermal beta only, as Euler.
+        const auto read = fv.FluxReconstruction(*work).ReadOwned();
+        const auto flow = read.Block("flow"), rans = read.Block("rans");
+        for (I iCell = 0; iCell < cells; ++iCell)
+        {
+            CHECK(flow(iCell, 4 * modes) == .001);
+            CHECK(rans(iCell, 0) == doctest::Approx(expected[iCell]).epsilon(2e-12));
+            CHECK(rans(iCell, modes) == doctest::Approx(.001 * expected[iCell]).epsilon(2e-12));
+            for (int mode = 2; mode < modes; ++mode)
+            {
+                CHECK(flow(iCell, 4 * modes + mode) == 0);
+                CHECK(rans(iCell, mode) == 0);
+                CHECK(rans(iCell, modes + mode) == 0);
+            }
+        }
+    }
+}
+
 TEST_CASE("SA implicit updates repair scalars after flow compression without unfreezing masked components")
 {
     auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
@@ -630,6 +739,7 @@ TEST_CASE("SA implicit updates repair scalars after flow compression without unf
         settings.numerics.positivity = variant;
         CAPTURE(variant);
         settings.numerics.ransState.saUpperLimit = .05;
+        settings.numerics.ransState.referenceConservative = {{"rho", 1}, {"rhoNuTilde", .02}};
         C::FiniteVolume fv(mesh, settings, Equation(settings));
         auto state = State(fv, variant);
         // Rest state isolates density compression from the kinetic-energy
@@ -734,6 +844,7 @@ TEST_CASE("RANS nonlinear stages recover a manufactured viscous source balance")
             if (rans.ComponentNumber() == 2)
                 initial[rans.ComponentNames()[1]] = .1;
             settings.numerics.ransState.referenceConservative = initial;
+            settings.numerics.ransState.referenceConservative["rho"] = 1;
             C::FiniteVolume fv(mesh, settings, equation);
             auto target = State(fv, variant);
             fv.InitializeConstant(target, {1, 0, 0, 0, 1}, {}, 0, {}, initial);

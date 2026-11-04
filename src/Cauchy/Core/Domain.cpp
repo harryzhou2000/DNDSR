@@ -2,6 +2,7 @@
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/StateInput.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -33,7 +34,7 @@ namespace DNDS::Cauchy
             return R::RowLayout::Dense(0, width);
         }
         EquationDofs BuildState(const FiniteVolume &discrete, const EquationSystem &equation, const DomainSettings &settings,
-                                const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers)
+                                const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers, const std::vector<real> &initialConservative)
         {
             const auto &fv = discrete.Metrics();
             if (equation.HasMixture() || equation.HasRANS())
@@ -42,10 +43,19 @@ namespace DNDS::Cauchy
                 for (const auto &block : equation.Schema().blocks)
                     fields.Add(block.name, fv.BuildField(FlowLayout(settings, index(block.components.size()))));
                 auto state = EquationDofs::Separate(equation.Schema(), std::move(fields));
-                discrete.InitializeConstant(state, settings.initialPrimitive, settings.initialMassFractions, settings.initialTemperature, workers, settings.initialRANS);
+                if (!initialConservative.empty())
+                    discrete.InitializeConservative(state, initialConservative);
+                else
+                    discrete.InitializeConstant(state, settings.initialPrimitive, settings.initialMassFractions, settings.initialTemperature, workers, settings.initialRANS);
                 return state;
             }
             auto field = fv.BuildField(FlowLayout(settings));
+            if (!initialConservative.empty())
+            {
+                auto state = EquationDofs::Coupled(equation.Schema(), std::move(field));
+                discrete.InitializeConservative(state, initialConservative);
+                return state;
+            }
             auto primitive = settings.initialPrimitive;
             if (settings.initialTemperature > 0)
                 primitive[4] = primitive[0] * equation.Gas().gasConstant * settings.initialTemperature;
@@ -74,18 +84,28 @@ namespace DNDS::Cauchy
             request.faceSpectralRadius = request.cellSpectralSum = time.steady || time.method != "ssprk3";
             return request;
         }
+        ResolvedPhysicalInputs ResolveInputs(const DomainSettings &settings, const EquationSetup &setup, const MPIInfo &mpi)
+        {
+            std::optional<ResolvedPhysicalInputs> result;
+            MPI::LocalStage(mpi, [&]
+                            { result = ResolvePhysicalStateInputs(settings, setup.equation, setup.workers); });
+            return std::move(*result);
+        }
     }
     Domain::Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time)
         : Domain(name, mesh, settings, time, ResolveEquation(name, settings, mesh->getMPI())) {}
     Domain::Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time, EquationSetup setup)
-        : _name(std::move(name)), _equation(std::move(setup.equation)), _workers(std::move(setup.workers)), _fv(PrepareWallField(mesh, _equation, settings), settings, _equation),
-          _accepted(BuildState(_fv, _equation, settings, _workers)), _trial(_accepted.Clone()),
+        : Domain(name, mesh, ResolveInputs(settings, setup, mesh->getMPI()), time, setup) {}
+    Domain::Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const ResolvedPhysicalInputs &inputs, const TimeSettings &time, EquationSetup setup)
+        : _name(std::move(name)), _equation(std::move(setup.equation)), _workers(std::move(setup.workers)), _fv(PrepareWallField(mesh, _equation, inputs.settings), inputs.settings, _equation),
+          _accepted(BuildState(_fv, _equation, inputs.settings, _workers, inputs.initialConservative)), _trial(_accepted.Clone()),
           _residualState(EquationDofOperations::NewVector(_accepted)), _residual(FlowField(_residualState)), _initial(EquationDofOperations::NewVector(_accepted)),
           _workspace(_equation.HasMixture() || _equation.HasRANS() ? nullptr : _fv.BuildWorkspace(_trial, TimeAuxiliary(time))),
           _equationWorkspace(_equation.HasMixture() || _equation.HasRANS() ? _fv.BuildEquationWorkspace(_trial, _workers) : nullptr),
-          _engine(size_t(settings.execution.hostThreads), settings.execution.checkAccess ? std::make_shared<R::AccessTrackingContext>() : nullptr),
+          _engine(size_t(inputs.settings.execution.hostThreads), inputs.settings.execution.checkAccess ? std::make_shared<R::AccessTrackingContext>() : nullptr),
           _stream(_engine.CreateCPUStream())
     {
+        const auto &settings = inputs.settings;
         _positivity = settings.numerics.positivity;
         _equation.ValidateStateSchema(_accepted);
         DNDS_check_throw_info(_fv.Metrics().Dimension() == settings.mesh.dimension, "Cauchy config/mesh dimension differs");

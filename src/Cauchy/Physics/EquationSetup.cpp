@@ -1,5 +1,6 @@
 #include "Cauchy/Physics/EquationSetup.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
+#include "Cauchy/Physics/StateInput.hpp"
 #include <filesystem>
 #include <cstdlib>
 
@@ -7,6 +8,7 @@ namespace DNDS::Cauchy
 {
     EquationSetup EquationSetup::Resolve(const EquationSettings &settings, index workerNumber)
     {
+        const auto scales = ResolveReferenceScales(settings);
         if (settings.eos == "perfectGas")
         {
             DNDS_check_throw_info(settings.mixture.mechanismFile.empty() && settings.mixture.phaseName.empty(), "perfect gas has unused mixture input");
@@ -18,8 +20,6 @@ namespace DNDS::Cauchy
                                   settings.viscosity == 0 && workerNumber > 0 && !settings.mixture.mechanismFile.empty(),
                               "invalid or unavailable mixture equation setup");
         const auto &input = settings.mixture;
-        const Physics::ReferenceScales scales{input.rho0, input.U0, input.L0, input.T0};
-        scales.Validate("equation.mixture");
         auto file = std::filesystem::path(input.mechanismFile);
         if (file.is_relative() && !std::filesystem::exists(file))
             if (const auto *directory = std::getenv("DNDS_MECH_PATH"))

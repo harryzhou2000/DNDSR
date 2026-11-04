@@ -6,6 +6,7 @@
 #include "Cauchy/Riemann/RiemannFlux.hpp"
 #include "Cauchy/Motion/RigidMotion.hpp"
 #include "Physics/RANS/Model.hpp"
+#include "Physics/StateInput.hpp"
 #include <map>
 
 namespace DNDS::Cauchy
@@ -35,6 +36,9 @@ namespace DNDS::Cauchy
         std::string system = "compressible", eos = "perfectGas", transport = "inviscid", source = "none";
         real gamma = 1.4, gasConstant = 1., viscosity = 0., prandtl = 0.72;
         MixtureSettings mixture;
+        /// Null preserves existing mixture scale fields (including their
+        /// configured unit-system defaults). An object requires all four scales.
+        Json referenceScales = nullptr;
         Physics::RANS::ModelSettings rans;
         DNDS_DECLARE_CONFIG(EquationSettings)
         {
@@ -47,6 +51,11 @@ namespace DNDS::Cauchy
             DNDS_FIELD(viscosity, "Constant dynamic viscosity");
             DNDS_FIELD(prandtl, "Molecular Prandtl number");
             config.field_section(&T::mixture, "mixture", "Ideal-gas mixture mechanism and reference scales");
+            config.field_json_schema(&T::referenceScales, "referenceScales", "Unit scales, separate from physical referenceState", []
+                                     {
+                const Json positive{{"type", "number"}};
+                return Json{{"oneOf", Json::array({Json{{"type", "null"}}, Json{{"type", "object"}, {"required", {"rho0", "U0", "L0", "T0"}},
+                    {"additionalProperties", false}, {"properties", {{"rho0", positive}, {"U0", positive}, {"L0", positive}, {"T0", positive}}}}})}}; });
             config.field_section(&T::rans, "rans", "Shared turbulence closure; none disables the transported RANS block");
         }
     };
@@ -107,7 +116,7 @@ namespace DNDS::Cauchy
         {
             DNDS_FIELD(saUpperLimit, "Euler SA final mean upper bound multiplied by density");
             DNDS_FIELD(omegaLowerFactor, "Euler omega floor factor multiplying the prescribed reference rhoOmega");
-            config.field_schema(&T::referenceConservative, "referenceConservative", "Named conservative reference RANS state; required for a nonzero omega floor", SpeciesMassFractionsSchema);
+            config.field_schema(&T::referenceConservative, "referenceConservative", "Named conservative RANS reference; rho is required for reconstruction PP primitive-reference conversion, without fallback. RANS values are required for a nonzero omega floor", SpeciesMassFractionsSchema);
         }
     };
     struct NumericsSettings
@@ -184,6 +193,7 @@ namespace DNDS::Cauchy
         std::string kind = "extrapolate", thermal = "adiabatic";
         std::string wallVelocityFrame = "mesh";
         std::array<real, 5> primitive{1, 0, 0, 0, 1};
+        Json state = nullptr;
         std::array<real, 3> velocity{0, 0, 0};
         std::map<std::string, real> massFractions;
         std::map<std::string, real> ransConservative;
@@ -195,6 +205,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(thermal, "Wall thermal law: adiabatic or isothermal");
             DNDS_FIELD(wallVelocityFrame, "mesh: velocity relative to moving wall; ground: prescribed absolute ground velocity");
             DNDS_FIELD(primitive, "Farfield rho,u,v,w,p; three velocities on any geometry");
+            config.field_json_schema(&T::state, "state", "Complete tagged prescribed state; null uses primitive and scalar fields", Physics::StateInput::Schema);
             config.field_schema(&T::massFractions, "massFractions", "Prescribed species mass fractions; omitted last species fills the remainder", SpeciesMassFractionsSchema);
             config.field_schema(&T::ransConservative, "ransConservative", "Named conservative RANS values in code units for prescribed boundaries", SpeciesMassFractionsSchema);
             DNDS_FIELD(velocity, "Prescribed wall velocity in wallVelocityFrame; farfield/analytic data always use ground axes");
@@ -330,6 +341,7 @@ namespace DNDS::Cauchy
         NumericsSettings numerics;
         ImplicitSettings implicit;
         std::array<real, 5> initialPrimitive{1, 0, 0, 0, 1};
+        Json initialState = nullptr, referenceState = nullptr;
         std::map<std::string, real> initialMassFractions;
         std::map<std::string, real> initialRANS;
         real initialTemperature = 0;
@@ -346,6 +358,8 @@ namespace DNDS::Cauchy
             config.field_section(&T::numerics, "numerics", "Discrete operators");
             config.field_section(&T::implicit, "implicit", "Nonlinear CPU implicit stage controls");
             DNDS_FIELD(initialPrimitive, "Constant initial rho,u,v,w,p");
+            config.field_json_schema(&T::initialState, "initialState", "Complete tagged initial state; null uses existing initial fields", Physics::StateInput::Schema);
+            config.field_json_schema(&T::referenceState, "referenceState", "Complete physical reference state; never inferred from unit scales or initial values", Physics::StateInput::Schema);
             config.field_schema(&T::initialMassFractions, "initialMassFractions", "Initial species mass fractions; omitted last species receives the remainder", SpeciesMassFractionsSchema);
             config.field_schema(&T::initialRANS, "initialRANS", "Complete named conservative RANS initial values in code units", SpeciesMassFractionsSchema);
             DNDS_FIELD(initialTemperature, "Positive constant initial temperature overrides initialPrimitive pressure; zero uses pressure");

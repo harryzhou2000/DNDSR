@@ -91,12 +91,34 @@ point inside a cell.
 - `EulerEvaluator.hpp::CompressInc/AddFixedIncrement`: final density/energy
   repair, scalar RANS repair, addition and species mean repair.
 
-Current Cauchy RANS point fallback and final scalar updates are implemented.
-The full separate RANS **coefficient-level** limiter and RANS checks during
-reference-order selection remain pending; admissible-RANS coefficient tests
-do not establish that missing behavior. The legacy SA compile-time switches
-and two-equation reference floors require explicit preservation when that
-piece is connected. No new generic scalar limiter is substituted.
+RANS reference selection checks every scalar against the flow density floor,
+as Euler's `checkRecBaseGood` does. Compression uses different thresholds:
+`smallReal * referencePrimitive[j]`. The current input is
+`numerics.ransState.referenceConservative`, containing explicit `rho` and all
+named conservative RANS components. Primitive references divide those scalars
+by the supplied rho. Missing/invalid rho fails when reconstruction PP needs
+the conversion. There is no unit-density or scaling-density fallback. The
+conservative omega mean floor does not need density and remains unchanged.
+These values are code-unit physical-state references, not the independent
+`rho0/U0/L0/T0` nondimensionalization scales.
+
+For two-equation RANS, the minimum scalar base-to-high ratio determines theta;
+when limited, Euler multiplies both **entire coefficient columns** by `.9*theta`.
+It does not blend only their difference from the reference. This distinction
+is intentionally preserved even with a nonconstant reference. Scalar damping
+does not lower thermal beta or enter its diagnostic count. During RHS/property
+evaluation, the separate component-wise fallback of negative RANS point values
+to their cell means remains active. No stronger positivity theorem is claimed
+for the whole-coefficient rule with a nonconstant reference.
+
+The SA `USE_NS_SA_NUT_REDUCED_ORDER` switch contributes its scalar ratio to the
+flow/species density fraction, without separately damping SA coefficients here,
+matching Euler. Its point fallback retains the existing compile-time control.
+Without that switch, SA still participates in reference-order quality checks.
+A nonnegative scalar mean below the reference-quality threshold can force
+complete order fallback; coefficient damping cannot raise a zero mean. An
+out-of-range/nonfinite scalar ratio fails explicitly rather than being clamped
+to hide incompatible reference thresholds.
 
 The homogeneous mixture fixture demonstrates convergence of a short discrete
 reacting step, with selected H2/H2O residuals and actual species evolution. It

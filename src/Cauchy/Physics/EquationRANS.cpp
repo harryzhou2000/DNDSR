@@ -3,6 +3,31 @@
 
 namespace DNDS::Cauchy
 {
+    namespace
+    {
+        struct RANSReference
+        {
+            std::array<real, 2> values{};
+            std::optional<real> density;
+        };
+        RANSReference ResolveReference(const EquationSystem &equation, const RANSStateSettings &settings)
+        {
+            RANSReference result;
+            auto values = settings.referenceConservative;
+            const auto rho = values.find("rho");
+            if (rho != values.end())
+            {
+                result.density = rho->second;
+                values.erase(rho);
+            }
+            DNDS_check_throw_info(!result.density || (std::isfinite(*result.density) && *result.density > 0), "RANS reference rho must be finite and positive");
+            const auto kind = equation.RANS().Kind();
+            const bool omega = kind == Physics::RANS::ModelKind::KOmegaWilcox || kind == Physics::RANS::ModelKind::KOmegaSST;
+            if (!values.empty() || (omega && settings.omegaLowerFactor != 0))
+                result.values = ResolveRANSValues(equation, values);
+            return result;
+        }
+    }
     std::array<real, 2> ResolveRANSValues(const EquationSystem &equation, const std::map<std::string, real> &values)
     {
         std::array<real, 2> result{};
@@ -24,12 +49,24 @@ namespace DNDS::Cauchy
     }
     RANSStateView ResolveRANSStatePolicy(const EquationSystem &equation, const RANSStateSettings &settings)
     {
-        const auto kind = equation.RANS().Kind();
-        const bool omega = kind == Physics::RANS::ModelKind::KOmegaWilcox || kind == Physics::RANS::ModelKind::KOmegaSST;
-        const auto reference = !settings.referenceConservative.empty() || (omega && settings.omegaLowerFactor != 0)
-                                   ? ResolveRANSValues(equation, settings.referenceConservative)
-                                   : std::array<real, 2>{};
-        return PrepareRANSStatePolicy(equation, reference, settings.saUpperLimit, settings.omegaLowerFactor);
+        return PrepareRANSStatePolicy(equation, ResolveReference(equation, settings).values, settings.saUpperLimit, settings.omegaLowerFactor);
+    }
+    RANSReconstructionView ResolveRANSReconstructionPolicy(const EquationSystem &equation,
+                                                           const RANSStateSettings &settings, real densityFloor)
+    {
+        DNDS_check_throw_info(std::isfinite(densityFloor) && densityFloor > 0, "invalid RANS reference-polynomial density floor");
+        const auto reference = ResolveReference(equation, settings);
+        DNDS_check_throw_info(reference.density.has_value(), "RANS reconstruction requires explicit rho in referenceConservative");
+        const auto names = equation.RANS().ComponentNames();
+        for (int j = 0; j < equation.RANS().ComponentNumber(); ++j)
+            DNDS_check_throw_info(settings.referenceConservative.count(names[j]), "RANS reconstruction requires all named scalar reference values");
+        RANSReconstructionView policy{equation.RANS().Kind(), equation.RANS().ComponentNumber(), densityFloor, {}};
+        for (int j = 0; j < policy.components; ++j)
+        {
+            policy.compressionFloors[j] = smallReal * (reference.values[j] / *reference.density);
+            DNDS_check_throw_info(std::isfinite(policy.compressionFloors[j]), "nonfinite primitive RANS reconstruction reference");
+        }
+        return policy;
     }
     RANSStateView PrepareRANSStatePolicy(const EquationSystem &equation, const std::array<real, 2> &farfield,
                                          real saUpperLimit, real lowerFactor)

@@ -667,6 +667,32 @@ namespace DNDS::Cauchy
             });
             stream.Record().WaitHost(); });
     }
+    void FiniteVolume::InitializeConservative(EquationDofs &state, const std::vector<real> &values) const
+    {
+        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                        {
+            Metrics().Validate();
+            _data->equation.ValidateStateSchema(state);
+            _data->equation.ResolveKernelProfile(state.Device());
+            index width = 0;
+            for (const auto &block : _data->equation.Schema().blocks) width += index(block.components.size());
+            DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && index(values.size()) == width &&
+                                      std::all_of(values.begin(), values.end(), [](real v) { return std::isfinite(v); }),
+                                  "conservative initializer row space or values differ from equation");
+            FlowState flow;
+            std::copy_n(values.begin(), 5, flow.begin());
+            flow = _data->motion.At(0).LocalState(flow);
+            auto output = state.WriteOwned();
+            index offset = 0;
+            for (const auto &block : _data->equation.Schema().blocks)
+            {
+                const auto rows = output.Block(block.name);
+                for (index iCell = 0; iCell < rows.RowCount(); ++iCell)
+                    for (index j = 0; j < rows.ComponentNumber(); ++j)
+                        rows(iCell, j) = block.name == "flow" ? flow[j] : values[offset + j];
+                offset += index(block.components.size());
+            } });
+    }
     void FiniteVolume::InitializeConstant(EquationDofs &state, const FlowState &primitive,
                                           const std::map<std::string, real> &massFractions, real temperature,
                                           std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,

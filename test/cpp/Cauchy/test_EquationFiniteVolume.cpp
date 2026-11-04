@@ -6,6 +6,7 @@
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
 #include "Cauchy/State/EquationTimeStepper.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/StateInput.hpp"
 #include "Cauchy/Physics/EquationSource.hpp"
 #include "Cauchy/Physics/EquationPositivity.hpp"
 #include "Cauchy/Core/Domain.hpp"
@@ -580,6 +581,68 @@ TEST_CASE("Mixture isothermal wall conducts the independent Fourier flux without
     }
     MPI_Allreduce(MPI_IN_PLACE, &actual, 1, MPI_DOUBLE, MPI_SUM, mpi.comm);
     CHECK(actual == doctest::Approx(expected).epsilon(2e-10));
+}
+
+TEST_CASE("Tagged mixture state initializes distributed Domain and prescribed boundary through one resolver")
+{
+    MixtureFixture mixture;
+    auto values = std::vector<double>(5 + mixture.species - 1, 0);
+    values[0] = .8 * mixture.scales.rho0;
+    values[1] = .2 * mixture.scales.U0;
+    values[2] = -.04 * mixture.scales.U0;
+    values[3] = .03 * mixture.scales.U0;
+    values[4] = 1400;
+    values[5] = .027;
+    values[8] = .22;
+    values[10] = .02;
+    C::DomainSettings settings;
+    settings.equation.eos = "idealGasMixture";
+    settings.equation.mixture.mechanismFile = mixture.prototype.mechanismFile();
+    settings.equation.referenceScales = {{"rho0", mixture.scales.rho0}, {"U0", mixture.scales.U0}, {"L0", mixture.scales.L0}, {"T0", mixture.scales.T0}};
+    settings.initialState = settings.referenceState = C::Json{{"type", "primRhoT_phy"}, {"state", values}};
+    settings.boundaries["101"].kind = "analytic";
+    settings.boundaries["101"].state = settings.initialState;
+    settings.numerics.reconstruction = "constant";
+    settings.numerics.faceFallback = false;
+    settings.numerics.positivity = false;
+    const auto config = C::SimulationConfig::ResolveCollective({{"defaults", C::Json(settings)}}, mpi.comm);
+    const auto normalized = C::ResolvePhysicalStateInputs(config.Domains()[0].settings, mixture.equation, mixture.workers);
+    const auto expected = normalized.initialConservative;
+    for (const auto *layout : {"aos", "soa", "aosoa32"})
+    {
+        auto input = config.Domains()[0].settings;
+        input.execution.layout = layout;
+        // The periodic volume has no physical zone; exercise the prescribed
+        // boundary separately below with the same resolved state.
+        input.boundaries.clear();
+        C::Domain domain("tagged", CauchyTest::PeriodicQuads(mpi, 4), input);
+        const auto before = domain.Dofs().Clone();
+        {
+            auto read = domain.Dofs().ReadOwned();
+            I offset = 0;
+            for (const auto &block : mixture.equation.Schema().blocks)
+            {
+                const auto rows = read.Block(block.name);
+                for (I iCell = 0; iCell < rows.owned.RowCount(); ++iCell)
+                    for (I j = 0; j < rows.ComponentNumber(); ++j)
+                        CHECK(rows(iCell, j) == doctest::Approx(expected[offset + j]).epsilon(2e-12));
+                offset += I(block.components.size());
+            }
+        }
+        domain.Advance(1e-5);
+        Compare(domain.Dofs(), before, 2e-12);
+    }
+    C::BoundarySystem boundary(normalized.settings.boundaries, mixture.equation);
+    auto evaluator = mixture.equation.MakePointEvaluator(mixture.workers.Acquire(), {});
+    auto rhoY = evaluator.SpeciesInput();
+    for (int k = 0; k < rhoY.nSpecies; ++k)
+        rhoY[k] = 0;
+    C::FlowState inside{1, 0, 0, 0, 1};
+    const auto value = boundary.At(101).FaceValue(evaluator, inside, rhoY, {1, 0, 0}, {0, 0, 0}, 0);
+    for (int j = 0; j < 5; ++j)
+        CHECK(value[j] == doctest::Approx(expected[j]).epsilon(2e-12));
+    for (int k = 0; k < rhoY.nSpecies; ++k)
+        CHECK(rhoY[k] == doctest::Approx(expected[5 + k]).epsilon(2e-12));
 }
 
 TEST_CASE("Configured mixture Domains advance every block through production time and publication paths")

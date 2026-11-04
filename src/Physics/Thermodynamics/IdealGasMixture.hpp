@@ -62,6 +62,8 @@ namespace DNDS::Physics::Thermodynamics
         /// Immutable code-scaled coefficients of BaseInternalEnergy. Retain
         /// the material while borrowing this reference; no worker is needed.
         const std::vector<real> &BaseSpecificInternalEnergies() const;
+        /// Code-scaled ideal-gas species constants; immutable material data.
+        const std::vector<real> &SpeciesGasConstants() const;
         /// Setup-only ideal-gas coefficients e_k(T), in code energy/mass.
         /// Consumes one compatible worker; returned values own their storage.
         /// Their raw composition-weighted sum is affine in rho and rhoY and

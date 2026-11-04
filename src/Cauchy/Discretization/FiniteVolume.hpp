@@ -497,6 +497,10 @@ namespace DNDS::Cauchy
         /// Mixtures require an explicit matching worker pool. RANS requires
         /// every named conservative scalar; all inputs are validated before
         /// writing any block. Does not infer turbulence values from flow.
+        /// Fill exact code-unit conservative values in equation-schema order.
+        /// Applies the initial rigid-frame rotation to flow momentum only.
+        /// Caller resolves/validates physical input with ResolvePhysicalState.
+        void InitializeConservative(EquationDofs &state, const std::vector<real> &values) const;
         void InitializeConstant(EquationDofs &state, const FlowState &primitive, const std::map<std::string, real> &massFractions = {},
                                 real temperature = 0, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
                                 const std::map<std::string, real> &ransConservative = {}) const;

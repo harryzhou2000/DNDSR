@@ -1,5 +1,6 @@
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
 #include "Cauchy/Physics/EquationPositivity.hpp"
+#include "Cauchy/Physics/EquationRANS.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "CFV/Math/TaylorBasis.hpp"
 
@@ -38,9 +39,11 @@ namespace DNDS::Cauchy
         std::shared_ptr<const Data> owner;
         EquationDofs prototype;
         EquationThermalPolicy policy;
+        RANSReconstructionView rans;
+        index ransFirst = -1;
         std::vector<R::Array<real>> higherValues, baseValues;
         std::optional<EquationDofs> reference;
-        std::optional<R::Array<index>> degree;
+        R::Array<index> degree;
         index limited = 0;
         real minimum = 1;
         State(std::shared_ptr<const Data> data, const EquationDofs &input, const EquationDofs &coefficients,
@@ -48,15 +51,28 @@ namespace DNDS::Cauchy
             : owner(std::move(data)), prototype(input.NumericAlias()),
               policy(owner->equation, owner->settings.numerics.densityFloor, owner->settings.numerics.temperatureFloor,
                      owner->settings.numerics.sensibleEnergyFloor, owner->settings.numerics.pressureFloor,
-                     workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{})
+                     workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}),
+              degree(R::RowLayout::Dense(owner->metrics.NumCell(), 1))
         {
             DNDS_check_throw_info(owner->positivitySamples, "equation PP sampling geometry is unavailable");
+            if (owner->equation.HasRANS())
+            {
+                rans = ResolveRANSReconstructionPolicy(owner->equation, owner->settings.numerics.ransState,
+                                                       owner->settings.numerics.densityFloor);
+                index first = 0;
+                for (const auto &block : owner->equation.Schema().blocks)
+                {
+                    if (block.name == "rans")
+                        ransFirst = first;
+                    first += index(block.components.size());
+                }
+                DNDS_assert(ransFirst >= 0);
+            }
             for (index iField = 0; iField < input.PhysicalFieldNumber(); ++iField)
                 higherValues.emplace_back(FiniteVolumeDetail::FieldLayout(input.PhysicalField(iField).Owned().Layout(), owner->positivitySamples->Size(), index(input.PhysicalField(iField).Width())));
             if (!owner->settings.numerics.positivityCompressToMean)
             {
                 reference.emplace(EquationDofOperations::NewVector(coefficients));
-                degree.emplace(R::RowLayout::Dense(owner->metrics.NumCell(), 1));
                 for (const auto &array : higherValues)
                     baseValues.emplace_back(array.Layout());
             }
@@ -65,6 +81,18 @@ namespace DNDS::Cauchy
         {
             for (index iField = 0; iField < input.PhysicalFieldNumber(); ++iField)
                 owner->positivitySamples->Evaluate(input.PhysicalField(iField), coefficients.PhysicalField(iField), values[iField]);
+        }
+        template <class Values>
+        bool ReferenceGood(const Values &values, index q, const EquationThermalView &bounds) const
+        {
+            struct ScalarRow
+            {
+                const Values &values;
+                index row, first;
+                real operator[](index j) const { return values(row, first + j); }
+            } scalars{values, q, ransFirst};
+            return bounds.Admissible(EquationPositivityDetail::PointRow<Values>{values, q}) &&
+                   rans.ReferenceAdmissible(scalars);
         }
     };
     FiniteVolume::EquationPositivityWorkspace::EquationPositivityWorkspace(std::shared_ptr<const Data> owner,
@@ -93,28 +121,24 @@ namespace DNDS::Cauchy
             for (index q = 0; q < points; ++q)
                 for (index j = 0; j < values.ComponentNumber(); ++j)
                     DNDS_check_throw_info(std::isfinite(values(q, j)), "nonfinite equation reconstruction PP input");
+            auto write = data.degree.Write();
+            const auto degrees = write.View<R::FixedRows<1>>();
+            for (index iCell = 0; iCell < cells; ++iCell)
+            {
+                bool good = true;
+                for (index q = data.owner->positivityOffsets[iCell]; q < data.owner->positivityOffsets[iCell + 1]; ++q)
+                    good = good && data.ReferenceGood(values, q, bounds);
+                degrees(iCell, 0) = good ? n.cfv.maxOrder : -1;
+            }
         }
         if (data.reference)
         {
             EquationDofOperations::Copy(*data.reference, flux);
-            {
-                const SampleRead read(data.prototype, data.higherValues, points);
-                const auto values = read.View();
-                auto write = data.degree->Write();
-                const auto degrees = write.View<R::FixedRows<1>>();
-                for (index iCell = 0; iCell < cells; ++iCell)
-                {
-                    bool good = true;
-                    for (index q = data.owner->positivityOffsets[iCell]; q < data.owner->positivityOffsets[iCell + 1]; ++q)
-                        good = good && bounds.Admissible(EquationPositivityDetail::PointRow<decltype(values)>{values, q});
-                    degrees(iCell, 0) = good ? n.cfv.maxOrder : -1;
-                }
-            }
             for (int order = n.cfv.maxOrder - 1; order >= 0; --order)
             {
                 const int keep = order ? CFV::Math::PolynomialSize(data.owner->metrics.Dimension(), order) - 1 : 0;
                 {
-                    const auto status = data.degree->Read();
+                    const auto status = data.degree.Read();
                     const auto degrees = status.View<R::FixedRows<1>>();
                     auto write = data.reference->WriteOwned();
                     const auto layout = write.ComponentLayout();
@@ -131,7 +155,7 @@ namespace DNDS::Cauchy
                 const auto referenceScope = data.reference->ReadOwned();
                 const auto referenceLayout = referenceScope.ComponentLayout();
                 const auto reference = referenceLayout.View();
-                auto degreeWrite = data.degree->Write();
+                auto degreeWrite = data.degree.Write();
                 const auto degrees = degreeWrite.View<R::FixedRows<1>>();
                 auto write = flux.WriteOwned();
                 const auto layout = write.ComponentLayout();
@@ -141,7 +165,7 @@ namespace DNDS::Cauchy
                     {
                         bool good = true;
                         for (index q = data.owner->positivityOffsets[iCell]; q < data.owner->positivityOffsets[iCell + 1]; ++q)
-                            good = good && bounds.Admissible(EquationPositivityDetail::PointRow<decltype(values)>{values, q});
+                            good = good && data.ReferenceGood(values, q, bounds);
                         if (good)
                             degrees(iCell, 0) = order;
                         else
@@ -168,8 +192,12 @@ namespace DNDS::Cauchy
             auto write = flux.WriteOwned();
             const auto layout = write.ComponentLayout();
             const auto coefficients = layout.View();
+            const auto degreeRead = data.degree.Read();
+            const auto degrees = degreeRead.View<R::FixedRows<1>>();
             for (index iCell = 0; iCell < cells; ++iCell)
             {
+                if (degrees(iCell, 0) == n.cfv.maxOrder)
+                    continue; // Preserve Euler's full-polynomial early exit.
                 const EquationPositivityDetail::PointRow<decltype(means)> mean{means, iCell};
                 struct MeanValues
                 {
@@ -177,8 +205,17 @@ namespace DNDS::Cauchy
                     real operator()(index, index j) const { return value[j]; }
                 } base{mean};
                 const index begin = data.owner->positivityOffsets[iCell], end = data.owner->positivityOffsets[iCell + 1];
-                const auto beta = baseRead ? bounds.ReconstructionFraction(mean, baseRead->View(), higher, begin, end, n.positivityBetaPower, n.positivityBetaCutoff)
-                                           : bounds.ReconstructionFraction(mean, base, higher, begin, end, n.positivityBetaPower, n.positivityBetaCutoff);
+                const auto scalarLimit = baseRead ? data.rans.Compute(baseRead->View(), higher, data.ransFirst, begin, end)
+                                                  : data.rans.Compute(base, higher, data.ransFirst, begin, end);
+                DNDS_check_throw_info(std::isfinite(scalarLimit.coefficientScale) && scalarLimit.coefficientScale >= 0 && scalarLimit.coefficientScale <= 1 &&
+                                          std::isfinite(scalarLimit.flowDensityFraction) && scalarLimit.flowDensityFraction >= 0 && scalarLimit.flowDensityFraction <= 1,
+                                      "invalid RANS reconstruction compression: check scalar reference floors and admissible base");
+                if (scalarLimit.coefficientScale < 1)
+                    for (int component = 0; component < data.rans.components; ++component)
+                        for (int mode = 0; mode < modes; ++mode)
+                            coefficients(iCell, (data.ransFirst + component) * modes + mode) *= scalarLimit.coefficientScale;
+                const auto beta = baseRead ? bounds.ReconstructionFraction(mean, baseRead->View(), higher, begin, end, n.positivityBetaPower, n.positivityBetaCutoff, scalarLimit.flowDensityFraction)
+                                           : bounds.ReconstructionFraction(mean, base, higher, begin, end, n.positivityBetaPower, n.positivityBetaCutoff, scalarLimit.flowDensityFraction);
                 DNDS_check_throw_info(std::isfinite(beta) && beta >= 0 && beta <= 1, "invalid equation reconstruction PP beta");
                 if (beta < 1)
                 {

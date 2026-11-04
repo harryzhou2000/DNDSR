@@ -48,6 +48,7 @@ namespace DNDS::Physics::Thermodynamics
         return result;
     }
     const std::vector<real> &IdealGasMixture::BaseSpecificInternalEnergies() const { return _state->baseEnergy; }
+    const std::vector<real> &IdealGasMixture::SpeciesGasConstants() const { return _state->gasConstants; }
     std::vector<real> IdealGasMixture::SpecificInternalEnergies(real temperature, Chemistry::ChemicalWorkerPool::Lease worker) const
     {
         DNDS_check_throw_info(std::isfinite(temperature) && temperature > 0, "thermal reference temperature must be finite and positive");
