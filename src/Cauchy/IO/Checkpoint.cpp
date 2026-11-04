@@ -50,6 +50,8 @@ namespace DNDS::Cauchy
                 result["gamma"] = equation.Gas().gamma;
                 result["gas_constant"] = equation.Gas().gasConstant;
             }
+            if (equation.HasRANS())
+                result["rans"] = equation.RANS().Settings();
             return result;
         }
         nlohmann::json CompatibleConfig(Json config)

@@ -7,6 +7,7 @@
 #include "Cauchy/State/EquationTimeStepper.hpp"
 #include "Cauchy/Physics/EquationSetup.hpp"
 #include "Cauchy/Physics/EquationPositivity.hpp"
+#include "Cauchy/Physics/EquationRANS.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -32,6 +33,7 @@ namespace DNDS::Cauchy
         std::shared_ptr<FiniteVolume::EquationWorkspace> _equationWorkspace, _equationObservationWorkspace;
         std::optional<EquationDofs> _equationBackup, _observationState;
         std::optional<EquationThermalPolicy> _equationThermal;
+        std::optional<RANSStateView> _ransState;
         std::shared_ptr<FiniteVolume::Workspace> _observationWorkspace;
         std::optional<CFV::FVField> _observationResidual;
         Runtime::EagerEngine _engine;

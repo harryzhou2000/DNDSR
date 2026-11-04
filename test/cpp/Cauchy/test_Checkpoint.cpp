@@ -3,6 +3,7 @@
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/Simulation.hpp"
 #include "Cauchy/IO/EquationArchive.hpp"
+#include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "CartesianFixture.hpp"
 #include "../CFV/ReconstructionFixture.hpp"
 #include "DNDS/Runtime/Array/ArrayIO.hpp"
@@ -265,6 +266,84 @@ TEST_CASE("Mixture visualization writes conservative species and physical bounda
     Remove({prefix + ".vtkhdf"});
 }
 #endif
+TEST_CASE("Configured SA BDF2 restores all fields across layouts and rejects changed model metadata")
+{
+    const auto path = Path("cauchy-sa-history-");
+    C::DomainSettings settings;
+    settings.equation.transport = "NewtonianFourier";
+    settings.equation.viscosity = .001;
+    settings.equation.rans.model = "SA";
+    settings.equation.rans.viscosityReference = .01;
+    settings.initialPrimitive = {1, .1, 0, 0, 1};
+    settings.initialRANS = {{"rhoNuTilde", .02}};
+    settings.execution.layout = "soa";
+    settings.execution.hostThreads = 2;
+    settings.numerics.reconstruction = "variational";
+    settings.numerics.cfv.maxOrder = 2;
+    settings.numerics.reconstructionIterations = 4;
+    settings.numerics.faceFallback = false;
+    settings.numerics.limiter = "none";
+    settings.numerics.viscousGradient = "polynomial";
+    settings.implicit.diagonal = "block";
+    settings.implicit.residualComponents = {"rho", "rhoNuTilde"};
+    settings.implicit.linear.method = "gmres";
+    settings.implicit.linear.preconditioner = "ilu";
+    C::TimeSettings time;
+    time.method = "bdf2";
+    const auto config = C::SimulationConfig::Resolve({{"defaults", settings}, {"time", time}}, mpi.size);
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    CHECK_FALSE(mesh->HasNodeWallDist());
+    C::Domain source("sa", mesh, config.Domains()[0].settings, config.Time());
+    CHECK(mesh->HasNodeWallDist());
+    CHECK(source.Dofs().PhysicalFieldNumber() == 2);
+    {
+        auto state = source.Dofs();
+        auto write = state.WriteOwned();
+        const auto sa = write.Block("rans");
+        for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+            sa(iCell, 0) *= 1 + .02 * std::sin(6.283185307179586 * source.Discretization().Metrics().GetCellCent(iCell)[0]);
+    }
+    CHECK(source.StableStep(.5) > 0);
+    source.Advance(1e-4);
+    source.Advance(2e-4);
+    REQUIRE(!source.LastImplicitStages().empty());
+    CHECK(source.LastImplicitStages().back().converged);
+    const C::Json metadata{{"test", "SA BDF history"}};
+    source.WriteCheckpoint(path, metadata, true);
+    {
+        auto file = std::make_shared<DNDS::Serializer::SerializerH5>(mpi);
+        file->OpenFile(path, true);
+        std::string text;
+        file->ReadString("metadata_json", text);
+        CHECK(C::Json::parse(text).at("flow").at("rans").at("model") == "SA");
+        file->CloseFile();
+    }
+    settings.execution.layout = "aosoa32";
+    C::Domain restored("sa", mesh, settings, time);
+    restored.ReadCheckpoint(path, metadata);
+    const auto compare = [&](double tolerance)
+    {
+        const auto a = source.Dofs().ReadOwned(), b = restored.Dofs().ReadOwned();
+        for (const auto *name : {"flow", "rans"})
+        {
+            const auto u = a.Block(name), v = b.Block(name);
+            for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+                for (DNDS::index j = 0; j < u.ComponentNumber(); ++j)
+                    CHECK(std::abs(u(iCell, j) - v(iCell, j)) <= tolerance);
+        }
+    };
+    compare(0);
+    CHECK(restored.PreviousTimeStep() == source.PreviousTimeStep());
+    source.Advance(1.5e-4);
+    restored.Advance(1.5e-4);
+    compare(2e-12);
+    settings.equation.rans.saVersion = 1;
+    C::Domain different("sa", mesh, settings, time);
+    const C::EquationDofOperations::Binding before(different.Dofs());
+    CHECK_THROWS(different.ReadCheckpoint(path, metadata));
+    CHECK_NOTHROW(before.Check(different.Dofs(), true));
+    Remove({path});
+}
 TEST_CASE("Older viscous archives retain primitive gradients and reject a silent polynomial method change")
 {
     const auto path = Path("cauchy-viscous-policy-");

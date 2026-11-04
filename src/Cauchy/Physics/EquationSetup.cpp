@@ -27,6 +27,6 @@ namespace DNDS::Cauchy
                     file = candidate;
         Physics::Chemistry::ChemicalSource prototype(file.string(), input.phaseName, scales.U0, scales.rho0);
         auto equation = EquationSystem::FromIdealGasMixture(Physics::Thermodynamics::IdealGasMixture(prototype, scales), settings.transport == "NewtonianFourier");
-        return {std::move(equation), Physics::Chemistry::ChemicalWorkerPool(prototype, workerNumber)};
+        return {equation.WithRANS(settings.rans), Physics::Chemistry::ChemicalWorkerPool(prototype, workerNumber)};
     }
 }

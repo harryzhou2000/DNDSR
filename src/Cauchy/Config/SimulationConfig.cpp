@@ -266,6 +266,13 @@ namespace DNDS::Cauchy
         require(s.execution.communication == "mpi-direct", "transport " + s.execution.communication);
         require(s.equation.system == "compressible", "equation " + s.equation.system);
         const bool mixture = s.equation.eos == "idealGasMixture";
+        const bool rans = s.equation.rans.model != "none", extended = mixture || rans;
+        require(rans || s.initialRANS.empty(), "initialRANS without a RANS model");
+        if (rans)
+        {
+            require(s.equation.rans.model == "SA" && s.equation.rans.desScale > 100, "RANS spatial profile " + s.equation.rans.model);
+            require(s.equation.transport == "NewtonianFourier", "RANS requires viscous transport");
+        }
         require(s.equation.eos == "perfectGas" || mixture, "EOS " + s.equation.eos);
 #ifndef DNDS_USE_CANTERA
         require(!mixture, "idealGasMixture requires Cantera in this build");
@@ -280,12 +287,15 @@ namespace DNDS::Cauchy
                         std::isfinite(material.L0) && material.L0 > 0 && std::isfinite(material.T0) && material.T0 > 0,
                     "mixture reference scales");
             require(s.equation.viscosity == 0, "mixture transport uses its material, not constant viscosity");
-            require(s.initialProfile.kind == "constant", "nonconstant mixture initialization");
+        }
+        if (extended)
+        {
+            require(s.initialProfile.kind == "constant", "nonconstant extended equation initialization");
             require(Riemann::RiemannFlux::Resolve(s.numerics.flux).Kind() == Riemann::Solver::Rusanov && !s.numerics.faceFallback,
-                    "mixture flux preparation/face fallback");
-            require(s.numerics.limiter == "none" || (s.numerics.limiter == "WBAP" && !s.numerics.characteristicLimiter), "mixture limiter");
-            require(s.equation.transport != "NewtonianFourier" || s.numerics.viscousGradient == "polynomial", "mixture viscous gradient");
-            require(!s.implicit.multigrid.levels && !s.implicit.roeDissipation, "mixture p-FAS/Roe Jacobian");
+                    "extended equation flux preparation/face fallback");
+            require(s.numerics.limiter == "none" || (s.numerics.limiter == "WBAP" && !s.numerics.characteristicLimiter), "extended equation limiter");
+            require(s.equation.transport != "NewtonianFourier" || s.numerics.viscousGradient == "polynomial", "extended equation viscous gradient");
+            require(!s.implicit.multigrid.levels && !s.implicit.roeDissipation, "extended equation p-FAS/Roe Jacobian");
         }
         require(Riemann::RiemannFlux::Available(s.numerics.flux), "numerical flux " + s.numerics.flux);
         require(s.numerics.reconstruction == "constant" || s.numerics.reconstruction == "gradient" || s.numerics.reconstruction == "variational", "reconstruction " + s.numerics.reconstruction);
@@ -301,8 +311,8 @@ namespace DNDS::Cauchy
             require(condition.kind != "doubleMachBottom" || condition.profile.kind == "doubleMachReflection", "DMR bottom requires its analytic shock profile");
             require(condition.thermal == "adiabatic" || condition.thermal == "isothermal", "thermal BC " + condition.thermal);
             require(condition.wallVelocityFrame == "mesh" || condition.wallVelocityFrame == "ground", "wall velocity frame " + condition.wallVelocityFrame);
-            require(!mixture || (condition.kind != "interface" && condition.kind != "doubleMachBottom" && (condition.kind != "analytic" || condition.profile.kind == "constant")),
-                    "mixture boundary profile " + condition.kind);
+            require(!extended || (condition.kind != "interface" && condition.kind != "doubleMachBottom" && (condition.kind != "analytic" || condition.profile.kind == "constant")),
+                    "extended equation boundary profile " + condition.kind);
             require(condition.kind != "noSlipWall" || s.equation.transport == "NewtonianFourier", "no-slip wall needs viscous transport");
         }
         if (!missing.empty())
@@ -312,7 +322,7 @@ namespace DNDS::Cauchy
                 message += "\n  " + item;
             DNDS_check_throw_info(false, message);
         }
-        return {{mixture ? "cpu/idealGasMixture/flow5+species" : "cpu/perfectGas/flow5", "cpu/" + s.numerics.flux, "cpu/" + s.equation.transport,
+        return {{std::string(mixture ? "cpu/idealGasMixture/flow5+species" : "cpu/perfectGas/flow5") + (rans ? "+" + s.equation.rans.model : ""), "cpu/" + s.numerics.flux, "cpu/" + s.equation.transport,
                  "cfv/" + s.numerics.reconstruction, "cfv/" + s.numerics.limiter, "runtime/mpi-direct"}};
     }
     SimulationConfig SimulationConfig::Resolve(const Json &input, int size, const std::vector<ConfigOverride> &overrides)
@@ -484,9 +494,9 @@ namespace DNDS::Cauchy
         for (const auto &domain : data->domains)
         {
             DNDS_check_throw_info(data->time.method != "ssprk3" || !domain.settings.implicit.multigrid.levels, "polynomial FAS requires an implicit time method");
-            if (domain.settings.equation.eos == "idealGasMixture")
+            if (domain.settings.equation.eos == "idealGasMixture" || domain.settings.equation.rans.model != "none")
                 DNDS_check_throw_info(!data->time.positivity.enabled && !(data->time.method == "ssprk3" && domain.settings.numerics.positivity),
-                                      "mixture physical-dt and explicit flux-blend PP adapters are not connected yet");
+                                      "extended equation physical-dt and explicit flux-blend PP adapters are not connected yet");
         }
         DNDS_check_throw_info(data->output.interval >= 0 && data->output.historyInterval > 0 && data->output.historySegmentRows > 0 && !data->output.prefix.empty(), "invalid Cauchy output controls");
         DNDS_check_throw_info(data->output.hdfDeflateLevel >= 0 && data->output.hdfDeflateLevel <= 9, "Cauchy output hdfDeflateLevel must be in [0,9]");

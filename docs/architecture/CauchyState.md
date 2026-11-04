@@ -826,9 +826,31 @@ requires a complete named `referenceConservative` map (the prescribed farfield
 reference). No boundary or initial state is implicitly chosen for that purpose.
 The numerical reference is separate from the immutable shared physical model.
 
-This is operator-level support, not a production RANS Domain profile. Root
-model configuration and frontend initialization plumbing, Python model
-construction and restart model metadata remain to be connected. Two-equation models
+The configured C++ and Python Domain accepts `equation.rans.model="SA"` with
+Newtonian/Fourier transport and a complete `initialRANS` map, for example
+`{"rhoNuTilde":0.02}`. Perfect gas requires positive molecular viscosity;
+mixtures use their material transport. Domain stores flow, RANS and species
+in separate arrays, with the selected AoS/SoA/AoSoA layout for each. Python
+`fields` and `residual_fields()` expose all named blocks through the same API.
+
+If no nodal wall field is published, Domain asks Geom to build it from the
+configured no-slip zones before constructing geometry-dependent operators.
+A caller-supplied wall field is retained. Release mesh read views before
+Domain construction; wall-field presence must agree across ranks.
+Implicit and explicit full-state updates apply the model scalar bounds;
+explicit flux-blend and physical-dt PP are still unavailable for this profile.
+
+Restart metadata includes the complete physical RANS model settings and
+logical component schema. Readers reject changed closures even if the scalar
+names match, while physical array layouts may differ. Optional reconstruction
+and BDF history follow the existing full-state checkpoint protocol. Spatial
+output includes named RANS scalars and uses RANS-aware boundary states.
+
+This is a configured SA path with focused distributed correctness coverage,
+not completion of the matched Euler physical/performance studies. It currently
+uses Rusanov, constant or polynomial reconstruction, and no limiter or
+non-characteristic WBAP; viscous reconstruction uses polynomial gradients.
+Two-equation models
 remain rejected by finite-volume construction until their turbulent kinetic
 pressure, gradient-dependent aux bounds and wall/Jacobian terms are wired.
 DES and QCR integration remain pending. Existing NS/mixture profiles retain

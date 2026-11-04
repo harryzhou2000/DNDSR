@@ -18,7 +18,7 @@ namespace DNDS::Cauchy
                               "unavailable Cauchy equation profile");
         const bool viscous = settings.transport == "NewtonianFourier";
         DNDS_check_throw_info(viscous || settings.viscosity == 0, "unused inviscid viscosity");
-        return EquationSystem({settings.gamma, settings.gasConstant, settings.viscosity, settings.prandtl}, viscous);
+        return EquationSystem({settings.gamma, settings.gasConstant, settings.viscosity, settings.prandtl}, viscous).WithRANS(settings.rans);
     }
     EquationSystem EquationSystem::FromIdealGasMixture(Physics::Thermodynamics::IdealGasMixture material, bool viscous)
     {
@@ -48,6 +48,7 @@ namespace DNDS::Cauchy
         if (!model->ComponentNumber())
             return result;
         DNDS_check_throw_info(_viscous, "RANS requires molecular viscous transport");
+        DNDS_check_throw_info(_mixture || _gas.viscosity > 0, "perfect-gas RANS requires positive molecular viscosity");
         EquationBlockSchema block{"rans", {}, {}};
         const auto names = model->ComponentNames();
         if (model->ComponentNumber() == 1)

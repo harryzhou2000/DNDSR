@@ -18,7 +18,7 @@ namespace DNDS::Cauchy
         const int independent = std::max(0, species - 1);
         std::vector<std::string> names;
         std::vector<index> first;
-        index flowFirst = -1, speciesFirst = -1;
+        index flowFirst = -1, speciesFirst = -1, ransFirst = -1;
         std::optional<EquationPointEvaluator> evaluator;
         std::optional<EquationThermalPolicy> thermal;
         Runtime::Array<real> derived;
@@ -31,6 +31,7 @@ namespace DNDS::Cauchy
                 first.push_back(index(names.size()));
                 if (block.name == "flow") flowFirst = index(names.size());
                 if (block.name == "species") speciesFirst = index(names.size());
+                if (block.name == "rans") ransFirst = index(names.size());
                 for (const auto &component : block.components) names.push_back(component.name);
             }
             for (const auto *name : {"p", "T", "u", "v", "w", "Mach"}) names.push_back(name);
@@ -101,7 +102,7 @@ namespace DNDS::Cauchy
                         for (int mode = 0; mode < modes; ++mode)
                             point.values[first[iBlock] + j] += recBlocks[iBlock](sample.cell, j * modes + mode) * b(0, mode);
                 if (!thermal->View().Admissible(point.values)) Gather(blocks, sample.cell, point);
-                BoundaryValue(point, flowFirst, speciesFirst, independent, sample, *evaluator, frame, time, false);
+                BoundaryValue(point, flowFirst, speciesFirst, independent, sample, *evaluator, frame, time, false, ransFirst);
                 const auto flow = point.Flow(flowFirst);
                 const auto properties = evaluator->Evaluate(flow, point.Species(speciesFirst, independent));
                 surface << Mesh().OriginalEntityId(Geom::EntityKind::Cell, sample.cell) << ',' << sample.zone;

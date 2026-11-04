@@ -15,7 +15,57 @@ from DNDSR.Cauchy import Domain, Simulation, PhysicalStepLimit, DerivedQuantity
 
 
 @pytest.mark.mpi
-def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_path):
+def test_configured_sa_fields_wall_setup_implicit_restart_and_output(tmp_path):
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    root = Path(__file__).resolve().parents[2]
+    mesh = Geom.with_native_topology(Geom.read_native_cgns(mpi, str(root / "data/mesh/Uniform_3x3_wall.cgns"), 2))
+    with mesh.acquire_read(faces=True) as read:
+        local_zones = {int(read.boundary_info(i).zone) for i in range(mesh.NumBnd())}
+    zones = set().union(*MPI.COMM_WORLD.allgather(local_zones))
+    config = {"defaults": {
+        "equation": {"transport": "NewtonianFourier", "viscosity": .001,
+                     "rans": {"model": "SA", "viscosityReference": .01}},
+        "initialRANS": {"rhoNuTilde": .02},
+        "execution": {"layout": "soa", "hostThreads": 2, "overlap": True},
+        "numerics": {"reconstruction": "constant", "limiter": "none", "faceFallback": False,
+                     "viscousGradient": "polynomial", "positivity": True},
+        "implicit": {"diagonal": "block", "residualComponents": ["rho", "rhoNuTilde"],
+                     "linear": {"method": "gmres", "preconditioner": "ilu"}},
+        "boundaries": {str(zone): {"kind": "noSlipWall"} for zone in zones},
+    }, "time": {"method": "bdf1"}}
+    domain = Domain(mesh, json.dumps(config))
+    fields = domain.fields
+    assert set(fields) == {"flow", "rans"}
+    np.testing.assert_array_equal(fields["rans"].numpy(), .02)
+    assert domain.stable_step(.5) > 0
+    residual = domain.residual_fields()
+    assert set(residual) == set(fields)
+    assert all(np.all(np.isfinite(array.numpy())) for array in residual.values())
+    domain.advance(1e-6)
+    assert all(report.converged and len(report.residual) == 6 for report in domain.implicit_stages)
+    values = fields["rans"].numpy()
+    assert np.all(values >= 0)
+    changed = np.max(np.abs(values - .02), initial=0.)
+    assert MPI.COMM_WORLD.allreduce(changed, op=MPI.MAX) > 0
+    saved = {name: array.numpy().copy() for name, array in fields.items()}
+    path = MPI.COMM_WORLD.bcast(str(tmp_path / "sa.h5") if MPI.COMM_WORLD.rank == 0 else None, root=0)
+    domain.write_checkpoint(path, json.dumps(config))
+    domain.advance(1e-6)
+    domain.read_checkpoint(path, json.dumps(config))
+    for name, array in fields.items():
+        np.testing.assert_array_equal(array.numpy(), saved[name])
+    domain.write_visualization(path + ".output")
+    import h5py
+
+    with h5py.File(path + ".output.vtkhdf", "r") as output:
+        assert "rhoNuTilde" in output["VTKHDF/CellData"]
+        assert np.all(np.isfinite(output["VTKHDF/CellData/rhoNuTilde"][:]))
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("rans", [False, True])
+def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_path, rans):
     import os
 
     mpi = DNDS.MPIInfo()
@@ -40,6 +90,10 @@ def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_p
                      "linear": {"method": "gmres", "preconditioner": "ilu"}},
         "boundaries": {str(zone): {"kind": "extrapolate"} for zone in zones},
     }, "time": {"method": "bdf1"}}
+    if rans:
+        config["defaults"]["equation"].update({"transport": "NewtonianFourier", "rans": {"model": "SA", "viscosityReference": .01}})
+        config["defaults"]["initialRANS"] = {"rhoNuTilde": .02}
+        config["defaults"]["numerics"]["viscousGradient"] = "polynomial"
     try:
         domain = Domain(mesh, json.dumps(config))
     except RuntimeError as error:
@@ -47,7 +101,7 @@ def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_p
             pytest.skip("Cantera is disabled in this build")
         raise
     fields = domain.fields
-    assert set(fields) == {"flow", "species"}
+    assert set(fields) == ({"flow", "rans", "species"} if rans else {"flow", "species"})
     before_flow, before_species = fields["flow"].numpy().copy(), fields["species"].numpy().copy()
     residual = domain.residual_fields()
     assert set(residual) == set(fields)
@@ -59,7 +113,9 @@ def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_p
     np.testing.assert_allclose(fields["flow"].numpy(), before_flow, rtol=1e-11, atol=1e-12)
     local_change = np.max(np.abs(fields["species"].numpy() - before_species), initial=0.)
     assert MPI.COMM_WORLD.allreduce(local_change, op=MPI.MAX) > 1e-10
-    assert all(len(report.residual) == 14 for report in domain.implicit_stages)
+    assert all(len(report.residual) == 14 + int(rans) for report in domain.implicit_stages)
+    if rans:
+        np.testing.assert_allclose(fields["rans"].numpy(), .02, rtol=1e-11, atol=1e-12)
     assert not derived.current(domain)
     assert derived.refresh(domain)
     assert derived.current(domain)

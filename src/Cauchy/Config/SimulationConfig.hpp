@@ -5,6 +5,7 @@
 #include "Cauchy/Core/DomainPlacement.hpp"
 #include "Cauchy/Riemann/RiemannFlux.hpp"
 #include "Cauchy/Motion/RigidMotion.hpp"
+#include "Physics/RANS/Model.hpp"
 #include <map>
 
 namespace DNDS::Cauchy
@@ -34,6 +35,7 @@ namespace DNDS::Cauchy
         std::string system = "compressible", eos = "perfectGas", transport = "inviscid", source = "none";
         real gamma = 1.4, gasConstant = 1., viscosity = 0., prandtl = 0.72;
         MixtureSettings mixture;
+        Physics::RANS::ModelSettings rans;
         DNDS_DECLARE_CONFIG(EquationSettings)
         {
             DNDS_FIELD(system, "Coupled equation family");
@@ -45,6 +47,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(viscosity, "Constant dynamic viscosity");
             DNDS_FIELD(prandtl, "Molecular Prandtl number");
             config.field_section(&T::mixture, "mixture", "Ideal-gas mixture mechanism and reference scales");
+            config.field_section(&T::rans, "rans", "Shared turbulence closure; none disables the transported RANS block");
         }
     };
     struct ExecutionSettings
@@ -328,6 +331,7 @@ namespace DNDS::Cauchy
         ImplicitSettings implicit;
         std::array<real, 5> initialPrimitive{1, 0, 0, 0, 1};
         std::map<std::string, real> initialMassFractions;
+        std::map<std::string, real> initialRANS;
         real initialTemperature = 0;
         FlowProfileSettings initialProfile;
         std::map<std::string, BoundarySettings> boundaries;
@@ -343,6 +347,7 @@ namespace DNDS::Cauchy
             config.field_section(&T::implicit, "implicit", "Nonlinear CPU implicit stage controls");
             DNDS_FIELD(initialPrimitive, "Constant initial rho,u,v,w,p");
             config.field_schema(&T::initialMassFractions, "initialMassFractions", "Initial species mass fractions; omitted last species receives the remainder", SpeciesMassFractionsSchema);
+            config.field_schema(&T::initialRANS, "initialRANS", "Complete named conservative RANS initial values in code units", SpeciesMassFractionsSchema);
             DNDS_FIELD(initialTemperature, "Positive constant initial temperature overrides initialPrimitive pressure; zero uses pressure");
             config.field_section(&T::initialProfile, "initialProfile", "Quadrature-averaged initial physical field");
             config.field_map_of<BoundarySettings>(&T::boundaries, "boundaries", "Boundary-zone ID to condition");

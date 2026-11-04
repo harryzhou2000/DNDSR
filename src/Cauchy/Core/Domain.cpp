@@ -8,6 +8,22 @@ namespace DNDS::Cauchy
     namespace R = Runtime;
     namespace
     {
+        ssp<Geom::UnstructuredMesh> PrepareWallField(ssp<Geom::UnstructuredMesh> mesh, const EquationSystem &equation,
+                                                     const DomainSettings &settings)
+        {
+            if (!equation.HasRANS())
+                return mesh;
+            const auto mpi = mesh->getMPI();
+            int available = mesh->HasNodeWallDist();
+            MPI_Allreduce(MPI_IN_PLACE, &available, 1, MPI_INT, MPI_SUM, mpi.comm);
+            DNDS_check_throw_info(available == 0 || available == mpi.size, "RANS nodal wall-field presence differs between ranks");
+            if (!available)
+                mesh->BuildNodeWallDist([&](auto zone)
+                                        {
+                    const auto found = settings.boundaries.find(std::to_string(zone));
+                    return found != settings.boundaries.end() && found->second.kind == "noSlipWall"; });
+            return mesh;
+        }
         R::RowLayout FlowLayout(const DomainSettings &settings, index width = 5)
         {
             if (settings.execution.layout == "soa")
@@ -20,13 +36,13 @@ namespace DNDS::Cauchy
                                 const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers)
         {
             const auto &fv = discrete.Metrics();
-            if (equation.HasMixture())
+            if (equation.HasMixture() || equation.HasRANS())
             {
                 Algebra::DofBundle fields(fv.Space());
                 for (const auto &block : equation.Schema().blocks)
                     fields.Add(block.name, fv.BuildField(FlowLayout(settings, index(block.components.size()))));
                 auto state = EquationDofs::Separate(equation.Schema(), std::move(fields));
-                discrete.InitializeConstant(state, settings.initialPrimitive, settings.initialMassFractions, settings.initialTemperature, workers);
+                discrete.InitializeConstant(state, settings.initialPrimitive, settings.initialMassFractions, settings.initialTemperature, workers, settings.initialRANS);
                 return state;
             }
             auto field = fv.BuildField(FlowLayout(settings));
@@ -62,24 +78,27 @@ namespace DNDS::Cauchy
     Domain::Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time)
         : Domain(name, mesh, settings, time, ResolveEquation(name, settings, mesh->getMPI())) {}
     Domain::Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time, EquationSetup setup)
-        : _name(std::move(name)), _equation(std::move(setup.equation)), _workers(std::move(setup.workers)), _fv(mesh, settings, _equation),
+        : _name(std::move(name)), _equation(std::move(setup.equation)), _workers(std::move(setup.workers)), _fv(PrepareWallField(mesh, _equation, settings), settings, _equation),
           _accepted(BuildState(_fv, _equation, settings, _workers)), _trial(_accepted.Clone()),
           _residualState(EquationDofOperations::NewVector(_accepted)), _residual(FlowField(_residualState)), _initial(EquationDofOperations::NewVector(_accepted)),
-          _workspace(_equation.HasMixture() ? nullptr : _fv.BuildWorkspace(_trial, TimeAuxiliary(time))),
-          _equationWorkspace(_equation.HasMixture() ? _fv.BuildEquationWorkspace(_trial, _workers) : nullptr),
+          _workspace(_equation.HasMixture() || _equation.HasRANS() ? nullptr : _fv.BuildWorkspace(_trial, TimeAuxiliary(time))),
+          _equationWorkspace(_equation.HasMixture() || _equation.HasRANS() ? _fv.BuildEquationWorkspace(_trial, _workers) : nullptr),
           _engine(size_t(settings.execution.hostThreads), settings.execution.checkAccess ? std::make_shared<R::AccessTrackingContext>() : nullptr),
           _stream(_engine.CreateCPUStream())
     {
         _positivity = settings.numerics.positivity;
         _equation.ValidateStateSchema(_accepted);
         DNDS_check_throw_info(_fv.Metrics().Dimension() == settings.mesh.dimension, "Cauchy config/mesh dimension differs");
-        if (_workers)
+        if (_equationWorkspace)
         {
             const auto &n = settings.numerics;
-            _equationThermal.emplace(_equation, n.densityFloor, n.temperatureFloor, n.sensibleEnergyFloor, n.pressureFloor, _workers->Acquire());
+            _equationThermal.emplace(_equation, n.densityFloor, n.temperatureFloor, n.sensibleEnergyFloor, n.pressureFloor,
+                                     _workers ? _workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{});
             DNDS_check_throw_info(!time.positivity.enabled && !(time.method == "ssprk3" && n.positivity),
-                                  "mixture physical-dt and explicit flux-blend PP adapters are not connected yet");
+                                  "extended equation physical-dt and explicit flux-blend PP adapters are not connected yet");
         }
+        if (_equation.HasRANS())
+            _ransState.emplace(ResolveRANSStatePolicy(_equation, settings.numerics.ransState));
         DNDS_check_throw_info(Admissible(_accepted), "Cauchy initial means violate density or minimum-temperature internal-energy bounds");
         ConfigureTimeStep(time, settings.implicit.positivity.compressionPower);
         InitializeImplicit(settings, time, mesh);
@@ -100,16 +119,17 @@ namespace DNDS::Cauchy
     }
     bool Domain::Admissible(const EquationDofs &state) const
     {
-        if (!_equation.HasMixture())
+        if (!_equationWorkspace)
             return _fv.Admissible(FlowField(state));
         int valid = 1;
         try
         {
-            auto evaluator = _equation.MakePointEvaluator(_workers->Acquire(), {});
+            auto evaluator = _equation.MakePointEvaluator(_workers ? _workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {});
             const auto read = state.ReadOwned();
             const auto layout = read.ComponentLayout();
             const auto values = layout.View();
             const auto bounds = _equationThermal->View();
+            const auto scalars = _ransState ? read.Block("rans") : EquationBlockReadView{};
             auto rhoY = evaluator.SpeciesInput();
             for (index iCell = 0; iCell < values.RowCount(); ++iCell)
             {
@@ -119,8 +139,13 @@ namespace DNDS::Cauchy
                     valid = 0;
                     break;
                 }
+                if (_ransState && !_ransState->Admissible(scalars[iCell]))
+                {
+                    valid = 0;
+                    break;
+                }
                 for (int k = 0; k < rhoY.nSpecies; ++k)
-                    rhoY[k] = values(iCell, 5 + k);
+                    rhoY[k] = values(iCell, bounds.speciesFirst + k);
                 const auto point = evaluator.Evaluate(bounds.Flow(row), rhoY);
                 valid &= point.thermo.pressure > 0 && point.thermo.temperature > 0;
             }
@@ -161,9 +186,9 @@ namespace DNDS::Cauchy
         for (auto &transfer : transfers)
             transfer.Wait();
         MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
-                        { if (_workers) _fv.PrepareAuxValues(_accepted, *_timeAuxiliary, _time, _workers);
+                        { if (_equationWorkspace) _fv.PrepareAuxValues(_accepted, *_timeAuxiliary, _time, _workers);
                           else _fv.PrepareAuxValues(Flow(), *_timeAuxiliary, _time, _interfaceInputs ? &*_interfaceInputs : nullptr); });
-        return _workers ? _fv.StableStep(_accepted, *_timeAuxiliary, cfl, _time) : _fv.StableStep(Flow(), *_timeAuxiliary, cfl, _time);
+        return _equationWorkspace ? _fv.StableStep(_accepted, *_timeAuxiliary, cfl, _time) : _fv.StableStep(Flow(), *_timeAuxiliary, cfl, _time);
     }
     void Domain::UpdateStage(real dt, real historyWeight, real stageWeight, real stageTime)
     {
@@ -175,14 +200,33 @@ namespace DNDS::Cauchy
                 const auto geometry = _fv.Metrics().AcquireRead(); const auto metric = geometry.HostView();
                 const auto initial = _initial.ReadOwned(), residual = _residualState.ReadOwned();
                 auto output = _trial.WriteOwned();
+                const auto flow = output.Block("flow");
                 for (index iBlock = 0; iBlock < _trial.BlockNumber(); ++iBlock)
                 {
                     const auto base = initial.Block(iBlock), rhs = residual.Block(iBlock); const auto state = output.Block(iBlock);
+                    const bool rans = _ransState && _trial.Schema().blocks[iBlock].name == "rans";
                     for (index iCell = 0; iCell < state.RowCount(); ++iCell)
+                    {
+                        if (rans)
+                        {
+                            std::array<real, 2> old{}, change{}, next{};
+                            for (int j = 0; j < _ransState->components; ++j)
+                            {
+                                old[j] = state(iCell, j);
+                                change[j] = historyWeight * base(iCell, j) + stageWeight * (old[j] + dt * rhs(iCell, j) / metric.GetCellVol(iCell)) - old[j];
+                                DNDS_check_throw_info(std::isfinite(change[j]), "nonfinite explicit RANS increment");
+                            }
+                            _ransState->RepairIncrement(old, change);
+                            for (int j = 0; j < _ransState->components; ++j) next[j] = old[j] + change[j];
+                            _ransState->RepairMean(flow(iCell, 0), next);
+                            for (int j = 0; j < _ransState->components; ++j) state(iCell, j) = next[j];
+                            continue;
+                        }
                         for (index j = 0; j < state.ComponentNumber(); ++j)
                             state(iCell, j) = historyWeight * base(iCell, j) + stageWeight * (state(iCell, j) + dt * rhs(iCell, j) / metric.GetCellVol(iCell));
+                    }
                 } });
-            DNDS_check_throw_info(Admissible(_trial), "Cauchy explicit mixture stage is inadmissible; accepted state unchanged");
+            DNDS_check_throw_info(Admissible(_trial), "Cauchy explicit extended-equation stage is inadmissible; accepted state unchanged");
             return;
         }
         _fv.Evaluate(_trial, _residual, *_workspace, _engine, _stream, stageTime);
@@ -488,18 +532,18 @@ namespace DNDS::Cauchy
         std::array<real, 14> result{};
         result[13] = std::numeric_limits<real>::max();
         result[2] = result[3] = std::numeric_limits<real>::max();
-        if (_workers)
+        if (_equationWorkspace)
         {
             const MPIInfo mpi(_fv.Metrics().Communicator());
             MPI::LocalStage(mpi, [&]
                             {
             DNDS_check_throw_info(forceZones.empty(), "equation-state boundary force diagnostics are not connected yet");
-            auto evaluator = _equation.MakePointEvaluator(_workers->Acquire(), {});
+            auto evaluator = _equation.MakePointEvaluator(_workers ? _workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {});
             const auto geometry = _fv.Metrics().AcquireRead(); const auto metric = geometry.HostView();
             const auto read = _accepted.ReadOwned(), residual = _observationState->ReadOwned();
             const auto flow = read.Block("flow");
             const auto layout = residual.ComponentLayout(); const auto rhs = layout.View();
-            const int independent = _equation.Mixture().SpeciesNumber() - 1;
+            const int independent = _equation.HasMixture() ? _equation.Mixture().SpeciesNumber() - 1 : 0;
             std::optional<EquationBlockReadView> species;
             if (independent) species.emplace(read.Block("species"));
             const index width = _accepted.ComponentNumber();
