@@ -1,4 +1,5 @@
 #include "Cauchy/Implicit/LinearProblem.hpp"
+#include "Cauchy/Implicit/LinearBlockKernels.hpp"
 #include "Solver/BlockInverse.hpp"
 #include <limits>
 #include <optional>
@@ -190,28 +191,10 @@ namespace DNDS::Cauchy
         const auto remote = ghost ? ghost->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{};
         const auto xGhost = Algebra::MakeEigenRowMatrices(remote, _components, 1);
         offDiagonal.WithBlocks([&](const auto &blocks)
-                               {
-        const auto compute = [&](index iCell)
-        {
-            if (_diagonalStorage == DiagonalStorage::Block)
-                y[iCell].noalias() = matrix[iCell] * x[iCell];
-            else
-                y[iCell].array() = matrix[iCell].array() * x[iCell].array();
-            for (index j = 0; j < index(_pattern->columns[iCell].size()); ++j)
-            {
-                const auto column = _pattern->columns[iCell][j];
-                if (column < index(_pattern->partition->owned))
-                    y[iCell].noalias() += blocks(iCell, j) * x[column];
-                else
-                    y[iCell].noalias() += blocks(iCell, j) * xGhost[column - index(_pattern->partition->owned)];
-            }
-        };
-        if (region == LinearRegion::All)
-            for (index iCell = 0; iCell < index(_pattern->partition->owned); ++iCell)
-                compute(iCell);
-        else
-            for (auto iCell : region == LinearRegion::Core ? _pattern->core : _pattern->dependent)
-                compute(iCell); });
+                               { Detail::ApplyBlockRows(x, xGhost, y, matrix, blocks, *_pattern,
+                                                        region == LinearRegion::All ? _pattern->order : region == LinearRegion::Core ? _pattern->core
+                                                                                                                                     : _pattern->dependent,
+                                                        _components, _diagonalStorage == DiagonalStorage::Block); });
     }
     void LinearProblemContext::ApplySGS(const Field &rhs, const Field &input, Field &forward, Field &output) const
     {

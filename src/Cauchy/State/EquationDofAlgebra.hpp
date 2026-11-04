@@ -109,12 +109,47 @@ namespace DNDS::Cauchy
 
     public:
         static void Copy(State &out, const State &x) { Apply(Algebra::PointwiseOperation::Copy, out, &x, nullptr, 0); }
+        static void CopyGuess(State &out, const State &x) { Copy(out, x); }
         static void Fill(State &out, real value) { Apply(Algebra::PointwiseOperation::Fill, out, nullptr, nullptr, value); }
         static void Scale(State &out, real value) { Apply(Algebra::PointwiseOperation::Scale, out, nullptr, nullptr, value); }
         static void Axpy(State &out, real value, const State &x) { Apply(Algebra::PointwiseOperation::Axpy, out, &x, nullptr, value); }
         static void LinearCombination(State &out, real a, const State &x, real b, const State &y)
         {
             Apply(Algebra::PointwiseOperation::Combination, out, &x, &y, a, b);
+        }
+        /// Owned local dot-product batch in logical row/component order. The
+        /// caller owns its communicator/reduction and distributed error policy.
+        /// Descriptors/scopes are resolved once; no per-element schema checks,
+        /// halo access or global payload flattening occurs.
+        static std::vector<real> LocalProducts(const State &x, const std::vector<const State *> &probes)
+        {
+            CheckCompatible(x, x);
+            for (const auto *probe : probes)
+            {
+                DNDS_check_throw_info(probe, "null equation product probe");
+                CheckCompatible(x, *probe);
+            }
+            const auto read = x.ReadOwned();
+            const auto layout = read.ComponentLayout();
+            const auto values = layout.View();
+            std::vector<State::ReadScope> readers;
+            std::vector<Algebra::DofComponentLayout<const real>> layouts;
+            readers.reserve(probes.size());
+            layouts.reserve(probes.size());
+            for (const auto *probe : probes)
+            {
+                readers.push_back(probe->ReadOwned());
+                layouts.push_back(readers.back().ComponentLayout());
+            }
+            std::vector<Algebra::DofComponentView<const real>> inputs;
+            for (const auto &input : layouts)
+                inputs.push_back(input.View());
+            std::vector<real> result(probes.size(), 0);
+            for (index iRow = 0; iRow < values.RowCount(); ++iRow)
+                for (index j = 0; j < values.ComponentNumber(); ++j)
+                    for (index k = 0; k < index(inputs.size()); ++k)
+                        result[k] += values(iRow, j) * inputs[k](iRow, j);
+            return result;
         }
     };
 }

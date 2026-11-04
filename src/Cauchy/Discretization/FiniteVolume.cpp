@@ -785,9 +785,8 @@ namespace DNDS::Cauchy
                 const auto target = write.template View<R::TableRows>();
                 for (index iPoint = 0; iPoint < plan.NumBoundaryQuadrature(); ++iPoint)
                 {
-                    const auto q = plan.GetBoundaryQuadrature(iPoint);
                     const auto &sample = _data->samples[_data->boundaryEntries[gradient ? _data->gradientBoundaryPoints[iPoint] : iPoint]];
-                    const auto face = FiniteVolumeDetail::BoundaryFaceValue(sample, gas, Load(values, q.cell), time, frame, incoming);
+                    const auto face = FiniteVolumeDetail::BoundaryFaceValue(sample, gas, Load(values, sample.cell), time, frame, incoming);
                     for (int j = 0; j < 5; ++j)
                         target(iPoint, j) = face[j];
                 }
@@ -854,9 +853,8 @@ namespace DNDS::Cauchy
                 const auto target = write.View<R::TableRows>();
                 for (index iPoint = 0; iPoint < _data->gradient.NumBoundaryQuadrature(); ++iPoint)
                 {
-                    const auto point = _data->gradient.GetBoundaryQuadrature(iPoint);
                     const auto &sample = _data->samples[_data->boundaryEntries[_data->gradientBoundaryPoints[iPoint]]];
-                    const auto value = gas.Primitive(FiniteVolumeDetail::BoundaryFaceValue(sample, gas, Load(values, point.cell), time, frame, incoming));
+                    const auto value = gas.Primitive(FiniteVolumeDetail::BoundaryFaceValue(sample, gas, Load(values, sample.cell), time, frame, incoming));
                     const FlowState primitive{value.density, value.velocity[0], value.velocity[1], value.velocity[2], value.temperature};
                     for (int j = 0; j < 5; ++j)
                         target(iPoint, j) = primitive[j];

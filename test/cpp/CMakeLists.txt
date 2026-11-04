@@ -224,6 +224,7 @@ dnds_add_unit_test(cauchy_riemann "Cauchy/test_Riemann.cpp" "cauchy;cfv;geom;dnd
 dnds_add_unit_test(cauchy_riemann_legacy "Cauchy/test_RiemannLegacy.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_finite_volume "Cauchy/test_FiniteVolume.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_equation_finite_volume "Cauchy/test_EquationFiniteVolume.cpp" "cauchy;cfv;geom;dnds")
+target_compile_definitions(dnds_test_cauchy_equation_finite_volume PRIVATE DNDS_TEST_SOURCE_ROOT="${PROJECT_SOURCE_DIR}")
 if(DNDS_USE_CANTERA)
     foreach(NP ${DNDS_TEST_NP_LIST})
         set_property(TEST dnds_cauchy_equation_finite_volume_np${NP} APPEND PROPERTY ENVIRONMENT

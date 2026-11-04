@@ -121,13 +121,15 @@ namespace DNDS::Physics::Chemistry
      * This is intentionally tolerant for reconstructed/limited CFD states.
      * Low-level chemistry APIs should call ChemicalSource::massFractions(),
      * which hard-fails on invalid species instead of repairing them.
+     * A one-species material has no independent input: a null empty view is
+     * valid and produces the sole mass fraction one.
      */
     inline void RepairMassFractions(double rho, ConstSpeciesBufferView rhoYTransported,
                                     SpeciesBufferView Y)
     {
         int Ns = Y.nSpecies;
         int Ns1 = Ns - 1;
-        DNDS_check_throw_info(rhoYTransported.data != nullptr, "RepairMassFractions(): input buffer is null");
+        DNDS_check_throw_info(rhoYTransported.data != nullptr || Ns1 == 0, "RepairMassFractions(): input buffer is null");
         DNDS_check_throw_info(Y.data != nullptr, "RepairMassFractions(): output buffer is null");
         DNDS_check_throw_info(Ns > 0 && rhoYTransported.nSpecies == Ns1,
                               "RepairMassFractions(): transported species count mismatch");

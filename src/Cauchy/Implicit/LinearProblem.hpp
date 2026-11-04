@@ -9,6 +9,7 @@
 
 namespace DNDS::Cauchy
 {
+    class EquationDofs;
     enum class LinearRegion
     {
         All,
@@ -92,6 +93,8 @@ namespace DNDS::Cauchy
         void ValidateMatrix() const;
         void ValidateField(const Field &field) const;
         void ValidateOutputs(const Field &input, const Field &output) const;
+        void ValidateField(const EquationDofs &field) const;
+        void ValidateOutputs(const EquationDofs &input, const EquationDofs &output) const;
 
     public:
         /// Off-diagonal row columns use the owned+ghost local indexing of the
@@ -194,6 +197,11 @@ namespace DNDS::Cauchy
         /// Stateless matrix action. Core acquires no input ghost lease. Every
         /// output allocation must be distinct from inputs and numeric storage.
         void Apply(const Field &input, Field &output, LinearRegion region = LinearRegion::All) const;
+        /// Coupled matrix action on logical blocks without whole-state packing.
+        /// Input/output may group components differently; semantics, row space
+        /// and device must agree. Core reads no ghost part. Caller retains the
+        /// matrix and serializes preparation; return is synchronous on CPU.
+        void Apply(const EquationDofs &input, EquationDofs &output, LinearRegion region = LinearRegion::All) const;
         /// Move-only access scope for one staged symmetric-GS application.
         /// Lower runs Core then HaloDependent; Upper runs HaloDependent then
         /// Core. All is available for either complete scan. Finish publishes
@@ -247,5 +255,8 @@ namespace DNDS::Cauchy
         /// matrix generations are checked while reads are pinned. RHS, forward
         /// scratch and output are separate native fields on the same row space.
         void ApplyILU(const Field &rhs, Field &forward, Field &output) const;
+        /// Same local factors/order on logical blocks. Only one-row dense
+        /// scratch is gathered at a time; no distributed state repacking.
+        void ApplyILU(const EquationDofs &rhs, EquationDofs &forward, EquationDofs &output) const;
     };
 }

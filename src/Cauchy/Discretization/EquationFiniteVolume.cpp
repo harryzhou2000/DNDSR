@@ -250,7 +250,7 @@ namespace DNDS::Cauchy
         }
         void BuildSourceSampling()
         {
-            if (!chemical)
+            if (!chemical || owner->equation.Mixture().SpeciesNumber() == 1)
                 return;
             auto read = owner->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
             const auto mesh = read.HostView();
@@ -519,7 +519,7 @@ namespace DNDS::Cauchy
         }
         void AddChemicalSource(const EquationDofs &state, EquationDofs &result, EquationPointEvaluator &evaluator)
         {
-            if (!chemical)
+            if (!sourceSampling)
                 return;
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                 sourceSampling->Evaluate(state.PhysicalField(iField), fluxCoefficients.PhysicalField(iField), sourceValues[iField]);

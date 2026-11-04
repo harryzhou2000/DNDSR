@@ -1,10 +1,36 @@
 #pragma once
 
 #include "DNDS/Runtime/Array/ArrayView.hpp"
+#include "DNDS/Algebra/DofComponentView.hpp"
 #include <Eigen/Core>
 
 namespace DNDS::Algebra
 {
+    /// Dense block kernels keep their ordinary Eigen maps for one physical
+    /// field. A logical component view gathers into caller-owned row scratch.
+    /// Scratch is allocated once per operator, never once per row/neighbor.
+    template <class Rows, class Vector>
+    auto ReadEigenRow(Rows rows, index iRow, Vector &) { return rows[iRow]; }
+    template <class T, class Vector>
+    auto ReadEigenRow(DofComponentView<T> rows, index iRow, Vector &scratch)
+    {
+        for (index j = 0; j < rows.ComponentNumber(); ++j)
+            scratch[j] = rows(iRow, j);
+        return Eigen::Ref<const Vector>(scratch);
+    }
+    template <class Rows, class Vector>
+    auto WriteEigenRow(Rows rows, index iRow, Vector &) { return rows[iRow]; }
+    template <class Vector>
+    auto WriteEigenRow(DofComponentView<real>, index, Vector &scratch) { return Eigen::Ref<Vector>(scratch); }
+    template <class Rows, class Vector>
+    void PublishEigenRow(Rows, index, const Vector &) {}
+    template <class Vector>
+    void PublishEigenRow(DofComponentView<real> rows, index iRow, const Vector &value)
+    {
+        for (index j = 0; j < rows.ComponentNumber(); ++j)
+            rows(iRow, j) = value[j];
+    }
+
     /// Borrowed per-row column-major dense matrices. Construct once in the
     /// operator prologue while retaining the Array access lease. Scalar rows may
     /// be strided (SoA/AoSoA); no packing or allocation occurs. CPU only.

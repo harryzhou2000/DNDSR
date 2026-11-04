@@ -1,5 +1,6 @@
 #include "Cauchy/Implicit/LinearProblem.hpp"
 #include "Solver/NativeBlockLU.hpp"
+#include "Cauchy/State/EquationDofAlgebra.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -129,5 +130,41 @@ namespace DNDS::Cauchy
                                   _ilu->offDiagonalVersion == OffDiagonalGeneration(),
                               "ILU factors are missing or stale against the operator");
         _ilu->factors->Solve(rhs.Owned(), forward.Owned(), output.Owned());
+    }
+    void LinearProblemContext::ApplyILU(const EquationDofs &rhs, EquationDofs &forward, EquationDofs &output) const
+    {
+        ValidateMatrix();
+        ValidateOutputs(rhs, forward);
+        ValidateOutputs(rhs, output);
+        ValidateOutputs(forward, output);
+        const auto diagonal = _diagonal.Read();
+        const auto offDiagonal = ReadOffDiagonal();
+        DNDS_check_throw_info(_ilu && _ilu->current && _ilu->diagonalVersion == _diagonal.Version() &&
+                                  _ilu->offDiagonalVersion == OffDiagonalGeneration(),
+                              "logical ILU factors are absent or stale");
+        const auto read = rhs.ReadOwned();
+        auto middle = forward.WriteOwned();
+        std::optional<EquationDofs::WriteScope> write;
+        try
+        {
+            write.emplace(output.WriteOwned());
+        }
+        catch (...)
+        {
+            middle.CancelUnmodified();
+            throw;
+        }
+        const auto b = read.ComponentLayout();
+        const auto y = middle.ComponentLayout(), x = write->ComponentLayout();
+        try
+        {
+            _ilu->factors->SolveRows(b.View(), y.View(), x.View());
+        }
+        catch (...)
+        {
+            middle.Fail();
+            write->Fail();
+            throw;
+        }
     }
 }

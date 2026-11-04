@@ -2,6 +2,7 @@
 
 #include "Cauchy/Physics/EquationSchema.hpp"
 #include "DNDS/Algebra/DofBundle.hpp"
+#include "DNDS/Algebra/DofComponentView.hpp"
 #include <array>
 
 namespace DNDS::Cauchy
@@ -153,6 +154,10 @@ namespace DNDS::Cauchy
             ReadScope &operator=(const ReadScope &) = delete;
             EquationBlockReadView Block(index iBlock) const;
             EquationBlockReadView Block(const std::string &name) const;
+            /// Resolve logical component metadata once for coupled dense-row
+            /// kernels. Retain this scope and the returned host layout owner.
+            /// This is not a device upload or a payload packing operation.
+            Algebra::DofComponentLayout<const real> ComponentLayout() const;
             /// Attach one enclosing execution-prefix completion to all leases;
             /// caller records the correct stream after their last use. CPU
             /// workers instead retain this scope until execution returns.
@@ -172,9 +177,13 @@ namespace DNDS::Cauchy
             WriteScope &operator=(const WriteScope &) = delete;
             EquationBlockArrayView<real> Block(index iBlock) const;
             EquationBlockArrayView<real> Block(const std::string &name) const;
+            Algebra::DofComponentLayout<real> ComponentLayout() const;
             void Complete(const Runtime::Completion &completion);
             /// Only before any values have changed, as for native Array leases.
             void CancelUnmodified();
+            /// Mark partially written output unusable on an abandoned staged
+            /// operator. Every physical output lease is retired consistently.
+            void Fail();
         };
         /// Pointwise algebra/reductions stay unsplit and owned-only. Include
         /// ghosts only for a stencil after its halo has become ready. Scopes

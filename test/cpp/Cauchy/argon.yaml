@@ -1,0 +1,10 @@
+phases:
+- name: argon
+  thermo: ideal-gas
+  elements: [Ar]
+  species:
+  - h2o2.yaml/species: [AR]
+  kinetics: gas
+  reactions: none
+  transport: mixture-averaged
+  state: {T: 300, P: 101325}

@@ -302,5 +302,43 @@ namespace DNDS::Direct
             solve.Upper(0, _symbolic->Num());
             solve.Finish();
         }
+        /// Full rank-local solve on borrowed logical component rows. Caller
+        /// retains all payload/shape/descriptor scopes, proves RHS/forward/
+        /// output and factor-storage nonaliasing, and serializes symbolic
+        /// changes. Numeric matrix/factor leases are retained here. No MPI or
+        /// distributed payload packing; only three local dense row vectors.
+        /// On failure the enclosing output scopes must fail/discard scratch.
+        void SolveRows(Algebra::DofComponentView<const real> rhs, Algebra::DofComponentView<real> forward,
+                       Algebra::DofComponentView<real> result) const
+        {
+            const index rows = _matrix.RowNumber(), width = _matrix.BlockSize();
+            for (const auto &dimensions : {std::pair<index, index>{rhs.RowCount(), rhs.ComponentNumber()},
+                                           {forward.RowCount(), forward.ComponentNumber()},
+                                           {result.RowCount(), result.ComponentNumber()}})
+                DNDS_check_throw_info(dimensions.first == rows && dimensions.second == width, "logical triangular vector extent differs");
+            auto matrix = _matrix.Read(), factors = _factors.Read();
+            DNDS_check_throw_info(CurrentVersions(), "logical triangular factors are absent or stale");
+            Detail::NativeFactorView<const real> factor(_symbolic, factors.View(), true);
+            Eigen::VectorXd value(width), other(width), product(width);
+            for (index pos = 0; pos < rows; ++pos)
+            {
+                const auto iCell = _symbolic->FillingReorderNew2Old(pos);
+                value = Algebra::ReadEigenRow(rhs, iCell, other);
+                const auto &columns = _symbolic->lowerTriStructure[iCell];
+                for (index j = 0; j < index(columns.size()); ++j)
+                    value.noalias() -= factor.GetLower(iCell, j) * Algebra::ReadEigenRow(forward, columns[j], other);
+                Algebra::PublishEigenRow(forward, iCell, value);
+            }
+            for (index pos = rows; pos > 0; --pos)
+            {
+                const auto iCell = _symbolic->FillingReorderNew2Old(pos - 1);
+                value = Algebra::ReadEigenRow(forward, iCell, other);
+                const auto &columns = _symbolic->upperTriStructure[iCell];
+                for (index j = 0; j < index(columns.size()); ++j)
+                    value.noalias() -= factor.GetUpper(iCell, j) * Algebra::ReadEigenRow(result, columns[j], other);
+                product.noalias() = factor.GetDiag(iCell) * value;
+                Algebra::PublishEigenRow(result, iCell, product);
+            }
+        }
     };
 }

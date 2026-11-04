@@ -7,6 +7,7 @@
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include "Solver/FieldTimeStepper.hpp"
 #include "Cauchy/State/EquationTimeStepper.hpp"
+#include "Cauchy/State/EquationGMRES.hpp"
 #include <numeric>
 #include <optional>
 
@@ -395,6 +396,179 @@ TEST_CASE("Retained scopes preserve allocation lifetime and storage replacement 
     for (I iRow = 0; iRow < fixture.rows; ++iRow)
         for (I j = 0; j < 14; ++j)
             CHECK(old(iRow, j) == Value(mpi.rank, iRow, 7 + j));
+}
+TEST_CASE("Coupled matrix action ILU and left GMRES preserve separate and permuted logical equation fields")
+{
+    Fixture fixture;
+    const auto schema = Schema(5);
+    constexpr I nv = 21;
+    const auto diagonal = [nv](I row)
+    {
+        Eigen::MatrixXd value(nv, nv);
+        for (I j = 0; j < nv; ++j)
+            for (I i = 0; i < nv; ++i)
+                value(i, j) = (i == j ? 4 + .001 * row + .002 * i : 0) + .001 * (i + 1) * (j + 1) / double(nv * nv);
+        return value;
+    };
+    const auto off = [nv](I row, I column)
+    {
+        Eigen::MatrixXd value(nv, nv);
+        for (I j = 0; j < nv; ++j)
+            for (I i = 0; i < nv; ++i)
+                value(i, j) = (i == j ? -.03 - .00001 * row : 0) + .0001 * (i + 1) * (column + j + 1) / double(nv * nv);
+        return value;
+    };
+    const auto vector = [nv](int owner, I row)
+    {
+        Eigen::VectorXd value(nv);
+        for (I j = 0; j < nv; ++j)
+            value[j] = Value(owner, row, j);
+        return value;
+    };
+    std::vector<std::vector<I>> columns(size_t(fixture.rows));
+    std::vector<I> core;
+    for (I iRow = 0; iRow < fixture.rows; ++iRow)
+    {
+        if (iRow > 0)
+            columns[iRow].push_back(iRow - 1);
+        if (iRow + 1 < fixture.rows)
+            columns[iRow].push_back(iRow + 1);
+        if (iRow + 2 >= fixture.rows)
+            columns[iRow].push_back(fixture.rows + iRow - (fixture.rows - 2));
+        else
+            core.push_back(iRow);
+    }
+    C::LinearProblemContext problem(fixture.space, nv, columns, core, C::DiagonalStorage::Block);
+    {
+        auto d = problem.Diagonal().Write();
+        auto b = problem.OffDiagonal().Write();
+        const auto matrices = A::MakeEigenRowMatrices(d.View<R::TableRows>(), nv, nv);
+        for (I iRow = 0; iRow < fixture.rows; ++iRow)
+        {
+            matrices[iRow] = diagonal(iRow);
+            for (I j = 0; j < I(columns[iRow].size()); ++j)
+                b.View()(iRow, j) = off(iRow, columns[iRow][j]);
+        }
+    }
+    problem.PrepareILUStructure(-1, false);
+    problem.FactorizeILU();
+    for (int layout = 0; layout < 3; ++layout)
+    {
+        auto state = fixture.Build(schema, layout, layout != 0);
+        if (layout == 2)
+        {
+            A::DofBundle fields(fixture.space);
+            fields.Add("packed", A::DofField<double>(fixture.space, Layout(nv, 2)));
+            state = C::EquationDofs(schema, std::move(fields), {{"flow", "packed", 14}, {"rans", "packed", 19}, {"species", "packed", 0}});
+        }
+        Fill(state);
+        auto result = fixture.Build(schema, (layout + 1) % 3, true);
+        auto rhs = C::EquationDofOperations::NewVector(result), localRhs = C::EquationDofOperations::NewVector(result);
+        auto forward = C::EquationDofOperations::NewVector(result), solved = C::EquationDofOperations::NewVector(result);
+        std::vector<R::TransferBinding> halo;
+        for (I iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+            halo.push_back(fixture.Bind(state.PhysicalField(iField)));
+        std::vector<R::TransferOperation> operations;
+        for (auto &binding : halo)
+            operations.push_back(binding.Begin());
+        problem.Apply(state, result, C::LinearRegion::Core);
+        for (auto &operation : operations)
+            operation.Wait();
+        problem.Apply(state, result, C::LinearRegion::HaloDependent);
+        {
+            const auto read = result.ReadOwned();
+            const auto layoutRead = read.ComponentLayout();
+            const auto values = layoutRead.View();
+            auto write = rhs.WriteOwned(), localWrite = localRhs.WriteOwned();
+            const auto rhsLayout = write.ComponentLayout(), localLayout = localWrite.ComponentLayout();
+            const auto b = rhsLayout.View(), local = localLayout.View();
+            for (I iRow = 0; iRow < fixture.rows; ++iRow)
+            {
+                Eigen::VectorXd expected = diagonal(iRow) * vector(mpi.rank, iRow);
+                Eigen::VectorXd localExpected = expected;
+                for (const auto column : columns[iRow])
+                {
+                    if (column < fixture.rows)
+                    {
+                        const Eigen::VectorXd addition = off(iRow, column) * vector(mpi.rank, column);
+                        expected += addition;
+                        localExpected += addition;
+                    }
+                    else
+                    {
+                        const int previous = (mpi.rank + fixture.active - 1) % fixture.active;
+                        expected.noalias() += off(iRow, column) * vector(previous, fixture.rows - 2 + column - fixture.rows);
+                    }
+                }
+                for (I j = 0; j < nv; ++j)
+                {
+                    CHECK(values(iRow, j) == doctest::Approx(expected[j]).epsilon(2e-13));
+                    b(iRow, j) = expected[j];
+                    local(iRow, j) = localExpected[j];
+                }
+            }
+        }
+        problem.ApplyILU(localRhs, forward, solved);
+        {
+            const auto read = solved.ReadOwned();
+            const auto view = read.ComponentLayout();
+            for (I iRow = 0; iRow < fixture.rows; ++iRow)
+                for (I j = 0; j < nv; ++j)
+                    CHECK(view.View()(iRow, j) == doctest::Approx(Value(mpi.rank, iRow, j)).epsilon(2e-12));
+        }
+        C::EquationGMRES gmres(state, 8);
+        struct Input
+        {
+            C::EquationDofs *state;
+            std::vector<R::TransferBinding> halo;
+        };
+        std::vector<Input> inputs;
+        gmres.VisitOperatorInputs([&](auto &input)
+                                  {
+            Input value{&input,{}};
+            for (I iField = 0; iField < input.PhysicalFieldNumber(); ++iField) value.halo.push_back(fixture.Bind(input.PhysicalField(iField)));
+            inputs.push_back(std::move(value)); });
+        const auto apply = [&](auto &input, auto &output)
+        {
+            const auto found = std::find_if(inputs.begin(), inputs.end(), [&](const auto &v)
+                                            { return v.state == &input; });
+            REQUIRE(found != inputs.end());
+            std::vector<R::TransferOperation> active;
+            for (auto &binding : found->halo)
+                active.push_back(binding.Begin());
+            problem.Apply(input, output, C::LinearRegion::Core);
+            for (auto &operation : active)
+                operation.Wait();
+            problem.Apply(input, output, C::LinearRegion::HaloDependent);
+        };
+        const auto products = [&](const auto &input, const auto &probes)
+        {
+            auto result = C::EquationDofOperations::LocalProducts(input, probes);
+            MPI_Allreduce(MPI_IN_PLACE, result.data(), int(result.size()), MPI_DOUBLE, MPI_SUM, mpi.comm);
+            return result;
+        };
+        const auto report = gmres.Solve(rhs, apply, [&](const auto &input, auto &output)
+                                        { problem.ApplyILU(input, forward, output); }, products, {40, 1e-12, 1e-10});
+        CHECK(report.converged);
+        CHECK(report.usable);
+        {
+            const auto read = gmres.Solution().ReadOwned();
+            const auto layoutRead = read.ComponentLayout();
+            const auto values = layoutRead.View();
+            for (I iRow = 0; iRow < fixture.rows; ++iRow)
+                for (I j = 0; j < nv; ++j)
+                    CHECK(values(iRow, j) == doctest::Approx(Value(mpi.rank, iRow, j)).epsilon(2e-10));
+        }
+        if (mpi.rank == 0)
+        {
+            const auto generation = forward.PhysicalField(0).Owned().Version();
+            const auto outputGeneration = solved.PhysicalField(0).Owned().Version();
+            auto pin = solved.PhysicalField(solved.PhysicalFieldNumber() - 1).Owned().Read();
+            CHECK_THROWS(problem.ApplyILU(localRhs, forward, solved));
+            CHECK(forward.PhysicalField(0).Owned().Version() == generation);
+            CHECK(solved.PhysicalField(0).Owned().Version() == outputGeneration);
+        }
+    }
 }
 TEST_CASE("The same BDF and coupled block solve interface advances all flow RANS and species components")
 {

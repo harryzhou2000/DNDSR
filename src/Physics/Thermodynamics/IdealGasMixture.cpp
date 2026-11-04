@@ -185,6 +185,15 @@ namespace DNDS::Physics::Thermodynamics
         auto &rates = _worker.Buffers().production;
         const auto &scales = _state->scales;
         const int species = int(rates.size()), components = 5 + species - 1;
+        // A one-species material has no independent chemical equation. Its
+        // full-energy convention also has no chemical energy source.
+        if (species == 1)
+        {
+            point.chemicalSource = {rates.data(), 0};
+            if (request.sourceJacobian)
+                point.sourceJacobian = {_sourceJacobian.data(), 0, components, species};
+            return point;
+        }
         const real physicalT = point.thermo.temperature * scales.T0;
         const real sourceT = std::max(physicalT, source.baseTemperature());
         const real sourceP = sourceT == physicalT ? point.thermo.pressure * scales.Pressure()

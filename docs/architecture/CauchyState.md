@@ -239,6 +239,20 @@ changes. Wall kinematics use the same rigid-frame producer as flow5. Chemistry
 uses cell volume quadrature and the shared polynomial sampler, following its
 optional cache policy. It adds independent mass rates and no full-energy source.
 
+A one-species material has no `species` block. Its empty independent-composition
+view may have a null pointer; repair/strict conversion produce the sole full
+mass fraction one. Thermodynamics still use the actual material. Chemical
+volume sampling is unnecessary, the point source is zero, and its optional
+logical flow5 Jacobian is zero. Do not invent a dummy transported component.
+
+The mixture assembly gates include independent nonconstant references. One
+integrates species diffusion from direct backend diffusivities and the full
+dependent-species correction at face points. Another integrates direct backend
+rates with independently generated Cartesian Gauss points and weights. Their
+signals distinguish omitted/reversed diffusion and mean-only source sampling.
+Layout agreement, periodic conservation and uniform-state fixtures remain
+useful additional checks; they do not replace those assembly oracles.
+
 The wrapper posts all physical-field halos before submitting owned-only core
 work, waits on the controller thread, then submits dependent work. First VR
 core work may overlap both the mean and coefficient exchanges. Ordered SOR
@@ -266,6 +280,52 @@ Riemann profiles, a distinct unlimited viscous polynomial, and non-wall/non-
 extrapolate BC producers until connected. The established flow5 path retains
 its existing capabilities. Extended stage/linear/PP/checkpoint/frontend adapters
 and physical RANS/flame acceptance remain separate work.
+
+## Logical rows in coupled linear algebra
+
+`ReadScope::ComponentLayout()` and `WriteScope::ComponentLayout()` resolve
+logical components to physical parents once. The returned
+`DNDS::Algebra::DofComponentLayout<T>` owns a small host descriptor table, while
+the enclosing access scope retains payload/shape owners and leases. Its borrowed
+`DofComponentView<T>` performs ordinary `(row, component)` access and keeps each
+parent's complete physical width/pitch. This is neither a storage conversion nor
+a distributed payload buffer. Keep both the layout owner and the source scope
+alive through use. Copying a plain view does not retain either. A future device
+launcher must also place that descriptor table in accessible device memory;
+these CPU adapters do not perform an implicit upload.
+
+```text
+EquationDofs -> physical Array handles
+  Read/WriteScope -> payload + shape leases
+  ComponentLayout -> owned host descriptors (one per logical component)
+    ComponentView -> borrowed descriptor pointer -> strided parent values
+```
+
+`LinearProblemContext::Apply` accepts these logical states as well as native
+fields. Both use the same matrix action; the established field path retains
+direct Eigen maps, while logical rows gather one dense vector at a time.
+`ApplyILU` uses the same prepared symbolic structure and numeric factors, with
+three local dense row vectors and no whole-state packing. Input/output may
+have different component grouping/layouts, but schema, row space and CPU
+placement must agree. Every physical output is reserved before numerical
+writes. The low-level `NativeBlockLU::SolveRows` borrows raw views: its caller
+must retain descriptors/payload scopes and prove nonaliasing and symbolic
+serialization. The checked context wrapper does so and fails partial outputs
+if a solve throws.
+
+`Solver::StateGMRES<State, Operations>` owns the existing restarted left-GMRES
+mathematics. `FieldGMRES` remains its historical native-field adapter;
+`EquationGMRES` uses logical-state algebra. Arnoldi, stopping, true residual,
+reorthogonalization and fixed-preconditioner requirements are unchanged.
+Operator/preconditioner callbacks finish synchronously, retain their resources,
+and coordinate distributed errors and halos. `LocalProducts` computes one
+owned-only dot-product batch in logical row/component order; its caller chooses
+the communicator/reduction. No implicit transfer occurs in the Krylov class.
+
+This does not yet extend the production SGS/nonlinear/Jacobian-preparation or
+checkpoint adapters. Matrix dimensions alone do not validate a physical model.
+The source/flux producer must supply the matching logical derivative ordering;
+physical RANS/species acceptance remains separately gated.
 
 ## Chemical source operator
 

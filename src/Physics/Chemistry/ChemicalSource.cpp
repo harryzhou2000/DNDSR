@@ -1203,7 +1203,7 @@ namespace DNDS::Physics::Chemistry
         DNDS_assert(impl_);
         int Ns = impl_->Ns;
         int Ns1 = Ns - 1;
-        DNDS_check_throw_info(rhoYTransported.data != nullptr, "ChemicalSource::massFractions(): input buffer is null");
+        DNDS_check_throw_info(rhoYTransported.data != nullptr || Ns1 == 0, "ChemicalSource::massFractions(): input buffer is null");
         DNDS_check_throw_info(Y.data != nullptr, "ChemicalSource::massFractions(): output buffer is null");
         DNDS_check_throw_info(Y.nSpecies >= Ns, "ChemicalSource::massFractions(): output buffer too small");
         DNDS_check_throw_info(rhoYTransported.nSpecies == Ns1,

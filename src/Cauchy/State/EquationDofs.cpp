@@ -304,6 +304,19 @@ namespace DNDS::Cauchy
         for (auto &lease : _ghost)
             lease.Complete(completion);
     }
+    Algebra::DofComponentLayout<const real> EquationDofs::ReadScope::ComponentLayout() const
+    {
+        DNDS_check_throw_info(_definition, "equation DOF scope is moved");
+        std::vector<Algebra::DofComponentColumn<const real>> columns;
+        columns.reserve(size_t(_definition->components));
+        for (index iBlock = 0; iBlock < index(_definition->blocks.size()); ++iBlock)
+        {
+            const auto block = Block(iBlock);
+            for (index j = 0; j < block.ComponentNumber(); ++j)
+                columns.push_back({block.owned.parent, block.ghost.parent, block.owned.first + j});
+        }
+        return {std::move(columns), index(_definition->space.OwnedRows()), _ghost.empty() ? 0 : index(_definition->space.GhostRows())};
+    }
     EquationDofs::WriteScope::WriteScope(EquationDofs &state, R::ExecutionContext context)
         : _definition(state._definition)
     {
@@ -341,6 +354,24 @@ namespace DNDS::Cauchy
     {
         for (auto &lease : _owned)
             lease.CancelUnmodified();
+    }
+    Algebra::DofComponentLayout<real> EquationDofs::WriteScope::ComponentLayout() const
+    {
+        DNDS_check_throw_info(_definition, "equation DOF scope is moved");
+        std::vector<Algebra::DofComponentColumn<real>> columns;
+        columns.reserve(size_t(_definition->components));
+        for (index iBlock = 0; iBlock < index(_definition->blocks.size()); ++iBlock)
+        {
+            const auto block = Block(iBlock);
+            for (index j = 0; j < block.ComponentNumber(); ++j)
+                columns.push_back({block.parent, {}, block.first + j});
+        }
+        return {std::move(columns), index(_definition->space.OwnedRows()), 0};
+    }
+    void EquationDofs::WriteScope::Fail()
+    {
+        for (auto &lease : _owned)
+            lease.Fail();
     }
     EquationDofs::ReadScope EquationDofs::ReadOwned(R::ExecutionContext context) const { return {*this, false, context}; }
     EquationDofs::ReadScope EquationDofs::ReadWithGhost(R::ExecutionContext context) const { return {*this, true, context}; }
