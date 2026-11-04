@@ -20,6 +20,46 @@ namespace DNDS::Algebra
             Axpy,
             Combination
         };
+    }
+    using PointwiseOperation = Detail::Pointwise;
+
+    /// Arithmetic core for leased host row views, including logical segments
+    /// of a wider physical field. Callers validate matching shapes/CPU placement
+    /// and retain access scopes. This function acquires no access, reads no
+    /// ghosts implicitly, and performs no allocation/communication. Binary
+    /// inputs may alias output only when their logical indexing is identical.
+    template <class Output, class X, class Y>
+    void ApplyHostRows(PointwiseOperation operation, Output output, X x, Y y, double a = 0, double b = 0)
+    {
+        using T = std::remove_reference_t<decltype(output(0, 0))>;
+        for (index iRow = 0; iRow < output.RowCount(); ++iRow)
+            for (index iCol = 0; iCol < output.RowSize(iRow); ++iCol)
+            {
+                switch (operation)
+                {
+                case PointwiseOperation::Fill:
+                    output(iRow, iCol) = T(a);
+                    break;
+                case PointwiseOperation::Copy:
+                    output(iRow, iCol) = x(iRow, iCol);
+                    break;
+                case PointwiseOperation::Scale:
+                    output(iRow, iCol) *= T(a);
+                    break;
+                case PointwiseOperation::Axpy:
+                    output(iRow, iCol) += T(a) * x(iRow, iCol);
+                    break;
+                case PointwiseOperation::Combination:
+                {
+                    const auto left = x(iRow, iCol), right = y(iRow, iCol);
+                    output(iRow, iCol) = T(a) * left + T(b) * right;
+                    break;
+                }
+                }
+            }
+    }
+    namespace Detail
+    {
         enum class Reduction
         {
             Dot,
@@ -42,31 +82,7 @@ namespace DNDS::Algebra
                 ApplyCUDA(context, operation, output, x, y, a, b);
                 return;
             }
-            for (index iRow = 0; iRow < output.RowCount(); ++iRow)
-                for (index iCol = 0; iCol < output.RowSize(iRow); ++iCol)
-                {
-                    switch (operation)
-                    {
-                    case Pointwise::Fill:
-                        output(iRow, iCol) = T(a);
-                        break;
-                    case Pointwise::Copy:
-                        output(iRow, iCol) = x(iRow, iCol);
-                        break;
-                    case Pointwise::Scale:
-                        output(iRow, iCol) *= T(a);
-                        break;
-                    case Pointwise::Axpy:
-                        output(iRow, iCol) += T(a) * x(iRow, iCol);
-                        break;
-                    case Pointwise::Combination:
-                    {
-                        const auto left = x(iRow, iCol), right = y(iRow, iCol);
-                        output(iRow, iCol) = T(a) * left + T(b) * right;
-                        break;
-                    }
-                    }
-                }
+            ApplyHostRows(operation, output, x, y, a, b);
         }
         template <class T>
         void Reduce(Runtime::ExecutionContext context, Reduction operation, Runtime::ArrayView<const T> x,

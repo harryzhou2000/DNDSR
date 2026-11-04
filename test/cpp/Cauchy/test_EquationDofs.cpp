@@ -6,6 +6,7 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include "Solver/FieldTimeStepper.hpp"
+#include "Cauchy/State/EquationTimeStepper.hpp"
 #include <numeric>
 #include <optional>
 
@@ -483,6 +484,218 @@ TEST_CASE("The same BDF and coupled block solve interface advances all flow RANS
             }
             CHECK(solves == 2);
         }
+}
+TEST_CASE("One time driver advances coupled and separate equation storage with identical coupled stage mathematics")
+{
+    Fixture fixture;
+    constexpr I nv = 21;
+    std::array<double, nv> a{};
+    double square = 0;
+    for (I j = 0; j < nv; ++j)
+    {
+        a[j] = double(j + 1) / nv;
+        square += a[j] * a[j];
+    }
+    const auto evaluate = [&](C::EquationDofs &state, C::EquationDofs &rate, double, int)
+    {
+        const auto input = state.ReadOwned();
+        auto output = rate.WriteOwned();
+        std::array<C::EquationBlockArrayView<const double>, 3> u;
+        std::array<C::EquationBlockArrayView<double>, 3> f;
+        const I offsets[]{0, 5, 7};
+        for (I iBlock = 0; iBlock < 3; ++iBlock)
+        {
+            u[iBlock] = input.Block(iBlock).owned;
+            f[iBlock] = output.Block(iBlock);
+        }
+        for (I iRow = 0; iRow < fixture.rows; ++iRow)
+        {
+            double projection = 0;
+            for (I iBlock = 0; iBlock < 3; ++iBlock)
+                for (I j = 0; j < u[iBlock].ComponentNumber(); ++j)
+                    projection += a[offsets[iBlock] + j] * u[iBlock](iRow, j);
+            for (I iBlock = 0; iBlock < 3; ++iBlock)
+                for (I j = 0; j < u[iBlock].ComponentNumber(); ++j)
+                    f[iBlock](iRow, j) = -u[iBlock](iRow, j) - a[offsets[iBlock] + j] * projection;
+        }
+    };
+    const auto solve = [&](C::EquationDofs &state, const C::EquationDofs &source, double mass, double scale, double, int)
+    {
+        const auto input = source.ReadOwned();
+        auto output = state.WriteOwned();
+        std::array<C::EquationBlockArrayView<const double>, 3> b;
+        std::array<C::EquationBlockArrayView<double>, 3> u;
+        const I offsets[]{0, 5, 7};
+        for (I iBlock = 0; iBlock < 3; ++iBlock)
+        {
+            b[iBlock] = input.Block(iBlock).owned;
+            u[iBlock] = output.Block(iBlock);
+        }
+        const double diagonal = mass + scale;
+        for (I iRow = 0; iRow < fixture.rows; ++iRow)
+        {
+            double projection = 0;
+            for (I iBlock = 0; iBlock < 3; ++iBlock)
+                for (I j = 0; j < b[iBlock].ComponentNumber(); ++j)
+                    projection += a[offsets[iBlock] + j] * b[iBlock](iRow, j);
+            for (I iBlock = 0; iBlock < 3; ++iBlock)
+                for (I j = 0; j < b[iBlock].ComponentNumber(); ++j)
+                    u[iBlock](iRow, j) = b[iBlock](iRow, j) / diagonal - scale * a[offsets[iBlock] + j] * projection / (diagonal * (diagonal + scale * square));
+        }
+        return true;
+    };
+    using Field = A::DofField<double>;
+    const auto nativeRate = [&](Field &state, Field &rate, double, int)
+    {
+        const auto read = state.Owned().Read();
+        auto write = rate.Owned().Write();
+        const auto u = read.View<R::UniformTableRows>();
+        const auto f = write.View<R::UniformTableRows>();
+        for (I iRow = 0; iRow < fixture.rows; ++iRow)
+        {
+            double projection = 0;
+            for (I j = 0; j < nv; ++j)
+                projection += a[j] * u(iRow, j);
+            for (I j = 0; j < nv; ++j)
+                f(iRow, j) = -u(iRow, j) - a[j] * projection;
+        }
+    };
+    const auto nativeSolve = [&](Field &state, const Field &source, double mass, double scale, double, int)
+    {
+        const auto read = source.Owned().Read();
+        auto write = state.Owned().Write();
+        const auto b = read.View<R::UniformTableRows>();
+        const auto u = write.View<R::UniformTableRows>();
+        const double diagonal = mass + scale;
+        for (I iRow = 0; iRow < fixture.rows; ++iRow)
+        {
+            double projection = 0;
+            for (I j = 0; j < nv; ++j)
+                projection += a[j] * b(iRow, j);
+            for (I j = 0; j < nv; ++j)
+                u(iRow, j) = b(iRow, j) / diagonal - scale * a[j] * projection / (diagonal * (diagonal + scale * square));
+        }
+        return true;
+    };
+    const auto converged = [&](const C::EquationDofs &h, const C::EquationDofs &i, I)
+    {
+        const auto rh = h.ReadOwned(), ri = i.ReadOwned();
+        double error = 0;
+        for (I iBlock = 0; iBlock < 3; ++iBlock)
+        {
+            const auto hv = rh.Block(iBlock).owned, iv = ri.Block(iBlock).owned;
+            for (I iRow = 0; iRow < fixture.rows; ++iRow)
+                for (I j = 0; j < hv.ComponentNumber(); ++j)
+                    error = std::max({error, std::abs(hv(iRow, j)), std::abs(iv(iRow, j))});
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &error, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+        return error < 1e-8;
+    };
+    const auto nativeConverged = [&](const Field &h, const Field &i, I)
+    {
+        const auto rh = h.Owned().Read(), ri = i.Owned().Read();
+        double error = 0;
+        const auto hv = rh.View<R::UniformTableRows>(), iv = ri.View<R::UniformTableRows>();
+        for (I iRow = 0; iRow < fixture.rows; ++iRow)
+            for (I j = 0; j < nv; ++j)
+                error = std::max({error, std::abs(hv(iRow, j)), std::abs(iv(iRow, j))});
+        MPI_Allreduce(MPI_IN_PLACE, &error, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+        return error < 1e-8;
+    };
+    for (const std::string method : {"bdf1", "bdf2", "trapz", "esdirk2", "esdirk3", "esdirk4", "ditr"})
+    {
+        INFO(method);
+        A::DofBundle fields(fixture.space);
+        fields.Add("flow", Field(fixture.space, Layout(5, 0)));
+        fields.Add("rans", Field(fixture.space, Layout(2, 2)));
+        fields.Add("species", Field(fixture.space, Layout(14, 1)));
+        auto state = C::EquationDofs::Separate(Schema(5), std::move(fields));
+        Fill(state);
+        auto candidate = C::EquationDofOperations::NewVector(state);
+        auto reference = fixture.Build(Schema(5), 0, false);
+        Fill(reference);
+        auto nativeCandidate = DNDS::ODE::FieldTimeOperations::NewVector(reference.CoupledField());
+        C::EquationTimeStepper driver(state, method, {}, {}, [&](auto &)
+                                      { return C::EquationDITR::StageOperator{evaluate, solve, {}}; });
+        DNDS::ODE::FieldTimeStepper oracle(reference.CoupledField(), method, {}, {}, [&](auto &)
+                                           { return DNDS::ODE::FieldDITR::StageOperator{nativeRate, nativeSolve, {}}; });
+        const auto compare = [&]
+        {
+            const auto read = candidate.ReadOwned();
+            const auto flat = nativeCandidate.Owned().Read();
+            const auto values = flat.View<R::UniformTableRows>();
+            I first = 0;
+            for (I iBlock = 0; iBlock < 3; ++iBlock)
+            {
+                const auto block = read.Block(iBlock).owned;
+                for (I iRow = 0; iRow < fixture.rows; ++iRow)
+                    for (I j = 0; j < block.ComponentNumber(); ++j)
+                        CHECK(block(iRow, j) == values(iRow, first + j));
+                first += block.ComponentNumber();
+            }
+        };
+        double time = 0;
+        for (double dt : {.02, .03})
+        {
+            REQUIRE(driver.Prepare(state, candidate, time, dt, evaluate, solve, converged));
+            REQUIRE(oracle.Prepare(reference.CoupledField(), nativeCandidate, time, dt, nativeRate, nativeSolve, nativeConverged));
+            compare();
+            C::EquationDofOperations::Copy(state, candidate);
+            driver.Commit();
+            A::Copy(reference.CoupledField(), nativeCandidate);
+            oracle.Commit();
+            CHECK(driver.PreviousDt() == dt);
+            time += dt;
+        }
+        if (method == "bdf2")
+        {
+            auto restored = driver.Fresh();
+            restored->RestoreHistory(driver.PreviousState(), driver.PreviousDt());
+            CHECK(restored->HasHistory());
+            const auto before = state.ReadOwned();
+            REQUIRE(restored->Prepare(state, candidate, time, .025, evaluate, solve));
+            REQUIRE(oracle.Prepare(reference.CoupledField(), nativeCandidate, time, .025, nativeRate, nativeSolve));
+            compare();
+            if (fixture.rows)
+                CHECK(before.Block("species")(0, 0) == state.ReadOwned().Block("species")(0, 0));
+        }
+    }
+}
+TEST_CASE("Equation algebra reserves every output before writing and time sources cannot be silently mutated")
+{
+    Fixture fixture;
+    auto state = fixture.Build(Schema(5), 2, true);
+    Fill(state);
+    auto candidate = C::EquationDofOperations::NewVector(state);
+    C::EquationDofOperations::Fill(candidate, -7);
+    std::vector<uint64_t> versions;
+    for (I iField = 0; iField < candidate.PhysicalFieldNumber(); ++iField)
+        versions.push_back(candidate.PhysicalField(iField).Owned().Version());
+    {
+        const auto held = candidate.PhysicalField(2).Owned().Read();
+        CHECK_THROWS(C::EquationDofOperations::Copy(candidate, state));
+    }
+    for (I iField = 0; iField < candidate.PhysicalFieldNumber(); ++iField)
+    {
+        CHECK(candidate.PhysicalField(iField).Owned().Version() == versions[iField]);
+        const auto read = candidate.PhysicalField(iField).Owned().Read();
+        const auto values = read.View<R::UniformTableRows>();
+        for (I iRow = 0; iRow < fixture.rows; ++iRow)
+            for (I j = 0; j < values.Width(); ++j)
+                CHECK(values(iRow, j) == -7);
+    }
+    C::EquationTimeStepper driver(state, "bdf1");
+    const auto invalid = [&](auto &, const auto &source, double, double, double, int)
+    {
+        auto write = const_cast<C::EquationDofs &>(source).WriteOwned();
+        if (fixture.rows)
+            write.Block("species")(0, 0) += 1;
+        return true;
+    };
+    CHECK_THROWS(driver.Prepare(state, candidate, 0, .01, [](auto &, auto &, double, int) {}, invalid));
+    CHECK_FALSE(driver.HasPendingTrial());
+    CHECK_FALSE(driver.HasHistory());
+    CheckValues(state);
 }
 int main(int argc, char **argv)
 {

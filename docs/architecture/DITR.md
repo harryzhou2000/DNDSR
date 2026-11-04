@@ -1,9 +1,13 @@
 # Native coupled DITR time equations
 
-`Solver/FieldDITR.hpp` provides the U2R2 (mask0) equations used by the active
-Euler `ImplicitHermite3SimpleJacobianDualStep::Step`. It is a synchronous native
-CPU field component, separate from accepted-state publication and history.
-FieldTimeStepper/Cauchy connect it through explicit stage callbacks. U2R1/U3R1 and the legacy extra temporal multigrid
+`Solver/StateDITR.hpp` provides the U2R2 (mask0) equations used by the active
+Euler `ImplicitHermite3SimpleJacobianDualStep::Step`. It is a synchronous CPU
+state component, separate from accepted-state publication and history.
+`FieldDITR` retains the native-field adapter; Cauchy's `EquationDITR` uses its
+whole logical state over one or several arrays. Both instantiate the same
+mathematics through explicit stage callbacks and storage/algebra adapters.
+See [Cauchy state](CauchyState.md) for ownership and layout contracts.
+U2R1/U3R1 and the legacy extra temporal multigrid
 acceleration are not implemented in this component.
 
 For the initial, intermediate and endpoint states `U0,Um,Ue`, rates `F=dU/dt`

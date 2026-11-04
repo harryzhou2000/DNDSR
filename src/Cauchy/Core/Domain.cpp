@@ -38,7 +38,7 @@ namespace DNDS::Cauchy
     Domain::Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time)
         : _name(std::move(name)), _equation(ResolveEquation(_name, settings)), _fv(mesh, settings, _equation),
           _accepted(BuildState(_fv, _equation, settings)), _trial(_accepted.Clone()),
-          _residual(_fv.Metrics().BuildField(FlowLayout(settings))), _initial(_fv.Metrics().BuildField(FlowLayout(settings))),
+          _residual(_fv.Metrics().BuildField(FlowLayout(settings))), _initial(EquationDofOperations::NewVector(_accepted)),
           _workspace(_fv.BuildWorkspace(_trial, TimeAuxiliary(time))),
           _engine(size_t(settings.execution.hostThreads), settings.execution.checkAccess ? std::make_shared<R::AccessTrackingContext>() : nullptr),
           _stream(_engine.CreateCPUStream())
@@ -84,7 +84,7 @@ namespace DNDS::Cauchy
             index limited = 0;
             MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
                             {
-                const auto initialRead = _initial.Owned().Read(), stateRead = _trial.CoupledField().Owned().Read();
+                const auto initialRead = _initial.CoupledField().Owned().Read(), stateRead = _trial.CoupledField().Owned().Read();
                 const auto highRead = _residual.Owned().Read(), lowRead = _fv.LowOrderResidual(*_workspace).Owned().Read();
                 const auto initial = initialRead.View<R::UniformTableRows>(), state = stateRead.View<R::UniformTableRows>();
                 const auto high = highRead.View<R::UniformTableRows>(), low = lowRead.View<R::UniformTableRows>();
@@ -137,7 +137,7 @@ namespace DNDS::Cauchy
                 {
                     const real residual = alpha == 1 ? rhs(iCell, j) : (1 - alpha) * low(iCell, j) + alpha * rhs(iCell, j);
                     stage(iCell, j) = historyWeight * initial(iCell, j) + stageWeight * (stage(iCell, j) + dt * residual / metrics.GetCellVol(iCell));
-                } }, R::ReadAs<R::UniformTableRows>(_initial.Owned()), R::ReadAs<R::UniformTableRows>(_residual.Owned()), R::ReadWriteAs<R::UniformTableRows>(_trial.CoupledField().Owned()));
+                } }, R::ReadAs<R::UniformTableRows>(_initial.CoupledField().Owned()), R::ReadAs<R::UniformTableRows>(_residual.Owned()), R::ReadWriteAs<R::UniformTableRows>(_trial.CoupledField().Owned()));
         _stream.Record().WaitHost();
         DNDS_check_throw_info(_fv.Admissible(_trial.CoupledField()), "Cauchy SSPRK3 stage is inadmissible; accepted state unchanged");
     }
@@ -152,14 +152,14 @@ namespace DNDS::Cauchy
         MPI_Allreduce(MPI_IN_PLACE, &max, 1, MPI_DOUBLE, MPI_MAX, _fv.Metrics().Communicator());
         DNDS_check_throw_info(min == max, "Cauchy timestep differs between domain ranks");
         DNDS_check_throw_info(_fv.Admissible(Flow()), "accepted Cauchy mean is inadmissible");
-        // Scheduled reads may coexist with a retained accepted-state reader.
-        // Immediate algebra's stronger idle-input contract would reject only
-        // the retaining rank and strand peers at the next domain collective.
+        // Owned read scopes may coexist with a retained accepted-state reader.
+        // Drain earlier engine work, then copy every logical segment through
+        // the same synchronous CPU state adapter used by the time driver.
         MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
                         {
-            Algebra::Copy(_engine, _stream, _trial.CoupledField(), Flow());
-            Algebra::Copy(_engine, _stream, _initial, Flow());
-            _stream.Record().WaitHost(); });
+            _stream.Record().WaitHost();
+            EquationDofOperations::Copy(_trial, _accepted);
+            EquationDofOperations::Copy(_initial, _accepted); });
         _lastFallbacks = 0;
         _lastAlpha = _lastBeta = 1;
         _lastAlphaCells = _lastBetaCells = 0;
@@ -215,7 +215,7 @@ namespace DNDS::Cauchy
         _coordinatedPrepared = false;
         _stageEquation.reset();
         if (_timeStepper)
-            _timeStepper->BeginStages(_initial, _trial.CoupledField(), _time, dt, _steady);
+            _timeStepper->BeginStages(_initial, _trial, _time, dt, _steady);
     }
     real Domain::PrepareCoordinatedStage(int stage)
     {
@@ -225,7 +225,7 @@ namespace DNDS::Cauchy
         _coordinatedPrepared = true;
         if (_timeStepper)
         {
-            _stageEquation = _timeStepper->PrepareStage(_trial.CoupledField());
+            _stageEquation = _timeStepper->PrepareStage(_trial);
             return _stageEquation->time;
         }
         static constexpr real c[]{0, 1, .5};
@@ -239,8 +239,8 @@ namespace DNDS::Cauchy
             const auto &equation = *_stageEquation;
             if (equation.implicit)
             {
-                const auto report = _multigrid ? _multigrid->Solve(*equation.source, equation.mass, equation.rhsScale, equation.time, equation.stage)
-                                               : _implicit->Solve(_trial.CoupledField(), *equation.source, equation.mass, equation.rhsScale, equation.time, equation.stage);
+                const auto report = _multigrid ? _multigrid->Solve(equation.source->CoupledField(), equation.mass, equation.rhsScale, equation.time, equation.stage)
+                                               : _implicit->Solve(_trial.CoupledField(), equation.source->CoupledField(), equation.mass, equation.rhsScale, equation.time, equation.stage);
                 DNDS_check_throw_info(RecordImplicitStage(report), "coordinated implicit stage reached its correction cap");
             }
         }
@@ -254,7 +254,7 @@ namespace DNDS::Cauchy
     {
         DNDS_check_throw_info(_coordinatedPrepared, "no coordinated stage to complete");
         if (_timeStepper)
-            _timeStepper->CompleteStage(_trial.CoupledField(), [this](auto &state, auto &rate, real time, int stage)
+            _timeStepper->CompleteStage(_trial, [this](auto &state, auto &rate, real time, int stage)
                                         { EvaluateImplicitRate(state, rate, *_workspace, time, stage); });
         _coordinatedPrepared = false;
         _stageEquation.reset();

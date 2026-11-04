@@ -394,7 +394,7 @@ namespace DNDS::Cauchy
         if (history)
         {
             serializer->WriteReal("history_dt", _timeStepper->PreviousDt());
-            Runtime::WriteArray(_timeStepper->PreviousState().Owned(), serializer, "history_flow", mpi);
+            Runtime::WriteArray(_timeStepper->PreviousState().CoupledField().Owned(), serializer, "history_flow", mpi);
         }
         serializer->CloseFile();
     }
@@ -539,7 +539,7 @@ namespace DNDS::Cauchy
         }
         StateEpoch epoch;
         epoch.acceptedStep = uint64_t(step);
-        std::unique_ptr<ODE::FieldTimeStepper> restoredStepper;
+        std::unique_ptr<EquationTimeStepper> restoredStepper;
         std::optional<CFV::FVField> restoredHistory;
         if (_timeStepper)
         {
@@ -554,7 +554,7 @@ namespace DNDS::Cauchy
                 transfer(*history, restoredHistory->Owned());
                 DNDS_check_throw_info(_fv.Admissible(*restoredHistory), "inadmissible Cauchy restart history");
                 MPI::LocalStage(mpi, [&]
-                                { restoredStepper->RestoreHistory(*restoredHistory, historyDt); });
+                                { restoredStepper->RestoreHistory(_trial.RebindCoupled(*restoredHistory), historyDt); });
             }
         }
         PublishTrial(time, epoch, &guess, mappedLimitedVRHistory ? &*mappedLimitedVRHistory : nullptr);

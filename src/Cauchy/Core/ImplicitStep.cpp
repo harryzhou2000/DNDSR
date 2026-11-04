@@ -16,22 +16,22 @@ namespace DNDS::Cauchy
         const MPIInfo mpi(_fv.Metrics().Communicator());
         MPI::LocalStage(mpi, [&]
                         { time.ditr.Validate(); _ditrControl = time.ditr; });
-        const ODE::FieldDITR::StageFactory factory = [this, mesh, settings, mpi](CFV::FVField &middle)
+        const EquationDITR::StageFactory factory = [this, mesh, settings, mpi](EquationDofs &middle)
         {
             AuxiliaryRequest required;
             required.faceSpectralRadius = required.cellSpectralSum = true;
             const auto workspace = _fv.BuildWorkspace(middle, required);
-            const auto solver = std::make_shared<NonlinearSolver>(_fv, middle, workspace, _engine, _stream, settings);
+            const auto solver = std::make_shared<NonlinearSolver>(_fv, middle.CoupledField(), workspace, _engine, _stream, settings);
             std::shared_ptr<PolynomialMultigrid> multigrid;
             if (settings.implicit.multigrid.levels)
-                multigrid = std::make_shared<PolynomialMultigrid>(mesh, _fv, middle, *solver, _engine, _stream, settings);
-            return ODE::FieldDITR::StageOperator{
+                multigrid = std::make_shared<PolynomialMultigrid>(mesh, _fv, middle.CoupledField(), *solver, _engine, _stream, settings);
+            return EquationDITR::StageOperator{
                 [this, workspace](auto &state, auto &rate, real time, int stage)
                 { EvaluateImplicitRate(state, rate, *workspace, time, stage); },
                 [this, solver, multigrid](auto &state, const auto &source, real mass, real scale, real time, int stage)
                 {
                     _trialEpoch.stage = stage;
-                    return RecordImplicitStage(multigrid ? multigrid->Solve(source, mass, scale, time, stage) : solver->Solve(state, source, mass, scale, time, stage));
+                    return RecordImplicitStage(multigrid ? multigrid->Solve(source.CoupledField(), mass, scale, time, stage) : solver->Solve(state.CoupledField(), source.CoupledField(), mass, scale, time, stage));
                 },
                 [fv = _fv, workspace, mpi]
                 {
@@ -42,13 +42,13 @@ namespace DNDS::Cauchy
                 }};
         };
         MPI::LocalStage(mpi, [&]
-                        { _timeStepper = std::make_unique<ODE::FieldTimeStepper>(_trial.CoupledField(), _steady ? "bdf1" : time.method, [mpi, checks = settings.implicit.collectiveChecks](const auto &run)
-                                                                                 { if (checks) MPI::LocalStage(mpi, run); else run(); }, ODE::DITRSettings{time.ditr.fraction, time.ditr.theta, time.ditr.iterations, settings.implicit.rejectUnconvergedStages}, factory); });
+                        { _timeStepper = std::make_unique<EquationTimeStepper>(_trial, _steady ? "bdf1" : time.method, [mpi, checks = settings.implicit.collectiveChecks](const auto &run)
+                                                                               { if (checks) MPI::LocalStage(mpi, run); else run(); }, ODE::DITRSettings{time.ditr.fraction, time.ditr.theta, time.ditr.iterations, settings.implicit.rejectUnconvergedStages}, factory); });
         _implicit = std::make_unique<NonlinearSolver>(_fv, _trial.CoupledField(), _workspace, _engine, _stream, settings);
         if (settings.implicit.multigrid.levels)
             _multigrid = std::make_unique<PolynomialMultigrid>(mesh, _fv, _trial.CoupledField(), *_implicit, _engine, _stream, settings);
     }
-    void Domain::EvaluateImplicitRate(CFV::FVField &state, CFV::FVField &rate, FiniteVolume::Workspace &workspace, real time, int stage)
+    void Domain::EvaluateImplicitRate(EquationDofs &state, EquationDofs &rate, FiniteVolume::Workspace &workspace, real time, int stage)
     {
         _trialEpoch.stage = stage;
         _fv.Evaluate(state, _residual, workspace, _engine, _stream, time);
@@ -57,7 +57,7 @@ namespace DNDS::Cauchy
         MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
                         {
             const auto geometry = _fv.Metrics().AcquireRead(); const auto metrics = geometry.HostView();
-            const auto read = _residual.Owned().Read(); auto write = rate.Owned().Write();
+            const auto read = _residual.Owned().Read(); auto write = rate.CoupledField().Owned().Write();
             const auto input = read.View<R::UniformTableRows>(); const auto output = write.View<R::UniformTableRows>();
             for (index iCell = 0; iCell < input.RowCount(); ++iCell)
                 for (int j = 0; j < 5; ++j) output(iCell, j) = input(iCell, j) / metrics.GetCellVol(iCell); });
@@ -125,24 +125,24 @@ namespace DNDS::Cauchy
         _lastImplicit.clear();
         _lastCoupledIterations = 0;
         _lastCoupledTargetRatio = 0;
-        const auto evaluate = [&](CFV::FVField &state, CFV::FVField &rate, real time, int stage)
+        const auto evaluate = [&](EquationDofs &state, EquationDofs &rate, real time, int stage)
         {
             EvaluateImplicitRate(state, rate, *_workspace, time, stage);
         };
-        const auto solve = [&](CFV::FVField &state, const CFV::FVField &source, real mass, real scale, real time, int stage)
+        const auto solve = [&](EquationDofs &state, const EquationDofs &source, real mass, real scale, real time, int stage)
         {
             _trialEpoch.stage = stage;
-            return RecordImplicitStage(_multigrid ? _multigrid->Solve(source, mass, scale, time, stage) : _implicit->Solve(state, source, mass, scale, time, stage));
+            return RecordImplicitStage(_multigrid ? _multigrid->Solve(source.CoupledField(), mass, scale, time, stage) : _implicit->Solve(state.CoupledField(), source.CoupledField(), mass, scale, time, stage));
         };
         std::array<real, 10> initialNorm{};
-        const auto coupled = [&](const CFV::FVField &hermite, const CFV::FVField &integral, index iteration)
+        const auto coupled = [&](const EquationDofs &hermite, const EquationDofs &integral, index iteration)
         {
             std::array<real, 11> norms{};
             MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
                             {
-                _fv.Metrics().ValidateField(hermite, 5); _fv.Metrics().ValidateField(integral, 5);
+                _fv.Metrics().ValidateField(hermite.CoupledField(), 5); _fv.Metrics().ValidateField(integral.CoupledField(), 5);
                 const auto geometry = _fv.Metrics().AcquireRead(); const auto metric = geometry.HostView();
-                const auto hRead = hermite.Owned().Read(), iRead = integral.Owned().Read();
+                const auto hRead = hermite.CoupledField().Owned().Read(), iRead = integral.CoupledField().Owned().Read();
                 const auto h = hRead.View<R::UniformTableRows>(), i = iRead.View<R::UniformTableRows>();
                 for (index iCell = 0; iCell < h.RowCount(); ++iCell)
                 {
@@ -169,8 +169,8 @@ namespace DNDS::Cauchy
             }
             return iteration >= control.minIterations && _lastCoupledTargetRatio <= 1;
         };
-        const bool prepared = _steady ? _timeStepper->PrepareSteady(_initial, _trial.CoupledField(), _time, solve)
-                                      : _timeStepper->Prepare(_initial, _trial.CoupledField(), _time, dt, evaluate, solve, coupled);
+        const bool prepared = _steady ? _timeStepper->PrepareSteady(_initial, _trial, _time, solve)
+                                      : _timeStepper->Prepare(_initial, _trial, _time, dt, evaluate, solve, coupled);
         if (!prepared)
         {
             // Failure-only diagnostics keep capped inner solves distinct from

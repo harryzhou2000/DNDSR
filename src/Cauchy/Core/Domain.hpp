@@ -4,7 +4,7 @@
 #include "Cauchy/Core/CoordinatedSchedule.hpp"
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
 #include "Cauchy/Multigrid/PolynomialMultigrid.hpp"
-#include "Solver/FieldTimeStepper.hpp"
+#include "Cauchy/State/EquationTimeStepper.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -22,7 +22,8 @@ namespace DNDS::Cauchy
         EquationSystem _equation;
         FiniteVolume _fv;
         EquationDofs _accepted, _trial;
-        CFV::FVField _residual, _initial;
+        CFV::FVField _residual;
+        EquationDofs _initial;
         std::shared_ptr<FiniteVolume::Workspace> _workspace;
         std::shared_ptr<FiniteVolume::Workspace> _observationWorkspace;
         std::optional<CFV::FVField> _observationResidual;
@@ -30,7 +31,7 @@ namespace DNDS::Cauchy
         Runtime::ExecutionStream _stream;
         std::unique_ptr<NonlinearSolver> _implicit;
         std::unique_ptr<PolynomialMultigrid> _multigrid;
-        std::unique_ptr<ODE::FieldTimeStepper> _timeStepper;
+        std::unique_ptr<EquationTimeStepper> _timeStepper;
         std::vector<NonlinearIterationReport> _lastImplicit;
         index _lastCoupledIterations = 0;
         real _lastCoupledTargetRatio = 0;
@@ -62,7 +63,7 @@ namespace DNDS::Cauchy
         void ConfigureTimeStep(const TimeSettings &time, int compressionPower);
         void PrepareImplicitStep(real dt);
         void PreserveReconstructionGuess();
-        void EvaluateImplicitRate(CFV::FVField &state, CFV::FVField &rate, FiniteVolume::Workspace &workspace, real time, int stage);
+        void EvaluateImplicitRate(EquationDofs &state, EquationDofs &rate, FiniteVolume::Workspace &workspace, real time, int stage);
         bool RecordImplicitStage(NonlinearIterationReport report);
         void BeginTrial(real dt);
         /// Simulation alone interleaves these serialized domain-local phases.
@@ -73,7 +74,7 @@ namespace DNDS::Cauchy
         void SolveCoordinatedStage();
         void CompleteCoordinatedStage();
         int CoordinatedStageNumber() const;
-        std::optional<ODE::FieldTimeStepper::StageEquation> _stageEquation;
+        std::optional<EquationTimeStepper::StageEquation> _stageEquation;
         int _coordinatedStage = 0;
         bool _coordinatedPrepared = false;
         std::optional<BoundaryInputs> _interfaceInputs;

@@ -37,6 +37,12 @@ namespace DNDS::Cauchy
             else
                 return components;
         }
+        DNDS_DEVICE_CALLABLE index RowSize(index iRow) const
+        {
+            if constexpr (Checked)
+                DNDS_HD_assert(iRow >= 0 && iRow < RowCount());
+            return ComponentNumber();
+        }
         DNDS_DEVICE_CALLABLE T &operator()(index iRow, index iComponent) const
         {
             if constexpr (Checked)
@@ -119,7 +125,7 @@ namespace DNDS::Cauchy
         /// cannot distinguish flow4+one scalar from compressible flow5.
         void RequireSchema(const EquationSchema &schema) const;
         void RequireCompatible(const EquationDofs &other) const;
-        /// Initial stage/linear adapter: one physical array in logical order.
+        /// Current physical FV/nonlinear/linear adapter: one array in logical order.
         /// Refuses split/permuted storage rather than silently flattening it.
         Algebra::DofField<real> &CoupledField();
         const Algebra::DofField<real> &CoupledField() const;

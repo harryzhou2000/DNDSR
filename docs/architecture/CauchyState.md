@@ -34,8 +34,8 @@ updates are allowed.
 `RebindFields(bundle)` does the same for separate or hybrid storage: physical
 field names/order, component widths, device and row space must match, while
 individual AoS/SoA/AoSoA layouts may differ. It shares the immutable map and new
-field handles without copying or flattening their payload. Stage/time/linear
-drivers still need their extended physical-profile adapters; this operation
+field handles without copying or flattening their payload. Physical stage-solve
+and linear kernels still need their extended profile adapters; this operation
 alone does not remove the current flow5 production restriction.
 
 `Domain::Dofs()` exposes the accepted semantic binding read-only. The existing
@@ -144,7 +144,7 @@ caller must coordinate failures before other ranks enter dependent collectives.
 The raw-field overload remains the trusted compressible stage/scratch adapter.
 
 The Domain frontend uses the semantic binding. Its available physical kernels,
-PP, nonlinear reports, checkpoint physical sections and coupled-stage adapter
+PP, nonlinear reports, checkpoint physical sections and physical stage-solver adapters
 remain **compressible flow5 only**. `CoupledField()` explicitly refuses split or
 permuted physical segments instead of silently flattening them. Generic mock
 tests exercise 17/21-component coupled BDF/block solves and separate physical
@@ -152,6 +152,55 @@ bindings; those tests are not RANS, species or incompressible implementations.
 Future models must supply their flux/transport, physical accumulation (including
 zero pressure mass where applicable), pseudo-mass and admissibility actions.
 The current identity-accumulation stage adapter is not a general DAE operator.
+
+## Whole-state algebra and time stepping
+
+`EquationDofOperations` supplies owned-only CPU Copy/Fill/Scale/Axpy and linear
+combination through DNDS's common `ApplyHostRows` arithmetic. It resolves logical
+blocks and reserves every source/output lease before numerical writes. Blocks
+may have different physical grouping/layouts. Binary output/input allocations
+are distinct; Scale is explicitly in-place and an exact self-Copy is a no-op.
+An unavailable device backend fails explicitly. These operations do no MPI or
+halo work. Their owned scopes can coexist with independent ghost writes.
+
+The time equations are implemented once in `Solver/StateTimeStepper.hpp` and
+`Solver/StateDITR.hpp`, with state ownership/algebra supplied by a small adapter.
+Historical `FieldTimeStepper`/`FieldDITR` names select the native single-field
+adapter; Cauchy's `EquationTimeStepper`/`EquationDITR` select the full semantic
+state. No tableau, BDF ratio, DITR interpolation or integration coefficient is
+duplicated or changed.
+
+```mermaid
+flowchart TD
+    Domain --> EquationDriver[EquationTimeStepper alias]
+    EquationDriver --> Generic[StateTimeStepper and StateDITR: common mathematics]
+    Generic --> EquationOps[EquationDofOperations: schema, bindings, scopes]
+    EquationOps --> DNDS[DNDS host row arithmetic]
+    EquationOps --> State[EquationDofs: flow, RANS, species]
+    State --> Fields[one or several native physical fields]
+    Generic --> NativeOps[historical FieldTimeOperations adapter]
+    NativeOps --> DNDS
+```
+
+Cauchy now stores its initial snapshot, implicit stage sources/rates and BDF
+history in the logical state. One stage-solve callback receives all components
+together. Initial/trial arrays are distinct, callback bindings and owned
+input/source generations are checked, and ordinary ghost refresh is allowed.
+The checks stay outside numerical loops and use the configured local-error
+coordinator; Cauchy's `implicit.collectiveChecks` controls its added agreement
+calls. External stage-sequence users complete/discard before the next stage,
+retain callback resources and finish CPU work before returning. This is a
+synchronous CPU driver, with no implicit accelerator fallback.
+
+`NewVector` allocates fresh uninitialized payload with the same per-field
+owned/ghost layout, space and semantic binding. `Clone` additionally copies
+owned values. History Commit uses nonthrowing handle swaps after accepted-state
+publication; Discard preserves accepted history. Callback exceptions can leave
+scratch partial, and DITR reconstructs failed intermediate workspace before a
+retry. The flow5 checkpoint keeps its existing `history_flow` representation
+through an explicit adapter; extended physical checkpoint sections are pending.
+Layout-independent time equations do not by themselves complete extended RHS,
+BC, PP, linear solves or RANS/species physical validation.
 
 ## Mixture point properties and derived refresh
 
