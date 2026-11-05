@@ -903,3 +903,17 @@ identical string tokens. This is a formatting-only change; no binaries were
 rebuilt and no new runtime test result is claimed. The style guide and wrapper
 description now identify the real root policy and this bounded override.
 The remaining manual readability inventory is not closed by these two files.
+
+## E3 matched candidate: retain production copy
+
+Job `12442622` completed `0:0` in 1m58s, source `e60b85ba`, first-available
+`amd_512` node `n1810`. All six intended rows/24 trials/120 phase records and six raw-log
+hashes pass independent verification. The [candidate report](plan53_validation/e3-candidate/README.md)
+retains the same-invocation controls, full min/max ranges and exact provenance.
+
+Native whole-array copy improves the larger split5+12 cases to 47–65% of the
+production commit time, but large flow5 regresses 178.19→685.08 microseconds.
+Keep production's logical-row copy, allocation identities and persistent
+bindings. No speculative size threshold or ownership swap is introduced.
+E3 still needs complete-RHS copy attribution; E4–E6 remain open. Both this job
+and E7 completed without changing the separate 80-node job or pinning a node.
