@@ -306,8 +306,28 @@ Standalone `ApplyCorrection` callers must agree its optional selection and
 scale before entering. All public defaults retain full-state behavior.
 
 `preSmooth`, `postSmooth` and `coarseSmooth` bound nonlinear corrections, and
-`cycles` caps V-cycles. Each level carries its pseudo-CFL between smooth calls;
-the next physical stage resets it. Coarse correction `damping` and physical PP
+`cycles` caps V-cycles. The finest smoother uses the domain's `implicit`
+settings. `multigrid.coarseLevelSettings["1"]` and `["2"]` independently
+override each coarse level's `preSmooth`, `postSmooth`, and partial `solver`
+controls. Unspecified solver fields inherit the domain defaults, including
+individual fields within `linear`, `sgs`, `ilu` and `positivity`. Allowed scalar
+overrides are `diagonal`, `jacobianAction`, `roeDissipation`, `pseudoCFL`,
+`maxPseudoCFL` and `relaxation`. Physics, finest convergence and the hierarchy
+cannot be changed by a smoother override; resolved controls are validated before
+constructing that level's solver. Unsupported equation/backend combinations
+still fail explicitly.
+
+For the maintained Euler ILU/4ILU/4ILU schedule use `preSmooth=1`,
+`postSmooth=0`, `coarseSmooth=4`, and override level1's `preSmooth` to4.
+Each level may independently choose its linear method/iterations and ILU fill;
+the4 in that schedule counts coarse nonlinear corrections, not ILU fill.
+At the bottom, an explicit pre/post pair sums to its correction count; -1
+inherits `coarseSmooth`/zero. At intermediate levels -1 inherits the common
+pre/post count. No coarse level has a separate convergence loop.
+
+Each coarse CFL starts from its own configured base and follows the finest
+CFL's relative growth, capped by that coarse level's `maxPseudoCFL`; the next
+physical stage resets it. Coarse correction `damping` and physical PP
 reuse the same candidate-before-publication policy as the fine smoother.
 Convergence checks the original finest equation with its original source,
 per-component norms and configured tolerances. A coarse forcing tolerance or

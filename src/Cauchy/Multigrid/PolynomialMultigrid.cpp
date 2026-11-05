@@ -233,7 +233,7 @@ namespace DNDS::Cauchy
             std::unique_ptr<Cycle> cycle;
             std::vector<Level> levelDefinitions;
             std::vector<Transfer> transferDefinitions;
-            std::vector<real> smootherCFL;
+            std::vector<real> smootherCFL, smootherBaseCFL, smootherMaxCFL;
             real mass = 0, rhsScale = 1, time = 0;
             int stage = 0;
             Report *report = nullptr;
@@ -276,8 +276,25 @@ namespace DNDS::Cauchy
             void BuildCycle()
             {
                 const auto &control = settings.multigrid;
+                Multigrid::FASCycleSettings sweeps{control.preSmooth, control.postSmooth, control.coarseSmooth, control.updateComponents};
+                sweeps.preSmoothByLevel.assign(size_t(control.levels), control.preSmooth);
+                sweeps.postSmoothByLevel.assign(size_t(control.levels), control.postSmooth);
+                for (const auto &[name, level] : control.coarseLevelSettings)
+                {
+                    const index number = name == "1" ? 1 : 2;
+                    if (number < control.levels)
+                    {
+                        if (level.preSmooth >= 0)
+                            sweeps.preSmoothByLevel[number] = level.preSmooth;
+                        if (level.postSmooth >= 0)
+                            sweeps.postSmoothByLevel[number] = level.postSmooth;
+                    }
+                    else if (number == control.levels)
+                        sweeps.coarseSmooth = (level.preSmooth < 0 ? control.coarseSmooth : level.preSmooth) +
+                                              (level.postSmooth < 0 ? 0 : level.postSmooth);
+                }
                 cycle = std::make_unique<Cycle>(levelDefinitions, transferDefinitions,
-                                                Multigrid::FASCycleSettings{control.preSmooth, control.postSmooth, control.coarseSmooth, control.updateComponents},
+                                                std::move(sweeps),
                                                 [this](const auto &run)
                                                 {
                                                     if (settings.collectiveChecks)
@@ -290,6 +307,8 @@ namespace DNDS::Cauchy
                        const DomainSettings &controls, const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers = std::nullopt)
             {
                 smootherCFL.assign(size_t(settings.multigrid.levels + 1), settings.pseudoCFL);
+                smootherBaseCFL = {settings.pseudoCFL};
+                smootherMaxCFL = {settings.maxPseudoCFL};
                 levelDefinitions.push_back(MakeLevel(state, *fineSolver, 0));
                 const auto identity = [mpi = mpi, checks = settings.collectiveChecks](const State &input, State &output)
                 {
@@ -298,6 +317,8 @@ namespace DNDS::Cauchy
                 for (int level = 0; level < settings.multigrid.levels; ++level)
                 {
                     auto lower = PolynomialMultigrid::CoarseSettings(controls, level);
+                    smootherBaseCFL.push_back(lower.implicit.pseudoCFL);
+                    smootherMaxCFL.push_back(lower.implicit.maxPseudoCFL);
                     coarse.push_back(std::make_unique<Coarse>(mesh, lower, fine, state, engine, stream, workers));
                     levelDefinitions.push_back(MakeLevel(coarse.back()->state, *coarse.back()->solver, level + 1));
                     transferDefinitions.push_back({identity, identity, identity, true});
@@ -357,7 +378,8 @@ namespace DNDS::Cauchy
                 if (!cycle)
                     BuildCycle();
                 const real cfl = pseudoCFL == 0 ? settings.pseudoCFL : pseudoCFL;
-                std::fill(smootherCFL.begin(), smootherCFL.end(), cfl);
+                for (index level = 0; level < index(smootherCFL.size()); ++level)
+                    smootherCFL[level] = std::min(smootherMaxCFL[level], smootherBaseCFL[level] * (cfl / settings.pseudoCFL));
                 Report work;
                 work.residual = Profile::Norms(state);
                 work.pseudoCFL = cfl;
@@ -409,9 +431,9 @@ namespace DNDS::Cauchy
 
     DomainSettings PolynomialMultigrid::CoarseSettings(const DomainSettings &fine, index level)
     {
-        DNDS_check_throw_info(level >= 0, "invalid polynomial coarse level");
+        DNDS_check_throw_info(level >= 0 && level < 2, "polynomial coarse level must be zero or one");
         auto lower = fine;
-        lower.implicit.multigrid.levels = 0;
+        lower.implicit = fine.implicit.ResolveCoarseLevel(level + 1);
         lower.numerics.reconstruction = "gradient";
         lower.numerics.firstOrderConvection = level > 0;
         lower.numerics.cfv.maxOrder = 1;

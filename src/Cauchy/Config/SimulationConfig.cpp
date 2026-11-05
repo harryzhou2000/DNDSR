@@ -295,6 +295,37 @@ namespace DNDS::Cauchy
                                   (!multigrid.levels || (multigrid.preSmooth <= iterations && multigrid.postSmooth <= iterations && multigrid.coarseSmooth <= iterations)) &&
                                   std::isfinite(multigrid.damping) && multigrid.damping > 0 && multigrid.damping <= 1,
                               "invalid polynomial FAS controls");
+        for (const auto &[name, level] : multigrid.coarseLevelSettings)
+        {
+            DNDS_check_throw_info((name == "1" || name == "2") && level.preSmooth >= -1 && level.postSmooth >= -1 &&
+                                      level.preSmooth <= iterations && level.postSmooth <= iterations,
+                                  "invalid coarse level key or smoothing count");
+            const index number = name == "1" ? 1 : 2;
+            if (number == multigrid.levels)
+            {
+                const index pre = level.preSmooth < 0 ? multigrid.coarseSmooth : level.preSmooth;
+                const index post = level.postSmooth < 0 ? 0 : level.postSmooth;
+                DNDS_check_throw_info(pre <= iterations - post && pre + post > 0, "invalid bottom-level correction count");
+            }
+            ResolveCoarseLevel(number);
+        }
+    }
+    ImplicitSettings ImplicitSettings::ResolveCoarseLevel(index level) const
+    {
+        DNDS_check_throw_info(level == 1 || level == 2, "coarse smoother level must be 1 or 2");
+        auto result = *this;
+        result.multigrid.levels = 0;
+        result.multigrid.coarseLevelSettings.clear();
+        const auto found = multigrid.coarseLevelSettings.find(std::to_string(level));
+        if (found != multigrid.coarseLevelSettings.end())
+        {
+            Keys(found->second.solver, MultigridSmootherSchema(), "/implicit/multigrid/coarseLevelSettings/" + std::to_string(level) + "/solver");
+            Json merged = result;
+            merged.merge_patch(found->second.solver);
+            result = merged.get<ImplicitSettings>();
+        }
+        result.Validate();
+        return result;
     }
     DomainSettings ResolveSweepOrdering(DomainSettings settings)
     {
@@ -472,6 +503,19 @@ namespace DNDS::Cauchy
             auto &resolved = data->root["domains"][iDomain];
             Allowed(resolved, {"name", "ranks", "settings"}, "/domains");
             Keys(resolved.at("settings"), schema, "/domains/settings");
+            // Coarse levels are dynamic map entries, so root defaults cannot
+            // supply their omitted count/solver fields. Expand after CLI patches
+            // as well; the solver patch itself stays partial for inheritance.
+            for (auto &[name, level] : resolved["settings"]["implicit"]["multigrid"]["coarseLevelSettings"].items())
+            {
+                const Json original = level;
+                level = MultigridLevelSettings{};
+                for (const auto &[key, value] : level.items())
+                    if (!original.contains(key))
+                        Origin(value, "/domains/" + std::to_string(iDomain) + "/settings/implicit/multigrid/coarseLevelSettings/" + Escape(name) + "/" + key,
+                               "schema default", data->provenance);
+                level.update(original);
+            }
             DomainConfig domain{{resolved.at("name").get<std::string>(), resolved.at("ranks").get<std::vector<int>>()}, resolved.at("settings").get<DomainSettings>()};
             const bool requestedCoreFirst = domain.settings.numerics.cfv.coreFirst;
             domain.settings = ResolveSweepOrdering(std::move(domain.settings));

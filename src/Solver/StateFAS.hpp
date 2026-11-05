@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DNDS/Algebra/ComponentSelection.hpp"
+#include <algorithm>
 #include <functional>
 #include <cstring>
 #include <memory>
@@ -50,6 +51,11 @@ namespace DNDS::Multigrid
         /// indices, common to all levels; restriction still transfers the full
         /// background state and residual for nonlinear tau construction.
         std::vector<index> updateComponents;
+        /// Optional counts indexed from the finest level, excluding the
+        /// coarsest (which uses coarseSmooth). Empty retains the scalar policy.
+        /// This expresses e.g. one fine and four intermediate corrections
+        /// without multiplying the work on every upper level.
+        std::vector<index> preSmoothByLevel, postSmoothByLevel;
     };
     struct FASCycleReport
     {
@@ -165,7 +171,7 @@ namespace DNDS::Multigrid
                 Relax(level, _settings.coarseSmooth, report);
                 return;
             }
-            Relax(level, _settings.preSmooth, report);
+            Relax(level, _settings.preSmoothByLevel.empty() ? _settings.preSmooth : _settings.preSmoothByLevel[level], report);
             auto &transfer = _transfers[level];
             ApplyOperator(fine, report, transfer.cancelIdentityLinearTerm);
             if (!transfer.cancelIdentityLinearTerm)
@@ -228,7 +234,7 @@ namespace DNDS::Multigrid
 
             RunLocal([&]
                      { CheckBinding(fine); CheckFrozen(fine); });
-            Relax(level, _settings.postSmooth, report);
+            Relax(level, _settings.postSmoothByLevel.empty() ? _settings.postSmooth : _settings.postSmoothByLevel[level], report);
         }
 
     public:
@@ -239,6 +245,11 @@ namespace DNDS::Multigrid
                      {
                 DNDS_check_throw_info(!levels.empty() && _transfers.size() + 1 == levels.size() && settings.preSmooth >= 0 && settings.postSmooth >= 0 && settings.coarseSmooth > 0,
                                       "invalid FAS hierarchy or sweep controls");
+                for (const auto *counts : {&settings.preSmoothByLevel, &settings.postSmoothByLevel})
+                    DNDS_check_throw_info(counts->empty() ||
+                                              (counts->size() == _transfers.size() &&
+                                               std::all_of(counts->begin(), counts->end(), [](index count) { return count >= 0; })),
+                                          "FAS per-level smoothing needs one nonnegative count per noncoarsest level");
                 const index width = Operations::ComponentNumber(levels.front().state);
                 _settings.updateComponents = Algebra::ComponentSelection(width, settings.updateComponents).Indices();
                 _levels.reserve(levels.size());

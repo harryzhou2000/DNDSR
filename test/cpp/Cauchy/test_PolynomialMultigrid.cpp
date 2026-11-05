@@ -101,6 +101,39 @@ TEST_CASE("Bottom pMG uses mean convection but retains direct gradients in both 
                 CHECK(difference < 1e-14);
         }
 }
+TEST_CASE("Each coarse smoother inherits defaults and resolves independent partial controls")
+{
+    auto settings = Controls();
+    settings.implicit.linear.method = "ilu";
+    settings.implicit.linear.iterations = 2;
+    settings.implicit.ilu.fill = 2;
+    settings.implicit.multigrid.coarseLevelSettings["1"].solver = {
+        {"linear", {{"method", "sgs"}, {"iterations", 3}}},
+        {"sgs", {{"exchangeBetweenSweeps", true}}},
+        {"pseudoCFL", 5},
+        {"maxPseudoCFL", 5}};
+    settings.implicit.multigrid.coarseLevelSettings["2"].solver = {{"ilu", {{"fill", 1}}}};
+    const auto intermediate = C::PolynomialMultigrid::CoarseSettings(settings, 0);
+    const auto bottom = C::PolynomialMultigrid::CoarseSettings(settings, 1);
+    CHECK(intermediate.implicit.linear.method == "sgs");
+    CHECK(intermediate.implicit.linear.iterations == 3);
+    CHECK(intermediate.implicit.sgs.exchangeBetweenSweeps);
+    CHECK(intermediate.implicit.pseudoCFL == 5);
+    CHECK(intermediate.implicit.linear.relativeTolerance == settings.implicit.linear.relativeTolerance);
+    CHECK(bottom.implicit.linear.method == "ilu");
+    CHECK(bottom.implicit.linear.iterations == 2);
+    CHECK(bottom.implicit.ilu.fill == 1);
+    CHECK(settings.implicit.ilu.fill == 2);
+    CHECK(bottom.implicit.multigrid.levels == 0);
+    C::Json input;
+    input["defaults"]["implicit"]["multigrid"]["coarseLevelSettings"]["1"] = {{"solver", {{"linear", {{"method", "sgs"}}}}}};
+    const auto config = C::SimulationConfig::Resolve(input, mpi.size);
+    const auto resolved = config.Domains().front().settings.implicit.ResolveCoarseLevel(1);
+    CHECK(resolved.linear.method == "sgs");
+    CHECK(resolved.linear.iterations == C::ImplicitSettings{}.linear.iterations);
+    settings.implicit.multigrid.coarseLevelSettings["2"].solver["linear"]["iterations"] = 0;
+    CHECK_THROWS(settings.implicit.Validate());
+}
 TEST_CASE("Finest FAS acceptance shares selected-component L1 L2 convergence with the stage solver")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
@@ -149,6 +182,21 @@ TEST_CASE("Polynomial FAS recovers the original P3 manufactured equation across 
     {
         auto settings = Controls();
         settings.implicit.multigrid.levels = scenario == 0 ? 1 : 2;
+        if (scenario == 2)
+        {
+            // Maintained Euler ILU/4ILU/4ILU schedule: one finest
+            // correction, four intermediate and four bottom corrections.
+            settings.implicit.multigrid.coarseLevelSettings["1"].preSmooth = 4;
+            settings.implicit.multigrid.coarseLevelSettings["2"].preSmooth = 4;
+            settings.implicit.multigrid.postSmooth = 0;
+            settings.implicit.multigrid.coarseSmooth = 4;
+            settings.implicit.multigrid.coarseLevelSettings["1"].solver = {
+                {"linear", {{"method", "ilu"}, {"iterations", 2}, {"relativeTolerance", 0}, {"absoluteTolerance", 0}}},
+                {"ilu", {{"fill", 1}}},
+                {"diagonal", "block"}};
+            settings.implicit.multigrid.coarseLevelSettings["2"].solver = {
+                {"linear", {{"method", "sgs"}, {"iterations", 3}}}, {"pseudoCFL", 5}, {"maxPseudoCFL", 5}};
+        }
         settings.numerics.positivity = scenario == 2;
         settings.execution.overlap = scenario != 1;
         settings.implicit.collectiveChecks = scenario != 1;
@@ -180,6 +228,11 @@ TEST_CASE("Polynomial FAS recovers the original P3 manufactured equation across 
                                                      (settings.implicit.multigrid.preSmooth + settings.implicit.multigrid.postSmooth));
         REQUIRE(report.levelCorrections.size() == size_t(settings.implicit.multigrid.levels + 1));
         CHECK(report.levelCorrections.back() > 0);
+        if (scenario == 2)
+        {
+            CHECK(report.levelCorrections[1] == 4 * report.multigridCycles);
+            CHECK(report.levelCorrections[2] == 4 * report.multigridCycles);
+        }
         CHECK(report.linearIterations > 0);
         CHECK(source.Owned().Version() == generation);
         const auto solutionRead = state.Owned().Read(), exactRead = exact.Owned().Read();

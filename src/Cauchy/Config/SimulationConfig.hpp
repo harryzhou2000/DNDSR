@@ -274,12 +274,31 @@ namespace DNDS::Cauchy
             DNDS_FIELD(compressionPower, "Positive integer exponent multiplier in Euler alpha compression");
         }
     };
+    /// Partial solver controls are merged into the domain implicit defaults
+    /// once, before constructing a coarse smoother. They cannot alter physics,
+    /// the hierarchy or the finest convergence policy.
+    inline Json MultigridSmootherSchema()
+    {
+        return {{"type", "object"}, {"additionalProperties", false}, {"properties", {{"diagonal", {{"type", "string"}}}, {"jacobianAction", {{"type", "string"}}}, {"roeDissipation", {{"type", "boolean"}}}, {"pseudoCFL", {{"type", "number"}}}, {"maxPseudoCFL", {{"type", "number"}}}, {"relaxation", {{"type", "number"}}}, {"linear", ImplicitLinearSettings::schema()}, {"sgs", ImplicitSGSSettings::schema()}, {"ilu", ImplicitILUSettings::schema()}, {"positivity", ImplicitPositivitySettings::schema()}}}};
+    }
+    struct MultigridLevelSettings
+    {
+        index preSmooth = -1, postSmooth = -1;
+        Json solver = Json::object();
+        DNDS_DECLARE_CONFIG(MultigridLevelSettings)
+        {
+            DNDS_FIELD(preSmooth, "Coarse nonlinear corrections before descent; -1 inherits preSmooth, or coarseSmooth at the bottom");
+            DNDS_FIELD(postSmooth, "Corrections after ascent; -1 inherits postSmooth, or zero at the bottom; bottom uses their sum");
+            config.field_json_schema(&T::solver, "solver", "Partial independent smoother controls; unspecified fields inherit domain implicit defaults", MultigridSmootherSchema);
+        }
+    };
     struct PolynomialMultigridSettings
     {
         int levels = 0;
         index cycles = 50, preSmooth = 1, postSmooth = 1, coarseSmooth = 4;
         real damping = 1;
         std::vector<index> updateComponents;
+        std::map<std::string, MultigridLevelSettings> coarseLevelSettings;
         DNDS_DECLARE_CONFIG(PolynomialMultigridSettings)
         {
             DNDS_FIELD(levels, "0 disables pMG; 1 adds direct-gradient O2; 2 also adds first-order convection, retaining viscosity");
@@ -287,6 +306,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(preSmooth, "Bounded nonlinear corrections before restriction");
             DNDS_FIELD(postSmooth, "Bounded nonlinear corrections after prolongation");
             DNDS_FIELD(coarseSmooth, "Bounded nonlinear corrections at the coarsest level");
+            config.field_map_of<MultigridLevelSettings>(&T::coarseLevelSettings, "coarseLevelSettings", "Independent coarse-level controls keyed by 1 or 2; finest uses domain implicit and the common pre/post counts");
             DNDS_FIELD(damping, "Physical coarse-correction multiplier in (0,1]");
             DNDS_FIELD(updateComponents, "Distinct logical equation indices updated by pMG; empty updates all. Other means remain frozen; finest convergence still uses residualComponents");
         }
@@ -310,6 +330,10 @@ namespace DNDS::Cauchy
         ImplicitPositivitySettings positivity;
         PolynomialMultigridSettings multigrid;
         void Validate() const;
+        /// Resolve one coarse smoother by merging its partial solver settings
+        /// into domain defaults and validating the resulting typed controls.
+        /// The returned settings disable recursive multigrid. Level 1 is O2.
+        ImplicitSettings ResolveCoarseLevel(index level) const;
         /// Operator-level validation after resolving an equation's dimension.
         /// Configuration checks name syntax first; material setup resolves
         /// component names against the actual equation schema before execution.

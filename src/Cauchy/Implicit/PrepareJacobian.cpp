@@ -279,7 +279,15 @@ namespace DNDS::Cauchy
                 if (controls.roeDissipation)
                 {
                     const auto characteristic = _data->equation.PrepareCharacteristics(left, right, normal);
-                    DNDS_check_throw_info(!characteristic.componentwiseFallback, "Roe Jacobian requires a valid physical characteristic basis");
+                    // A componentwise limiter fallback is not a Roe matrix.
+                    // Retain the physical failure and identify the mean states
+                    // before the application aborts the distributed solve.
+                    if (characteristic.componentwiseFallback)
+                        DNDS_check_throw_info(false, fmt::format(
+                                                         "Roe Jacobian requires a valid physical characteristic basis: cell={} face={} neighbor={} zone={} "
+                                                         "left=[{:.17g},{:.17g},{:.17g},{:.17g},{:.17g}] right=[{:.17g},{:.17g},{:.17g},{:.17g},{:.17g}] sound={:.17g}",
+                                                         iCell, sample.face, sample.other, sample.zone,
+                                                         left[0], left[1], left[2], left[3], left[4], right[0], right[1], right[2], right[3], right[4], characteristic.soundSpeed));
                     const auto leftData = prepared(iCell, left);
                     const auto rightData = sample.other == UnInitIndex ? _data->equation.PrepareFluxState(right) : prepared(sample.other, right);
                     const auto model = _data->equation.PrepareRiemann(_data->flux, leftData, rightData, leftData, rightData, normal, gridVelocity);
