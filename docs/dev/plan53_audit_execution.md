@@ -129,8 +129,8 @@ producer-ready-delay assessment are unrun, with no production adoption.
 
 The [targeted source disposition](plan53_validation/source-disposition.md)
 records the final boundary/readability review and its limits. That review found
-one residual EntityGhostMapping policy gap, corrected below; its focused and
-routine validation is in progress. The bounded CPU sanitizer and independent
+one residual EntityGhostMapping policy gap, corrected below; focused validation
+and the routine gate have completed. The bounded CPU sanitizer and independent
 frozen Euler gates remain pinned evidence, not whole-platform qualification.
 Formatter default discovery now includes Cauchy and Physics;
 no repository-wide formatting was performed. Pending queue entries are not
@@ -1183,8 +1183,8 @@ transfers with independent payload expectations. PMPI asserts their total
 reduction count equals twice the blocking path plus exactly two mandatory
 context-policy agreements, and the disabled blocking path omits optional
 checks. No extra negative-case matrix or CTest registration is added. The
-source-matched focused np1/2/4 policy gate passes3/3 in0.92seconds. A following
-incremental aggregate build and existing routine gate remain in progress.
+source-matched focused np1/2/4 policy gate passes3/3 in0.92seconds. The following
+incremental aggregate and routine gate completed as recorded below.
 
 ## E3 split-mixture matched attribution
 
@@ -1197,3 +1197,22 @@ with10/16 publications per unlimited/WBAP RHS. Publication occupies about
 no handle swap or speculative copy-dispatch threshold is added. E3's requested
 representative flow5 and split-mixture attribution is complete, with flux-seed/
 PP traffic and physical advancement explicitly outside the measurement.
+
+## Final routine acceptance
+
+The [routine report](plan53_validation/routine-2026-11-06/README.md) retains
+all428 registration outcomes:420 passed in the333.52s initial sweep; eight
+reorder/transition entries failed on missingUP3D_32.cgns, then all eight passed
+in50.40s after installing that unchanged canonical fixture. No tests, source,
+thresholds or binaries changed for the retry. Both aggregate builds completed,
+and the corrected benchmark-only compute-worker tail smoke passes at np2.
+This is passing evidence across batches, not a single all-green sweep or a
+matched suite-speedup claim. Extended/integration and fresh CUDA/Python runtime
+acceptance remain outside this final gate. The raw failures, exact retry set,
+fixture hash and mechanical-agent capacity handoff remain in compact records.
+
+E1's specifically queued source propagation, E2 functionality/memory, E3
+publication, E4 bounded grouping, revised E6 frozen-operator and E7 acquisition
+have their scoped evidence. E5's actual composed-RHS/staging-time acceptance and
+additional E6 nonlinear-stage timing remain open; the goal is not declared
+complete from neighboring tests or mock performance results.
