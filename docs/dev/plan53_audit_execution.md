@@ -843,3 +843,21 @@ batch does not claim a new CUDA runtime test. These changes/classifications
 close the specifically queued cold I/O/map/interface items, not an exhaustive
 claim that all future wrappers have no optional agreement. E3–E6, final
 readability and per-suite rank curation remain open.
+
+## Geometry-only evaluated-Jacobian consolidation
+
+Both evaluated producers now use a private static stencil-row builder for the
+identical row/column/quadrature traversal. The callers retain distinct Point
+types and numerical snapshots: flow5 keeps its Roe sample ordinal; equation
+physics does not allocate that unused field. Immutable geometry reuse, source
+worker/EOS ownership, pressure derivatives and assembled filling are unchanged.
+The helper preserves sample order, repeated periodic images and diagonal/self
+exclusion. It performs no communication or live-state query.
+
+All **9/9** Jacobian, equation-FV and RANS-FV registrations pass at np1/2/4
+(54.82s plus3.62s for the RANS batch). The existing independent frozen-flux,
+assembled/evaluated action/SGS, physical/periodic/moving-frame and reconstructed
+mixture/RANS source checks remain. An initial build listed the wrong RANS
+target name after successfully building the first two targets; the registered
+`dnds_test_cauchy_rans_fv` target then built and its batch passed. No performance
+gain is claimed; E6's candidate/reuse assessment remains pending.

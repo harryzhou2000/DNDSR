@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
+#include "Cauchy/Implicit/JacobianGeometry.hpp"
 #include <Eigen/Core>
 #include <optional>
 
@@ -54,24 +55,13 @@ namespace DNDS::Cauchy
                 prepared->owner = fv._data;
                 prepared->partition = output.Space().Pin();
                 prepared->columns = output.Columns();
-                prepared->rows.resize(output.Columns().size());
                 auto read = fv.Metrics().AcquireRead();
                 const auto metric = read.HostView();
-                for (index iCell = 0; iCell < index(prepared->rows.size()); ++iCell)
-                {
-                    auto &row = prepared->rows[iCell];
-                    const auto &columns = output.Columns()[iCell];
-                    row.resize(columns.size());
-                    for (index entry = fv._data->offsets[iCell]; entry < fv._data->offsets[iCell + 1]; ++entry)
-                    {
-                        const auto &sample = fv._data->samples[entry];
-                        if (sample.other == UnInitIndex || sample.other == iCell)
-                            continue; // These contributions belong to the diagonal.
-                        const auto slot = std::find(columns.begin(), columns.end(), sample.other);
-                        DNDS_check_throw_info(slot != columns.end(), "evaluated Jacobian stencil is missing an adjacent cell");
-                        row[slot - columns.begin()].push_back({sample.other, sample.auxiliaryFace, entry, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, metric.GetFaceWeight(sample.point)});
-                    }
-                }
+                JacobianDetail::BuildStencilRows(fv._data->offsets, fv._data->samples, prepared->columns, prepared->rows,
+                                                 [&](const auto &sample, index entry)
+                                                 {
+                                                     return Point{sample.other, sample.auxiliaryFace, entry, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, metric.GetFaceWeight(sample.point)};
+                                                 });
                 geometry = std::move(prepared);
             }
             if (roe)
