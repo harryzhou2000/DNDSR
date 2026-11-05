@@ -22,6 +22,7 @@
 #include "doctest.h"
 
 #include "Euler/EulerSolver.hpp"
+#include "EulerP/EulerP_Evaluator_impl_common.hxx"
 
 #include <fstream>
 #include <iostream>
@@ -475,6 +476,265 @@ TEST_CASE("Viscous wall perturbations match prescribed turbulence ghost values")
     const auto rightMinus = saEval.generateBoundaryValue(minus, saState, 0, 0, -1, normal, base,
                                                          Geom::tPoint::Zero(), 0, Geom::BC_ID_DEFAULT_WALL, false);
     CHECK((linear - (rightPlus - rightMinus) / (2 * h)).norm() < 1e-9);
+}
+
+TEST_CASE("SA GG boundaries preserve means, face targets and traversal independence")
+{
+    using Eval = EulerEvaluator<NS_SA>;
+    const auto root = projectRoot();
+    const auto path = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json", "sa_gg_targets",
+                                          {{"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}, {"subs2ndOrderGGScheme", 0}}},
+                                           {"dataIOControl", {{"meshDirectBisect", 0}, {"meshFile", root + "/data/mesh/Uniform_3x3_wall.cgns"}}}});
+    EulerSolver<NS> fixture(g_mpi);
+    fixture.ConfigureFromJson(path, true);
+    fixture.ReadMeshAndInitialize();
+    auto mesh = fixture.getMesh();
+    auto vr = fixture.getVFV();
+    REQUIRE_FALSE(mesh->isPeriodic);
+    EulerEvaluatorSettings<NS_SA> settings(6);
+    settings.useSourceGradFixGG = 1;
+    Eval eval(mesh, vr, std::make_shared<BoundaryHandler<NS_SA>>(6), settings);
+    ArrayDOFV<6> u, rhs;
+    ArrayDOFV<1> beta, alpha;
+    ArrayRECV<6> rec;
+    vr->BuildUDof(u, 6);
+    vr->BuildUDof(rhs, 6);
+    vr->BuildUDof(beta, 1);
+    vr->BuildUDof(alpha, 1);
+    vr->BuildURec(rec, 6);
+    for (DNDS::index iCell = 0; iCell < mesh->NumCellProc(); ++iCell)
+        rec[iCell].setZero();
+    beta.setConstant(1);
+    alpha.setConstant(1);
+    for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+    {
+        const auto center = vr->GetCellBary(iCell);
+        u[iCell] << 1, .4, -.2, 0, 3.25, .1 + .02 * center(0) + .03 * center(1);
+    }
+    u.trans.startPersistentPull();
+    u.trans.waitPersistentPull();
+    std::vector<Eval::TU> original;
+    for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+    {
+        original.emplace_back(u[iCell]);
+        eval.gradUFix[iCell].setZero(3, 6);
+    }
+    std::vector<Eigen::Vector3d> expected(mesh->NumCell(), Eigen::Vector3d::Zero());
+    DNDS::index wallCount = 0;
+    for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+    {
+        auto faces = mesh->cell2face[iCell];
+        for (DNDS::rowsize j = 0; j < faces.size(); ++j)
+        {
+            const auto iFace = faces[j];
+            const auto other = mesh->CellFaceOther(iCell, iFace, j);
+            const int side = mesh->CellIsFaceBack(iCell, iFace, j) ? 0 : 1;
+            const Eigen::Vector3d normal = vr->GetFaceNormFromCell(iFace, iCell, side, -1) * (side ? -1 : 1);
+            DNDS::real faceScalar = 0;
+            if (other != UnInitIndex)
+                faceScalar = .5 * (u[other](5) + u[iCell](5));
+            else
+            {
+                REQUIRE(eval.pBCHandler->GetTypeFromID(mesh->GetFaceZone(iFace)) == BCWall);
+                // VR deliberately returns the raw right value from a fresh
+                // mutable trace; the mean and subsequent callbacks stay intact.
+                Eval::TU left = u[iCell];
+                const Eval::TVec unitNormal = normal.head<Eval::dim>();
+                const auto rawRight = eval.generateBoundaryValue(left, u[iCell], iCell, iFace, -1,
+                                                                 unitNormal, Geom::NormBuildLocalBaseV<Eval::dim>(unitNormal),
+                                                                 vr->GetFaceQuadraturePPhys(iFace, -1), 0,
+                                                                 mesh->GetFaceZone(iFace), true, 1);
+                CHECK(left(5) == 0);
+                CHECK(rawRight(5) == 0);
+                CHECK((u[iCell] - original[iCell]).isZero(0));
+                ++wallCount;
+            }
+            expected[iCell] += vr->GetFaceArea(iFace) / vr->GetCellVol(iCell) * normal * (faceScalar - u[iCell](5));
+        }
+        const auto forward = eval.EvaluateSourceGradientGG(u[iCell], u, iCell, 0);
+        CHECK((forward.col(5) - expected[iCell]).norm() < 1e-12);
+        for (int sourceAll : {0, 1})
+        {
+            eval.settings.source2nd = sourceAll;
+            eval.settings.ransSource2nd = !sourceAll;
+            Eval::TU before = Eval::TU::Zero(), after = Eval::TU::Zero();
+            Eval::TJacobianU jac;
+            Eval::TDiffU unused = Eval::TDiffU::Zero();
+            auto source = [&](auto &value)
+            {
+                eval.EvaluateCellSource(value, jac, u[iCell], unused, iCell, 0, SourceFilter::All, 1,
+                                        true, OptionalRef(u), OptionalRef(rec), OptionalRef(rec), false, 0);
+            };
+            source(before);
+            for (DNDS::rowsize j = 0; j < faces.size() / 2; ++j)
+                std::swap(faces[j], faces[faces.size() - 1 - j]);
+            const auto reversed = eval.EvaluateSourceGradientGG(u[iCell], u, iCell, 0);
+            source(after);
+            for (DNDS::rowsize j = 0; j < faces.size() / 2; ++j)
+                std::swap(faces[j], faces[faces.size() - 1 - j]);
+            CHECK((forward - reversed).norm() < 1e-12);
+            CHECK((before - after).norm() < 1e-11 * (1 + before.norm()));
+        }
+        CHECK((u[iCell] - original[iCell]).isZero(0));
+    }
+    MPI::AllreduceOneIndex(wallCount, MPI_SUM, g_mpi);
+    CHECK(wallCount > 0);
+
+    // Independent zero-wall target oracle for all direct-gradient schemes.
+    auto reflected = [](const auto &, const auto &mean, auto, auto, auto, const auto &, const auto &, auto) -> Eval::TU
+    {
+        Eval::TU ghost = mean;
+        ghost.template segment<3>(1) *= -1;
+        ghost(5) *= -1;
+        return ghost;
+    };
+    CFV::tUGrad<6, 2> actual, reference;
+    vr->BuildUGrad(actual, 6);
+    vr->BuildUGrad(reference, 6);
+    for (int method : {1, 11, 2})
+    {
+        vr->DoReconstruction2ndGrad<6>(actual, u, eval.GetGradientBoundary(0), method);
+        vr->DoReconstruction2ndGrad<6>(reference, u, reflected, method);
+        for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+            CHECK((actual[iCell] - reference[iCell]).norm() < 1e-12);
+    }
+
+    // A constant polynomial has zero base gradient. Its corrected source GG
+    // must therefore equal the face-target oracle, including a full wall jump.
+    eval.settings.ignoreSourceTerm = true;
+    JacobianDiagBlock<6> sourceJac;
+    sourceJac.SetModeAndInit(1, 6, u);
+    eval.EvaluateRHS(rhs, sourceJac, u, rec, rec, beta, alpha, false, 0,
+                     Eval::RHS_Ignore_Viscosity | Eval::RHS_Dont_Update_Integration | Eval::RHS_Dont_Record_Bud_Flux);
+    for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+    {
+        CHECK((eval.gradUFix[iCell].col(5) / vr->GetCellVol(iCell) - expected[iCell]).norm() < 1e-12);
+        CHECK((u[iCell] - original[iCell]).isZero(0));
+    }
+
+    // Reproduce the affine mean field exactly. Interior polynomial traces
+    // agree, leaving only wall jumps measured from the nonconstant trace.
+    for (DNDS::index iCell = 0; iCell < mesh->NumCellProc(); ++iCell)
+    {
+        actual[iCell].setZero();
+        actual[iCell].col(5) << .02, .03;
+    }
+    vr->ConvertUGradToURec<6>(rec, actual);
+    rec.trans.startPersistentPull();
+    rec.trans.waitPersistentPull();
+    eval.EvaluateRHS(rhs, sourceJac, u, rec, rec, beta, alpha, false, 0,
+                     Eval::RHS_Ignore_Viscosity | Eval::RHS_Dont_Update_Integration | Eval::RHS_Dont_Record_Bud_Flux);
+    for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+    {
+        Eigen::Vector3d correction = Eigen::Vector3d::Zero();
+        const auto faces = mesh->cell2face[iCell];
+        for (DNDS::rowsize j = 0; j < faces.size(); ++j)
+        {
+            const auto iFace = faces[j];
+            if (mesh->CellFaceOther(iCell, iFace, j) != UnInitIndex)
+                continue;
+            const auto point = vr->GetFaceQuadraturePPhys(iFace, -1);
+            const DNDS::real wallTrace = .1 + .02 * point(0) + .03 * point(1);
+            correction -= vr->GetFaceArea(iFace) * vr->GetFaceNorm(iFace, -1) * wallTrace / vr->GetCellVol(iCell);
+        }
+        CHECK((eval.gradUFix[iCell].col(5) / vr->GetCellVol(iCell) - correction).norm() < 1e-12);
+        CHECK((u[iCell] - original[iCell]).isZero(0));
+    }
+}
+
+TEST_CASE("EulerP scalar GG reads neighbour cells and face-indexed boundary buffers")
+{
+    namespace EP = DNDS::EulerP;
+    constexpr auto host = DeviceBackend::Host;
+    const auto root = projectRoot();
+    const auto path = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json", "eulerp_scalar_gg",
+                                          {{"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}}},
+                                           {"dataIOControl", {{"meshDirectBisect", 0}, {"meshFile", root + "/data/mesh/Uniform_3x3_wall.cgns"}}}});
+    EulerSolver<NS> fixture(g_mpi);
+    fixture.ConfigureFromJson(path, true);
+    fixture.ReadMeshAndInitialize();
+    auto mesh = fixture.getMesh();
+    auto fv = std::static_pointer_cast<CFV::FiniteVolume>(fixture.getVFV());
+    EP::TUDof flow, boundaryFlow;
+    EP::TUGrad flowGradient;
+    EP::TUScalar scalars[2], boundaryScalars[2];
+    EP::TUScalarGrad gradients[2];
+    fv->BuildUDof(flow, 5);
+    fv->BuildUDof(boundaryFlow, 5, true, true, Geom::MeshLoc::Face);
+    fv->BuildUGradD<5, 3>(flowGradient, 5);
+    for (int j = 0; j < 2; ++j)
+    {
+        fv->BuildUDof(scalars[j], 1);
+        fv->BuildUDof(boundaryScalars[j], 1, true, true, Geom::MeshLoc::Face);
+        fv->BuildUGradD<1, 3>(gradients[j], 1);
+    }
+    for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+    {
+        const auto x = fv->GetCellBary(iCell);
+        scalars[0][iCell](0) = 1 + x(0) * x(0) + .3 * x(1);
+        scalars[1][iCell](0) = -2 + .2 * x(0) - x(1) * x(1);
+        flow[iCell].setConstant(1);
+        flow[iCell](0) = scalars[0][iCell](0);
+        flow[iCell](1) = scalars[1][iCell](0);
+    }
+    flow.trans.startPersistentPull();
+    flow.trans.waitPersistentPull();
+    for (auto &scalar : scalars)
+    {
+        scalar.trans.startPersistentPull();
+        scalar.trans.waitPersistentPull();
+    }
+    for (DNDS::index iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
+    {
+        boundaryScalars[0][iFace](0) = 100 + .7 * iFace;
+        boundaryScalars[1][iFace](0) = -30 - .9 * iFace;
+        boundaryFlow[iFace].setConstant(1);
+        boundaryFlow[iFace](0) = boundaryScalars[0][iFace](0);
+        boundaryFlow[iFace](1) = boundaryScalars[1][iFace](0);
+    }
+    using ScalarView = EP::TUScalar::t_deviceView<host>;
+    using GradientView = EP::TUScalarGrad::t_deviceView<host>;
+    deviceViewVector<ScalarView, host> scalarViews(2, [&](int j)
+                                                   { return scalars[j].deviceView<host>(); });
+    deviceViewVector<ScalarView, host> boundaryViews(2, [&](int j)
+                                                     { return boundaryScalars[j].deviceView<host>(); });
+    deviceViewVector<GradientView, host> gradientViews(2, [&](int j)
+                                                       { return gradients[j].deviceView<host>(); });
+    EP::Evaluator_impl<host>::RecGradient_Arg::Portable args{};
+    args.u = flow.deviceView<host>();
+    args.uGrad = flowGradient.deviceView<host>();
+    args.faceBCBuffer = boundaryFlow.deviceView<host>();
+    args.uScalar = scalarViews.deviceView();
+    args.uScalarGrad = gradientViews.deviceView();
+    args.faceBCScalarBuffer = boundaryViews.deviceView();
+    EP::EvaluatorDeviceView<host> view(fv->deviceView<host>(), EP::BCHandlerDeviceView<host>({}), EP::PhysicsDeviceView<host>{{}, {}});
+    DNDS::index interiorCount = 0, mismatchedFaceCount = 0;
+    for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+    {
+        EP::RecGradient_GGRec_Kernel_GG<host>(view, args, iCell, mesh->NumCell(), 7, 2);
+        for (int j = 0; j < 2; ++j)
+        {
+            Eigen::Vector3d expected = Eigen::Vector3d::Zero();
+            auto faces = mesh->cell2face[iCell];
+            for (DNDS::rowsize k = 0; k < faces.size(); ++k)
+            {
+                const auto iFace = faces[k];
+                const auto other = mesh->CellFaceOther(iCell, iFace, k);
+                const int side = mesh->CellIsFaceBack(iCell, iFace, k) ? 0 : 1;
+                const Eigen::Vector3d normal = fv->GetFaceNormFromCell(iFace, iCell, side, -1) * (side ? -1 : 1);
+                const DNDS::real right = other == UnInitIndex ? boundaryScalars[j][iFace](0) : scalars[j][other](0);
+                expected += .5 * fv->GetFaceArea(iFace) / fv->GetCellVol(iCell) * normal * (right - scalars[j][iCell](0));
+                interiorCount += other != UnInitIndex;
+                mismatchedFaceCount += other == UnInitIndex && iFace != iCell;
+            }
+            CHECK((gradients[j][iCell] - expected).norm() < 1e-11);
+            CHECK((flowGradient[iCell].col(j) - expected).norm() < 1e-11);
+        }
+    }
+    MPI::AllreduceOneIndex(interiorCount, MPI_SUM, g_mpi);
+    MPI::AllreduceOneIndex(mismatchedFaceCount, MPI_SUM, g_mpi);
+    CHECK(interiorCount > 0);
+    CHECK(mismatchedFaceCount > 0);
 }
 
 template <EulerModel model>

@@ -360,7 +360,7 @@ namespace DNDS::Euler
 
         /// @name Reconstruction
         /// @{
-        int direct2ndRecMethod = 1;        ///< Direct 2nd-order reconstruction method selector.
+        int direct2ndRecMethod = 1;        ///< Gradient reconstruction: 1=GG (subs2ndOrderGGScheme controls interior weighting), 11=GGMP, 2=least squares. All use post-BC face targets.
         int specialBuiltinInitializer = 0; ///< Index of a built-in special initializer (0 = none).
         real uRecAlphaCompressPower = 1;   ///< Alpha compression power for the reconstruction limiter.
         real uRecBetaCompressPower = 1;    ///< Beta compression power for the reconstruction limiter.
@@ -429,14 +429,14 @@ namespace DNDS::Euler
         int ransSARotCorrection = 1;                ///< Enable the SA-R production rotation correction (not SA-RC).
         int ransEigScheme = 0;                      ///< Eigenvalue computation scheme for RANS.
         int ransForce2nd = 0;                       ///< Force 2nd-order accuracy for RANS variables.
-        int ransSource2nd = 0;                      ///< Enable 2nd-order RANS source term discretization.
+        int ransSource2nd = 0;                      ///< Use unweighted arithmetic-mean GG for source RANS gradient columns; retain reconstructed states/quadrature.
         /// @}
 
         /// @name Viscous Flux and Source Options
         /// @{
-        int source2nd = 0;                    ///< Enable 2nd-order source term discretization.
+        int source2nd = 0;                    ///< Use unweighted arithmetic-mean GG for all source gradient columns; retain reconstructed states/quadrature.
         int usePrimGradInVisFlux = 0;         ///< Use primitive-variable gradients in viscous flux.
-        int useSourceGradFixGG = 0;           ///< Apply Green-Gauss gradient fix for source terms.
+        int useSourceGradFixGG = 0;           ///< Add face-average-minus-pre-BC-polynomial-trace jump correction to reconstructed source gradients.
         int nCentralSmoothStep = 0;           ///< Number of central-difference smoothing steps.
         real centralSmoothEps = 0.5;          ///< Epsilon for central smoothing.
         int pointImplicitSourceUpdateOut = 0; ///< Print point-implicit source-update Newton residual ratios.
@@ -740,7 +740,7 @@ namespace DNDS::Euler
             DNDS_FIELD(noRsOnWall,              "Disable Riemann solver on wall boundaries");
             DNDS_FIELD(noGRPOnWall,             "Disable GRP on wall boundaries");
             DNDS_FIELD(ignoreSourceTerm,        "Ignore source terms");
-            DNDS_FIELD(direct2ndRecMethod,      "Direct 2nd-order reconstruction method");
+            DNDS_FIELD(direct2ndRecMethod,      "Gradient reconstruction: 1=Green-Gauss (interior weighting from subs2ndOrderGGScheme), 11=GGMP, 2=least squares; boundary values use post-BC left/right face averages");
             DNDS_FIELD(specialBuiltinInitializer, "Special built-in initializer code");
             DNDS_FIELD(uRecAlphaCompressPower,  "uRec alpha compression power");
             DNDS_FIELD(uRecBetaCompressPower,   "uRec beta compression power");
@@ -799,10 +799,10 @@ namespace DNDS::Euler
             DNDS_FIELD(ransSARotCorrection,     "SA rotation correction");
             DNDS_FIELD(ransEigScheme,           "RANS eigenvalue scheme");
             DNDS_FIELD(ransForce2nd,            "Force 2nd-order RANS");
-            DNDS_FIELD(ransSource2nd,           "RANS source 2nd-order");
-            DNDS_FIELD(source2nd,               "Source term 2nd-order");
+            DNDS_FIELD(ransSource2nd,           "Use legacy unweighted arithmetic-mean Green-Gauss for RANS source gradient columns, with immutable cell means and post-BC face averages; reconstructed states/quadrature are retained; direct-FV uses its prepared gradient instead");
+            DNDS_FIELD(source2nd,               "Use legacy unweighted arithmetic-mean Green-Gauss for all source gradient columns, with immutable cell means and post-BC face averages; reconstructed states/quadrature are retained; direct-FV uses its prepared gradient instead");
             DNDS_FIELD(usePrimGradInVisFlux,    "Use primitive gradient in viscous flux");
-            DNDS_FIELD(useSourceGradFixGG,      "Use source gradient fix for Green-Gauss");
+            DNDS_FIELD(useSourceGradFixGG,      "Correct reconstructed source gradients by integrated face-average-minus-pre-BC-polynomial-trace jumps, including fixUL changes to the left face state");
             DNDS_FIELD(nCentralSmoothStep,      "Central smoothing steps",
                        DNDS::Config::range(0));
             DNDS_FIELD(centralSmoothEps,        "Central smoothing epsilon");

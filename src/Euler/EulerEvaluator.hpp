@@ -829,6 +829,8 @@ namespace DNDS::Euler
          * @param refreshWeakAlpha Recompute the weak branch; false holds its old values.
          * @param resetWeakAlpha Start a new stage with the fresh weak gate rather than
          *                       applying its relaxation/decay to the preceding stage.
+         * @param FBoundary Gradient-boundary callback from GetGradientBoundary,
+         *                  using an effective ghost rather than the raw VR BC value.
          * @param reconstructionMask Optional caller-owned static constraint on reference gradients/modes for this call only.
          * @param flags Explicit LVR_* reuse promises. Owned and ghost U, boundary
          *              data, method and mask must be unchanged since preparation;
@@ -1203,6 +1205,40 @@ namespace DNDS::Euler
             SourceFilter filter = SourceFilter::All,
             OptionalRef<ArrayDOFV<1>> cellTWarm = {},
             real reactiveSplitCoupledScale = 1.0);
+
+        /** @brief Legacy unweighted source GG gradient, with immutable cell means.
+         *
+         * Interior faces use half the neighbour-minus-mean jump, including
+         * periodic transforms. Boundary faces use the average of the post-BC
+         * left/right states minus the original mean. No distance weighting,
+         * limiting, halo exchange or mean-state mutation is performed.
+         */
+        TDiffU EvaluateSourceGradientGG(const TU &mean, ArrayDOFV<nVarsFixed> &u,
+                                        index iCell, real t)
+        {
+            TDiffU gradient;
+            gradient.setZero(dim, nVars);
+            const auto c2f = mesh->cell2face[iCell];
+            for (rowsize ic2f = 0; ic2f < c2f.size(); ++ic2f)
+            {
+                const index iFace = c2f[ic2f];
+                const index other = mesh->CellFaceOther(iCell, iFace, ic2f);
+                const int side = mesh->CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                const TVec normal = vfv->GetFaceNormFromCell(iFace, iCell, side, -1).template head<dim>() * (side ? -1 : 1);
+                TU right;
+                if (other != UnInitIndex)
+                {
+                    right = u[other];
+                    UFromOtherCell(right, iFace, iCell, other, side);
+                }
+                else
+                    right = generateBoundaryValueForGradient(mean, iCell, iFace, -1, normal,
+                                                             vfv->GetFaceQuadraturePPhys(iFace, -1), t,
+                                                             mesh->GetFaceZone(iFace), 0);
+                gradient += .5 * vfv->GetFaceArea(iFace) * normal * (right - mean).transpose();
+            }
+            return gradient / vfv->GetCellVol(iCell);
+        }
 
         /**
          * @brief Evaluate the cell-integrated source term for a single cell.
@@ -1636,7 +1672,7 @@ namespace DNDS::Euler
          * @param[in]     pPhysics  Physical coordinates of the evaluation point.
          * @param[in]     t         Current simulation time.
          * @param[in]     btype     Boundary type ID.
-         * @param[in]     fixUL     If true, do not modify the left state.
+         * @param[in]     fixUL     If true, permit the handler to modify the left face state (zero SA at a viscous wall). Never pass a stored mean as mutable ULxy.
          * @param[in]     geomMode  Geometry evaluation mode (0=standard).
          * @param[in]     linMode   Linearization mode (0=nonlinear, nonzero=linearized about ULMeanXy).
          * @return Ghost (right) state for the Riemann solver.
@@ -1653,6 +1689,33 @@ namespace DNDS::Euler
             bool fixUL = false,
             int geomMode = 0,
             int linMode = 0);
+
+        /** @brief Effective ghost for GG/GGMP/least-squares gradient boundaries.
+         *
+         * A fresh left copy may be changed by fixUL. Return right+left-mean,
+         * so half its jump from mean equals the post-BC face average minus
+         * mean. This adapter is not the high-order VR boundary protocol.
+         */
+        TU generateBoundaryValueForGradient(const TU &mean, index iCell, index iFace, int iG,
+                                            const TVec &normal, const Geom::tPoint &point, real t,
+                                            Geom::t_index btype, int geomMode = 1)
+        {
+            TU left = mean;
+            TU right = generateBoundaryValue(left, mean, iCell, iFace, iG, normal,
+                                             Geom::NormBuildLocalBaseV<dim>(normal), point,
+                                             t, btype, true, geomMode);
+            return right + (left - mean);
+        }
+
+        /// Boundary callback only for direct gradient reconstruction, including LVR's O2 reference.
+        typename TVFV::template TFBoundary<nVarsFixed> GetGradientBoundary(real t)
+        {
+            return [this, t](const auto &, const auto &mean, index iCell, index iFace, int iG,
+                             const Geom::tPoint &normal, const Geom::tPoint &point, Geom::t_index btype) -> TU
+            {
+                return generateBoundaryValueForGradient(mean, iCell, iFace, iG, normal.template head<dim>(), point, t, btype);
+            };
+        }
 
     private:
         /// @name Per-BC-type handlers (called by generateBoundaryValue)

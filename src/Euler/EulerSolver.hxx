@@ -233,6 +233,12 @@ namespace DNDS::Euler
                     compressed);
                 return eval.generateBoundaryValue(ULfixed, UMean, iCell, iFace, ig, normOutV, normBase, pPhy, tSimu + ct * curDtImplicit, bType, true, 1);
             };
+            auto FBoundaryGG = eval.GetGradientBoundary(rhsTime);
+            // The degree-one substitution calls a gradient reconstruction;
+            // high-order VR retains its original boundary-value protocol.
+            const auto &FBoundaryRec = vfv->getSettings().maxOrder == 1 && vfv->getSettings().subs2ndOrder != 0
+                                           ? FBoundaryGG
+                                           : FBoundary;
             typename TVFV::template TFBoundaryDiff<nVarsFixed>
                 FBoundaryDiff = [&](const TU &UL, const TU &dU, const TU &UMean, index iCell, index iFace, int ig,
                                     const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
@@ -295,7 +301,7 @@ namespace DNDS::Euler
                                       config.limiterControl.limitedVR,
                                       !config.limiterControl.limitedVR.weakFreezeWithinImplicitStage || limitedVRStageStart,
                                       limitedVRStageStart,
-                                      FBoundary, reconstructionMask,
+                                      FBoundaryGG, reconstructionMask,
                                       reuseDtGradients ? TEval::LVR_Already_Have_UGradBufNoLim |
                                                              TEval::LVR_Already_Have_UGradBuf
                                                        : TEval::LVR_No_Flags);
@@ -344,12 +350,12 @@ namespace DNDS::Euler
 
                     if (useLimitedVR)
                         vfv->DoReconstructionIterLimited(
-                            uRecC, uRecNew, cx, FBoundary,
+                            uRecC, uRecNew, cx, FBoundaryRec,
                             uRecO2, lvrAlpha_, false, reconstructionMask);
                     else
                         vfv->DoReconstructionIter(
                             uRecC, uRecNew, cx,
-                            FBoundary,
+                            FBoundaryRec,
                             false, false, false, reconstructionMask);
 
                     uRecC.trans.startPersistentPull();
@@ -391,7 +397,7 @@ namespace DNDS::Euler
                 {
                     vfv->DoReconstructionIter(
                         uRecC, uRecNew, cx,
-                        FBoundary,
+                        FBoundaryRec,
                         true, true, false, reconstructionMask);
                     uRecNew.trans.startPersistentPull();
                     uRecNew.trans.waitPersistentPull();
@@ -456,7 +462,7 @@ namespace DNDS::Euler
                 uRecNew = uRecBC; // last version of B
                 vfv->DoReconstructionIter(
                     uRecC, uRecBC, cx,
-                    FBoundary, true, true, true, reconstructionMask); // puts rhs of reconstruction A^-1b into uRecBC
+                    FBoundaryRec, true, true, true, reconstructionMask); // puts rhs of reconstruction A^-1b into uRecBC
                 if (iter > 2)
                 {
                     if (config.implicitReconstructionControl.fpcgResetScheme == 0)
@@ -498,7 +504,7 @@ namespace DNDS::Euler
                         {
                             vfv->DoReconstructionIter(
                                 x, res, cx,
-                                FBoundary, true, true, false, reconstructionMask);
+                                FBoundaryRec, true, true, false, reconstructionMask);
                             res.trans.startPersistentPull();
                             res.trans.waitPersistentPull();
                             res *= -1;
@@ -540,7 +546,7 @@ namespace DNDS::Euler
                 std::vector<int> mask;
                 mask.resize(1);
                 mask[0] = 5;
-                vfv->DoReconstruction2nd(uRec, u, FBoundary, 1, mask, reconstructionMask);
+                vfv->DoReconstruction2nd(uRec, u, FBoundaryGG, 1, mask, reconstructionMask);
             }
             if (model == NS_2EQ || model == NS_2EQ_3D)
             {
@@ -548,7 +554,7 @@ namespace DNDS::Euler
                 mask.resize(2);
                 mask[0] = 5;
                 mask[1] = 6;
-                vfv->DoReconstruction2nd(uRec, u, FBoundary, 1, mask, reconstructionMask);
+                vfv->DoReconstruction2nd(uRec, u, FBoundaryGG, 1, mask, reconstructionMask);
             }
             Timer().StopTimer(PerformanceTimer::Reconstruction);
             if (gradIsZero)
