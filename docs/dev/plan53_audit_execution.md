@@ -563,3 +563,38 @@ or timing improvements are claimed.
 Remaining E1 classification/propagation covers archive/serializer coordination,
 compatibility decoding, bare map construction and distributed interface search.
 Other pending packages and independent Euler comparisons are unchanged.
+
+## E3 coefficient-publication functional pilot
+
+An opt-in CPU benchmark now separates the production publication call, its
+lease-protected row-copy arithmetic without mesh acquisition, a Jacobi sweep
+and one top-degree WBAP pass. There is no production ownership or binding
+change. Both copy paths retain the original coefficient allocation/binding;
+independent global-ID values check exact owned/ghost payloads after transfer.
+Reset, setup, halo fill and validation are excluded from timing. Logical
+read/write bytes are reported separately from wall time and are not measured
+hardware traffic.
+
+Both local np2/OMP1 pilots pass: P3 flow5 AoS and P2 separate 5+12-component SoA,
+two forward/reverse phase-order trials, 128 cells/rank. Means and compute-only
+coefficient input generations are unchanged; numeric outputs are finite. A
+handful of pure component reconstruction fields does not establish reacting
+RHS qualification. The target is excluded from ordinary builds/CTest.
+All 20 tooling tests pass (2.985 s), including registered aggregate coverage.
+
+Compact source-pinned records/logs and exact measured source bytes are in
+`docs/dev/plan53_validation/e3-functional-pilot/`. The first compile referenced
+a nonexistent field convenience read accessor; the corrected owned/ghost
+scope implementation builds and both pilots exit zero. No performance gain,
+buffer-swap recommendation or E3 completion is accepted from shared-host pilot
+times. Matched small/large cases, complete production copy counts and RHS
+fractions remain pending. E4/E5/E6 and the submitted E7 job remain distinct.
+
+Further E1 source review also identifies the unconditional WBAP preparation
+`MPI::LocalStage` in flow5 `FiniteVolume.cpp`, in addition to archive/compatibility
+and distributed interface entry points. Audit this against the configured
+policy; do not count Runtime halo off-mode evidence as proof that all Cauchy
+local stages are optional already.
+WBAP is one identified call, not an exhaustive Cauchy inventory: remaining
+constructor/workspace/restore and positivity stages also require classification,
+with protocol and numerical collectives retained independently of policy.
