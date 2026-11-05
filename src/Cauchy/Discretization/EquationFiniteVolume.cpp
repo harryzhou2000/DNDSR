@@ -297,7 +297,7 @@ namespace DNDS::Cauchy
                     if (ransModel)
                         RANSStateView{ransModel->Kind(), ransModel->ComponentNumber()}.RepairReconstruction(ransMean[sample.cell], point.values.data() + ransFirst);
                     BoundaryValue(point, flowFirst, speciesFirst, owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() - 1 : 0,
-                                  sample, evaluator, frame, time, false,
+                                  sample, evaluator, frame, time, owner->settings.numerics.reconstruction == "variational",
                                   {ransModel, ransFirst, &cellMean, wallRead ? wallValues.cellMean(sample.cell, 0) : 0});
                     for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
                     {

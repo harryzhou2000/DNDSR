@@ -237,6 +237,15 @@ Exact replay still requires compatible numerical controls and stored guesses.
 
 ## Polynomial multigrid
 
+VR boundary input follows Euler's reconstruction equation: wall points receive
+the **reflected exterior state**, evaluated from the current polynomial when
+requested. A stationary slip reflection preserves rho and rhoE and reverses
+normal momentum. This is different from the physical wall trace consumed by
+direct gradients and viscous laws. Replacing the reflected target with that
+trace halves the momentum jump and changes the conservative-energy boundary
+equation. Flow5 and logical-equation paths use the same convention; analytic
+and inter-domain prescribed point values retain their existing meanings.
+
 `Cauchy/Multigrid/PolynomialMultigrid` connects the generic
 [FAS cycle](FAS.md) to same-cell spatial operators. `implicit.multigrid.levels=0`
 disables it. Level1 is direct-gradient second order, level2 additionally uses

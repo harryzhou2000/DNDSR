@@ -844,7 +844,14 @@ namespace DNDS::Cauchy
                 for (index iPoint = 0; iPoint < plan.NumBoundaryQuadrature(); ++iPoint)
                 {
                     const auto &sample = _data->samples[_data->boundaryEntries[gradient ? _data->gradientBoundaryPoints[iPoint] : iPoint]];
-                    const auto face = FiniteVolumeDetail::BoundaryFaceValue(sample, gas, Load(values, sample.cell), time, frame, incoming);
+                    // VR's boundary equation follows Euler's reflected exterior
+                    // target. Direct gradients instead consume the physical
+                    // trace; using that trace in VR halves the wall constraint
+                    // and changes its conservative energy equation.
+                    const auto inside = Load(values, sample.cell);
+                    const auto face = !gradient && _data->settings.numerics.reconstruction == "variational"
+                                          ? FiniteVolumeDetail::BoundaryExterior(sample, gas, inside, time, frame, incoming)
+                                          : FiniteVolumeDetail::BoundaryFaceValue(sample, gas, inside, time, frame, incoming);
                     for (int j = 0; j < 5; ++j)
                         target(iPoint, j) = face[j];
                 }
@@ -872,7 +879,7 @@ namespace DNDS::Cauchy
                         inside[j] += rec(sample.cell, j * modes + mode) * b(0, mode);
                 if (!gas.Admissible(inside))
                     inside = Load(u, sample.cell);
-                const auto face = FiniteVolumeDetail::BoundaryFaceValue(sample, gas, inside, time, frame, incoming);
+                const auto face = FiniteVolumeDetail::BoundaryExterior(sample, gas, inside, time, frame, incoming);
                 for (int j = 0; j < 5; ++j)
                     values(iPoint, j) = face[j];
             }

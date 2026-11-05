@@ -189,7 +189,9 @@ namespace DNDS::CFV
         Runtime::Array<real> BuildCellMaxLenScale() const;
     };
 
-    /// Explicit Dirichlet values at the prepared boundary quadrature points.
+    /// Explicit targets for boundary reconstruction equations at prepared
+    /// quadrature points. The caller selects their physical convention (e.g.
+    /// Euler's reflected exterior target at a wall, or a prescribed trace).
     /// Refresh after changing a state-dependent BC. No callback is invoked by
     /// reconstruction. Each object belongs to exactly one reconstruction plan.
     struct ReconstructionBoundaryValues
