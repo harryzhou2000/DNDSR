@@ -99,23 +99,14 @@ namespace DNDS::Cauchy::EquationFVDetail
                 std::array<real, 2> target{};
                 if (twoEquationWall)
                 {
-                    // Isothermal viscosity uses the physical wall state. The
-                    // convective exterior deliberately retains interior T, so
-                    // it cannot be used as the transport property input.
+                    // Euler uses the wall-temperature state for isothermal
+                    // viscosity, and the cell mean for an adiabatic wall.
                     FlowState viscosityFlow = rans.mean->Flow(flowFirst);
                     auto viscositySpecies = rans.mean->Species(speciesFirst, independent);
                     if (sample.boundary.isothermal)
                     {
                         viscosityFlow = flow;
                         viscositySpecies = {rhoY.data, rhoY.nSpecies};
-                        if (exterior)
-                        {
-                            auto scratch = evaluator.SpeciesInput();
-                            for (int k = 0; k < independent; ++k)
-                                scratch[k] = rhoY[k];
-                            viscosityFlow = sample.boundary.FaceValue(evaluator, inside, scratch, normal, location, time, &frame);
-                            viscositySpecies = {scratch.data, scratch.nSpecies};
-                        }
                     }
                     const auto properties = evaluator.Evaluate(viscosityFlow, viscositySpecies, 0, {true});
                     Physics::RANS::Point mean;
@@ -128,7 +119,15 @@ namespace DNDS::Cauchy::EquationFVDetail
                     target = RANSWallTarget(*rans.model, mean, inside[0]);
                 }
                 for (int j = 0; j < components; ++j)
-                    point.values[rans.first + j] = exterior ? 2 * target[j] - point.values[rans.first + j] : target[j];
+                {
+                    // Euler's thermal primitive conversion rescales SA and k
+                    // with density. Its prescribed omega/epsilon formula then
+                    // reflects the original interior conservative value.
+                    real reflected = point.values[rans.first + j];
+                    if (sample.boundary.isothermal && (components == 1 || j == 0))
+                        reflected *= flow[0] / inside[0];
+                    point.values[rans.first + j] = exterior ? 2 * target[j] - reflected : target[j];
+                }
             }
             else if (sample.boundary.kind == BoundaryKind::Farfield || sample.boundary.kind == BoundaryKind::Analytic)
             {

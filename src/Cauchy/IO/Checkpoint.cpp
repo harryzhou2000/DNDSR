@@ -130,6 +130,10 @@ namespace DNDS::Cauchy
                     // means nor the compatible polynomial coefficient schema.
                     numerics.erase("reconstructionIterations");
                     numerics.erase("reconstructionTolerance");
+                    // Older archives predate this opt-in Euler wall mode.
+                    // An inactive option has no numerical compatibility effect.
+                    if (!numerics.value("noRsOnWall", false))
+                        numerics.erase("noRsOnWall");
                     // Missing viscous controls in older archives denote the
                     // original primitive-cell-gradient scheme. Selecting the
                     // polynomial operator is a visible numerical method change.

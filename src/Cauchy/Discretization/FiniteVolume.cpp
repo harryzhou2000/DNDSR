@@ -844,14 +844,12 @@ namespace DNDS::Cauchy
                 for (index iPoint = 0; iPoint < plan.NumBoundaryQuadrature(); ++iPoint)
                 {
                     const auto &sample = _data->samples[_data->boundaryEntries[gradient ? _data->gradientBoundaryPoints[iPoint] : iPoint]];
-                    // VR's boundary equation follows Euler's reflected exterior
-                    // target. Direct gradients instead consume the physical
-                    // trace; using that trace in VR halves the wall constraint
-                    // and changes its conservative energy equation.
+                    // VR consumes Euler's exterior target; direct conservative
+                    // gradients consume the mean of that exterior and inside.
                     const auto inside = Load(values, sample.cell);
                     const auto face = !gradient && _data->settings.numerics.reconstruction == "variational"
                                           ? FiniteVolumeDetail::BoundaryExterior(sample, gas, inside, time, frame, incoming)
-                                          : FiniteVolumeDetail::BoundaryFaceValue(sample, gas, inside, time, frame, incoming);
+                                          : FiniteVolumeDetail::BoundaryGradientValue(sample, gas, inside, time, frame, incoming);
                     for (int j = 0; j < 5; ++j)
                         target(iPoint, j) = face[j];
                 }
@@ -919,7 +917,7 @@ namespace DNDS::Cauchy
                 for (index iPoint = 0; iPoint < _data->gradient.NumBoundaryQuadrature(); ++iPoint)
                 {
                     const auto &sample = _data->samples[_data->boundaryEntries[_data->gradientBoundaryPoints[iPoint]]];
-                    const auto value = gas.Primitive(FiniteVolumeDetail::BoundaryFaceValue(sample, gas, Load(values, sample.cell), time, frame, incoming));
+                    const auto value = gas.Primitive(FiniteVolumeDetail::BoundaryGradientValue(sample, gas, Load(values, sample.cell), time, frame, incoming));
                     const FlowState primitive{value.density, value.velocity[0], value.velocity[1], value.velocity[2], value.temperature};
                     for (int j = 0; j < 5; ++j)
                         target(iPoint, j) = primitive[j];

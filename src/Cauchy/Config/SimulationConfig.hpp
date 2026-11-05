@@ -135,7 +135,7 @@ namespace DNDS::Cauchy
         bool reconstructionBoundaryFromPolynomial = true;
         bool firstOrderConvection = false;
         std::string viscousGradient = "primitive";
-        bool viscousLimited = true, noGRPOnWall = false;
+        bool viscousLimited = true, noGRPOnWall = false, noRsOnWall = false;
         bool positivity = false;
         real temperatureFloor = 1e-12;
         real positivityBetaCutoff = 1e-3;
@@ -165,6 +165,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(viscousGradient, "primitive retains the cell-gradient scheme; polynomial uses cached polynomial derivatives and Euler's normal face-jump penalty");
             DNDS_FIELD(viscousLimited, "Use the filtered flux polynomial for polynomial viscosity; false uses the unlimited VR guess");
             DNDS_FIELD(noGRPOnWall, "Disable the polynomial normal jump penalty on no-slip walls, retaining the polynomial gradient");
+            DNDS_FIELD(noRsOnWall, "Euler wall option: use the same physical wall state on both convective sides, retaining the previously formed viscous gradient");
             DNDS_FIELD(positivity, "Mean-preserving reconstruction and implicit correction PP; flow5 SSPRK also uses conservative flux blending");
             DNDS_FIELD(temperatureFloor, "Minimum temperature enforced through the equation's internal-energy bound");
             DNDS_FIELD(positivityBetaCutoff, "Set numerically tiny reconstruction beta to zero; matches legacy's mean fallback");

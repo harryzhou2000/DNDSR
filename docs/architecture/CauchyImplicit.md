@@ -240,9 +240,10 @@ Exact replay still requires compatible numerical controls and stored guesses.
 VR boundary input follows Euler's reconstruction equation: wall points receive
 the **reflected exterior state**, evaluated from the current polynomial when
 requested. A stationary slip reflection preserves rho and rhoE and reverses
-normal momentum. This is different from the physical wall trace consumed by
-direct gradients and viscous laws. Replacing the reflected target with that
-trace halves the momentum jump and changes the conservative-energy boundary
+normal momentum. Direct conservative gradients use the mean of the inside and
+exterior states, while viscous laws use their prepared mean/jump convention.
+See [the boundary convention guide](CauchyBoundary.md). Replacing the reflected
+target with a physical trace halves the momentum jump and changes the conservative-energy boundary
 equation. Flow5 and logical-equation paths use the same convention; analytic
 and inter-domain prescribed point values retain their existing meanings.
 

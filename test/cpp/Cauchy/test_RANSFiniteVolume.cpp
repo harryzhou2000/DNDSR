@@ -480,7 +480,8 @@ TEST_CASE("Two-equation boundary points use mean wall distance and the correct t
                     auto point = inside;
                     C::EquationFVDetail::BoundaryValue(point, 0, 7, ns, sample, evaluator, frame, 0, exterior,
                                                        {&model, 5, &mean, distance});
-                    CHECK(point.values[5] == doctest::Approx(exterior ? -.03 : 0));
+                    const double densityRatio = isothermal ? point.values[0] / inside.values[0] : 1;
+                    CHECK(point.values[5] == doctest::Approx(exterior ? -.03 * densityRatio : 0));
                     CHECK(point.values[6] == doctest::Approx(exterior ? 2 * target - .4 : target).epsilon(2e-11));
                     CHECK(mean.values[0] == 2);
                     for (int k = 0; k < ns; ++k)

@@ -283,9 +283,8 @@ namespace DNDS::Cauchy
                 for (index iPoint = 0; iPoint < index(owner->boundaryEntries.size()); ++iPoint)
                 {
                     const auto &sample = owner->samples[owner->boundaryEntries[iPoint]];
-                    Gather(meanBlocks, sample.cell, point);
-                    if (wallRead)
-                        Gather(meanBlocks, sample.cell, cellMean);
+                    Gather(meanBlocks, sample.cell, cellMean);
+                    point.values = cellMean.values;
                     if (polynomial)
                     {
                         const auto basis = basisRead.FaceBasis(sample.face, sample.side, sample.point, 0, scratch);
@@ -297,8 +296,17 @@ namespace DNDS::Cauchy
                     if (ransModel)
                         RANSStateView{ransModel->Kind(), ransModel->ComponentNumber()}.RepairReconstruction(ransMean[sample.cell], point.values.data() + ransFirst);
                     BoundaryValue(point, flowFirst, speciesFirst, owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() - 1 : 0,
-                                  sample, evaluator, frame, time, owner->settings.numerics.reconstruction == "variational",
+                                  sample, evaluator, frame, time, true,
                                   {ransModel, ransFirst, &cellMean, wallRead ? wallValues.cellMean(sample.cell, 0) : 0});
+#ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
+                    // Euler's reconstruction callback uses fixUL=true: its
+                    // returned SA target is zero, rather than a negative ghost.
+                    if (ransModel && ransModel->Kind() == Physics::RANS::ModelKind::SA && sample.boundary.kind == BoundaryKind::NoSlipWall)
+                        point.values[ransFirst] = 0;
+#endif
+                    if (owner->settings.numerics.reconstruction != "variational" && sample.boundary.kind != BoundaryKind::Interface)
+                        for (index j = 0; j < state.ComponentNumber(); ++j)
+                            point.values[j] = .5 * (cellMean.values[j] + point.values[j]);
                     for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
                     {
                         const auto target = output.Block(iBlock);
@@ -400,9 +408,27 @@ namespace DNDS::Cauchy
                             left.values[ransFirst] = right.values[ransFirst] = 0;
 #endif
                     }
-                    const auto leftFlow = left.Flow(flowFirst), rightFlow = right.Flow(flowFirst);
-                    const auto leftData = EquationPointEvaluator::FluxState(leftFlow, evaluator.Evaluate(leftFlow, left.Species(speciesFirst, independent), 0, {}));
-                    const auto rightData = EquationPointEvaluator::FluxState(rightFlow, evaluator.Evaluate(rightFlow, right.Species(speciesFirst, independent), 0, {}));
+                    auto leftFlow = left.Flow(flowFirst), rightFlow = right.Flow(flowFirst);
+                    const bool noRsWall = owner->settings.numerics.noRsOnWall && sample.other == UnInitIndex && sample.boundary.kind == BoundaryKind::NoSlipWall;
+                    const auto prepareWallState = [&]
+                    {
+                        face.values = left.values;
+                        const auto original = left.Flow(flowFirst);
+                        const Physics::Chemistry::SpeciesBufferView wallSpecies{independent ? face.values.data() + speciesFirst : nullptr, independent};
+                        const auto wall = sample.boundary.FaceValue(evaluator, original, wallSpecies,
+                                                                    {sample.normal[0], sample.normal[1], sample.normal[2]},
+                                                                    {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time, &frame);
+                        for (int j = 0; j < 5; ++j)
+                            face.values[flowFirst + j] = wall[j];
+                        if (ransModel)
+                            for (int j = 0; j < ransModel->ComponentNumber(); ++j)
+                                face.values[ransFirst + j] *= wall[0] / original[0];
+                        return wall;
+                    };
+                    if (noRsWall)
+                        leftFlow = rightFlow = prepareWallState();
+                    const auto leftData = EquationPointEvaluator::FluxState(leftFlow, evaluator.Evaluate(leftFlow, noRsWall ? face.Species(speciesFirst, independent) : left.Species(speciesFirst, independent), 0, {}));
+                    const auto rightData = EquationPointEvaluator::FluxState(rightFlow, evaluator.Evaluate(rightFlow, noRsWall ? face.Species(speciesFirst, independent) : right.Species(speciesFirst, independent), 0, {}));
                     const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
                     const auto grid = frame.GridVelocity({sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]});
                     const auto flowFlux = Riemann::Rusanov(leftData, rightData, normal, grid);
@@ -414,7 +440,7 @@ namespace DNDS::Cauchy
                     }
                     const real alpha = std::max(std::abs(speedLeft) + leftData.soundSpeed, std::abs(speedRight) + rightData.soundSpeed);
                     for (index j = 0; j < width; ++j)
-                        flux[j] = .5 * (left.values[j] * speedLeft + right.values[j] * speedRight - alpha * (right.values[j] - left.values[j]));
+                        flux[j] = noRsWall ? face.values[j] * speedLeft : .5 * (left.values[j] * speedLeft + right.values[j] * speedRight - alpha * (right.values[j] - left.values[j]));
                     for (int j = 0; j < 5; ++j)
                         flux[flowFirst + j] = flowFlux[j];
                     if (ransModel && ransModel->ComponentNumber() == 2)
@@ -422,30 +448,13 @@ namespace DNDS::Cauchy
                         FlowState average;
                         for (int j = 0; j < 5; ++j)
                             average[j] = .5 * (leftFlow[j] + rightFlow[j]);
-                        const auto stress = TurbulentNormalFlux(average, .5 * (left.values[ransFirst] + right.values[ransFirst]), normal);
+                        const auto stress = TurbulentNormalFlux(average, noRsWall ? face.values[ransFirst] : .5 * (left.values[ransFirst] + right.values[ransFirst]), normal);
                         for (int j = 0; j < 5; ++j)
                             flux[flowFirst + j] += stress[j];
                     }
                     const bool wall = sample.other == UnInitIndex && sample.boundary.kind == BoundaryKind::NoSlipWall;
                     if (viscous && (sample.other != UnInitIndex || wall))
                     {
-                        if (wall && sample.boundary.isothermal)
-                        {
-                            // Preserve the existing polynomial wall law: wall
-                            // rho,p/composition and reflected velocity form the
-                            // viscous exterior. Convective reflection above is
-                            // unchanged and cannot yield a negative exterior T.
-                            // Reuse the not-yet-filled face scratch here.
-                            face.values = left.values;
-                            BoundaryValue(face, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, false, boundaryInput(sample));
-                            const auto wallFlow = face.Flow(flowFirst);
-                            const real pressure = evaluator.Evaluate(wallFlow, face.Species(speciesFirst, independent), 0, {}).thermo.pressure;
-                            const auto value = evaluator.FromPrimitive({wallFlow[0], rightFlow[1] / rightFlow[0], rightFlow[2] / rightFlow[0], rightFlow[3] / rightFlow[0], pressure},
-                                                                       face.Species(speciesFirst, independent));
-                            right.values = face.values;
-                            for (int j = 0; j < 5; ++j)
-                                right.values[flowFirst + j] = value[j];
-                        }
                         const real inverseDistance = wall && owner->settings.numerics.noGRPOnWall ? 0 : 1 / sample.viscousDistance;
                         for (index j = 0; j < width; ++j)
                         {
@@ -454,6 +463,8 @@ namespace DNDS::Cauchy
                                 face.gradient(j, d) = .5 * (left.gradient(j, d) + right.gradient(j, d)) +
                                                       normal[d] * (right.values[j] - left.values[j]) * inverseDistance;
                         }
+                        if (noRsWall)
+                            prepareWallState();
                         const auto faceFlow = face.Flow(flowFirst);
                         const auto point = evaluator.Evaluate(faceFlow, face.Species(speciesFirst, independent), 0, {true, true, true, false, false});
                         struct SpeciesGradient

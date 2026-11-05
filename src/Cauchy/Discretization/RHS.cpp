@@ -168,8 +168,11 @@ namespace DNDS::Cauchy
                     rightGradient = left.gradient;
                 }
                 const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
-                const auto leftFlux = data->equation.PrepareFluxState(left.state), rightFlux = data->equation.PrepareFluxState(right);
                 const Vector3 point{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]};
+                const bool noRsWall = data->settings.numerics.noRsOnWall && sample.other == UnInitIndex && sample.boundary.kind == BoundaryKind::NoSlipWall;
+                const auto convectiveLeft = noRsWall ? FiniteVolumeDetail::BoundaryFaceValue(sample, gas, left.state, time, frame, incoming) : left.state;
+                const auto convectiveRight = noRsWall ? convectiveLeft : right;
+                const auto leftFlux = data->equation.PrepareFluxState(convectiveLeft), rightFlux = data->equation.PrepareFluxState(convectiveRight);
                 const auto gridVelocity = frame.GridVelocity(point);
                 const auto leftMean = Load(mean, iCell), rightMean = sample.other == UnInitIndex ? FiniteVolumeDetail::BoundaryExterior(sample, gas, leftMean, time, frame, incoming) : RotateState(Load(mean, sample.other), sample.rotation);
                 const auto leftMeanData = hasThermo ? Riemann::AcousticState{{leftMean, thermo(iCell, 0)}, thermo(iCell, 1)} : data->equation.PrepareFluxState(leftMean);
@@ -193,29 +196,17 @@ namespace DNDS::Cauchy
                 auto flux = data->flux.Evaluate(prepared.Input(leftFlux, rightFlux, normal, gridVelocity), fluxSettings).flux;
                 FlowState lowFlux{};
                 if (produceLow)
-                    lowFlux = Riemann::Rusanov(leftMeanData, rightMeanData, normal, gridVelocity);
+                    lowFlux = noRsWall ? Riemann::Rusanov(leftFlux, rightFlux, normal, gridVelocity) : Riemann::Rusanov(leftMeanData, rightMeanData, normal, gridVelocity);
                 if (polynomialViscosity && (sample.other != UnInitIndex || sample.boundary.kind == BoundaryKind::NoSlipWall || sample.boundary.kind == BoundaryKind::Interface))
                 {
-                    FlowState rightLinearization = right;
-                    if (sample.other == UnInitIndex)
-                    {
-                        // Euler generates the boundary exterior from the
-                        // filtered convective state even for unlimited viscosity.
-                        if (sample.boundary.isothermal)
-                        {
-                            const auto wall = gas.Primitive(sample.boundary.FaceValue(gas, left.state, normal, point, time, &frame));
-                            const auto exterior = gas.Primitive(right);
-                            viscousRight = gas.Conservative({wall.density, exterior.velocity[0], exterior.velocity[1], exterior.velocity[2], wall.pressure});
-                            rightLinearization = viscousRight;
-                        }
-                    }
+                    FlowState rightLinearization = convectiveRight;
                     FlowState faceMean{};
                     for (int j = 0; j < 5; ++j)
-                        faceMean[j] = .5 * (left.state[j] + rightLinearization[j]);
+                        faceMean[j] = .5 * (convectiveLeft[j] + rightLinearization[j]);
                     DNDS_check_throw_info(ThermallyAdmissible(faceMean, thermalBounds), "inadmissible polynomial viscous linearization");
                     const bool wall = sample.other == UnInitIndex && sample.boundary.kind == BoundaryKind::NoSlipWall;
                     const real inverseDistance = wall && data->settings.numerics.noGRPOnWall ? 0 : 1 / sample.viscousDistance;
-                    const auto diffusion = PolynomialViscousFlux(data->equation, left.state, rightLinearization, left.viscousState, viscousRight,
+                    const auto diffusion = PolynomialViscousFlux(data->equation, convectiveLeft, rightLinearization, left.viscousState, viscousRight,
                                                                  left.gradient, rightGradient, normal, inverseDistance, wall && !sample.boundary.isothermal);
                     for (int component = 0; component < 5; ++component)
                     {
@@ -223,12 +214,13 @@ namespace DNDS::Cauchy
                         lowFlux[component] -= diffusion[component];
                     }
                 }
-                else if (viscous && !polynomialViscosity)
+                else if (viscous && !polynomialViscosity &&
+                         (sample.other != UnInitIndex || sample.boundary.kind == BoundaryKind::NoSlipWall || sample.boundary.kind == BoundaryKind::Interface))
                 {
                     auto primitive = gas.Primitive(left.state);
                     auto gradient = left.gradient;
                     const auto ownPrimitive = gas.Primitive(Load(mean, iCell));
-                    const auto rightPrimitive = gas.Primitive(sample.other == UnInitIndex ? FiniteVolumeDetail::BoundaryFaceValue(sample, gas, Load(mean, iCell), time, frame, incoming) : RotateState(Load(mean, sample.other), sample.rotation));
+                    const auto rightPrimitive = gas.Primitive(sample.other == UnInitIndex ? FiniteVolumeDetail::BoundaryGradientValue(sample, gas, Load(mean, iCell), time, frame, incoming) : RotateState(Load(mean, sample.other), sample.rotation));
                     // Evaluate into an owning vector: an Eigen expression
                     // would retain a dangling temporary cell barycenter.
                     const Geom::tPoint distance = sample.other == UnInitIndex ? Geom::tPoint(sample.ownPoint - metric.GetCellBary(iCell)) : Geom::tPoint(sample.otherPoint - metric.GetCellBary(iCell));
@@ -256,7 +248,10 @@ namespace DNDS::Cauchy
                     }
                     else if (sample.boundary.kind == BoundaryKind::SlipWall || sample.boundary.kind == BoundaryKind::NoSlipWall)
                     {
-                        primitive = gas.Primitive(sample.boundary.FaceValue(gas, left.state, normal, point, time, &frame));
+                        FlowState faceMean{};
+                        for (int j = 0; j < 5; ++j)
+                            faceMean[j] = .5 * (convectiveLeft[j] + convectiveRight[j]);
+                        primitive = gas.Primitive(faceMean);
                         if (!sample.boundary.isothermal)
                         {
                             real heat = 0;

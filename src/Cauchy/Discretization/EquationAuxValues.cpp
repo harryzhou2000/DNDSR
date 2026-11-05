@@ -142,8 +142,14 @@ namespace DNDS::Cauchy
                 const auto &sample = _data->samples[_data->boundaryEntries[_data->gradientBoundaryPoints[iPoint]]];
                 Gather(blocks, sample.cell, mean);
                 point.values = mean.values;
-                BoundaryValue(point, flowFirst, speciesFirst, independent, sample, *evaluator, frame, time, false,
+                BoundaryValue(point, flowFirst, speciesFirst, independent, sample, *evaluator, frame, time, true,
                               {model, ransFirst, &mean, walls ? wall.cellMean(sample.cell, 0) : 0});
+#ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
+                if (model && model->Kind() == Physics::RANS::ModelKind::SA && sample.boundary.kind == BoundaryKind::NoSlipWall)
+                    point.values[ransFirst] = 0;
+#endif
+                for (index j = 0; j < state.ComponentNumber(); ++j)
+                    point.values[j] = .5 * (mean.values[j] + point.values[j]);
                 first = 0;
                 for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
                 {
@@ -490,8 +496,9 @@ namespace DNDS::Cauchy
                     {
                         right.values = left.values;
                         right.gradient = left.gradient;
-                        EquationFVDetail::BoundaryValue(right, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, true,
-                                                        {ransModel, ransFirst, &left, walls ? wallValues.cellMean(sample.cell, 0) : 0});
+                        // Euler's EvaluateDt uses the owned mean on both sides
+                        // of a physical boundary. Exterior targets belong to
+                        // reconstruction/RHS, not the mean spectral estimate.
                     }
                     else
                     {
@@ -499,9 +506,7 @@ namespace DNDS::Cauchy
                         LoadGradients(sample.other, right);
                         EquationFVDetail::RotatePoint(right, sample.rotation, vectorStarts);
                     }
-                    // A reflected two-equation wall state may have negative k;
-                    // evaluate its thermodynamics, not its turbulence closure.
-                    const auto rightProperties = sample.other == UnInitIndex ? Properties(right, evaluator, 1, !walls) : prepared(sample.other, right);
+                    const auto rightProperties = sample.other == UnInitIndex ? leftProperties : prepared(sample.other, right);
                     const Riemann::AcousticState rightData{{right.Flow(flowFirst), rightProperties[0]}, rightProperties[1]};
                     const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
                     const auto grid = frame.GridVelocity({sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]});
@@ -517,8 +522,6 @@ namespace DNDS::Cauchy
                             if (sample.other == UnInitIndex)
                             {
                                 face.values = left.values;
-                                EquationFVDetail::BoundaryValue(face, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, false,
-                                                                {ransModel, ransFirst, &left, wallValues.cellMean(sample.cell, 0)});
                             }
                             bound = std::max(bound, Properties(face, evaluator, wallValues.faces(sample.face, q))[2]);
                         }

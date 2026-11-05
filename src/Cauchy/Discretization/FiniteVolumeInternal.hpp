@@ -82,6 +82,19 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         return sample.boundary.Exterior(gas, inside, {sample.normal[0], sample.normal[1], sample.normal[2]},
                                         {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time, &frame);
     }
+    /// GradientPlan consumes a face trace; Euler's GG/LS construction consumes
+    /// a mirrored exterior at twice the wall distance. This conservative mean
+    /// is the matching trace, including its energy/species convention. Incoming
+    /// interface packets already are prescribed point values, not ghost states.
+    inline FlowState BoundaryGradientValue(const Sample &sample, const PerfectGas &gas, const FlowState &inside,
+                                           real time, const RigidFrame &frame, RHSScalarView incoming)
+    {
+        auto result = BoundaryExterior(sample, gas, inside, time, frame, incoming);
+        if (sample.boundary.kind != BoundaryKind::Interface)
+            for (int j = 0; j < 5; ++j)
+                result[j] = .5 * (inside[j] + result[j]);
+        return result;
+    }
 }
 
 namespace DNDS::Cauchy

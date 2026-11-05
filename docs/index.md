@@ -34,6 +34,9 @@ The [native LVR guide](architecture/CauchyLimitedVR.md) documents penalty
 ownership, sensor ordering, halo phases and warm-state restart semantics.
 Native linear operators, Jacobian assembly, staged SGS and local ILU are described
 in [Cauchy implicit operator contracts](architecture/CauchyImplicit.md).
+The [boundary convention guide](architecture/CauchyBoundary.md) distinguishes
+Euler exterior targets, conservative gradient traces, viscous wall laws,
+farfield switching and approximate implicit boundary derivatives.
 The [Cauchy positivity policy](architecture/CauchyPositivity.md) specifies
 thermal constraints, component scopes and preserved Euler repair ordering.
 The initial CPU single-domain flow solver uses native CFV P3/WBAP; numerical

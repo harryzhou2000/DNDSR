@@ -40,7 +40,7 @@ namespace DNDS::Cauchy
             real normalSpeed = -gridNormalSpeed;
             for (int d = 0; d < 3; ++d)
                 normalSpeed += local.velocity[d] * normal[d];
-            if (normalSpeed >= local.soundSpeed)
+            if (normalSpeed > local.soundSpeed)
                 return inside;
             if (normalSpeed <= -local.soundSpeed)
                 return farfield;
@@ -121,8 +121,10 @@ namespace DNDS::Cauchy
         {
             for (int d = 0; d < 3; ++d)
                 exterior[1 + d] = 2 * wallVelocity[d] - p.velocity[d];
-            // Enforce T_wall through the viscous gradient, not an extrapolated
-            // negative exterior temperature. Inviscid wall uses equal rho,p.
+            // Euler imposes the wall temperature on the reflected exterior
+            // itself (also the VR target), keeping its pressure and velocity.
+            if (isothermal)
+                exterior[0] = p.pressure / (gas.gasConstant * temperature);
         }
         return gas.Conservative(exterior);
     }
@@ -164,8 +166,37 @@ namespace DNDS::Cauchy
         }
         if (kind == BoundaryKind::NoSlipWall)
         {
+            if (isothermal)
+            {
+                const auto primitive = gas.Primitive(inside);
+                const real density = primitive.pressure / (gas.gasConstant * temperature);
+                Vector3 reflected{};
+                real speedSquared = 0, reflectedSquared = 0;
+                for (int d = 0; d < 3; ++d)
+                {
+                    reflected[d] = 2 * wallVelocity[d] - primitive.velocity[d];
+                    speedSquared += primitive.velocity[d] * primitive.velocity[d];
+                    reflectedSquared += reflected[d] * reflected[d];
+                }
+                for (int column = 0; column < 5; ++column)
+                {
+                    const real dp = (gas.gamma - 1) * (column == 0 ? .5 * speedSquared : column == 4 ? 1
+                                                                                                     : -primitive.velocity[column - 1]);
+                    const real drho = dp / (gas.gasConstant * temperature);
+                    result[column * 5] = drho;
+                    result[column * 5 + 4] = dp / (gas.gamma - 1) + .5 * reflectedSquared * drho;
+                    for (int d = 0; d < 3; ++d)
+                    {
+                        const real dv = (column == 0 ? primitive.velocity[d] : column == 1 + d ? -1
+                                                                                               : 0) /
+                                        inside[0];
+                        result[column * 5 + 1 + d] = drho * reflected[d] + density * dv;
+                        result[column * 5 + 4] += density * reflected[d] * dv;
+                    }
+                }
+                return result;
+            }
             // m' = 2*rho*v_wall-m; E' = E+2*rho*|v_wall|^2-2*v_wall.m.
-            // Wall temperature belongs to the viscous face law, not Exterior.
             for (int d = 0; d < 3; ++d)
             {
                 result[1 + d] = 2 * wallVelocity[d];
@@ -183,7 +214,7 @@ namespace DNDS::Cauchy
             normalSpeed += local.velocity[d] * normal[d];
             speedSquared += local.velocity[d] * local.velocity[d];
         }
-        if (normalSpeed >= local.soundSpeed)
+        if (normalSpeed > local.soundSpeed)
             return result;
         if (normalSpeed <= -local.soundSpeed)
             return {};
@@ -205,6 +236,23 @@ namespace DNDS::Cauchy
                 result[(1 + d) * 5 + 4] = -local.velocity[d];
         }
         return result;
+    }
+    std::array<real, 25> BoundaryCondition::ApproximateExteriorJacobian(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal,
+                                                                        const Vector3 &point, real time, const RigidFrame *frame) const
+    {
+        // Euler's linMode=1 returns homogeneous wall reflection before its
+        // thermal/scalar wall treatment, and zero for prescribed/open BCs.
+        auto wallKind = kind;
+        if (kind == BoundaryKind::DoubleMachBottom)
+            wallKind = (frame ? frame->WorldPoint(point) : point)[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
+        if (wallKind != BoundaryKind::SlipWall && wallKind != BoundaryKind::NoSlipWall)
+            return {};
+        BoundaryCondition wall;
+        wall.kind = wallKind;
+        wall.velocity = velocity;
+        wall.wallMovesWithMesh = wallMovesWithMesh;
+        wall.isothermal = false;
+        return wall.ExteriorJacobian(gas, inside, normal, point, time, frame);
     }
     BoundarySystem::BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const PerfectGas &gas)
         : BoundarySystem(settings, &gas) {}

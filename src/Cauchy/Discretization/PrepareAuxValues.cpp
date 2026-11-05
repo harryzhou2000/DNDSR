@@ -191,7 +191,9 @@ namespace DNDS::Cauchy
                     const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
                     const Vector3 point{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]};
                     const auto gridVelocity = frame.GridVelocity(point);
-                    const auto right = sample.other == UnInitIndex ? FiniteVolumeDetail::BoundaryExterior(sample, gas, left, time, frame, incoming)
+                    // Physical boundaries duplicate the owner mean, matching
+                    // Euler EvaluateDt. Interfaces supply a remote point state.
+                    const auto right = sample.other == UnInitIndex ? (sample.boundary.kind == BoundaryKind::Interface ? FiniteVolumeDetail::BoundaryExterior(sample, gas, left, time, frame, incoming) : left)
                                                                    : RotateState(Load(mean, sample.other), sample.rotation);
                     const auto rightData = sample.other == UnInitIndex ? equation.PrepareFluxState(right) : prepared(sample.other, right);
                     DNDS_check_throw_info(rightData.flow.pressure > 0 && std::isfinite(rightData.soundSpeed),

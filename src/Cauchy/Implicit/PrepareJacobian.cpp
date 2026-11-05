@@ -323,7 +323,7 @@ namespace DNDS::Cauchy
                 {
                     if (controls.roeDissipation)
                     {
-                        const auto boundary = sample.boundary.kind == BoundaryKind::Interface ? std::array<real, 25>{} : sample.boundary.ExteriorJacobian(_data->equation.Gas(), left, normal, point, time, &frame);
+                        const auto boundary = sample.boundary.ApproximateExteriorJacobian(_data->equation.Gas(), left, normal, point, time, &frame);
                         own.noalias() += other * Eigen::Map<const Matrix>(boundary.data());
                     }
                 }

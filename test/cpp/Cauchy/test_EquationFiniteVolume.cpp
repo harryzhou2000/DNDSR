@@ -216,7 +216,7 @@ TEST_CASE("Logical nonlinear flow5 retains native finite-sweep stage mathematics
 TEST_CASE("Equation wall values preserve internal energy and support empty owners on a physical 3D mesh")
 {
     const auto mesh = CFVTest::CartesianHexes(mpi, 1);
-    for (int scenario = 0; scenario < 4; ++scenario)
+    for (int scenario = 0; scenario < 5; ++scenario)
     {
         C::DomainSettings settings;
         settings.mesh.dimension = 3;
@@ -224,19 +224,20 @@ TEST_CASE("Equation wall values preserve internal energy and support empty owner
         settings.equation.viscosity = .002;
         settings.numerics.viscousGradient = "polynomial";
         settings.numerics.faceFallback = false;
-        settings.boundaries["7"].kind = scenario < 2 ? "noSlipWall" : scenario == 2 ? "farfield"
-                                                                                    : "analytic";
+        settings.boundaries["7"].kind = scenario < 2 || scenario == 4 ? "noSlipWall" : scenario == 2 ? "farfield"
+                                                                                                     : "analytic";
         settings.boundaries["7"].primitive = {.9, -.3, .1, .2, 1.2};
-        if (scenario >= 2)
+        if (scenario == 2 || scenario == 3)
         {
             settings.numerics.reconstruction = "variational";
             settings.numerics.cfv.maxOrder = 3;
         }
-        if (scenario == 1)
+        if (scenario == 1 || scenario == 4)
         {
             settings.boundaries["7"].thermal = "isothermal";
             settings.boundaries["7"].temperature = .7;
         }
+        settings.numerics.noRsOnWall = scenario == 4;
         const auto equation = C::EquationSystem::Resolve(settings.equation);
         C::FiniteVolume fv(mesh, settings, equation);
         auto raw = fv.Metrics().BuildField(5);
@@ -570,6 +571,7 @@ TEST_CASE("Mixture isothermal wall conducts the independent Fourier flux without
     settings.numerics.reconstruction = "constant";
     settings.numerics.faceFallback = false;
     settings.numerics.viscousGradient = "polynomial";
+    settings.numerics.noRsOnWall = true;
     auto &wall = settings.boundaries["7"];
     wall.kind = "noSlipWall";
     wall.thermal = "isothermal";
@@ -594,8 +596,9 @@ TEST_CASE("Mixture isothermal wall conducts the independent Fourier flux without
     const double p = r1 * mixture.scales.rho0 * mixture.prototype.mixtureR(fractions) * 1400;
     const double e1 = mixture.prototype.mixtureIntEnergy(1400, fractions, p) / mixture.scales.SpecificEnergy();
     const double e2 = mixture.prototype.mixtureIntEnergy(600, fractions, p) / mixture.scales.SpecificEnergy();
-    const double rho = .5 * (r1 + r2), energy = .5 * (r1 * e1 + r2 * e2) / rho;
-    const double temperature = mixture.prototype.temperatureFromUV(energy * mixture.scales.SpecificEnergy(), 1 / (rho * mixture.scales.rho0), fractions, 1000, 1e-12);
+    // Euler noRsOnWall uses the wall state for the flux's thermodynamics,
+    // retaining the previously formed conservative exterior jump gradient.
+    const double rho = r2, energy = e2, temperature = 600;
     P::Thermodynamics::Properties thermo;
     P::Transport::Properties transport;
     mixture.prototype.EvaluateProperties(temperature, rho * mixture.scales.rho0 * mixture.prototype.mixtureR(fractions) * temperature, fractions, thermo, &transport);
