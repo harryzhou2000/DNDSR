@@ -60,6 +60,7 @@ TEST_CASE("Cold mesh preparation shares an explicit policy without changing conn
     std::vector<I> expectedOrdering;
     int enabledSetup = 0;
     int enabledOutput = 0;
+    int enabledCompanion = 0;
     for (bool enabled : {true, false})
     {
         auto context = std::make_shared<R::CommunicationContext>(mpi.comm, enabled);
@@ -143,6 +144,40 @@ TEST_CASE("Cold mesh preparation shares an explicit policy without changing conn
         for (I iGhost = 0; iGhost < cells.NumGhost(); ++iGhost)
             for (I j = 0; j < 2; ++j)
                 CHECK(read.View()(iGhost, j) == 2 * cells.LocalToGlobal(cells.NumOwned() + iGhost) + j);
+        G::EntityGhostMapping mapping(cells);
+        const auto checkCompanion = [&](const R::Array<double> &values)
+        {
+            auto companion = values.Read();
+            for (I iGhost = 0; iGhost < cells.NumGhost(); ++iGhost)
+                for (I j = 0; j < 2; ++j)
+                    CHECK(companion.View()(iGhost, j) == 2 * cells.LocalToGlobal(cells.NumOwned() + iGhost) + j);
+        };
+        int blockingReductions = 0, pendingReductions = 0;
+        {
+            Count count;
+            auto values = mapping.TransferRows(cells, source, R::ElementSchema::For<double>());
+            blockingReductions = reductions;
+            checkCompanion(values);
+        }
+        {
+            Count count;
+            // Isolated namespaces allow simultaneous same-tag companion
+            // transfers. Their checks must still inherit the mapping policy.
+            auto first = mapping.BeginRows(cells, source, R::ElementSchema::For<double>());
+            auto second = mapping.BeginRows(cells, source, R::ElementSchema::For<double>());
+            first.operation.Wait();
+            second.operation.Wait();
+            pendingReductions = reductions;
+            checkCompanion(first.ghost);
+            checkCompanion(second.ghost);
+        }
+        // Required route/schema/binding protocols remain in both modes. The
+        // async pair adds exactly two required context-policy agreements.
+        CHECK(pendingReductions == 2 * blockingReductions + 2);
+        if (enabled)
+            enabledCompanion = blockingReductions;
+        else
+            CHECK(blockingReductions < enabledCompanion);
         G::EntityField<double> field(cells, source);
         auto fieldBinding = field.BuildHaloRoute(cells).Bind(field, cells);
         {

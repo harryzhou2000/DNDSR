@@ -252,8 +252,7 @@ namespace DNDS::Geom
             catch (...)
             {
             }
-            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _route.Communicator());
-            DNDS_check_throw_info(valid, "companion halo route has stale/wrong source order, row extent or unpublished Array shape");
+            _route.Context()->Preflight(valid, "companion halo route has stale/wrong source order, row extent or unpublished Array shape");
             return storage;
         }
 
@@ -280,8 +279,9 @@ namespace DNDS::Geom
         bool Valid() const { return _source.Valid() && _route.Valid(); }
         /// Transfer an ordered companion with the same route. The caller names
         /// its source entity order and explicit wire schema; no map escapes.
-        /// Invalid/unpublished Array shapes are rejected collectively. The
-        /// published shape is retained through binding, preventing shape edits.
+        /// Invalid/unpublished shapes follow the mapping's preflight policy:
+        /// coordinated rejection when enabled, communicator abort otherwise.
+        /// The published shape is retained through binding, preventing edits.
         template <class T>
         Runtime::Array<T> TransferRows(const EntitySpace &source, const Runtime::Array<T> &owned,
                                        const Runtime::ElementSchema &schema, Runtime::TransferLayout layout = {}) const
@@ -301,7 +301,8 @@ namespace DNDS::Geom
         /// Start a companion transfer without waiting. Keep PendingRows alive
         /// until its operation completes; callers may start several transfers
         /// over one route to overlap transport before observing completion.
-        /// Uses the same collective shape preflight as TransferRows.
+        /// Uses the same shape policy as TransferRows. Its isolated message
+        /// namespace inherits that policy; it never re-enables optional checks.
         template <class T>
         PendingRows<T> BeginRows(const EntitySpace &source, const Runtime::Array<T> &owned,
                                  const Runtime::ElementSchema &schema, Runtime::TransferLayout layout = {}) const
@@ -311,7 +312,8 @@ namespace DNDS::Geom
             Runtime::Array<T> ghost(payload.DestinationLayout());
             Runtime::TransferOptions options;
             options.mode = Runtime::TransferMode::Transient;
-            options.context = std::make_shared<Runtime::CommunicationContext>(_route.Communicator());
+            options.context = std::make_shared<Runtime::CommunicationContext>(
+                _route.Communicator(), _route.Context()->ChecksCollectivePreflight());
             auto binding = payload.Bind(owned, ghost, Runtime::TransferTransport::Direct, options);
             return PendingRows<T>(std::move(ghost), binding.Begin());
         }

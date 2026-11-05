@@ -476,6 +476,15 @@ use the same communicator, options, relation signatures and call order, includin
 empty ranks. Keep communicators alive and complete asynchronous producers before
 host setup. A callback must not enter collectives or mutate the source.
 
+`EntityGhostMapping::TransferRows` and `BeginRows` retain the source's published
+shape through payload binding. Both use the mapping context's optional safety
+policy. `BeginRows` creates an isolated message namespace so several companion
+transfers can be active together; that namespace inherits the policy rather
+than restoring default-on checks. Context-policy, schema and routing agreement
+remain required. With checks disabled, invalid source/order/shape aborts the
+communicator instead of permitting a rank-local retry. Keep each returned
+`PendingRows` and its operation alive until completion before reading ghosts.
+
 `NativeMeshTransition` carries full-family row transfers and the exact input
 `sourceSpaces`. Validate fields against those descriptors before applying a
 transfer; topology completion can add families with an intermediate source
