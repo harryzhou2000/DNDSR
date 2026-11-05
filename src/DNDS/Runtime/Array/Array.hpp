@@ -350,7 +350,7 @@ namespace DNDS::Runtime
         static ArrayHandle FromSharedStorage(ArrayStorage::Shared storage)
         {
             DNDS_check_throw_info(storage && storage->ElementBytes() == sizeof(T), "Array element size mismatch");
-            DNDS_check_throw_info(reinterpret_cast<uintptr_t>(storage->Values().LegacyPointer()) % alignof(T) == 0,
+            DNDS_check_throw_info(storage->Values().IsAligned(alignof(T)),
                                   "Array storage alignment mismatch");
             return ArrayHandle(std::move(storage));
         }

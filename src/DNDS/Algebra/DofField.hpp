@@ -59,11 +59,7 @@ namespace DNDS::Algebra
     {
         inline bool Overlaps(const Runtime::Buffer &a, const Runtime::Buffer &b)
         {
-            if (!a.Bytes() || !b.Bytes() || a.GetDevice() != b.GetDevice())
-                return false;
-            const auto x = reinterpret_cast<uintptr_t>(a.LegacyPointer());
-            const auto y = reinterpret_cast<uintptr_t>(b.LegacyPointer());
-            return x <= y ? y - x < a.Bytes() : x - y < b.Bytes();
+            return a.Overlaps(b);
         }
     }
 

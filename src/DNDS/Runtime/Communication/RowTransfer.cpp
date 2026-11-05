@@ -991,7 +991,7 @@ namespace DNDS::Runtime
                         b.receives.push_back(MPI_REQUEST_NULL);
                         auto type = b.reducer ? b.reductionLayout->receiveTypes[peer] : p.receiveTypes[peer];
                         if (b.transport == TransferTransport::Direct)
-                            MPI_Irecv(b.reducer ? b.workspace.LegacyPointer() : b.destination.LegacyPointer(), 1,
+                            MPI_Irecv(b.reducer ? op->workspace.View<uint8_t>().data : op->destination.View<uint8_t>().data, 1,
                                       type->value, peer, b.options.tag, b.comm, &b.receives.back());
                         else if (b.transport == TransferTransport::DevicePacked)
                             MPI_Irecv(b.PackedPointer(true, peer), b.PackedCount(true, peer), p.schema.Type(), peer, b.options.tag, b.comm, &b.receives.back());
@@ -1003,7 +1003,7 @@ namespace DNDS::Runtime
                     {
                         b.sends.push_back(MPI_REQUEST_NULL);
                         if (b.transport == TransferTransport::Direct)
-                            MPI_Isend(b.source.LegacyPointer(), 1, p.sendTypes[peer]->value,
+                            MPI_Isend(op->source.View<uint8_t>().data, 1, p.sendTypes[peer]->value,
                                       peer, b.options.tag, b.comm, &b.sends.back());
                         else
                             MPI_Isend(b.packedSend[peer].data(), b.packedSendSizes[peer], MPI_PACKED,

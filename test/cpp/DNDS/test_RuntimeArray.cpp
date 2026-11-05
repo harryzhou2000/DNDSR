@@ -671,6 +671,33 @@ TEST_CASE("Imported six-equation state retains external owner and one access dom
     CHECK(releases == 1);
 }
 
+TEST_CASE("Buffer address queries detect foreign aliases without acquiring access")
+{
+    auto owner = std::make_shared<std::vector<uint8_t>>(64);
+    const std::shared_ptr<void> address(owner, owner->data());
+    const auto allocation = R::Allocation::Import(address, 64);
+    auto whole = R::Buffer::FromAllocation(allocation, 0, 64);
+    const auto first = whole.Subspan(0, 32), next = whole.Subspan(32, 32);
+    const auto crossing = whole.Subspan(16, 32), empty = whole.Subspan(16, 0);
+    // Separate imports deliberately have different controllers. Physical alias
+    // detection must still work; this does not make such imports lease-safe.
+    const auto foreign = R::Buffer::FromAllocation(R::Allocation::Import(address, 64), 0, 64);
+    auto writer = whole.Write();
+    CHECK_THROWS(whole.Read());
+    CHECK(whole.SameRange(foreign));
+    CHECK(whole.SameAddress(first));
+    CHECK_FALSE(whole.SameRange(first));
+    CHECK(first.Overlaps(foreign));
+    CHECK(first.Overlaps(crossing));
+    CHECK(crossing.Overlaps(first));
+    CHECK_FALSE(first.Overlaps(next));
+    CHECK_FALSE(whole.Overlaps(empty));
+    CHECK_FALSE(R::Buffer{}.Overlaps(whole));
+    CHECK(whole.IsAligned(1));
+    CHECK_FALSE(whole.IsAligned(0));
+    CHECK(R::Buffer{}.IsAligned(64));
+}
+
 TEST_CASE("Imported read-only storage rejects writes without invalidating readers")
 {
     auto owner = std::make_shared<std::vector<int64_t>>(19, 41);

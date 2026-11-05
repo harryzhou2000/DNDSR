@@ -409,11 +409,23 @@ namespace DNDS::Runtime
         return !_state->writer && !_state->readers && !_state->pendingReaders && !_state->pendingWriters;
     }
     bool Buffer::IsUnique() const { return _state && _state.use_count() == 1; }
-    void *Buffer::LegacyPointer() const
+    uintptr_t Buffer::Address() const
     {
         auto *base = _state ? static_cast<std::byte *>(_state->allocation.Data()) : nullptr;
-        return base ? base + _offset : nullptr;
+        return reinterpret_cast<uintptr_t>(base ? base + _offset : nullptr);
     }
+    bool Buffer::Overlaps(const Buffer &other) const
+    {
+        if (!Bytes() || !other.Bytes() || GetDevice() != other.GetDevice())
+            return false;
+        const auto a = Address(), b = other.Address();
+        // Differences avoid overflowing the end address of a foreign range.
+        return a <= b ? b - a < Bytes() : a - b < other.Bytes();
+    }
+    bool Buffer::SameAddress(const Buffer &other) const { return GetDevice() == other.GetDevice() && Address() == other.Address(); }
+    bool Buffer::SameRange(const Buffer &other) const { return SameAddress(other) && Bytes() == other.Bytes(); }
+    bool Buffer::IsAligned(size_t alignment) const { return alignment && Address() % alignment == 0; }
+    void *Buffer::LegacyPointer() const { return reinterpret_cast<void *>(Address()); }
     bool Buffer::IsValid() const
     {
         if (!_state)

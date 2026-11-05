@@ -14,6 +14,14 @@ to inline CPU, worker CPU and CUDA execution.
 
 ## Execution, access and final release
 
+`Buffer::Overlaps`, `SameAddress`, `SameRange` and `IsAligned` inspect address,
+extent and device metadata only. They acquire no access lease, read no payload
+and do not establish producer readiness. They remain usable while an allocation
+has an active writer or pending device work. Overlap also detects independently
+imported foreign aliases, but does **not** merge their access controllers:
+import each allocation once and derive shared ranges from that allocation.
+Only typed access leases may authorize reading or writing the values.
+
 1. Declare every accessed allocation and its intent in `SubmitArrays`. Use
    `Read`, `Write` or `ReadWrite` consistently with the kernel. `Write` does not
    zero storage or guarantee that the kernel initializes every element. A raw

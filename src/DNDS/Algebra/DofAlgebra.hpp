@@ -128,7 +128,7 @@ namespace DNDS::Algebra
             if (writing)
                 DNDS_check_throw_info(!Overlaps(a.Owned().Storage(), b.Ghost().Storage()), "algebra output overlaps an operand's ghost storage");
             if (writing && Overlaps(a.Owned().Storage(), b.Owned().Storage()))
-                DNDS_check_throw_info(a.Owned().Storage().LegacyPointer() == b.Owned().Storage().LegacyPointer() &&
+                DNDS_check_throw_info(a.Owned().Storage().SameAddress(b.Owned().Storage()) &&
                                           a.Owned().Layout() == b.Owned().Layout(),
                                       "algebra partial overlap is unsupported");
         }

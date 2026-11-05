@@ -264,7 +264,7 @@ namespace DNDS::Runtime
             _schema = PythonDtypeSchema(_dtype);
             DNDS_check_throw_info(_storage && _storage->ElementBytes() == size_t(_dtype.itemsize()), "Array dtype size mismatch");
             const auto alignment = std::max<size_t>(1, pybind11::cast<size_t>(_dtype.attr("alignment")));
-            DNDS_check_throw_info(reinterpret_cast<uintptr_t>(Storage().LegacyPointer()) % alignment == 0,
+            DNDS_check_throw_info(Storage().IsAligned(alignment),
                                   "Array dtype alignment mismatch");
         }
         template <class T>
@@ -339,7 +339,7 @@ namespace DNDS::Runtime
             result._schema = _schema;
             result._elementType = _elementType;
             if (_element)
-                DNDS_check_throw_info(reinterpret_cast<uintptr_t>(result.Storage().LegacyPointer()) % _element->alignment == 0,
+                DNDS_check_throw_info(result.Storage().IsAligned(_element->alignment),
                                       "Array POD alignment mismatch");
             return result;
         }

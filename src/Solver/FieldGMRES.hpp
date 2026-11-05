@@ -30,7 +30,7 @@ namespace DNDS::Linear
         }
         static void CopyGuess(Field &out, const Field &input)
         {
-            if (out.Owned().Storage().LegacyPointer() == input.Owned().Storage().LegacyPointer() && out.Owned().Layout() == input.Owned().Layout())
+            if (out.Owned().Storage().SameAddress(input.Owned().Storage()) && out.Owned().Layout() == input.Owned().Layout())
                 return;
             Algebra::Copy(out, input);
         }

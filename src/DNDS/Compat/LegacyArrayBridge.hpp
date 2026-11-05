@@ -75,7 +75,7 @@ namespace DNDS::Runtime
                           "legacy bridge requires native-compatible POD elements");
             DNDS_check_throw_info(device == Device::Host(), "legacy bridge supports explicit host sharing only");
             auto values = source.HostBufferSnapshot();
-            DNDS_check_throw_info(reinterpret_cast<uintptr_t>(values.LegacyPointer()) % alignof(T) == 0,
+            DNDS_check_throw_info(values.IsAligned(alignof(T)),
                                   "legacy bridge element alignment mismatch");
             return ArrayStorage::FromBuffer(LegacyHostLayout(source), std::move(values), sizeof(T));
         }

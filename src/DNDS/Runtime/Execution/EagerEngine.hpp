@@ -98,7 +98,7 @@ namespace DNDS::Runtime
                                   "allocation alignment must be a power of two");
             auto result = Allocate(bytes);
             DNDS_check_throw_info(!options.alignmentBytes ||
-                                      reinterpret_cast<uintptr_t>(result.LegacyPointer()) % options.alignmentBytes == 0,
+                                      result.IsAligned(options.alignmentBytes),
                                   "stream allocator cannot satisfy requested alignment");
             return result;
         }

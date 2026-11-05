@@ -262,6 +262,7 @@ namespace DNDS::Runtime
         friend class CUDALauncher;
         std::shared_ptr<BufferState> _state;
         size_t _offset = 0, _bytes = 0;
+        uintptr_t Address() const;
         explicit Buffer(std::shared_ptr<BufferState> state);
         static Buffer AllocateCUDAAsync(size_t bytes, ExecutionContext context, AllocationOptions options = {});
 
@@ -277,6 +278,15 @@ namespace DNDS::Runtime
         Buffer Subspan(size_t offset, size_t bytes) const;
         size_t Bytes() const;
         Device GetDevice() const;
+        /// Address/placement metadata only: no access lease, readiness wait or
+        /// payload dereference. Detect physical overlap even for independently
+        /// imported aliases; such aliases still have separate access controllers.
+        bool Overlaps(const Buffer &other) const;
+        bool SameAddress(const Buffer &other) const;
+        bool SameRange(const Buffer &other) const;
+        /// Zero alignment is invalid (false); a null/empty address is aligned.
+        /// This validates address alignment, not capacity or producer completion.
+        bool IsAligned(size_t alignment) const;
         uint64_t Identity() const;
         /// Weak identity pin for host tracking registries; never retains payload
         /// storage or exposes its pointer. Buffer ranges share this identity.

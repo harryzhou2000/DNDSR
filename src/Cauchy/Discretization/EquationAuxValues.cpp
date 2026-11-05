@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/EquationFiniteVolumeInternal.hpp"
+#include "Cauchy/Discretization/AuxiliaryReduction.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
@@ -553,27 +554,9 @@ namespace DNDS::Cauchy
                 return;
             const auto metric = geometry.HostView();
             const real rotationBound = Geom::tPoint{frame.angularVelocity[0], frame.angularVelocity[1], frame.angularVelocity[2]}.norm();
-            for (const auto iCell : cells)
-            {
-                real sum = 0, wave = 0, pressure = std::numeric_limits<real>::max();
-                for (index entry = data->auxiliaryCellOffsets[iCell]; entry < data->auxiliaryCellOffsets[iCell + 1]; ++entry)
-                {
-                    const auto iAux = data->auxiliaryCellFaces[entry];
-                    if (writes[4])
-                        sum += data->auxiliaryFaceArea[iAux] * (writes[1] ? values[1](iAux, 0) + values[1](iAux, 1) : scratch(iAux, 0));
-                    if (writes[5])
-                        wave = std::max(wave, writes[2] ? values[2](iAux, 0) : scratch(iAux, 1));
-                    if (writes[6])
-                        pressure = std::min(pressure, writes[3] ? values[3](iAux, 0) : scratch(iAux, 2));
-                }
-                if (writes[4])
-                    values[4](iCell, 0) = sum + metric.GetCellVol(iCell) * rotationBound;
-                if (writes[5])
-                    values[5](iCell, 0) = wave;
-                if (writes[6])
-                    values[6](iCell, 0) = pressure;
-            }
+            FiniteVolumeDetail::ReduceAuxiliaryCells(*data, cells, metric, rotationBound, writes, values, scratch);
         }
+
         void Core()
         {
             DNDS_check_throw_info(phase == 0, "equation auxiliary core already executed");

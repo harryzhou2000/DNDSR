@@ -7,6 +7,7 @@
 #include "Geom/Transition/LocalCellOrdering.hpp"
 #include "Geom/Unstructured/ReaderPartitionGraph.hpp"
 #include "Geom/Transition/NativeMeshPartitionGraph.hpp"
+#include "Geom/Transition/MeshAdjacencyBindings.hpp"
 #include <algorithm>
 #include <limits>
 #include <numeric>
@@ -19,26 +20,8 @@ namespace DNDS::Geom
     namespace
     {
         using RArray = Runtime::Array<index>;
-        const std::array<AdjacencyDescriptor, size_t(MeshRelation::Count)> &Bindings()
-        {
-            static const std::array<AdjacencyDescriptor, size_t(MeshRelation::Count)> result{
-                Adj::Cell2Node, Adj::Bnd2Node, Adj::Bnd2Cell, Adj::Cell2Cell,
-                Adj::Node2Cell, Adj::Node2Bnd, Adj::Cell2Face, Adj::Face2Node,
-                Adj::Face2Cell, Adj::Face2Bnd, Adj::Bnd2Face, Adj::Cell2Edge,
-                Adj::Edge2Node, Adj::Edge2Cell, Adj::Cell2CellFace};
-            return result;
-        }
-        AdjacencyDescriptor FacadeKey(size_t slot)
-        {
-            auto key = Bindings()[slot];
-            key.path = key.Path();
-            key.selection = RelationSelection::Incidence;
-            key.order = RelationOrder::Topological;
-            key.periodic = RelationPeriodicPolicy::EntityIdentity;
-            key.semanticName = "geom.transition.facade." + std::to_string(slot);
-            key.semanticVersion = 1;
-            return key;
-        }
+        using MeshTransitionDetail::Bindings;
+        using MeshTransitionDetail::FacadeKey;
         RArray BuildIndexRows(const std::vector<std::vector<index>> &rows)
         {
             return Runtime::BuildArrayRows<index>(rows.size(), [&](size_t row)
