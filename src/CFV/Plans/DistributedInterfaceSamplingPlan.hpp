@@ -20,6 +20,9 @@ namespace DNDS::CFV
     /// returns samples in receiver query order via canonical direct transfers.
     /// Values remain in the donor reference/component frame. Equation adapters
     /// handle vector/tensor frame conversion; there is no conservative flux.
+    /// Collective setup/evaluation uses the correspondence map's immutable
+    /// preflight policy. Off-mode local rejection aborts before more MPI; all
+    /// ranks still enter count, routing and payload protocols in matching order.
     class DistributedInterfaceSamplingPlan
     {
         struct Data
@@ -54,8 +57,8 @@ namespace DNDS::CFV
             Runtime::Array<index> cells;
             Runtime::Array<real> points;
             std::optional<FiniteVolumeRead> geometryPin;
-            MPI::LocalStage(mpi, [&]
-                            {
+            context->LocalStage([&]
+                                {
                 map.Validate();
                 DNDS_check_throw_info(bool(reconstruction)==map.HasLocalDonor(),"sampling donor-domain participation differs from the geometric map");
                 if(reconstruction)
@@ -82,8 +85,8 @@ namespace DNDS::CFV
             const auto route = Runtime::SparseBatchExchange::Build(context, map.Size(), std::move(destinations));
             cells = route.Exchange(cells);
             points = route.Exchange(points);
-            MPI::LocalStage(mpi, [&]
-                            {
+            context->LocalStage([&]
+                                {
                 auto read = cells.Read();
                 for (index iQuery = 0; iQuery < cells.RowCount(); ++iQuery)
                     DNDS_check_throw_info(reconstruction && read.View()(iQuery, 0) >= 0 && read.View()(iQuery, 0) < reconstruction->Metrics().NumCell(),
@@ -127,12 +130,8 @@ namespace DNDS::CFV
                                             Runtime::Array<real> &values, Runtime::TransferMode mode = Runtime::TransferMode::Persistent,
                                             int tag = 0) const
         {
-            MPIInfo mpi;
-            mpi.comm = _data->returnRoute.Communicator();
-            MPI_Comm_rank(mpi.comm, &mpi.rank);
-            MPI_Comm_size(mpi.comm, &mpi.size);
-            MPI::LocalStage(mpi, [&]
-                            {
+            _data->returnRoute.Context()->LocalStage([&]
+                                                     {
                 Validate();
                 DNDS_check_throw_info(workspace.plan == _data && values.RowCount() == Size() &&
                                           values.GetDevice() == Runtime::Device::Host() && values.Layout().Kind() == Runtime::RowLayoutKind::Table,
@@ -154,12 +153,8 @@ namespace DNDS::CFV
         void EvaluateCoupled(const FVField *mean, const FVField *coefficients, DistributedSamplingWorkspace &workspace,
                              Runtime::Array<real> &values) const
         {
-            MPIInfo mpi;
-            mpi.comm = _data->returnRoute.Communicator();
-            MPI_Comm_rank(mpi.comm, &mpi.rank);
-            MPI_Comm_size(mpi.comm, &mpi.size);
-            MPI::LocalStage(mpi, [&]
-                            { EvaluateDonors(mean, coefficients, workspace); });
+            _data->returnRoute.Context()->LocalStage([&]
+                                                     { EvaluateDonors(mean, coefficients, workspace); });
             auto binding = BindResult(workspace, values, Runtime::TransferMode::Transient);
             binding.Begin().Wait();
         }

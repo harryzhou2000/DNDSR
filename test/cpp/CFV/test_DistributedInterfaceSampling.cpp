@@ -42,6 +42,7 @@ TEST_CASE("Distributed polynomial sampling evaluates on cell owners and returns 
     std::vector<I> selected(size_t(mesh->Entities(G::EntityKind::Bnd).NumOwned()));
     std::iota(selected.begin(), selected.end(), I(0));
     auto reference = G::BoundaryPatch::Create(mesh, selected);
+    auto unchecked = std::make_shared<R::CommunicationContext>(mpi.comm, false);
     // The empty geometry owner also submits queries to remote cell owners.
     R::Array<double> points(R::RowLayout::Dense(3, 3));
     R::Array<I> ids(R::RowLayout::Dense(3, 1));
@@ -64,7 +65,9 @@ TEST_CASE("Distributed polynomial sampling evaluates on cell owners and returns 
         }
         for (auto mode : {G::InterfaceRoutingMode::CoarseBoxes, G::InterfaceRoutingMode::AllGatherBoundary})
         {
-            const auto map = G::DistributedInterfacePointMap::Match(patch, points, ids, mode);
+            const auto map = mode == G::InterfaceRoutingMode::CoarseBoxes
+                                 ? G::DistributedInterfacePointMap::Match(unchecked, patch, points, ids, mode)
+                                 : G::DistributedInterfacePointMap::Match(patch, points, ids, mode);
             C::DistributedInterfaceSamplingPlan sampler(reconstruction, map);
             auto work = sampler.BuildWorkspace(2);
             R::Array<double> values(R::RowLayout::Dense(3, 2));

@@ -807,3 +807,39 @@ user additionally permits amd_1T/amd_2T when the original partition is blocked
 and suitable idle resources/access are verified. These alternatives do not
 change the same-allocation serial comparison requirement. E3–E6 and remaining
 I/O-policy/readability/test-rank work remain open.
+
+## E1 checkpoint protocols and remaining CFV entry points
+
+Classified native Array I/O acceptance, full native archive phases, compatible
+schema selection and legacy decoding as required coordinated checkpoint
+protocols. These guard file mutation, codec/schema-dependent loops and
+recoverable failure before later collective I/O, rather than a repeated
+prepared numerical halo start. Keep those checks under either compute policy.
+Per-rank Array codecs validate locally; enclosing mesh/checkpoint transactions
+coordinate their ranks. Files do not persist communication policies; restored
+maps begin default-on and may be explicitly rebound at a preparation boundary.
+Public docstrings and the mesh policy guide now state these boundaries.
+
+The duplicate native archive exception/allreduce helper delegates to the
+existing MPI local-stage helper with the same diagnostic/recovery behavior.
+All **6/6** native/legacy archive registrations pass at np1/2/4 (2.69s),
+including matching/even partitions, JSON/H5, IDs/periodic data and malformed-
+file retry. The first batch had3 native passes and3 legacy fixture failures:
+this isolated tree lacked `Uniform32_Periodic.cgns`. Copying the canonical
+111723-byte fixture with SHA256
+`f47e562074c029d5cb3436a7a7ad37a042c32a5a689f93545ef7b8ae3a520ea7`
+enabled the unchanged successful rerun. A mistakenly duplicated local build
+was stopped; its potentially shared test object was invalidated and rebuilt
+serially before testing. No failed batch is counted as passing.
+
+Remaining CFV distributed sampling construction, result-binding and synchronous
+evaluation now use the geometric map context policy; `EvaluateDonors` remains
+explicit rank-local computation. The existing sparse analytic/rotating test
+uses off mode against the checked dense baseline, including persistent result
+reuse. All **3/3** distributed sampling registrations pass at np1/2/4 (0.77s).
+Device halo-binding validation selects the metric policy as well, with no
+device kernel or stream contract change. It compiles in the CPU library; this
+batch does not claim a new CUDA runtime test. These changes/classifications
+close the specifically queued cold I/O/map/interface items, not an exhaustive
+claim that all future wrappers have no optional agreement. E3–E6, final
+readability and per-suite rank curation remain open.

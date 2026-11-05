@@ -1,6 +1,7 @@
 #include "Geom/IO/NativeMeshArchive.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "DNDS/Runtime/Array/ArrayIO.hpp"
+#include "DNDS/MPI/CollectiveStage.hpp"
 #include <nlohmann/json.hpp>
 #include <cmath>
 #include <limits>
@@ -16,21 +17,10 @@ namespace DNDS::Geom
         template <class F>
         void ArchiveStage(const MPIInfo &mpi, F &&action)
         {
-            std::exception_ptr error;
-            int valid = 1;
-            try
-            {
-                action();
-            }
-            catch (...)
-            {
-                error = std::current_exception();
-                valid = 0;
-            }
-            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
-            if (error)
-                std::rethrow_exception(error);
-            DNDS_check_throw_info(valid, "native mesh archive operation failed on another rank");
+            // File/codec errors must be recoverable before later collective
+            // I/O or schema-dependent loops. This is a checkpoint protocol,
+            // independent of the compute-transfer preflight policy.
+            MPI::LocalStage(mpi, std::forward<F>(action), "native mesh archive operation failed on another rank");
         }
 
         void Agree(const MPIInfo &mpi, const std::string &value)

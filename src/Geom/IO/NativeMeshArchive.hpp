@@ -8,6 +8,9 @@ namespace DNDS::Geom
     /// Decode authoritative owned arrays and saved coverage policy without
     /// materializing ghosts. Matching/direct-partition I/O remains unchanged;
     /// redistribution or topology construction may precede final assembly.
+    /// File/schema/codec acceptance stays coordinated independently of optional
+    /// compute-transfer preflight. Loading creates fresh default-on contexts;
+    /// execution policy is not persisted in the file.
     NativeOwnedMeshData ReadNativeMeshArchiveOwned(
         const MPIInfo &mpi, Serializer::SerializerBaseSSP serializer, const std::string &name,
         Serializer::ArrayGlobalOffset partition = Serializer::ArrayGlobalOffset_Unknown);

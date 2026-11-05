@@ -411,7 +411,13 @@ returns values to the receivers through the reversed canonical row route.
 Allocate a `DistributedSamplingWorkspace` with `BuildWorkspace(components)`.
 `Evaluate` provides synchronous collective evaluation/return; alternatively
 `EvaluateDonors` and `BindResult` separate compute from a reusable persistent
-result binding. Concurrent bindings sharing a route context use distinct `tag`
+result binding. Sampling construction, result-binding checks and the collective
+evaluation wrapper inherit that map context's preflight policy. Disabled mode
+omits successful local validation agreements and aborts on local rejection;
+counts, schemas, routing and payload transfers remain required. The rank-local
+`EvaluateDonors` entry still throws locally; its caller must coordinate errors
+before starting any subsequent communication, or use the collective wrapper.
+Concurrent bindings sharing a route context use distinct `tag`
 arguments; the default tag zero is for non-overlapping bindings. The workspace
 is private to one active evaluation. Callers
 finish producers, release conflicting Python views, retain all handles through

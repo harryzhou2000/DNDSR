@@ -13,6 +13,10 @@ namespace DNDS::Runtime
 
     namespace Detail
     {
+        /// Required checkpoint acceptance, independent of transfer preflight.
+        /// A rank's file/codec/shape failure must not let peers enter the next
+        /// collective dataset operation. Per-rank serializers check locally;
+        /// mesh/checkpoint owners coordinate their wider transaction separately.
         inline void IOCheck(bool valid, const MPIInfo &mpi, bool perRank, const char *message)
         {
             int all = valid;

@@ -250,8 +250,8 @@ namespace DNDS::CFV
     {
         Validate();
         const auto &metric = _data->source.Metrics();
-        MPI::LocalStage(_data->source.Metrics()._data->mesh->getMPI(), [&]
-                        {Validate();ValidateField(*this,field,field.Width());
+        metric.Communication()->LocalStage([&]
+                                           {Validate();ValidateField(*this,field,field.Width());
             DNDS_check_throw_info(field.Space().Same(metric._data->dofs),"device field belongs to another metric space"); });
         return R::PayloadPlan(*metric._data->halo, field.Owned().Layout(), field.Ghost().Layout(), R::ElementSchema::Arithmetic<real>()).Bind(field.Owned(), field.Ghost(), transport, std::move(options));
     }

@@ -130,11 +130,18 @@ fixed-record batches likewise use their context for local-stage checks while
 retaining count discovery and payload/schema protocols. These synchronous setup
 operations still require every participant, including empty ranks, in order.
 
-This remains a staged E1 implementation. Archive/serializer error coordination,
-bare entity-space creation, legacy compatibility decoders and other cold
-preparation entry points require separate classification and propagation;
-they must not be counted as safety-free merely because final halos inherit
-the context. Required file, schema and payload protocols remain enabled.
+Checkpoint/archive I/O is a separate coordinated protocol. Array `IOCheck`,
+native `ArchiveStage`, compatible-schema selection and legacy codec acceptance
+retain their agreement under either compute-preflight mode. They guard file
+mutation, schema-dependent dataset loops and recovery before later collective
+I/O. Disabling them would remove checkpoint recovery/acceptance rather than
+only a repeated prepared-transfer safety handshake. Per-rank serializers check
+their local array data; enclosing mesh/checkpoint APIs still coordinate ranks.
+Names, schemas, endian/shape encodings, counts/partitions and codec failures
+remain required checks. Files do not persist a process's communication policy;
+restored entity maps start with default-on contexts. A subsequent explicit
+preparation boundary may rebind the policy. No new file format or I/O switch
+is introduced, and off-mode numerical halos do not imply safety-free I/O.
 
 Bare `EntitySpace` construction always agrees the entity kind before exchanging
 rank-offset maps. That is a required mapping protocol, not a repeated payload

@@ -44,6 +44,11 @@ is not retained as an immutable buffer's later access context. Geometry,
 topology/distribution or layout changes invalidate the source plan before reuse;
 solution changes do not invalidate geometric caches.
 
+Device halo-binding validation inherits the source metrics' communication
+policy. Payload setup and selected MPI/provider protocols remain explicit.
+This only controls host preparation checks; it does not infer CUDA stream
+readiness or turn CUDA-aware MPI into a stream-ordered backend.
+
 ## Fields and numerical envelope
 
 `BuildField(prototype)` and `BuildWorkspace(components, prototype, vectorStarts)`

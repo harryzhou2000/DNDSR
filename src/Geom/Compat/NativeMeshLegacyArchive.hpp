@@ -10,6 +10,9 @@ namespace DNDS::Geom
         Serializer::ArrayGlobalOffset partition = Serializer::ArrayGlobalOffset_Unknown);
     /// Decode native full archives or legacy primary archives after exact
     /// collectively agreed schema selection. The serializer is already open.
+    /// Schema selection, codec acceptance and file-read recovery remain
+    /// coordinated even when compute-transfer preflight is disabled. The file
+    /// contains no execution-policy setting; new maps use default-on contexts.
     std::shared_ptr<const UnstructuredMeshState> ReadCompatibleNativeMeshArchive(
         const MPIInfo &mpi, Serializer::SerializerBaseSSP serializer, const std::string &name,
         Serializer::ArrayGlobalOffset partition = Serializer::ArrayGlobalOffset_Unknown,
