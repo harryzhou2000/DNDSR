@@ -1048,3 +1048,25 @@ Retain flow5 production copying and stable bindings. This closes its measured
 publication fraction, not split-field/reacting RHS attribution or excluded
 flux-seed/PP traffic. First build attempt found an unregenerated target; cache
 regeneration and the same16-worker build succeeded before submission.
+
+## E4 grouped reservation functional gate
+
+The opt-in CPU `TransferGroup` retains existing payload bindings, physical
+buffers, datatypes, tags and separate requests. Ordinary Start's reservation,
+rollback and posting bodies are factored into private operation methods without
+changing their protocol/arithmetic bodies. The group prepares all members,
+performs one optional agreement, then posts. Constructor setup requires exact
+context and ordered-tag agreement; duplicate members, unsupported placement,
+provider and nonpersistent bindings reject. No Cauchy orchestration adopts it
+before assessment; scheduled/checked-stream and GPU grouping are unsupported.
+
+Two focused cases extend the existing Runtime executable. Direct/HostPacked,
+enabled/disabled preflight, AoS/SoA/AoSoA, repeated starts and an np4 empty owner
+retain exact rank/row/component payload oracles and separate-binding reuse.
+PMPI observes one group launch reduction when enabled and zero when disabled.
+A rank-local active writer rejects the group before posting, keeps output
+generations unchanged and permits retry after releasing the writer; mismatched
+ordered members also reject. All six row-transfer/transient registrations pass
+np1/2/4. The first compile failed on a two-argument doctest CAPTURE; correcting
+that test diagnostic gave the successful build. Matched costs and the E4
+retain/adopt decision remain pending, as does optional coalescing assessment.

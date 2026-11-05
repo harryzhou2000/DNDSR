@@ -121,6 +121,22 @@ publish incomplete state. Do not catch-and-continue such a distributed failure.
 Required routing/count/schema/binding-control and numerical collectives remain.
 Policy replacement requires a coordinated, drained preparation boundary.
 
+`TransferGroup(context, bindings)` is an opt-in CPU persistent-MPI assessment
+path. It retains the exact member bindings and separate messages/tags; it does
+not coalesce physical fields. All ranks pass the same ordered member tags at
+construction. Members must use that exact shared context and host Direct or
+HostPacked transport. Device/provider and scheduled/checked-stream launches
+are rejected rather than silently falling back. Ordinary separate starts remain
+the production default.
+
+Group `Begin()` acquires every input/output before one optional agreement, then
+posts each member's prepared requests. If enabled validation rejects, every
+successful unmodified reservation is cancelled before any payload is posted.
+Disabled preflight retains local validation and the normal fail-fast contract.
+Keep producer/consumer accesses complete and serialize the group and all member
+bindings. Returned operations preserve per-field destination readiness versus
+full send completion; drain all of them before starting the group again.
+
 Pass the same policy context to `EntitySpace::BuildRowTransferPlan(context)`
 or a Runtime route constructor. Contexts selected during binding must have the
 same resolved mode on every rank; the existing binding-control agreement

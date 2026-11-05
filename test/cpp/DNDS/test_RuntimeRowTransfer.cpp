@@ -54,6 +54,105 @@ int main(int argc, char **argv)
     return result;
 }
 
+TEST_CASE("Prepared CPU transfer groups retain separate payloads and perform one optional agreement")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    const int active = size > 2 ? size - 1 : size;
+    const DNDS::index rows = rank < active ? 35 : 0, ghosts = rank < active ? 3 : 0;
+    const int previous = (rank + active - 1) % active;
+    const DNDS::index order[]{33, 0, 17};
+    for (const bool checked : {true, false})
+        for (const auto transport : {TransferTransport::Direct, TransferTransport::HostPacked})
+        {
+            CAPTURE(checked);
+            CAPTURE(transport == TransferTransport::HostPacked);
+            auto context = std::make_shared<CommunicationContext>(MPI_COMM_WORLD, checked);
+            std::vector<RowRequest> requests;
+            for (DNDS::index iRow = 0; iRow < ghosts; ++iRow)
+                requests.push_back({previous, order[iRow], iRow});
+            RowTransferPlan route(context, rows, ghosts, requests);
+            std::vector<Array<double>> input, output;
+            std::vector<TransferBinding> bindings;
+            for (int field = 0; field < 3; ++field)
+            {
+                const auto layout = field == 0 ? RowLayout::Dense(rows, 5, 8) : field == 1 ? RowLayout::ColMajor(rows, 12, {8, 1})
+                                                                                           : RowLayout::TiledColMajor(rows, 7, 8);
+                input.emplace_back(layout);
+                output.emplace_back(layout.WithRowCount(ghosts));
+                PayloadPlan payload(route, input.back().Layout(), output.back().Layout(), ElementSchema::For<double>());
+                bindings.push_back(payload.Bind(input.back(), output.back(), transport, {TransferMode::Persistent, context, 10 + field}));
+            }
+            TransferGroup group(context, bindings);
+            for (int iteration = 0; iteration < 2; ++iteration)
+            {
+                for (int field = 0; field < 3; ++field)
+                {
+                    auto write = input[field].Write();
+                    const auto values = write.View<UniformTableRows>();
+                    for (DNDS::index iRow = 0; iRow < rows; ++iRow)
+                        for (DNDS::index j = 0; j < values.Width(); ++j)
+                            values(iRow, j) = 10000 * rank + 1000 * field + 100000 * iteration + 10 * iRow + j;
+                }
+                {
+                    CountReductions count;
+                    auto operations = group.Begin();
+                    REQUIRE(operations.size() == 3);
+                    for (auto &operation : operations)
+                        operation.Wait();
+                }
+                CHECK(reductionNumber == (checked ? 1 : 0));
+                for (int field = 0; field < 3; ++field)
+                {
+                    auto read = output[field].Read();
+                    const auto values = read.View<UniformTableRows>();
+                    for (DNDS::index iRow = 0; iRow < ghosts; ++iRow)
+                        for (DNDS::index j = 0; j < values.Width(); ++j)
+                            CHECK(values(iRow, j) == 10000 * previous + 1000 * field + 100000 * iteration + 10 * order[iRow] + j);
+                }
+                // The same retained bindings still support ordinary starts.
+                for (const auto &binding : bindings)
+                    binding.Begin().Wait();
+            }
+        }
+}
+
+TEST_CASE("Grouped reservation rejection releases all fields before any payload is posted")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    auto context = std::make_shared<CommunicationContext>(MPI_COMM_WORLD);
+    RowTransferPlan route(context, 1, 1, {{(rank + size - 1) % size, 0, 0}});
+    Array<double> a(RowLayout::Dense(1, 1)), b(RowLayout::Dense(1, 1));
+    Array<double> x(RowLayout::Dense(1, 1)), y(RowLayout::Dense(1, 1));
+    a.Write().View()(0, 0) = rank + 1;
+    b.Write().View()(0, 0) = rank + 10;
+    PayloadPlan payload(route, a.Layout(), x.Layout(), ElementSchema::For<double>());
+    const auto first = payload.Bind(a, x, TransferTransport::Direct, {TransferMode::Persistent, context, 21});
+    const auto second = payload.Bind(b, y, TransferTransport::Direct, {TransferMode::Persistent, context, 22});
+    if (size > 1)
+        CHECK_THROWS(TransferGroup(context, rank == 0 ? std::vector<TransferBinding>{second, first} : std::vector<TransferBinding>{first, second}));
+    TransferGroup group(context, {first, second});
+    const auto xVersion = x.Version(), yVersion = y.Version();
+    {
+        std::optional<Array<double>::WriteLease> busy;
+        if (rank == 0)
+            busy.emplace(b.Write());
+        CHECK_THROWS(group.Begin());
+        CHECK(x.Version() == xVersion);
+        CHECK(y.Version() == yVersion);
+    }
+    // Both the earlier successful reservation and the failing member are usable
+    // afterward. A hidden active request/lease would reject or hang this retry.
+    auto operations = group.Begin();
+    for (auto &operation : operations)
+        operation.Wait();
+    CHECK(x.Read().View()(0, 0) == (rank + size - 1) % size + 1);
+    CHECK(y.Read().View()(0, 0) == (rank + size - 1) % size + 10);
+}
+
 TEST_CASE("Optional collective preflight removes only successful launch reductions")
 {
     int worldRank = 0, worldSize = 0;

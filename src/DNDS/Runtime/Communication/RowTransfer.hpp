@@ -203,6 +203,7 @@ namespace DNDS::Runtime
 
     class TransferBinding;
     class TransferOperation;
+    class TransferGroup;
 
     /// Immutable setup description shared by payload providers. Layouts include
     /// physical strides; schemas describe transmitted fields, not POD padding.
@@ -269,6 +270,7 @@ namespace DNDS::Runtime
         std::shared_ptr<Detail::TransferProviderBinding> _provider;
         friend class PayloadPlan;
         friend class TransferOperation;
+        friend class TransferGroup;
         TransferBinding(std::shared_ptr<const PayloadPlan::State> plan, Buffer source, Buffer destination,
                         std::shared_ptr<const Reducer> reducer, TransferTransport transport, TransferOptions options,
                         bool layoutsValid = true);
@@ -323,6 +325,7 @@ namespace DNDS::Runtime
         std::unique_ptr<Detail::TransferProviderOperation> _provider;
         friend class TransferBinding;
         friend class MPIProgress;
+        friend class TransferGroup;
         std::shared_ptr<const AccessOrder> CheckedOrder() const;
         explicit TransferOperation(std::unique_ptr<State> state);
         explicit TransferOperation(std::unique_ptr<Detail::TransferProviderOperation> provider);
@@ -344,6 +347,29 @@ namespace DNDS::Runtime
         void WaitDestinationReady();
         void Wait();
         bool Test();
+    };
+
+    /// Opt-in prepared CPU MPI bundle; existing separate starts remain default.
+    /// Members retain their allocations, datatypes, tags and separate messages.
+    /// Construction is collective on context: every rank supplies the same
+    /// ordered tags, including empty participants. Members must be persistent
+    /// host Direct/HostPacked bindings using that exact context. Other providers,
+    /// devices and scheduled/checked-stream launches are explicitly unsupported.
+    ///
+    /// Begin acquires every local member before its one optional safety agreement;
+    /// rejection cancels all unmodified reservations before any request is posted.
+    /// Serialize group/member/controller access, finish old operations and release
+    /// producer/consumer views first. Returned operations retain the normal
+    /// destination-ready versus full-send-completion distinction. Drain all of
+    /// them before reusing the group, changing buffers or MPI_Finalize.
+    class TransferGroup
+    {
+        std::shared_ptr<CommunicationContext> _context;
+        std::vector<TransferBinding> _bindings;
+
+    public:
+        TransferGroup(std::shared_ptr<CommunicationContext> context, std::vector<TransferBinding> bindings);
+        std::vector<TransferOperation> Begin() const;
     };
 
     template <class T>

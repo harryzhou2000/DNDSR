@@ -844,8 +844,130 @@ namespace DNDS::Runtime
         std::exception_ptr error;
         AccessTrackingContext::Submission checked;
         std::shared_ptr<const AccessOrder> order;
+        bool Prepare(bool scheduled, bool checkedAccess, bool callerValid);
+        void CancelPrepared();
+        void Post();
         ~State() { checked.Complete(); }
     };
+    bool TransferOperation::State::Prepare(bool scheduled, bool checkedAccess, bool callerValid)
+    {
+        auto &_state = binding;
+        auto *op = this;
+        const auto context = this->context;
+        bool valid = callerValid && _state->plan->route.Valid();
+        {
+            std::lock_guard<std::mutex> lock(_state->mutex);
+            valid = valid && !_state->active;
+        }
+        try
+        {
+            DNDS_check_throw_info(valid, "transfer binding is active or routing is stale");
+            auto ctx = [context](const Buffer &b)
+            { return b.GetDevice() == Device::Host() ? ExecutionContext::Host() : context; };
+            op->source.Acquire(_state->source, ctx(_state->source), false, scheduled, checkedAccess);
+            op->destination.Acquire(_state->destination, ctx(_state->destination), true, scheduled, checkedAccess);
+            if (_state->reducer)
+                op->workspace.Acquire(_state->workspace, ctx(_state->workspace), true, scheduled, checkedAccess);
+            // Producers must have released their write leases. This event also
+            // orders prior work on the caller's stream before portable MPI.
+            if (_state->transport == TransferTransport::DevicePacked)
+            {
+                op->packingSubmitted = true;
+                Detail::LaunchDevicePacking(context, op->source.View<uint8_t>().data, _state->deviceSend.LegacyPointer(),
+                                            static_cast<const Detail::DevicePackRow *>(_state->packRows.LegacyPointer()), _state->packRowCount,
+                                            static_cast<const Detail::DevicePackField *>(_state->packFields.LegacyPointer()), _state->fieldCount, index(_state->plan->schema.Extent()), false);
+                op->packedReady = Completion::Record(context);
+            }
+            else
+                Completion::Record(context).Wait();
+            if (_state->transport == TransferTransport::HostPacked)
+            {
+                auto stage = [context](const void *src, Device sd, void *dst, size_t bytes)
+                { Detail::CopyBytes(src, sd, dst, Device::Host(), bytes, sd == Device::Host() ? ExecutionContext::Host() : context).Wait(); };
+                stage(op->source.View<uint8_t>().data, _state->source.GetDevice(), _state->hostSource.LegacyPointer(), _state->source.Bytes());
+                stage(op->destination.View<uint8_t>().data, _state->destination.GetDevice(), _state->hostDestination.LegacyPointer(), _state->destination.Bytes());
+                for (size_t peer = 0; peer < _state->packedSend.size(); ++peer)
+                {
+                    if (!_state->packedSendSizes[peer])
+                        continue;
+                    int position = 0;
+                    MPI_Pack(_state->hostSource.LegacyPointer(), 1, _state->plan->sendTypes[peer]->value,
+                             _state->packedSend[peer].data(), int(_state->packedSend[peer].size()), &position, _state->comm);
+                    DNDS_check_throw_info(position == _state->packedSendSizes[peer], "MPI packed payload size changed");
+                }
+            }
+        }
+        catch (...)
+        {
+            valid = false;
+        }
+
+        return valid;
+    }
+    void TransferOperation::State::CancelPrepared()
+    {
+        auto *op = this;
+        // Some peers may have queued packing before collective rejection.
+        // Drain that read-only prefix before releasing the source lease.
+        if (op->packingSubmitted)
+            Completion::Record(context).Wait();
+        op->source.CancelUnmodified();
+        op->destination.CancelUnmodified();
+        op->workspace.CancelUnmodified();
+    }
+    void TransferOperation::State::Post()
+    {
+        auto &_state = binding;
+        auto *op = this;
+        if (_state->transport == TransferTransport::DevicePacked)
+            op->source.Complete(op->packedReady);
+        {
+            std::lock_guard<std::mutex> lock(_state->mutex);
+            _state->active = true;
+        }
+        if (_state->options.mode == TransferMode::Persistent)
+        {
+            if (!_state->receives.empty())
+                MPI_Startall(int(_state->receives.size()), _state->receives.data());
+            if (_state->transport != TransferTransport::DevicePacked && !_state->sends.empty())
+                MPI_Startall(int(_state->sends.size()), _state->sends.data());
+        }
+        else
+        {
+            auto &b = *_state;
+            const auto &p = *b.plan;
+            b.receives.clear();
+            b.sends.clear();
+            for (int peer = 0; peer < int(p.route.SendRows().size()); ++peer)
+            {
+                if (!p.route.ReceiveRows()[peer].empty())
+                {
+                    b.receives.push_back(MPI_REQUEST_NULL);
+                    auto type = b.reducer ? b.reductionLayout->receiveTypes[peer] : p.receiveTypes[peer];
+                    if (b.transport == TransferTransport::Direct)
+                        MPI_Irecv(b.reducer ? op->workspace.View<uint8_t>().data : op->destination.View<uint8_t>().data, 1,
+                                  type->value, peer, b.options.tag, b.comm, &b.receives.back());
+                    else if (b.transport == TransferTransport::DevicePacked)
+                        MPI_Irecv(b.PackedPointer(true, peer), b.PackedCount(true, peer), p.schema.Type(), peer, b.options.tag, b.comm, &b.receives.back());
+                    else
+                        MPI_Irecv(b.packedReceive[peer].data(), int(b.packedReceive[peer].size()), MPI_PACKED,
+                                  peer, b.options.tag, b.comm, &b.receives.back());
+                }
+                if (b.transport != TransferTransport::DevicePacked && !p.route.SendRows()[peer].empty())
+                {
+                    b.sends.push_back(MPI_REQUEST_NULL);
+                    if (b.transport == TransferTransport::Direct)
+                        MPI_Isend(op->source.View<uint8_t>().data, 1, p.sendTypes[peer]->value,
+                                  peer, b.options.tag, b.comm, &b.sends.back());
+                    else
+                        MPI_Isend(b.packedSend[peer].data(), b.packedSendSizes[peer], MPI_PACKED,
+                                  peer, b.options.tag, b.comm, &b.sends.back());
+                }
+            }
+        }
+        op->sendsStarted = _state->transport != TransferTransport::DevicePacked;
+        op->started = true;
+    }
     TransferOperation TransferBinding::Begin(ExecutionContext context) const
     {
         return Start(context, false);
@@ -904,116 +1026,17 @@ namespace DNDS::Runtime
         op->context = context;
         auto begin = [&]
         {
-            bool valid = callerValid && _state->plan->route.Valid();
-            {
-                std::lock_guard<std::mutex> lock(_state->mutex);
-                valid = valid && !_state->active;
-            }
-            try
-            {
-                DNDS_check_throw_info(valid, "transfer binding is active or routing is stale");
-                auto ctx = [context](const Buffer &b)
-                { return b.GetDevice() == Device::Host() ? ExecutionContext::Host() : context; };
-                op->source.Acquire(_state->source, ctx(_state->source), false, scheduled, bool(tracking));
-                op->destination.Acquire(_state->destination, ctx(_state->destination), true, scheduled, bool(tracking));
-                if (_state->reducer)
-                    op->workspace.Acquire(_state->workspace, ctx(_state->workspace), true, scheduled, bool(tracking));
-                // Producers must have released their write leases. This event also
-                // orders prior work on the caller's stream before portable MPI.
-                if (_state->transport == TransferTransport::DevicePacked)
-                {
-                    op->packingSubmitted = true;
-                    Detail::LaunchDevicePacking(context, op->source.View<uint8_t>().data, _state->deviceSend.LegacyPointer(),
-                                                static_cast<const Detail::DevicePackRow *>(_state->packRows.LegacyPointer()), _state->packRowCount,
-                                                static_cast<const Detail::DevicePackField *>(_state->packFields.LegacyPointer()), _state->fieldCount, index(_state->plan->schema.Extent()), false);
-                    op->packedReady = Completion::Record(context);
-                }
-                else
-                    Completion::Record(context).Wait();
-                if (_state->transport == TransferTransport::HostPacked)
-                {
-                    auto stage = [context](const void *src, Device sd, void *dst, size_t bytes)
-                    { Detail::CopyBytes(src, sd, dst, Device::Host(), bytes, sd == Device::Host() ? ExecutionContext::Host() : context).Wait(); };
-                    stage(op->source.View<uint8_t>().data, _state->source.GetDevice(), _state->hostSource.LegacyPointer(), _state->source.Bytes());
-                    stage(op->destination.View<uint8_t>().data, _state->destination.GetDevice(), _state->hostDestination.LegacyPointer(), _state->destination.Bytes());
-                    for (size_t peer = 0; peer < _state->packedSend.size(); ++peer)
-                    {
-                        if (!_state->packedSendSizes[peer])
-                            continue;
-                        int position = 0;
-                        MPI_Pack(_state->hostSource.LegacyPointer(), 1, _state->plan->sendTypes[peer]->value,
-                                 _state->packedSend[peer].data(), int(_state->packedSend[peer].size()), &position, _state->comm);
-                        DNDS_check_throw_info(position == _state->packedSendSizes[peer], "MPI packed payload size changed");
-                    }
-                }
-            }
-            catch (...)
-            {
-                valid = false;
-            }
+            const bool valid = op->Prepare(scheduled, bool(tracking), callerValid);
             try
             {
                 _state->Preflight(valid, "transfer access/stream preflight failed on a rank");
             }
             catch (...)
             {
-                // Some peers may have queued packing before collective rejection.
-                // Drain that read-only prefix before releasing the source lease.
-                if (op->packingSubmitted)
-                    Completion::Record(context).Wait();
-                op->source.CancelUnmodified();
-                op->destination.CancelUnmodified();
-                op->workspace.CancelUnmodified();
+                op->CancelPrepared();
                 throw;
             }
-            if (_state->transport == TransferTransport::DevicePacked)
-                op->source.Complete(op->packedReady);
-            {
-                std::lock_guard<std::mutex> lock(_state->mutex);
-                _state->active = true;
-            }
-            if (_state->options.mode == TransferMode::Persistent)
-            {
-                if (!_state->receives.empty())
-                    MPI_Startall(int(_state->receives.size()), _state->receives.data());
-                if (_state->transport != TransferTransport::DevicePacked && !_state->sends.empty())
-                    MPI_Startall(int(_state->sends.size()), _state->sends.data());
-            }
-            else
-            {
-                auto &b = *_state;
-                const auto &p = *b.plan;
-                b.receives.clear();
-                b.sends.clear();
-                for (int peer = 0; peer < int(p.route.SendRows().size()); ++peer)
-                {
-                    if (!p.route.ReceiveRows()[peer].empty())
-                    {
-                        b.receives.push_back(MPI_REQUEST_NULL);
-                        auto type = b.reducer ? b.reductionLayout->receiveTypes[peer] : p.receiveTypes[peer];
-                        if (b.transport == TransferTransport::Direct)
-                            MPI_Irecv(b.reducer ? op->workspace.View<uint8_t>().data : op->destination.View<uint8_t>().data, 1,
-                                      type->value, peer, b.options.tag, b.comm, &b.receives.back());
-                        else if (b.transport == TransferTransport::DevicePacked)
-                            MPI_Irecv(b.PackedPointer(true, peer), b.PackedCount(true, peer), p.schema.Type(), peer, b.options.tag, b.comm, &b.receives.back());
-                        else
-                            MPI_Irecv(b.packedReceive[peer].data(), int(b.packedReceive[peer].size()), MPI_PACKED,
-                                      peer, b.options.tag, b.comm, &b.receives.back());
-                    }
-                    if (b.transport != TransferTransport::DevicePacked && !p.route.SendRows()[peer].empty())
-                    {
-                        b.sends.push_back(MPI_REQUEST_NULL);
-                        if (b.transport == TransferTransport::Direct)
-                            MPI_Isend(op->source.View<uint8_t>().data, 1, p.sendTypes[peer]->value,
-                                      peer, b.options.tag, b.comm, &b.sends.back());
-                        else
-                            MPI_Isend(b.packedSend[peer].data(), b.packedSendSizes[peer], MPI_PACKED,
-                                      peer, b.options.tag, b.comm, &b.sends.back());
-                    }
-                }
-            }
-            op->sendsStarted = _state->transport != TransferTransport::DevicePacked;
-            op->started = true;
+            op->Post();
         };
         if (tracking)
         {
@@ -1033,6 +1056,75 @@ namespace DNDS::Runtime
         if (tracking)
             result._state->order = tracking->Record(lane, [] {});
         return result;
+    }
+    TransferGroup::TransferGroup(std::shared_ptr<CommunicationContext> context, std::vector<TransferBinding> bindings)
+        : _context(std::move(context)), _bindings(std::move(bindings))
+    {
+        DNDS_check_throw_info(_context, "transfer group needs a live coordinated communication context");
+        bool valid = true;
+        std::string signature;
+        std::vector<const void *> owners;
+        for (const auto &binding : _bindings)
+        {
+            const auto &state = binding._state;
+            if (!state || binding._provider)
+            {
+                valid = false;
+                continue;
+            }
+            valid = valid && state->options.context == _context &&
+                    state->options.mode == TransferMode::Persistent &&
+                    state->source.GetDevice() == Device::Host() && state->destination.GetDevice() == Device::Host() &&
+                    (state->transport == TransferTransport::Direct || state->transport == TransferTransport::HostPacked) &&
+                    std::find(owners.begin(), owners.end(), state.get()) == owners.end();
+            owners.push_back(state.get());
+            signature += std::to_string(state->options.tag) + ":";
+        }
+        // Ordered tags identify the exact member set in this shared namespace.
+        // This required setup agreement is never a per-Begin policy handshake.
+        Agree(signature, _context->Communicator(), valid);
+    }
+    std::vector<TransferOperation> TransferGroup::Begin() const
+    {
+        DNDS_check_throw_info(_context, "transfer group was moved");
+        std::vector<TransferOperation> operations;
+        if (_bindings.empty())
+            return operations;
+        bool valid = true;
+        try
+        {
+            operations.reserve(_bindings.size());
+            for (const auto &binding : _bindings)
+            {
+                auto state = std::make_unique<TransferOperation::State>();
+                state->binding = binding._state;
+                state->context = ExecutionContext::Host();
+                operations.push_back(TransferOperation(std::move(state)));
+                // Do not short circuit: all successfully acquired fields must
+                // be present in the rollback set before agreement/posting.
+                const bool prepared = operations.back()._state->Prepare(false, false, true);
+                valid = prepared && valid;
+            }
+        }
+        catch (...)
+        {
+            valid = false;
+        }
+        try
+        {
+            _context->Preflight(valid, "transfer group reservation failed on a rank");
+        }
+        catch (...)
+        {
+            for (auto &operation : operations)
+                operation._state->CancelPrepared();
+            throw;
+        }
+        // Persistent requests and all payload/lease owners are already ready.
+        // Keep field messages/tags separate; no coalescing or packing is added.
+        for (auto &operation : operations)
+            operation._state->Post();
+        return operations;
     }
     TransferOperation::TransferOperation() = default;
     std::shared_ptr<const AccessOrder> TransferOperation::CheckedOrder() const { return _state ? _state->order : nullptr; }
