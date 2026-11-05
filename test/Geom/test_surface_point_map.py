@@ -35,8 +35,11 @@ def test_shared_surface_snapshot_and_warped_quad_projection(backend):
     settings = Geom.SurfaceSearchSettings()
     settings.maxGap = .03
     settings.coarseBoxesPerRank = 3
+    unchecked = R.CommunicationContext(mpi, False)
     for mode in (Geom.SurfaceRoutingMode.AllGatherSurface, Geom.SurfaceRoutingMode.CoarseBoxes):
-        mapping = Geom.DistributedSurfacePointMap.Match(mpi, surface, points, ids, mode, settings)
+        mapping = Geom.DistributedSurfacePointMap.Match(
+            mpi, surface, points, ids, mode, settings,
+            communication=unchecked if mode == Geom.SurfaceRoutingMode.CoarseBoxes else None)
         match = mapping.Get(0)
         assert match.queryId == 17
         assert match.geometryRank == owner

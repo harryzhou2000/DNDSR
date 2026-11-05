@@ -99,6 +99,9 @@ namespace DNDS::Geom
     /// routing baseline. Mesh coordinates always remain in their reference frame.
     /// Query IDs are unique per origin rank. Every rank calls with the same mode
     /// and settings, including empty query/patch ranks. Retain MPI until disposal.
+    /// The simple overload inherits mesh preparation policy; the coupling
+    /// overload follows the explicit context. Required geometry/metadata routing
+    /// is retained; unchecked local validation failure aborts the communicator.
     class DistributedInterfacePointMap
     {
         std::shared_ptr<const Detail::DistributedInterfaceMapData> _data;

@@ -80,6 +80,7 @@ namespace DNDS::Geom
         py::class_<DistributedSurfacePointMap>(m, "DistributedSurfacePointMap")
             .def_static("Match", &DistributedSurfacePointMap::Match, py::arg("mpi"), py::arg("surface"), py::arg("points"), py::arg("queryIds"),
                         py::arg("mode") = SurfaceRoutingMode::CoarseBoxes, py::arg("settings") = SurfaceSearchSettings{},
+                        py::arg("communication") = nullptr,
                         "Collective geometry-only search. All ranks participate with matching controls, including empty owners/queries.")
             .def("Size", &DistributedSurfacePointMap::Size)
             .def("Get", &DistributedSurfacePointMap::Get)

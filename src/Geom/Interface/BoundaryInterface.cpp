@@ -37,8 +37,8 @@ namespace DNDS::Geom
         AdjacencyRegistry registry(mesh.getMPI());
         registry.RegisterMesh(mesh, requirements);
         std::optional<CompiledGhostTree> program;
-        MPI::LocalStage(mesh.getMPI(), [&]
-                        { program.emplace(CompiledGhostTree::compile(spec)); });
+        mesh.Entities(EntityKind::Cell).LocalStage([&]
+                                                   { program.emplace(CompiledGhostTree::compile(spec)); });
         auto result = registry.BuildGhosted(registry.Evaluate(*program));
         BoundaryStencilPlan plan;
         plan._publication = std::make_shared<const AdjacencyGhostPublication>(std::move(result));
@@ -166,7 +166,9 @@ namespace DNDS::Geom
     DistributedInterfacePointMap DistributedInterfacePointMap::Match(BoundaryPatch donor, const R::Array<real> &points,
                                                                      const R::Array<index> &queryIds, InterfaceRoutingMode mode, InterfaceSearchSettings settings)
     {
-        auto context = std::make_shared<R::CommunicationContext>(donor._data->mesh->getMPI().comm);
+        const auto policy = donor._data->mesh->PreparationCommunication();
+        auto context = std::make_shared<R::CommunicationContext>(donor._data->mesh->getMPI().comm,
+                                                                 !policy || policy->ChecksCollectivePreflight());
         return Match(std::move(context), std::move(donor), points, queryIds, mode, settings);
     }
     DistributedInterfacePointMap DistributedInterfacePointMap::Match(std::shared_ptr<R::CommunicationContext> coupling,
@@ -175,11 +177,12 @@ namespace DNDS::Geom
     {
         DNDS_check_throw_info(coupling, "distributed interface needs a coupling context");
         const MPIInfo mpi(coupling->Communicator());
+        R::CommunicationDetail::AgreePolicy(mpi.comm, coupling->ChecksCollectivePreflight());
         std::optional<MeshReadAccess> meshRead;
         std::optional<SurfacePatch> surface;
         std::vector<int> ownerRanks;
-        MPI::LocalStage(mpi, [&]
-                        {
+        coupling->LocalStage([&]
+                             {
             if(donor)
             {
                 donor->Validate();
@@ -202,13 +205,13 @@ namespace DNDS::Geom
                 surface.emplace(SurfacePatch::Create({},R::Array<real>(R::RowLayout::Dense(0,6))));
             DNDS_check_throw_info(mode == InterfaceRoutingMode::CoarseBoxes || mode == InterfaceRoutingMode::AllGatherBoundary,"unknown interface routing mode"); });
         const auto map = DistributedSurfacePointMap::Match(mpi, *surface, points, queryIds,
-                                                           mode == InterfaceRoutingMode::CoarseBoxes ? SurfaceRoutingMode::CoarseBoxes : SurfaceRoutingMode::AllGatherSurface, settings);
+                                                           mode == InterfaceRoutingMode::CoarseBoxes ? SurfaceRoutingMode::CoarseBoxes : SurfaceRoutingMode::AllGatherSurface, settings, coupling);
         // Attach mesh semantics only AFTER generic geometric location. The
         // locator's selected-element route is also reusable for other clients'
         // element data, rather than embedding volume rows in search packets.
         R::Array<index> links, received;
-        MPI::LocalStage(mpi, [&]
-                        {
+        coupling->LocalStage([&]
+                             {
             links = R::Array<index>(R::RowLayout::Dense(donor ? donor->Size() : 0, 5));
             received = R::Array<index>(R::RowLayout::Dense(map.Size(), 5));
             auto write = links.Write();
@@ -223,8 +226,8 @@ namespace DNDS::Geom
         auto binding = R::PayloadPlan(route, links.Layout(), received.Layout(), R::ElementSchema::Arithmetic<index>()).Bind(links, received, R::TransferTransport::Direct, {R::TransferMode::Transient, route.Context(), 0});
         binding.Begin().Wait();
         std::shared_ptr<Detail::DistributedInterfaceMapData> data;
-        MPI::LocalStage(mpi, [&]
-                        {
+        coupling->LocalStage([&]
+                             {
             data = std::make_shared<Detail::DistributedInterfaceMapData>(coupling,donor);
             data->matches.reserve(size_t(map.Size()));
             auto read = received.Read();

@@ -149,11 +149,15 @@ TEST_CASE("Distributed mesh-independent surface location agrees across routing m
     G::SurfaceSearchSettings settings;
     settings.maxGap = 0.03;
     settings.coarseBoxesPerRank = 3;
+    auto unchecked = std::make_shared<R::CommunicationContext>(mpi.comm, false);
+    // A caller's retained binding must not occupy the locator's private tag.
+    const auto retainedTag = unchecked->Reserve(0);
     for (auto backend : {G::BoundingBoxBackend::Native, G::BoundingBoxBackend::CGAL})
         for (auto mode : {G::SurfaceRoutingMode::AllGatherSurface, G::SurfaceRoutingMode::CoarseBoxes})
         {
             const auto active = surface.WithBackend(backend);
-            auto map = G::DistributedSurfacePointMap::Match(mpi, active, points, ids, mode, settings);
+            auto map = G::DistributedSurfacePointMap::Match(mpi, active, points, ids, mode, settings,
+                                                            mode == G::SurfaceRoutingMode::CoarseBoxes ? unchecked : nullptr);
             REQUIRE(map.Size() == 3);
             for (I iQuery = 0; iQuery < 3; ++iQuery)
             {
@@ -177,6 +181,7 @@ TEST_CASE("Distributed mesh-independent surface location agrees across routing m
                 }
             }
             const auto route = map.BuildElementDataRoute();
+            CHECK(route.Context()->ChecksCollectivePreflight() == (mode != G::SurfaceRoutingMode::CoarseBoxes));
             auto binding = R::PayloadPlan(route, payload.Layout(), received.Layout(), R::ElementSchema::Arithmetic<I>()).Bind(payload, received, R::TransferTransport::Direct, {R::TransferMode::Transient, route.Context(), 0});
             binding.Begin().Wait();
             auto read = received.Read();

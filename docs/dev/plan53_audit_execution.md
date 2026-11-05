@@ -654,3 +654,29 @@ as unchecked exceptions. All **9/9** equation-FV, RANS-FV and auxiliary-preparat
 registrations pass at np1/2/4 (60.69 s). This closes the whole-equation FV local-
 stage portion, not the remaining nonlinear/archive/interface scope or an
 independent old/new Euler validation.
+
+## E1 sparse batches and distributed surface/interface setup
+
+Fixed-record batch construction/exchange, boundary-stencil compilation and
+distributed surface/boundary matching now inherit their agreed context policy
+for local validation. Geometry-only matching accepts an optional congruent
+context, including from Python. It creates its own communicator/tag namespace
+and returns selected-element routes with that policy. A retained caller tag-zero
+reservation is exercised by the existing geometric/payload oracle. Coupling
+contexts govern boundary adapters, including ranks without a donor mesh; the
+simple overload inherits the donor mesh preparation mode.
+
+Count discovery, settings/schema agreement, candidate/proposal routing,
+arbitration and selected payload transfers remain required. No search geometry,
+donor resolution, projection or interpolation arithmetic changes. Off-mode
+rejection aborts; the existing checked-mode recoverable error cases remain.
+All **9/9** sparse-batch, surface and distributed-boundary registrations pass
+at np1/2/4 (1.98 s, final rerun including retained-tag ownership). After building all four Python modules and
+installing this checkout's Python component, both backend cases pass on **each
+of two MPI ranks**, with no skips, analytic warped-quad projections and retained
+snapshot ownership. The sparse mode uses explicit off policy and the dense
+baseline retains the default on policy.
+
+This closes the interface/search local-stage portion. Archive/compatibility,
+bare entity-space and nonlinear-stage classification remain open. The separate
+Euler probes and E3–E7 measurements do not become complete from these tests.

@@ -183,13 +183,24 @@ namespace DNDS::Geom
     void SurfacePointMap::ValidateFor(const SurfacePatch &active) const { DNDS_check_throw_info(active.Same(_data->surface), "active surface snapshot or pose differs from map"); }
 
     DistributedSurfacePointMap DistributedSurfacePointMap::Match(MPIInfo mpi, SurfacePatch surface, const R::Array<real> &points,
-                                                                 const R::Array<index> &queryIds, SurfaceRoutingMode mode, SurfaceSearchSettings settings)
+                                                                 const R::Array<index> &queryIds, SurfaceRoutingMode mode, SurfaceSearchSettings settings,
+                                                                 std::shared_ptr<R::CommunicationContext> communication)
     {
-        auto context = std::make_shared<R::CommunicationContext>(mpi.comm);
+        const bool checks = !communication || communication->ChecksCollectivePreflight();
+        // Search owns a distinct tag namespace: the caller may retain bindings
+        // on its coupling context. Construction agrees policy before local
+        // stages; inherit the mode, never borrow occupied tags.
+        auto context = std::make_shared<R::CommunicationContext>(mpi.comm, checks);
+        context->LocalStage([&]
+                            {
+            int relation = MPI_UNEQUAL;
+            DNDS_check_throw_info(MPI_Comm_compare(mpi.comm, communication ? communication->Communicator() : context->Communicator(), &relation) == MPI_SUCCESS &&
+                                      (relation == MPI_IDENT || relation == MPI_CONGRUENT),
+                                  "surface communication context has different ranks/order"); });
         std::optional<R::Array<real>::ReadLease> pointRead;
         std::optional<R::Array<index>::ReadLease> idRead;
-        MPI::LocalStage(mpi, [&]
-                        {
+        context->LocalStage([&]
+                            {
             settings.Validate();
             CheckQueries(points, queryIds);
             DNDS_check_throw_info(mode == SurfaceRoutingMode::CoarseBoxes || mode == SurfaceRoutingMode::AllGatherSurface,"unknown surface routing mode");
@@ -207,8 +218,8 @@ namespace DNDS::Geom
         R::Array<real> geometry;
         std::vector<SpatialBox> localBounds;
         SpatialBox coarse;
-        MPI::LocalStage(mpi, [&]
-                        {
+        context->LocalStage([&]
+                            {
             if (mode == SurfaceRoutingMode::CoarseBoxes)
             {
                 // Sparse search keeps geometry and its reference BVH on the
@@ -252,8 +263,8 @@ namespace DNDS::Geom
         if (mode == SurfaceRoutingMode::AllGatherSurface)
         {
             std::vector<std::vector<index>> all;
-            MPI::LocalStage(mpi, [&]
-                            {
+            context->LocalStage([&]
+                                {
                 all.resize(size_t(mpi.size));
                 for (auto &peer : all)
                 {
@@ -263,8 +274,8 @@ namespace DNDS::Geom
             const auto route = R::SparseBatchExchange::Build(context, surface.Size(), std::move(all));
             elements = route.Exchange(elements);
             geometry = route.Exchange(geometry);
-            MPI::LocalStage(mpi, [&]
-                            {
+            context->LocalStage([&]
+                                {
                 candidatePoints = points;
                 candidateKeys = R::Array<index>(R::RowLayout::Dense(points.RowCount(),2));
                 auto write = candidateKeys.Write();
@@ -279,8 +290,8 @@ namespace DNDS::Geom
         {
             const int count = settings.coarseBoxesPerRank;
             std::vector<real> boxes, local;
-            MPI::LocalStage(mpi, [&]
-                            {
+            context->LocalStage([&]
+                                {
                 boxes.resize(size_t(mpi.size)*6*count);
                 local.resize(size_t(6*count));
                 std::vector<index> order(size_t(surface.Size()));
@@ -307,8 +318,8 @@ namespace DNDS::Geom
             MPI_Allgather(local.data(), 6 * count, DNDS_MPI_REAL, boxes.data(), 6 * count, DNDS_MPI_REAL, mpi.comm);
             std::vector<std::vector<index>> destinations;
             R::Array<index> keys;
-            MPI::LocalStage(mpi, [&]
-                            {
+            context->LocalStage([&]
+                                {
                 destinations.resize(size_t(mpi.size));
                 keys = R::Array<index>(R::RowLayout::Dense(points.RowCount(),2));
                 auto write = keys.Write();
@@ -337,8 +348,8 @@ namespace DNDS::Geom
             const auto route = R::SparseBatchExchange::Build(context, points.RowCount(), std::move(destinations));
             candidatePoints = route.Exchange(points);
             candidateKeys = route.Exchange(keys);
-            MPI::LocalStage(mpi, [&]
-                            {
+            context->LocalStage([&]
+                                {
                 origins.resize(size_t(candidatePoints.RowCount()));
                 for (int peer = 0; peer < mpi.size; ++peer)
                     std::fill(origins.begin()+route.ReceiveOffsets()[peer],origins.begin()+route.ReceiveOffsets()[peer+1],peer); });
@@ -353,8 +364,8 @@ namespace DNDS::Geom
             int origin;
         };
         std::vector<Proposal> proposals;
-        MPI::LocalStage(mpi, [&]
-                        {
+        context->LocalStage([&]
+                            {
             auto qr = candidatePoints.Read();
             auto kr = candidateKeys.Read();
             const auto q = qr.View<R::FixedRows<3>>();
@@ -420,8 +431,8 @@ namespace DNDS::Geom
         R::Array<index> proposalKeys;
         R::Array<real> proposalValues;
         std::vector<std::vector<index>> replies;
-        MPI::LocalStage(mpi, [&]
-                        {
+        context->LocalStage([&]
+                            {
             proposalKeys = R::Array<index>(R::RowLayout::Dense(proposals.size(),6));
             proposalValues = R::Array<real>(R::RowLayout::Dense(proposals.size(),13));
             replies.resize(size_t(mpi.size));
@@ -437,8 +448,8 @@ namespace DNDS::Geom
         auto returnedKeys = replyRoute.Exchange(proposalKeys);
         auto returnedValues = replyRoute.Exchange(proposalValues);
         std::shared_ptr<Detail::DistributedSurfacePointMapData> data;
-        MPI::LocalStage(mpi, [&]
-                        {
+        context->LocalStage([&]
+                            {
             data = std::make_shared<Detail::DistributedSurfacePointMapData>(surface,mpi,context);
             std::vector<std::vector<SurfaceMatchProposal>> byQuery(size_t(points.RowCount()));
             auto kr = returnedKeys.Read();
@@ -471,8 +482,8 @@ namespace DNDS::Geom
     R::RowTransferPlan DistributedSurfacePointMap::BuildElementDataRoute() const
     {
         std::vector<R::RowRequest> requests;
-        MPI::LocalStage(_data->mpi, [&]
-                        {
+        _data->context->LocalStage([&]
+                                   {
             requests.reserve(size_t(Size()));
             for (index iQuery = 0; iQuery < Size(); ++iQuery)
             {

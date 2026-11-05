@@ -148,6 +148,17 @@ cannot discover an unannounced remote update. Concurrent bindings sharing a
 communication context require distinct tags; the default tag zero assumes no
 overlap. The locator does not schedule solver exchanges or computation.
 
+An optional `communication` argument on the generic distributed match selects
+the immutable safety policy; its communicator must have the same ranks and
+order as `mpi.comm`. Null keeps preflight enabled. The locator creates its own
+communicator namespace, so a caller may retain bindings/tags on the supplied
+context. Selected-element routes inherit the selected mode. The simple boundary
+adapter instead inherits the donor mesh policy; its explicit coupling overload
+uses the coupling context policy. All ranks select the same mode and participate
+in the same setup phases. Disabled preflight still checks local inputs, but a
+failure aborts rather than coordinating a recoverable exception. Required
+setting agreement, discovery, arbitration and payload protocols remain active.
+
 ## Dependencies and focused validation
 
 `BoundingBoxTree` is an immutable CPU interface with two selectable backends:

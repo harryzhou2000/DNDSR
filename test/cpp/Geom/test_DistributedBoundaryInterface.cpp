@@ -20,6 +20,7 @@ TEST_CASE("Distributed sliding matches exact Cartesian donors across geometry an
             std::vector<I> selected(size_t(mesh->Entities(EntityKind::Bnd).NumOwned()));
             std::iota(selected.begin(), selected.end(), I(0));
             const auto reference = BoundaryPatch::Create(mesh, selected, {}, backend);
+            auto unchecked = std::make_shared<R::CommunicationContext>(mpi.comm, false);
             const auto unchanged = mesh->versions.Stamp(R::Change::Geometry);
             const I count = !emptyPeer && mpi.size > 1 && mpi.rank == mpi.size - 1 ? 0 : 3;
             R::Array<double> points(R::RowLayout::Dense(count, 3));
@@ -42,9 +43,11 @@ TEST_CASE("Distributed sliding matches exact Cartesian donors across geometry an
                         key.View()(iQuery, 0) = 100 - 7 * iQuery;
                     }
                 }
-                auto routed = DistributedInterfacePointMap::Match(patch, points, ids);
+                auto routed = DistributedInterfacePointMap::Match(unchecked, patch, points, ids);
                 auto baseline = DistributedInterfacePointMap::Match(patch, points, ids, InterfaceRoutingMode::AllGatherBoundary);
                 CHECK(routed.Size() == count);
+                CHECK_FALSE(routed.Context()->ChecksCollectivePreflight());
+                CHECK(baseline.Context()->ChecksCollectivePreflight());
                 for (I iQuery = 0; iQuery < count; ++iQuery)
                 {
                     const I row = iQuery == 2 ? 5 : (3 * mpi.rank + iQuery + 3 * step) % 10;

@@ -118,6 +118,18 @@ policy even when the destination is a fresh empty mesh. Smoothing equations,
 constraint ordering and the documented native/legacy rounding difference stay
 unchanged.
 
+Boundary stencil compilation and distributed boundary matching follow the same
+policy. The simple mesh-bound match inherits its donor mesh's preparation mode;
+the coupling overload follows its explicit context, including on ranks without
+a donor mesh. The geometry-only `DistributedSurfacePointMap::Match` accepts an
+optional congruent context for this policy and creates a private communication
+namespace. It never consumes tags retained by the caller. Selected-element data
+routes preserve the mode. Counts, search-setting agreement, candidate discovery,
+proposal arbitration and selected payload transfers remain required. Sparse
+fixed-record batches likewise use their context for local-stage checks while
+retaining count discovery and payload/schema protocols. These synchronous setup
+operations still require every participant, including empty ranks, in order.
+
 This remains a staged E1 implementation. Archive/serializer error coordination,
 bare entity-space creation, legacy compatibility decoders and other cold
 preparation entry points require separate classification and propagation;

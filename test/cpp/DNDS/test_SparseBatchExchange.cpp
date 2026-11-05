@@ -29,7 +29,10 @@ TEST_CASE("Sparse fixed-record batches fan out and return variable proposal coun
     int rank = 0, peers = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &peers);
-    auto context = std::make_shared<R::CommunicationContext>(MPI_COMM_WORLD);
+    bool checks = true;
+    SUBCASE("enabled preflight") {}
+    SUBCASE("disabled preflight") { checks = false; }
+    auto context = std::make_shared<R::CommunicationContext>(MPI_COMM_WORLD, checks);
     R::Array<BatchRecord> source(R::RowLayout::Dense(5, 1));
     {
         auto write = source.Write();
@@ -42,6 +45,7 @@ TEST_CASE("Sparse fixed-record batches fan out and return variable proposal coun
     send[(rank + 1) % peers].push_back(0);
     send[(rank + peers - 1) % peers].push_back(0);
     auto plan = R::SparseBatchExchange::Build(context, 5, send);
+    CHECK(plan.Route().Context()->ChecksCollectivePreflight() == checks);
     auto incoming = plan.Exchange(source);
     R::Array<BatchRecord> proposals(incoming.Layout());
     std::vector<std::vector<I>> replies(static_cast<size_t>(peers));

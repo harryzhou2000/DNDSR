@@ -105,6 +105,10 @@ namespace DNDS::Geom
     /// with matching settings, including empty owners/queries. Caller retains
     /// mpi.comm through routes/operations. No volume mesh or solution payload
     /// belongs here. A new pose/geometry requires an explicitly rebuilt map.
+    /// Optional communication supplies the agreed safety policy on a congruent
+    /// communicator. Search creates its own tag namespace, so existing caller
+    /// bindings cannot collide. Disabled checks abort on local failure; required
+    /// settings/count/discovery and geometric matching decisions remain.
     class DistributedSurfacePointMap
     {
         std::shared_ptr<const Detail::DistributedSurfacePointMapData> _data;
@@ -114,7 +118,8 @@ namespace DNDS::Geom
         static DistributedSurfacePointMap Match(MPIInfo mpi, SurfacePatch surface, const Runtime::Array<real> &points,
                                                 const Runtime::Array<index> &queryIds,
                                                 SurfaceRoutingMode mode = SurfaceRoutingMode::CoarseBoxes,
-                                                SurfaceSearchSettings settings = {});
+                                                SurfaceSearchSettings settings = {},
+                                                std::shared_ptr<Runtime::CommunicationContext> communication = {});
         index Size() const;
         SurfacePointMatch Get(index iQuery) const;
         void ValidateFor(const SurfacePatch &active) const;

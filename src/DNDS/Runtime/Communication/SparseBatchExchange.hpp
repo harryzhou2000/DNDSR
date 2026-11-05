@@ -17,6 +17,8 @@ namespace DNDS::Runtime
     /// communicator and drains operations before finalization. Equal counts
     /// cannot certify semantic row correspondence: request keys/epochs belong
     /// to the application protocol. This is not a rank-local mailbox.
+    /// Optional validation follows context policy; disabled-mode rejection
+    /// aborts. Peer counts, record width/tag agreement and routing stay required.
     class SparseBatchExchange
     {
         RowTransferPlan _route;
@@ -34,8 +36,8 @@ namespace DNDS::Runtime
             MPI_Comm_rank(mpi.comm, &mpi.rank);
             MPI_Comm_size(mpi.comm, &mpi.size);
             std::vector<index> sendCounts, receiveCounts, offsets;
-            MPI::LocalStage(mpi, [&]
-                            {
+            context->LocalStage([&]
+                                {
                 DNDS_check_throw_info(sourceRows >= 0 && destinations.size() == size_t(mpi.size), "invalid batch extent or peer count");
                 sendCounts.resize(size_t(mpi.size));
                 receiveCounts.resize(size_t(mpi.size));
@@ -51,8 +53,8 @@ namespace DNDS::Runtime
                                                DNDS_MPI_INDEX, mpi.comm) == MPI_SUCCESS,
                                   "batch count discovery failed");
             std::vector<std::vector<index>> receive;
-            MPI::LocalStage(mpi, [&]
-                            {
+            context->LocalStage([&]
+                                {
                 receive.resize(size_t(mpi.size));
                 for (int peer = 0; peer < mpi.size; ++peer)
                 {
@@ -82,8 +84,8 @@ namespace DNDS::Runtime
             Array<T> destination;
             std::optional<ElementSchema> schema;
             index width = 0;
-            MPI::LocalStage(mpi, [&]
-                            {
+            _route.Context()->LocalStage([&]
+                                         {
                 const auto shape = source.Layout();
                 DNDS_check_throw_info(source.GetDevice() == Device::Host() && shape.Kind() == RowLayoutKind::Table &&
                                           shape.RowCount() == _route.SourceRows(), "batch exchange needs a host fixed-record table");
