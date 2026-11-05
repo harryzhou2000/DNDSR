@@ -118,10 +118,14 @@ reduction. No other implementation checkout or MG/IV work was used.
 
 ## Still pending
 
-E1's remaining cold-entry-point classification/propagation remains open, as do the bounded
-E3–E7 measurements, selected scoped readability work and per-suite high-rank
-rationale/curation. The bounded CPU sanitizer and independent frozen Euler
-gates are recorded below; neither is a whole-platform qualification.
+E3 complete-RHS copy attribution and E4–E6 matched assessments remain open.
+E1's cold-entry-point classification and E2's capability/memory gates are
+recorded below; a final cross-layer source audit is still required. E7's
+allocated-node assessment is complete, with a retain recommendation. The
+bounded CPU sanitizer and independent frozen Euler gates are recorded below;
+neither is a whole-platform qualification. Scoped readability and per-suite
+rank curation have concrete changes below, with the remaining manual source
+review still open.
 Formatter default discovery now includes Cauchy and Physics;
 no repository-wide formatting was performed. Pending queue entries are not
 completed merely because neighboring fixes or test labels exist.
@@ -917,3 +921,31 @@ Keep production's logical-row copy, allocation identities and persistent
 bindings. No speculative size threshold or ownership swap is introduced.
 E3 still needs complete-RHS copy attribution; E4–E6 remain open. Both this job
 and E7 completed without changing the separate 80-node job or pinning a node.
+
+## Cauchy MPI tier curation and E6 functional probe
+
+Eleven named Cauchy suites keep np1/2 in routine and np4/8 in extended; no
+registration, case, assertion or executable is removed. The
+[per-suite rationale](plan53_validation/test-tiers.md) distinguishes these
+repetitions from the empty-owner, subset-writer and multidomain cases that
+retain routine high-rank coverage. Unfiltered CTest remains unchanged in scope.
+The configured CPU build has 469 total registrations: 466 labeled C++ entries
+(428 routine, 22 extended, 16 integration) and three non-C++ entries. These are
+current configuration counts, not a subtraction from the older pinned suite
+measurements or evidence of a wall-time saving.
+
+The opt-in `cauchy_benchmark_jacobian` adds no CTest registration. On generated
+P3 periodic quads with frozen viscous flow5 means/radii it isolates auxiliary
+preparation, first/repeated Jacobian preparation, diagonal inversion, matrix
+action and a local SGS pair. It also times actual preparation+inversion+1/5/20
+pairs and preparation+inversion+five communicated SGS iterations; these are
+measured sequences rather than sums of separate medians. Requested and actual
+iteration counts must agree. Memory observations precede allocation of the
+other storage-mode oracle; Linux RSS and getrusage high-water remain separate
+observations, not a summed or inferred evaluator-storage size.
+
+Both local np2, width12, OMP1 assembled/evaluated invocations pass complete
+matrix-action and SGS elementwise parity, finite values and unchanged mean
+generation (logs in the isolated assessment workspace). These are functional
+gates only. An allocated-node baseline/candidate comparison, additional frozen
+operator UTs and the E6 retain/change recommendation remain pending.

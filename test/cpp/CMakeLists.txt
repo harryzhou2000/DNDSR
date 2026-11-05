@@ -272,6 +272,9 @@ target_link_libraries(cauchy_benchmark_implicit PRIVATE cauchy cfv geom dnds ${D
 add_executable(cauchy_benchmark_geom_acquisition EXCLUDE_FROM_ALL Cauchy/benchmark_GeomAcquisition.cpp)
 target_include_directories(cauchy_benchmark_geom_acquisition PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
 target_link_libraries(cauchy_benchmark_geom_acquisition PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+add_executable(cauchy_benchmark_jacobian EXCLUDE_FROM_ALL Cauchy/benchmark_Jacobian.cpp)
+target_include_directories(cauchy_benchmark_jacobian PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+target_link_libraries(cauchy_benchmark_jacobian PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
 add_executable(cauchy_experiment_multidomain_iv EXCLUDE_FROM_ALL Cauchy/experiment_MultidomainIV.cpp)
 target_include_directories(cauchy_experiment_multidomain_iv PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
 target_link_libraries(cauchy_experiment_multidomain_iv PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
@@ -943,6 +946,16 @@ add_dependencies(geom_unit_tests geom_test_native_mesh_assertions)
 include(${PROJECT_SOURCE_DIR}/cmake/DndsTestTargets.cmake)
 dnds_check_registered_test_targets(all_unit_tests)
 
+# Higher-rank repetitions of these application/operator suites remain runnable
+# in the extended tier. Their routine np1/2 entries cover local and distributed
+# semantics; distinct empty-rank/rank-subset/multidomain contracts keep np4/8.
+# See docs/dev/plan53_validation/test-tiers.md for the per-suite rationale.
+set(_dnds_extended_rank_suites
+    cauchy_boundary_inputs cauchy_wall_distance cauchy_rans_fv
+    cauchy_equation_source cauchy_viscous_flux cauchy_auxiliary_preparation
+    cauchy_nonlinear cauchy_physical_timestep cauchy_implicit_domain
+    cauchy_foundation cauchy_polynomial_multigrid)
+
 # Labels separate module ownership from execution cost. No registration/rank is
 # dropped here: large legacy mesh/golden fixtures remain explicitly runnable.
 get_property(_dnds_cpp_tests DIRECTORY PROPERTY TESTS)
@@ -956,6 +969,9 @@ foreach(_dnds_test IN LISTS _dnds_cpp_tests)
     set(_dnds_tier routine)
     if(_dnds_test MATCHES "^(cfv_reconstruction(3d)?|geom_mesh_pipeline|geom_mesh_index_conversion)_np")
         set(_dnds_tier integration)
+    endif()
+    if(_dnds_test MATCHES "^dnds_(cauchy_[a-z_]+)_np(4|8)$" AND CMAKE_MATCH_1 IN_LIST _dnds_extended_rank_suites)
+        set(_dnds_tier extended)
     endif()
     set_property(TEST ${_dnds_test} APPEND PROPERTY LABELS "cpp;${_dnds_module};${_dnds_tier}")
     if(_dnds_test MATCHES "_np(4|8)$")
