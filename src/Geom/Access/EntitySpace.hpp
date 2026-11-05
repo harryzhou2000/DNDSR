@@ -119,6 +119,9 @@ namespace DNDS::Geom
         /// an owned-to-ghost route every call. Retain/share the returned plan to
         /// reuse its immutable route; descriptor lookup never initiates MPI.
         Runtime::RowTransferPlan BuildRowTransferPlan() const;
+        /// Use an explicit congruent context and its immutable safety policy.
+        /// Mapping/epoch and peer order are retained, not rediscovered.
+        Runtime::RowTransferPlan BuildRowTransferPlan(std::shared_ptr<Runtime::CommunicationContext> context) const;
     };
 
 }

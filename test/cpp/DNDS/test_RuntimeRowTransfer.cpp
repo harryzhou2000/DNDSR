@@ -5,17 +5,155 @@
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
 #include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include <optional>
+#include <atomic>
 
 using namespace DNDS::Runtime;
 
+namespace
+{
+    std::atomic<bool> countReductions{false};
+    std::atomic<int> reductionNumber{0};
+    struct CountReductions
+    {
+        CountReductions()
+        {
+            reductionNumber = 0;
+            countReductions = true;
+        }
+        ~CountReductions() { countReductions = false; }
+    };
+}
+// MPI's profiling interface counts real Runtime/library calls, rather than a
+// test-only policy callback. Only this executable interposes the MPI symbol.
+extern "C" int MPI_Allreduce(const void *send, void *receive, int count, MPI_Datatype type, MPI_Op operation, MPI_Comm comm)
+{
+    if (countReductions)
+        ++reductionNumber;
+    return PMPI_Allreduce(send, receive, count, type, operation, comm);
+}
+
 int main(int argc, char **argv)
 {
-    MPI_Init(&argc, &argv);
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+        return 1;
+    if (argc == 2 && std::string(argv[1]) == "--preflight-off-failure")
+    {
+        int rank = 0;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        auto context = std::make_shared<CommunicationContext>(MPI_COMM_WORLD, false);
+        Array<double> source(RowLayout::Dense(1, 1)), destination(RowLayout::Dense(1, 1));
+        RowTransferPlan route(context, 1, 1, {{rank, 0, 0}});
+        auto binding = PayloadPlan(route, source.Layout(), destination.Layout(), ElementSchema::For<double>()).Bind(source, destination);
+        binding.BeginScheduled(ExecutionContext::Host(), rank != 0).Wait();
+        return 0; // Reaching this line is a failed fail-fast contract.
+    }
     doctest::Context ctx;
     ctx.applyCommandLine(argc, argv);
     int result = ctx.run();
-    MPI_Finalize();
+    DNDS::MPI::Finalize();
     return result;
+}
+
+TEST_CASE("Optional collective preflight removes only successful launch reductions")
+{
+    int worldRank = 0, worldSize = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &worldRank);
+    MPI_Comm_size(MPI_COMM_WORLD, &worldSize);
+    // np4 exercises independent subgroups; every nontrivial group is reversed.
+    MPI_Comm comm = MPI_COMM_NULL;
+    MPI_Comm_split(MPI_COMM_WORLD, worldSize >= 4 ? worldRank % 2 : 0, -worldRank, &comm);
+    int rank = 0, size = 0;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &size);
+    const int previous = (rank + size - 1) % size;
+    const bool sourceEmpty = size > 1 && rank == size - 1;
+    const bool donorEmpty = size > 1 && previous == size - 1;
+    const DNDS::index sourceRows = sourceEmpty ? 0 : 4, ghostRows = donorEmpty ? 0 : 3;
+    for (const bool enabled : {true, false})
+    {
+        CAPTURE(enabled);
+        auto context = std::make_shared<CommunicationContext>(comm, enabled);
+        CHECK(context->ChecksCollectivePreflight() == enabled);
+        std::vector<RowRequest> requests;
+        const DNDS::index order[]{3, 1, 2};
+        for (DNDS::index iRow = 0; iRow < ghostRows; ++iRow)
+            requests.push_back({previous, order[iRow], iRow});
+        RowTransferPlan route(context, sourceRows, ghostRows, requests);
+        for (int layout = 0; layout < 3; ++layout)
+        {
+            CAPTURE(layout);
+            std::vector<size_t> sourceSizes = sourceEmpty ? std::vector<size_t>{} : std::vector<size_t>{2, 0, 3, 1};
+            std::vector<size_t> ghostSizes = donorEmpty ? std::vector<size_t>{} : std::vector<size_t>{1, 0, 3};
+            const auto sourceShape = layout == 0 ? RowLayout::Dense(sourceRows, 3, 5) : layout == 1 ? RowLayout::Padded(sourceSizes, 5)
+                                                                                                    : RowLayout::Ragged(sourceSizes);
+            const auto ghostShape = layout == 0 ? RowLayout::Dense(ghostRows, 3, 7) : layout == 1 ? RowLayout::Padded(ghostSizes, 7)
+                                                                                                  : RowLayout::Ragged(ghostSizes);
+            Array<int64_t> source(sourceShape), destination(ghostShape);
+            {
+                auto write = source.Write();
+                for (DNDS::index iRow = 0; iRow < sourceRows; ++iRow)
+                    for (DNDS::index j = 0; j < sourceShape.RowSize(iRow); ++j)
+                        write.View()(iRow, j) = rank * 1000 + iRow * 10 + j;
+            }
+            std::vector<int64_t> expected(ghostShape.Elements(), -77);
+            DNDS::index csrOffset = 0;
+            for (DNDS::index iRow = 0; iRow < ghostRows; ++iRow)
+            {
+                const DNDS::index width = layout == 0 ? 3 : DNDS::index(ghostSizes[size_t(iRow)]);
+                for (DNDS::index j = 0; j < width; ++j)
+                    expected[size_t((layout == 2 ? csrOffset : iRow * 7) + j)] = previous * 1000 + order[iRow] * 10 + int64_t(j);
+                csrOffset += width;
+            }
+            const PayloadPlan payload(route, sourceShape, ghostShape, ElementSchema::For<int64_t>());
+            for (const auto mode : {TransferMode::Transient, TransferMode::Persistent})
+            {
+                CAPTURE(mode == TransferMode::Persistent);
+                auto binding = payload.Bind(source, destination, TransferTransport::Direct, {mode, context, 23});
+                EagerEngine engine(0, std::make_shared<AccessTrackingContext>());
+                const auto stream = engine.CreateCPUStream();
+                for (int kind = 0; kind < 3; ++kind)
+                {
+                    CAPTURE(kind);
+                    {
+                        auto write = destination.Storage().Write();
+                        std::fill_n(write.View<int64_t>().data, expected.size(), int64_t(-77));
+                    }
+                    {
+                        CountReductions counter;
+                        auto operation = kind == 0 ? binding.Begin() : kind == 1 ? binding.BeginScheduled()
+                                                                                 : binding.BeginChecked(stream);
+                        operation.Wait();
+                    }
+                    CHECK(reductionNumber == (enabled ? (kind == 2 ? 3 : 1) : 0));
+                    auto read = destination.Storage().Read();
+                    for (DNDS::index iElement = 0; iElement < DNDS::index(expected.size()); ++iElement)
+                        CHECK(read.View<int64_t>()[iElement] == expected[iElement]);
+                }
+            }
+        }
+    }
+    MPI_Comm_free(&comm);
+}
+
+TEST_CASE("Communication context agrees its immutable safety policy before preparing routes")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    if (size > 1)
+    {
+        CHECK_THROWS(std::make_shared<CommunicationContext>(MPI_COMM_WORLD, rank != 0));
+        const auto checked = std::make_shared<CommunicationContext>(MPI_COMM_WORLD, true);
+        const auto unchecked = std::make_shared<CommunicationContext>(MPI_COMM_WORLD, false);
+        RowTransferPlan route(checked, 1, 1, {{rank, 0, 0}});
+        Array<int64_t> source(RowLayout::Dense(1, 1)), destination(RowLayout::Dense(1, 1));
+        PayloadPlan payload(route, source.Layout(), destination.Layout(), ElementSchema::For<int64_t>());
+        // Each context is coherent, but different ranks choose different modes.
+        // The existing binding-control agreement must reject that before posting.
+        CHECK_THROWS(payload.Bind(source, destination, TransferTransport::Direct,
+                                  {TransferMode::Persistent, rank == 0 ? checked : unchecked, 11}));
+        payload.Bind(source, destination, TransferTransport::Direct, {TransferMode::Persistent, checked, 11}).Begin().Wait();
+    }
 }
 
 TEST_CASE("Large permuted routes preserve row order padding and rank-local collision flags")

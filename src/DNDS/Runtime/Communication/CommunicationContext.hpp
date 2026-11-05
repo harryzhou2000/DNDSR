@@ -1,6 +1,9 @@
 #pragma once
 
 #include "DNDS/MPI/MPI.hpp"
+#include "DNDS/Runtime/Communication/CollectiveValidation.hpp"
+#include <exception>
+#include <utility>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -17,6 +20,7 @@ namespace DNDS::Runtime
         {
             MPI_Comm comm = MPI_COMM_NULL;
             int tagLimit = 0;
+            bool collectivePreflight = true;
             std::mutex mutex;
             std::map<int, std::weak_ptr<const int>> tags;
             ~State()
@@ -30,12 +34,20 @@ namespace DNDS::Runtime
         std::shared_ptr<State> _state;
 
     public:
-        explicit CommunicationContext(MPI_Comm comm)
+        /// Immutable safety policy, agreed once at collective construction.
+        /// Replacing it requires a coordinated, drained preparation boundary.
+        /// Disabled mode retains local checks but aborts on local rejection;
+        /// rank-asymmetric exceptions are recoverable only in enabled mode.
+        explicit CommunicationContext(MPI_Comm comm, bool collectivePreflight = true)
             : _state(std::make_shared<State>())
         {
             DNDS_check_throw_info(comm != MPI_COMM_NULL, "communication context needs a communicator");
             DNDS_check_throw_info(MPI_Comm_dup(comm, &_state->comm) == MPI_SUCCESS,
                                   "cannot duplicate communication context");
+            int policy[]{int(collectivePreflight), -int(collectivePreflight)};
+            MPI_Allreduce(MPI_IN_PLACE, policy, 2, MPI_INT, MPI_MIN, _state->comm);
+            DNDS_check_throw_info(policy[0] == -policy[1], "collective preflight policy differs between ranks");
+            _state->collectivePreflight = collectivePreflight;
             int flag = 0;
             int *limit = nullptr;
             DNDS_check_throw_info(MPI_Comm_get_attr(_state->comm, MPI_TAG_UB, &limit, &flag) == MPI_SUCCESS,
@@ -46,6 +58,37 @@ namespace DNDS::Runtime
             _state->tagLimit = flag && limit ? *limit : 32767;
         }
         MPI_Comm Communicator() const { return _state->comm; }
+        bool ChecksCollectivePreflight() const { return _state->collectivePreflight; }
+        void Preflight(bool valid, const char *message) const
+        {
+            CommunicationDetail::Preflight(valid, _state->comm, _state->collectivePreflight, message);
+        }
+        /// Local-only preparation followed by optional agreement. Do not put
+        /// collectives inside run; each rank must enter this phase in order.
+        /// Preserve the local exception when agreement rejects the phase.
+        template <class F>
+        void LocalStage(F &&run, const char *message = "communication preparation failed on a rank") const
+        {
+            std::exception_ptr failure;
+            try
+            {
+                std::forward<F>(run)();
+            }
+            catch (...)
+            {
+                failure = std::current_exception();
+            }
+            try
+            {
+                Preflight(!failure, message);
+            }
+            catch (...)
+            {
+                if (failure)
+                    std::rethrow_exception(failure);
+                throw;
+            }
+        }
         /// Local reservation. The binding collectively checks success before it
         /// posts messages. Retain the returned owner through request retirement.
         std::shared_ptr<const int> Reserve(int tag) const

@@ -39,9 +39,14 @@ namespace DNDS::Runtime
             .def_static("available", &NCCLTransferProvider::Available)
             .def("check_async_error", &NCCLTransferProvider::CheckAsyncError)
             .def("abort", &NCCLTransferProvider::Abort);
-        py::class_<CommunicationContext, std::shared_ptr<CommunicationContext>>(m, "CommunicationContext", "Collective shared communicator. Match setup order on all ranks and use distinct matched tags for concurrent bindings.")
-            .def(py::init([](const MPIInfo &mpi)
-                          { return std::make_shared<CommunicationContext>(mpi.comm); }));
+        py::class_<CommunicationContext, std::shared_ptr<CommunicationContext>>(m, "CommunicationContext",
+                                                                                "Collective shared communicator with immutable collective_preflight (default true). "
+                                                                                "Match setup order and selected policy on all ranks; use distinct matched tags for concurrent bindings. "
+                                                                                "With safety agreement disabled, rejected local MPI launches abort the communicator. Local access/readiness checks remain.")
+            .def(py::init([](const MPIInfo &mpi, bool collectivePreflight)
+                          { return std::make_shared<CommunicationContext>(mpi.comm, collectivePreflight); }),
+                 py::arg("mpi"), py::arg("collective_preflight") = true)
+            .def_property_readonly("collective_preflight", &CommunicationContext::ChecksCollectivePreflight);
         py::enum_<TransferMode>(m, "TransferMode").value("Persistent", TransferMode::Persistent).value("Transient", TransferMode::Transient);
         py::class_<TransferOptions>(m, "TransferOptions", "Persistent/transient request policy, independent of transport. Caller matches context/tag across ranks; transient mode remains collective.")
             .def(py::init([](TransferMode mode, std::shared_ptr<CommunicationContext> context, int tag, std::shared_ptr<TransferProvider> provider)

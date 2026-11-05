@@ -12,12 +12,6 @@ namespace DNDS::Runtime
 {
     namespace
     {
-        void CheckAll(bool valid, MPI_Comm comm, const char *message)
-        {
-            int all = valid;
-            MPI_Allreduce(MPI_IN_PLACE, &all, 1, MPI_INT, MPI_MIN, comm);
-            DNDS_check_throw_info(all, message);
-        }
         void Agree(const std::string &value, MPI_Comm comm, bool valid = true, index *uniformWidth = nullptr)
         {
             int rank = 0;
@@ -115,7 +109,7 @@ namespace DNDS::Runtime
         std::vector<uint64_t> ExchangeLengths(const RowTransferPlan &route, const RowLayout &source, bool preflightDone = false)
         {
             if (!preflightDone)
-                CheckAll(source.RowCount() == route.SourceRows() && route.Valid(), route.Communicator(), "row transfer source layout or epoch mismatch");
+                route.Context()->Preflight(source.RowCount() == route.SourceRows() && route.Valid(), "row transfer source layout or epoch mismatch");
             const auto sendCounts = Counts(route.SendRows()), receiveCounts = Counts(route.ReceiveRows());
             const auto sendOffsets = Offsets(sendCounts), receiveOffsets = Offsets(receiveCounts);
             std::vector<uint64_t> send, receive(receiveOffsets.back());
@@ -229,7 +223,7 @@ namespace DNDS::Runtime
         for (auto request : requests)
             valid = valid && request.sourceRank >= 0 && request.sourceRank < size && request.sourceRow >= 0 &&
                     request.destinationRow >= 0 && request.destinationRow < destinationRows;
-        CheckAll(valid, state->comm, "invalid row transfer request");
+        state->context->Preflight(valid, "invalid row transfer request");
         state->sources = sourceRows;
         state->destinations = destinationRows;
         state->dependencies = std::move(dependencies);
@@ -259,7 +253,7 @@ namespace DNDS::Runtime
         std::vector<int> incomingCounts(size);
         MPI_Alltoall(requestCounts.data(), 1, MPI_INT, incomingCounts.data(), 1, MPI_INT, state->comm);
         auto incomingTotal = std::accumulate(incomingCounts.begin(), incomingCounts.end(), int64_t(0));
-        CheckAll(incomingTotal <= INT_MAX, state->comm, "row transfer request table exceeds MPI int range");
+        state->context->Preflight(incomingTotal <= INT_MAX, "row transfer request table exceeds MPI int range");
         SeenRows sourcesSeen(sourceRows, size_t(incomingTotal));
         auto requestOffsets = Offsets(requestCounts), incomingOffsets = Offsets(incomingCounts);
         std::vector<int64_t> outgoing, incoming(size_t(incomingTotal), 0);
@@ -275,7 +269,7 @@ namespace DNDS::Runtime
                 sourcesSeen.Append(index(incoming[j]));
             }
         state->reverseCollisions = sourcesSeen.HasDuplicates();
-        CheckAll(valid, state->comm, "row transfer source index does not exist");
+        state->context->Preflight(valid, "row transfer source index does not exist");
         _state = std::move(state);
     }
     RowTransferPlan RowTransferPlan::Known(std::shared_ptr<CommunicationContext> context, index sourceRows, index destinationRows,
@@ -303,11 +297,11 @@ namespace DNDS::Runtime
             for (auto row : peer)
                 valid = valid && row >= 0 && row < destinationRows;
         }
-        CheckAll(valid && ns <= INT_MAX && nr <= INT_MAX, comm, "invalid known row route");
+        context->Preflight(valid && ns <= INT_MAX && nr <= INT_MAX, "invalid known row route");
         auto sc = Counts(send), rc = Counts(receive);
         std::vector<int> actual(size);
         MPI_Alltoall(sc.data(), 1, MPI_INT, actual.data(), 1, MPI_INT, comm);
-        CheckAll(actual == rc, comm, "known row route peer counts disagree");
+        context->Preflight(actual == rc, "known row route peer counts disagree");
         auto state = std::make_shared<State>();
         state->context = std::move(context);
         state->comm = comm;
@@ -375,7 +369,7 @@ namespace DNDS::Runtime
         {
             valid = false;
         }
-        CheckAll(valid, Communicator(), "cannot allocate sender-ordered route");
+        Context()->Preflight(valid, "cannot allocate sender-ordered route");
         RowTransferPlan result;
         result._state = std::move(state);
         return {std::move(result), std::move(oldToNew)};
@@ -405,7 +399,7 @@ namespace DNDS::Runtime
         catch (...)
         {
         }
-        CheckAll(bool(destination), Communicator(), "cannot infer destination row layout");
+        Context()->Preflight(bool(destination), "cannot infer destination row layout");
         return *destination;
     }
 
@@ -527,7 +521,7 @@ namespace DNDS::Runtime
         {
             valid = false;
         }
-        CheckAll(valid, comm, "row payload destination/edge width mismatch or MPI layout compilation failure");
+        state->route.Context()->Preflight(valid, "row payload destination/edge width mismatch or MPI layout compilation failure");
         _state = std::move(state);
     }
     RowLayout PayloadPlan::DestinationLayout() const { return _state->destination; }
@@ -536,8 +530,7 @@ namespace DNDS::Runtime
     bool PayloadPlan::Compatible(const std::string &type) const { return _state->schema.Compatible(type); }
     void PayloadPlan::CheckLayouts(const RowLayout &source, const RowLayout &destination, size_t bytes, bool elementCompatible) const
     {
-        CheckAll(LayoutsMatch(source, destination, bytes, elementCompatible),
-                 _state->route.Communicator(), "Array layout differs from compiled payload");
+        _state->route.Context()->Preflight(LayoutsMatch(source, destination, bytes, elementCompatible), "Array layout differs from compiled payload");
     }
     bool PayloadPlan::LayoutsMatch(const RowLayout &source, const RowLayout &destination, size_t bytes, bool elementCompatible) const
     {
@@ -575,9 +568,14 @@ namespace DNDS::Runtime
         MPI_Comm comm = MPI_COMM_NULL;
         std::vector<MPI_Request> sends, receives;
         bool active = false;
+        bool collectivePreflight = true;
         std::mutex mutex;
         std::shared_ptr<AccessTrackingContext> tracking;
         uint64_t lane = 0;
+        void Preflight(bool valid, const char *message) const
+        {
+            CommunicationDetail::Preflight(valid, comm, collectivePreflight, message);
+        }
         ~State()
         {
             if (tracking)
@@ -614,25 +612,28 @@ namespace DNDS::Runtime
         state->reducer = std::move(reducer);
         state->transport = transport;
         state->options = std::move(options);
+        state->collectivePreflight = (state->options.context ? state->options.context : state->plan->route.Context())->ChecksCollectivePreflight();
         const auto routeComm = state->plan->route.Communicator();
         // Fixed control fields need no string broadcast. Min(x,-x) proves
         // exact agreement in one collective; widen before negating INT_MIN.
         const int64_t controls[]{int(state->options.mode), bool(state->options.context), state->options.tag,
                                  bool(state->reducer), int(transport),
-                                 state->reducer ? int(state->reducer->initialization) : 0, bool(state->options.provider), state->options.allowStreamOrderedDeviceMemory};
-        int64_t agreed[17];
-        for (index i = 0; i < 8; ++i)
+                                 state->reducer ? int(state->reducer->initialization) : 0, bool(state->options.provider), state->options.allowStreamOrderedDeviceMemory,
+                                 state->collectivePreflight};
+        constexpr index controlNumber = sizeof(controls) / sizeof(controls[0]);
+        int64_t agreed[2 * controlNumber + 1];
+        for (index i = 0; i < controlNumber; ++i)
         {
             agreed[2 * i] = controls[i];
             agreed[2 * i + 1] = -controls[i];
         }
-        agreed[16] = layoutsValid;
-        MPI_Allreduce(MPI_IN_PLACE, agreed, 17, MPI_INT64_T, MPI_MIN, routeComm);
+        agreed[2 * controlNumber] = layoutsValid;
+        MPI_Allreduce(MPI_IN_PLACE, agreed, int(2 * controlNumber + 1), MPI_INT64_T, MPI_MIN, routeComm);
         bool controlsAgree = true;
-        for (index i = 0; i < 8; ++i)
+        for (index i = 0; i < controlNumber; ++i)
             controlsAgree = controlsAgree && agreed[2 * i] == -agreed[2 * i + 1];
         DNDS_check_throw_info(controlsAgree, "transfer binding policy differs between ranks");
-        DNDS_check_throw_info(agreed[16], "Array layout differs from compiled payload");
+        DNDS_check_throw_info(agreed[2 * controlNumber], "Array layout differs from compiled payload");
         if (state->options.provider)
         {
             Agree(state->options.provider->Name(), routeComm);
@@ -644,10 +645,10 @@ namespace DNDS::Runtime
         }
         if (state->reducer)
             Agree(state->reducer->identity, routeComm);
-        CheckAll(transport != TransferTransport::Direct || state->options.allowStreamOrderedDeviceMemory ||
-                     (!state->source.StreamOrderedMemory() && !state->destination.StreamOrderedMemory()),
-                 routeComm,
-                 "Direct MPI pool/VMM memory requires verified allowStreamOrderedDeviceMemory; CUDA awareness alone is insufficient. Select explicit packing or ordinary preallocated device storage.");
+        CommunicationDetail::Preflight(transport != TransferTransport::Direct || state->options.allowStreamOrderedDeviceMemory ||
+                                           (!state->source.StreamOrderedMemory() && !state->destination.StreamOrderedMemory()),
+                                       routeComm, state->collectivePreflight,
+                                       "Direct MPI pool/VMM memory requires verified allowStreamOrderedDeviceMemory; CUDA awareness alone is insufficient. Select explicit packing or ordinary preallocated device storage.");
         bool valid = true;
         if (state->options.context)
         {
@@ -667,7 +668,7 @@ namespace DNDS::Runtime
         }
         else
         {
-            CheckAll(state->options.tag == 0, routeComm, "isolated transfer binding uses tag zero");
+            CommunicationDetail::Preflight(state->options.tag == 0, routeComm, state->collectivePreflight, "isolated transfer binding uses tag zero");
             MPI_Comm_dup(routeComm, &state->comm);
         }
         const auto &p = *state->plan;
@@ -690,9 +691,9 @@ namespace DNDS::Runtime
         if (state->reducer)
             valid = valid && state->reducer->schema == p.schema.Identity() && state->reducer->elementBytes == p.schema.Extent() &&
                     (transport == TransferTransport::HostPacked || state->destination.GetDevice().space == MemorySpace::Host ? bool(state->reducer->host) : bool(state->reducer->device));
-        // A rejected context can have a different rank order, so always agree
-        // on the route communicator before using the selected context.
-        CheckAll(valid, routeComm, transport == TransferTransport::DevicePacked ? "DevicePacked requires CUDA-aware MPI, one CUDA placement, a described schema, valid extents and collision resolution" : "invalid transfer binding: context/tag, collision, schema, placement, size or alias");
+        // A rejected context can have a different group/order. Validate on the
+        // route communicator; disabled safety agreement fails fast there too.
+        CommunicationDetail::Preflight(valid, routeComm, state->collectivePreflight, transport == TransferTransport::DevicePacked ? "DevicePacked requires CUDA-aware MPI, one CUDA placement, a described schema, valid extents and collision resolution" : "invalid transfer binding: context/tag, collision, schema, placement, size or alias");
         try
         {
             if (state->reducer)
@@ -797,7 +798,7 @@ namespace DNDS::Runtime
         // Copy/direct bindings do not allocate a workspace. Reducer/transport
         // policy was agreed above, so all ranks take the same branch here.
         if (state->reducer || transport != TransferTransport::Direct)
-            CheckAll(valid, state->comm, "cannot allocate/compile transfer workspace");
+            state->Preflight(valid, "cannot allocate/compile transfer workspace");
         state->receives.reserve(p.route.ReceiveRows().size());
         state->sends.reserve(p.route.SendRows().size());
         auto *receiveBase = state->reducer ? state->workspace.LegacyPointer() : state->destination.LegacyPointer();
@@ -883,7 +884,7 @@ namespace DNDS::Runtime
         {
             valid = false;
         }
-        CheckAll(valid, _state->comm, "checked MPI stream preflight failed on a rank");
+        _state->Preflight(valid, "checked MPI stream preflight failed on a rank");
         return Start(stream.Context(), true, std::move(tracking), lane);
     }
     void TransferBinding::Enqueue(EagerEngine &engine, const ExecutionStream &stream) const
@@ -952,7 +953,7 @@ namespace DNDS::Runtime
             }
             try
             {
-                CheckAll(valid, _state->comm, "transfer access/stream preflight failed on a rank");
+                _state->Preflight(valid, "transfer access/stream preflight failed on a rank");
             }
             catch (...)
             {
@@ -1024,7 +1025,7 @@ namespace DNDS::Runtime
                     accesses.push_back({*buffer, AccessMode::Write});
             tracking->Submit(lane, accesses, [&](auto submission)
                              { op->checked = submission; begin(); }, [&](bool valid)
-                             { CheckAll(valid, _state->comm, "unordered checked MPI access on a rank"); });
+                             { _state->Preflight(valid, "unordered checked MPI access on a rank"); });
         }
         else
             begin();

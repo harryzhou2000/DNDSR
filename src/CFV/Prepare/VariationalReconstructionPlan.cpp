@@ -14,8 +14,8 @@ namespace DNDS::CFV
     {
         auto geometry = metrics._data;
         std::shared_ptr<Detail::ReconstructionData> data;
-        MPI::LocalStage(geometry->mesh->getMPI(), [&]
-                        {
+        geometry->communication->LocalStage([&]
+                                            {
             metrics.Validate();
             settings.Validate();
             DNDS_check_throw_info(settings.intOrder == geometry->intOrder, "VR quadrature differs from prepared metrics");

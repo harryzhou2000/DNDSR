@@ -54,7 +54,8 @@ int main(int argc, char **argv)
                                         { mesh->PrepareNativeTopology(); });
         C::Json input{{"defaults", {{"mesh", {{"dimension", 2}}}, {"equation", {{"transport", "NewtonianFourier"}, {"viscosity", .001}}}, {"numerics", {{"reconstruction", "variational"}, {"flux", "Roe"}, {"limiter", "none"}, {"faceFallback", false}, {"positivity", false}, {"viscousGradient", "polynomial"}, {"reconstructionIterations", 5}, {"reconstructionTolerance", 0}, {"cfv", {{"maxOrder", 3}, {"intOrder", 5}, {"SORInstead", false}, {"jacobiRelax", 1}, {"HQMWeights", true}}}}}, {"execution", {{"checkAccess", checked}, {"overlap", overlap}}}}}};
         // The timing switch controls both optional scheduling checks and the
-        // composed operator's extra failure agreements. Transfer safety stays on.
+        // composed operator's extra failure agreements, including Runtime halo
+        // preflight in current code. Historical report pins kept that preflight on.
         input["defaults"]["implicit"]["collectiveChecks"] = checked;
         if (extra)
             input["defaults"]["numerics"]["positivity"] = true;

@@ -20,16 +20,8 @@ namespace DNDS::Runtime
         ReadAccess _sourcePin;
         TransferOperation _operation;
         bool _committed = false;
-        MPI_Comm _comm = MPI_COMM_NULL;
         std::optional<RowTransferPlan> _routeOwner;
         std::exception_ptr _error;
-
-        static void CheckAll(bool valid, MPI_Comm comm, const char *message)
-        {
-            int all = valid;
-            MPI_Allreduce(MPI_IN_PLACE, &all, 1, MPI_INT, MPI_MIN, comm);
-            DNDS_check_throw_info(all, message);
-        }
 
     public:
         DynamicRowTransfer(RowTransferPlan route, ArrayStorage::Shared source,
@@ -38,7 +30,7 @@ namespace DNDS::Runtime
                            TransferOptions options = {TransferMode::Transient, {}, 0},
                            std::optional<Reducer> reducer = {}, ExecutionContext context = ExecutionContext::Host(),
                            TransferLayout destinationLayout = {})
-            : _comm(route.Communicator()), _routeOwner(route)
+            : _routeOwner(route)
         {
             bool valid = true;
             try
@@ -52,7 +44,7 @@ namespace DNDS::Runtime
             {
                 valid = false;
             }
-            CheckAll(valid, route.Communicator(), "dynamic transfer source reservation failed on a rank");
+            route.Context()->Preflight(valid, "dynamic transfer source reservation failed on a rank");
             PayloadPlan payload(route, _source->Layout(), schema, destinationLayout);
             try
             {
@@ -62,7 +54,7 @@ namespace DNDS::Runtime
             {
                 valid = false;
             }
-            CheckAll(valid, route.Communicator(), "dynamic transfer destination allocation failed on a rank");
+            route.Context()->Preflight(valid, "dynamic transfer destination allocation failed on a rank");
             auto binding = reducer ? payload.Bind(_source->Values(), _destination->Values(), std::move(*reducer), transport, options)
                                    : payload.Bind(_source->Values(), _destination->Values(), transport, options);
             _operation = binding.Begin(context);
@@ -114,7 +106,7 @@ namespace DNDS::Runtime
             {
                 _error = std::current_exception();
             }
-            CheckAll(!_error, _comm, "dynamic transfer failed; destination was not published");
+            _routeOwner->Context()->Preflight(!_error, "dynamic transfer failed; destination was not published");
             _committed = true;
             return std::move(_destination);
         }

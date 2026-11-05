@@ -27,7 +27,10 @@ TEST_CASE("Exchange routes arbitrary rows and transpose sums, retaining buffers"
         write.View<double>()[1] = 100 * rank + 2;
     }
     auto leaves = Buffer::Allocate(3 * sizeof(double));
-    ExchangePlan plan(MPI_COMM_WORLD, 2, {{(rank + 1) % size, 1}, {rank, 0}, {(rank + 1) % size, 1}});
+    // The lightweight facade inherits the policy while retaining its per-call
+    // payload protocol setup. Local buffer exclusion remains active.
+    auto communication = std::make_shared<CommunicationContext>(MPI_COMM_WORLD, false);
+    ExchangePlan plan(communication, 2, {{(rank + 1) % size, 1}, {rank, 0}, {(rank + 1) % size, 1}});
     auto op = plan.BeginCopy(roots, leaves, sizeof(double));
     CHECK_THROWS(roots.Write());
     CHECK_THROWS(leaves.Read());

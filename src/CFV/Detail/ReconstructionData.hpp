@@ -16,6 +16,7 @@ namespace DNDS::CFV::Detail
         ssp<Geom::UnstructuredMesh> mesh;
         Runtime::VersionStamp stamp;
         Geom::EntitySpace cells;
+        std::shared_ptr<Runtime::CommunicationContext> communication;
         Algebra::DofSpace dofs;
         std::optional<Runtime::RowTransferPlan> halo;
         mutable std::once_flag partitionOnce;
@@ -30,11 +31,11 @@ namespace DNDS::CFV::Detail
         // Face quadrature table: position[3], unit normal[3], weighted measure.
         Runtime::Array<real> faceQuadrature;
         Runtime::Array<index> faceOffsets;
-        FiniteVolumeData(ssp<Geom::UnstructuredMesh> m, int order, bool axis, std::shared_ptr<Runtime::CommunicationContext> communication)
+        FiniteVolumeData(ssp<Geom::UnstructuredMesh> m, int order, bool axis, std::shared_ptr<Runtime::CommunicationContext> context)
             : mesh(std::move(m)), stamp(mesh->versions.Stamp(Runtime::Change::Topology | Runtime::Change::Geometry |
                                                              Runtime::Change::Distribution | Runtime::Change::Layout)),
               cells(mesh->Entities(Geom::EntityKind::Cell)),
-              dofs(std::move(communication), cells.NumOwned(), cells.NumGhost(), "FV cells"),
+              communication(std::move(context)), dofs(communication, cells.NumOwned(), cells.NumGhost(), "FV cells"),
               dim(mesh->getDim()), intOrder(order), axisymmetric(axis) {}
     };
     struct ReconstructionData

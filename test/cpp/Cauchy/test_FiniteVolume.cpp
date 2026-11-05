@@ -16,6 +16,49 @@ namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
 namespace A = DNDS::Algebra;
 static DNDS::MPIInfo mpi;
+TEST_CASE("Cauchy collective switch reaches prepared halos without changing the P3 RHS")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 3);
+    std::vector<double> reference;
+    for (const bool checks : {true, false})
+    {
+        C::DomainSettings settings;
+        settings.implicit.collectiveChecks = checks;
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.reconstructionIterations = 3;
+        settings.numerics.limiter = "WBAP";
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        CHECK(fv.Metrics().Communication()->ChecksCollectivePreflight() == checks);
+        auto state = fv.Metrics().BuildField(5), result = fv.Metrics().BuildField(5);
+        {
+            auto write = state.Owned().Write();
+            for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            {
+                const auto center = fv.Metrics().GetCellCent(iCell);
+                const auto values = equation.Gas().Conservative({1 + .05 * std::sin(6.283185307179586 * center[0]), .3, -.1, .2, 1});
+                for (int j = 0; j < 5; ++j)
+                    write.View()(iCell, j) = values[j];
+            }
+        }
+        auto workspace = fv.BuildWorkspace(state);
+        R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateCPUStream();
+        fv.Evaluate(state, result, *workspace, engine, stream);
+        const auto read = result.Owned().Read();
+        for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+            {
+                const auto value = read.View()(iCell, j);
+                CHECK(std::isfinite(value));
+                if (checks)
+                    reference.push_back(value);
+                else
+                    CHECK(value == reference[size_t(iCell * 5 + j)]);
+            }
+    }
+}
 TEST_CASE("Semantic finite-volume dispatch preserves the trusted flow kernel and rejects an incompatible model before communication")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 8);

@@ -1119,8 +1119,11 @@ solve or an independent mathematical oracle; dedicated UTs supply those
 oracles. Fixed means do not imply settled finite-sweep reconstruction.
 PP and physical ODE/nonlinear controllers are outside this benchmark. The
 `checked` argument selects both scheduled-access checking and the linear
-wrapper's optional collective-error preflights; required shape/route checks,
-solve-entry agreement and numerical reductions remain enabled.
+wrapper's optional collective-error preflights. At the historical report pin,
+Runtime halo safety preflight remained enabled. The current executable also
+propagates `implicit.collectiveChecks` into prepared CFV/Runtime halos; do not
+merge timings across these definitions. Required setup protocols, solve-entry
+agreement and numerical reductions remain enabled.
 
 
 ## Method-owned buffers and completed halo publications
@@ -1157,9 +1160,13 @@ Extra halo audits are controlled by `execution.haloFreshnessChecks` (default
 `false`). They are also disabled by `implicit.collectiveChecks=false`, even
 when explicitly requested. This gates the extra Begin diagnostic collective
 and the post-exchange freshness audits; no new freshness reduction occurs by
-default. Mandatory transfer preflights remain: the companion folds its binding
-validity into the existing MPI check, so one invalid rank cannot leave peers
-posting requests. Completion still publishes the local version record. As with
+default. The same switch now reaches the Runtime communication context used by
+CFV halos. Enabled mode folds companion binding validity into existing MPI
+agreement. Disabled mode retains local validation and aborts the communicator
+on a rejected launch, rather than stranding peers after a rank-local exception.
+Routing/schema/binding-control agreements and numerical reductions stay on;
+scheduled access checks remain controlled independently by `execution.checkAccess`.
+Completion still publishes the local version record. As with
 other eager operations, callers remain responsible for common scheduling and
 producer readiness. The companion rejects CUDA until a stream-ready
 publication protocol is implemented. It introduces no output-halo refresh.

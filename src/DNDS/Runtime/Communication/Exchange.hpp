@@ -19,6 +19,8 @@ namespace DNDS::Runtime
     public:
         ExchangePlan(MPI_Comm communicator, size_t localRoots, const std::vector<RemoteRow> &leaves,
                      std::vector<VersionStamp> dependencies = {});
+        ExchangePlan(std::shared_ptr<CommunicationContext> context, size_t localRoots, const std::vector<RemoteRow> &leaves,
+                     std::vector<VersionStamp> dependencies = {});
         using Operation = TransferOperation;
         Operation BeginCopy(const Buffer &roots, Buffer &leaves, size_t rowBytes) const;
         Operation BeginAdd(const Buffer &leaves, Buffer &roots, size_t components) const;

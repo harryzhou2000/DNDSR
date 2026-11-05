@@ -154,7 +154,8 @@ namespace DNDS::CFV
         /// axisymmetric uses radius=y>=0 and measures r*dA/r*ds, without 2*pi.
         /// Equation source terms and cylindrical component connections remain
         /// with the equation adapter; this option changes integration only.
-        static FiniteVolumePlan ConstructMetrics(ssp<Geom::UnstructuredMesh> mesh, int intOrder = 5, bool axisymmetric = false);
+        static FiniteVolumePlan ConstructMetrics(ssp<Geom::UnstructuredMesh> mesh, int intOrder = 5, bool axisymmetric = false,
+                                                 bool collectivePreflight = true);
         void Validate() const;
         FiniteVolumeRead AcquireRead() const;
         index NumCell() const;
@@ -164,6 +165,9 @@ namespace DNDS::CFV
         bool Axisymmetric() const;
         const Geom::EntitySpace &Cells() const;
         const Algebra::DofSpace &Space() const;
+        /// Preparation/transfer policy shared by this immutable plan's halos.
+        /// Does not change mesh numbering, numerical collectives or access checks.
+        std::shared_ptr<Runtime::CommunicationContext> Communication() const;
         /// Lazily cached conservative cell-node-cell split, shared by copies
         /// and gradient/reconstruction consumers. Purely rank-local; no halo
         /// fetch or MPI is posted. Complete published node-star adjacency is

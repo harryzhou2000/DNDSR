@@ -202,40 +202,49 @@ namespace DNDS::Geom
 
     Runtime::RowTransferPlan EntitySpace::BuildRowTransferPlan() const
     {
-        // All ranks agree before route construction can enter its collectives.
-        int valid = Valid();
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _mpi.comm);
-        DNDS_check_throw_info(valid, "cannot build a row route from a stale entity space on a rank");
-        int kindRange[]{int(_kind), -int(_kind)};
-        MPI_Allreduce(MPI_IN_PLACE, kindRange, 2, MPI_INT, MPI_MIN, _mpi.comm);
-        DNDS_check_throw_info(kindRange[0] == -kindRange[1], "row route entity kind differs between ranks");
-        // The ghost map already contains the peer-grouped request/send order;
-        // rebuilding it through a generic request all-to-all repeats setup work
-        // for every relation and companion transferred through this route.
-        std::vector<std::vector<index>> send(size_t(_mpi.size)), receive(size_t(_mpi.size));
-        for (int peer = 0; peer < _mpi.size; ++peer)
-        {
-            const auto first = _ghostMap->ghostStart[size_t(peer)];
-            const auto end = _ghostMap->ghostStart[size_t(peer + 1)];
-            receive[size_t(peer)].reserve(size_t(end - first));
-            for (index row = first; row < end; ++row)
-                receive[size_t(peer)].push_back(row);
-
-            const auto pushFirst = _ghostMap->pushIndexStarts[size_t(peer)];
-            const auto pushEnd = _ghostMap->pushIndexStarts[size_t(peer + 1)];
-            send[size_t(peer)].reserve(size_t(pushEnd - pushFirst));
-            for (index slot = pushFirst; slot < pushEnd; ++slot)
+        return BuildRowTransferPlan(std::make_shared<Runtime::CommunicationContext>(_mpi.comm));
+    }
+    Runtime::RowTransferPlan EntitySpace::BuildRowTransferPlan(std::shared_ptr<Runtime::CommunicationContext> context) const
+    {
+        DNDS_check_throw_info(context, "entity-space row route needs a communication context");
+        std::vector<std::vector<index>> send, receive;
+        context->LocalStage([&]
+                            {
+            DNDS_check_throw_info(Valid(), "cannot build a row route from a stale entity space");
+            int comparison = MPI_UNEQUAL;
+            DNDS_check_throw_info(MPI_Comm_compare(_mpi.comm, context->Communicator(), &comparison) == MPI_SUCCESS &&
+                                      (comparison == MPI_IDENT || comparison == MPI_CONGRUENT),
+                                  "entity-space row route requires identical communicator rank order");
+            // Reuse the ghost map's peer correspondence; no row discovery or
+            // global-sized storage is needed for each payload route.
+            send.resize(size_t(_mpi.size));
+            receive.resize(size_t(_mpi.size));
+            for (int peer = 0; peer < _mpi.size; ++peer)
             {
-                MPI_int owner = -1;
-                index local = -1;
-                const auto global = _ghostMap->pushingIndexGlobal[size_t(slot)];
-                DNDS_check_throw_info(_global->search(global, owner, local) && owner == _mpi.rank,
-                                      "entity-space peer route contains a row outside the sending rank");
-                send[size_t(peer)].push_back(local);
-            }
-        }
-        auto context = std::make_shared<Runtime::CommunicationContext>(_mpi.comm);
-        return Runtime::RowTransferPlan::Known(std::move(context), size_t(_owned), size_t(_ghost),
+                const auto first = _ghostMap->ghostStart[size_t(peer)];
+                const auto end = _ghostMap->ghostStart[size_t(peer + 1)];
+                receive[size_t(peer)].reserve(size_t(end - first));
+                for (index row = first; row < end; ++row)
+                    receive[size_t(peer)].push_back(row);
+
+                const auto pushFirst = _ghostMap->pushIndexStarts[size_t(peer)];
+                const auto pushEnd = _ghostMap->pushIndexStarts[size_t(peer + 1)];
+                send[size_t(peer)].reserve(size_t(pushEnd - pushFirst));
+                for (index slot = pushFirst; slot < pushEnd; ++slot)
+                {
+                    MPI_int owner = -1;
+                    index local = -1;
+                    const auto global = _ghostMap->pushingIndexGlobal[size_t(slot)];
+                    DNDS_check_throw_info(_global->search(global, owner, local) && owner == _mpi.rank,
+                                          "entity-space peer route contains a row outside the sending rank");
+                    send[size_t(peer)].push_back(local);
+                }
+            } });
+        // Entity kind is a required protocol choice, independent of safety mode.
+        int kindRange[]{int(_kind), -int(_kind)};
+        MPI_Allreduce(MPI_IN_PLACE, kindRange, 2, MPI_INT, MPI_MIN, context->Communicator());
+        DNDS_check_throw_info(kindRange[0] == -kindRange[1], "row route entity kind differs between ranks");
+        return Runtime::RowTransferPlan::Known(std::move(context), _owned, _ghost,
                                                std::move(send), std::move(receive), {_stamp});
     }
 

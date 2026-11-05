@@ -111,6 +111,25 @@ pending conflicting checked reservation with an unchecked `BeginScheduled`.
 Use distinct matched tags for concurrently active bindings in a shared
 `CommunicationContext`. Transient requests change setup cost, not these rules.
 
+`CommunicationContext(comm, collectivePreflight=true)` agrees an immutable
+safety policy once at construction. Existing callers retain enabled behavior.
+With `false`, prepared MPI `Begin`, `BeginScheduled` and `BeginChecked` omit
+their safety-only reductions. Local lease, validity, readiness and checked
+ordering validation still run. A rejected local launch calls `MPI_Abort`:
+rank-asymmetric exception recovery without agreement could strand peers or
+publish incomplete state. Do not catch-and-continue such a distributed failure.
+Required routing/count/schema/binding-control and numerical collectives remain.
+Policy replacement requires a coordinated, drained preparation boundary.
+
+Pass the same policy context to `EntitySpace::BuildRowTransferPlan(context)`
+or a Runtime route constructor. Contexts selected during binding must have the
+same resolved mode on every rank; the existing binding-control agreement
+checks this before posting. CFV exposes `ConstructMetrics(...,
+collectivePreflight)` and shares that context through preparation and halos.
+Python uses `collective_preflight` in both constructors. The lightweight
+`ExchangePlan` accepts a context too, but still prepares payload protocol
+metadata per call; zero launch reductions does not mean zero setup collectives.
+
 Contexts support `MPI_COMM_SELF` and reordered split communicators. When a
 communicator does not carry `MPI_TAG_UB`, tag reservation uses the portable
 range 0–32767; it does not assume that every communicator inherits world-model

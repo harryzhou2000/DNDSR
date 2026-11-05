@@ -118,9 +118,63 @@ reduction. No other implementation checkout or MG/IV work was used.
 
 ## Still pending
 
-E1 and E2 implementation and their focused gates remain open, as do the bounded
+E1's remaining cold mesh-construction propagation and E2 implementation remain
+open, as do the bounded
 E3–E7 measurements, independent frozen Euler seam comparisons, selected scoped
 readability work, per-suite high-rank rationale/curation and the sanitizer
 ownership pass. Formatter default discovery now includes Cauchy and Physics;
 no repository-wide formatting was performed. Pending queue entries are not
 completed merely because neighboring fixes or test labels exist.
+
+## E1: prepared-transfer and FV policy
+
+Runtime communication contexts now agree an immutable `collectivePreflight`
+policy at construction, enabled by default. Prepared ordinary, scheduled and
+checked MPI starts inherit it; bindings also agree the selected effective mode
+in their existing control reduction. This prevents choosing individually valid
+contexts with inconsistent policies across ranks. The policy is stored in the
+binding, without a shared-owner lookup per launch. Changing policy requires a
+drained, coordinated preparation boundary.
+
+Disabled mode retains local access/readiness/version validation and aborts the
+communicator on rejected local preparation/launch instead of permitting an
+unsafe rank-asymmetric recovery. Required route/count/schema/control exchanges
+and numerical reductions remain. Dynamic transfer, the lightweight Exchange
+facade and explicit EntitySpace route preparation accept/inherit the context.
+The generic mechanism is shared; required NCCL setup agreement remains required.
+
+CFV metrics own the policy context, use it for local preparation/binding and
+pass it to the entity-space route builder. VR local preparation inherits it.
+Cauchy's existing `implicit.collectiveChecks` now reaches these halos; no
+second overlapping Cauchy switch was added. Scheduled-access checking remains
+independent. Historical phase-benchmark descriptions retain their old pinned
+meaning rather than relabeling earlier measurements.
+
+The completed 10-entry CPU batch passes in 20.03 s. Real MPI profiling-interface
+counts prove **0** launch reductions when disabled, versus **1** for ordinary/
+scheduled and **3** for checked starts when enabled. The compact fixture covers
+table/padded/CSR payloads, untouched padding, persistent/transient requests,
+empty owners, and reversed/split communicators at np1/2/4. A bounded two-rank
+subprocess confirms explicit off-mode abort. Constructor/binding mode mismatch
+checks reject collectively and permit a subsequent valid transfer. Existing
+transient and split-SOR checks pass. Cauchy's P3/WBAP RHS is bit-identical between
+on/off modes with checked CPU workers at np1/2; this is policy regression parity,
+not a new independent discretization oracle or a speedup measurement.
+
+The isolated cache initially selected host Python 3.14. Before runtime Python
+validation it was corrected to `/home/harry/projects/DNDSR/venv/bin/python`
+(3.12.3), matching headers/library, then the DNDS binding was rebuilt and installed
+into this checkout. A direct installed-component two-rank smoke checks the
+default/override property, native write leases and a strided direct payload;
+see [reproducer](plan53_validation/runtime_policy_smoke.py). This deliberately
+bypasses the Python package's eager imports of the other modules; it does not
+qualify the complete Python facade or CFV Python module. The first direct smoke
+incorrectly assumed the facade's slice monkeypatch was present; using the native
+write-lease API fixes that harness mismatch. No library defect or data corruption
+was inferred from it.
+
+Cold primary/topology/assembler preparation still has separate local-stage
+agreements outside the explicit EntitySpace context. Their policy propagation
+remains an E1 follow-up; the work above is not a claim that every mesh setup
+agreement has been removed. No CUDA acceptance, E2 storage-profile completion,
+or E3–E7 matched performance result is claimed.

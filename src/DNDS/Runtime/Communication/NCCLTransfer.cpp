@@ -28,12 +28,6 @@ namespace DNDS::Runtime
         {
             DNDS_check_throw_info(error == ncclSuccess, ncclGetErrorString(error));
         }
-        void CheckAll(bool valid, MPI_Comm comm, const char *message)
-        {
-            int all = valid;
-            MPI_Allreduce(MPI_IN_PLACE, &all, 1, MPI_INT, MPI_MIN, comm);
-            DNDS_check_throw_info(all, message);
-        }
         template <class T>
         Buffer Upload(const std::vector<T> &values, Device device)
         {
@@ -405,8 +399,8 @@ namespace DNDS::Runtime
         DNDS_check_throw_info(comm != MPI_COMM_NULL, "NCCL setup needs an MPI communicator");
         int count = 0;
         const auto status = cudaGetDeviceCount(&count);
-        CheckAll(status == cudaSuccess && device.space == MemorySpace::CUDA && device.ordinal >= 0 && device.ordinal < count,
-                 comm, "NCCL setup needs a valid rank-local CUDA device");
+        CommunicationDetail::RequireAll(status == cudaSuccess && device.space == MemorySpace::CUDA && device.ordinal >= 0 && device.ordinal < count,
+                                        comm, "NCCL setup needs a valid rank-local CUDA device");
         auto state = std::make_shared<State>();
         state->device = device;
         CheckCUDA(cudaSetDevice(device.ordinal));
@@ -416,7 +410,7 @@ namespace DNDS::Runtime
         MPI_Comm_size(comm, &size);
         ncclUniqueId identifier;
         const auto unique = rank ? ncclSuccess : ncclGetUniqueId(&identifier);
-        CheckAll(unique == ncclSuccess, comm, "NCCL communicator identifier failed");
+        CommunicationDetail::RequireAll(unique == ncclSuccess, comm, "NCCL communicator identifier failed");
         MPI_Bcast(&identifier, sizeof(identifier), MPI_BYTE, 0, comm);
         state->identity = identifier;
         CheckNCCL(ncclCommInitRank(&state->comm, size, identifier, rank));
@@ -443,7 +437,7 @@ namespace DNDS::Runtime
                      source.Bytes() <= size_t(INT64_MAX) && destination.Bytes() <= size_t(INT64_MAX) &&
                      source.Bytes() / extent == payload.source.Elements() && source.Bytes() % extent == 0 &&
                      destination.Bytes() / extent == payload.destination.Elements() && destination.Bytes() % extent == 0;
-        CheckAll(valid, payload.route.Communicator(), "invalid NCCL binding: context/tag, collision/reducer, schema, layout, placement or communicator");
+        CommunicationDetail::RequireAll(valid, payload.route.Communicator(), "invalid NCCL binding: context/tag, collision/reducer, schema, layout, placement or communicator");
         std::shared_ptr<State::Binding> binding;
         try
         {
@@ -454,7 +448,7 @@ namespace DNDS::Runtime
         {
             valid = false;
         }
-        CheckAll(valid, payload.route.Communicator(), "NCCL workspace preparation failed; Direct requires contiguous rows and a full schema");
+        CommunicationDetail::RequireAll(valid, payload.route.Communicator(), "NCCL workspace preparation failed; Direct requires contiguous rows and a full schema");
         return binding;
     }
 #else

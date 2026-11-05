@@ -79,7 +79,7 @@ namespace DNDS::CFV
             .def_readonly("rawCondition", &HardEigen::SVDInverseDiagnostics::rawCondition)
             .def_readonly("retainedCondition", &HardEigen::SVDInverseDiagnostics::retainedCondition);
         py::class_<FiniteVolumePlan>(m, "FiniteVolumePlan")
-            .def_static("ConstructMetrics", &FiniteVolumePlan::ConstructMetrics, py::arg("mesh"), py::arg("intOrder") = 5, py::arg("axisymmetric") = false,
+            .def_static("ConstructMetrics", &FiniteVolumePlan::ConstructMetrics, py::arg("mesh"), py::arg("intOrder") = 5, py::arg("axisymmetric") = false, py::arg("collective_preflight") = true,
                         "Collective CPU preparation. All ranks must call with matching settings.")
             .def("Validate", &FiniteVolumePlan::Validate)
             .def("NumCell", &FiniteVolumePlan::NumCell)

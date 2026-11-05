@@ -10,6 +10,7 @@ namespace DNDS::CFV
     using namespace Geom;
     using namespace Geom::Elem;
     const Algebra::DofSpace &FiniteVolumePlan::Space() const { return _data->dofs; }
+    std::shared_ptr<R::CommunicationContext> FiniteVolumePlan::Communication() const { return _data->communication; }
 
     void ReconstructionSettings::Validate() const
     {
@@ -28,15 +29,15 @@ namespace DNDS::CFV
             for (const auto weight : weights)
                 DNDS_check_throw_info(std::isfinite(weight) && weight >= 0, "invalid zone boundary derivative weight");
     }
-    FiniteVolumePlan FiniteVolumePlan::ConstructMetrics(ssp<UnstructuredMesh> mesh, int intOrder, bool axisymmetric)
+    FiniteVolumePlan FiniteVolumePlan::ConstructMetrics(ssp<UnstructuredMesh> mesh, int intOrder, bool axisymmetric, bool collectivePreflight)
     {
         DNDS_check_throw_info(mesh, "finite-volume metrics require a mesh");
         const auto mpi = mesh->getMPI();
-        auto communication = std::make_shared<R::CommunicationContext>(mpi.comm);
+        auto communication = std::make_shared<R::CommunicationContext>(mpi.comm, collectivePreflight);
         std::shared_ptr<Detail::FiniteVolumeData> data;
         // All local allocation/geometry failures agree before the halo collective.
-        MPI::LocalStage(mpi, [&]
-                        {
+        communication->LocalStage([&]
+                                  {
             DNDS_check_throw_info(intOrder >= 2 && intOrder <= INT_ORDER_MAX, "invalid FV integration order");
             auto read = mesh->AcquireRead(MeshReadRequirements::CellFlux());
             const auto view = read.HostView();
@@ -131,7 +132,7 @@ namespace DNDS::CFV
                     point(iPoint, 6) = det * quadrature.GetWeight(iG) * (axisymmetric ? position[1] : 1.);
                 }
             } });
-        data->halo.emplace(data->cells.BuildRowTransferPlan());
+        data->halo.emplace(data->cells.BuildRowTransferPlan(communication));
         return FiniteVolumePlan(std::move(data));
     }
     void FiniteVolumePlan::Validate() const
@@ -193,15 +194,15 @@ namespace DNDS::CFV
     }
     R::TransferBinding FiniteVolumePlan::BindHalo(FVField &field) const
     {
-        MPI::LocalStage(_data->mesh->getMPI(), [&]
-                        { ValidateField(field, field.Width()); });
+        _data->communication->LocalStage([&]
+                                         { ValidateField(field, field.Width()); });
         return R::PayloadPlan(*_data->halo, field.Owned().Layout(), field.Ghost().Layout(), R::ElementSchema::Arithmetic<real>())
             .Bind(field.Owned(), field.Ghost(), R::TransferTransport::Direct);
     }
     Algebra::DofHalo<> FiniteVolumePlan::BindTrackedHalo(FVField &field) const
     {
-        MPI::LocalStage(_data->mesh->getMPI(), [&]
-                        { ValidateField(field, field.Width()); });
+        _data->communication->LocalStage([&]
+                                         { ValidateField(field, field.Width()); });
         return Algebra::DofHalo<>(field, *_data->halo);
     }
     real FiniteVolumePlan::GetCellVol(index iCell) const

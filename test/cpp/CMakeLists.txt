@@ -334,6 +334,13 @@ dnds_add_mpi_test(serializer "DNDS/test_Serializer.cpp" "dnds")
 dnds_add_mpi_test(mpi "DNDS/test_MPI.cpp" "dnds")
 dnds_add_mpi_test(runtime_exchange "DNDS/test_RuntimeExchange.cpp" "dnds")
 dnds_add_mpi_test(runtime_row_transfer "DNDS/test_RuntimeRowTransfer.cpp" "dnds")
+if(Python_EXECUTABLE)
+    add_test(NAME dnds_runtime_preflight_off_failure_np2
+        COMMAND ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/check_preflight_failfast.py
+                --mpi ${MPIEXEC_EXECUTABLE} --exe $<TARGET_FILE:dnds_test_runtime_row_transfer>)
+    set_tests_properties(dnds_runtime_preflight_off_failure_np2 PROPERTIES TIMEOUT 25
+        PROCESSORS 2 ENVIRONMENT "OMP_NUM_THREADS=1;OMPI_MCA_rmaps_base_oversubscribe=1")
+endif()
 dnds_add_mpi_test(native_dof_algebra "DNDS/test_NativeDofAlgebra.cpp" "dnds")
 add_dependencies(dnds_unit_tests dnds_test_native_dof_algebra)
 dnds_add_mpi_test(runtime_transient "DNDS/test_RuntimeTransient.cpp" "dnds")
