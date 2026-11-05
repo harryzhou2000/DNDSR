@@ -3,6 +3,7 @@
 #include "Cauchy/Implicit/PositivityReduction.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include "DNDS/Runtime/Communication/CollectiveValidation.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -49,10 +50,8 @@ namespace DNDS::Cauchy
         template <class F>
         void Stage(F &&run) const
         {
-            if (settings.collectiveChecks)
-                MPI::LocalStage(mpi, std::forward<F>(run));
-            else
-                run();
+            R::CommunicationDetail::LocalStage(mpi.comm, settings.collectiveChecks,
+                                               std::forward<F>(run), "nonlinear local phase failed");
         }
     };
     NonlinearSolver::NonlinearSolver(const FiniteVolume &discrete, CFV::FVField &state, std::shared_ptr<FiniteVolume::Workspace> workspace,

@@ -453,7 +453,10 @@ native physical field in order, reuses the domain's row mapping, and coordinates
 its own failures. Callers keep field handles/layouts and the matrix stable,
 release debug views, and retain MPI owners on the controller. Per-kernel
 `collectiveChecks=false` is caller-ordered eager execution; setup and solve-entry
-checks remain collective. This is synchronous CPU orchestration, not a queued
+checks remain collective. Optional local linear/nonlinear/multigrid phases
+omit successful safety agreement but abort on local failure before more MPI.
+Candidate acceptance and numerical norms remain collective. Off mode does not
+offer a recoverable rank-local retry. This is synchronous CPU orchestration, not a queued
 CUDA implementation.
 
 ```text

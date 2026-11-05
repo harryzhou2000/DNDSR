@@ -23,8 +23,10 @@ namespace DNDS::Cauchy
     {
         bool overlap = true;
         /// Checked mode coordinates local kernel failures before more MPI.
-        /// False is caller-ordered eager mode: callers own distributed failure
-        /// handling. Constructor/control and solve-entry agreement stay enabled.
+        /// False omits successful local-phase agreement and aborts on a local
+        /// phase failure before peers can strand in MPI. Callers still own
+        /// matching operation order. Constructor/control, solve-entry and
+        /// numerical acceptance agreement stay enabled in either mode.
         bool collectiveChecks = true;
     };
     /// Domain-local CPU linear orchestration. Owns reusable native vectors and

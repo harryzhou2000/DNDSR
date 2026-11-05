@@ -5,6 +5,7 @@
 #include "Cauchy/Physics/EquationPositivity.hpp"
 #include "Cauchy/Physics/EquationRANS.hpp"
 #include "Cauchy/Implicit/PositivityReduction.hpp"
+#include "DNDS/Runtime/Communication/CollectiveValidation.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -74,10 +75,8 @@ namespace DNDS::Cauchy
         template <class F>
         void Stage(F &&run) const
         {
-            if (settings.collectiveChecks)
-                MPI::LocalStage(mpi, std::forward<F>(run));
-            else
-                run();
+            R::CommunicationDetail::LocalStage(mpi.comm, settings.collectiveChecks,
+                                               std::forward<F>(run), "equation nonlinear local phase failed");
         }
         void PrepareLinear(const EquationDofs &state, bool overlap)
         {

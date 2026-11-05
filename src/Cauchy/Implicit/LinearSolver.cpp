@@ -2,6 +2,7 @@
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include "DNDS/Runtime/Communication/CollectiveValidation.hpp"
 #include <array>
 #include <optional>
 #include <utility>
@@ -138,10 +139,8 @@ namespace DNDS::Cauchy
             template <class F>
             void Stage(F &&run) const
             {
-                if (execution.collectiveChecks)
-                    MPI::LocalStage(mpi, std::forward<F>(run));
-                else
-                    run();
+                R::CommunicationDetail::LocalStage(mpi.comm, execution.collectiveChecks,
+                                                   std::forward<F>(run), "linear local phase failed");
             }
             Input &Halo(Field &field)
             {

@@ -69,6 +69,9 @@ namespace DNDS::Cauchy
     /// independent solvers. The engine is borrowed: it must remain alive at its
     /// original address through all solver/hierarchy copies and queued work.
     /// Drain work before destroying the final owner; do not move a bound engine.
+    /// Optional local phases omit successful safety agreement when checks are
+    /// disabled and abort on failure. Solve-entry, numerical norms and candidate
+    /// acceptance remain coordinated; off mode does not permit rank-local retry.
     class NonlinearSolver
     {
         struct Data;
@@ -136,6 +139,8 @@ namespace DNDS::Cauchy
     /// Copies share mutable implementation/workspace state. The borrowed engine
     /// must outlive every solver/hierarchy copy and queued operation at a stable
     /// address. Drain work before destroying the final owner; do not move it.
+    /// Optional local-phase failures follow the flow5 adapter's same policy:
+    /// off mode aborts; candidate acceptance and solve-entry remain coordinated.
     class EquationNonlinearSolver
     {
         struct Data;

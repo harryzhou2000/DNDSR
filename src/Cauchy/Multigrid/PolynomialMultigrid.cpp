@@ -3,6 +3,7 @@
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Solver/FAS.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include "DNDS/Runtime/Communication/CollectiveValidation.hpp"
 #include <tuple>
 
 namespace DNDS::Cauchy
@@ -198,10 +199,8 @@ namespace DNDS::Cauchy
                         for (index iCell = 0; iCell < source.RowCount(); ++iCell)
                             for (index j = 0; j < width; ++j) destination(iCell, j) = source(iCell, j); });
                 };
-                if (collectiveChecks)
-                    MPI::LocalStage(mpi, run);
-                else
-                    run();
+                R::CommunicationDetail::LocalStage(mpi.comm, collectiveChecks, run,
+                                                   "polynomial multigrid identity transfer failed");
             }
             struct Coarse
             {
@@ -282,10 +281,8 @@ namespace DNDS::Cauchy
                                                 Multigrid::FASCycleSettings{control.preSmooth, control.postSmooth, control.coarseSmooth, control.updateComponents},
                                                 [this](const auto &run)
                                                 {
-                                                    if (settings.collectiveChecks)
-                                                        MPI::LocalStage(mpi, run);
-                                                    else
-                                                        run();
+                                                    R::CommunicationDetail::LocalStage(mpi.comm, settings.collectiveChecks, run,
+                                                                                       "polynomial multigrid local phase failed");
                                                 });
             }
             void Build(const ssp<Geom::UnstructuredMesh> &mesh, R::EagerEngine &engine, const R::ExecutionStream &stream,

@@ -709,3 +709,31 @@ distinguishes vector RHS fields from matrix fields explicitly. All **22/22**
 tooling tests pass (final rerun2.984s), including its two critical verifier regressions.
 The latest E7 job12442096 check remains PENDING(Priority), no assigned node,
 runtime00:00:00 and no declared output logs; it is left queued unchanged.
+
+## E1 implicit local-phase failure handling
+
+The flow5 and logical-equation nonlinear local stages, shared linear driver,
+pMG identity transfers and generic cycle-algebra callback now use the same
+Runtime local-stage helper. Previously their disabled branch called the action
+directly, allowing a rank-local exception while another rank could enter its
+next transfer. Successful off-mode phases still have zero safety agreement;
+rejected phases now abort on their domain communicator. Enabled mode retains
+coordinated originating exceptions. These checks remain outside cell loops.
+
+Required constructor/control/schema and solve-entry protocols remain unchanged.
+Candidate admissibility/frozen-component acceptance stays collective before
+bound-state publication, as do all numerical norms and convergence decisions.
+This does not alter stationary scans, matrix factors, ODE/FAS mathematics,
+reconstruction order or the default checked behavior. Public linear/nonlinear
+contracts and the implicit/state guides now distinguish optional fail-fast
+phases from recoverable required acceptance checks.
+
+All **12/12** nonlinear, whole-equation FV, linear-driver and polynomial-MG
+CTest registrations pass at np1/2/4 (**72.19s**). Existing manufactured dense/
+nonlinear targets, separate/permuted mixture storage, checked/unchecked modes,
+worker execution, source immutability and rejected-candidate invariants remain.
+No negative-case matrix or physical MG/IV experiment was added or touched.
+The common Runtime failure helper itself is unchanged; its earlier bounded
+off-mode abort test remains the fail-fast implementation gate. Remaining E1
+work is the archive/serializer/compatibility and bare-map classification, plus
+any separately identified cold wrapper; this phase alone does not close E1.

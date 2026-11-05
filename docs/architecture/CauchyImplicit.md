@@ -279,8 +279,14 @@ no temporal coarsening or nested stage-convergence loop is introduced.
 `implicit.collectiveChecks` also controls the optional agreement around local
 cycle algebra and identity copies. With it disabled, those operations perform
 no collective; required stage-entry, transfer and numerical norm protocols are
-unchanged. Callers then own coordinated failure handling, as for other eager
-equation operators. Shape/binding checks remain local and outside cell loops.
+unchanged. Optional local phases in linear/nonlinear solves, identity transfers
+and cycle algebra share Runtime's failure policy: enabled mode coordinates a
+recoverable exception; disabled mode aborts on local rejection before peers can
+strand in later MPI. A successful off-mode phase has no replacement handshake.
+Callers still match all operation order and may not recover/retry rank-locally.
+Candidate admissibility is a required numerical acceptance decision, not an
+optional diagnostic; it remains coordinated before any bound-state write.
+Shape/binding checks stay outside cell loops and no kernel arithmetic changes.
 
 Direct nonlinear users can select the same behavior with
 `NonlinearSolveControl::updateComponents`. Selection is validated and agreed in
@@ -532,8 +538,9 @@ All domain ranks construct/call the solver together with agreed controls.
 Callers serialize access, release conflicting debug/Python views, and bind each
 input to the intended entity ghost mapping. Checked execution coordinates local
 kernel errors before more MPI; disabling those checks is caller-ordered eager
-execution and transfers distributed failure handling to the caller. Control and
-solve-entry checks remain collective. A preflight rejection is reusable; a
+execution with fail-fast abort on local phase errors. Callers retain matching
+submission order. Control and solve-entry checks remain collective. A coordinated
+preflight rejection is reusable; a
 failure after iteration starts invalidates that workspace for reuse. Reports
 distinguish convergence, finite iteration limits and unusable breakdowns. The
 borrowed solution changes at the next solve; it cannot serve as that solve's RHS.
