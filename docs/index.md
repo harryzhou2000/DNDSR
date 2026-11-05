@@ -36,6 +36,8 @@ The [Cauchy positivity policy](architecture/CauchyPositivity.md) specifies
 thermal constraints, component scopes and preserved Euler repair ordering.
 The [Cauchy audit fix record](dev/cauchy_audit_fix.md) tracks the shared SST
 blend correction and independent RANS reconstruction positivity policy.
+The [plan 53 execution ledger](dev/plan53_audit_execution.md) reconciles those
+commits with the remaining programming audit, UT consolidation and enhancements.
 The initial CPU single-domain flow solver uses native CFV P3/WBAP; numerical
 case qualification and implicit/physical multi-domain execution remain separate
 gates. The placement foundation mock alone is not a fluid validation.

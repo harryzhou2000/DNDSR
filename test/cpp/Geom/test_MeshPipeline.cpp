@@ -7,6 +7,8 @@
 #include "Geom/Connectivity/NativeMeshTopology.hpp"
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "DNDS/Runtime/Array/RowBuilder.hpp"
+#include "DNDS/MPI/CollectiveStage.hpp"
+#include <cstdlib>
 #include <filesystem>
 #include <set>
 #include <map>
@@ -104,7 +106,14 @@ static ssp<UnstructuredMesh> ReadConfigured(const MeshConfig &cfg, int layers = 
     state = NativeMeshPreparation::Partition(*state, g_mpi, p).state;
     return UnstructuredMesh::FromNative(g_mpi, Complete(std::move(state), layers));
 }
-static ssp<UnstructuredMesh> nativeBoundarySource(int id, const MeshConfig &) { return g_full[id]; }
+static ssp<UnstructuredMesh> buildFullMesh(int, const MeshConfig &, int);
+static ssp<UnstructuredMesh> FullMesh(int id)
+{
+    if (!g_full[id])
+        g_full[id] = buildFullMesh(id, g_configs[id], 1);
+    return g_full[id];
+}
+static ssp<UnstructuredMesh> nativeBoundarySource(int id, const MeshConfig &) { return FullMesh(id); }
 static ssp<UnstructuredMesh> buildFullMesh(int, const MeshConfig &cfg, int parts = 1)
 {
     auto mesh = ReadConfigured(cfg);
@@ -232,25 +241,20 @@ static void Roundtrip(UnstructuredMesh &mesh, std::initializer_list<MeshRelation
             continue;                         \
         CAPTURE(_ci);                         \
         const auto &cfg = g_configs[_ci];     \
-        auto m = g_full[_ci];                 \
-        SUBCASE(cfg.name) { __VA_ARGS__ }     \
+        SUBCASE(cfg.name)                     \
+        {                                     \
+            auto m = FullMesh(_ci);           \
+            __VA_ARGS__                       \
+        }                                     \
     }
 int main(int argc, char **argv)
 {
-    MPI_Init(&argc, &argv);
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+        return 1;
     g_mpi.setWorld();
 
-    // Build one full-pipeline mesh per config.
-    for (int ic = 0; ic < N_CONFIGS; ic++)
-    {
-        // Ball2 (index 4) is only tested with np=8 — skip the expensive
-        // build at other rank counts to avoid wasting ~60s on serial
-        // read+partition of a 958K-cell 3D mesh that no test will use.
-        if (ic == 4 && g_mpi.size != 8)
-            continue;
-        g_full[ic] = buildFullMesh(ic, g_configs[ic]);
-    }
-
+    // Fixtures are created inside selected test/subcase bodies. Doctest
+    // filtering must not trigger unrelated NACA or million-cell Ball2 imports.
     doctest::Context ctx;
     ctx.applyCommandLine(argc, argv);
     int res = ctx.run();
@@ -258,7 +262,7 @@ int main(int argc, char **argv)
     for (auto &m : g_full)
         m.reset();
     g_edges.reset();
-    MPI_Finalize();
+    DNDS::MPI::Finalize();
     return res;
 }
 
@@ -352,7 +356,7 @@ static std::map<I, std::set<I>> LocalNodeStars(const UnstructuredMeshView &v, co
             result[nodes.LocalToGlobal(node)].insert(cells.LocalToGlobal(cell));
     return result;
 }
-TEST_CASE("Benchmark: native inverse compose and face topology with verified results")
+TEST_CASE("Native inverse compose and face topology match independent incidences")
 {
     const auto &cfg = g_configs[2];
     AutoAppendName2ID names;
@@ -367,15 +371,29 @@ TEST_CASE("Benchmark: native inverse compose and face topology with verified res
     auto source = NativeMeshAssembler::Build(g_mpi, std::move(owned), recipe);
     auto sourceMesh = UnstructuredMesh::FromNative(g_mpi, source);
     REQUIRE(sourceMesh->NumCellGlobal() == 20816);
+    int repetitions = 1;
+    DNDS::MPI::LocalStage(g_mpi, [&]
+                          {
+        if (const auto *text = std::getenv("DNDS_TEST_TOPOLOGY_REPETITIONS"))
+            repetitions = std::stoi(text);
+        DNDS_check_throw_info(repetitions > 0 && repetitions <= 32, "topology benchmark repetitions must be in 1..32"); });
+    int range[2]{repetitions, -repetitions};
+    MPI_Allreduce(MPI_IN_PLACE, range, 2, MPI_INT, MPI_MIN, g_mpi.comm);
+    REQUIRE(range[0] == -range[1]);
+    const auto clock = [&]
+    {
+        if (repetitions == 1)
+            return 0.;
+        MPI_Barrier(g_mpi.comm);
+        return MPI_Wtime();
+    };
     double inverseTime = 0, composeTime = 0, topologyTime = 0;
-    for (int run = 0; run < 3; ++run)
+    for (int run = 0; run < repetitions; ++run)
     {
         auto cone = sourceMesh->ReadNativeRelation(Adj::Cell2Node);
-        MPI_Barrier(g_mpi.comm);
-        const auto t0 = MPI_Wtime();
+        const auto t0 = clock();
         auto inverse = AdjacencyRegistry::Inverse(cone, g_mpi);
-        MPI_Barrier(g_mpi.comm);
-        inverseTime += MPI_Wtime() - t0;
+        inverseTime += clock() - t0;
         auto complete = inverse.WithGhostRows(EntityGhostMapping(source->Entities(EntityKind::Node)));
         auto inverseRead = inverse.Read();
         auto retained = sourceMesh->AcquireRead();
@@ -384,11 +402,9 @@ TEST_CASE("Benchmark: native inverse compose and face topology with verified res
         const auto stars = LocalNodeStars(v, cells, nodes);
         for (I node = 0; node < nodes.NumOwned(); ++node)
             CHECK(Set(inverseRead.GlobalRow(node)) == stars.at(nodes.LocalToGlobal(node)));
-        MPI_Barrier(g_mpi.comm);
-        const auto t1 = MPI_Wtime();
+        const auto t1 = clock();
         auto adjacency = AdjacencyRegistry::Compose(cone, complete.Read(), true);
-        MPI_Barrier(g_mpi.comm);
-        composeTime += MPI_Wtime() - t1;
+        composeTime += clock() - t1;
         auto adjacencyRead = adjacency.Read();
         for (I cell = 0; cell < cells.NumOwned(); ++cell)
         {
@@ -401,20 +417,22 @@ TEST_CASE("Benchmark: native inverse compose and face topology with verified res
             expected.erase(cells.LocalToGlobal(cell));
             CHECK(Set(adjacencyRead.GlobalRow(cell)) == expected);
         }
-        MPI_Barrier(g_mpi.comm);
-        const auto t2 = MPI_Wtime();
+        const auto t2 = clock();
         auto topology = PrepareNativeMeshTopology(*source, g_mpi, true, false);
-        MPI_Barrier(g_mpi.comm);
-        topologyTime += MPI_Wtime() - t2;
+        topologyTime += clock() - t2;
         CHECK(topology->NumGlobal(EntityKind::Cell) == 20816);
         CHECK(topology->NumGlobal(EntityKind::Face) > 0);
         auto full = UnstructuredMesh::FromNative(g_mpi, Complete(topology));
         FaceIncidence(*full);
     }
-    for (auto &elapsed : std::array<std::reference_wrapper<double>, 3>{inverseTime, composeTime, topologyTime})
-        MPI_Allreduce(MPI_IN_PLACE, &elapsed.get(), 1, MPI_DOUBLE, MPI_MAX, g_mpi.comm);
-    if (g_mpi.rank == 0)
-        std::cout << "Native setup mean over 3 runs: inverse " << inverseTime / 3 << " compose " << composeTime / 3 << " face topology " << topologyTime / 3 << std::endl;
+    if (repetitions > 1)
+    {
+        for (auto &elapsed : std::array<std::reference_wrapper<double>, 3>{inverseTime, composeTime, topologyTime})
+            MPI_Allreduce(MPI_IN_PLACE, &elapsed.get(), 1, MPI_DOUBLE, MPI_MAX, g_mpi.comm);
+        if (g_mpi.rank == 0)
+            std::cout << "Native setup mean over " << repetitions << " runs: inverse " << inverseTime / repetitions
+                      << " compose " << composeTime / repetitions << " face topology " << topologyTime / repetitions << std::endl;
+    }
 }
 TEST_CASE("N2CB: every owned node has at least one adjacent cell"){FOR_EACH_MESH_CONFIG({auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();for(I node=0;node<v.NumNode();++node)CHECK(!v.Relation(MeshRelation::NodeCells,node).empty()); })} TEST_CASE("N2CB: owned node stars match independent local cone incidence"){
     FOR_EACH_MESH_CONFIG({auto r=m->AcquireRead(FullRequirements());auto v=r.HostView();const auto cells=m->Entities(EntityKind::Cell),nodes=m->Entities(EntityKind::Node);const auto stars=LocalNodeStars(v,cells,nodes);
@@ -493,7 +511,7 @@ TEST_CASE("Ball2: mixed 3D element types")
     if (g_mpi.size != 8)
         return;
 
-    auto m = g_full[4]; // Ball2 is index 4
+    auto m = FullMesh(4); // Ball2 is index 4
     DNDS_assert(m != nullptr);
 
     // Count element types locally

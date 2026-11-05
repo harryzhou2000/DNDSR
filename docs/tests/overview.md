@@ -11,14 +11,18 @@ to verify parallel correctness.
 
 ## Module Test Pages
 
-| Module | Page | C++ tests | Python tests | Test cases |
-|---|---|---|---|---|---|
-| **DNDS** (core) | @ref dnds_unit_tests | 8 executables | 1 file (9 tests) | 249 |
-| **Geom** | @ref geom_unit_tests | 9 executables | 1 file (2 tests) | 193 |
-| **CFV** | @ref cfv_unit_tests | 4 executables | 5 files (43 tests) | 67 |
-| **Euler** | @ref euler_unit_tests | 4 executables | 2 files (4 tests) | 62 |
-| **Solver** | @ref solver_unit_tests | 4 executables | — | 29 |
-| | | **29 executables** | **58 tests** | **600** |
+| Module | Page | Aggregate target | Python suite |
+|---|---|---|---|
+| DNDS/Runtime/Algebra | @ref dnds_unit_tests | `dnds_unit_tests` | `test/DNDS` |
+| Geom | @ref geom_unit_tests | `geom_unit_tests` | `test/Geom` |
+| CFV | @ref cfv_unit_tests | `cfv_unit_tests` | `test/CFV` |
+| Euler/shared Physics | @ref euler_unit_tests | `euler_unit_tests` | `test/Euler` |
+| Solver | @ref solver_unit_tests | `solver_unit_tests` | — |
+| Cauchy | [audit execution](../dev/plan53_audit_execution.md) | `cauchy_unit_tests` | `test/Cauchy` |
+
+Executable/registration counts depend on CUDA, Cantera, Python and configured
+MPI sizes. Inspect the configured suite with `ctest -N` or
+`ctest --show-only=json-v1`; historical assertion totals are not a coverage gate.
 
 ## Quick Start
 
@@ -30,7 +34,7 @@ cmake -B build -DDNDS_BUILD_TESTS=ON
 cmake --build build -t all_unit_tests -j8
 
 # 3. Run the full C++ test suite
-ctest --test-dir build --output-on-failure
+ctest --test-dir build -L cpp --output-on-failure
 
 # 4. Run Python tests (requires pybind11 shared libraries)
 cmake --build build -t dnds_pybind11 geom_pybind11 cfv_pybind11 eulerP_pybind11 -j32
@@ -48,9 +52,40 @@ PYTHONPATH=python pytest test/ -v
 | `cfv_unit_tests` | All CFV test executables |
 | `euler_unit_tests` | All Euler test executables |
 | `solver_unit_tests` | All Solver test executables |
+| `cauchy_unit_tests` | All Cauchy test executables and frontend |
 | `all_unit_tests` | All of the above |
 
-All test executables are `EXCLUDE_FROM_ALL` and must be built explicitly.
+Test executables are `EXCLUDE_FROM_ALL` and must be built explicitly.
+Registration helpers record their targets; configuration rejects one that is
+not reachable through `all_unit_tests`. Tooling tests exercise transitive
+aggregate coverage and a deliberately missing dependency without compiling C++.
+
+## Execution tiers and Python ownership
+
+C++ registrations have `cpp`, module (`dnds`, `geom`, `cfv`, `euler`, `solver`,
+`cauchy`) and `routine`/`integration` labels. `mpi-high` identifies np4/8;
+these ranks remain registered. Use `ctest -L routine -LE mpi-high` for a bounded
+np1/2 contract pass, or `ctest -L integration` for retained large-mesh and golden
+numerical tests. This classification is not a measured whole-suite time budget.
+
+The 3D CFV binary has a generated 64-cell constant/halo contract and a separate
+32^3 periodic golden/convergence/order registration. Mesh pipeline/conversion
+fixtures are lazy, so doctest `--count`, test and subcase filters do not import
+unselected meshes. The realistic NACA/Ball2 suites remain integration tests;
+existing small native smoothing tests retain independent Hermite boundary and
+interior constraints in the routine tier. No large numerical tolerance or
+iteration cap was reduced.
+
+The topology-incidence integration case runs once by default. Repeated timing
+is opt-in through `geom_benchmark_topology_np2`, or
+`DNDS_TEST_TOPOLOGY_REPETITIONS=3 mpiexec -np N geom_test_mesh_pipeline
+--test-case="Native inverse compose and face topology match independent incidences"`.
+Use the runner's normal allocation and affinity policy for measurements.
+
+CI excludes the CTest `python` label because its complete serial pytest step
+owns extension coverage; explicit two-rank Runtime Python integration remains
+separate. Standalone CTest users can still run the serial Python registrations
+after building and installing extensions. `harness_tooling` needs no extensions.
 
 ## MPI Test Registration
 

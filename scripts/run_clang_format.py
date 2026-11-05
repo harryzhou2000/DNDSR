@@ -33,7 +33,7 @@ SCRIPT_PATH = Path(__file__).resolve()
 SCRIPTS_DIR = SCRIPT_PATH.parent
 PROJECT_ROOT = SCRIPTS_DIR.parent
 
-DEFAULT_MODULES = ("DNDS", "Solver", "Geom", "CFV", "Euler", "EulerP")
+DEFAULT_MODULES = ("DNDS", "Solver", "Geom", "CFV", "Euler", "EulerP", "Cauchy", "Physics")
 DEFAULT_ROOTS = ("src", "app", "test/cpp")
 
 FORMAT_EXTS = (

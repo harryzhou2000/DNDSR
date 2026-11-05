@@ -20,6 +20,7 @@
 
 #include "CFV/Legacy/VariationalReconstruction.hpp"
 #include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
+#include "ReconstructionFixture.hpp"
 
 #include <array>
 #include <cmath>
@@ -146,6 +147,12 @@ static tVR::TFBoundary<g_nv> g_zeroBC =
 // Core: run reconstruction and measure L1 error at quadrature points,
 // normalized by domain volume.
 // ===================================================================
+struct ReconstructionRun3D
+{
+    int iterations = 0;
+    DNDS::real lastUpdate = veryLargeReal;
+};
+
 static DNDS::real runTest3D(
     ssp<tVR> vr,
     RecMethod3D method,
@@ -153,8 +160,11 @@ static DNDS::real runTest3D(
     const tVR::TFBoundary<g_nv> &bc,
     int maxIters,
     DNDS::real convTol,
-    bool printProgress)
+    bool printProgress,
+    ReconstructionRun3D *stats = nullptr)
 {
+    if (stats)
+        *stats = {};
     auto mesh = vr->mesh;
 
     CFV::tUDof<g_nv> u;
@@ -232,6 +242,8 @@ static DNDS::real runTest3D(
             uRec.trans.waitPersistentPull();
 
             lastInc = incGlobal;
+            if (stats)
+                *stats = {iter + 1, incGlobal};
             if (printProgress && g_mpi.rank == 0 && (iter < 5 || (iter + 1) % 20 == 0))
                 std::cout << "    iter " << iter + 1 << " inc = "
                           << std::scientific << incGlobal << std::endl;
@@ -273,28 +285,27 @@ static DNDS::real runTest3D(
 // Prebuilt mesh
 // ===================================================================
 static ssp<UnstructuredMesh> g_mesh3d;
+static ssp<UnstructuredMesh> LargeMesh()
+{
+    // Laziness matters: doctest filters and the small contract registration
+    // must not import/partition the 32^3 integration fixture.
+    if (!g_mesh3d)
+        g_mesh3d = buildMesh3D("Uniform32_3D_Periodic.cgns", 1.0, 1.0, 1.0);
+    return g_mesh3d;
+}
 
 int main(int argc, char **argv)
 {
-    MPI_Init(&argc, &argv);
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+        return 1;
     g_mpi.setWorld();
-
-    if (g_mpi.rank == 0)
-        std::cout << "=== Building 3D mesh ===" << std::endl;
-
-    // Uniform32_3D_Periodic: [0,1]^3 periodic hex mesh, 32768 cells
-    g_mesh3d = buildMesh3D("Uniform32_3D_Periodic.cgns", 1.0, 1.0, 1.0);
-
-    if (g_mpi.rank == 0)
-        std::cout << "=== 3D mesh built, nCellGlobal="
-                  << g_mesh3d->NumCellGlobal() << " ===" << std::endl;
 
     doctest::Context ctx;
     ctx.applyCommandLine(argc, argv);
     int res = ctx.run();
 
     g_mesh3d.reset();
-    MPI_Finalize();
+    DNDS::MPI::Finalize();
     return res;
 }
 
@@ -320,9 +331,9 @@ static constexpr DNDS::real GOLDEN_NOT_ACQUIRED = 1e300;
 // CONSTANT EXACTNESS: all methods should reproduce a constant exactly
 // ===================================================================
 
-TEST_CASE("3D: constant exactness with GaussGreen")
+TEST_CASE("3D: constant exactness with GaussGreen" * doctest::test_suite("integration"))
 {
-    auto vr = buildVR3D(g_mesh3d, RecMethod3D::GaussGreen);
+    auto vr = buildVR3D(LargeMesh(), RecMethod3D::GaussGreen);
     ScalarFunc3D f = [](const tPoint &)
     { return 1.0; };
     DNDS::real err = runTest3D(vr, RecMethod3D::GaussGreen, f, g_zeroBC, 1, 0, false);
@@ -331,9 +342,9 @@ TEST_CASE("3D: constant exactness with GaussGreen")
     CHECK(err < 1e-12);
 }
 
-TEST_CASE("3D static reconstruction mask is exchanged and survives GG and VR updates")
+TEST_CASE("3D static reconstruction mask is exchanged and survives GG and VR updates" * doctest::test_suite("integration"))
 {
-    auto vr = buildVR3D(g_mesh3d, RecMethod3D::VFV_P2_HQM);
+    auto vr = buildVR3D(LargeMesh(), RecMethod3D::VFV_P2_HQM);
     CFV::tUDof<1> u, mask;
     std::vector<DNDS::index> selectedCells;
     CFV::tURec<1> rec, scratch;
@@ -341,7 +352,7 @@ TEST_CASE("3D static reconstruction mask is exchanged and survives GG and VR upd
     vr->BuildUDof(mask, 1);
     vr->BuildURec(rec, 1);
     vr->BuildURec(scratch, 1);
-    for (DNDS::index i = 0; i < g_mesh3d->NumCell(); ++i)
+    for (DNDS::index i = 0; i < LargeMesh()->NumCell(); ++i)
     {
         auto p = vr->GetCellBary(i);
         mask[i](0) = p(0) > 0.6 && p(2) < 0.4;
@@ -374,9 +385,9 @@ TEST_CASE("3D static reconstruction mask is exchanged and survives GG and VR upd
             CHECK(rec[i].isZero(0));
 }
 
-TEST_CASE("3D: constant exactness with VFV_P1_HQM")
+TEST_CASE("3D: constant exactness with VFV_P1_HQM" * doctest::test_suite("integration"))
 {
-    auto vr = buildVR3D(g_mesh3d, RecMethod3D::VFV_P1_HQM);
+    auto vr = buildVR3D(LargeMesh(), RecMethod3D::VFV_P1_HQM);
     ScalarFunc3D f = [](const tPoint &)
     { return 1.0; };
     DNDS::real err = runTest3D(vr, RecMethod3D::VFV_P1_HQM, f, g_zeroBC, 100, 1e-15, false);
@@ -385,9 +396,9 @@ TEST_CASE("3D: constant exactness with VFV_P1_HQM")
     CHECK(err < 1e-12);
 }
 
-TEST_CASE("3D: constant exactness with VFV_P2_HQM")
+TEST_CASE("3D: constant exactness with VFV_P2_HQM" * doctest::test_suite("integration"))
 {
-    auto vr = buildVR3D(g_mesh3d, RecMethod3D::VFV_P2_HQM);
+    auto vr = buildVR3D(LargeMesh(), RecMethod3D::VFV_P2_HQM);
     ScalarFunc3D f = [](const tPoint &)
     { return 1.0; };
     DNDS::real err = runTest3D(vr, RecMethod3D::VFV_P2_HQM, f, g_zeroBC, 200, 1e-15, false);
@@ -445,127 +456,69 @@ static Test3DCase g_3dTests[] = {
 
 static const int g_n3dTests = sizeof(g_3dTests) / sizeof(g_3dTests[0]);
 
-TEST_CASE("3D: golden-value regression for smooth functions")
+TEST_CASE("3D: smooth-function golden values, convergence and order" * doctest::test_suite("integration"))
 {
-    for (int ti = 0; ti < g_n3dTests; ti++)
+    DNDS::real p1Error = 0, p2Error = 0;
+    for (int ti = 0; ti < g_n3dTests; ++ti)
     {
-        auto &tc = g_3dTests[ti];
-        std::string label = std::string("3D/") + tc.funcName + "/" +
-                            recMethodName3D(tc.method);
-
-        SUBCASE(label.c_str())
+        const auto &tc = g_3dTests[ti];
+        const std::string label = std::string("3D/") + tc.funcName + "/" + recMethodName3D(tc.method);
+        INFO(label);
+        auto vr = buildVR3D(LargeMesh(), tc.method);
+        ReconstructionRun3D stats;
+        const auto error = runTest3D(vr, tc.method, tc.func, g_zeroBC, tc.maxIters, tc.convTol, false, &stats);
+        if (g_mpi.rank == 0)
+            std::cout << "[" << label << "] err = " << std::scientific
+                      << std::setprecision(10) << error << std::endl;
+        CHECK(error > 0);
+        CHECK(std::isfinite(error));
+        if (tc.golden < GOLDEN_NOT_ACQUIRED)
+            CHECK(error == doctest::Approx(tc.golden).epsilon(1e-6));
+        if (std::string(tc.funcName) == "sinCos3D")
         {
-            auto vr = buildVR3D(g_mesh3d, tc.method);
-            DNDS::real err = runTest3D(vr, tc.method, tc.func,
-                                       g_zeroBC, tc.maxIters, tc.convTol, false);
-
-            if (g_mpi.rank == 0)
-                std::cout << "[" << label << "] err = " << std::scientific
-                          << std::setprecision(10) << err << std::endl;
-
-            CHECK(err > 0.0);
-            CHECK_FALSE(std::isnan(err));
-
-            if (tc.golden < GOLDEN_NOT_ACQUIRED)
-                CHECK(err == doctest::Approx(tc.golden).epsilon(1e-6));
-        }
-    }
-}
-
-// ===================================================================
-// VFV P1 on 3D: convergence check
-// ===================================================================
-
-TEST_CASE("3D: VFV P1 HQM converges on sinCos3D")
-{
-    auto vr = buildVR3D(g_mesh3d, RecMethod3D::VFV_P1_HQM);
-
-    CFV::tUDof<g_nv> u;
-    vr->BuildUDof(u, 1);
-    CFV::tURec<g_nv> uRec, uRecNew;
-    vr->BuildURec(uRec, 1);
-    vr->BuildURec(uRecNew, 1);
-
-    auto mesh = vr->mesh;
-    for (DNDS::index iCell = 0; iCell < mesh->NumCell(); iCell++)
-    {
-        auto qCell = vr->GetCellQuad(iCell);
-        Eigen::Vector<DNDS::real, g_nv> uc;
-        uc.setZero();
-        qCell.IntegrationSimple(
-            uc,
-            [&](auto &vInc, int iG)
+            if (tc.method == RecMethod3D::VFV_P1_HQM)
             {
-                vInc(0) = sinCos3D(vr->GetCellQuadraturePPhys(iCell, iG)) *
-                          vr->GetCellJacobiDet(iCell, iG);
-            });
-        u[iCell] = uc / vr->GetCellVol(iCell);
-    }
-    u.trans.startPersistentPull();
-    u.trans.waitPersistentPull();
-
-    int convergedAt = 0;
-    DNDS::real lastInc = veryLargeReal;
-    for (int iter = 0; iter < 200; iter++)
-    {
-        vr->DoReconstructionIter<g_nv>(uRec, uRecNew, u, g_zeroBC, true);
-
-        DNDS::real incLocal = 0.0;
-        for (DNDS::index iCell = 0; iCell < mesh->NumCell(); iCell++)
-            incLocal += (uRecNew[iCell] - uRec[iCell]).array().square().sum();
-        DNDS::real incGlobal = 0.0;
-        MPI::Allreduce(&incLocal, &incGlobal, 1, DNDS_MPI_REAL, MPI_SUM, g_mpi.comm);
-        incGlobal = std::sqrt(incGlobal / mesh->NumCellGlobal());
-
-        std::swap(uRec, uRecNew);
-        uRec.trans.startPersistentPull();
-        uRec.trans.waitPersistentPull();
-
-        lastInc = incGlobal;
-        if (incGlobal < 1e-14)
-        {
-            convergedAt = iter + 1;
-            break;
+                p1Error = error;
+                CHECK(stats.iterations > 0);
+                CHECK(stats.iterations < tc.maxIters);
+                CHECK(stats.lastUpdate < tc.convTol);
+            }
+            if (tc.method == RecMethod3D::VFV_P2_HQM)
+                p2Error = error;
         }
     }
-
-    if (g_mpi.rank == 0)
-        std::cout << "[3D/Convergence P1-HQM] " << convergedAt
-                  << " iters, final inc = " << std::scientific << lastInc << std::endl;
-
-    CHECK(convergedAt > 0);
-    CHECK(convergedAt < 200);
-}
-
-// ===================================================================
-// Order-accuracy check: P2 < P1
-// ===================================================================
-
-TEST_CASE("3D: VFV P2 HQM error < P1 on sinCos3D")
-{
-    auto vrP1 = buildVR3D(g_mesh3d, RecMethod3D::VFV_P1_HQM);
-    auto vrP2 = buildVR3D(g_mesh3d, RecMethod3D::VFV_P2_HQM);
-
-    DNDS::real errP1 = runTest3D(vrP1, RecMethod3D::VFV_P1_HQM, sinCos3D,
-                                 g_zeroBC, 200, 1e-14, false);
-    DNDS::real errP2 = runTest3D(vrP2, RecMethod3D::VFV_P2_HQM, sinCos3D,
-                                 g_zeroBC, 200, 1e-14, false);
-
-    if (g_mpi.rank == 0)
-        std::cout << "[3D] P2/P1 ratio = " << errP2 / errP1 << std::endl;
-
-    CHECK(errP2 < errP1);
+    REQUIRE(p1Error > 0);
+    REQUIRE(p2Error > 0);
+    CHECK(p2Error < p1Error);
 }
 
 // ===================================================================
 // Metric sanity: cell volumes sum to domain volume
 // ===================================================================
 
-TEST_CASE("3D: cell volumes sum to 1.0 (unit cube)")
+TEST_CASE("3D: cell volumes sum to 1.0 (unit cube)" * doctest::test_suite("integration"))
 {
-    auto vr = buildVR3D(g_mesh3d, RecMethod3D::GaussGreen);
+    auto vr = buildVR3D(LargeMesh(), RecMethod3D::GaussGreen);
     DNDS::real globalVol = vr->GetGlobalVol();
     if (g_mpi.rank == 0)
         std::cout << "[3D] globalVol = " << std::setprecision(15) << globalVol << std::endl;
     CHECK(globalVol == doctest::Approx(1.0).epsilon(1e-10));
+}
+
+TEST_CASE("Small connected 3D cells preserve constants through GG and P1/P2 VR")
+{
+    const auto mesh = CFVTest::CartesianHexes(g_mpi, 4);
+    const ScalarFunc3D constant = [](const tPoint &)
+    { return 1.; };
+    const tVR::TFBoundary<g_nv> boundary = [](const auto &, const auto &, DNDS::index, DNDS::index, int,
+                                              const tPoint &, const tPoint &, t_index)
+    { return Eigen::Vector<DNDS::real, g_nv>::Ones(); };
+    for (const auto method : {RecMethod3D::GaussGreen, RecMethod3D::VFV_P1_HQM, RecMethod3D::VFV_P2_HQM})
+    {
+        CAPTURE(recMethodName3D(method));
+        auto vr = buildVR3D(mesh, method);
+        const auto error = runTest3D(vr, method, constant, boundary, 200, 1e-15, false);
+        CHECK(std::isfinite(error));
+        CHECK(error < 1e-12);
+    }
 }

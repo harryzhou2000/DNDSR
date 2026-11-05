@@ -79,6 +79,7 @@ find_path(DNDS_EXTERNAL_INCLUDE_DOCTEST doctest.h PATHS
 function(dnds_add_unit_test TEST_NAME SRC_FILE LIBS)
     set(TARGET_NAME "dnds_test_${TEST_NAME}")
     add_executable(${TARGET_NAME} ${SRC_FILE})
+    set_property(GLOBAL APPEND PROPERTY DNDS_CPP_TEST_TARGETS ${TARGET_NAME})
     target_include_directories(${TARGET_NAME} PRIVATE
         ${DNDS_EXTERNAL_INCLUDE_DOCTEST}
         ${DNDS_EXTERNAL_INCLUDES}
@@ -101,6 +102,7 @@ endfunction()
 function(dnds_add_mpi_test TEST_NAME SRC_FILE LIBS)
     set(TARGET_NAME "dnds_test_${TEST_NAME}")
     add_executable(${TARGET_NAME} ${SRC_FILE})
+    set_property(GLOBAL APPEND PROPERTY DNDS_CPP_TEST_TARGETS ${TARGET_NAME})
     target_include_directories(${TARGET_NAME} PRIVATE
         ${DNDS_EXTERNAL_INCLUDE_DOCTEST}
         ${DNDS_EXTERNAL_INCLUDES}
@@ -128,6 +130,7 @@ endfunction()
 function(geom_add_unit_test TEST_NAME SRC_FILE LIBS)
     set(TARGET_NAME "geom_test_${TEST_NAME}")
     add_executable(${TARGET_NAME} ${SRC_FILE})
+    set_property(GLOBAL APPEND PROPERTY DNDS_CPP_TEST_TARGETS ${TARGET_NAME})
     target_include_directories(${TARGET_NAME} PRIVATE
         ${DNDS_EXTERNAL_INCLUDE_DOCTEST}
         ${DNDS_EXTERNAL_INCLUDES}
@@ -150,6 +153,7 @@ endfunction()
 function(geom_add_mpi_test TEST_NAME SRC_FILE LIBS)
     set(TARGET_NAME "geom_test_${TEST_NAME}")
     add_executable(${TARGET_NAME} ${SRC_FILE})
+    set_property(GLOBAL APPEND PROPERTY DNDS_CPP_TEST_TARGETS ${TARGET_NAME})
     target_include_directories(${TARGET_NAME} PRIVATE
         ${DNDS_EXTERNAL_INCLUDE_DOCTEST}
         ${DNDS_EXTERNAL_INCLUDES}
@@ -286,9 +290,9 @@ endif()
 if(DNDS_USE_CANTERA)
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_equation_source)
 endif()
-add_dependencies(cauchy_unit_tests dnds_test_cauchy_equation_dofs)
+add_dependencies(cauchy_unit_tests dnds_test_cauchy_equation_dofs dnds_test_cauchy_equation_finite_volume)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_wall_distance)
-add_dependencies(cauchy_unit_tests dnds_test_cauchy_rans_state dnds_test_cauchy_state_input)
+add_dependencies(cauchy_unit_tests dnds_test_cauchy_rans_state dnds_test_cauchy_state_input dnds_test_cauchy_rans_reconstruction_reduced)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_rans_fv)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_interface_iteration)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_limited_vr dnds_test_cauchy_limited_vr_checkpoint)
@@ -427,6 +431,14 @@ geom_add_mpi_test(mesh_connectivity "Geom/test_MeshConnectivity.cpp" "geom;dnds"
 geom_add_mpi_test(mesh_connectivity_ghost "Geom/test_MeshConnectivity_Ghost.cpp" "geom;dnds")
 geom_add_mpi_test(mesh_connectivity_interpolate "Geom/test_MeshConnectivity_Interpolate.cpp" "geom;dnds")
 geom_add_mpi_test(mesh_reorder "Geom/test_MeshReorder.cpp" "geom;dnds")
+add_custom_target(geom_benchmark_topology_np2
+    COMMAND ${CMAKE_COMMAND} -E env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+            DNDS_TEST_TOPOLOGY_REPETITIONS=3
+            ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+            $<TARGET_FILE:geom_test_mesh_pipeline> ${MPIEXEC_POSTFLAGS}
+            "--test-case=Native inverse compose and face topology match independent incidences"
+    DEPENDS geom_test_mesh_pipeline
+    USES_TERMINAL)
 geom_add_unit_test(mesh_cgns_multizone "Geom/test_MeshCGNSMultiZone.cpp" "geom;dnds")
 geom_add_mpi_test(mesh_audit "Geom/test_MeshAudit.cpp" "geom;dnds")
 geom_add_mpi_test(mesh_facade "Geom/test_MeshFacade.cpp" "geom;dnds")
@@ -560,6 +572,7 @@ endforeach()
 function(cfv_add_unit_test TEST_NAME SRC_FILE LIBS)
     set(TARGET_NAME "cfv_test_${TEST_NAME}")
     add_executable(${TARGET_NAME} ${SRC_FILE})
+    set_property(GLOBAL APPEND PROPERTY DNDS_CPP_TEST_TARGETS ${TARGET_NAME})
     target_include_directories(${TARGET_NAME} PRIVATE
         ${DNDS_EXTERNAL_INCLUDE_DOCTEST}
         ${DNDS_EXTERNAL_INCLUDES}
@@ -582,6 +595,7 @@ endfunction()
 function(cfv_add_mpi_test TEST_NAME SRC_FILE LIBS)
     set(TARGET_NAME "cfv_test_${TEST_NAME}")
     add_executable(${TARGET_NAME} ${SRC_FILE})
+    set_property(GLOBAL APPEND PROPERTY DNDS_CPP_TEST_TARGETS ${TARGET_NAME})
     target_include_directories(${TARGET_NAME} PRIVATE
         ${DNDS_EXTERNAL_INCLUDE_DOCTEST}
         ${DNDS_EXTERNAL_INCLUDES}
@@ -597,7 +611,7 @@ function(cfv_add_mpi_test TEST_NAME SRC_FILE LIBS)
         _dnds_np_timeout(${NP} _TIMEOUT)
         add_test(NAME cfv_${TEST_NAME}_np${NP}
             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${NP}
-                    ${MPIEXEC_PREFLAGS} $<TARGET_FILE:${TARGET_NAME}> ${MPIEXEC_POSTFLAGS})
+                    ${MPIEXEC_PREFLAGS} $<TARGET_FILE:${TARGET_NAME}> ${MPIEXEC_POSTFLAGS} ${ARGN})
         _dnds_maybe_set_timeout(cfv_${TEST_NAME}_np${NP} ${_TIMEOUT})
         set_tests_properties(cfv_${TEST_NAME}_np${NP} PROPERTIES
             PROCESSORS ${NP}
@@ -626,7 +640,20 @@ target_link_libraries(cfv_benchmark_fv_facility PRIVATE cfv geom dnds ${DNDS_EXT
 cfv_add_unit_test(limiters "CFV/test_Limiters.cpp" "cfv;geom;dnds")
 cfv_add_unit_test(reconstruction_math "CFV/test_ReconstructionMath.cpp" "dnds")
 add_dependencies(cfv_unit_tests cfv_test_reconstruction_math)
-cfv_add_mpi_test(reconstruction3d "CFV/test_Reconstruction3D.cpp" "cfv;geom;dnds")
+cfv_add_mpi_test(reconstruction3d "CFV/test_Reconstruction3D.cpp" "cfv;geom;dnds" "--test-suite=integration")
+# The same binary has a generated 64-cell contract fixture. Keep this routine
+# registration separate from the unchanged 32^3 numerical integration fixture.
+foreach(NP ${DNDS_TEST_NP_LIST})
+    add_test(NAME cfv_reconstruction3d_contract_np${NP}
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${NP}
+                ${MPIEXEC_PREFLAGS} $<TARGET_FILE:cfv_test_reconstruction3d>
+                ${MPIEXEC_POSTFLAGS} --test-suite-exclude=integration)
+    _dnds_np_timeout(${NP} _TIMEOUT)
+    _dnds_maybe_set_timeout(cfv_reconstruction3d_contract_np${NP} ${_TIMEOUT})
+    set_tests_properties(cfv_reconstruction3d_contract_np${NP} PROPERTIES
+        PROCESSORS ${NP} ENVIRONMENT "OMP_NUM_THREADS=${DNDS_TEST_OMP_THREADS}")
+endforeach()
+
 
 set(CFV_TEST_TARGETS
     cfv_test_fv_facility
@@ -641,6 +668,7 @@ if(DNDS_USE_CUDA)
     function(cfv_add_cuda_mpi_test TEST_NAME SRC_FILE LIBS)
         set(TARGET_NAME "cfv_test_${TEST_NAME}")
         add_executable(${TARGET_NAME} ${SRC_FILE})
+        set_property(GLOBAL APPEND PROPERTY DNDS_CPP_TEST_TARGETS ${TARGET_NAME})
         target_include_directories(${TARGET_NAME} PRIVATE
             ${DNDS_EXTERNAL_INCLUDE_DOCTEST}
             ${DNDS_EXTERNAL_INCLUDES}
@@ -717,6 +745,7 @@ endforeach()
 function(euler_add_unit_test TEST_NAME SRC_FILE LIBS)
     set(TARGET_NAME "euler_test_${TEST_NAME}")
     add_executable(${TARGET_NAME} ${SRC_FILE})
+    set_property(GLOBAL APPEND PROPERTY DNDS_CPP_TEST_TARGETS ${TARGET_NAME})
     target_include_directories(${TARGET_NAME} PRIVATE
         ${DNDS_EXTERNAL_INCLUDE_DOCTEST}
         ${DNDS_EXTERNAL_INCLUDES}
@@ -739,6 +768,7 @@ endfunction()
 function(euler_add_mpi_test TEST_NAME SRC_FILE LIBS)
     set(TARGET_NAME "euler_test_${TEST_NAME}")
     add_executable(${TARGET_NAME} ${SRC_FILE})
+    set_property(GLOBAL APPEND PROPERTY DNDS_CPP_TEST_TARGETS ${TARGET_NAME})
     target_include_directories(${TARGET_NAME} PRIVATE
         ${DNDS_EXTERNAL_INCLUDE_DOCTEST}
         ${DNDS_EXTERNAL_INCLUDES}
@@ -836,6 +866,7 @@ add_dependencies(all_unit_tests solver_unit_tests)
 function(solver_add_unit_test TEST_NAME SRC_FILE LIBS)
     set(TARGET_NAME "solver_test_${TEST_NAME}")
     add_executable(${TARGET_NAME} ${SRC_FILE})
+    set_property(GLOBAL APPEND PROPERTY DNDS_CPP_TEST_TARGETS ${TARGET_NAME})
     target_include_directories(${TARGET_NAME} PRIVATE
         ${DNDS_EXTERNAL_INCLUDE_DOCTEST}
         ${DNDS_EXTERNAL_INCLUDES}
@@ -876,3 +907,27 @@ endforeach()
 
 geom_add_mpi_test(native_mesh_assertions "Geom/test_NativeMeshAssertions.cpp" "geom;dnds")
 add_dependencies(geom_unit_tests geom_test_native_mesh_assertions)
+
+# A fresh aggregate build must cover every registered helper-created executable.
+include(${PROJECT_SOURCE_DIR}/cmake/DndsTestTargets.cmake)
+dnds_check_registered_test_targets(all_unit_tests)
+
+# Labels separate module ownership from execution cost. No registration/rank is
+# dropped here: large legacy mesh/golden fixtures remain explicitly runnable.
+get_property(_dnds_cpp_tests DIRECTORY PROPERTY TESTS)
+foreach(_dnds_test IN LISTS _dnds_cpp_tests)
+    set(_dnds_module dnds)
+    if(_dnds_test MATCHES "^(dnds_cauchy_|cauchy_)")
+        set(_dnds_module cauchy)
+    elseif(_dnds_test MATCHES "^(geom|cfv|euler|solver)_")
+        set(_dnds_module ${CMAKE_MATCH_1})
+    endif()
+    set(_dnds_tier routine)
+    if(_dnds_test MATCHES "^(cfv_reconstruction(3d)?|geom_mesh_pipeline|geom_mesh_index_conversion)_np")
+        set(_dnds_tier integration)
+    endif()
+    set_property(TEST ${_dnds_test} APPEND PROPERTY LABELS "cpp;${_dnds_module};${_dnds_tier}")
+    if(_dnds_test MATCHES "_np(4|8)$")
+        set_property(TEST ${_dnds_test} APPEND PROPERTY LABELS "mpi-high")
+    endif()
+endforeach()

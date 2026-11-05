@@ -1,0 +1,26 @@
+# Validate explicit build coverage for EXCLUDE_FROM_ALL test executables.
+# Registration helpers append targets to DNDS_CPP_TEST_TARGETS. Validate only
+# manual aggregate dependencies: link-library graphs do not build test programs.
+function(dnds_check_registered_test_targets AGGREGATE)
+    set(_dnds_pending_targets ${AGGREGATE})
+    set(_dnds_reachable_targets)
+    while(_dnds_pending_targets)
+        list(POP_BACK _dnds_pending_targets _dnds_target)
+        if(NOT _dnds_target IN_LIST _dnds_reachable_targets)
+            list(APPEND _dnds_reachable_targets ${_dnds_target})
+            # Frontend targets can be declared later in the parent CMakeLists.
+            if(TARGET ${_dnds_target})
+                get_target_property(_dnds_dependencies ${_dnds_target} MANUALLY_ADDED_DEPENDENCIES)
+                if(_dnds_dependencies)
+                    list(APPEND _dnds_pending_targets ${_dnds_dependencies})
+                endif()
+            endif()
+        endif()
+    endwhile()
+    get_property(_dnds_registered_targets GLOBAL PROPERTY DNDS_CPP_TEST_TARGETS)
+    foreach(_dnds_target IN LISTS _dnds_registered_targets)
+        if(NOT _dnds_target IN_LIST _dnds_reachable_targets)
+            message(FATAL_ERROR "Registered test target ${_dnds_target} is missing from ${AGGREGATE}")
+        endif()
+    endforeach()
+endfunction()

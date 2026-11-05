@@ -168,6 +168,13 @@ static void roundTrip(UnstructuredMesh &mesh, AdjacencyDescriptor key, int repea
 // Parameterized test macro
 // ---------------------------------------------------------------------------
 
+static ssp<UnstructuredMesh> FullMesh(int id)
+{
+    if (!g_meshes[id])
+        g_meshes[id] = buildMesh(id, g_configs[id]);
+    return g_meshes[id];
+}
+
 #define FOR_EACH_MESH_CONFIG(body)                     \
     for (int _ci = 0; _ci < N_CONFIGS; _ci++)          \
     {                                                  \
@@ -176,25 +183,21 @@ static void roundTrip(UnstructuredMesh &mesh, AdjacencyDescriptor key, int repea
             continue;                                  \
         CAPTURE(_ci);                                  \
         const auto &cfg = g_configs[_ci];              \
-        auto m = g_meshes[_ci];                        \
-        SUBCASE(cfg.name) { body }                     \
+        SUBCASE(cfg.name)                              \
+        {                                              \
+            auto m = FullMesh(_ci);                    \
+            body                                       \
+        }                                              \
     }
 
 // ---------------------------------------------------------------------------
 int main(int argc, char **argv)
 {
-    MPI_Init(&argc, &argv);
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+        return 1;
     g_mpi.setWorld();
 
-    // Pre-build all mesh configs for read-only tests.
-    for (int i = 0; i < N_CONFIGS; i++)
-    {
-        // Skip Ball2 (index 4) for np < 8 to avoid timeout
-        if (i == 4 && g_mpi.size != 8)
-            continue;
-        g_meshes[i] = buildMesh(i, g_configs[i]);
-    }
-
+    // Build fixtures lazily after doctest selects a test/subcase.
     doctest::Context ctx;
     ctx.applyCommandLine(argc, argv);
     int res = ctx.run();
@@ -202,7 +205,7 @@ int main(int argc, char **argv)
     // Destroy all meshes together before MPI_Finalize.
     for (auto &m : g_meshes)
         m.reset();
-    MPI_Finalize();
+    DNDS::MPI::Finalize();
     return res;
 }
 
@@ -243,7 +246,7 @@ TEST_CASE("Ball2: mixed 3D element types")
     if (g_mpi.size != 8)
         return;
 
-    auto m = g_meshes[4]; // Ball2 is index 4
+    auto m = FullMesh(4); // Ball2 is index 4
     DNDS_assert(m != nullptr);
 
     // Count element types locally

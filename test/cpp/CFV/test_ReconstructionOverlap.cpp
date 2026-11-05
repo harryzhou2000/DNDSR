@@ -133,6 +133,9 @@ TEST_CASE("Core-first SOR uses a separate frozen send snapshot during split exec
     plan.DoReconstructionIterTo(mean, snapshot, split, boundary, C::ReconstructionRegion::Core);
     pending.Wait();
     plan.DoReconstructionIterTo(mean, snapshot, split, boundary, C::ReconstructionRegion::HaloDependent);
+    // The To operator fills update scratch. Publish only after both regions,
+    // exactly as the production split path does, before observing coefficients.
+    plan.CommitReconstruction(split);
     Equal(reference.coefficients, split.coefficients);
 }
 

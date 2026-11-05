@@ -365,9 +365,10 @@ jobs:
       # ------------------------------------------------------------------
       # 12. Run C++ tests
       # ------------------------------------------------------------------
+      # Serial extension coverage belongs to the complete pytest step below.
       - name: Run C++ tests
         timeout-minutes: 30
-        run: ctest --test-dir build --output-on-failure --timeout 600
+        run: ctest --test-dir build --output-on-failure --timeout 600 -LE python
         env:
           DNDS_MECH_PATH: ${{ github.workspace }}/external/cfd_externals/install/data
           CANTERA_DATA: ${{ github.workspace }}/external/cfd_externals/install/data
