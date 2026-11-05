@@ -380,3 +380,24 @@ and measured-source snapshot are retained in roughly 40 KiB of evidence/report.
 Twenty tooling tests pass (2.950 s); the new target is excluded from ordinary
 builds/CTest. E3–E7 require their own bounded
 matched measurements; this record does not close them or Euler/sanitizer work.
+
+## E7 acquisition probe: local functional gate
+
+An opt-in `cauchy_benchmark_geom_acquisition` separates mesh Primary/CellFlux
+acquisition, metric/basis/RHS entry, auxiliary begin/complete and reconstruction
+unsplit/core/dependent phases. It counts C++ new calls/bytes on the calling
+thread in a separate batch from timing; this is not an Eigen/malloc allocator
+profiler or a count of Array leases. The executable does not change production
+ownership. Its generated periodic fixture accepts benchmark widths through 512;
+ordinary test sizes and registrations remain unchanged.
+
+The local np2/OMP1 width16/P3 functional pilot passes: 128 owned cells/rank,
+96 core cells/rank, unchanged mean/coefficient generations and elementwise
+bit-identical split/unsplit reconstruction. Four warmups precede eight counted
+and 100 timed entry calls; heavier numeric phases have four timed calls. The
+pilot observes 47 new calls for each mesh read, 48 for metrics, 96 for basis,
+145 for RHS entry, 49 for auxiliary begin/complete and 47 for each reconstruction
+call. These counts motivate a matched measurement; shared-host pilot times do
+not close E7. Required allocated-node comparisons and the retain/change decision
+remain open. Source, binary hashes and pilot log are in the isolated local
+assessment workspace; the other implementation checkout/MG/IV jobs are excluded.
