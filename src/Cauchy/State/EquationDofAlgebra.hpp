@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cauchy/State/EquationDofs.hpp"
+#include "DNDS/Algebra/LocalProducts.hpp"
 #include <optional>
 
 namespace DNDS::Cauchy
@@ -145,10 +146,7 @@ namespace DNDS::Cauchy
             for (const auto &input : layouts)
                 inputs.push_back(input.View());
             std::vector<real> result(probes.size(), 0);
-            for (index iRow = 0; iRow < values.RowCount(); ++iRow)
-                for (index j = 0; j < values.ComponentNumber(); ++j)
-                    for (index k = 0; k < index(inputs.size()); ++k)
-                        result[k] += values(iRow, j) * inputs[k](iRow, j);
+            Algebra::Detail::AccumulateLocalProducts(values, inputs, values.RowCount(), values.ComponentNumber(), result);
             return result;
         }
     };

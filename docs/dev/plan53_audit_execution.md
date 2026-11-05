@@ -477,3 +477,39 @@ checkout's ignored independent workspace `workspace/plan53-targeted-assessment`;
 the remote task is `cauchy-audit-fix-plan53-20261105` under the canonical
 workspace/worktrees. Poll only this job, retain failure/partial rows and fetch
 compact terminal evidence before drawing the E7 retain/change conclusion.
+
+## Shared local products and ownership sanitizer gate
+
+The field/equation Krylov adapters now share only their private CPU
+row/component/probe arithmetic, under `DNDS/Algebra/LocalProducts.hpp`.
+Their schema validation, acquired-view ownership, component selection and
+communication remain in the adapters. Accumulation order is unchanged; the
+helper does not flatten layouts or introduce elementwise dispatch. The
+existing owned-algebra/active-halo fixture checks two products against an
+independent scalar formula across coupled/split AoS, SoA and AoSoA storage,
+including empty ranks. All six equation-DOF/linear-solver registrations at
+np1/2/4 pass (1.93 s). This is helper correctness, not a new speedup claim.
+
+A separate paired `build-audit-asan` builds Runtime array, eager-engine and
+access-tracking tests with AddressSanitizer and UndefinedBehaviorSanitizer.
+All **54 test cases pass**: array 30 cases/26,993 assertions, engine 17
+cases/125,847 assertions, tracking 7 cases/55 assertions. The array suite's
+intentional abort child-process cases also pass; no negative cases were
+excluded. Each executable has a 120 s bound and runs with
+`ASAN_OPTIONS=detect_leaks=0:halt_on_error=1` and
+`UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`. No sanitizer diagnostic was
+reported. Leak checking is explicitly not covered, nor MPI distributed/CUDA
+ownership by this serial batch.
+
+The sanitizer configuration requested Debug `-O1 -g1`, but
+`DNDS_FAST_BUILD_FAST=ON` adds later `-O3 -g0` to the DNDS library; sanitizer
+instrumentation remains enabled. Test executables retain `-O1 -g1`. This
+qualifies optimized CPU ownership/error-unwind behavior, not an O1-only
+library build. The only initial configure failure was an incorrect cache-seed
+path, corrected before the successful build; no failed test was relabeled.
+Compressed logs, actual flags, commands and executable hashes are retained in
+`docs/dev/plan53_validation/ownership-sanitizers/`.
+
+E1's remaining cold paths, E3–E7, independent old/new Euler parity and final
+readability/rank-curation work remain open. The latest exact-job poll still
+reports E7 job 12442096 PENDING (Priority), with no allocated node/results.

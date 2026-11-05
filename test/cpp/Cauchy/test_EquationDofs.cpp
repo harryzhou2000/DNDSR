@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/State/EquationDofs.hpp"
+#include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/Implicit/LinearSolver.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
@@ -250,6 +251,17 @@ TEST_CASE("Owned-only pointwise algebra and reductions overlap direct halo write
                 transfers.push_back(binding.Begin());
             Pointwise(state, output);
             CheckValues(output, 3, -2);
+            const auto products = C::EquationDofOperations::LocalProducts(state, {&state, &output});
+            std::array<double, 2> productReference{};
+            for (I iRow = 0; iRow < fixture.rows; ++iRow)
+                for (I component = 0; component < state.ComponentNumber(); ++component)
+                {
+                    const auto value = Value(mpi.rank, iRow, component);
+                    productReference[0] += value * value;
+                    productReference[1] += value * (3 * value - 2);
+                }
+            CHECK(products[0] == doctest::Approx(productReference[0]).epsilon(1e-13));
+            CHECK(products[1] == doctest::Approx(productReference[1]).epsilon(1e-13));
             if (fixture.ghosts)
             {
                 CHECK_THROWS(state.ReadWithGhost());

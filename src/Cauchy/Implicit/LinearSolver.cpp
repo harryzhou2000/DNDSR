@@ -38,10 +38,7 @@ namespace DNDS::Cauchy
                     retained.push_back(probe->Owned().Read());
                     values.push_back(retained.back().View<R::UniformTableRows>());
                 }
-                for (index iRow = 0; iRow < source.RowCount(); ++iRow)
-                    for (index j = 0; j < source.RowSize(iRow); ++j)
-                        for (index k = 0; k < index(values.size()); ++k)
-                            local[k] += source(iRow, j) * values[k](iRow, j);
+                Algebra::Detail::AccumulateLocalProducts(source, values, source.RowCount(), Width(x), local);
                 return local;
             }
         };
