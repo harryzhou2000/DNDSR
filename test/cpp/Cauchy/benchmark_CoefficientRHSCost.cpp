@@ -1,9 +1,14 @@
 // E3 observes the real composed flow5 RHS using a link-only wrapper. Production
 // CFV has no profiling branch/timer. GNU-compatible --wrap is required here.
 #include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "Cauchy/Physics/EquationSetup.hpp"
+#include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "CartesianFixture.hpp"
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
+#include <numeric>
 
 namespace C = DNDS::Cauchy;
 namespace F = DNDS::CFV;
@@ -37,13 +42,15 @@ namespace
 {
     void Run(int argc, char **argv)
     {
-        DNDS_check_throw_info(argc == 5, "arguments: grid-width none|WBAP repetitions trials");
+        DNDS_check_throw_info(argc == 5 || argc == 6, "arguments: grid-width none|WBAP repetitions trials [flow5|split-mixture]");
         const I width = std::stoll(argv[1]);
         const std::string limiter = argv[2];
         const int repetitions = std::stoi(argv[3]), trials = std::stoi(argv[4]);
+        const std::string profile = argc == 6 ? argv[5] : "flow5";
+        const bool mixture = profile == "split-mixture";
         const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
         DNDS_check_throw_info(width >= 4 && width <= 400 && width * width >= mpi.size &&
-                                  (limiter == "none" || limiter == "WBAP") &&
+                                  (limiter == "none" || limiter == "WBAP") && (profile == "flow5" || mixture) &&
                                   repetitions >= 1 && repetitions <= 20 && trials >= 1 && trials <= 4,
                               "coefficient RHS assessment outside declared bounds");
         auto mesh = CauchyTest::PeriodicQuads(mpi, width);
@@ -61,29 +68,114 @@ namespace
         settings.numerics.cfv.maxOrder = 3;
         settings.numerics.cfv.intOrder = 5;
         settings.numerics.cfv.SORInstead = false;
-        const auto equation = C::EquationSystem::Resolve(settings.equation);
-        C::FiniteVolume fv(mesh, settings, equation);
-        auto mean = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
+        if (mixture)
         {
-            auto write = mean.Owned().Write();
-            const auto values = write.View<R::UniformTableRows>();
-            for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
-            {
-                const auto point = fv.Metrics().GetCellCent(iCell);
-                const auto state = equation.Gas().Conservative({1 + .01 * std::sin(6.28 * point[0]), .2, -.1, .05, 1});
-                for (int j = 0; j < 5; ++j)
-                    values(iCell, j) = state[j];
-            }
+            settings.equation.eos = "idealGasMixture";
+            settings.equation.viscosity = 0;
+            settings.equation.source = "chemical";
+            settings.equation.mixture.mechanismFile = "h2o2.yaml";
+            settings.equation.referenceScales = {{"rho0", 1.225}, {"U0", 340}, {"L0", 2}, {"T0", 288.15}};
+            settings.numerics.flux = "rusanov";
+            settings.numerics.faceFallback = false;
+            settings.numerics.characteristicLimiter = false;
         }
-        const auto generation = mean.Owned().Version();
-        auto workspace = fv.BuildWorkspace(mean);
+        auto physical = C::EquationSetup::Resolve(settings.equation);
+        const auto &equation = physical.equation;
+        C::FiniteVolume fv(mesh, settings, equation);
+        std::optional<F::FVField> mean, residual;
+        std::optional<C::EquationDofs> equationMean, equationResidual;
+        std::shared_ptr<C::FiniteVolume::Workspace> workspace;
+        std::shared_ptr<C::FiniteVolume::EquationWorkspace> equationWorkspace;
+        I components = 5, fields = 1;
+        std::vector<uint64_t> generations;
         R::EagerEngine engine(0);
         const auto stream = engine.CreateCPUStream();
-        const auto evaluate = [&]
-        { fv.Evaluate(mean, residual, *workspace, engine, stream); };
+        std::function<void()> evaluate, validate;
+        if (!mixture)
+        {
+            mean.emplace(fv.Metrics().BuildField(5));
+            residual.emplace(fv.Metrics().BuildField(5));
+            {
+                auto write = mean->Owned().Write();
+                const auto values = write.View<R::UniformTableRows>();
+                for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                {
+                    const auto point = fv.Metrics().GetCellCent(iCell);
+                    const auto state = equation.Gas().Conservative({1 + .01 * std::sin(6.28 * point[0]), .2, -.1, .05, 1});
+                    for (int j = 0; j < 5; ++j)
+                        values(iCell, j) = state[j];
+                }
+            }
+            generations.push_back(mean->Owned().Version());
+            workspace = fv.BuildWorkspace(*mean);
+            evaluate = [&]
+            { fv.Evaluate(*mean, *residual, *workspace, engine, stream); };
+            validate = [&]
+            {
+                DNDS_check_throw_info(mean->Owned().Version() == generations[0], "composed RHS mutated means");
+                auto read = residual->Owned().Read();
+                const auto values = read.View<R::UniformTableRows>();
+                for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                    for (int j = 0; j < 5; ++j)
+                        DNDS_check_throw_info(std::isfinite(values(iCell, j)), "nonfinite composed RHS");
+            };
+        }
+        else
+        {
+            DNDS::Algebra::DofBundle bundle(fv.Metrics().Space());
+            components = 0;
+            for (const auto &block : equation.Schema().blocks)
+            {
+                const auto count = I(block.components.size());
+                bundle.Add(block.name, fv.Metrics().BuildField(count));
+                components += count;
+            }
+            equationMean.emplace(C::EquationDofs::Separate(equation.Schema(), std::move(bundle)));
+            fields = equationMean->PhysicalFieldNumber();
+            DNDS_check_throw_info(fields == 2 && equation.Mixture().SpeciesNumber() == 10 && physical.workers,
+                                  "split-mixture assessment requires h2o2's ten species and an explicit worker");
+            {
+                auto write = equationMean->WriteOwned();
+                const auto flow = write.Block("flow"), rhoY = write.Block("species");
+                auto evaluator = equation.MakePointEvaluator(physical.workers->Acquire(), {});
+                std::vector<DNDS::real> fractions = equation.IndependentMassFractions({{"H2", .027}, {"O2", .22}, {"H2O", .02}});
+                std::vector<DNDS::real> species(fractions.size());
+                for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                {
+                    const auto point = fv.Metrics().GetCellCent(iCell);
+                    const double rho = .8 + .001 * std::sin(6.28 * point[0]);
+                    for (I k = 0; k < I(species.size()); ++k)
+                        species[k] = rho * fractions[k];
+                    const auto state = evaluator.FromPrimitive({rho, .2, -.04, .03, 0}, {species.data(), int(species.size())}, 1400. / equation.Mixture().Scales().T0);
+                    for (int j = 0; j < 5; ++j)
+                        flow(iCell, j) = state[j];
+                    for (I k = 0; k < I(species.size()); ++k)
+                        rhoY(iCell, k) = species[k];
+                }
+            }
+            for (I iField = 0; iField < fields; ++iField)
+                generations.push_back(equationMean->PhysicalField(iField).Owned().Version());
+            equationResidual.emplace(C::EquationDofOperations::NewVector(*equationMean));
+            equationWorkspace = fv.BuildEquationWorkspace(*equationMean, physical.workers);
+            evaluate = [&]
+            { fv.Evaluate(*equationMean, *equationResidual, *equationWorkspace, engine, stream); };
+            validate = [&]
+            {
+                for (I iField = 0; iField < fields; ++iField)
+                    DNDS_check_throw_info(equationMean->PhysicalField(iField).Owned().Version() == generations[iField], "equation RHS mutated means");
+                const auto read = equationResidual->ReadOwned();
+                for (I iBlock = 0; iBlock < equationResidual->BlockNumber(); ++iBlock)
+                {
+                    const auto values = read.Block(iBlock);
+                    for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                        for (I j = 0; j < values.ComponentNumber(); ++j)
+                            DNDS_check_throw_info(std::isfinite(values(iCell, j)), "nonfinite equation RHS");
+                }
+            };
+        }
         for (int warm = 0; warm < 5; ++warm)
             evaluate();
-        const I expected = 5 + (limiter == "WBAP" ? 3 : 0);
+        const I expected = fields * (5 + (limiter == "WBAP" ? 3 : 0));
         int provided = 0;
         MPI_Query_thread(&provided);
         for (int trial = 0; trial < trials; ++trial)
@@ -99,18 +191,11 @@ namespace
                     evaluate();
                 const double total = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
                 PublicationProbe::active = false;
-                DNDS_check_throw_info(mean.Owned().Version() == generation, "composed RHS mutated means");
+                validate();
                 if (instrumented)
                     DNDS_check_throw_info(PublicationProbe::calls == expected * repetitions &&
-                                              PublicationProbe::logicalBytes == expected * repetitions * 16 * fv.Metrics().NumCell() * 45,
+                                              PublicationProbe::logicalBytes == (5 + (limiter == "WBAP" ? 3 : 0)) * repetitions * 16 * fv.Metrics().NumCell() * 9 * components,
                                           "actual production publication count/bytes differ");
-                {
-                    auto read = residual.Owned().Read();
-                    const auto values = read.View<R::UniformTableRows>();
-                    for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
-                        for (int j = 0; j < 5; ++j)
-                            DNDS_check_throw_info(std::isfinite(values(iCell, j)), "nonfinite composed RHS");
-                }
                 double maximum[]{total / repetitions, PublicationProbe::seconds / repetitions, PublicationProbe::seconds / total};
                 double minimum = maximum[2];
                 MPI_Allreduce(MPI_IN_PLACE, maximum, 3, MPI_DOUBLE, MPI_MAX, mpi.comm);
@@ -118,7 +203,7 @@ namespace
                 I count[]{PublicationProbe::calls, PublicationProbe::logicalBytes};
                 MPI_Allreduce(MPI_IN_PLACE, count, 2, MPI_INT64_T, MPI_MAX, mpi.comm);
                 if (mpi.rank == 0)
-                    std::cout << "PLAN53_COPY_RHS " << J{{"np", mpi.size}, {"width", width}, {"degree", 3}, {"limiter", limiter}, {"trial", trial}, {"instrumented", instrumented}, {"repetitions", repetitions}, {"provided", provided}, {"rhs_seconds", maximum[0]}, {"publication_seconds", maximum[1]}, {"local_fraction_min", minimum}, {"local_fraction_max", maximum[2]}, {"publication_calls_max", count[0]}, {"publication_logical_bytes_max", count[1]}, {"finite", true}, {"mean_generation_unchanged", true}}.dump() << std::endl;
+                    std::cout << "PLAN53_COPY_RHS " << J{{"np", mpi.size}, {"width", width}, {"degree", 3}, {"limiter", limiter}, {"profile", profile}, {"physical_fields", fields}, {"components", components}, {"trial", trial}, {"instrumented", instrumented}, {"repetitions", repetitions}, {"provided", provided}, {"rhs_seconds", maximum[0]}, {"publication_seconds", maximum[1]}, {"local_fraction_min", minimum}, {"local_fraction_max", maximum[2]}, {"publication_calls_max", count[0]}, {"publication_logical_bytes_max", count[1]}, {"finite", true}, {"mean_generation_unchanged", true}}.dump() << std::endl;
             }
     }
 }

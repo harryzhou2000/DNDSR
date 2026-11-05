@@ -1116,3 +1116,28 @@ packing, posting, MPI waits, unpack and agreement; explicit full-array staging
 bytes are separately reported, not mislabeled as packed network payload.
 This is mock owned compute, not a whole solver RHS speedup. Its checked
 24-row allocated-node recorder and final retain/change decision remain pending.
+
+The focused whole-equation/RANS-FV np2 complement passes both registrations
+(21.39 seconds). It preserves the existing reconstructed chemistry/RANS source
+and split/permuted layout oracles after the identity-dispatch/Runtime factoring.
+This closes that E6 correctness complement without adding another parameter
+matrix or physical run.
+
+## E3 split-mixture attribution gate
+
+The existing composed-RHS benchmark now accepts an explicit `split-mixture`
+profile using the existing EquationSetup/worker interfaces and `h2o2.yaml`.
+Flow5 and nine independent species occupy two separate AoS fields. Transport
+and chemical sources execute in the real equation Evaluate path; input uses
+explicit reference scales and1400K converted to code temperature. Setup and
+worker allocation stay outside timing, with no fallback density/temperature.
+Publication timer/counting remains the same link wrapper; no production
+numerical change is made. Default flow5 behavior is retained.
+
+Both local np2/P3 none/WBAP gates pass with finite residuals, unchanged owned
+field generations and exactly10/16 publications per RHS. A flow5 default
+smoke also passes. The recorder checks the ten-species mechanism's hash and
+14-component/two-field shape rather than treating an arbitrary passive-scalar
+microbenchmark as reacting performance. Allocation/transport/source costs are
+not inferred from the previous5+12 field study. Matched split attribution is
+still pending and will run only the same bounded small/large cases.

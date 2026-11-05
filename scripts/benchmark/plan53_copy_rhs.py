@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""E3 composed flow5 RHS publication fractions, with timer-off controls."""
+"""E3 composed flow5/split-mixture RHS publication fractions, with timer-off controls."""
 
 import argparse
 import datetime
@@ -22,6 +22,7 @@ def main():
     parser.add_argument("--records", type=Path, required=True)
     parser.add_argument("--expected-source", required=True)
     parser.add_argument("--pilot", action="store_true")
+    parser.add_argument("--profile", choices=("flow5", "split-mixture"), default="flow5")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
@@ -34,7 +35,7 @@ def main():
         raise ValueError("copy-RHS assessment uses OMP1 and OPENBLAS1")
     repetitions, trials = (1, 2) if args.pilot else (5, 3)
     cases = ((2, 12),) if args.pilot else ((32, 32), (32, 400), (8, 200))
-    rows = [{"np": np, "width": width, "limiter": limiter, "status": "unrun"}
+    rows = [{"np": np, "width": width, "limiter": limiter, "profile": args.profile, "status": "unrun"}
             for np, width in cases for limiter in ("none", "WBAP")]
     binary = args.binary.resolve()
     args.records.mkdir(parents=True, exist_ok=False)
@@ -45,6 +46,9 @@ def main():
                 "rows": rows, "status": "running", "controller_affinity": sorted(os.sched_getaffinity(0)),
                 "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "environment": {key: os.environ.get(key) for key in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "DNDS_DISABLE_ASYNC_MPI", "UCX_TLS", "UCX_NET_DEVICES")}}
+    if args.profile == "split-mixture":
+        mechanism = Path(os.environ["DNDS_MECH_PATH"]) / "h2o2.yaml"
+        manifest["mechanism"] = dict(path=str(mechanism.resolve()), sha256=sha(mechanism))
 
     def save():
         temporary = args.records / "manifest.tmp"
@@ -56,7 +60,7 @@ def main():
     for ordinal, row in enumerate(rows):
         log = args.records / f"row-{ordinal:02d}.log"
         command = [str(args.mpiexec.resolve()), "--bind-to", "core", "--map-by", "core", "--report-bindings", "-np", str(row["np"]),
-                   str(binary), str(row["width"]), row["limiter"], str(repetitions), str(trials)]
+                   str(binary), str(row["width"]), row["limiter"], str(repetitions), str(trials), row["profile"]]
         row.update(command=command, log=str(log.resolve()), status="running")
         save()
         try:
@@ -72,7 +76,9 @@ def main():
                 raise ValueError("missing/duplicate timer-on/off trial records")
             expected_calls = 5 + (3 if row["limiter"] == "WBAP" else 0)
             for record in records:
-                if (any(record[key] != row[key] for key in ("np", "width", "limiter"))
+                fields, components = (1, 5) if row["profile"] == "flow5" else (2, 14)
+                if (any(record[key] != row[key] for key in ("np", "width", "limiter", "profile"))
+                        or record["physical_fields"] != fields or record["components"] != components
                         or record["degree"] != 3 or record["repetitions"] != repetitions):
                     raise ValueError("record identity/work differs from command")
                 if not record["finite"] or not record["mean_generation_unchanged"] or record["provided"] < 1:
@@ -83,10 +89,11 @@ def main():
                             ("publication_seconds", "local_fraction_min", "local_fraction_max"))
                         or not 0 <= record["local_fraction_min"] <= record["local_fraction_max"] <= 1):
                     raise ValueError("invalid publication time/fraction")
-                calls = repetitions * expected_calls if record["instrumented"] else 0
+                calls = repetitions * expected_calls * fields if record["instrumented"] else 0
+                logical_bytes = repetitions * expected_calls * 16 * 9 * components if record["instrumented"] else 0
                 owned_max = (row["width"] ** 2 + row["np"] - 1) // row["np"]
                 if (record["publication_calls_max"] != calls
-                        or record["publication_logical_bytes_max"] != calls * 16 * owned_max * 45):
+                        or record["publication_logical_bytes_max"] != logical_bytes * owned_max):
                     raise ValueError("actual publication count/bytes differ from fixed-sweep P3 contract")
                 if (record["publication_seconds"] > 0) != record["instrumented"]:
                     raise ValueError("timer mode was not honored")
