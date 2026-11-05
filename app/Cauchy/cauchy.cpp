@@ -1,5 +1,7 @@
 #include "Cauchy/Core/Simulation.hpp"
+#include "Cauchy/Core/StepRejected.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include "DNDS/MPI/Failure.hpp"
 #include "DNDS/IO/CsvLog.hpp"
 #include "argparse.hpp"
 #include <fstream>
@@ -64,24 +66,14 @@ static int Run(int argc, char **argv, double started)
             const auto &output = config.Output();
             const auto &time = config.Time();
             const auto domainCount = DNDS::index(config.Domains().size());
-            // Finish the global domain order even after one local failure:
-            // later domains may share ranks with a successful communicator.
+            // Actions may enter domain collectives. Propagate unexpected errors
+            // to the fatal boundary; never try a control reduction after a
+            // rank-local failure while its peers may still be in that action.
             const auto visitDomains = [&](const auto &action)
             {
-                std::exception_ptr failure;
                 for (DNDS::index iDomain = 0; iDomain < domainCount; ++iDomain)
                     if (simulation.Local(iDomain))
-                        try
-                        {
-                            action(iDomain, simulation.GetDomain(iDomain));
-                        }
-                        catch (...)
-                        {
-                            if (!failure)
-                                failure = std::current_exception();
-                        }
-                DNDS::MPI::LocalStage(mpi, [&]
-                                      { if (failure) std::rethrow_exception(failure); }, "Cauchy frontend failed in another domain");
+                        action(iDomain, simulation.GetDomain(iDomain));
             };
             const auto domainPrefix = [&](DNDS::index iDomain)
             { return output.prefix + (domainCount == 1 ? "" : "_domain" + std::to_string(iDomain)); };
@@ -200,7 +192,7 @@ static int Run(int argc, char **argv, double started)
                         simulation.Advance(dt);
                         break;
                     }
-                    catch (const std::exception &failure)
+                    catch (const DNDS::Cauchy::StepRejected &failure)
                     {
                         if (retries++ >= time.maxRetries)
                             throw;
@@ -243,8 +235,13 @@ static int Run(int argc, char **argv, double started)
         }
         catch (const std::exception &exception)
         {
-            std::cerr << "Cauchy rank " << mpi.rank << ": " << exception.what() << '\n';
-            status = 1;
+            // No agreement/finalization here: another rank may still be inside
+            // a solver collective. Unexpected errors terminate the MPI job.
+            DNDS::MPI::Abort(mpi.comm, std::string("Cauchy: ") + exception.what());
+        }
+        catch (...)
+        {
+            DNDS::MPI::Abort(mpi.comm, "Cauchy: unknown fatal exception");
         }
         MPI_Allreduce(MPI_IN_PLACE, &status, 1, MPI_INT, MPI_MAX, mpi.comm);
     }

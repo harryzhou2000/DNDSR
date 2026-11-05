@@ -233,9 +233,10 @@ namespace DNDS::Geom
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
             path = std::get<0>(factory.ModifyFilePath(inputPath, mpi, "part_%d", true));
-            serializer = factory.BuildSerializer(mpi);
             std::ifstream probe(path, std::ios::binary);
             DNDS_check_throw_info(probe.good(), "native archive input file is not readable"); });
+        // HDF5 serializer construction duplicates a communicator.
+        serializer = factory.BuildSerializer(mpi);
         struct CloseArchive
         {
             Serializer::SerializerBaseSSP serializer;
@@ -252,12 +253,13 @@ namespace DNDS::Geom
                     }
             }
         } close{serializer, false, factory.type == "JSON"};
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        { serializer->OpenFile(path, true); close.opened = true; });
+        // Backend I/O can be collective; only the path/probe preparation above
+        // may be wrapped in LocalStage. Let I/O failures escape immediately.
+        serializer->OpenFile(path, true);
+        close.opened = true;
         const auto partition = repartition && !serializer->IsPerRank() ? Serializer::ArrayGlobalOffset_EvenSplit : Serializer::ArrayGlobalOffset_Unknown;
         auto owned = ReadCompatibleNativeMeshArchiveOwned(mpi, serializer, "meshPart", partition);
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        { serializer->CloseFile(); });
+        serializer->CloseFile();
         close.opened = close.json = false;
         if (repartition)
         {

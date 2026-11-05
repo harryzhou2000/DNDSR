@@ -143,7 +143,7 @@ namespace DNDS::Cauchy
             }
         };
         std::unique_ptr<CheckpointRead> PrepareCheckpointRead(const std::string &path, const Json &resolved);
-        void ReserveCheckpointRead(CheckpointRead &checkpoint);
+        void ReserveCheckpointRead(CheckpointRead &checkpoint, bool collectiveChecks = true);
         void CommitCheckpointRead(CheckpointRead &checkpoint);
 
     public:
@@ -205,8 +205,9 @@ namespace DNDS::Cauchy
         /// Physical Strang applies constant-volume species half-steps around
         /// the same transport driver, retaining VR and resetting method history
         /// across source jumps. LastImplicitStages reports transport solves.
-        /// Backend/allocation failure may poison private scratch; reconstruct
-        /// the Domain before retrying such failures. Accepted state is retained.
+        /// Only StepRejected certifies an agreed numerical retry. Unexpected
+        /// backend/access/allocation exceptions must reach a fail-fast MPI
+        /// boundary; catching and continuing to MPI/finalization is unsafe.
         void PrepareStep(real dt);
         void CommitStep();
         void DiscardStep() noexcept

@@ -64,12 +64,9 @@ namespace DNDS::Cauchy
             connection.donor = domainIndex(settings.donor);
             connection.receiver = domainIndex(settings.receiver);
             connection.context = std::make_shared<R::CommunicationContext>(coupling);
-            // Patch construction is domain-collective. Nonmembers never enter
-            // it or allocate a dummy mesh. Agree errors on the coupling context
-            // only after each participating domain has completed its work.
-            std::string error;
-            int valid = 1;
-            try
+            // Patch construction is domain-collective. A local exception must
+            // propagate to the fatal boundary, not to a coupling reduction
+            // while another donor rank is still constructing the patch.
             {
                 if (auto &fv = data.discrete[connection.donor])
                     connection.patch = fv->BuildBoundaryPatch(settings.donorZone);
@@ -81,13 +78,6 @@ namespace DNDS::Cauchy
                             connection.receiverRows.push_back(iPoint);
                 }
             }
-            catch (const std::exception &exception)
-            {
-                valid = 0;
-                error = exception.what();
-            }
-            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, coupling);
-            DNDS_check_throw_info(valid, "interface patch construction failed: " + error);
             index counts[2]{connection.patch ? connection.patch->Size() : 0, index(connection.receiverRows.size())};
             MPI_Allreduce(MPI_IN_PLACE, counts, 2, MPI_INT64_T, MPI_SUM, coupling);
             DNDS_check_throw_info(counts[0] > 0 && counts[1] > 0, "interface donor patch or receiver boundary quadrature is globally empty; check zone IDs");

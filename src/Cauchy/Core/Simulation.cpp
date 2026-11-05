@@ -2,6 +2,7 @@
 #include "Cauchy/Interface/InterfaceCoupling.hpp"
 #include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include "Cauchy/Core/StepRejected.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -37,23 +38,13 @@ namespace DNDS::Cauchy
     Simulation::Simulation(SimulationConfig config, MPI_Comm comm, const MeshFactory &factory)
         : _config(std::move(config)), _placement(comm, _config.RankGroups()), _domains(size_t(_placement.DomainNumber()))
     {
-        int valid = 1;
-        std::string error;
         for (auto iDomain : _placement.LocalDomains())
-            try
-            {
-                const auto &domain = _config.Domains()[iDomain];
-                const MPIInfo mpi(_placement.Context(iDomain)->Communicator());
-                auto mesh = factory ? factory(iDomain, domain, mpi) : ReadMesh(domain, mpi);
-                _domains[iDomain] = std::make_unique<Domain>(domain.placement.name, std::move(mesh), domain.settings, _config.Time());
-            }
-            catch (const std::exception &exception)
-            {
-                valid = 0;
-                error = exception.what();
-            }
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _placement.Control());
-        DNDS_check_throw_info(valid, "Cauchy domain construction failed: " + error);
+        {
+            const auto &domain = _config.Domains()[iDomain];
+            const MPIInfo mpi(_placement.Context(iDomain)->Communicator());
+            auto mesh = factory ? factory(iDomain, domain, mpi) : ReadMesh(domain, mpi);
+            _domains[iDomain] = std::make_unique<Domain>(domain.placement.name, std::move(mesh), domain.settings, _config.Time());
+        }
         if (!_config.Interfaces().empty())
         {
             std::vector<const FiniteVolume *> local(_domains.size(), nullptr);
@@ -66,24 +57,14 @@ namespace DNDS::Cauchy
             // Separate packet allocations preserve these traces on rejection.
             const auto initialize = [&](bool prepared)
             {
-                int ready = 1;
-                std::string failure;
                 for (auto &domain : _domains)
                     if (domain)
-                        try
-                        {
-                            if (prepared)
-                                domain->_fv.PrepareReconstruction(domain->_trial.CoupledField(), *domain->_workspace, domain->_engine, domain->_stream, 0);
-                            else
-                                domain->_fv.RefreshSamplingInputs(domain->_trial.CoupledField(), *domain->_workspace, domain->_engine, domain->_stream);
-                        }
-                        catch (const std::exception &exception)
-                        {
-                            ready = 0;
-                            failure = exception.what();
-                        }
-                MPI_Allreduce(MPI_IN_PLACE, &ready, 1, MPI_INT, MPI_MIN, _placement.Control());
-                DNDS_check_throw_info(ready, "initial interface preparation failed: " + failure);
+                    {
+                        if (prepared)
+                            domain->_fv.PrepareReconstruction(domain->_trial.CoupledField(), *domain->_workspace, domain->_engine, domain->_stream, 0);
+                        else
+                            domain->_fv.RefreshSamplingInputs(domain->_trial.CoupledField(), *domain->_workspace, domain->_engine, domain->_stream);
+                    }
                 std::vector<InterfaceDomainInput> ports(_domains.size());
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                     if (auto &domain = _domains[iDomain])
@@ -92,18 +73,10 @@ namespace DNDS::Cauchy
                 _interfaces->Refresh(ports, 0, {});
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                     if (_domains[iDomain])
-                        try
-                        {
-                            if (const auto *input = _interfaces->Inputs(iDomain))
-                                _domains[iDomain]->BindInterfaceInputs(*input);
-                        }
-                        catch (const std::exception &exception)
-                        {
-                            ready = 0;
-                            failure = exception.what();
-                        }
-                MPI_Allreduce(MPI_IN_PLACE, &ready, 1, MPI_INT, MPI_MIN, _placement.Control());
-                DNDS_check_throw_info(ready, "initial interface binding failed: " + failure);
+                    {
+                        if (const auto *input = _interfaces->Inputs(iDomain))
+                            _domains[iDomain]->BindInterfaceInputs(*input);
+                    }
             };
             initialize(false);
             initialize(true);
@@ -143,6 +116,8 @@ namespace DNDS::Cauchy
             uint64_t trialIdentifier = 0;
             const auto localPhase = [&](const auto &action, const std::string &name)
             {
+                // Domain actions may contain MPI. Only an explicitly agreed
+                // numerical rejection permits this later control agreement.
                 int ready = 1;
                 std::string error;
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
@@ -151,13 +126,14 @@ namespace DNDS::Cauchy
                         {
                             action(iDomain, *_domains[iDomain]);
                         }
-                        catch (const std::exception &exception)
+                        catch (const StepRejected &exception)
                         {
                             ready = 0;
                             error = exception.what();
                         }
                 MPI_Allreduce(MPI_IN_PLACE, &ready, 1, MPI_INT, MPI_MIN, _placement.Control());
-                DNDS_check_throw_info(ready, "coordinated " + name + " failed; accepted states unchanged: " + error);
+                if (!ready)
+                    throw StepRejected("coordinated " + name + " rejected; accepted states unchanged: " + error);
             };
             const auto ports = [&](bool prepared)
             {
@@ -229,19 +205,46 @@ namespace DNDS::Cauchy
                                { domain._fv.RefreshSamplingInputs(domain._trial.CoupledField(), *domain._workspace, domain._engine, domain._stream); }, "accepted-time predictor halos");
                     refresh(_config.Time().steady ? _time : _time + dt, 0, false, true);
                 }
-                localPhase([&](index iDomain, Domain &domain)
-                           { MPI::LocalStage(MPIInfo(domain._fv.Metrics().Communicator()), [&]
-                                             {
-                        DNDS_check_throw_info(domain._trialReady&&(!domain._timeStepper||domain._timeStepper->HasPendingTrial()),"domain has no complete candidate");
-                        destinations[iDomain].emplace(domain._accepted.WriteOwned());
-                        sources[iDomain].emplace(domain._trial.ReadOwned()); }); }, "publication reservation");
+                // Only local lease acquisition belongs in this control-stage
+                // catch. Domain solves above contain MPI and must not be caught
+                // and followed by an unrelated control reduction on local failure.
+                try
+                {
+                    MPI::LocalStage(MPIInfo(_placement.Control()), [&]
+                                    {
+                    for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
+                        if (auto &domain = _domains[iDomain])
+                        {
+                            DNDS_check_throw_info(domain->_trialReady&&(!domain->_timeStepper||domain->_timeStepper->HasPendingTrial()),"domain has no complete candidate");
+                            destinations[iDomain].emplace(domain->_accepted.WriteOwned());
+                            sources[iDomain].emplace(domain->_trial.ReadOwned());
+                        } });
+                }
+                catch (...)
+                {
+                    for (auto &destination : destinations)
+                        if (destination)
+                            destination->CancelUnmodified();
+                    for (auto &domain : _domains)
+                        if (domain)
+                            domain->DiscardStep();
+                    if (_interfaces)
+                    {
+                        _interfaces->Discard();
+                        for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
+                            if (_domains[iDomain])
+                                if (const auto *input = _interfaces->Inputs(iDomain))
+                                    _domains[iDomain]->BindInterfaceInputs(*input);
+                    }
+                    throw;
+                }
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                     if (_domains[iDomain])
                         _domains[iDomain]->CommitReserved(*destinations[iDomain], *sources[iDomain]);
                 if (_interfaces)
                     _interfaces->Commit();
             }
-            catch (...)
+            catch (const StepRejected &)
             {
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                 {
@@ -255,8 +258,10 @@ namespace DNDS::Cauchy
                     _interfaces->Discard();
                     // Restore only ready accepted packets. No donor search,
                     // payload transfer or physical recomputation is needed.
-                    localPhase([&](index iDomain, Domain &domain)
-                               {if(const auto *input=_interfaces->Inputs(iDomain)) domain.BindInterfaceInputs(*input); }, "accepted trace restoration");
+                    for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
+                        if (_domains[iDomain])
+                            if (const auto *input = _interfaces->Inputs(iDomain))
+                                _domains[iDomain]->BindInterfaceInputs(*input);
                 }
                 throw;
             }
@@ -265,7 +270,6 @@ namespace DNDS::Cauchy
             ++_step;
             return;
         }
-        std::string failure;
         for (auto &domain : _domains)
             if (domain)
                 try
@@ -275,19 +279,11 @@ namespace DNDS::Cauchy
                                                             "domain was advanced outside its Simulation; use the coordinated frontend"); });
                     domain->PrepareStep(dt);
                 }
-                catch (const std::exception &exception)
+                catch (const StepRejected &)
                 {
-                    valid = 0;
-                    failure = exception.what();
-                }
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _placement.Control());
-        if (!valid)
-        {
-            for (auto &domain : _domains)
-                if (domain)
                     domain->DiscardStep();
-            DNDS_check_throw_info(false, "Cauchy candidate rejected; simulation clock unchanged: " + failure);
-        }
+                    throw;
+                }
         // Commit is serialized and collectively preflighted inside each domain.
         // External debug writers/aliases must be released before this call.
         for (auto &domain : _domains)

@@ -83,9 +83,10 @@ namespace DNDS::Cauchy
                 bool active = false;
             };
             std::vector<Input> inputs;
-            /// Slots are allocated at binding time. This scoped guard drains all
-            /// started requests on exceptions; no per-application vector allocation
-            /// or pending request survives the synchronous controller operation.
+            /// Slots are allocated at binding time. Normal retirement drains;
+            /// active transfer retirement during unwinding fails immediately.
+            /// No per-application allocation or pending request survives this
+            /// synchronous controller operation.
             class Exchange
             {
                 Input *_input = nullptr;
@@ -159,8 +160,9 @@ namespace DNDS::Cauchy
                 if (execution.overlap)
                     Stage([&]
                           { problem->Apply(input, output, LinearRegion::Core); });
+                exchange.Wait();
                 Stage([&]
-                      { exchange.Wait(); problem->Apply(input, output, execution.overlap ? LinearRegion::HaloDependent : LinearRegion::All); });
+                      { problem->Apply(input, output, execution.overlap ? LinearRegion::HaloDependent : LinearRegion::All); });
             }
             void Sweep(const Field &rhs, Field &input, Field &output, bool knownZero)
             {
@@ -174,11 +176,13 @@ namespace DNDS::Cauchy
                 if (knownZero) iteration->Lower();
                 else if (execution.overlap) iteration->Lower(LinearRegion::Core); });
                 if (!knownZero)
+                {
+                    exchange->Wait();
                     Stage([&]
-                          { exchange->Wait(); iteration->Lower(execution.overlap ? LinearRegion::HaloDependent : LinearRegion::All); });
+                          { iteration->Lower(execution.overlap ? LinearRegion::HaloDependent : LinearRegion::All); });
+                }
                 if (settings.exchangeBetweenSweeps)
-                    Stage([&]
-                          { Exchange(Halo(forward)).Wait(); });
+                    Exchange(Halo(forward)).Wait();
                 Stage([&]
                       { iteration->Upper(); iteration->Finish(); });
             }

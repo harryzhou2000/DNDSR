@@ -539,10 +539,12 @@ TEST_CASE("Staged field bundle preserves every source when a later preparation f
     };
     second.prepare = [&](const auto &, const auto &m) -> std::unique_ptr<PreparedCompanion>
     {
-        // This injected local phase posts no MPI. The bundle agrees on failure
-        // before proceeding to another field or publishing any retained value.
-        if (m.rank == 0)
-            throw std::runtime_error("injected second-field prepare failure");
+        // The callback owns its bounded local preflight. The bundle must not
+        // wrap an arbitrary MPI-containing callback in another catch/agreement.
+        DNDS::MPI::LocalStage(m, [&]
+                              {
+            if (m.rank == 0)
+                throw std::runtime_error("injected second-field prepare failure"); });
         return std::make_unique<FieldTransferDetail::Prepared<Runtime::Array<int64_t>>>(stages, stages);
     };
     ReorderRegistry registry;
@@ -944,8 +946,12 @@ TEST_CASE("Staged field attachment rejection precedes mesh mutation")
     {
         b.prepare = [&](const auto &, const auto &m) -> std::unique_ptr<PreparedCompanion>
         {
-            if (m.rank == 0)
-                throw std::runtime_error("second preparation rejected");
+            // Recover only a bounded local preflight owned by the callback.
+            // The outer transition cannot catch arbitrary collective work.
+            DNDS::MPI::LocalStage(m, [&]
+                                  {
+                if (m.rank == 0)
+                    throw std::runtime_error("second preparation rejected"); });
             return std::make_unique<FieldTransferDetail::Prepared<Runtime::Field<int64_t>>>(second, second);
         };
     }

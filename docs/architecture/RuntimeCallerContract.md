@@ -12,6 +12,32 @@ execution leaves ordering proof with the caller. A successful submission or `IsV
 that an operator read the intended time level. These obligations apply equally
 to inline CPU, worker CPU and CUDA execution.
 
+## Distributed exceptions
+
+`MPI::LocalStage` is a preflight around **local work only**. Every rank reaches
+its single agreement after that work returns or throws. Its action must not
+contain communication, collective I/O, a domain solve or an MPI-containing
+callback. Local communicator queries and datatype construction are safe.
+Wrapping a complete solver/transfer in a catch followed by `Allreduce` cannot
+recover it: a peer may still be in an earlier collective on another communicator.
+
+Unexpected exceptions propagate to a fail-fast application boundary. Use
+`MPI::Abort(comm, diagnostic)` there; do not perform another agreement or
+`MPI_Finalize`. `DNDS_assert` remains appropriate for hard invariants.
+Cleanup catches may cancel unused leases, mark partial output failed and rethrow;
+they must not launch communication or attempt distributed rollback. An active
+MPI transfer or pending MPI-progress owner destroyed during exception unwinding
+aborts instead of draining potentially unmatched work. Normal retirement still
+waits, and explicit completion failures remain observable.
+
+Worker execution retains exceptions until its event/synchronization is observed.
+That is a transport of the error to the controller, not numerical recovery.
+Observe worker completion before entering dependent MPI. For recoverable numerical
+outcomes, agree an explicit status after the local calculation and before the next
+communication phase. Cauchy's `StepRejected` is such a domain-wide status; arbitrary
+`std::exception` is not. Python controllers have the same duty and must abort the
+MPI run on unexpected exceptions rather than locally catching and continuing.
+
 ## Execution, access and final release
 
 1. Declare every accessed allocation and its intent in `SubmitArrays`. Use
@@ -155,7 +181,7 @@ a lock. Drain old operations before mutating their dependencies.
 
 `DynamicRowTransfer` pins its source and privately builds a destination preserving
 the local table width/stride, padded capacity or CSR family by default;
-construction and `Commit()` must follow matched collective order. It publishes
+construction and transport calls must follow matched participant order. Commit publishes
 only after successful payload completion. Multiple fields are separate operations:
 the application must commit and validate the complete field bundle before
 publishing a new mesh epoch. There is no atomic multi-field transaction.

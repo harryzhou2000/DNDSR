@@ -115,6 +115,11 @@ namespace DNDS::Cauchy
                 if (settings.contains("numerics") && settings["numerics"].is_object())
                 {
                     auto &numerics = settings["numerics"];
+                    // Earlier archives predate the coarse convection switch.
+                    // Its false default preserves their operator; true remains
+                    // a deliberate numerical compatibility difference.
+                    if (!numerics.value("firstOrderConvection", false))
+                        numerics.erase("firstOrderConvection");
                     // Adding inactive limiter controls must not invalidate
                     // older non-LVR checkpoints. Active LVR controls remain a
                     // numerical compatibility requirement.
@@ -696,10 +701,10 @@ namespace DNDS::Cauchy
         checkpoint->limitedVRHistory = std::move(mappedLimitedVRHistory);
         return checkpoint;
     }
-    void Domain::ReserveCheckpointRead(CheckpointRead &checkpoint)
+    void Domain::ReserveCheckpointRead(CheckpointRead &checkpoint, bool collectiveChecks)
     {
-        MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
-                        {
+        const auto reserve = [&]
+        {
             DNDS_check_throw_info(!checkpoint.committed && !checkpoint.destination, "checkpoint publication was already reserved or committed");
             checkpoint.source.emplace(_trial.ReadOwned());
             checkpoint.destination.emplace(_accepted.WriteOwned());
@@ -707,12 +712,16 @@ namespace DNDS::Cauchy
             {
                 checkpoint.input.push_back(checkpoint.source->Block(iBlock).owned);
                 checkpoint.output.push_back(checkpoint.destination->Block(iBlock));
-            } });
+            } };
+        if (collectiveChecks)
+            MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), reserve);
+        else
+            reserve();
         if (checkpoint.equationGuess)
-            checkpoint.reconstruction.emplace(_fv.ReserveReconstructionRestore(_equationWorkspace, *checkpoint.equationGuess));
+            checkpoint.reconstruction.emplace(_fv.ReserveReconstructionRestore(_equationWorkspace, *checkpoint.equationGuess, collectiveChecks));
         else
             checkpoint.reconstruction.emplace(_fv.ReserveReconstructionRestore(_workspace, *checkpoint.guess,
-                                                                               checkpoint.limitedVRHistory ? &*checkpoint.limitedVRHistory : nullptr));
+                                                                               checkpoint.limitedVRHistory ? &*checkpoint.limitedVRHistory : nullptr, collectiveChecks));
     }
     void Domain::CommitCheckpointRead(CheckpointRead &checkpoint)
     {

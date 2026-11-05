@@ -6,7 +6,13 @@
 namespace DNDS::MPI
 {
     /// Run local preparation, then agree before entering another collective.
-    /// The action must not perform unmatched MPI calls. All ranks participate,
+    /// The action must be rank-local: no communication, collective I/O, domain
+    /// solve or callback which may enter MPI. A catch followed by Allreduce
+    /// cannot recover a failure from inside an MPI-containing operation: peers
+    /// may still be in an earlier collective. Such errors must propagate to a
+    /// fail-fast application boundary (MPI_Abort, without another agreement).
+    /// Local communicator queries and local datatype construction are allowed.
+    /// All ranks participate,
     /// including empty owners. The originating exception is preserved locally;
     /// peers throw the supplied diagnostic. This is not distributed rollback.
     template <class F>

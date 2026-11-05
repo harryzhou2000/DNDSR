@@ -297,14 +297,7 @@ namespace DNDS::Cauchy
                 };
                 for (int level = 0; level < settings.multigrid.levels; ++level)
                 {
-                    auto lower = controls;
-                    lower.implicit.multigrid.levels = 0;
-                    lower.numerics.reconstruction = level == 0 ? "gradient" : "constant";
-                    lower.numerics.cfv.maxOrder = 1;
-                    if (lower.numerics.limiter == "LVR")
-                        lower.numerics.limiter = "WBAP";
-                    if (level)
-                        lower.numerics.limiter = "none";
+                    auto lower = PolynomialMultigrid::CoarseSettings(controls, level);
                     coarse.push_back(std::make_unique<Coarse>(mesh, lower, fine, state, engine, stream, workers));
                     levelDefinitions.push_back(MakeLevel(coarse.back()->state, *coarse.back()->solver, level + 1));
                     transferDefinitions.push_back({identity, identity, identity, true});
@@ -400,9 +393,8 @@ namespace DNDS::Cauchy
             }
             void SetBoundaryInputs(const BoundaryInputs &input)
             {
-                MPI::LocalStage(mpi, [&]
-                                {
-                    for (auto &lower : coarse) Profile::SetBoundaryInputs(lower->discrete, *lower->workspace, input); });
+                for (auto &lower : coarse)
+                    Profile::SetBoundaryInputs(lower->discrete, *lower->workspace, input);
             }
         };
     }
@@ -414,6 +406,21 @@ namespace DNDS::Cauchy
     {
         using PolynomialHierarchy::PolynomialHierarchy;
     };
+
+    DomainSettings PolynomialMultigrid::CoarseSettings(const DomainSettings &fine, index level)
+    {
+        DNDS_check_throw_info(level >= 0, "invalid polynomial coarse level");
+        auto lower = fine;
+        lower.implicit.multigrid.levels = 0;
+        lower.numerics.reconstruction = "gradient";
+        lower.numerics.firstOrderConvection = level > 0;
+        lower.numerics.cfv.maxOrder = 1;
+        if (lower.numerics.limiter == "LVR")
+            lower.numerics.limiter = "WBAP";
+        if (level)
+            lower.numerics.limiter = "none";
+        return lower;
+    }
 
     PolynomialMultigrid::PolynomialMultigrid(ssp<Geom::UnstructuredMesh> mesh, const FiniteVolume &fine, CFV::FVField &state,
                                              NonlinearSolver &solver, R::EagerEngine &engine, R::ExecutionStream stream, const DomainSettings &settings)

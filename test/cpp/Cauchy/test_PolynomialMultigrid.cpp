@@ -41,6 +41,66 @@ namespace
         }
     }
 }
+TEST_CASE("Bottom pMG uses mean convection but retains direct gradients in both RHS profiles")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 6);
+    auto fine = Controls();
+    fine.numerics.viscousGradient = "polynomial";
+    fine.numerics.faceFallback = false;
+    fine.numerics.characteristicLimiter = false;
+    const auto bottom = C::PolynomialMultigrid::CoarseSettings(fine, 1);
+    CHECK(bottom.numerics.reconstruction == "gradient");
+    CHECK(bottom.numerics.firstOrderConvection);
+    CHECK_FALSE(C::PolynomialMultigrid::CoarseSettings(fine, 0).numerics.firstOrderConvection);
+    for (bool logical : {false, true})
+        for (bool viscous : {false, true})
+        {
+            std::vector<double> results[2];
+            for (int variant = 0; variant < 2; ++variant)
+            {
+                auto settings = bottom;
+                settings.numerics.positivity = false;
+                settings.equation.transport = viscous ? "NewtonianFourier" : "inviscid";
+                settings.equation.viscosity = viscous ? .01 : 0;
+                if (variant)
+                    settings.numerics.reconstruction = "constant";
+                const auto equation = C::EquationSystem::Resolve(settings.equation);
+                C::FiniteVolume fv(mesh, settings, equation);
+                auto state = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
+                Fill(fv, equation, state, 0);
+                R::EagerEngine engine;
+                const auto stream = engine.CreateCPUStream();
+                if (logical)
+                {
+                    auto input = C::EquationDofs::Coupled(equation.Schema(), state);
+                    auto output = C::EquationDofs::Coupled(equation.Schema(), residual);
+                    auto workspace = fv.BuildEquationWorkspace(input);
+                    fv.Evaluate(input, output, *workspace, engine, stream);
+                }
+                else
+                {
+                    auto workspace = fv.BuildWorkspace(state);
+                    fv.Evaluate(state, residual, *workspace, engine, stream);
+                }
+                const auto read = residual.Owned().Read();
+                const auto values = read.View<R::UniformTableRows>();
+                for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+                    for (int j = 0; j < 5; ++j)
+                        results[variant].push_back(values(iCell, j));
+            }
+            double difference = 0;
+            for (DNDS::index i = 0; i < DNDS::index(results[0].size()); ++i)
+                difference = std::max(difference, std::abs(results[0][i] - results[1][i]));
+            MPI_Allreduce(MPI_IN_PLACE, &difference, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+            CAPTURE(logical);
+            CAPTURE(viscous);
+            CAPTURE(difference);
+            if (viscous)
+                CHECK(difference > 1e-6);
+            else
+                CHECK(difference < 1e-14);
+        }
+}
 TEST_CASE("Finest FAS acceptance shares selected-component L1 L2 convergence with the stage solver")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);

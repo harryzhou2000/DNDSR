@@ -10,6 +10,9 @@ namespace DNDS::Cauchy
     /// Local domain phases run serially on shared ranks and concurrently on
     /// disjoint communicators. Physical stages share one clock and consume a
     /// frozen interface round. Caller serializes stepping and external mutation.
+    /// Unexpected exceptions must escape to a fail-fast MPI application boundary;
+    /// catching locally and entering MPI/finalization can strand other ranks.
+    /// Only StepRejected certifies a collectively agreed numerical retry.
     class Simulation
     {
         SimulationConfig _config;

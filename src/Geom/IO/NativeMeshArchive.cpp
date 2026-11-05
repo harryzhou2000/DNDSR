@@ -47,6 +47,24 @@ namespace DNDS::Geom
                          { DNDS_check_throw_info(value == expected, "native archive metadata or collective options differ between ranks"); });
         }
 
+        /// Per-rank JSON codecs contain no MPI, so their errors can be agreed.
+        /// HDF5 operations own a collective protocol and must escape directly.
+        template <class F>
+        void CodecStage(const MPIInfo &mpi, const S::SerializerBaseSSP &serializer, F &&action)
+        {
+            if (serializer->IsPerRank())
+                ArchiveStage(mpi, std::forward<F>(action));
+            else
+                action();
+        }
+        template <class T>
+        void WriteRows(const R::Array<T> &rows, const S::SerializerBaseSSP &serializer, const std::string &name,
+                       const MPIInfo &mpi, const std::string &schema = {})
+        {
+            CodecStage(mpi, serializer, [&]
+                       { R::WriteArray(rows, serializer, name, mpi, schema); });
+        }
+
         int64_t Integer(const Json &value, int64_t minimum = 0, int64_t maximum = INT64_MAX)
         {
             DNDS_check_throw_info(value.is_number_integer(), "native archive integer metadata has a noninteger type");
@@ -205,16 +223,20 @@ namespace DNDS::Geom
                              S::ArrayGlobalOffset partition, index width, const std::string &schema)
         {
             DNDS_check_throw_info(width >= -1, "native archive uniform width is invalid");
-            auto array = R::ReadArray<T>(serializer, name, mpi, partition, R::Device::Host(), schema);
+            std::optional<R::Array<T>> read;
+            CodecStage(mpi, serializer, [&]
+                       { read.emplace(R::ReadArray<T>(serializer, name, mpi, partition, R::Device::Host(), schema)); });
+            auto array = std::move(*read);
             if (width >= 0)
             {
-                // The enclosing read stage agrees after both I/O and shape
-                // checks. No nested collective here: a per-rank codec error
-                // must not skip a collective entered by successful peers.
+                // I/O above owns its collective protocol. Only local shape
+                // checks belong in an error-agreement stage.
+                ArchiveStage(mpi, [&]
+                             {
                 for (index row = 0; row < array.RowCount(); ++row)
                     DNDS_check_throw_info(array.RowSize(row) == width, "native archive uniform row shape mismatch");
                 DNDS_check_throw_info(array.Layout().Elements() == size_t(CheckedSize::Multiply(array.RowCount(), width)),
-                                      "native archive uniform storage extent mismatch");
+                                      "native archive uniform storage extent mismatch"); });
                 return R::Array<T>::FromStorage(R::RowLayout::Dense(array.RowCount(), size_t(width)), array.Storage());
             }
             return array;
@@ -292,33 +314,29 @@ namespace DNDS::Geom
                      { encoded = metadata.dump(); });
         Agree(mpi, encoded);
         R::Detail::SerializerPath guard(serializer);
-        ArchiveStage(mpi, [&]
-                     {
+        CodecStage(mpi, serializer, [&]
+                   {
             serializer->CreatePath(name);
             serializer->GoToPath(name);
             serializer->WriteString("metadata_json", encoded);
             if (serializer->IsPerRank()) serializer->WriteInt("writer_rank", mpi.rank); });
         for (const auto &[kind, ids] : owned.ids)
-            ArchiveStage(mpi, [&]
-                         { R::WriteArray(ids, serializer, "ids_" + std::to_string(int(kind)), mpi); });
+            WriteRows(ids, serializer, "ids_" + std::to_string(int(kind)), mpi);
         if (owned.provenance)
             for (const auto &[kind, values] : owned.provenance->sourceIds)
-                ArchiveStage(mpi, [&]
-                             { R::WriteArray(values, serializer, "ancestry_" + std::to_string(int(kind)), mpi); });
+                WriteRows(values, serializer, "ancestry_" + std::to_string(int(kind)), mpi);
         for (size_t slot = 0; slot < owned.relations.size(); ++slot)
             if (owned.relations[slot])
-                ArchiveStage(mpi, [&]
-                             { R::WriteArray(*owned.relations[slot], serializer, "fixed_" + std::to_string(slot), mpi); });
+                WriteRows(*owned.relations[slot], serializer, "fixed_" + std::to_string(slot), mpi);
         size_t number = 0;
         for (const auto &[key, rows] : owned.namedRelations)
         {
-            ArchiveStage(mpi, [&]
-                         { R::WriteArray(rows, serializer, "named_" + std::to_string(number), mpi); });
+            WriteRows(rows, serializer, "named_" + std::to_string(number), mpi);
             ++number;
         }
         Companions(owned, [&](const char *field, EntityKind, const auto &rows, const char *schema)
                    {
-            if (rows) ArchiveStage(mpi, [&] { R::WriteArray(*rows, serializer, field, mpi, schema); }); });
+            if (rows) WriteRows(*rows, serializer, field, mpi, schema); });
     }
 
     NativeOwnedMeshData ReadNativeMeshArchiveOwned(const MPIInfo &mpi, S::SerializerBaseSSP serializer,
@@ -332,16 +350,18 @@ namespace DNDS::Geom
         Agree(mpi, std::to_string(partition.offset()));
         R::Detail::SerializerPath guard(serializer);
         std::string encoded;
-        ArchiveStage(mpi, [&]
-                     {
+        CodecStage(mpi, serializer, [&]
+                   {
             serializer->GoToPath(name);
-            serializer->ReadString("metadata_json", encoded);
-            if (serializer->IsPerRank())
-            {
-                index rank = -1;
+            serializer->ReadString("metadata_json", encoded); });
+        if (serializer->IsPerRank())
+        {
+            index rank = -1;
+            ArchiveStage(mpi, [&]
+                         {
                 serializer->ReadIndex("writer_rank", rank);
-                DNDS_check_throw_info(rank == mpi.rank, "per-rank native archive belongs to another rank");
-            } });
+                DNDS_check_throw_info(rank == mpi.rank, "per-rank native archive belongs to another rank"); });
+        }
         Agree(mpi, encoded);
         Json metadata;
         NativeOwnedMeshData owned;
@@ -459,14 +479,15 @@ namespace DNDS::Geom
                 for (size_t j = 0; j < 3; ++j) owned.periodicInfo.rotationCenter[image].map()[j] = values[12 + j];
             } });
         for (const auto &[kind, total] : totals)
-            ArchiveStage(mpi, [&]
-                         { owned.ids.emplace(kind, ReadRows<index>(serializer, "ids_" + std::to_string(int(kind)), mpi, partition, 1, R::ArraySchema<index>())); });
+            owned.ids.emplace(kind, ReadRows<index>(serializer, "ids_" + std::to_string(int(kind)), mpi, partition, 1, R::ArraySchema<index>()));
         for (const auto &[kind, width] : provenanceWidths)
+        {
+            auto values = ReadRows<index>(serializer, "ancestry_" + std::to_string(int(kind)), mpi, partition, width, R::ArraySchema<index>());
             ArchiveStage(mpi, [&]
                          {
-                auto values = ReadRows<index>(serializer, "ancestry_" + std::to_string(int(kind)), mpi, partition, width, R::ArraySchema<index>());
                 DNDS_check_throw_info(values.RowCount() == owned.ids.at(kind).RowCount(), "native archive ancestry partition differs from its entity family");
                 owned.provenance->sourceIds.emplace(kind, std::move(values)); });
+        }
         std::map<EntityKind, index> localMaxima;
         ArchiveStage(mpi, [&]
                      {
@@ -500,17 +521,15 @@ namespace DNDS::Geom
                 DNDS_check_throw_info(space.NumGlobal() == totals.at(kind), "native archive family global row count mismatch"); });
         for (size_t slot = 0; slot < owned.relations.size(); ++slot)
             if (!metadata["fixed"][slot].is_null())
-                ArchiveStage(mpi, [&]
-                             { owned.relations[slot] = ReadRows<index>(serializer, "fixed_" + std::to_string(slot), mpi, partition, Integer(metadata["fixed"][slot], -1), R::ArraySchema<index>()); });
+                owned.relations[slot] = ReadRows<index>(serializer, "fixed_" + std::to_string(slot), mpi, partition, Integer(metadata["fixed"][slot], -1), R::ArraySchema<index>());
         for (size_t number = 0; number < named.size(); ++number)
-            ArchiveStage(mpi, [&]
-                         { owned.namedRelations.emplace(named[number], ReadRows<index>(serializer, "named_" + std::to_string(number), mpi, partition, Integer(metadata["named"][number].at("width"), -1), R::ArraySchema<index>())); });
+            owned.namedRelations.emplace(named[number], ReadRows<index>(serializer, "named_" + std::to_string(number), mpi, partition, Integer(metadata["named"][number].at("width"), -1), R::ArraySchema<index>()));
         Companions(owned, [&](const char *field, EntityKind, auto &rows, const char *schema)
                    {
             if (!metadata["companions"].contains(field)) return;
             using Array = typename std::decay_t<decltype(rows)>::value_type;
             using T = std::remove_const_t<std::remove_reference_t<decltype(std::declval<Array>().Read().View()(0, 0))>>;
-            ArchiveStage(mpi, [&] { rows = ReadRows<T>(serializer, field, mpi, partition, Integer(metadata["companions"][field].at("width"), -1), schema); }); });
+            rows = ReadRows<T>(serializer, field, mpi, partition, Integer(metadata["companions"][field].at("width"), -1), schema); });
         return owned;
     }
 

@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 from DNDSR import DNDS, Geom
-from DNDSR.Cauchy import Domain, Simulation, PhysicalStepLimit, DerivedQuantity
+from DNDSR.Cauchy import Domain, Simulation, StepRejected, PhysicalStepLimit, DerivedQuantity
 
 
 @pytest.mark.mpi
@@ -421,6 +421,24 @@ def test_rank_local_invalid_config_is_collectively_rejected():
     mesh = Geom.with_native_topology(Geom.read_native_cgns(mpi, str(path), 2))
     with pytest.raises(RuntimeError):
         Domain(mesh, "{" if MPI.COMM_WORLD.rank == 0 else "{}")
+
+
+@pytest.mark.mpi
+def test_explicit_numerical_rejection_has_a_distinct_python_exception():
+    domain, _ = build_domain(layout="soa", flux="rusanov", workers=0)
+    flow = domain.flow
+    if MPI.COMM_WORLD.rank == 0 and flow.shape[0]:
+        # A physical pressure jump has a finite RHS but an enormous explicit
+        # timestep makes the stage inadmissible. The acceptance is collective.
+        flow[0, 4] = float(flow[0, 4]) + 1
+    saved = flow.numpy().copy()
+    with pytest.raises(StepRejected):
+        domain.advance(1e4)
+    assert domain.time == 0 and domain.step == 0
+    np.testing.assert_array_equal(flow.numpy(), saved)
+    domain.discard_step()
+    domain.advance(1e-6)
+    assert domain.step == 1
 
 
 @pytest.mark.mpi

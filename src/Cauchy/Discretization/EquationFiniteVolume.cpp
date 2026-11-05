@@ -369,7 +369,8 @@ namespace DNDS::Cauchy
                         {
                             const real value = recBlocks[iBlock](iCell, j * modes + mode);
                             const index logical = logicalFirst[iBlock] + j;
-                            point.values[logical] += value * basis(0, mode);
+                            if (!owner->settings.numerics.firstOrderConvection)
+                                point.values[logical] += value * basis(0, mode);
                             if (viscous)
                                 for (int d = 0; d < dim; ++d)
                                     point.gradient(logical, d) += value * basis(1 + d, mode);
@@ -829,16 +830,27 @@ namespace DNDS::Cauchy
         auto restore = ReserveReconstructionRestoreImpl(work, guess, {});
         restore.Commit();
     }
-    FiniteVolume::ReconstructionRestore FiniteVolume::ReserveReconstructionRestore(std::shared_ptr<EquationWorkspace> work, const EquationDofs &guess) const
+    FiniteVolume::ReconstructionRestore FiniteVolume::ReserveReconstructionRestore(std::shared_ptr<EquationWorkspace> work, const EquationDofs &guess, bool collectiveChecks) const
     {
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        { DNDS_check_throw_info(bool(work), "null equation reconstruction workspace"); });
+        const auto validate = [&]
+        { DNDS_check_throw_info(bool(work), "null equation reconstruction workspace"); };
+        if (collectiveChecks)
+            MPI::LocalStage(MPIInfo(Metrics().Communicator()), validate);
+        else
+            validate();
         auto &reference = *work;
-        return ReserveReconstructionRestoreImpl(reference, guess, std::move(work));
+        return ReserveReconstructionRestoreImpl(reference, guess, std::move(work), collectiveChecks);
     }
     FiniteVolume::ReconstructionRestore FiniteVolume::ReserveReconstructionRestoreImpl(EquationWorkspace &work, const EquationDofs &guess,
-                                                                                       std::shared_ptr<EquationWorkspace> retained) const
+                                                                                       std::shared_ptr<EquationWorkspace> retained, bool collectiveChecks) const
     {
+        const auto stage = [&](const auto &run)
+        {
+            if (collectiveChecks)
+                MPI::LocalStage(MPIInfo(Metrics().Communicator()), run);
+            else
+                run();
+        };
         struct Reservation
         {
             std::shared_ptr<EquationWorkspace> owner;
@@ -854,8 +866,8 @@ namespace DNDS::Cauchy
             }
         };
         std::shared_ptr<Reservation> reservation;
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        stage([&]
+              {
                 reservation = std::make_shared<Reservation>();
                 reservation->owner = std::move(retained);
                 DNDS_check_throw_info(work.owner == _data, "foreign equation reconstruction workspace");
@@ -874,9 +886,9 @@ namespace DNDS::Cauchy
                 for (index iBlock = 0; iBlock < guess.BlockNumber(); ++iBlock)
                     reservation->output.push_back(reservation->destination->Block(iBlock)); });
         std::optional<ReconstructionRestore> restore;
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        { restore.emplace(ReconstructionRestore([reservation, &work]() noexcept
-                                                                {
+        stage([&]
+              { restore.emplace(ReconstructionRestore([reservation, &work]() noexcept
+                                                      {
             reservation->started = true;
             for (index iBlock = 0; iBlock < index(reservation->input.size()); ++iBlock)
             {

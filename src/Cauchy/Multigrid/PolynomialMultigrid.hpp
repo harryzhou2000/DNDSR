@@ -21,6 +21,11 @@ namespace DNDS::Cauchy
         std::shared_ptr<EquationData> _equationData;
 
     public:
+        /// Zero-based coarse-level controls, also usable to reproduce a level
+        /// operator independently. Level 0 uses direct-gradient O2 convection;
+        /// subsequent levels use mean convection with the same gradients for
+        /// diffusion and sources. No mesh/state ownership is changed.
+        static DomainSettings CoarseSettings(const DomainSettings &fine, index level);
         PolynomialMultigrid(ssp<Geom::UnstructuredMesh> mesh, const FiniteVolume &fine, CFV::FVField &state,
                             NonlinearSolver &fineSolver, Runtime::EagerEngine &engine, Runtime::ExecutionStream stream,
                             const DomainSettings &settings);
@@ -43,7 +48,7 @@ namespace DNDS::Cauchy
         EquationNonlinearIterationReport ApplyCycle(const EquationDofs &source, real mass, real rhsScale, real time,
                                                     int stage = 0, real pseudoCFL = 0);
         /// Frozen stage trace shared with coarse levels after checking their
-        /// canonical boundary quadrature order. Performs no interface exchange.
+        /// canonical boundary quadrature order. Local alias binding only; no MPI.
         void SetBoundaryInputs(const BoundaryInputs &input);
     };
 }

@@ -1,5 +1,6 @@
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/Simulation.hpp"
+#include "Cauchy/Core/StepRejected.hpp"
 #include "DNDS/Runtime/Interop/Array_bind.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
@@ -16,6 +17,7 @@ PYBIND11_MODULE(cauchy_pybind11, m)
     namespace C = DNDS::Cauchy;
     namespace R = DNDS::Runtime;
     py::module_::import("DNDSR.CFV");
+    py::register_exception<C::StepRejected>(m, "StepRejected", PyExc_RuntimeError);
     py::class_<C::InterfaceDiagnostics>(m, "InterfaceDiagnostics", "Global coupling work counters; donor changes include nonmonotone stage revisits and rejected trials.")
         .def_readonly("query_points", &C::InterfaceDiagnostics::queryPoints)
         .def_readonly("changed_donors", &C::InterfaceDiagnostics::changedDonors)
@@ -126,7 +128,7 @@ PYBIND11_MODULE(cauchy_pybind11, m)
                  for (DNDS::index iField = 0; iField < value->PhysicalFieldNumber(); ++iField)
                      result.emplace(value->Fields().Name(iField), R::PythonArray::Share(value->PhysicalField(iField).Owned()));
                  return result; }, "Collective full-equation integrated residual fields; shared overwriteable scratch, with the same candidate-invalidating and view-release rules as residual.")
-        .def("advance", &C::Domain::Advance, py::arg("dt"), py::call_guard<py::gil_scoped_release>(), "Collective configured time method; invalid candidate leaves accepted state/time/history unchanged. SSPRK uses raw flow5/species increments, with separate RANS scalar repair. On positivity rejection call discard_step and retry the whole step with smaller dt; maxRetries is a C++ frontend control, not automatic here. Rebuild the Domain after a backend failure that poisons scratch.")
+        .def("advance", &C::Domain::Advance, py::arg("dt"), py::call_guard<py::gil_scoped_release>(), "Collective configured time method. Only StepRejected certifies a domain-wide numerical rejection: discard_step and retry with smaller dt. Other exceptions must terminate the MPI run immediately (for example MPI.COMM_WORLD.Abort(1)); do not catch locally and continue to MPI/finalization. SSPRK keeps raw flow5/species increments and separate RANS repair. maxRetries belongs to the C++ frontend.")
         .def("prepare_step", &C::Domain::PrepareStep, py::arg("dt"), py::call_guard<py::gil_scoped_release>(), "Prepare all stages without publication. Discard a failed trial before smaller-dt retry; release debug views before preparation and commit.")
         .def("commit_step", &C::Domain::CommitStep, py::call_guard<py::gil_scoped_release>())
         .def("discard_step", &C::Domain::DiscardStep)
@@ -175,7 +177,7 @@ PYBIND11_MODULE(cauchy_pybind11, m)
         .def("local", &C::Simulation::Local, py::arg("domain"))
         .def("domain", static_cast<C::Domain &(C::Simulation::*)(DNDS::index)>(&C::Simulation::GetDomain), py::arg("domain"), py::return_value_policy::reference_internal,
              "Borrow a local domain, retaining Simulation. Advance through Simulation to keep clocks and interface snapshots coordinated.")
-        .def("advance", &C::Simulation::Advance, py::arg("dt"), py::call_guard<py::gil_scoped_release>(), "Collective coordinated step with the same dt on all control ranks. Positivity rejection discards every domain trial without advancing accepted states/time; the caller supplies smaller dt and retries. No automatic maxRetries here; backend failures may require rebuilding poisoned scratch.")
+        .def("advance", &C::Simulation::Advance, py::arg("dt"), py::call_guard<py::gil_scoped_release>(), "Collective coordinated step with the same dt on all control ranks. Only StepRejected certifies an agreed numerical retry; other exceptions must reach a fail-fast MPI application boundary without another collective/finalization. No automatic maxRetries here.")
         .def("write_checkpoint", &C::Simulation::WriteCheckpoint, py::arg("path"), py::arg("reconstruction") = false,
              py::call_guard<py::gil_scoped_release>(), "Collective coordinated checkpoint; multi-domain manifests retain per-domain native archives. All ranks use the same path and release conflicting views.")
         .def("read_checkpoint", &C::Simulation::ReadCheckpoint, py::arg("path"), py::call_guard<py::gil_scoped_release>(),

@@ -3,6 +3,7 @@
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/Simulation.hpp"
+#include "Cauchy/Core/StepRejected.hpp"
 #include "../CFV/ReconstructionFixture.hpp"
 #include "../Geom/NativeMeshOverlapFixture.hpp"
 #include "CartesianFixture.hpp"
@@ -616,7 +617,7 @@ TEST_CASE("Cauchy rejects inadmissible trial collectively and retries without ac
         }
     }
     const auto before = domain.State().Clone();
-    CHECK_THROWS(domain.Advance(1e4));
+    CHECK_THROWS_AS(domain.Advance(1e4), C::StepRejected);
     CHECK(domain.Time() == 0);
     CHECK(domain.Epoch().acceptedStep == 0);
     {
@@ -1011,7 +1012,7 @@ TEST_CASE("Cauchy thermal PP rejects invalid low-order stages collectively witho
         }
     }
     const auto saved = domain.State().Clone();
-    CHECK_THROWS_WITH_AS(domain.Advance(1e4), doctest::Contains("both low/high PP stage candidates"), std::exception);
+    CHECK_THROWS_WITH_AS(domain.Advance(1e4), doctest::Contains("admissible low-order stage"), C::StepRejected);
     CHECK(domain.Time() == 0);
     CHECK(domain.Epoch().acceptedStep == 0);
     {

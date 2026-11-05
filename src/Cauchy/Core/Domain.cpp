@@ -1,4 +1,5 @@
 #include "Cauchy/Core/Domain.hpp"
+#include "Cauchy/Core/StepRejected.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
@@ -158,6 +159,7 @@ namespace DNDS::Cauchy
         if (!_equationWorkspace)
             return _fv.Admissible(FlowField(state));
         int valid = 1;
+        std::exception_ptr failure;
         try
         {
             auto evaluator = _equation.MakePointEvaluator(_workers ? _workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {});
@@ -188,10 +190,16 @@ namespace DNDS::Cauchy
         }
         catch (...)
         {
-            valid = 0;
+            // Purely local thermodynamic work above. Preserve backend/access
+            // errors rather than converting them into numerical rejection.
+            failure = std::current_exception();
         }
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _fv.Metrics().Communicator());
-        return bool(valid);
+        int status[]{valid, !failure};
+        MPI_Allreduce(MPI_IN_PLACE, status, 2, MPI_INT, MPI_MIN, _fv.Metrics().Communicator());
+        if (failure)
+            std::rethrow_exception(failure);
+        DNDS_check_throw_info(status[1], "Cauchy admissibility evaluation failed on another rank");
+        return bool(status[0]);
     }
     bool Domain::RefreshDerived(DerivedFields &fields, bool onlyIfStale) const
     {
@@ -276,7 +284,8 @@ namespace DNDS::Cauchy
                             state(iCell, j) = historyWeight * base(iCell, j) + stageWeight * (state(iCell, j) + dt * rhs(iCell, j) / metric.GetCellVol(iCell));
                     }
                 } });
-            DNDS_check_throw_info(Admissible(_trial), "Cauchy explicit extended-equation stage is inadmissible; accepted state unchanged");
+            if (!Admissible(_trial))
+                throw StepRejected("Cauchy explicit extended-equation stage is inadmissible; accepted state unchanged");
             return;
         }
         _fv.Evaluate(_trial, _residual, *_workspace, _engine, _stream, stageTime);
@@ -315,7 +324,6 @@ namespace DNDS::Cauchy
                     safe[0] &= ThermallyAdmissible(target, _fv.ThermalConstraints());
                     const bool lowSafe = ThermallyAdmissible(base, _fv.ThermalConstraints());
                     safe[1] &= lowSafe;
-                    DNDS_check_throw_info(lowSafe || ThermallyAdmissible(target, _fv.ThermalConstraints()), "both low/high PP stage candidates are inadmissible; reduce dt");
                     const auto fraction = lowSafe ? AdmissibleFraction(base, target, _fv.ThermalConstraints()) : real(1);
                     if (fraction < 1) { ++limited; alpha = std::min(alpha, fraction); }
                 } });
@@ -331,7 +339,8 @@ namespace DNDS::Cauchy
                 // A shared flux blend uses the low-order endpoint everywhere;
                 // local success of the high endpoint cannot excuse an invalid
                 // low endpoint when another cell actually requires blending.
-                DNDS_check_throw_info(safe[1], "global conservative PP blend requires admissible low-order stage; reduce dt");
+                if (!safe[1])
+                    throw StepRejected("global conservative PP blend requires admissible low-order stage; reduce dt");
             }
             MPI_Allreduce(MPI_IN_PLACE, &limited, 1, MPI_INT64_T, MPI_SUM, _fv.Metrics().Communicator());
             _lastAlpha = std::min(_lastAlpha, alpha);
@@ -353,7 +362,8 @@ namespace DNDS::Cauchy
                     stage(iCell, j) = historyWeight * initial(iCell, j) + stageWeight * (stage(iCell, j) + dt * residual / metrics.GetCellVol(iCell));
                 } }, R::ReadAs<R::UniformTableRows>(_initial.CoupledField().Owned()), R::ReadAs<R::UniformTableRows>(_residual.Owned()), R::ReadWriteAs<R::UniformTableRows>(_trial.CoupledField().Owned()));
         _stream.Record().WaitHost();
-        DNDS_check_throw_info(_fv.Admissible(_trial.CoupledField()), "Cauchy SSPRK3 stage is inadmissible; accepted state unchanged");
+        if (!_fv.Admissible(_trial.CoupledField()))
+            throw StepRejected("Cauchy SSPRK3 stage is inadmissible; accepted state unchanged");
     }
     void Domain::BeginTrial(real dt)
     {
@@ -439,12 +449,14 @@ namespace DNDS::Cauchy
     int Domain::CoordinatedStageNumber() const { return _timeStepper ? _timeStepper->StageNumber() : 3; }
     void Domain::BindInterfaceInputs(const BoundaryInputs &input)
     {
-        MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
-                        {
-            _fv.SetBoundaryInputs(*_workspace,input);
-            if(_observationWorkspace) _fv.SetBoundaryInputs(*_observationWorkspace,input);
-            if(_timePPWorkspace) _fv.SetBoundaryInputs(*_timePPWorkspace,input);
-            _interfaceInputs=input; });
+        // Local validated aliases only. This must stay free of MPI so cleanup
+        // can restore an already accepted packet without another collective.
+        _fv.SetBoundaryInputs(*_workspace, input);
+        if (_observationWorkspace)
+            _fv.SetBoundaryInputs(*_observationWorkspace, input);
+        if (_timePPWorkspace)
+            _fv.SetBoundaryInputs(*_timePPWorkspace, input);
+        _interfaceInputs = input;
         if (_multigrid)
             _multigrid->SetBoundaryInputs(input);
     }
@@ -487,7 +499,8 @@ namespace DNDS::Cauchy
                                                                                          : _equationImplicit->Solve(_trial, *equation.source, equation.mass, equation.rhsScale, equation.time, equation.stage))
                                                         : RecordImplicitStage(_multigrid ? _multigrid->Solve(equation.source->CoupledField(), equation.mass, equation.rhsScale, equation.time, equation.stage)
                                                                                          : _implicit->Solve(_trial.CoupledField(), equation.source->CoupledField(), equation.mass, equation.rhsScale, equation.time, equation.stage));
-                DNDS_check_throw_info(accepted, "coordinated implicit stage reached its correction cap");
+                if (!accepted)
+                    throw StepRejected("coordinated implicit stage reached its correction cap");
             }
         }
         else
@@ -508,7 +521,8 @@ namespace DNDS::Cauchy
         if (++_coordinatedStage == CoordinatedStageNumber())
         {
             FinishChemicalStep();
-            DNDS_check_throw_info(Admissible(_trial), "coordinated candidate is inadmissible");
+            if (!Admissible(_trial))
+                throw StepRejected("coordinated candidate is inadmissible");
             _trialTime = _steady ? _time : _time + _trialDt;
             _trialReady = true;
         }

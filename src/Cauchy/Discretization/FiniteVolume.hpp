@@ -209,9 +209,12 @@ namespace DNDS::Cauchy
                 commit();
             }
         };
+        /// Reservation is memory-only. With collectiveChecks=false it performs
+        /// no MPI; the caller must agree all reservations before any Commit.
+        /// Simulation uses that mode for one cross-domain publication preflight.
         ReconstructionRestore ReserveReconstructionRestore(std::shared_ptr<Workspace> workspace, const Runtime::Array<real> &coefficients,
-                                                           const Runtime::Array<real> *limitedVRHistory = nullptr) const;
-        ReconstructionRestore ReserveReconstructionRestore(std::shared_ptr<EquationWorkspace> workspace, const EquationDofs &guess) const;
+                                                           const Runtime::Array<real> *limitedVRHistory = nullptr, bool collectiveChecks = true) const;
+        ReconstructionRestore ReserveReconstructionRestore(std::shared_ptr<EquationWorkspace> workspace, const EquationDofs &guess, bool collectiveChecks = true) const;
         /// Full logical-state CPU workspace on the same geometry/CFV plans.
         /// Each physical field keeps its layout and shared row routing; no
         /// whole-state packing is performed. Matching schema/physical grouping
@@ -622,9 +625,9 @@ namespace DNDS::Cauchy
 
     private:
         ReconstructionRestore ReserveReconstructionRestoreImpl(Workspace &workspace, const Runtime::Array<real> &coefficients,
-                                                               const Runtime::Array<real> *limitedVRHistory, std::shared_ptr<Workspace> retained) const;
+                                                               const Runtime::Array<real> *limitedVRHistory, std::shared_ptr<Workspace> retained, bool collectiveChecks = true) const;
         ReconstructionRestore ReserveReconstructionRestoreImpl(EquationWorkspace &workspace, const EquationDofs &guess,
-                                                               std::shared_ptr<EquationWorkspace> retained) const;
+                                                               std::shared_ptr<EquationWorkspace> retained, bool collectiveChecks = true) const;
         std::shared_ptr<EquationWorkspace> BuildEquationWorkspaceImpl(EquationDofs &state,
                                                                       std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, bool meanOnly) const;
         void EvaluateEquationImpl(EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace,

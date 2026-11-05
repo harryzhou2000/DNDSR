@@ -105,7 +105,14 @@ TEST_CASE("Transient reduction stages collisions and rejects a partial publicati
                                         { if (rank == 0) throw std::runtime_error("injected reduction failure"); a += b; }, int64_t(0));
     DynamicRowTransfer rejected(route, source.SharedStorage(), ElementSchema::Arithmetic<int64_t>(), Device::Host(),
                                 TransferTransport::Direct, {TransferMode::Transient, context, 62}, bad);
-    CHECK_THROWS(rejected.Commit());
+    // Completion errors are local: Commit must not try an error reduction
+    // while another rank may still be progressing its transfer. A real caller
+    // aborts the distributed run. This injected reducer runs after MPI drains,
+    // so this test can inspect the failing rank and the successful peer.
+    if (rank == 0)
+        CHECK_THROWS(rejected.Commit());
+    else
+        CHECK_NOTHROW(rejected.Commit());
     CHECK_THROWS(rejected.Commit());
 }
 

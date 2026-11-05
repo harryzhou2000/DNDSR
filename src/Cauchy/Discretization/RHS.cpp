@@ -119,7 +119,8 @@ namespace DNDS::Cauchy
                         for (int mode = 0; mode < modes; ++mode)
                         {
                             const real value = coefficient(cell, component * modes + mode);
-                            state[component] += value * basis(0, mode);
+                            if (!data->settings.numerics.firstOrderConvection)
+                                state[component] += value * basis(0, mode);
                             if (polynomialViscosity)
                             {
                                 const real viscousValue = input.viscousCoefficients ? viscousCoefficient(cell, component * modes + mode) : value;

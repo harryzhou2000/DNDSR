@@ -572,18 +572,29 @@ namespace DNDS::Cauchy
         restore.Commit();
     }
     FiniteVolume::ReconstructionRestore FiniteVolume::ReserveReconstructionRestore(std::shared_ptr<Workspace> workspace, const R::Array<real> &coefficients,
-                                                                                   const R::Array<real> *limitedVRHistory) const
+                                                                                   const R::Array<real> *limitedVRHistory, bool collectiveChecks) const
     {
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        { DNDS_check_throw_info(bool(workspace), "null reconstruction workspace"); });
+        const auto validate = [&]
+        { DNDS_check_throw_info(bool(workspace), "null reconstruction workspace"); };
+        if (collectiveChecks)
+            MPI::LocalStage(MPIInfo(Metrics().Communicator()), validate);
+        else
+            validate();
         auto &reference = *workspace;
-        return ReserveReconstructionRestoreImpl(reference, coefficients, limitedVRHistory, std::move(workspace));
+        return ReserveReconstructionRestoreImpl(reference, coefficients, limitedVRHistory, std::move(workspace), collectiveChecks);
     }
     FiniteVolume::ReconstructionRestore FiniteVolume::ReserveReconstructionRestoreImpl(Workspace &workspace, const R::Array<real> &coefficients,
-                                                                                       const R::Array<real> *limitedVRHistory, std::shared_ptr<Workspace> retained) const
+                                                                                       const R::Array<real> *limitedVRHistory, std::shared_ptr<Workspace> retained, bool collectiveChecks) const
     {
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        const auto stage = [&](const auto &run)
+        {
+            if (collectiveChecks)
+                MPI::LocalStage(MPIInfo(Metrics().Communicator()), run);
+            else
+                run();
+        };
+        stage([&]
+              {
             DNDS_check_throw_info(workspace.owner == _data.get() && coefficients.GetDevice() == R::Device::Host() &&
                                       !coefficients.Layout().IsVariable() && coefficients.RowCount() == Metrics().NumCell() &&
                                       coefficients.Layout().Width() == workspace.reconstruction.coefficients.Width(),
@@ -626,8 +637,8 @@ namespace DNDS::Cauchy
             }
         };
         std::shared_ptr<Reservation> reservation;
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        stage([&]
+              {
             reservation = std::make_shared<Reservation>();
             reservation->owner = std::move(retained);
             reservation->source.emplace(coefficients.Read());
@@ -641,9 +652,9 @@ namespace DNDS::Cauchy
         const auto from = reservation->historySource ? reservation->historySource->View<R::UniformTableRows>() : ReadView{};
         const auto to = reservation->historyDestination ? reservation->historyDestination->View<R::UniformTableRows>() : WriteView{};
         std::optional<ReconstructionRestore> restore;
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        { restore.emplace(ReconstructionRestore([reservation, &workspace, input, output, from, to]() noexcept
-                                                                {
+        stage([&]
+              { restore.emplace(ReconstructionRestore([reservation, &workspace, input, output, from, to]() noexcept
+                                                      {
             reservation->started = true;
             for (index iCell = 0; iCell < output.RowCount(); ++iCell)
                 for (index j = 0; j < output.RowSize(iCell); ++j)

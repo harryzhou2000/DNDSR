@@ -1,4 +1,5 @@
 #include "Cauchy/Core/Domain.hpp"
+#include "Cauchy/Core/StepRejected.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 
@@ -343,8 +344,9 @@ namespace DNDS::Cauchy
                 details["vr_sweeps"] = last.reconstructionIterations;
                 details["vr_relative_update"] = last.reconstructionRelativeUpdate;
             }
-            DNDS_check_throw_info(false, "Cauchy implicit stage reached its correction cap; accepted state/history unchanged; " + details.dump());
+            throw StepRejected("Cauchy implicit stage reached its correction cap; accepted state/history unchanged; " + details.dump());
         }
-        DNDS_check_throw_info(Admissible(_trial), "Cauchy implicit candidate is inadmissible");
+        if (!Admissible(_trial))
+            throw StepRejected("Cauchy implicit candidate is inadmissible");
     }
 }

@@ -9,8 +9,9 @@ namespace DNDS::Cauchy
 {
     /// One physical clock for all fluid domains. A round consumes frozen traces
     /// and returns fresh candidates; iteration order does not implement block GS.
-    /// Domain-local work must complete/coordinate its own collectives before
-    /// returning or throwing. MPI process failure recovery is not provided.
+    /// Domain work owns its collectives. Unexpected exceptions propagate to a
+    /// fail-fast application boundary without a control agreement/recovery.
+    /// Nonfinite returned candidates are agreed only after every callback returns.
     class CoordinatedSchedule
     {
         DomainPlacement _placement;
@@ -42,17 +43,12 @@ namespace DNDS::Cauchy
             std::vector<real> candidates(_traces.size(), 0);
             valid = 1;
             for (auto iDomain : _placement.LocalDomains())
-                try
-                {
-                    const auto value = domain(iDomain, _traces, trial);
-                    valid &= std::isfinite(value);
-                    if (_placement.DomainRank(iDomain) == 0)
-                        candidates[iDomain] = value;
-                }
-                catch (...)
-                {
-                    valid = 0;
-                }
+            {
+                const auto value = domain(iDomain, _traces, trial);
+                valid &= std::isfinite(value);
+                if (_placement.DomainRank(iDomain) == 0)
+                    candidates[iDomain] = value;
+            }
             MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _placement.Control());
             DNDS_check_throw_info(valid, "Cauchy domain round failed; clock and traces were not committed");
             MPI_Allreduce(MPI_IN_PLACE, candidates.data(), int(candidates.size()), MPI_DOUBLE, MPI_SUM, _placement.Control());

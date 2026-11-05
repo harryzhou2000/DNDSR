@@ -194,7 +194,11 @@ namespace DNDS::Cauchy
                     const auto right = sample.other == UnInitIndex ? FiniteVolumeDetail::BoundaryExterior(sample, gas, left, time, frame, incoming)
                                                                    : RotateState(Load(mean, sample.other), sample.rotation);
                     const auto rightData = sample.other == UnInitIndex ? equation.PrepareFluxState(right) : prepared(sample.other, right);
-                    DNDS_check_throw_info(rightData.flow.pressure > 0 && std::isfinite(rightData.soundSpeed), "invalid boundary mean in auxiliary preparation");
+                    DNDS_check_throw_info(rightData.flow.pressure > 0 && std::isfinite(rightData.soundSpeed),
+                                          "invalid right mean in auxiliary preparation: face=" + std::to_string(iFace) +
+                                              " cell=" + std::to_string(sample.cell) + " neighbor=" + std::to_string(sample.other) +
+                                              " zone=" + std::to_string(sample.zone) + " pressure=" + std::to_string(rightData.flow.pressure) +
+                                              " soundSpeed=" + std::to_string(rightData.soundSpeed) + " time=" + std::to_string(time));
                     if (spectral)
                     {
                         convection = std::max({convection, Riemann::SignalSpeed(leftData, normal, gridVelocity), Riemann::SignalSpeed(rightData, normal, gridVelocity)});

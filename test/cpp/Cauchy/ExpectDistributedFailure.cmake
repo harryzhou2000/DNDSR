@@ -1,0 +1,15 @@
+execute_process(
+    COMMAND "${MPIEXEC}" "${NP_FLAG}" "${NP}" ${MPI_FLAGS} "${FIXTURE}" "${MODE}"
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 20)
+if(result EQUAL 0 OR result MATCHES "[Tt]imeout|[Tt]imed out")
+    message(FATAL_ERROR "Expected prompt fatal exit, got ${result}\n${output}\n${error}")
+endif()
+if(MODE STREQUAL "factory")
+    set(expected "injected domain factory failure")
+else()
+    set(expected "cannot drain an active MPI transfer during exception unwinding")
+endif()
+if(NOT "${output}\n${error}" MATCHES "${expected}")
+    message(FATAL_ERROR "Missing expected failure diagnostic (${result})\n${output}\n${error}")
+endif()
+message(STATUS "Verified ${MODE} fatal exit at np=${NP}: ${result}")

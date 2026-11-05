@@ -111,9 +111,10 @@ namespace DNDS::Geom
         /// Legacy fn callbacks retain their consuming failure semantics.
         /// Native field adapters additionally provide a staged preparation.
         std::function<void(const PermutationTransfer &)> preflight;
-        /// A collective adapter coordinates local failures before each internal
-        /// collective. The bundle agrees on its return/failure, but cannot
-        /// repair divergent MPI initiated by an arbitrary caller callback.
+        /// A collective adapter coordinates local preparation before each
+        /// internal transfer. The bundle agrees only on returned readiness;
+        /// exceptions propagate directly to a fail-fast application boundary.
+        /// It cannot recover divergent MPI inside an arbitrary callback.
         std::function<std::unique_ptr<PreparedCompanion>(const PermutationTransfer &, const MPIInfo &)> prepare;
         std::function<CompanionAttachment()> attachment;
         CompanionDisposition disposition = CompanionDisposition::TransferIfReordered;

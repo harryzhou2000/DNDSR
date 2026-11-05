@@ -48,8 +48,6 @@ namespace DNDS::Cauchy
             AuxiliaryRequest request;
             request.faceSpectralRadius = request.cellSpectralSum = true;
             auxiliary = fv.BuildAuxiliaryValues(request);
-            if (fv.Equation().HasRANS() && fv.Equation().RANS().ComponentNumber() == 2)
-                meanGradients.emplace(fv.BuildMeanGradients(state));
             if (positivity)
                 thermal.emplace(fv.Equation(), densityFloor, temperatureFloor, controls.numerics.sensibleEnergyFloor, pressureFloor,
                                 workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{});
@@ -79,8 +77,12 @@ namespace DNDS::Cauchy
             else
                 run();
         }
-        void PrepareLinear(const EquationDofs &state, bool overlap)
+        void PrepareLinear(EquationDofs &state, bool overlap)
         {
+            // Mean-gradient setup binds MPI halos. Keep it outside the local
+            // Data allocation stage in the nonlinear-solver constructor.
+            if (discrete.Equation().HasRANS() && discrete.Equation().RANS().ComponentNumber() == 2)
+                meanGradients.emplace(discrete.BuildMeanGradients(state));
             linear = std::make_unique<EquationLinearSolver>(problem, state, [&](auto &field)
                                                             { return discrete.Metrics().BindHalo(field); }, NonlinearDetail::ResolveLinear(settings), LinearExecution{overlap, settings.collectiveChecks});
         }
@@ -274,13 +276,13 @@ namespace DNDS::Cauchy
                 real rhsAlpha = 1;
                 {
                     const NonlinearDetail::PhaseTimer timer(control.profile, NonlinearProfile::PseudoTimePP);
+                    if (!cachedRate)
+                    {
+                        if (data.meanGradients) data.discrete.PrepareAuxValues(state, data.auxiliary, *data.meanGradients, *data.engine, data.stream, time, data.workers);
+                        else data.discrete.PrepareAuxValues(state, data.auxiliary, time, data.workers);
+                    }
                     data.Stage([&]
                     {
-                        if (!cachedRate)
-                        {
-                            if (data.meanGradients) data.discrete.PrepareAuxValues(state, data.auxiliary, *data.meanGradients, *data.engine, data.stream, time, data.workers);
-                            else data.discrete.PrepareAuxValues(state, data.auxiliary, time, data.workers);
-                        }
                         const auto read = data.auxiliary.cellSpectralSum->Owned().Read();
                         const auto meanRead = state.ReadOwned(); const auto meanLayout = meanRead.ComponentLayout(); const auto means = meanLayout.View();
                         auto residualWrite = data.defect.WriteOwned(); const auto residualLayout = residualWrite.ComponentLayout(); const auto defect = residualLayout.View();

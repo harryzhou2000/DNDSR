@@ -73,6 +73,6 @@ namespace DNDS::Runtime
                  { return self.operation->Test(); }, py::call_guard<py::gil_scoped_release>())
             .def("wait", [](PythonDynamicTransfer &self)
                  { self.operation->Wait(); }, py::call_guard<py::gil_scoped_release>())
-            .def("commit", &PythonDynamicTransfer::Commit, "Collectively wait/check and publish this field only. Validate all migrated fields before publishing a new mesh epoch.");
+            .def("commit", &PythonDynamicTransfer::Commit, "Wait for transport and publish this local field only. Completion errors propagate locally: abort the MPI run, without attempting a post-error collective. Validate all migrated fields before publishing a new mesh epoch; no distributed rollback.");
     }
 }

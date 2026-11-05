@@ -2,6 +2,7 @@
 #include "DNDS/Runtime/Communication/DevicePacking.hpp"
 #include "DNDS/Runtime/Communication/TransferAccess.hpp"
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
+#include "DNDS/MPI/Failure.hpp"
 #include <algorithm>
 #include <climits>
 #include <numeric>
@@ -1060,6 +1061,13 @@ namespace DNDS::Runtime
     }
     TransferOperation::~TransferOperation()
     {
+        // Waiting while unwinding a rank-local exception can strand this rank
+        // before the application reaches its fatal handler: a peer may never
+        // post the matching operation. Normal RAII retirement still drains;
+        // exceptional retirement of active MPI work is unconditionally fatal.
+        if (_state && _state->started && std::uncaught_exceptions())
+            DNDS::assert_false_info("no exception while an MPI transfer is active", __FILE__, __LINE__,
+                                    "cannot drain an active MPI transfer during exception unwinding; aborting instead of risking unmatched MPI waits");
         try
         {
             Wait();
@@ -1078,24 +1086,37 @@ namespace DNDS::Runtime
         auto &b = *s.binding;
         if (s.sendsStarted)
             return true;
-        if (wait)
-            s.packedReady.Wait();
-        else if (!s.packedReady.Ready())
-            return false;
-        if (b.options.mode == TransferMode::Persistent)
+        try
         {
-            if (!b.sends.empty())
-                MPI_Startall(int(b.sends.size()), b.sends.data());
+            if (wait)
+                s.packedReady.Wait();
+            else if (!s.packedReady.Ready())
+                return false;
+            if (b.options.mode == TransferMode::Persistent)
+            {
+                if (!b.sends.empty())
+                    MPI_Startall(int(b.sends.size()), b.sends.data());
+            }
+            else
+            {
+                b.sends.clear();
+                for (int peer = 0; peer < int(b.plan->route.SendRows().size()); ++peer)
+                    if (!b.plan->route.SendRows()[peer].empty())
+                    {
+                        b.sends.push_back(MPI_REQUEST_NULL);
+                        MPI_Isend(b.PackedPointer(false, peer), b.PackedCount(false, peer), b.plan->schema.Type(), peer, b.options.tag, b.comm, &b.sends.back());
+                    }
+            }
         }
-        else
+        catch (const std::exception &error)
         {
-            b.sends.clear();
-            for (int peer = 0; peer < int(b.plan->route.SendRows().size()); ++peer)
-                if (!b.plan->route.SendRows()[peer].empty())
-                {
-                    b.sends.push_back(MPI_REQUEST_NULL);
-                    MPI_Isend(b.PackedPointer(false, peer), b.PackedCount(false, peer), b.plan->schema.Type(), peer, b.options.tag, b.comm, &b.sends.back());
-                }
+            // Receives are posted but sends may be missing. Neither a retry,
+            // a destructor drain nor an error Allreduce can be matched safely.
+            MPI::Abort(b.comm, std::string("packed MPI send preparation failed after receives were posted: ") + error.what());
+        }
+        catch (...)
+        {
+            MPI::Abort(b.comm, "packed MPI send preparation failed after receives were posted");
         }
         s.sendsStarted = true;
         return true;

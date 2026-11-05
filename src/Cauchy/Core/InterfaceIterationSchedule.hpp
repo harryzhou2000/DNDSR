@@ -34,10 +34,11 @@ namespace DNDS::Cauchy
     /// linear operator or refreshes a trace inside a Krylov/preconditioner call.
     ///
     /// Serialize calls and retain communication/packet owners. Use the
-    /// coupling context so local validation and hook failures are coordinated
-    /// before publication. Construction always agrees stage identity/policy.
-    /// Hooks themselves must coordinate their internal collective phases before
-    /// throwing. Disabling per-iteration checks selects caller-ordered eager
+    /// coupling context for local schedule validation before publication.
+    /// Construction always agrees stage identity/policy. Hooks own their MPI
+    /// phases and local preflights; the schedule never catches a hook exception
+    /// and attempts another agreement. Unexpected hook errors are fatal to a
+    /// distributed run. Disabling per-iteration checks selects caller-ordered eager
     /// execution; callers then coordinate errors before peers enter collectives.
     /// This synchronous CPU protocol does not certify CUDA stream completion.
     /// Construct/call/destroy on an MPI-permitted controller thread and release
@@ -112,8 +113,7 @@ namespace DNDS::Cauchy
             try
             {
                 if (_refresh)
-                    Together([&]
-                             { _hooks.begin(_current); });
+                    _hooks.begin(_current);
             }
             catch (...)
             {
@@ -122,8 +122,9 @@ namespace DNDS::Cauchy
             }
             return _refresh;
         }
-        /// Join required inputs before dependent CPU work. An agreed callback
-        /// failure leaves every participant failed, with no new publication.
+        /// Join required inputs before dependent CPU work. Hooks perform their
+        /// own local preflights. An exception marks this schedule failed and
+        /// propagates directly; it does not certify failure agreement with peers.
         void CompleteInputs()
         {
             Together([&]
@@ -131,8 +132,7 @@ namespace DNDS::Cauchy
             try
             {
                 if (_refresh)
-                    Together([&]
-                             { _hooks.complete(_current); });
+                    _hooks.complete(_current);
                 if (_refresh)
                     _published = _current;
                 _state = State::Ready;
@@ -170,8 +170,7 @@ namespace DNDS::Cauchy
                 return;
             _state = State::Failed;
             _published.reset();
-            Together([&]
-                     { _hooks.discard(_current); });
+            _hooks.discard(_current);
             _discarded = true;
         }
     };

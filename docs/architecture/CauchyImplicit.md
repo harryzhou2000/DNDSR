@@ -41,6 +41,23 @@ controller as direct solves. `iterations` counts finest V-cycles;
 remains the cap for this compatibility frontend. Source coefficients and frozen
 other-stage terms are unchanged throughout a cycle. Temporal-pMG is deferred.
 
+Coarse controls are defined centrally by `PolynomialMultigrid::CoarseSettings`.
+The first coarse level uses direct-gradient second-order convection. The bottom
+level also prepares direct gradients, but `firstOrderConvection=true` suppresses
+only the polynomial contribution to convective face values. Viscous derivatives
+and RANS/chemical volume-source reconstruction remain present. Choosing
+`reconstruction=constant` instead removed these gradients and changed the coarse
+operator; that was corrected on November 5, 2026. Both flow5 and logical equation
+RHS profiles use the same policy, with no change to finest defaults.
+
+See [the distributed exception contract](RuntimeCallerContract.md#distributed-exceptions).
+Only an agreed `StepRejected` may drive a smaller-dt retry. General exceptions
+from domain solves, interface matching, linear transfers and I/O escape directly;
+the production frontend aborts MPI without a final agreement. Cross-domain accepted
+state and checkpoint publication use memory-only reservation under a single
+control-communicator preflight, before any commit. This preserves all-or-none
+publication without wrapping collective numerical/I/O work in an outer catch.
+
 Focused tests compare two incomplete DITR iterations against independently
 written Euler-form scalar equations for both variants, compare a single CPU
 correction byte-for-byte with the first ordinary-solve update, and exercise

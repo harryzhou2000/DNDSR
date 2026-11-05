@@ -247,6 +247,22 @@ dnds_add_mpi_test(cauchy_linear "Cauchy/test_LinearProblem.cpp" "cauchy;cfv;geom
 dnds_add_mpi_test(cauchy_linear_solver "Cauchy/test_LinearSolver.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_nonlinear "Cauchy/test_NonlinearSolver.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_polynomial_multigrid "Cauchy/test_PolynomialMultigrid.cpp" "cauchy;cfv;geom;dnds")
+add_executable(dnds_test_distributed_failure Cauchy/test_DistributedFailure.cpp)
+target_include_directories(dnds_test_distributed_failure PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+target_link_libraries(dnds_test_distributed_failure PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+set_target_properties(dnds_test_distributed_failure PROPERTIES EXCLUDE_FROM_ALL ON)
+foreach(NP ${DNDS_TEST_NP_LIST})
+    if(NP GREATER 1)
+        foreach(MODE factory transfer)
+            add_test(NAME dnds_distributed_failure_${MODE}_np${NP}
+                COMMAND ${CMAKE_COMMAND} "-DMPIEXEC=${MPIEXEC_EXECUTABLE}" "-DNP_FLAG=${MPIEXEC_NUMPROC_FLAG}"
+                    "-DNP=${NP}" "-DMPI_FLAGS=${MPIEXEC_PREFLAGS}" "-DFIXTURE=$<TARGET_FILE:dnds_test_distributed_failure>"
+                    "-DMODE=${MODE}" -P ${CMAKE_CURRENT_SOURCE_DIR}/Cauchy/ExpectDistributedFailure.cmake)
+            set_tests_properties(dnds_distributed_failure_${MODE}_np${NP} PROPERTIES
+                TIMEOUT 30 PROCESSORS ${NP} ENVIRONMENT "OMP_NUM_THREADS=1")
+        endforeach()
+    endif()
+endforeach()
 dnds_add_mpi_test(cauchy_implicit_domain "Cauchy/test_ImplicitDomain.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_checkpoint "Cauchy/test_Checkpoint.cpp" "cauchy;cfv;geom;dnds")
 if(DNDS_USE_CANTERA)
@@ -292,6 +308,7 @@ add_dependencies(cauchy_unit_tests dnds_test_cauchy_config dnds_test_cauchy_phys
 add_dependencies(all_unit_tests cauchy_unit_tests)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_nonlinear)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_polynomial_multigrid)
+add_dependencies(cauchy_unit_tests dnds_test_distributed_failure)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_implicit_domain)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_checkpoint)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_physical_timestep)

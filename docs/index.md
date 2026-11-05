@@ -22,6 +22,8 @@ distributed gates and the measured gains and regressions by shape.
 ## Architecture entry points
 
 Cauchy development starts at the [solver contracts and ledger](architecture/Cauchy.md).
+The [November 5 pMG and distributed-failure audit](dev/cauchy_pmg_distributed_errors_2026-11-05.md)
+records the coarse-gradient correction, fail-fast boundary and publication checks.
 The [multidomain input and restart guide](guides/cauchy_multidomain.md) gives the
 configuration shape, CGNS/HDF loader boundaries and simulation archive layout.
 The [equation-state contract](architecture/CauchyState.md) documents semantic

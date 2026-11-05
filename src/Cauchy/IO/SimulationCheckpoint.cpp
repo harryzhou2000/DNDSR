@@ -10,26 +10,14 @@ namespace DNDS::Cauchy
 {
     namespace
     {
-        // A failure in one domain cannot skip a later communicator shared with
-        // another local domain. Finish the agreed domain order before control
-        // ranks report an error. Each action coordinates its own domain errors.
+        // Actions may perform collective I/O. Do not catch and continue to a
+        // control agreement: peers may not have left the failing domain action.
         template <class Action>
         void LocalDomains(const DomainPlacement &placement, Action &&action)
         {
-            std::exception_ptr failure;
             for (index iDomain = 0; iDomain < placement.DomainNumber(); ++iDomain)
                 if (placement.DomainRank(iDomain) >= 0)
-                    try
-                    {
-                        action(iDomain);
-                    }
-                    catch (...)
-                    {
-                        if (!failure)
-                            failure = std::current_exception();
-                    }
-            MPI::LocalStage(MPIInfo(placement.Control()), [&]
-                            { if (failure) std::rethrow_exception(failure); }, "Cauchy I/O failed in another domain");
+                    action(iDomain);
         }
         void AgreePath(const MPIInfo &mpi, const std::string &path)
         {
@@ -197,8 +185,12 @@ namespace DNDS::Cauchy
                 LocalDomains(_placement, [&](index iDomain)
                              { if (const auto *input = _interfaces->Inputs(iDomain)) GetDomain(iDomain).BindInterfaceInputs(*input); });
             }
-            LocalDomains(_placement, [&](index iDomain)
-                         { GetDomain(iDomain).ReserveCheckpointRead(*checkpoints[iDomain]); });
+            // All reservation work is local, including reconstruction writers.
+            // This one control preflight prevents any domain from publishing if
+            // another domain cannot reserve, without catching collective I/O.
+            MPI::LocalStage(control, [&]
+                            { LocalDomains(_placement, [&](index iDomain)
+                                           { GetDomain(iDomain).ReserveCheckpointRead(*checkpoints[iDomain], false); }); });
         }
         catch (...)
         {
@@ -207,6 +199,8 @@ namespace DNDS::Cauchy
             if (_interfaces)
             {
                 _interfaces->Discard();
+                // Already validated accepted-packet aliases. Binding is local
+                // and does not perform I/O, search, transfer or MPI agreement.
                 LocalDomains(_placement, [&](index iDomain)
                              { if (const auto *input = _interfaces->Inputs(iDomain)) GetDomain(iDomain).BindInterfaceInputs(*input); });
             }
