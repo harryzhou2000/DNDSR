@@ -23,7 +23,9 @@ def main():
     parser.add_argument("--records", type=Path, required=True)
     parser.add_argument("--pilot", action="store_true")
     args = parser.parse_args()
-    binaries = {name: getattr(args, name).resolve() for name in ("baseline", "candidate")}
+    # Provenance belongs beside the caller's frozen name, including when the
+    # pilot aliases an existing binary. Hashing still follows the executable.
+    binaries = {name: getattr(args, name).absolute() for name in ("baseline", "candidate")}
     provenance = {}
     for name, binary in binaries.items():
         sidecar = binary.with_suffix(".json")
