@@ -10,6 +10,15 @@
 
 namespace DNDS::Cauchy::FiniteVolumeDetail
 {
+    inline CFV::ReconstructionCapabilities ReconstructionSupport(const DomainSettings &settings)
+    {
+        const auto &numerics = settings.numerics;
+        const bool limitedVR = numerics.limiter == "LVR" &&
+                               (numerics.limitedVR.alphaMax > 0 || numerics.limitedVR.contactAlphaMax > 0);
+        auto support = CFV::ReconstructionCapabilities::ForSweeps(numerics.limiter == "WBAP" || limitedVR);
+        support.sweeps = numerics.reconstruction == "variational";
+        return support;
+    }
     inline Runtime::RowLayout FieldLayout(const Runtime::RowLayout &prototype, index rows, index width)
     {
         if (prototype.Kind() == Runtime::RowLayoutKind::ColMajorTable)
@@ -133,7 +142,7 @@ namespace DNDS::Cauchy
         Data(ssp<Geom::UnstructuredMesh> source, DomainSettings controls, EquationSystem physics)
             : mesh(std::move(source)), settings(std::move(controls)), equation(std::move(physics)), motion(settings.motion, settings.mesh.dimension), flux(Riemann::RiemannFlux::Resolve(settings.numerics.flux)),
               boundary(settings.boundaries, equation), metrics(CFV::FiniteVolumePlan::ConstructMetrics(mesh, settings.numerics.cfv.intOrder, false, settings.implicit.collectiveChecks)),
-              reconstruction(CFV::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings.numerics.cfv)),
+              reconstruction(CFV::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings.numerics.cfv, FiniteVolumeDetail::ReconstructionSupport(settings))),
               gradient(CFV::GradientPlan::Prepare(*mesh, metrics, settings.numerics.gradient == "greenGauss" ? CFV::GradientMethod::GreenGauss : settings.numerics.gradient == "ggmp" ? CFV::GradientMethod::GGMP
                                                                                                                                                                                       : CFV::GradientMethod::LeastSquares)),
               partition(metrics.CellWorkPartition())

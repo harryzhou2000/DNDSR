@@ -42,8 +42,10 @@ namespace DNDS::CFV::Detail
     {
         FiniteVolumePlan metrics;
         ReconstructionSettings settings;
+        ReconstructionCapabilities capabilities;
+        uint64_t preparationRuntimeScratchBytes = 0;
         ReconstructionInverseDiagnostics inverseDiagnostics;
-        Runtime::Array<real> inverseConditions;
+        std::optional<Runtime::Array<real>> inverseConditions;
         std::optional<Geom::EntityWorkPartition> workPartition;
         // Inverse logical order for split SOR. Independent of physical row order.
         std::vector<index> coreFirstPosition;
@@ -52,18 +54,18 @@ namespace DNDS::CFV::Detail
         Runtime::Array<real> faceBasis;
         // One row per owned cell-face incidence, preallocated from cell2face.
         Runtime::Array<index> offsets, neighbors, faces, boundaryOffsets;
-        Runtime::Array<real> matrixAInvB, vectorAInvB, secondary;
-        Runtime::Array<real> localMatrix, localInverse;
+        std::optional<Runtime::Array<real>> matrixAInvB, vectorAInvB, secondary;
+        std::optional<Runtime::Array<real>> localMatrix, localInverse;
         // Unscaled blocks retain the original assembled operator even when
         // the truncated local inverse projects out small, nonzero modes.
-        Runtime::Array<real> rawMatrixB, rawVectorB, rawBoundaryInjection;
+        std::optional<Runtime::Array<real>> rawMatrixB, rawVectorB, rawBoundaryInjection;
         Runtime::Array<real> neighborRotation;
         bool hasRotatedPeriodicity = false;
         // Dirichlet injection already multiplied by A^{-1} and quadrature weight.
-        Runtime::Array<real> boundaryInjection;
+        std::optional<Runtime::Array<real>> boundaryInjection;
         Runtime::Array<index> boundaryPoints;
-        ReconstructionData(FiniteVolumePlan m, ReconstructionSettings s)
-            : metrics(std::move(m)), settings(s), n(Math::PolynomialSize(metrics.Dimension(), s.maxOrder) - 1),
+        ReconstructionData(FiniteVolumePlan m, ReconstructionSettings s, ReconstructionCapabilities c)
+            : metrics(std::move(m)), settings(s), capabilities(c), n(Math::PolynomialSize(metrics.Dimension(), s.maxOrder) - 1),
               cachedDerivatives(s.cacheDiffBase ? Math::TaylorBasis(metrics.Dimension(), s.maxOrder).DerivativeNumber(s.cacheDiffBaseOrder) : 0) {}
     };
     inline void Zero(FVField &field)

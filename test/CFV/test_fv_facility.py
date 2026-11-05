@@ -25,6 +25,41 @@ def function(point):
 
 
 @pytest.mark.mpi
+def test_prepared_capabilities_preserve_sweep_and_freeze_operation_contract():
+    grid = mesh()
+    metrics = CFV.FiniteVolumePlan.ConstructMetrics(grid)
+    settings = CFV.ReconstructionSettings()
+    settings.maxOrder = 1
+    capabilities = CFV.ReconstructionCapabilities.ForSweeps(False)
+    full = CFV.VariationalReconstructionPlan.ConstructRecCoeff(metrics, settings)
+    lean = CFV.VariationalReconstructionPlan.ConstructRecCoeff(metrics, settings, capabilities)
+    capabilities.linearSystem = True  # publication owns a frozen copy
+    assert not lean.Capabilities().linearSystem
+    assert not lean.Capabilities().Supports(CFV.ReconstructionOperation.WBAP)
+    omitted = {entry.name for entry in lean.StorageReport().tables if not entry.allocated}
+    assert {"secondary", "localMatrix", "localInverse", "rawMatrixB", "rawVectorB", "rawBoundaryInjection"} <= omitted
+    mean = metrics.BuildField(1)
+    mean.owned.assign(np.array([function(metrics.GetCellCent(i)) for i in range(metrics.NumCell())]).reshape(-1, 1))
+    metrics.BindHalo(mean).begin().wait()
+    workspaces = []
+    for plan in (full, lean):
+        work = plan.BuildWorkspace(1)
+        work.coefficients.owned.assign(np.full((metrics.NumCell(), plan.NRecDOF()), .17))
+        boundary = plan.BuildBoundaryValues(1)
+        boundary.values.assign(np.array([function(plan.GetBoundaryQuadrature(i).point)
+                                        for i in range(plan.NumBoundaryQuadrature())]).reshape(-1, 1))
+        metrics.BindHalo(work.coefficients).begin().wait()
+        plan.DoReconstructionIter(mean, work, boundary)
+        workspaces.append(work)
+    np.testing.assert_array_equal(workspaces[0].coefficients.owned.numpy(), workspaces[1].coefficients.owned.numpy())
+    output = metrics.BuildField(lean.NRecDOF())
+    output.owned.assign(np.full((metrics.NumCell(), lean.NRecDOF()), -13.))
+    with pytest.raises(RuntimeError, match="not prepared"):
+        lean.ApplyLinearOperator(workspaces[1].coefficients, output)
+    np.testing.assert_array_equal(output.owned.numpy(), np.full((metrics.NumCell(), lean.NRecDOF()), -13.))
+
+
+@pytest.mark.mpi
 @pytest.mark.parametrize("cache_enabled", [True, False])
 def test_reconstruction_shared_buffers_explicit_halo_and_point_sampling(cache_enabled):
     grid = mesh()

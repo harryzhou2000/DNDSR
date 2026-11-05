@@ -105,6 +105,8 @@ namespace DNDS::CFV
 #ifndef DNDS_USE_CUDA
         DNDS_check_throw_info(false, "CUDA reconstruction is unavailable in this build");
 #endif
+        source.Require(ReconstructionOperation::Sweep);
+        source.Require(ReconstructionOperation::WBAP);
         source.Validate();
         DNDS_check_throw_info(device.space == R::MemorySpace::CUDA && context.device == device, "device reconstruction requires explicit CUDA placement/context");
         DNDS_check_throw_info(!source.Settings().SORInstead, "CUDA SOR requires a logical parallel sweep design and is unsupported");
@@ -124,10 +126,10 @@ namespace DNDS::CFV
         DNDS_REC_ADD(neighbors);
         DNDS_REC_ADD(faces);
         DNDS_REC_ADD(boundaryOffsets);
-        DNDS_REC_ADD(matrixAInvB);
-        DNDS_REC_ADD(vectorAInvB);
-        DNDS_REC_ADD(secondary);
-        DNDS_REC_ADD(boundaryInjection);
+        view.matrixAInvB = result->Add("matrixAInvB", *host.matrixAInvB, context);
+        view.vectorAInvB = result->Add("vectorAInvB", *host.vectorAInvB, context);
+        view.secondary = result->Add("secondary", *host.secondary, context);
+        view.boundaryInjection = result->Add("boundaryInjection", *host.boundaryInjection, context);
 #undef DNDS_REC_ADD
         view.rotation = result->Add("neighborRotation", host.neighborRotation, context);
         for (bool core : {true, false})

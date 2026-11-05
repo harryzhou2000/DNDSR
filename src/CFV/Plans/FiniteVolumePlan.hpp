@@ -10,6 +10,7 @@
 #include "DNDS/Math/HardEigen.hpp"
 #include "CFV/Math/ReconstructionFunctional.hpp"
 #include "CFV/Math/TaylorBasis.hpp"
+#include "CFV/Plans/ReconstructionCapabilities.hpp"
 #include <map>
 
 namespace DNDS::Geom
@@ -284,9 +285,19 @@ namespace DNDS::CFV
                                       const FVField *target, const Runtime::Array<real> *alpha) const;
 
     public:
-        static VariationalReconstructionPlan ConstructRecCoeff(FiniteVolumePlan metrics, ReconstructionSettings settings = {});
+        /// Collective CPU setup. The immutable capabilities must agree on all
+        /// ranks. Default support preserves the standalone API; reduced profiles
+        /// omit unused tables and fail explicitly on unprepared operations.
+        static VariationalReconstructionPlan ConstructRecCoeff(FiniteVolumePlan metrics, ReconstructionSettings settings = {},
+                                                               ReconstructionCapabilities capabilities = {});
         const FiniteVolumePlan &Metrics() const;
         const ReconstructionSettings &Settings() const;
+        ReconstructionCapabilities Capabilities() const;
+        /// Validate requested support at operator entry, before output mutation
+        /// or communication. This checks capabilities only; operators still
+        /// pin geometry and validate its generation before using prepared data.
+        void Require(ReconstructionOperation operation) const;
+        ReconstructionStorageReport StorageReport() const;
         int NRecDOF() const;
         ReconstructionInverseDiagnostics GetInverseDiagnostics() const;
         /// Owned-cell spectrum diagnostics from setup, without refactorization.

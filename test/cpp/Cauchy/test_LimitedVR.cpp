@@ -189,9 +189,15 @@ TEST_CASE("LVR layer or capability differences reject before building divergent 
             settings.numerics.limitedVR.alphaMax = settings.numerics.limitedVR.contactAlphaMax = 0;
         else
             settings.numerics.limitedVR.neighborLayers = mpi.rank == 0 ? 1 : 0;
-        C::FiniteVolume fv(mesh, settings, C::EquationSystem::Resolve(settings.equation));
-        auto mean = fv.Metrics().BuildField(5);
-        CHECK_THROWS_WITH_AS(fv.BuildWorkspace(mean), doctest::Contains(inactive ? "LVR capability differs" : "LVR configuration differs"), std::exception);
+        const auto prepare = [&]
+        {
+            C::FiniteVolume fv(mesh, settings, C::EquationSystem::Resolve(settings.equation));
+            auto mean = fv.Metrics().BuildField(5);
+            fv.BuildWorkspace(mean);
+        };
+        // Different operation support now rejects during CFV preparation,
+        // earlier than the workspace's LVR routing/configuration agreement.
+        CHECK_THROWS_WITH_AS(prepare(), doctest::Contains(inactive ? "VR preparation capabilities differ" : "LVR configuration differs"), std::exception);
     }
 }
 TEST_CASE("Zero LVR caps recover the unlimited operator and omit unnecessary gate work")

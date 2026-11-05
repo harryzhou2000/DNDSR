@@ -12,6 +12,32 @@ namespace DNDS::CFV
     void pybind11_FiniteVolumePlan_define(pybind11::module_ &m)
     {
         namespace py = pybind11;
+        py::enum_<ReconstructionOperation>(m, "ReconstructionOperation")
+            .value("Sweep", ReconstructionOperation::Sweep)
+            .value("WBAP", ReconstructionOperation::WBAP)
+            .value("LinearSystem", ReconstructionOperation::LinearSystem)
+            .value("LocalPreconditioner", ReconstructionOperation::LocalPreconditioner)
+            .value("InverseDiagnostics", ReconstructionOperation::InverseDiagnostics);
+        py::class_<ReconstructionCapabilities>(m, "ReconstructionCapabilities")
+            .def(py::init<>())
+            .def_static("ForSweeps", &ReconstructionCapabilities::ForSweeps, py::arg("withWBAP") = true)
+            .def_readwrite("sweeps", &ReconstructionCapabilities::sweeps)
+            .def_readwrite("wbap", &ReconstructionCapabilities::wbap)
+            .def_readwrite("linearSystem", &ReconstructionCapabilities::linearSystem)
+            .def_readwrite("localPreconditioner", &ReconstructionCapabilities::localPreconditioner)
+            .def_readwrite("inverseDiagnostics", &ReconstructionCapabilities::inverseDiagnostics)
+            .def("Supports", &ReconstructionCapabilities::Supports);
+        py::class_<ReconstructionTableStorage>(m, "ReconstructionTableStorage")
+            .def_readonly("name", &ReconstructionTableStorage::name)
+            .def_readonly("allocated", &ReconstructionTableStorage::allocated)
+            .def_readonly("payloadBytes", &ReconstructionTableStorage::payloadBytes)
+            .def_readonly("allocationBytes", &ReconstructionTableStorage::allocationBytes);
+        py::class_<ReconstructionStorageReport>(m, "ReconstructionStorageReport")
+            .def_readonly("tables", &ReconstructionStorageReport::tables)
+            .def_readonly("retainedPayloadBytes", &ReconstructionStorageReport::retainedPayloadBytes)
+            .def_readonly("retainedAllocationBytes", &ReconstructionStorageReport::retainedAllocationBytes)
+            .def_readonly("preparationRuntimeScratchBytes", &ReconstructionStorageReport::preparationRuntimeScratchBytes)
+            .def_readonly("preparationRuntimePeakBytes", &ReconstructionStorageReport::preparationRuntimePeakBytes);
         py::enum_<ReconstructionRegion>(m, "ReconstructionRegion")
             .value("All", ReconstructionRegion::All)
             .value("Core", ReconstructionRegion::Core)
@@ -181,8 +207,11 @@ namespace DNDS::CFV
                  py::arg("output"), py::arg("derivative") = 0);
         py::class_<VariationalReconstructionPlan>(m, "VariationalReconstructionPlan")
             .def_static("ConstructRecCoeff", &VariationalReconstructionPlan::ConstructRecCoeff,
-                        py::arg("metrics"), py::arg("settings") = ReconstructionSettings{})
+                        py::arg("metrics"), py::arg("settings") = ReconstructionSettings{}, py::arg("capabilities") = ReconstructionCapabilities{})
             .def("NRecDOF", &VariationalReconstructionPlan::NRecDOF)
+            .def("Capabilities", &VariationalReconstructionPlan::Capabilities)
+            .def("Require", &VariationalReconstructionPlan::Require)
+            .def("StorageReport", &VariationalReconstructionPlan::StorageReport)
             .def("GetInverseDiagnostics", &VariationalReconstructionPlan::GetInverseDiagnostics)
             .def("GetCellInverseDiagnostics", &VariationalReconstructionPlan::GetCellInverseDiagnostics)
             .def("Validate", &VariationalReconstructionPlan::Validate)

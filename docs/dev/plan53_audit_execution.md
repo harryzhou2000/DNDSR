@@ -118,8 +118,8 @@ reduction. No other implementation checkout or MG/IV work was used.
 
 ## Still pending
 
-E1's remaining cold mesh-construction propagation and E2 implementation remain
-open, as do the bounded
+E1's remaining cold mesh-construction propagation and E2's memory/timing
+assessment remain open, as do the bounded
 E3–E7 measurements, independent frozen Euler seam comparisons, selected scoped
 readability work, per-suite high-rank rationale/curation and the sanitizer
 ownership pass. Formatter default discovery now includes Cauchy and Physics;
@@ -176,5 +176,72 @@ was inferred from it.
 Cold primary/topology/assembler preparation still has separate local-stage
 agreements outside the explicit EntitySpace context. Their policy propagation
 remains an E1 follow-up; the work above is not a claim that every mesh setup
-agreement has been removed. No CUDA acceptance, E2 storage-profile completion,
-or E3–E7 matched performance result is claimed.
+agreement has been removed. At that checkpoint no CUDA acceptance, E2
+storage-profile completion, or E3–E7 matched performance result was claimed.
+
+## E2: operation-selected reconstruction storage
+
+The immutable `ReconstructionCapabilities` contract defaults to full standalone
+support. Requested sweeps, WBAP, original linear-system actions, preconditioning
+and inverse diagnostics select their own retained tables. Omitted tables have
+no Array allocation or writer; their construction is skipped. The independent
+basis-cache policy is unchanged. Face-system scratch drops the two secondary
+maps when WBAP is absent, and SVD is omitted when no inverse consumer requests
+it. Inverse-only preparation retains the B coupling needed for self-periodic
+diagonal corrections. Raw A/B are never recovered from a filtered inverse.
+
+Cauchy selects sweeps only for variational reconstruction, secondary maps for
+WBAP/active LVR, and retains its existing inverse diagnostics. It omits the
+standalone reconstruction linear/preconditioner tables, which are separate
+from Cauchy's flow Jacobian/preconditioner. Unsupported operations reject before
+output acquisition/communication. Capability checking is independent of the
+existing pin-then-generation-validation order; it must not create a window
+between validating geometry and pinning it. Manual async wrappers call the
+support check before queueing.
+
+The [capability dependency table and reporting contract](../architecture/ReconstructionCapabilities.md)
+document the public C++/Python API. `StorageReport` separates logical payload,
+unique allocation extents (including metadata), and the known Runtime face-system
+scratch/peak. It does not estimate native Eigen/std scratch, allocator overhead,
+process RSS or a universal memory/performance speedup. Isolated process-memory
+and matched timing measurements remain queued with E3–E7.
+
+Focused new fixtures cover 2D/3D degrees 1–3, Jacobi/SOR, split direct-MPI overlap,
+WBAP, empty owners, rotated and self-periodic meshes, sampling without matrix
+support, stale geometry, and raw/preconditioner independence under complete SVD
+truncation. The existing independent raw symmetry/Jacobi oracle is retained.
+The np1/2/4/8 registrations are small: np4 adds multiple active owners plus an
+empty peer; np8 partitions the 3D eight-cell cube and leaves multiple empty
+periodic owners. No long solver trajectory was added.
+
+The first capability test run rejected the intended operations but matched the
+entire exception string; DNDS includes its stack trace, so the test now checks
+the specific message substring. The first LVR np2 batch passed all numerical
+assertions but expected the capability disagreement at workspace construction;
+it now checks the complete preparation call and the earlier CFV disagreement
+message. An initial Python invocation omitted `--with-mpi` and was skipped;
+only the subsequent actual MPI execution counts as acceptance. These harness
+failures/skips are not relabeled as passing runs.
+
+Final CPU acceptance after the pin/validation review:
+
+1. Eighteen CTest registrations pass (67.92 s): the capability, completion and
+   reconstruction-overlap suites at np1/2/4/8, and Cauchy flow5, equation-state
+   and LVR operator suites at np1/2. Reduced/full sweeps and limiter results
+   compare bit-for-bit on the generated fixtures. Existing raw-system tests
+   retain their independent symmetry/residual criteria.
+2. The existing periodic quad/triangle legacy-VR comparison passes at np2,
+   including relaxed Jacobi and SOR (one case, 39,128 assertions across ranks).
+   Its numerical tolerance is unchanged. This is a CFV comparison, not the
+   still-pending independent original-Euler physics-seam comparison.
+3. DNDS, Geom, CFV and EulerP Python modules were built and installed from this
+   checkout. With Python 3.12, Open MPI 5.0.9, OMP1 and `pytest --with-mpi`, three
+   tests pass on each of two ranks: the new frozen-capability/storage contract
+   and both existing cached/uncached shared-buffer reconstruction variants.
+   The small `Uniform_3x3_wall.cgns` fixture has SHA256
+   `78c02176f8bd9e1fb281b3eb9e4caf7be1baf41ce67546f67a8e16a0e10f085c`.
+4. All 20 tooling tests pass (3.020 s), including aggregate test dependencies.
+
+These local correctness checks ran alongside compilation and do not establish
+matched performance. CUDA execution, sanitizer acceptance, isolated RSS and
+memory/timing assessment remain unclaimed.

@@ -636,6 +636,8 @@ cfv_add_mpi_test(reconstruction_overlap "CFV/test_ReconstructionOverlap.cpp" "cf
 cfv_add_mpi_test(gradient_plan "CFV/test_GradientPlan.cpp" "cfv;geom;dnds")
 cfv_add_mpi_test(limited_vr "CFV/test_LimitedVR.cpp" "cfv;geom;dnds")
 cfv_add_mpi_test(fv_completion "CFV/test_FVCompletion.cpp" "cfv;geom;dnds")
+cfv_add_mpi_test(reconstruction_capabilities "CFV/test_ReconstructionCapabilities.cpp" "cfv;geom;dnds")
+add_dependencies(cfv_unit_tests cfv_test_reconstruction_capabilities)
 add_dependencies(cfv_unit_tests cfv_test_fv_completion)
 add_dependencies(cfv_unit_tests cfv_test_gradient_plan)
 add_dependencies(cfv_unit_tests cfv_test_limited_vr)

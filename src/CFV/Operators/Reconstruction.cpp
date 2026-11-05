@@ -28,16 +28,106 @@ namespace DNDS::CFV
     const FiniteVolumePlan &VariationalReconstructionPlan::Metrics() const { return _data->metrics; }
     const ReconstructionSettings &VariationalReconstructionPlan::Settings() const { return _data->settings; }
     int VariationalReconstructionPlan::NRecDOF() const { return _data->n; }
+    ReconstructionCapabilities VariationalReconstructionPlan::Capabilities() const { return _data->capabilities; }
+    void VariationalReconstructionPlan::Require(ReconstructionOperation operation) const
+    {
+        if (_data->capabilities.Supports(operation))
+            return;
+        const char *name = "unknown";
+        switch (operation)
+        {
+        case ReconstructionOperation::Sweep:
+            name = "reconstruction sweep";
+            break;
+        case ReconstructionOperation::WBAP:
+            name = "WBAP limiter";
+            break;
+        case ReconstructionOperation::LinearSystem:
+            name = "original linear system";
+            break;
+        case ReconstructionOperation::LocalPreconditioner:
+            name = "local preconditioner";
+            break;
+        case ReconstructionOperation::InverseDiagnostics:
+            name = "inverse diagnostics";
+            break;
+        }
+        DNDS_check_throw_info(false, std::string("VR operation was not prepared: ") + name);
+    }
+    ReconstructionStorageReport VariationalReconstructionPlan::StorageReport() const
+    {
+        Validate();
+        ReconstructionStorageReport result;
+        std::vector<uint64_t> identities;
+        const auto add = [&](const char *name, const auto &array)
+        {
+            using Value = typename std::decay_t<decltype(array)>::value_type;
+            const uint64_t payload = uint64_t(array.RowCount()) * array.Layout().Width() * sizeof(Value);
+            uint64_t allocation = 0;
+            std::vector<uint64_t> tableIdentities;
+            array.SharedStorage()->VisitAllocations([&](uint64_t identity, size_t bytes, auto)
+                                                    {
+                if (std::find(tableIdentities.begin(), tableIdentities.end(), identity) == tableIdentities.end())
+                {
+                    tableIdentities.push_back(identity);
+                    allocation += bytes;
+                }
+                if (std::find(identities.begin(), identities.end(), identity) == identities.end())
+                {
+                    identities.push_back(identity);
+                    result.retainedAllocationBytes += bytes;
+                } });
+            result.tables.push_back({name, true, payload, allocation});
+            result.retainedPayloadBytes += payload;
+        };
+        const auto optional = [&](const char *name, const auto &array)
+        {
+            if (array)
+                add(name, *array);
+            else
+                result.tables.push_back({name, false, 0, 0});
+        };
+#define DNDS_REC_STORAGE(name) add(#name, _data->name)
+        DNDS_REC_STORAGE(moments);
+        if (_data->settings.cacheDiffBase)
+            DNDS_REC_STORAGE(faceBasis);
+        else
+            result.tables.push_back({"faceBasis", false, 0, 0});
+        DNDS_REC_STORAGE(offsets);
+        DNDS_REC_STORAGE(neighbors);
+        DNDS_REC_STORAGE(faces);
+        DNDS_REC_STORAGE(boundaryOffsets);
+        DNDS_REC_STORAGE(neighborRotation);
+        DNDS_REC_STORAGE(boundaryPoints);
+#undef DNDS_REC_STORAGE
+#define DNDS_REC_OPTIONAL_STORAGE(name) optional(#name, _data->name)
+        DNDS_REC_OPTIONAL_STORAGE(matrixAInvB);
+        DNDS_REC_OPTIONAL_STORAGE(vectorAInvB);
+        DNDS_REC_OPTIONAL_STORAGE(boundaryInjection);
+        DNDS_REC_OPTIONAL_STORAGE(secondary);
+        DNDS_REC_OPTIONAL_STORAGE(localMatrix);
+        DNDS_REC_OPTIONAL_STORAGE(localInverse);
+        DNDS_REC_OPTIONAL_STORAGE(rawMatrixB);
+        DNDS_REC_OPTIONAL_STORAGE(rawVectorB);
+        DNDS_REC_OPTIONAL_STORAGE(rawBoundaryInjection);
+        DNDS_REC_OPTIONAL_STORAGE(inverseConditions);
+#undef DNDS_REC_OPTIONAL_STORAGE
+        result.preparationRuntimeScratchBytes = _data->preparationRuntimeScratchBytes;
+        result.preparationRuntimePeakBytes = result.retainedAllocationBytes + result.preparationRuntimeScratchBytes;
+        return result;
+    }
     ReconstructionInverseDiagnostics VariationalReconstructionPlan::GetInverseDiagnostics() const
     {
+        Require(ReconstructionOperation::InverseDiagnostics);
         Validate();
         return _data->inverseDiagnostics;
     }
     HardEigen::SVDInverseDiagnostics VariationalReconstructionPlan::GetCellInverseDiagnostics(index iCell) const
     {
+        Require(ReconstructionOperation::InverseDiagnostics);
         Validate();
         DNDS_check_throw_info(iCell >= 0 && iCell < Metrics().NumCell(), "inverse diagnostic cell is not owned");
-        auto read = _data->inverseConditions.Read();
+        auto read = _data->inverseConditions->Read();
         const auto values = read.View<Runtime::FixedRows<4>>();
         return {_data->n, Eigen::Index(values(iCell, 0)), values(iCell, 3), values(iCell, 1), values(iCell, 2)};
     }
@@ -79,6 +169,7 @@ namespace DNDS::CFV
     }
     FaceCharacteristicTransform VariationalReconstructionPlan::BuildFaceTransform(index first, index count) const
     {
+        Require(ReconstructionOperation::WBAP);
         Validate();
         DNDS_check_throw_info(first >= 0 && count > 0 && count <= 64, "invalid characteristic component range");
         FaceCharacteristicTransform result{first, count,
@@ -96,6 +187,7 @@ namespace DNDS::CFV
     }
     void VariationalReconstructionPlan::FinalizeFaceTransform(FaceCharacteristicTransform &transform) const
     {
+        Require(ReconstructionOperation::WBAP);
         Validate();
         transform.forwardVersion = transform.inverseVersion = 0;
         DNDS_check_throw_info(transform.plan == _data && transform.first >= 0 && transform.count > 0 && transform.count <= 64,
@@ -133,6 +225,7 @@ namespace DNDS::CFV
                                                                  const ReconstructionBoundaryValues &boundary, ReconstructionRegion region,
                                                                  const FVField *target, const R::Array<real> *alpha) const
     {
+        Require(ReconstructionOperation::Sweep);
         auto meshRead = Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         Validate();
         CheckWorkspace(_data.get(), work);
@@ -185,7 +278,7 @@ namespace DNDS::CFV
         auto bRead = boundary.values.Read();
         const auto bValues = bRead.View<R::TableRows>();
         auto oRead = _data->offsets.Read(), nbRead = _data->neighbors.Read(), boRead = _data->boundaryOffsets.Read();
-        auto mRead = _data->matrixAInvB.Read(), vRead = _data->vectorAInvB.Read(), injectionRead = _data->boundaryInjection.Read();
+        auto mRead = _data->matrixAInvB->Read(), vRead = _data->vectorAInvB->Read(), injectionRead = _data->boundaryInjection->Read();
         const auto offsets = oRead.View<R::FixedRows<1>>(), neighbors = nbRead.View<R::FixedRows<1>>(), bOffsets = boRead.View<R::FixedRows<1>>();
         const auto matrices = mRead.View<R::TableRows>(), vectors = vRead.View<R::TableRows>(), injection = injectionRead.View<R::TableRows>();
         const real relax = _data->settings.jacobiRelax;
@@ -275,7 +368,6 @@ namespace DNDS::CFV
     void VariationalReconstructionPlan::CommitReconstruction(ReconstructionWorkspace &work) const
     {
         auto meshRead = Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
-        Validate();
         CheckWorkspace(_data.get(), work);
         auto source = work.temporary.Owned().Read();
         auto destination = work.coefficients.Owned().Write();
@@ -288,6 +380,7 @@ namespace DNDS::CFV
                                                                const FaceCharacteristicTransform *transform, ReconstructionRegion region,
                                                                const R::Array<real> *indicator, real threshold) const
     {
+        Require(ReconstructionOperation::WBAP);
         auto meshRead = Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         Validate();
         CheckWorkspace(_data.get(), work);
@@ -333,7 +426,7 @@ namespace DNDS::CFV
             const auto output = outputWrite.View<R::UniformTableRows>();
             const auto scratch = scratchWrite.View<R::TableRows>();
             auto offsetRead = _data->offsets.Read(), neighborRead = _data->neighbors.Read(), faceRead = _data->faces.Read();
-            auto secondaryRead = _data->secondary.Read();
+            auto secondaryRead = _data->secondary->Read();
             const auto offsets = offsetRead.View<R::FixedRows<1>>(), neighbors = neighborRead.View<R::FixedRows<1>>(), faces = faceRead.View<R::FixedRows<1>>();
             const auto secondary = secondaryRead.View<R::TableRows>();
             auto rotationRead = _data->neighborRotation.Read();
@@ -432,7 +525,6 @@ namespace DNDS::CFV
                                                            R::Array<real> &values, int derivative) const
     {
         auto meshRead = Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
-        Validate();
         const index nv = mean.Width(), n = NRecDOF();
         DNDS_check_throw_info(derivative >= 0 && derivative <= n, "polynomial derivative ordinal outside basis");
         Metrics().ValidateField(mean, nv), Metrics().ValidateField(coefficients, n * nv);
@@ -468,7 +560,6 @@ namespace DNDS::CFV
     Eigen::MatrixXd VariationalReconstructionPlan::GetCachedFaceBasis(index iFace, int side, int iQuadrature) const
     {
         auto meshRead = Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
-        Validate();
         DNDS_check_throw_info(Settings().cacheDiffBase && iFace >= 0 && iFace < Metrics().NumFaceProc() && (side == 0 || side == 1),
                               "basis cache disabled or face/side outside prepared data");
         DNDS_check_throw_info(meshRead.HostView().FaceCells(iFace)[side] != UnInitIndex, "exterior face parent has no basis cache");

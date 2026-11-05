@@ -11,6 +11,7 @@ namespace DNDS::CFV
     void VariationalReconstructionPlan::ApplyLinearOperator(const FVField &coefficients, FVField &output,
                                                             const std::vector<index> &periodicVectorStarts) const
     {
+        Require(ReconstructionOperation::LinearSystem);
         auto meshRead = Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         Validate();
         const index n = NRecDOF();
@@ -25,7 +26,7 @@ namespace DNDS::CFV
         auto offsetRead = _data->offsets.Read(), neighborRead = _data->neighbors.Read();
         auto rotationRead = _data->neighborRotation.Read();
         const auto rotations = rotationRead.View<R::FixedRows<9>>();
-        auto matrixRead = _data->rawMatrixB.Read(), diagonalRead = _data->localMatrix.Read();
+        auto matrixRead = _data->rawMatrixB->Read(), diagonalRead = _data->localMatrix->Read();
         const auto offsets = offsetRead.View<R::FixedRows<1>>(), neighbors = neighborRead.View<R::FixedRows<1>>();
         const auto matrices = matrixRead.View<R::TableRows>(), diagonals = diagonalRead.View<R::TableRows>();
         const auto xMatrices = Algebra::MakeEigenRowMatrices(x, n, components);
@@ -54,6 +55,7 @@ namespace DNDS::CFV
     void VariationalReconstructionPlan::BuildRightHandSide(const FVField &mean, const ReconstructionBoundaryValues &boundary,
                                                            FVField &output, const std::vector<index> &periodicVectorStarts) const
     {
+        Require(ReconstructionOperation::LinearSystem);
         auto meshRead = Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         Validate();
         const index n = NRecDOF(), components = mean.Width();
@@ -71,7 +73,7 @@ namespace DNDS::CFV
         auto offsetRead = _data->offsets.Read(), neighborRead = _data->neighbors.Read(), boundaryOffsetRead = _data->boundaryOffsets.Read();
         auto rotationRead = _data->neighborRotation.Read();
         const auto rotations = rotationRead.View<R::FixedRows<9>>();
-        auto vectorRead = _data->rawVectorB.Read(), injectionRead = _data->rawBoundaryInjection.Read();
+        auto vectorRead = _data->rawVectorB->Read(), injectionRead = _data->rawBoundaryInjection->Read();
         const auto offsets = offsetRead.View<R::FixedRows<1>>(), neighbors = neighborRead.View<R::FixedRows<1>>(), boundaryOffsets = boundaryOffsetRead.View<R::FixedRows<1>>();
         const auto vectors = vectorRead.View<R::TableRows>(), injections = injectionRead.View<R::TableRows>();
         const auto yMatrices = Algebra::MakeEigenRowMatrices(y, n, components);
@@ -107,6 +109,7 @@ namespace DNDS::CFV
     void VariationalReconstructionPlan::ComputeResidual(const FVField &rhs, const FVField &coefficients, FVField &output,
                                                         const std::vector<index> &periodicVectorStarts) const
     {
+        Require(ReconstructionOperation::LinearSystem);
         Metrics().ValidateField(rhs, coefficients.Width());
         DNDS_check_throw_info(!Algebra::Detail::Overlaps(rhs.Owned().Storage(), output.Owned().Storage()), "residual output aliases RHS");
         ApplyLinearOperator(coefficients, output, periodicVectorStarts);
@@ -120,12 +123,13 @@ namespace DNDS::CFV
     }
     void VariationalReconstructionPlan::ApplyLocalPreconditioner(const FVField &input, FVField &output) const
     {
+        Require(ReconstructionOperation::LocalPreconditioner);
         auto geometry = Metrics().AcquireRead();
         Validate();
         const index n = NRecDOF();
         DNDS_check_throw_info(input.Width() > 0 && input.Width() % n == 0, "preconditioner width is not a mode multiple");
         Metrics().ValidateField(input, input.Width()), Metrics().ValidateField(output, input.Width());
-        auto read = input.Owned().Read(), matrixRead = _data->localInverse.Read();
+        auto read = input.Owned().Read(), matrixRead = _data->localInverse->Read();
         auto write = output.Owned().Write();
         const auto x = read.View<R::UniformTableRows>();
         const auto matrix = matrixRead.View<R::TableRows>();

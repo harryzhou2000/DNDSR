@@ -373,6 +373,8 @@ TEST_CASE("Native Cauchy flow5 residual preserves constant state across layouts 
             settings.numerics.cfv.boundaryDerivativeWeights = {1, 0, 0, 0};
             const auto equation = C::EquationSystem::Resolve(settings.equation);
             C::FiniteVolume fv(mesh, settings, equation);
+            CHECK(fv.Reconstruction().Capabilities().sweeps == (method == "variational"));
+            CHECK_FALSE(fv.Reconstruction().Capabilities().linearSystem);
             const auto physical = layout == 0 ? R::RowLayout::Dense(0, 5, 8) : layout == 1 ? R::RowLayout::ColMajor(0, 5, {8, 1})
                                                                                            : R::RowLayout::TiledColMajor(0, 5, 32);
             auto state = fv.Metrics().BuildField(physical), residual = fv.Metrics().BuildField(physical);

@@ -39,6 +39,12 @@ access and transfer execution; CFV owns reconstruction mathematics; the solver
 owns field histories, equations, stage scheduling, stopping and domain coupling.
 No solver or CFV dependency is introduced into Geom.
 
+Preparation can select supported operations using an immutable
+[`ReconstructionCapabilities`](ReconstructionCapabilities.md) value. The default
+retains the complete standalone API; reduced profiles omit unused matrix tables
+and reject unavailable operations before communication or output mutation.
+Basis caching remains independent of this selection.
+
 ## Supported mathematics
 
 * Cell-centered planar 2D and volumetric 3D unstructured cells, scalar or multiple
