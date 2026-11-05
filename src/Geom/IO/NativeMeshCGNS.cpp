@@ -995,7 +995,8 @@ namespace DNDS::Geom
         std::optional<NativePeriodicImportOptions> periodic, NativeSerialDistribution distribution)
     {
         DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native CGNS import requires a communicator");
-        FieldTransferDetail::LocalStage(mpi, [&]
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !options.communication || options.communication->ChecksCollectivePreflight());
+        FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                         {
             int rank, count;
             MPI_Comm_rank(mpi.comm, &rank);
@@ -1012,7 +1013,7 @@ namespace DNDS::Geom
         if (periodic)
         {
             std::array<real, 61> values{}, canonical{};
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                             {
                 values[0] = periodic->tolerance;
                 size_t offset = 1;
@@ -1026,20 +1027,20 @@ namespace DNDS::Geom
                 DNDS_check_throw_info(periodic->tolerance > 0, "invalid native periodic import tolerance"); });
             canonical = values;
             MPI_Bcast(canonical.data(), int(canonical.size()), DNDS_MPI_REAL, readerRank, mpi.comm);
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                             { DNDS_check_throw_info(values == canonical, "native periodic import options differ across ranks"); });
         }
         int pathSize = int(path.size());
         MPI_Bcast(&pathSize, 1, MPI_INT, readerRank, mpi.comm);
         std::string expectedPath;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                         { expectedPath = mpi.rank == readerRank ? path : std::string(size_t(pathSize), '\0'); });
         MPI_Bcast(expectedPath.data(), pathSize, MPI_CHAR, readerRank, mpi.comm);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                         { DNDS_check_throw_info(path == expectedPath, "native CGNS import paths differ across ranks"); });
 
         NativeSerialMeshData serial;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                         { if (mpi.rank == readerRank) serial = ReadNativeCGNSSerial(path, dimension, boundaryId); });
         return DistributeNativeSerialMeshOwned(mpi, std::move(serial), dimension, readerRank, options, std::move(periodic), distribution);
     }
@@ -1049,7 +1050,8 @@ namespace DNDS::Geom
         NativeMeshBuildOptions options, std::optional<NativePeriodicImportOptions> periodic, NativeSerialDistribution distribution)
     {
         DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native serial distribution requires communicator");
-        FieldTransferDetail::LocalStage(mpi, [&]
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !options.communication || options.communication->ChecksCollectivePreflight());
+        FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                         {
             int rank = -1, size = 0;
             MPI_Comm_rank(mpi.comm, &rank); MPI_Comm_size(mpi.comm, &size);
@@ -1060,7 +1062,7 @@ namespace DNDS::Geom
         std::array<int, 6> parameters{dimension, readerRank, options.cellLayers, int(options.completeNodeStar), int(bool(periodic)), int(distribution)};
         auto expected = parameters;
         MPI_Bcast(expected.data(), int(expected.size()), MPI_INT, 0, mpi.comm);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                         { DNDS_check_throw_info(parameters == expected, "native serial distribution options differ across ranks"); });
         if (periodic)
         {
@@ -1078,10 +1080,10 @@ namespace DNDS::Geom
             }
             canonical = frame;
             MPI_Bcast(canonical.data(), int(canonical.size()), DNDS_MPI_REAL, readerRank, mpi.comm);
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                             { DNDS_check_throw_info(frame == canonical && std::isfinite(frame[0]) && frame[0] > 0, "native serial periodic frames differ or invalid tolerance"); });
         }
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                         {
             DNDS_check_throw_info(!serial.periodic, "native serial ingress requires raw records before periodic canonicalization");
             const auto nc = serial.cellNodes.RowCount(), nn = serial.coordinates.RowCount(), nb = serial.boundaryNodes.RowCount();
@@ -1111,7 +1113,7 @@ namespace DNDS::Geom
                     DNDS_check_throw_info(std::isfinite(points.View()(row, component)), "native serial coordinate nonfinite");
             if (periodic) serial = CanonicalizeNativePeriodic(std::move(serial), *periodic); });
         std::string identityWire;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                         {
             if (mpi.rank == readerRank)
             {
@@ -1122,11 +1124,11 @@ namespace DNDS::Geom
             DNDS_check_throw_info(identityWire.size() <= size_t(INT_MAX), "native serial identity metadata too large"); });
         int identitySize = int(identityWire.size());
         MPI_Bcast(&identitySize, 1, MPI_INT, readerRank, mpi.comm);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                         { identityWire.resize(size_t(identitySize)); });
         MPI_Bcast(identityWire.data(), identitySize, MPI_CHAR, readerRank, mpi.comm);
         MeshIdentity identity;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                         {
             const auto json = nlohmann::json::parse(identityWire);
             identity.meshNamespace = json.at("namespace").get<std::string>();
@@ -1137,7 +1139,7 @@ namespace DNDS::Geom
         MPI_Bcast(&nodeHighWater, 1, DNDS_MPI_INDEX, readerRank, mpi.comm);
         index counts[]{index(serial.cellNodes.RowCount()), index(serial.coordinates.RowCount()), index(serial.boundaryNodes.RowCount())};
         MPI_Bcast(counts, 3, MPI_INT64_T, readerRank, mpi.comm);
-        auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
+        auto context = options.communication ? options.communication : std::make_shared<Runtime::CommunicationContext>(mpi.comm);
         // Empty ranks must carry the reader's physical layout too. A default
         // empty Array has no table width; it is not a valid receiver prototype
         // for a fixed-width source (nor a declaration of compact CSR storage).
@@ -1149,7 +1151,7 @@ namespace DNDS::Geom
                                                                     : 0,
                             shape.Width(), shape.Stride()};
             MPI_Bcast(storage, 3, DNDS_MPI_INDEX, readerRank, mpi.comm);
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                             {
                 if (mpi.rank != readerRank)
                     source = Array(storage[0] == 2 ? Runtime::RowLayout::Ragged({}) :
@@ -1220,7 +1222,7 @@ namespace DNDS::Geom
             const index length = distribution == NativeSerialDistribution::ReaderOwned ? (mpi.rank == readerRank ? total : 0) : total / mpi.size + (mpi.rank < total % mpi.size);
             const index first = distribution == NativeSerialDistribution::ReaderOwned ? 0 : (total / mpi.size) * mpi.rank + std::min<index>(mpi.rank, total % mpi.size);
             std::vector<Runtime::RowRequest> requests;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                             {
                 requests.reserve(size_t(length));
                 for (index row = 0; row < length; ++row)
@@ -1234,7 +1236,7 @@ namespace DNDS::Geom
             source = storagePrototype(std::move(source));
             Runtime::PayloadPlan payload(plan, source.Layout(), schema);
             std::optional<Array> output;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                             { output.emplace(payload.DestinationLayout()); });
             Runtime::TransferOptions transferOptions;
             transferOptions.context = context;
@@ -1276,7 +1278,7 @@ namespace DNDS::Geom
     {
         auto owned = DistributeNativeSerialMeshOwned(mpi, std::move(serial), dimension, readerRank, options, std::move(periodic), distribution);
         GhostSpec recipe;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                         { recipe = DefaultNativeMeshGhostSpec(owned, options.cellLayers, options.completeNodeStar); });
         return NativeMeshAssembler::Build(mpi, std::move(owned), recipe);
     }
@@ -1288,7 +1290,7 @@ namespace DNDS::Geom
     {
         auto owned = ReadNativeCGNSOwned(mpi, path, dimension, boundaryId, readerRank, options, std::move(periodic), distribution);
         GhostSpec recipe;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                         { recipe = DefaultNativeMeshGhostSpec(owned, options.cellLayers, options.completeNodeStar); });
         return NativeMeshAssembler::Build(mpi, std::move(owned), recipe);
     }

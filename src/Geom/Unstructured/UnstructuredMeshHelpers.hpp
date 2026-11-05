@@ -52,13 +52,13 @@ namespace DNDS::Geom
         const PartitionOptions &partOpts, const t_FBCName_2_ID &nameMapper,
         std::optional<NativePeriodicImportOptions> periodic = {},
         int elevation = 0, int bisect = 0, int readerRank = 0,
-        MeshAuditOptions audit = {});
+        MeshAuditOptions audit = {}, std::shared_ptr<Runtime::CommunicationContext> communication = {});
     inline NativeOwnedMeshData ReadAndDeriveNativeMeshFromOpenFOAMOwned(
         const MPIInfo &mpi, const std::string &meshFile, const PartitionOptions &partOpts,
         const std::map<std::string, std::string> &nameMapping,
         const t_FBCName_2_ID &nameMapper, std::optional<NativePeriodicImportOptions> periodic = {},
         int elevation = 0, int bisect = 0, int readerRank = 0,
-        MeshAuditOptions audit = {});
+        MeshAuditOptions audit = {}, std::shared_ptr<Runtime::CommunicationContext> communication = {});
 
     /// Partition the source before optional order derivation, matching source
     /// mesh setup. Refinement retains parent ownership without repartitioning;
@@ -69,21 +69,22 @@ namespace DNDS::Geom
         NativeOwnedMeshData owned, const MPIInfo &mpi,
         const PartitionOptions &partOpts, int elevation, int bisect)
     {
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        { DNDS_check_throw_info((elevation == 0 || elevation == 1) && bisect >= 0 && bisect <= 4,
-                                                                "native mesh setup requires elevation 0/1 and bisection count 0..4"); });
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !owned.communication || owned.communication->ChecksCollectivePreflight());
+        owned.LocalStage(mpi, [&]
+                         { DNDS_check_throw_info((elevation == 0 || elevation == 1) && bisect >= 0 && bisect <= 4,
+                                                 "native mesh setup requires elevation 0/1 and bisection count 0..4"); });
         std::array<int, 2> derived{elevation, bisect}, expected = derived;
         MPI_Bcast(expected.data(), int(expected.size()), MPI_INT, 0, mpi.comm);
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        { DNDS_check_throw_info(derived == expected, "native mesh derivation options differ across ranks"); });
+        owned.LocalStage(mpi, [&]
+                         { DNDS_check_throw_info(derived == expected, "native mesh derivation options differ across ranks"); });
         NativePartitionOptions partition{partOpts.metisType, partOpts.metisUfactor, partOpts.metisSeed,
                                          partOpts.edgeWeightMethod, std::max(partOpts.metisNcuts, 1), 1};
         owned = NativeMeshPreparation::PartitionOwned(owned, mpi, partition).owned;
         auto isO2 = [&]
         {
             int local = 1;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            owned.LocalStage(mpi, [&]
+                             {
                 auto info = owned.cellInfo->Read();
                 for (size_t row = 0; row < owned.cellInfo->RowCount(); ++row)
                     local = local && Elem::Element{info.View()(row, 0).getElemType()}.GetOrder() == 2; });
@@ -110,8 +111,8 @@ namespace DNDS::Geom
         if (!elevation && !bisect && !deferNewFacesUntilPreparation)
             owned = NativeMeshTopology::Build(std::move(owned), mpi);
         GhostSpec recipe;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        { recipe = DefaultNativeMeshGhostSpec(owned, 1, true); });
+        owned.LocalStage(mpi, [&]
+                         { recipe = DefaultNativeMeshGhostSpec(owned, 1, true); });
         return NativeMeshAssembler::Build(mpi, std::move(owned), recipe);
     }
 
@@ -145,10 +146,10 @@ namespace DNDS::Geom
         const MPIInfo &mpi, int dimension, const std::string &meshFile,
         const PartitionOptions &partOpts, const t_FBCName_2_ID &nameMapper,
         std::optional<NativePeriodicImportOptions> periodic, int elevation, int bisect,
-        int readerRank, MeshAuditOptions audit)
+        int readerRank, MeshAuditOptions audit, std::shared_ptr<Runtime::CommunicationContext> communication)
     {
         auto owned = ReadNativeCGNSOwned(mpi, meshFile, dimension, nameMapper, readerRank,
-                                         {1, true, audit}, periodic, NativeSerialDistribution::ReaderOwned);
+                                         {1, true, audit, std::move(communication)}, periodic, NativeSerialDistribution::ReaderOwned);
         return DeriveAndPartitionNativeMeshOwned(std::move(owned), mpi, partOpts, elevation, bisect);
     }
 
@@ -156,30 +157,31 @@ namespace DNDS::Geom
         const MPIInfo &mpi, const std::string &meshFile, const PartitionOptions &partOpts,
         const std::map<std::string, std::string> &nameMapping,
         const t_FBCName_2_ID &nameMapper, std::optional<NativePeriodicImportOptions> periodic,
-        int elevation, int bisect, int readerRank, MeshAuditOptions audit)
+        int elevation, int bisect, int readerRank, MeshAuditOptions audit, std::shared_ptr<Runtime::CommunicationContext> communication)
     {
         auto owned = ReadNativeOpenFOAMOwned(mpi, meshFile, nameMapping, nameMapper, readerRank,
-                                             {1, true, audit}, periodic, NativeSerialDistribution::ReaderOwned);
+                                             {1, true, audit, std::move(communication)}, periodic, NativeSerialDistribution::ReaderOwned);
         return DeriveAndPartitionNativeMeshOwned(std::move(owned), mpi, partOpts, elevation, bisect);
     }
 
     inline std::shared_ptr<const UnstructuredMeshState> PrepareNativeMeshForSolverOwned(
         NativeOwnedMeshData owned, const MPIInfo &mpi, const PrepareMeshOptions &opts)
     {
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !owned.communication || owned.communication->ChecksCollectivePreflight());
         std::array<int, 6> settings{opts.reorderCells, opts.reorderParts, int(opts.buildSerialOut),
                                     opts.reorderPartsInner, opts.ghostLayers, int(opts.buildEdges)},
             expected = settings;
         MPI_Bcast(expected.data(), int(expected.size()), MPI_INT, 0, mpi.comm);
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        { DNDS_check_throw_info(settings == expected && opts.ghostLayers > 0 &&
-                                                                    (opts.reorderCells == 0 || opts.reorderCells == 1),
-                                                                "native preparation options differ across ranks or invalid depth"); });
+        owned.LocalStage(mpi, [&]
+                         { DNDS_check_throw_info(settings == expected && opts.ghostLayers > 0 &&
+                                                     (opts.reorderCells == 0 || opts.reorderCells == 1),
+                                                 "native preparation options differ across ranks or invalid depth"); });
         if (opts.reorderCells == 1)
             owned = NativeMeshTransition::ReorderOwnedCells(owned, mpi, opts.reorderParts, opts.reorderPartsInner).owned;
         owned = NativeMeshTopology::Build(std::move(owned), mpi, true, opts.buildEdges);
         GhostSpec recipe;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        owned.LocalStage(mpi, [&]
+                         {
             recipe = DefaultNativeMeshGhostSpec(owned, opts.ghostLayers, true);
             if (owned.ghostSpec)
                 recipe.chains.insert(recipe.chains.end(), owned.ghostSpec->chains.begin(), owned.ghostSpec->chains.end());

@@ -118,7 +118,7 @@ reduction. No other implementation checkout or MG/IV work was used.
 
 ## Still pending
 
-E1's remaining importer/transition/loader propagation and E2's memory/timing
+E1's remaining cold-entry-point classification/propagation and E2's memory/timing
 assessment remain open, as do the bounded
 E3–E7 measurements, independent frozen Euler seam comparisons, selected scoped
 readability work, per-suite high-rank rationale/curation and the sanitizer
@@ -178,6 +178,62 @@ separate local-stage agreements outside the explicit EntitySpace context. Their
 policy propagation was an E1 follow-up; the work above is not a claim that every mesh setup
 agreement has been removed. At that checkpoint no CUDA acceptance, E2
 storage-profile completion, or E3–E7 matched performance result was claimed.
+
+### E1 importer, owned transition and production-loader follow-up
+
+Native CGNS/OpenFOAM ingress, owned partition/graph weighting, local and
+distributed transitions, refinement/elevation and registered native companions
+now carry the selected context. Required count exchanges, placement decisions,
+schedule agreement and numerical reductions remain. NativeRowTransfer combines
+the existing branch-mode agreement with agreement of the actual selected
+preflight policy; it does not substitute a successful per-launch handshake.
+Standalone Array/Field registration accepts an explicit context; EntityField
+registration inherits it. EntityField's pre-start binding check now follows
+the route policy, with the boolean cached independently of a moved handle.
+
+The default Cauchy CGNS loader passes `implicit.collectiveChecks` into owned
+mesh ingress before partitioning. Custom mesh factories keep responsibility
+for their preparation context. Python CGNS factories expose the default-on
+`collective_preflight` option, including their periodic-input/name-dictionary
+preparation. Topology/refinement wrappers inherit the existing mesh policy.
+
+Completed local C++ checks for this follow-up:
+
+1. Four new-policy registrations at np1/2/4/8 pass (1.21 s), exercising owned
+   CGNS import, partition, elevation, bisection, local reorder and final assembly
+   in both modes. The final rerun also checks an ID-valued registered companion
+   through permutation. EntityField halo values use the global-ID oracle;
+   PMPI counts are two safety reductions on, zero off.
+2. Nine existing preparation/transition/refinement registrations at np1/2/4
+   pass (3.99 s); their original semantic and failure checks are retained.
+3. The final six-registration batch passes (18.37 s): updated mesh policy at
+   np1/2/4/8 plus Cauchy finite-volume at np1/2. Its new default-loader fixture
+   uses the four-cell periodic CGNS file, checks policy on mesh families and
+   metrics, and compares one completed physical step bit-for-bit on/off.
+   These are correctness gates, not performance or physical-accuracy claims.
+
+4. DNDS, Geom, CFV and EulerP extensions were rebuilt and installed from this
+   checkout. Python 3.12/Open MPI 5.0.9, OMP1 and `pytest --with-mpi` pass five
+   CGNS/owned-setup tests on each of two ranks (0.13 s per rank). This includes
+   disabled-preflight import/topology, retained views, native archive roundtrip
+   and setup publication checks. Twenty tooling tests pass (3.173 s).
+
+The first Python rebuild rejected two wrappers with a missing local context
+variable introduced during this propagation; the corrected rebuild succeeded.
+The first runtime attempt lacked the fixture generator's expected CGNS-library
+path. An ignored `external/cfd_externals/install` link now reuses the canonical
+installation, without replacing the tracked submodule directory. The next
+attempt exposed an incorrect `Bnd` spelling in the new Python test; the public
+enum is `Boundary`. Both harness failures are retained in the local logs;
+only the final successful run is counted above. No solver payload corruption
+was observed in those failed setup attempts.
+
+E1 is not closed by these gates. Archive/serializer failure coordination, bare
+entity-space creation, compatibility importers and remaining cold wrappers still
+need collective-purpose classification and policy propagation where optional.
+Do not remove required schema/file/data exchanges or count their presence as
+a repeated prepared-transfer regression. E2 measurements, E3–E7 and independent
+Euler/sanitizer/readability work remain queued without changing the goal scope.
 
 ## E2: operation-selected reconstruction storage
 

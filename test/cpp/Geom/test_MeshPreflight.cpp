@@ -3,6 +3,9 @@
 #include "NativeMeshOverlapFixture.hpp"
 #include "NativePeriodicFixtures.hpp"
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
+#include "Geom/Access/EntityField.hpp"
+#include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
+#include "NativeReorderChecks.hpp"
 #include <atomic>
 
 namespace G = DNDS::Geom;
@@ -116,6 +119,71 @@ TEST_CASE("Cold mesh preparation shares an explicit policy without changing conn
         for (I iGhost = 0; iGhost < cells.NumGhost(); ++iGhost)
             for (I j = 0; j < 2; ++j)
                 CHECK(read.View()(iGhost, j) == 2 * cells.LocalToGlobal(cells.NumOwned() + iGhost) + j);
+        G::EntityField<double> field(cells, source);
+        auto fieldBinding = field.BuildHaloRoute(cells).Bind(field, cells);
+        {
+            Count count;
+            fieldBinding.Begin(R::ExecutionContext::Host()).Wait();
+            CHECK(reductions.load() == (enabled ? 2 : 0));
+        }
+        auto ghostRead = fieldBinding.GhostValues().Read();
+        for (I iGhost = 0; iGhost < cells.NumGhost(); ++iGhost)
+            for (I j = 0; j < 2; ++j)
+                CHECK(ghostRead.View()(iGhost, j) == 2 * cells.LocalToGlobal(cells.NumOwned() + iGhost) + j);
+    }
+}
+
+TEST_CASE("CGNS owned import partition refinement reorder and publication inherit preflight")
+{
+    std::vector<I> expected;
+    for (bool enabled : {true, false})
+    {
+        CAPTURE(enabled);
+        auto context = std::make_shared<R::CommunicationContext>(mpi.comm, enabled);
+        const auto path = (NativeReorderChecks::Root() / "data/mesh/UniformSquare_10.cgns").string();
+        G::PartitionOptions partition;
+        partition.metisSeed = 43;
+        auto owned = G::ReadAndDeriveNativeMeshFromCGNSOwned(
+            mpi, 2, path, partition, G::FBC_Name_2_ID_Default, {}, 1, 1, mpi.size - 1, {}, context);
+        REQUIRE(owned.communication == context);
+        for (const auto &[kind, space] : owned.spaces)
+        {
+            CHECK(space.NumGhost() == 0);
+            CHECK(space.ChecksCollectivePreflight() == enabled);
+        }
+        R::Array<I> companion(R::RowLayout::Dense(owned.spaces.at(G::EntityKind::Cell).NumOwned(), 2));
+        {
+            auto ids = owned.ids.at(G::EntityKind::Cell).Read();
+            auto write = companion.Write();
+            for (I iCell = 0; iCell < I(companion.RowCount()); ++iCell)
+                for (I j = 0; j < 2; ++j)
+                    write.View()(iCell, j) = 31 * ids.View()(iCell, 0) + j;
+        }
+        auto reordered = G::NativeMeshTransition::ReorderOwnedCells(owned, mpi, 2, 1);
+        auto entry = G::RegisterArray(companion, G::EntityKind::Cell, "id-based companion",
+                                      R::ElementSchema::For<I>(), R::ExecutionContext::Host(),
+                                      G::CompanionDisposition::TransferIfReordered, {}, context);
+        entry.fn(reordered.transfers.at(G::EntityKind::Cell), mpi);
+        owned = std::move(reordered.owned);
+        {
+            auto ids = owned.ids.at(G::EntityKind::Cell).Read();
+            auto read = companion.Read();
+            for (I iCell = 0; iCell < I(companion.RowCount()); ++iCell)
+                for (I j = 0; j < 2; ++j)
+                    CHECK(read.View()(iCell, j) == 31 * ids.View()(iCell, 0) + j);
+        }
+        G::PrepareMeshOptions options;
+        options.reorderCells = 1;
+        options.reorderParts = 2;
+        auto state = G::PrepareNativeMeshForSolverOwned(std::move(owned), mpi, options);
+        auto mesh = G::UnstructuredMesh::FromNative(mpi, std::move(state));
+        REQUIRE(mesh->PreparationCommunication() == context);
+        const auto actual = Connectivity(*mesh);
+        if (enabled)
+            expected = actual;
+        else
+            CHECK(actual == expected);
+        mesh->CurrentNativeState()->Audit({true, true});
     }
 }
 

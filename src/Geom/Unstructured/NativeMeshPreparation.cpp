@@ -110,13 +110,13 @@ namespace DNDS::Geom
                     MPI_Comm_free(&value);
             }
         };
-        void Agree(const MPIInfo &mpi, const NativePartitionOptions &options)
+        void Agree(const MPIInfo &mpi, const NativePartitionOptions &options, const std::shared_ptr<Runtime::CommunicationContext> &communication)
         {
             std::array<int, 7> values{options.metisUfactor, options.metisSeed, options.edgeWeightMethod,
                                       options.metisNcuts, options.ghostLayers, options.metisType == "KWAY", int(options.deferNewFacesUntilPreparation)};
             auto expected = values;
             MPI_Bcast(expected.data(), int(expected.size()), MPI_INT, 0, mpi.comm);
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             { DNDS_check_throw_info(values == expected && (options.metisType == "KWAY" || options.metisType == "RB") &&
                                                                         (options.edgeWeightMethod == 0 || options.edgeWeightMethod == 1) && options.metisUfactor > 0 && options.metisSeed >= 0 &&
                                                                         options.metisNcuts > 0 && options.ghostLayers > 0 &&
@@ -231,7 +231,7 @@ namespace DNDS::Geom
             std::optional<MeshReadAccess> read;
             std::optional<EntitySpace> cells, nodes;
             int active = 0;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, source.PreparationCommunication(), [&]
                                             {
                 source.Validate();
                 DNDS_check_throw_info(!source.Requirements().faces, "reader partition scratch requires primary input");
@@ -243,7 +243,7 @@ namespace DNDS::Geom
                 DNDS_check_throw_info(read->HostView().Dimension() == 2 || read->HostView().Dimension() == 3,
                                       "reader partition scratch requires dimension two or three"); });
             MPI_Allreduce(MPI_IN_PLACE, &active, 1, MPI_INT, MPI_SUM, mpi.comm);
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, source.PreparationCommunication(), [&]
                                             {
                 DNDS_check_throw_info(active <= 1, "reader partition scratch requires at most one active cell rank");
                 graph.offsets.push_back(0);
@@ -272,12 +272,13 @@ namespace DNDS::Geom
             return graph;
         }
 
-        void ScaleNativePartitionWeights(const MPIInfo &mpi, const std::vector<real> &diameters, NativePartitionGraph &graph)
+        void ScaleNativePartitionWeights(const MPIInfo &mpi, const std::vector<real> &diameters, NativePartitionGraph &graph,
+                                         std::shared_ptr<Runtime::CommunicationContext> communication)
         {
             real maximum = 0;
             index directedEdges = 0;
             std::vector<index> edgeCounts;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 directedEdges = size_t_to_signed<index>(diameters.size());
                 edgeCounts.resize(size_t(mpi.size)); });
@@ -285,7 +286,7 @@ namespace DNDS::Geom
             for (auto diameter : diameters)
                 maximum = std::max(maximum, diameter);
             MPI_Allreduce(MPI_IN_PLACE, &maximum, 1, DNDS_MPI_REAL, MPI_MAX, mpi.comm);
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 directedEdges = 0;
                 for (auto count : edgeCounts) directedEdges = CheckedSize::Add(directedEdges, count);
@@ -312,7 +313,7 @@ namespace DNDS::Geom
             std::vector<real> diameters;
             std::optional<EntitySpace> cells;
             std::optional<MeshReadAccess> read;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, source.PreparationCommunication(), [&]
                                             {
                 source.Validate();
                 source.CheckRequirements(MeshReadRequirements::CellFlux());
@@ -322,7 +323,7 @@ namespace DNDS::Geom
                 read.emplace(source.Snapshot(Runtime::Device::Host()).AcquireRead()); });
             int expected = method;
             MPI_Bcast(&expected, 1, MPI_INT, 0, mpi.comm);
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, source.PreparationCommunication(), [&]
                                             {
                 DNDS_check_throw_info(method == expected, "native partition edge weight methods differ across ranks");
                 const auto view = read->HostView();
@@ -369,7 +370,7 @@ namespace DNDS::Geom
                     graph.offsets.push_back(METIS::indexToIdx(size_t_to_signed<index>(graph.adjacency.size())));
                 } });
             if (method)
-                ScaleNativePartitionWeights(mpi, diameters, graph);
+                ScaleNativePartitionWeights(mpi, diameters, graph, source.PreparationCommunication());
             return graph;
         }
     }
@@ -385,8 +386,8 @@ namespace DNDS::Geom
             MPI_Allgather(&owned, 1, DNDS_MPI_INDEX, counts.data(), 1, DNDS_MPI_INDEX, mpi.comm);
             idx_t global = 0, nParts = 0;
             std::vector<idx_t> offsets;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            cells.LocalStage([&]
+                             {
                 global = METIS::indexToIdx(cells.NumGlobal());
                 nParts = METIS::indexToIdx(std::min<index>(mpi.size, global));
                 offsets.push_back(0);
@@ -397,14 +398,14 @@ namespace DNDS::Geom
             xadj = std::move(graph.offsets);
             adjacency = std::move(graph.adjacency);
             adjacencyWeights = std::move(graph.weights);
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            cells.LocalStage([&]
+                             {
                 if (adjacency.empty()) adjacency.push_back(0);
                 if (options.edgeWeightMethod && adjacencyWeights.empty()) adjacencyWeights.push_back(1); });
             std::vector<real_t> weights;
             std::vector<idx_t> candidate;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            cells.LocalStage([&]
+                             {
                 weights.assign(size_t(nParts), nParts ? real_t(1) / real_t(nParts) : real_t(0));
                 candidate.resize(part.size()); });
             ActiveCommunicator active;
@@ -466,8 +467,8 @@ namespace DNDS::Geom
                 }
             }
             std::vector<MPI_int> targets;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            cells.LocalStage([&]
+                             {
                 DNDS_check_throw_info(status == METIS_OK, "native METIS/ParMETIS partition failed");
                 for (index row = 0; row < owned; ++row)
                 {
@@ -482,23 +483,24 @@ namespace DNDS::Geom
     NativeOwnedMeshTransitionResult NativeMeshPreparation::PartitionOwned(
         const NativeOwnedMeshData &source, const MPIInfo &mpi, const NativePartitionOptions &options)
     {
-        Agree(mpi, options);
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !source.communication || source.communication->ChecksCollectivePreflight());
+        Agree(mpi, options, source.communication);
         int active = 0;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        source.LocalStage(mpi, [&]
+                          {
             for (const auto &[kind, space] : source.spaces)
                 DNDS_check_throw_info(space.Valid() && space.NumGhost() == 0, "owned partition requires owned-only input spaces");
             active = source.spaces.at(EntityKind::Cell).NumOwned() ? 1 : 0; });
         MPI_Allreduce(MPI_IN_PLACE, &active, 1, MPI_INT, MPI_SUM, mpi.comm);
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        { DNDS_check_throw_info(options.metisType != "RB" || active <= 1, "owned RB partition requires one reader cell rank"); });
+        source.LocalStage(mpi, [&]
+                          { DNDS_check_throw_info(options.metisType != "RB" || active <= 1, "owned RB partition requires one reader cell rank"); });
         const bool primaryCellGraph = options.edgeWeightMethod == 0 && source.relations[size_t(MeshRelation::CellCells)];
         auto graph = primaryCellGraph
                          ? detail::BuildOwnedPrimaryCellGraph(source, mpi)
                          : detail::BuildOwnedPartitionGraph(source, mpi, options.edgeWeightMethod);
         auto carried = source;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        source.LocalStage(mpi, [&]
+                          {
             std::vector<size_t> sizes(size_t(graph.offsets.empty() ? 0 : graph.offsets.size() - 1));
             for (size_t row = 0; row < sizes.size(); ++row)
                 sizes[row] = size_t(graph.offsets[row + 1] - graph.offsets[row]);
@@ -512,8 +514,8 @@ namespace DNDS::Geom
                                                })); });
         auto targets = detail::PartitionNativeGraph(source.spaces.at(EntityKind::Cell), mpi, std::move(graph), options);
         ReorderInput input;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        source.LocalStage(mpi, [&]
+                          {
             input.explicitMaps.push_back({EntityKind::Cell, std::move(targets)});
             if (!source.spaces.count(EntityKind::Face))
             {
@@ -530,10 +532,12 @@ namespace DNDS::Geom
     NativeMeshTransitionResult NativeMeshPreparation::Partition(
         const UnstructuredMeshState &source, const MPIInfo &mpi, const NativePartitionOptions &options)
     {
-        Agree(mpi, options);
+        const auto communication = source.PreparationCommunication();
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
+        Agree(mpi, options, source.PreparationCommunication());
         int activeRanks = 0;
         std::array<int, 2> facial{};
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, source.PreparationCommunication(), [&]
                                         {
             source.Validate();
             activeRanks = source.NumOwned(EntityKind::Cell) ? 1 : 0;
@@ -541,7 +545,7 @@ namespace DNDS::Geom
         MPI_Allreduce(MPI_IN_PLACE, &activeRanks, 1, MPI_INT, MPI_SUM, mpi.comm);
         auto expectedFacial = facial;
         MPI_Bcast(expectedFacial.data(), int(expectedFacial.size()), MPI_INT, 0, mpi.comm);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, source.PreparationCommunication(), [&]
                                         { DNDS_check_throw_info(facial == expectedFacial, "native partition facial inventory differs across ranks");
                                           DNDS_check_throw_info(options.metisType != "RB" || activeRanks <= 1,
                                                                 "native recursive partition requires all cells on one reader rank before distribution"); });
@@ -553,7 +557,7 @@ namespace DNDS::Geom
         const bool completeBefore = !facial[0] && !readerGraph;
         if (completeBefore)
             owned = NativeMeshTopology::Build(std::move(owned), mpi);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, source.PreparationCommunication(), [&]
                                         {
             for (const auto kind : {EntityKind::Cell, EntityKind::Node, EntityKind::Bnd, EntityKind::Face, EntityKind::Edge})
                 if (source.HasEntities(kind))
@@ -575,7 +579,7 @@ namespace DNDS::Geom
                          : detail::BuildOwnedPartitionGraph(owned, mpi, options.edgeWeightMethod);
         auto targets = detail::PartitionNativeGraph(owned.spaces.at(EntityKind::Cell), mpi, std::move(graph), options);
         ReorderInput input;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, source.PreparationCommunication(), [&]
                                         {
             input.explicitMaps.push_back({EntityKind::Cell, std::move(targets)});
             if (!source.HasEntities(EntityKind::Face))
@@ -589,12 +593,12 @@ namespace DNDS::Geom
         if (completeAfter)
             moved.owned = NativeMeshTopology::Build(std::move(moved.owned), mpi);
         if (completeBefore || completeAfter)
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, source.PreparationCommunication(), [&]
                                             { moved.owned.ghostSpec = ExtendNativeMeshGhostSpecForTopology(moved.owned, true, false, options.ghostLayers); });
         NativeMeshTransitionResult result;
         result.transfers = std::move(moved.transfers);
         result.sourceSpaces = std::move(moved.sourceSpaces);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, source.PreparationCommunication(), [&]
                                         {
             // External fields validate the caller's original publication,
             // never the detached owned map or a transient completion map.

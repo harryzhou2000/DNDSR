@@ -63,11 +63,34 @@ overload accepting an explicit congruent context remains available. Binding and
 request ownership, direct MPI datatypes and explicit payload namespaces keep
 their existing contracts; attaching a context does not create a transfer.
 
-This is the owned-builder/topology/assembler core of plan 53 E1. Importer,
-partition/reorder companion stages and production-loader propagation are still
-being completed; the existing Cauchy switch is not yet a claim that every cold
-mesh stage uses this context. Python exposes descriptor rebinding and inspection;
-its runtime gate is queued with the remaining cross-module rebuild.
+CGNS/OpenFOAM native ingress accepts the context through
+`NativeMeshBuildOptions::communication`. The owned read/derive helpers also
+accept it as their final argument. Partition, local permutation, distributed
+row correspondence and elevation/bisection preserve it through the final
+publication. Cauchy's default CGNS loader constructs that context from
+`implicit.collectiveChecks`; custom mesh factories still supply their own mesh
+preparation policy. Supplying an already built mesh does not retroactively
+change the communication that created it.
+
+`EntityField` routes inherit the entity descriptor's policy, including its
+binding-generation validation before each start. Standalone `RegisterArray`
+and `RegisterField` accept an explicit communication context: an Array has no
+intrinsic mesh policy. Null retains enabled compatibility behavior. EntityField
+registration supplies its context automatically. Retain registered handles
+until preparation/publication finishes, join producers and release conflicting
+access scopes before invoking a transition. Off mode does not relax ownership.
+
+Python `read_native_cgns` and `read_native_cgns_with_names` expose the same
+default-on policy as `collective_preflight`. Topology/refinement wrappers inherit
+the publication policy; descriptor rebinding and inspection remain available.
+All ranks must select the same mode. Disabled-mode input failures abort rather
+than becoming recoverable Python exceptions.
+
+This remains a staged E1 implementation. Archive/serializer error coordination,
+bare entity-space creation, legacy compatibility decoders and other cold
+preparation entry points require separate classification and propagation;
+they must not be counted as safety-free merely because final halos inherit
+the context. Required file, schema and payload protocols remain enabled.
 
 `geom_test_mesh_preflight` compares on/off topology and direct halo payloads,
 including empty owners and a self-periodic mesh. PMPI counts prove four repeated
@@ -76,3 +99,11 @@ mode. Required setup reductions are retained, so complete setup is not expected
 to have zero MPI reductions. The test also checks immutable descriptor rebinding
 and mutation preflight, and rejects inconsistent context selection before
 optional preparation begins.
+
+The owned-CGNS fixture additionally exercises reader-only ingress, partition,
+elevation, bisection, a permuted ID-valued companion, local reorder and final
+assembly with both policies. Final connectivity is identical. An EntityField
+halo start has two safety reductions in enabled mode and zero when disabled;
+its received values are checked against global row IDs. A small Cauchy default
+loader fixture verifies the config reaches mesh families and metrics, then
+compares a completed physical step bit-for-bit across policies.

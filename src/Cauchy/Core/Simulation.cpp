@@ -27,7 +27,9 @@ namespace DNDS::Cauchy
                     periodic->frames.translation[d + 1].map()[d] = domain.settings.mesh.periodicLengths[d];
                 }
             }
-            auto owned = Geom::ReadAndDeriveNativeMeshFromCGNSOwned(mpi, domain.settings.mesh.dimension, domain.settings.mesh.file, partition, mapper, periodic);
+            auto communication = std::make_shared<Runtime::CommunicationContext>(mpi.comm, domain.settings.implicit.collectiveChecks);
+            auto owned = Geom::ReadAndDeriveNativeMeshFromCGNSOwned(mpi, domain.settings.mesh.dimension, domain.settings.mesh.file,
+                                                                    partition, mapper, periodic, 0, 0, 0, Geom::MeshAuditOptions{}, communication);
             Geom::PrepareMeshOptions prepare;
             prepare.buildSerialOut = false;
             prepare.reorderCells = 1;

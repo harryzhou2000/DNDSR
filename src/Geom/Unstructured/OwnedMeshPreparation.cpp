@@ -25,8 +25,8 @@ namespace DNDS::Geom::detail
             nodeBits.emplace(source.cellNodesPbi->Read());
         }
         NativePartitionGraph graph;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        source.LocalStage(mpi, [&]
+                          {
             graph.offsets.push_back(0);
             const size_t cellCount = size_t(cells.NumOwned());
             constexpr size_t maxVertices = size_t(Elem::CellNumNodeMax);
@@ -161,10 +161,10 @@ namespace DNDS::Geom::detail
     {
         int expected = method;
         MPI_Bcast(&expected, 1, MPI_INT, 0, mpi.comm);
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        { DNDS_check_throw_info(method == expected && (method == 0 || method == 1) &&
-                                                                    (source.dimension == 2 || source.dimension == 3),
-                                                                "owned partition requires matching weight method 0/1 and dimension two/three"); });
+        source.LocalStage(mpi, [&]
+                          { DNDS_check_throw_info(method == expected && (method == 0 || method == 1) &&
+                                                      (source.dimension == 2 || source.dimension == 3),
+                                                  "owned partition requires matching weight method 0/1 and dimension two/three"); });
         auto closure = BuildNativeCellClosure(source, mpi);
         auto cone = closure.cellNodes.Read();
         auto metadata = closure.cellInfo.ReadCombined();
@@ -176,8 +176,8 @@ namespace DNDS::Geom::detail
         std::optional<Runtime::ArrayPair<real>::ReadLease> points;
         if (method)
         {
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            { DNDS_check_throw_info(source.coords, "weighted owned partition requires coordinates"); });
+            source.LocalStage(mpi, [&]
+                              { DNDS_check_throw_info(source.coords, "weighted owned partition requires coordinates"); });
             EntityGhostMapping route(cone.Target());
             coordinates.emplace(Runtime::ArrayPair<real>{*source.coords,
                                                          route.TransferRows(cone.Target(), *source.coords, Runtime::ElementSchema::Arithmetic<real>())});
@@ -185,8 +185,8 @@ namespace DNDS::Geom::detail
         }
         NativePartitionGraph graph;
         std::vector<real> diameters;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        source.LocalStage(mpi, [&]
+                          {
             auto rows = ConnectivityRows::EnumerateSubEntities(
                 [&](index cell, int slot) { return cone.ConvertedIndex(cell, size_t(slot), Adj_PointToLocal, false); },
                 query, cone.RowCount(), cone.Target().NumLocal());
@@ -242,7 +242,7 @@ namespace DNDS::Geom::detail
                 graph.offsets.push_back(METIS::indexToIdx(size_t_to_signed<index>(graph.adjacency.size())));
             } });
         if (method)
-            ScaleNativePartitionWeights(mpi, diameters, graph);
+            ScaleNativePartitionWeights(mpi, diameters, graph, source.communication);
         return graph;
     }
 }

@@ -159,8 +159,9 @@ namespace DNDS::Geom
                                                 NativeMeshBuildOptions options, std::optional<NativePeriodicImportOptions> periodic, NativeSerialDistribution distribution)
     {
         Require(mpi.comm != MPI_COMM_NULL, "native OpenFOAM requires a communicator");
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !options.communication || options.communication->ChecksCollectivePreflight());
         std::string signature;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                         {
             int rank = -1, size = 0;
             MPI_Comm_rank(mpi.comm, &rank); MPI_Comm_size(mpi.comm, &size);
@@ -186,10 +187,10 @@ namespace DNDS::Geom
         MPI_Bcast(&count, 1, MPI_INT, 0, mpi.comm);
         std::string expected = mpi.rank == 0 ? signature : std::string(size_t(count), '\0');
         MPI_Bcast(expected.data(), count, MPI_CHAR, 0, mpi.comm);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                         { Require(signature == expected, "OpenFOAM settings differ across ranks"); });
         NativeSerialMeshData serial;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                         { if (mpi.rank == readerRank) serial = ReadNativeOpenFOAMSerial(path, nameMapping, boundaryId); });
         return DistributeNativeSerialMeshOwned(mpi, std::move(serial), 3, readerRank, options, std::move(periodic), distribution);
     }
@@ -200,7 +201,7 @@ namespace DNDS::Geom
     {
         auto owned = ReadNativeOpenFOAMOwned(mpi, path, nameMapping, boundaryId, readerRank, options, std::move(periodic), distribution);
         GhostSpec recipe;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, options.communication, [&]
                                         { recipe = DefaultNativeMeshGhostSpec(owned, options.cellLayers, options.completeNodeStar); });
         return NativeMeshAssembler::Build(mpi, std::move(owned), recipe);
     }

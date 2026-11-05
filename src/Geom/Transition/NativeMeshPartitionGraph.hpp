@@ -5,7 +5,13 @@
 #include "DNDS/MPI/MPI.hpp"
 #include <algorithm>
 #include <utility>
+#include <memory>
 #include <vector>
+
+namespace DNDS::Runtime
+{
+    class CommunicationContext;
+}
 
 namespace DNDS::Geom
 {
@@ -74,7 +80,8 @@ namespace DNDS::Geom
         /// Temporary exact facial incidence from owned cell cones. Remote
         /// inputs are sparse closure scratch, with no Face family/publication.
         NativePartitionGraph BuildOwnedPartitionGraph(const NativeOwnedMeshData &source, const MPIInfo &mpi, int edgeWeightMethod = 0);
-        void ScaleNativePartitionWeights(const MPIInfo &mpi, const std::vector<real> &diameters, NativePartitionGraph &graph);
+        void ScaleNativePartitionWeights(const MPIInfo &mpi, const std::vector<real> &diameters, NativePartitionGraph &graph,
+                                         std::shared_ptr<Runtime::CommunicationContext> communication = {});
         std::vector<MPI_int> PartitionNativeGraph(const EntitySpace &cells, const MPIInfo &mpi,
                                                   NativePartitionGraph graph, const NativePartitionOptions &options);
     }

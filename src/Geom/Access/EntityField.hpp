@@ -152,20 +152,21 @@ namespace DNDS::Geom
                 std::shared_ptr<Slot> _slot;
                 std::shared_ptr<State> _expected;
                 MPIInfo _mpi;
+                bool _collectivePreflight = true;
                 Runtime::Array<T> _ghost;
                 Runtime::TransferBinding _binding;
                 friend class HaloRoute;
                 Binding(std::shared_ptr<Slot> slot, std::shared_ptr<State> expected, Runtime::Array<T> ghost,
-                        Runtime::TransferBinding binding)
-                    : _slot(std::move(slot)), _expected(std::move(expected)), _mpi(_expected->space._mpi),
+                        Runtime::TransferBinding binding, bool collectivePreflight)
+                    : _slot(std::move(slot)), _expected(std::move(expected)), _mpi(_expected->space._mpi), _collectivePreflight(collectivePreflight),
                       _ghost(std::move(ghost)), _binding(std::move(binding)) {}
                 void ValidateCurrent()
                 {
-                    FieldTransferDetail::LocalStage(_mpi, [&]
-                                                    {
+                    Runtime::CommunicationDetail::LocalStage(_mpi.comm, _collectivePreflight, [&]
+                                                             {
                         DNDS_check_throw_info(_slot && _expected && _slot->current == _expected,
                                               "entity field halo binding is moved or predates field publication");
-                        _expected->Validate(_expected->space); });
+                        _expected->Validate(_expected->space); }, "entity field halo binding predates field publication");
                 }
 
             public:
@@ -198,18 +199,18 @@ namespace DNDS::Geom
 
             Binding Bind(EntityField &field, const EntitySpace &expected, Runtime::TransferLayout destinationLayout = {}) const
             {
-                FieldTransferDetail::LocalStage(_space._mpi, [&]
-                                                {
+                _space.LocalStage([&]
+                                  {
                     field.Validate(expected);
                     DNDS_check_throw_info(_space.SameOrder(expected), "entity field route belongs to another mesh/order"); });
                 auto state = field._slot->current;
                 auto mesh = Retain(_space);
                 Runtime::PayloadPlan payload(_route, state->values.Layout(), state->schema, destinationLayout);
                 std::optional<Runtime::Array<T>> ghost;
-                FieldTransferDetail::LocalStage(_space._mpi, [&]
-                                                { ghost.emplace(payload.DestinationLayout(), state->values.GetDevice()); });
+                _space.LocalStage([&]
+                                  { ghost.emplace(payload.DestinationLayout(), state->values.GetDevice()); });
                 auto binding = payload.Bind(state->values, *ghost, Runtime::TransferTransport::Direct);
-                return Binding(field._slot, std::move(state), std::move(*ghost), std::move(binding));
+                return Binding(field._slot, std::move(state), std::move(*ghost), std::move(binding), _route.Context()->ChecksCollectivePreflight());
             }
         };
 
@@ -234,8 +235,8 @@ namespace DNDS::Geom
         }
         HaloRoute BuildHaloRoute(const EntitySpace &space) const
         {
-            FieldTransferDetail::LocalStage(space._mpi, [&]
-                                            { Validate(space); });
+            space.LocalStage([&]
+                             { Validate(space); });
             return HaloRoute(space);
         }
         /// Explicit generic escape. Retains values but loses Geom association;
@@ -257,7 +258,7 @@ namespace DNDS::Geom
             // Descriptor construction is local. Defer semantic checks to the
             // collectively guarded preparation stages, before any payload.
             auto entry = RegisterArray<T>(state->values, state->space.Kind(), std::move(name), state->schema, state->context,
-                                          CompanionDisposition::TransferIfReordered, destinationLayout);
+                                          CompanionDisposition::TransferIfReordered, destinationLayout, state->space.Communication());
             entry.preflight = [state](const PermutationTransfer &transfer)
             {
                 state->Validate(state->space);
@@ -287,8 +288,8 @@ namespace DNDS::Geom
             entry.prepare = [slot, state, prepare](const PermutationTransfer &transfer, const MPIInfo &mpi)
             {
                 std::shared_ptr<typename Runtime::Array<T>::ReadLease> retained;
-                FieldTransferDetail::LocalStage(mpi, [&]
-                                                { retained = std::make_shared<typename Runtime::Array<T>::ReadLease>(state->values.Read(state->context)); });
+                state->space.LocalStage([&]
+                                        { retained = std::make_shared<typename Runtime::Array<T>::ReadLease>(state->values.Read(state->context)); });
                 auto old = prepare(transfer, mpi);
                 auto *array = dynamic_cast<FieldTransferDetail::Prepared<Runtime::Array<T>> *>(old.get());
                 DNDS_check_throw_info(array, "entity field adapter preparation type mismatch");

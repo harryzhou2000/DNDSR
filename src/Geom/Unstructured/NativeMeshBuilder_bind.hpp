@@ -28,10 +28,10 @@ namespace DNDS::Geom
                   const auto source = mesh.CurrentNativeState();
                   py::gil_scoped_release release;
                   source->Audit(audit); }, py::arg("mesh"), py::arg("audit") = MeshAuditOptions{}, "Collective checkpoint audit (full by default), without rebuilding or mutating the mesh. Caller retains the communicator and supplies identical flags on all ranks.");
-        auto periodicImport = [](const MPIInfo &mpi, py::object geometry, real tolerance)
+        auto periodicImport = [](const MPIInfo &mpi, py::object geometry, real tolerance, const std::shared_ptr<Runtime::CommunicationContext> &communication)
         {
             std::optional<NativePeriodicImportOptions> result;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 DNDS_check_throw_info(!geometry.is_none() || tolerance == 1e-9, "periodic tolerance requires explicit periodic_geometry ({} selects defaults)");
                 if (geometry.is_none() && tolerance == 1e-9) return;
@@ -68,18 +68,22 @@ namespace DNDS::Geom
               {
                   const auto mpi = mesh.mpi;
                   DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native boundary extraction requires a communicator");
+                  const auto communication = mesh.PreparationCommunication();
+                  Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
                   py::gil_scoped_release release;
                   std::shared_ptr<const UnstructuredMeshState> source;
-                  FieldTransferDetail::LocalStage(mpi, [&] { source = mesh.CurrentNativeState(); });
+                  FieldTransferDetail::LocalStage(mpi, communication, [&] { source = mesh.CurrentNativeState(); });
                   auto result = NativeMeshExtraction::ExtractBoundary(*source, mpi, {cellLayers, completeNodeStar});
                   return UnstructuredMesh::FromNative(mpi, std::move(result.state)); }, py::arg("mesh"), py::arg("cell_layers") = 1, py::arg("complete_node_star") = false, "Collectively extract nonperiodic native boundary elements into a new mesh and namespace. Used nodes are compacted on their source owners; physical face order is preserved when present. Output has no boundary elements. Source queries and retained reads stay valid; owned Node->Node and Cell->Boundary ancestry is available through native_mesh_provenance. One-dimensional output supports line cells without point boundaries or facial topology.");
         auto derive = [](const UnstructuredMesh &mesh, int cellLayers, bool completeNodeStar, bool bisect, bool preserveIds = false)
         {
             const auto mpi = mesh.mpi;
             DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native refinement requires a communicator");
+            const auto communication = mesh.PreparationCommunication();
+            Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
             py::gil_scoped_release release;
             std::shared_ptr<const UnstructuredMeshState> source;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             { source = mesh.CurrentNativeState(); });
             const NativeMeshBuildOptions options{cellLayers, completeNodeStar};
             auto result = bisect ? NativeMeshRefinement::Bisect(*source, mpi, options)
@@ -113,47 +117,51 @@ namespace DNDS::Geom
                   result["source_kinds"] = std::move(kinds);
                   result["source_ids"] = std::move(ids);
                   return result; }, py::arg("mesh"), "Return None or durable ancestry metadata: source_namespace, source_kinds and owned source_ids Runtime.Arrays. Arrays share storage and independently retain the immutable owner publication, so writes remain blocked after the mesh/dict is released. Runtime row() returns independent snapshots; retain native read leases for borrowed pointers.");
-        m.def("read_native_cgns", [periodicImport](const MPIInfo &mpi, const std::string &path, int dimension, int readerRank, int cellLayers, bool completeNodeStar, py::object geometry, real tolerance, bool readerOwned, MeshAuditOptions audit)
+        m.def("read_native_cgns", [periodicImport](const MPIInfo &mpi, const std::string &path, int dimension, int readerRank, int cellLayers, bool completeNodeStar, py::object geometry, real tolerance, bool readerOwned, MeshAuditOptions audit, bool collectivePreflight)
               {
-                  const auto periodic = periodicImport(mpi, geometry, tolerance);
+                  auto communication = std::make_shared<Runtime::CommunicationContext>(mpi.comm, collectivePreflight);
+                  const auto periodic = periodicImport(mpi, geometry, tolerance, communication);
                   AutoAppendName2ID boundaryIds;
                   py::gil_scoped_release release;
                   return UnstructuredMesh::FromNative(mpi, ReadNativeCGNS(mpi, path, dimension,
-                      [&](const std::string &name) { return boundaryIds(name); }, readerRank, {cellLayers, completeNodeStar, audit}, periodic, readerOwned ? NativeSerialDistribution::ReaderOwned : NativeSerialDistribution::Even)); }, py::arg("mpi"), py::arg("path"), py::arg("dimension"), py::arg("reader_rank") = 0, py::arg("cell_layers") = 1, py::arg("complete_node_star") = false, py::arg("periodic_geometry") = py::none(), py::arg("periodic_tolerance") = 1e-9, py::arg("reader_owned") = false, py::arg("audit") = MeshAuditOptions{}, "Collectively import CGNS through native Runtime arrays. Optional periodic_geometry uses the SetPeriodicGeometry dictionary keys; radians and absolute matching tolerance. None with default tolerance disables identification; {} enables default transforms. BC main/donor labels determine pairing; CGNS periodic connection properties and same-original-node fixed points are rejected. All ranks supply identical options. Only reader_rank parses the file. reader_owned retains initial ownership there for serial RB partitioning.");
-        m.def("read_native_cgns_with_names", [periodicImport](const MPIInfo &mpi, const std::string &path, int dimension, int readerRank, int cellLayers, bool completeNodeStar, py::object geometry, real tolerance, bool readerOwned, MeshAuditOptions audit)
+                      [&](const std::string &name) { return boundaryIds(name); }, readerRank, {cellLayers, completeNodeStar, audit, communication}, periodic, readerOwned ? NativeSerialDistribution::ReaderOwned : NativeSerialDistribution::Even)); }, py::arg("mpi"), py::arg("path"), py::arg("dimension"), py::arg("reader_rank") = 0, py::arg("cell_layers") = 1, py::arg("complete_node_star") = false, py::arg("periodic_geometry") = py::none(), py::arg("periodic_tolerance") = 1e-9, py::arg("reader_owned") = false, py::arg("audit") = MeshAuditOptions{}, py::arg("collective_preflight") = true, "Collectively import CGNS through native Runtime arrays. Optional periodic_geometry uses the SetPeriodicGeometry dictionary keys; radians and absolute matching tolerance. None with default tolerance disables identification; {} enables default transforms. BC main/donor labels determine pairing; CGNS periodic connection properties and same-original-node fixed points are rejected. All ranks supply identical options. collective_preflight defaults on; off retains local validation and aborts the communicator on local failure. Only reader_rank parses the file. reader_owned retains initial ownership there for serial RB partitioning.");
+        m.def("read_native_cgns_with_names", [periodicImport](const MPIInfo &mpi, const std::string &path, int dimension, int readerRank, int cellLayers, bool completeNodeStar, py::object geometry, real tolerance, bool readerOwned, MeshAuditOptions audit, bool collectivePreflight)
               {
-                  const auto periodic = periodicImport(mpi, geometry, tolerance);
+                  auto communication = std::make_shared<Runtime::CommunicationContext>(mpi.comm, collectivePreflight);
+                  const auto periodic = periodicImport(mpi, geometry, tolerance, communication);
                   auto names = std::make_shared<AutoAppendName2ID>();
                   std::shared_ptr<const UnstructuredMeshState> state;
                   {
                       py::gil_scoped_release release;
                       state = ReadNativeCGNS(mpi, path, dimension,
-                          [&](const std::string &name) { return (*names)(name); }, readerRank, {cellLayers, completeNodeStar, audit}, periodic, readerOwned ? NativeSerialDistribution::ReaderOwned : NativeSerialDistribution::Even);
+                          [&](const std::string &name) { return (*names)(name); }, readerRank, {cellLayers, completeNodeStar, audit, communication}, periodic, readerOwned ? NativeSerialDistribution::ReaderOwned : NativeSerialDistribution::Even);
                       // Only readerRank parses names. Broadcast the exact assigned
                       // dictionary rather than recreating IDs in unordered order.
                       std::string encoded;
-                      FieldTransferDetail::LocalStage(mpi, [&]
+                      FieldTransferDetail::LocalStage(mpi, communication, [&]
                       { if (mpi.rank == readerRank) encoded = nlohmann::json{{"names", names->n2id_map}, {"cap", names->id_cap}}.dump(); });
                       int count = 0;
-                      FieldTransferDetail::LocalStage(mpi, [&]
+                      FieldTransferDetail::LocalStage(mpi, communication, [&]
                       { DNDS_check_throw_info(encoded.size() <= size_t(std::numeric_limits<int>::max()), "CGNS boundary dictionary exceeds MPI count range"); count = int(encoded.size()); });
                       MPI_Bcast(&count, 1, MPI_INT, readerRank, mpi.comm);
-                      FieldTransferDetail::LocalStage(mpi, [&] { encoded.resize(size_t(count)); });
+                      FieldTransferDetail::LocalStage(mpi, communication, [&] { encoded.resize(size_t(count)); });
                       MPI_Bcast(encoded.data(), count, MPI_CHAR, readerRank, mpi.comm);
-                      FieldTransferDetail::LocalStage(mpi, [&]
+                      FieldTransferDetail::LocalStage(mpi, communication, [&]
                       {
                           auto metadata = nlohmann::json::parse(encoded);
                           names->n2id_map = metadata.at("names").get<decltype(names->n2id_map)>();
                           names->id_cap = metadata.at("cap").get<t_index>();
                       });
                   }
-                  return py::make_tuple(UnstructuredMesh::FromNative(mpi, std::move(state)), names); }, py::arg("mpi"), py::arg("path"), py::arg("dimension"), py::arg("reader_rank") = 0, py::arg("cell_layers") = 1, py::arg("complete_node_star") = false, py::arg("periodic_geometry") = py::none(), py::arg("periodic_tolerance") = 1e-9, py::arg("reader_owned") = false, py::arg("audit") = MeshAuditOptions{}, "Collective native CGNS import returning (mesh, boundary name dictionary). Optional periodic_geometry and periodic_tolerance match read_native_cgns. The exact reader-assigned names and IDs are retained on every rank.");
+                  return py::make_tuple(UnstructuredMesh::FromNative(mpi, std::move(state)), names); }, py::arg("mpi"), py::arg("path"), py::arg("dimension"), py::arg("reader_rank") = 0, py::arg("cell_layers") = 1, py::arg("complete_node_star") = false, py::arg("periodic_geometry") = py::none(), py::arg("periodic_tolerance") = 1e-9, py::arg("reader_owned") = false, py::arg("audit") = MeshAuditOptions{}, py::arg("collective_preflight") = true, "Collective native CGNS import returning (mesh, boundary name dictionary). Optional periodic_geometry and periodic_tolerance match read_native_cgns. The exact reader-assigned names and IDs are retained on every rank. collective_preflight has the same contract as read_native_cgns.");
         m.def("with_native_topology", [](const UnstructuredMesh &mesh, bool faces, bool edges, int ghostLayers)
               {
                   const auto mpi = mesh.mpi;
                   DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native topology requires a communicator");
+                  const auto communication = mesh.PreparationCommunication();
+                  Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
                   std::shared_ptr<const UnstructuredMeshState> source;
-                  FieldTransferDetail::LocalStage(mpi, [&] { source = mesh.CurrentNativeState(); });
+                  FieldTransferDetail::LocalStage(mpi, communication, [&] { source = mesh.CurrentNativeState(); });
                   py::gil_scoped_release release;
                   return UnstructuredMesh::FromNative(mpi, PrepareNativeMeshTopology(*source, mpi, faces, edges, ghostLayers)); }, py::arg("mesh"), py::arg("faces") = true, py::arg("edges") = false, py::arg("ghost_layers") = 1, "Collectively return a new native mesh with face/edge topology. Source must be a nonperiodic native publication; source storage and escaped read views remain valid. Owned cell face/edge cones are local. Outer ghost cell cones can contain unavailable negative global references; complete face-to-cell closure does not imply complete converse ghost cell cones.");
         m.def("build_native_mesh", [](const MPIInfo &mpi, int dimension, py::object coordinates, py::object cellNodes, py::object cellInfo, py::object boundaryNodes, py::object boundaryInfo, int cellLayers, bool completeNodeStar, py::object nodeIds, py::object cellIds, py::object boundaryIds, MeshAuditOptions audit)

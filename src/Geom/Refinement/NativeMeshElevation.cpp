@@ -26,7 +26,7 @@ namespace DNDS::Geom
         {
             auto layout = route.DestinationLayout(source.Layout());
             std::optional<Array> result;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, context, [&]
                                             { result.emplace(std::move(layout)); });
             Runtime::TransferOptions options;
             options.mode = Runtime::TransferMode::Transient;
@@ -42,17 +42,27 @@ namespace DNDS::Geom
     NativeOwnedMeshDerivedResult NativeMeshRefinement::ElevateOwned(const NativeOwnedMeshData &source, const MPIInfo &mpi,
                                                                     NativeMeshBuildOptions options, bool preserveCellIds)
     {
-        int expectedPreserve = preserveCellIds;
-        MPI_Bcast(&expectedPreserve, 1, MPI_INT, 0, mpi.comm);
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        { DNDS_check_throw_info(expectedPreserve == int(preserveCellIds), "native elevation Cell ID policy differs across ranks"); });
         auto owned = source;
         if (!options.audit)
             options.audit = owned.audit;
         if (!options.communication)
             options.communication = owned.communication;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !options.communication || options.communication->ChecksCollectivePreflight());
+        if (options.communication)
+        {
+            owned.communication = options.communication;
+            owned.LocalStage(mpi, [&]
+                             {
+                for (auto &[kind, space] : owned.spaces)
+                    space = space.WithCommunication(options.communication); });
+        }
+        int expectedPreserve = preserveCellIds;
+        MPI_Bcast(&expectedPreserve, 1, MPI_INT, 0, mpi.comm);
+        owned.LocalStage(mpi, [&]
+                         { DNDS_check_throw_info(expectedPreserve == int(preserveCellIds), "native elevation Cell ID policy differs across ranks"); });
+
+        owned.LocalStage(mpi, [&]
+                         {
             for (const auto *metadata : {&*owned.cellInfo, &*owned.bndInfo})
             {
                 auto read = metadata->Read();
@@ -108,16 +118,16 @@ namespace DNDS::Geom
         const auto oldNodes = source.spaces.at(EntityKind::Node);
         const index nOld = oldNodes.NumOwned();
         index nNew = 0;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        owned.LocalStage(mpi, [&]
+                         {
             DNDS_check_throw_info(spans.entities.NumOwned() <= std::numeric_limits<index>::max() - nOld,
                                   "native elevated local node count overflows");
             nNew = nOld + spans.entities.NumOwned(); });
         std::vector<index> oldCounts(size_t(mpi.size)), newCounts(size_t(mpi.size)), starts(size_t(mpi.size) + 1);
         MPI_Allgather(&nOld, 1, DNDS_MPI_INDEX, oldCounts.data(), 1, DNDS_MPI_INDEX, mpi.comm);
         MPI_Allgather(&nNew, 1, DNDS_MPI_INDEX, newCounts.data(), 1, DNDS_MPI_INDEX, mpi.comm);
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        owned.LocalStage(mpi, [&]
+                         {
             for (int rank = 0; rank < mpi.size; ++rank)
             {
                 DNDS_check_throw_info(newCounts[size_t(rank)] >= 0 && newCounts[size_t(rank)] <= INT64_MAX - starts[size_t(rank)],
@@ -141,8 +151,8 @@ namespace DNDS::Geom
         auto idRead = sourceIds.ReadCombined();
         Runtime::Array<real> newCoordinates(Runtime::RowLayout::Dense(size_t(nNew), 3));
         std::vector<std::vector<index>> nodeParents(size_t(nNew), std::vector<index>{});
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        owned.LocalStage(mpi, [&]
+                         {
             auto output = newCoordinates.Write();
             for (index node = 0; node < nOld; ++node)
             {
@@ -179,8 +189,8 @@ namespace DNDS::Geom
         Runtime::Array<ElemInfo> newCellInfo(Runtime::RowLayout::Dense(size_t(cells.NumOwned()), 1));
         Runtime::Array<ElemInfo> newBoundaryInfo(Runtime::RowLayout::Dense(size_t(boundaries.NumOwned()), 1));
         Array types(Runtime::RowLayout::Dense(size_t(cells.NumOwned()), 1));
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        owned.LocalStage(mpi, [&]
+                         {
             auto additions = spans.parent2entity.Read();
             auto output = newCellInfo.Write();
             auto typeWrite = types.Write();
@@ -212,8 +222,8 @@ namespace DNDS::Geom
                 output.View()(size_t(cell), 0) = info;
             } });
         std::vector<Runtime::RowRequest> requests;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        owned.LocalStage(mpi, [&]
+                         {
             auto parents = owned.relations[size_t(MeshRelation::BoundaryCells)]->Read();
             const auto sourceCells = source.spaces.at(EntityKind::Cell);
             for (index boundary = 0; boundary < boundaries.NumOwned(); ++boundary)
@@ -223,7 +233,7 @@ namespace DNDS::Geom
                 const auto parent = parents.View()(size_t(boundary), 0);
                 requests.push_back({sourceCells.Owner(parent), sourceCells.OwnerLocalRow(parent), size_t(boundary)});
             } });
-        auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
+        auto context = owned.communication ? owned.communication : std::make_shared<Runtime::CommunicationContext>(mpi.comm);
         Runtime::RowTransferPlan boundaryRoute(context, size_t(cells.NumOwned()), size_t(boundaries.NumOwned()), requests);
         auto candidateNodes = ElevationFetch(boundaryRoute, closure.cellNodes.Owned(), mpi, context);
         auto candidateSpans = ElevationFetch(boundaryRoute, spans.parent2entity.Owned(), mpi, context);
@@ -232,16 +242,16 @@ namespace DNDS::Geom
         if (periodic)
         {
             std::optional<Array> frames;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            owned.LocalStage(mpi, [&]
+                             {
                 auto read = owned.cellNodesPbi->Read();
                 std::vector<std::vector<index>> rows(owned.cellNodesPbi->RowCount());
                 for (size_t row = 0; row < rows.size(); ++row) for (auto bits : read.View()[row]) rows[row].push_back(uint8_t(bits));
                 frames = ElevationRows(rows); });
             candidateFrames = ElevationFetch(boundaryRoute, *frames, mpi, context);
         }
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        owned.LocalStage(mpi, [&]
+                         {
             auto cones = owned.relations[size_t(MeshRelation::BoundaryNodes)]->Read();
             auto boundaryInfo = owned.bndInfo->Read();
             auto parentNodes = candidateNodes.Read(), parentSpans = candidateSpans.Read(), parentTypes = candidateTypes.Read();
@@ -316,8 +326,8 @@ namespace DNDS::Geom
             } });
         NativeOwnedMeshDerivedResult result;
         std::optional<NativeMeshInput> input;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        owned.LocalStage(mpi, [&]
+                         {
             result.provenance.sourceNamespace = source.identity.meshNamespace;
             result.provenance.sourceIds.emplace(EntityKind::Node, ElevationRows(nodeParents));
             result.provenance.sourceIds.emplace(EntityKind::Cell, owned.ids.at(EntityKind::Cell));
@@ -350,8 +360,8 @@ namespace DNDS::Geom
             }
             input->provenance = result.provenance; });
         if (owned.periodic)
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            owned.LocalStage(mpi, [&]
+                             {
                 input->periodic = true;
                 input->periodicInfo = owned.periodicInfo;
                 input->cellNodesPbi = ElevationRows(cellBits);
@@ -365,8 +375,8 @@ namespace DNDS::Geom
     {
         auto result = ElevateOwned(NativeMeshAssembler::CaptureOwned(source, mpi), mpi, options, preserveCellIds);
         GhostSpec recipe;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        { recipe = DefaultNativeMeshGhostSpec(result.owned, options.cellLayers, options.completeNodeStar); });
+        result.owned.LocalStage(mpi, [&]
+                                { recipe = DefaultNativeMeshGhostSpec(result.owned, options.cellLayers, options.completeNodeStar); });
         return {NativeMeshAssembler::Build(mpi, std::move(result.owned), recipe), std::move(result.provenance)};
     }
 

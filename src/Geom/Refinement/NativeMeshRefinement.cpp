@@ -40,9 +40,19 @@ namespace DNDS::Geom
             options.audit = owned.audit;
         if (!options.communication)
             options.communication = owned.communication;
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !options.communication || options.communication->ChecksCollectivePreflight());
+        if (options.communication)
+        {
+            owned.communication = options.communication;
+            owned.LocalStage(mpi, [&]
+                             {
+                for (auto &[kind, space] : owned.spaces)
+                    space = space.WithCommunication(options.communication); });
+        }
+
         AdjacencyRegistry closure(mpi);
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        owned.LocalStage(mpi, [&]
+                         {
             for (const auto &[kind, space] : owned.spaces)
                 DNDS_check_throw_info(space.Valid() && space.NumGhost() == 0, "owned bisection requires owned-only entity spaces");
             for (const auto &[key, slot] : std::initializer_list<std::pair<AdjacencyDescriptor, MeshRelation>>{
@@ -60,8 +70,8 @@ namespace DNDS::Geom
         std::vector<std::vector<NodePeriodicBits>> cellBits, boundaryBits;
         std::vector<ElemInfo> cellInfo, boundaryInfo;
         std::vector<index> cellParents, boundaryParents, nodeParents;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        owned.LocalStage(mpi, [&]
+                         {
             result.provenance.sourceNamespace = source.identity.meshNamespace;
             auto nodeIds = owned.ids.at(EntityKind::Node).Read();
             for (index row = 0; row < source.spaces.at(EntityKind::Node).NumOwned(); ++row)
@@ -125,8 +135,8 @@ namespace DNDS::Geom
         const auto cells = nodes.CreateSibling(EntityKind::Cell, index(cellNodes.size()));
         const auto boundaries = nodes.CreateSibling(EntityKind::Bnd, index(boundaryNodes.size()));
         std::optional<NativeMeshInput> input;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        owned.LocalStage(mpi, [&]
+                         {
             input.emplace(NativeMeshInput{mpi, owned.dimension, cells, nodes, boundaries,
                                          IndexRows(cellNodes), IndexRows(boundaryNodes), *owned.coords,
                                          Column(cellInfo), Column(boundaryInfo), {}});
@@ -147,8 +157,8 @@ namespace DNDS::Geom
                 }
                 return Runtime::Array<NodePeriodicBits>::FromSharedStorage(builder.Commit());
             };
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            owned.LocalStage(mpi, [&]
+                             {
                 input->periodic = true;
                 input->periodicInfo = owned.periodicInfo;
                 input->cellNodesPbi = bitRows(cellBits);
@@ -163,8 +173,8 @@ namespace DNDS::Geom
     {
         auto result = BisectOwned(NativeMeshAssembler::CaptureOwned(source, mpi), mpi, options);
         GhostSpec recipe;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        { recipe = DefaultNativeMeshGhostSpec(result.owned, options.cellLayers, options.completeNodeStar); });
+        result.owned.LocalStage(mpi, [&]
+                                { recipe = DefaultNativeMeshGhostSpec(result.owned, options.cellLayers, options.completeNodeStar); });
         return {NativeMeshAssembler::Build(mpi, std::move(result.owned), recipe), std::move(result.provenance)};
     }
 

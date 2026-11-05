@@ -160,10 +160,10 @@ namespace DNDS::Geom
             }
         }
 
-        void AgreeSchedule(const ReorderInput &input, const MPIInfo &mpi)
+        void AgreeSchedule(const ReorderInput &input, const MPIInfo &mpi, const std::shared_ptr<Runtime::CommunicationContext> &communication)
         {
             std::string schedule;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 for (const auto &map : input.explicitMaps)
                     schedule += "m" + std::to_string(int(map.kind)) + ";";
@@ -173,10 +173,10 @@ namespace DNDS::Geom
             int length = int(schedule.size());
             MPI_Bcast(&length, 1, MPI_INT, 0, mpi.comm);
             std::string expected;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             { expected = mpi.rank == 0 ? schedule : std::string(size_t(length), '\0'); });
             MPI_Bcast(expected.data(), length, MPI_CHAR, 0, mpi.comm);
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             { DNDS_check_throw_info(schedule == expected, "transition reorder schedule differs between ranks"); });
         }
 
@@ -214,7 +214,9 @@ namespace DNDS::Geom
         result._source = handle._mesh;
         auto &source = *result._source;
         const auto &mpi = source.mpi;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        const auto communication = source.PreparationCommunication();
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             DNDS_check_throw_info(ghostLayers >= 1, "transition requires at least one explicit ghost layer");
             DNDS_check_throw_info(caches == TransitionCachePolicy::Invalidate || caches == TransitionCachePolicy::RebuildOutput,
@@ -237,7 +239,7 @@ namespace DNDS::Geom
                 result._sourceSpaces.push_back(source.Entities(EntityKind::Face));
             if (view.HasRelation(MeshRelation::EdgeNodes))
                 result._sourceSpaces.push_back(source.Entities(EntityKind::Edge)); });
-        AgreeSchedule(input, mpi);
+        AgreeSchedule(input, mpi, communication);
         auto view = result._sourceRead->HostView();
         const bool hasFaces = view.HasRelation(MeshRelation::FaceNodes), hasEdges = view.HasRelation(MeshRelation::EdgeNodes);
         const bool hasAux = view.HasRelation(MeshRelation::CellFaceCells), hasWall = view.HasNodeWallDist();
@@ -257,7 +259,7 @@ namespace DNDS::Geom
         DNDS_check_throw_info(minLayers == maxLayers, "transition ghost layer policy differs between ranks");
 
         {
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 result._fields.fields.reserve(fields.size());
                 result._bindings.reserve(fields.size());
@@ -267,7 +269,7 @@ namespace DNDS::Geom
                     result._attachmentStamps.push_back(field.attachment());
                 if (checkpoint) checkpoint("cloned"); });
             auto moved = NativeMeshTransition::Build(*source._nativeState, mpi, input, ghostLayers);
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 result._next = UnstructuredMesh::FromNative(mpi, std::move(moved.state));
                 result._next->mRank = source.mRank;
@@ -287,7 +289,7 @@ namespace DNDS::Geom
                 for (auto kind : {EntityKind::Node, EntityKind::Bnd})
                     plan.reorderedKinds.insert(kind);
             ReorderRegistry registry;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 registry.companions = fields;
                 for (size_t i = 0; i < registry.companions.size(); ++i)
@@ -313,7 +315,7 @@ namespace DNDS::Geom
             // Validates full field schema/disposition schedule before the first
             // field transfer. Deferred callbacks never publish into live handles.
             auto deferred = plan.prepareCompanions(registry, mpi);
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 for (size_t i = 0; i < fields.size(); ++i)
                     if (fields[i].requiresEntityBinding && !result._bindingPrepared[i])
@@ -329,7 +331,7 @@ namespace DNDS::Geom
             if (caches == TransitionCachePolicy::RebuildOutput)
             {
                 auto output = NativeMeshOutput::Build(*result._next->CurrentNativeState(), mpi);
-                FieldTransferDetail::LocalStage(mpi, [&]
+                FieldTransferDetail::LocalStage(mpi, communication, [&]
                                                 { result._output = std::make_shared<NativeMeshOutput>(std::move(output)); });
             }
             return result;
@@ -340,7 +342,7 @@ namespace DNDS::Geom
     {
         DNDS_check_throw_info(_source && _handle, "invalid moved-from mesh transition");
         std::lock_guard<std::mutex> lock(_handle->_mutex);
-        FieldTransferDetail::LocalStage(_source->mpi, [&]
+        FieldTransferDetail::LocalStage(_source->mpi, _source->PreparationCommunication(), [&]
                                         {
             DNDS_check_throw_info(!_published && _next && _handle->_mesh == _source && _sourceStamp.Valid(),
                                   "transition source handle/order changed or transition already published");

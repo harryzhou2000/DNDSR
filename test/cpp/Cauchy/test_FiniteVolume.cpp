@@ -16,6 +16,39 @@ namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
 namespace A = DNDS::Algebra;
 static DNDS::MPIInfo mpi;
+TEST_CASE("Default Cauchy CGNS loader propagates the configured preflight policy")
+{
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+    const auto path = (root / "data/mesh/IV10_2.cgns").string();
+    std::vector<double> reference;
+    for (bool checks : {true, false})
+    {
+        C::DomainSettings settings;
+        settings.mesh.file = path;
+        settings.mesh.dimension = 2;
+        settings.mesh.periodicLengths = {10, 10, 0};
+        settings.mesh.boundaryIds = {{"PERIODIC_1", -1}, {"PERIODIC_1_DONOR", -4}, {"PERIODIC_2", -2}, {"PERIODIC_2_DONOR", -5}};
+        settings.implicit.collectiveChecks = checks;
+        const auto config = C::SimulationConfig::ResolveCollective({{"defaults", C::Json(settings)}}, mpi.comm);
+        C::Simulation simulation(config, mpi.comm);
+        auto &domain = simulation.GetDomain(0);
+        CHECK(domain.Discretization().Metrics().Communication()->ChecksCollectivePreflight() == checks);
+        for (auto kind : {DNDS::Geom::EntityKind::Cell, DNDS::Geom::EntityKind::Node, DNDS::Geom::EntityKind::Face, DNDS::Geom::EntityKind::Bnd})
+            CHECK(domain.Discretization().Mesh().Entities(kind).ChecksCollectivePreflight() == checks);
+        simulation.Advance(1e-4);
+        auto read = domain.Flow().Owned().Read();
+        for (DNDS::index iCell = 0; iCell < domain.Discretization().Metrics().NumCell(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+            {
+                const auto value = read.View()(iCell, j);
+                CHECK(std::isfinite(value));
+                if (checks)
+                    reference.push_back(value);
+                else
+                    CHECK(value == reference[size_t(iCell * 5 + j)]);
+            }
+    }
+}
 TEST_CASE("Cauchy collective switch reaches prepared halos without changing the P3 RHS")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 3);

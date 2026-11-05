@@ -53,17 +53,21 @@ namespace DNDS::Geom
 
     /// Extract the exact correspondence once, then share it across native Arrays
     /// (including separate SoA components). No geometry or interpolation in DNDS.
-    inline Runtime::RowTransferPlan NativeRowTransfer(const PermutationTransfer &transfer, const MPIInfo &mpi)
+    /// All ranks select the same policy at this setup boundary. A null context
+    /// preserves enabled preflight; off mode still validates locally and aborts
+    /// on failure. The returned route retains the context for payload launches.
+    inline Runtime::RowTransferPlan NativeRowTransfer(const PermutationTransfer &transfer, const MPIInfo &mpi,
+                                                      std::shared_ptr<Runtime::CommunicationContext> communication = {})
     {
         // Agree on the mode before taking branches with different collectives.
-        int mode = transfer.isLocalOnly, minMode = 0, maxMode = 0;
-        MPI_Allreduce(&mode, &minMode, 1, MPI_INT, MPI_MIN, mpi.comm);
-        MPI_Allreduce(&mode, &maxMode, 1, MPI_INT, MPI_MAX, mpi.comm);
-        DNDS_check_throw_info(minMode == maxMode, "native row transfer modes disagree");
+        const bool checks = !communication || communication->ChecksCollectivePreflight();
+        int controls[]{int(transfer.isLocalOnly), -int(transfer.isLocalOnly), int(checks), -int(checks)};
+        MPI_Allreduce(MPI_IN_PLACE, controls, 4, MPI_INT, MPI_MIN, mpi.comm);
+        DNDS_check_throw_info(controls[0] == -controls[1] && controls[2] == -controls[3], "native row transfer mode/policy differs between ranks");
         std::vector<std::vector<index>> send, receive;
         std::vector<int> sendCounts, receiveCounts;
         index destinationRows = 0;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             const index rows = index(transfer.size());
             send.resize(mpi.size);
@@ -117,7 +121,7 @@ namespace DNDS::Geom
         if (!transfer.isLocalOnly)
         {
             MPI_Alltoall(sendCounts.data(), 1, MPI_INT, receiveCounts.data(), 1, MPI_INT, mpi.comm);
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 // ArrayTransformer push receives contiguous sender-rank buckets,
                 // retaining each sender's pushIndex order within its bucket.
@@ -130,7 +134,7 @@ namespace DNDS::Geom
                 }
                 DNDS_check_throw_info(next == destinationRows, "native destination offsets disagree with received rows"); });
         }
-        return Runtime::RowTransferPlan::Known(std::make_shared<Runtime::CommunicationContext>(mpi.comm),
+        return Runtime::RowTransferPlan::Known(communication ? std::move(communication) : std::make_shared<Runtime::CommunicationContext>(mpi.comm),
                                                index(transfer.size()), destinationRows, std::move(send), std::move(receive));
     }
 
@@ -139,12 +143,15 @@ namespace DNDS::Geom
     /// does not itself move data; the caller must keep the referenced handle alive.
     /// The destination storage policy is explicit and never inferred from a
     /// static accessor. Padding is not copied. Failed preparation retains source.
+    /// Arrays have no mesh communication policy: pass the mesh's context to
+    /// inherit its preflight mode. Null retains enabled compatibility behavior.
     template <class T>
     CompanionEntry RegisterArray(Runtime::Array<T> &array, EntityKind kind, std::string name,
                                  Runtime::ElementSchema schema = Runtime::ElementSchema::Arithmetic<T>(),
                                  Runtime::ExecutionContext context = Runtime::ExecutionContext::Host(),
                                  CompanionDisposition disposition = CompanionDisposition::TransferIfReordered,
-                                 Runtime::TransferLayout destinationLayout = {})
+                                 Runtime::TransferLayout destinationLayout = {},
+                                 std::shared_ptr<Runtime::CommunicationContext> communication = {})
     {
         CompanionEntry entry{kind, {}, std::move(name)};
         entry.disposition = disposition;
@@ -173,12 +180,12 @@ namespace DNDS::Geom
                                        size_t(array.RowCount()),
                                        0};
         };
-        entry.prepare = [&array, schema, context, destinationLayout](const PermutationTransfer &transfer, const MPIInfo &mpi)
+        entry.prepare = [&array, schema, context, destinationLayout, communication](const PermutationTransfer &transfer, const MPIInfo &mpi)
         {
-            auto route = NativeRowTransfer(transfer, mpi);
+            auto route = NativeRowTransfer(transfer, mpi, communication);
             Runtime::PayloadPlan payload(route, array.Layout(), schema, destinationLayout);
             std::unique_ptr<FieldTransferDetail::Prepared<Runtime::Array<T>>> next;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             { next = std::make_unique<FieldTransferDetail::Prepared<Runtime::Array<T>>>(array,
                                                                                                                         Runtime::Array<T>(payload.DestinationLayout(), array.GetDevice())); });
             payload.Bind(array, next->next).Begin(context).Wait();
@@ -186,9 +193,9 @@ namespace DNDS::Geom
         };
         auto validate = entry.preflight;
         auto prepare = entry.prepare;
-        entry.fn = [validate, prepare, disposition](const PermutationTransfer &transfer, const MPIInfo &mpi)
+        entry.fn = [validate, prepare, disposition, communication](const PermutationTransfer &transfer, const MPIInfo &mpi)
         {
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 DNDS_check_throw_info(disposition == CompanionDisposition::TransferIfReordered, "field disposition prohibits reorder");
                 validate(transfer); });
@@ -202,9 +209,12 @@ namespace DNDS::Geom
     /// Stable IDs, states and time histories are ordinary registered fields.
     /// The initial implementation is host-only; ghosts are rebuilt separately.
     /// The field reference must outlive the synchronous reorder call.
+    /// Pass the agreed mesh communication context explicitly; a null context
+    /// keeps collective preflight enabled, independently of array execution.
     template <class T>
     CompanionEntry RegisterField(Runtime::Field<T> &field, EntityKind kind, std::string name,
-                                 CompanionDisposition disposition = CompanionDisposition::TransferIfReordered)
+                                 CompanionDisposition disposition = CompanionDisposition::TransferIfReordered,
+                                 std::shared_ptr<Runtime::CommunicationContext> communication = {})
     {
         CompanionEntry entry{kind, {}, std::move(name)};
         entry.disposition = disposition;
@@ -235,25 +245,25 @@ namespace DNDS::Geom
                                        field.Values().Identity(), field.Values().Version(), 0, field.Layout().rows,
                                        field.GetDistribution().owned, field.GetDistribution().ghosts};
         };
-        entry.prepare = [&field](const PermutationTransfer &transfer, const MPIInfo &mpi)
+        entry.prepare = [&field, communication](const PermutationTransfer &transfer, const MPIInfo &mpi)
         {
             // Move source addresses with the mesh's exact correspondence,
             // including local permutation and distributed receive order.
-            auto route = NativeRowTransfer(transfer, mpi);
+            auto route = NativeRowTransfer(transfer, mpi, communication);
             auto layout = field.Layout();
             layout.rows = route.DestinationRows();
             auto distribution = field.GetDistribution();
             distribution.owned = layout.rows;
             ++distribution.epoch;
             std::unique_ptr<FieldTransferDetail::Prepared<Runtime::Field<T>>> next;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             { next = std::make_unique<FieldTransferDetail::Prepared<Runtime::Field<T>>>(field,
                                                                                                                         Runtime::Field<T>(layout, distribution, field.Association())); });
             // Dense Field includes stride padding in its exact row
             // history. Byte schema retains compatibility for POD fields.
             std::optional<Runtime::Array<uint8_t>> source, destination;
             std::optional<Runtime::ElementSchema> bytes;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                         const auto width = CheckedSize::Multiply(layout.stride, sizeof(T));
                         source.emplace(Runtime::Array<uint8_t>::FromStorage(Runtime::RowLayout::Dense(field.Layout().rows, width), field.Values()));
@@ -267,9 +277,9 @@ namespace DNDS::Geom
         };
         auto validate = entry.preflight;
         auto prepare = entry.prepare;
-        entry.fn = [validate, prepare, disposition](const PermutationTransfer &transfer, const MPIInfo &mpi)
+        entry.fn = [validate, prepare, disposition, communication](const PermutationTransfer &transfer, const MPIInfo &mpi)
         {
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 DNDS_check_throw_info(disposition == CompanionDisposition::TransferIfReordered, "field disposition prohibits reorder");
                 validate(transfer); });
