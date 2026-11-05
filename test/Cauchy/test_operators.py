@@ -81,8 +81,10 @@ def test_equation_operator_frontend_composes_native_residual_and_linear_solve(mi
             packed = algebra.DoubleDofField(state.space, R.RowLayout.tiled_col_major(0, 6, 32))
             species_width = len(state.blocks["species"])
             species = algebra.DoubleDofField(state.space, R.RowLayout.col_major(0, species_width, 16, 1))
-            state = C.EquationDofs.from_fields(prototype, [("packed", packed), ("species", species)],
-                                             [("rans", "packed", 0), ("flow", "packed", 1), ("species", "species", 0)])
+            # Registry order deliberately differs from the sorted fields dict.
+            state = C.EquationDofs.from_fields(prototype, [("zPacked", packed), ("aSpecies", species)],
+                                             [("rans", "zPacked", 0), ("flow", "zPacked", 1), ("species", "aSpecies", 0)])
+            assert state.field_names == ["zPacked", "aSpecies"]
             state.copy_from(prototype)
         fields = state.fields
         for i_cell in range(state.space.owned_rows):
