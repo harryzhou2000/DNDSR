@@ -104,3 +104,9 @@ complete E5's composed-RHS net-benefit/staging-time acceptance. Coalescing,
 early-ready-field delay, cross-node executor behavior and a production worker
 remain unmeasured, so no automatic executor adoption is made. Keep these limits
 visible when reconciling plan52 rather than marking the full package complete.
+
+November6 final measurement follow-up: the benchmark-only probes at9ccb3dbd
+complete the composed-RHS/staging and actual nonlinear-update gaps; see the
+[report](e5e6-rhs-stage/README.md). All27 production-source hashes in the
+companion JSON still match. This adds no production MPI worker and does not
+extend the source audit to CUDA, graph capture or cross-node worker execution.

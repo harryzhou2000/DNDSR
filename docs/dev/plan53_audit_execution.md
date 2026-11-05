@@ -116,16 +116,17 @@ explicit multirank Runtime Python tests remain. This CPU batch does not claim
 Python extension runtime, CUDA or sanitizer acceptance, nor a whole-suite cost
 reduction. No other implementation checkout or MG/IV work was used.
 
-## Still pending
+## Latest disposition
 
 This paragraph tracks the latest state; the dated entries below preserve their
 earlier pending observations. E3 flow5 attribution and E4/E5's bounded mock
 scheduling assessment have completed, as have revised E6 matched acceptance
 and its equation/RANS correctness complement. E7 retains the existing ownership
-API. Split-mixture RHS attribution completed as job12442922. E5 still lacks
-separate staging clocks and a composed-RHS net-benefit assessment; its mock
-overlap result is not substituted for that acceptance. Optional coalescing and
-producer-ready-delay assessment are unrun, with no production adoption.
+API. Split-mixture RHS attribution completed as job12442922. E5's composed-RHS
+and staging-time follow-up and E6's additional actual nonlinear-update timing
+completed as job12443109, with25rows/138records independently verified. Their
+report below closes the scoped remaining measurement queue. Optional coalescing
+and producer-ready-delay assessment are unrun, with no production adoption.
 
 The [targeted source disposition](plan53_validation/source-disposition.md)
 records the final boundary/readability review and its limits. That review found
@@ -1216,3 +1217,39 @@ publication, E4 bounded grouping, revised E6 frozen-operator and E7 acquisition
 have their scoped evidence. E5's actual composed-RHS/staging-time acceptance and
 additional E6 nonlinear-stage timing remain open; the goal is not declared
 complete from neighboring tests or mock performance results.
+
+## E5 composed RHS and E6 actual nonlinear-update acceptance
+
+The [final assessment](plan53_validation/e5e6-rhs-stage/README.md) records
+job12443109, source9ccb3dbd, completed0:0 in4m28s on scheduler-selected amd_512
+nodeo2702. All25cases/138records and raw hashes were independently verified;
+the clean-source local18-case recorder, empty-participant gate and22 tooling
+tests passed before submission. Both targets built on login with16workers.
+The original production Direct/inline control, unchanged transport algorithms,
+fixed work and full elementwise output comparisons keep scheduling attribution
+separate from numerical changes. The27 reviewed production source hashes remain
+unchanged from the final source audit.
+
+With the same two-physical-core budget per rank, large HostPacked compute/MPI
+workers improve actual RHS by2.57%/3.28% for flow5 and2.01%/2.59% for reacting
+flow5/species. Small packed compute-worker regresses. Separate CopyBytes clocks
+attribute1.78ms/14.53MB to large flow5 and11.54ms/60.65MB to reacting caller
+staging per RHS. Direct has no explicit staging. Host pending intervals are
+not network-utilization evidence, and summed worker waits are not additive
+critical-path costs. Retain Direct and existing production scheduling; no
+general MPI executor is introduced from these small, shape-dependent gains.
+
+Actual one-correction/five-SGS nonlinear calls take256/400ms assembled/evaluated
+for flow5 and3803/4409ms for reacting equations. Complete fields match exactly
+between storage modes, repeated reset solves agree, immutable owned sources
+and reference means are preserved, and the energy defect decreases. These are
+deliberately capped updates, not converged physical steps. Retain assembled
+storage for measured reuse while preserving evaluated capability and unchanged
+reconstructed-quadrature source Jacobians.
+
+The scoped audit/fix/consolidation and E1–E7 work order is complete with its
+retain/change decisions and explicit limits. Optional coalescing/readiness-delay,
+cross-node worker behavior, general worker error recovery and new CUDA/capture
+qualification remain future work. The independent implementation checkout and
+MG/IV experiments were neither changed nor operated on. Earlier failed/capped/
+unrun evidence and prior source pins remain intact.
