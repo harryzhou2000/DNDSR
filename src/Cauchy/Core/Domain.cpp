@@ -101,7 +101,9 @@ namespace DNDS::Cauchy
         {
             std::optional<ResolvedPhysicalInputs> result;
             MPI::LocalStage(mpi, [&]
-                            { result = ResolvePhysicalStateInputs(settings, setup.equation, setup.workers); });
+                            {
+                settings.execution.ValidateMPIThreadSupport(MPI::GetMPIThreadLevel());
+                result = ResolvePhysicalStateInputs(settings, setup.equation, setup.workers); });
             return std::move(*result);
         }
     }

@@ -111,13 +111,14 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
 }
 int main(int argc, char **argv)
 {
-    MPI_Init(&argc, &argv);
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+        return 1;
     mpi.setWorld();
     int status;
     {
         doctest::Context context(argc, argv);
         status = context.run();
     }
-    MPI_Finalize();
+    DNDS::MPI::Finalize();
     return status;
 }

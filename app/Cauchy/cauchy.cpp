@@ -253,7 +253,12 @@ static int Run(int argc, char **argv, double started)
 
 int main(int argc, char **argv)
 {
-    DNDS::MPI::Init_thread(&argc, &argv);
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+    {
+        // Initialization failed: no MPI clock, solver construction or finalize.
+        std::cerr << "Cauchy: MPI initialization failed\n";
+        return 1;
+    }
     // Include import/partition/setup in the external wall-time budget.
     const int status = Run(argc, argv, MPI_Wtime());
     DNDS::MPI::Finalize();

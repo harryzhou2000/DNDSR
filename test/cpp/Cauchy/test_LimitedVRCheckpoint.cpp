@@ -303,11 +303,12 @@ TEST_CASE("LVR fine reconstruction connects to limited-gradient and constant pol
 }
 int main(int argc, char **argv)
 {
-    MPI_Init(&argc, &argv);
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+        return 1;
     mpi.setWorld();
     doctest::Context context;
     context.applyCommandLine(argc, argv);
     const int result = context.run();
-    MPI_Finalize();
+    DNDS::MPI::Finalize();
     return result;
 }

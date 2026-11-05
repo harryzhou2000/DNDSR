@@ -135,12 +135,13 @@ TEST_CASE("Named coupled DOF blocks preserve layout independence subset algebra 
 }
 int main(int argc, char **argv)
 {
-    MPI_Init(&argc, &argv);
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+        return 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     doctest::Context context;
     context.applyCommandLine(argc, argv);
     const int result = context.run();
-    MPI_Finalize();
+    DNDS::MPI::Finalize();
     return result;
 }

@@ -281,13 +281,14 @@ TEST_CASE("P3 flow5 crosses a posed disk interface with dense and sparse distrib
 }
 int main(int argc, char **argv)
 {
-    MPI_Init(&argc, &argv);
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+        return 1;
     mpi.setWorld();
     int status;
     {
         doctest::Context context(argc, argv);
         status = context.run();
     }
-    MPI_Finalize();
+    DNDS::MPI::Finalize();
     return status;
 }

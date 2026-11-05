@@ -65,6 +65,10 @@ namespace DNDS::Cauchy
     /// source/mass/RHS coefficients; physics/discretization, sparse algebra and
     /// physical history remain separate. Each instance binds to one stable trial
     /// state/workspace. Caller serializes all accesses and coordinates retries.
+    /// Copies share mutable implementation/workspace state; they are not
+    /// independent solvers. The engine is borrowed: it must remain alive at its
+    /// original address through all solver/hierarchy copies and queued work.
+    /// Drain work before destroying the final owner; do not move a bound engine.
     class NonlinearSolver
     {
         struct Data;
@@ -129,6 +133,9 @@ namespace DNDS::Cauchy
     /// remains unconverged and leaves acceptance to the time orchestrator.
     /// Callers serialize bound state/workspace/engine access, coordinate all
     /// domain ranks and keep owners on the controller through worker joins.
+    /// Copies share mutable implementation/workspace state. The borrowed engine
+    /// must outlive every solver/hierarchy copy and queued operation at a stable
+    /// address. Drain work before destroying the final owner; do not move it.
     class EquationNonlinearSolver
     {
         struct Data;

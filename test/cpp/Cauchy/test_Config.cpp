@@ -3,6 +3,16 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("CPU workers require an MPI capability that permits multithreaded execution")
+{
+    C::ExecutionSettings execution;
+    CHECK_NOTHROW(execution.ValidateMPIThreadSupport(MPI_THREAD_SINGLE));
+    execution.hostThreads = 2;
+    CHECK_THROWS_WITH(execution.ValidateMPIThreadSupport(MPI_THREAD_SINGLE),
+                      doctest::Contains("at least MPI_THREAD_FUNNELED"));
+    CHECK_NOTHROW(execution.ValidateMPIThreadSupport(MPI_THREAD_FUNNELED));
+    CHECK_NOTHROW(execution.ValidateMPIThreadSupport(MPI_THREAD_MULTIPLE));
+}
 TEST_CASE("DITR inherits common controls and only supplied compatibility fields override them")
 {
     C::Json input{{"time", {{"method", "ditr"}}},

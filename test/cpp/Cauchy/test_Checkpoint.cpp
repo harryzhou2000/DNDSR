@@ -725,6 +725,11 @@ TEST_CASE("Restart dt growth reads the accepted scalar and supports files predat
 TEST_CASE("CGNS checkpoint remains physical across independently built MPI partitions")
 {
     const auto path = Path("cauchy-cgns-repartition-");
+    // Check fixture availability before splitting writer participants. An absent
+    // mesh must fail all ranks, not leave nonwriters waiting after a writer exits.
+    DNDS::MPI::LocalStage(mpi, []
+                          { DNDS_check_throw_info(std::filesystem::is_regular_file(std::string(DNDS_TEST_SOURCE_ROOT) + "/data/mesh/IV10_20.cgns"),
+                                                  "checkpoint partition test requires data/mesh/IV10_20.cgns"); });
     const C::Json input{{"defaults", {{"mesh", {{"file", std::string(DNDS_TEST_SOURCE_ROOT) + "/data/mesh/IV10_20.cgns"}, {"dimension", 2}, {"periodicLengths", {10, 10, 0}}, {"boundaryIds", {{"PERIODIC_1", -1}, {"PERIODIC_1_DONOR", -4}, {"PERIODIC_2", -2}, {"PERIODIC_2_DONOR", -5}}}}}, {"numerics", {{"reconstruction", "constant"}, {"cfv", {{"maxOrder", 1}}}}}}}};
     const auto value = [](const C::Domain &domain, DNDS::index iCell)
     {
@@ -800,11 +805,12 @@ TEST_CASE("Rigid motion restart retains absolute-state convention and BDF histor
 }
 int main(int argc, char **argv)
 {
-    MPI_Init(&argc, &argv);
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+        return 1;
     mpi.setWorld();
     doctest::Context context;
     context.applyCommandLine(argc, argv);
     const auto result = context.run();
-    MPI_Finalize();
+    DNDS::MPI::Finalize();
     return result;
 }

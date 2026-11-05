@@ -302,6 +302,11 @@ namespace DNDS::Cauchy
             settings.numerics.cfv.coreFirst = true;
         return settings;
     }
+    void ExecutionSettings::ValidateMPIThreadSupport(int provided) const
+    {
+        DNDS_check_throw_info(hostThreads == 0 || provided >= MPI_THREAD_FUNNELED,
+                              "Cauchy CPU workers require at least MPI_THREAD_FUNNELED; disable workers or request a higher MPI thread level");
+    }
     ResolvedExecutionPlan ResolvedExecutionPlan::Resolve(const DomainConfig &domain)
     {
         const auto &s = domain.settings;

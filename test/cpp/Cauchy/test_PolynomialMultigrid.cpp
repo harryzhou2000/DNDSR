@@ -71,7 +71,13 @@ TEST_CASE("Finest FAS acceptance shares selected-component L1 L2 convergence wit
         R::EagerEngine engine;
         const auto stream = engine.CreateCPUStream();
         C::NonlinearSolver smoother(fine, state, work, engine, stream, settings);
-        C::PolynomialMultigrid solver(mesh, fine, state, smoother, engine, stream, settings);
+        auto solver = [&]
+        {
+            auto original = smoother;
+            C::PolynomialMultigrid hierarchy(mesh, fine, state, original, engine, stream, settings);
+            auto moved = std::move(original);
+            return hierarchy;
+        }(); // Both original facades expired; callbacks retain shared state.
         const auto version = state.Owned().Version();
         const auto report = solver.Solve(source, 20, 1, 0);
         CHECK(report.converged);
@@ -445,7 +451,13 @@ TEST_CASE("Logical polynomial FAS recovers nonconstant RANS and reacting mixture
                 first += values.ComponentNumber();
             }
         }
-        C::PolynomialMultigrid solver(mesh, fine, state, smoother, engine, stream, settings, setup.workers);
+        auto solver = [&]
+        {
+            auto original = smoother;
+            C::PolynomialMultigrid hierarchy(mesh, fine, state, original, engine, stream, settings, setup.workers);
+            auto moved = std::move(original);
+            return hierarchy;
+        }(); // Equation callbacks must not borrow either expired facade.
         const auto report = solver.Solve(source, mass, scale, .1);
         CHECK(report.converged);
         CHECK(report.multigridCycles > 0);
@@ -541,11 +553,12 @@ TEST_CASE("Equation Domain performs one spatial FAS update per DITR coupled stag
 }
 int main(int argc, char **argv)
 {
-    MPI_Init(&argc, &argv);
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+        return 1;
     mpi.setWorld();
     doctest::Context context;
     context.applyCommandLine(argc, argv);
     const auto result = context.run();
-    MPI_Finalize();
+    DNDS::MPI::Finalize();
     return result;
 }

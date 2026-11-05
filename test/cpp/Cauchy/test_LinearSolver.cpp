@@ -262,10 +262,11 @@ TEST_CASE("Evaluated block publication validates row identity, column ordinals a
 }
 int main(int argc, char **argv)
 {
-    MPI_Init(&argc, &argv);
+    if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)
+        return 1;
     doctest::Context context;
     context.applyCommandLine(argc, argv);
     const auto result = context.run();
-    MPI_Finalize();
+    DNDS::MPI::Finalize();
     return result;
 }

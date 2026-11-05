@@ -73,6 +73,10 @@ namespace DNDS::Cauchy
         bool checkAccess = true;
         bool overlap = true;
         bool haloFreshnessChecks = false;
+        /// Check the actual MPI process capability before constructing workers.
+        /// FUNNELED permits CPU workers; MPI calls still belong to the controller.
+        /// SINGLE forbids worker threads even if workers themselves never call MPI.
+        void ValidateMPIThreadSupport(int provided) const;
         DNDS_DECLARE_CONFIG(ExecutionSettings)
         {
             DNDS_FIELD(device, "Required numerical backend; no implicit fallback");

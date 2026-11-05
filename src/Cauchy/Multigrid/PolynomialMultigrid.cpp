@@ -226,7 +226,9 @@ namespace DNDS::Cauchy
             };
             FiniteVolume fine;
             State state, value;
-            Solver *fineSolver;
+            // Retain the solver's shared implementation, not the caller's
+            // movable facade. Stored level callbacks borrow this stable member.
+            Solver fineSolver;
             ImplicitSettings settings;
             MPIInfo mpi;
             std::vector<std::unique_ptr<Coarse>> coarse;
@@ -238,7 +240,7 @@ namespace DNDS::Cauchy
             int stage = 0;
             Report *report = nullptr;
             PolynomialHierarchy(const FiniteVolume &discrete, State &input, Solver &solver, const DomainSettings &controls)
-                : fine(discrete), state(input), value(Operations::NewVector(input)), fineSolver(&solver),
+                : fine(discrete), state(input), value(Operations::NewVector(input)), fineSolver(solver),
                   settings(controls.implicit), mpi(discrete.Metrics().Communicator())
             {
                 settings.ValidateComponents(Operations::ComponentNumber(input));
@@ -290,7 +292,7 @@ namespace DNDS::Cauchy
                        const DomainSettings &controls, const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers = std::nullopt)
             {
                 smootherCFL.assign(size_t(settings.multigrid.levels + 1), settings.pseudoCFL);
-                levelDefinitions.push_back(MakeLevel(state, *fineSolver, 0));
+                levelDefinitions.push_back(MakeLevel(state, fineSolver, 0));
                 const auto identity = [mpi = mpi, checks = settings.collectiveChecks](const State &input, State &output)
                 {
                     IdentityTransfer(input, output, mpi, checks);
@@ -331,7 +333,7 @@ namespace DNDS::Cauchy
             }
             auto Measure(const State &source)
             {
-                fineSolver->EvaluateEquation(state, value, mass, rhsScale, time);
+                fineSolver.EvaluateEquation(state, value, mass, rhsScale, time);
                 auto norms = Profile::Norms(state);
                 std::vector<real> sum(norms.size() + 1, 0);
                 MPI::LocalStage(mpi, [&]
@@ -392,10 +394,10 @@ namespace DNDS::Cauchy
                 auto residual = Profile::Norms(state);
                 Report initial;
                 initial.residual = residual;
-                return NonlinearDetail::Iterate(control, fine.Equation().Schema(), mpi.rank, stage, {}, std::move(initial), fineSolver->ReconstructionTolerance(), [&]
+                return NonlinearDetail::Iterate(control, fine.Equation().Schema(), mpi.rank, stage, {}, std::move(initial), fineSolver.ReconstructionTolerance(), [&]
                                                 { residual = Measure(source); }, [&](auto &norms)
                                                 { norms = residual; }, [&]
-                                                { return fineSolver->ReconstructionStats(); }, [&](auto &total)
+                                                { return fineSolver.ReconstructionStats(); }, [&](auto &total)
                                                 { NonlinearDetail::AccumulateWork(total, ApplyCycle(source, mass, rhsScale, time, stage, total.pseudoCFL)); });
             }
             void SetBoundaryInputs(const BoundaryInputs &input)

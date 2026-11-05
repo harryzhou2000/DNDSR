@@ -11,8 +11,11 @@ namespace DNDS::Cauchy
     /// CPU flow5 and logical equation states support full or selected-component
     /// principal-system cycles through the same hierarchy and FAS recursion.
     /// Unselected means remain frozen; all finest residuals stay observable.
-    /// Fine state/workspace remain bound; caller retains the finest solver and
-    /// engine, serializes calls and owns physical trial rollback.
+    /// Fine state/workspace remain bound. The hierarchy retains a copy of the
+    /// finest solver's shared implementation; its original facade may move or
+    /// expire. Caller keeps the engine alive at a stable address through every
+    /// hierarchy/solver copy and queued operation, serializes calls and owns
+    /// physical trial rollback. Copies share mutable solver/workspace state.
     class PolynomialMultigrid
     {
         struct Data;
