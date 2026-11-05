@@ -1070,3 +1070,49 @@ ordered members also reject. All six row-transfer/transient registrations pass
 np1/2/4. The first compile failed on a two-argument doctest CAPTURE; correcting
 that test diagnostic gave the successful build. Matched costs and the E4
 retain/adopt decision remain pending, as does optional coalescing assessment.
+
+## Revised E6 matched result
+
+Job `12442822` completed `0:0` in 48 seconds, all twelve rows/36 trials/324
+phase records and full-field oracles verified. The
+[revised report](plan53_validation/e6-plan-flag/README.md) preserves the first
+candidate separately and records the differing CMake cache hashes honestly;
+benchmark source and actual compile/link flags match. At np32/5,000 cells per
+rank, assembled preparation changes 23.805→14.014 ms and actual
+preparation+inverse+five-pair work changes 36.936→26.964 ms. Auxiliary differs
+by -1.1% to+4.3% across large cases rather than the first candidate's larger
+regressions. Retain the plan-level exact identity specialization, subject to
+the unchanged focused source/layout complement. Assembled wins every measured
+preparation+reuse sequence; keep evaluated storage without an unsupported
+universal break-even or exact-memory advantage claim.
+
+## E4/E5 scheduling probe functional gates
+
+The opt-in Linux benchmark uses the actual persistent Runtime Direct and
+HostPacked paths over a Cartesian sparse rank graph. Its frozen split5+12
+AoS fields represent means or nine reconstruction modes. Exact independent
+rank/row/component payload and owned-only arithmetic oracles run outside
+timing after every exchange; source generations stay unchanged. Two distinct
+physical cores are reserved per rank for every compared path, with explicit
+controller/worker pinning and per-rank socket/core/NUMA provenance. A worker
+cannot turn an inadequate single-core mask into a silently different budget.
+
+Caller-side starts, compute-worker overlap and a dedicated MPI-worker candidate
+share the same pack/post/wait/unpack algorithms. In the MPI-worker mode, all
+MPI work is on one worker until its future is observed: the controller performs
+only owned numerical work, then joins before any barrier/reduction/destruction.
+Initialization/finalization remain on the main thread. This establishes
+SERIALIZED ownership without requesting MULTIPLE to conceal concurrent entry.
+Worker-task guards retain iteration locals through error unwinding. No
+production communication executor is added.
+
+Six corrected local pilot rows and two guard repeats pass with actual
+MPI_THREAD_SERIALIZED. A final three-row metadata gate validates unique
+physical-core placement, named phases, PMPI request/pack/agreement counts and
+source generations. Initial benchmark compile errors (missing JSON include,
+mixed const/mutable auto declaration) and a mechanical runner's zero-trials
+argument failure are retained before the successful gates. PMPI clocks separate
+packing, posting, MPI waits, unpack and agreement; explicit full-array staging
+bytes are separately reported, not mislabeled as packed network payload.
+This is mock owned compute, not a whole solver RHS speedup. Its checked
+24-row allocated-node recorder and final retain/change decision remain pending.

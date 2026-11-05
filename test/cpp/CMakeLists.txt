@@ -347,6 +347,11 @@ dnds_add_mpi_test(serializer "DNDS/test_Serializer.cpp" "dnds")
 dnds_add_mpi_test(mpi "DNDS/test_MPI.cpp" "dnds")
 dnds_add_mpi_test(runtime_exchange "DNDS/test_RuntimeExchange.cpp" "dnds")
 dnds_add_mpi_test(runtime_row_transfer "DNDS/test_RuntimeRowTransfer.cpp" "dnds")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(dnds_benchmark_transfer_scheduling EXCLUDE_FROM_ALL DNDS/benchmark_TransferScheduling.cpp)
+    target_include_directories(dnds_benchmark_transfer_scheduling PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+    target_link_libraries(dnds_benchmark_transfer_scheduling PRIVATE dnds ${DNDS_EXTERNAL_LIBS})
+endif()
 if(Python_EXECUTABLE)
     add_test(NAME dnds_runtime_preflight_off_failure_np2
         COMMAND ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/check_preflight_failfast.py
