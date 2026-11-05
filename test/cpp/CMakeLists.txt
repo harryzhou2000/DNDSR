@@ -275,7 +275,18 @@ target_link_libraries(cauchy_benchmark_geom_acquisition PRIVATE cauchy cfv geom 
 add_executable(cauchy_benchmark_jacobian EXCLUDE_FROM_ALL Cauchy/benchmark_Jacobian.cpp)
 target_include_directories(cauchy_benchmark_jacobian PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
 target_link_libraries(cauchy_benchmark_jacobian PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+add_executable(cauchy_benchmark_nonlinear_stage EXCLUDE_FROM_ALL Cauchy/benchmark_NonlinearStage.cpp)
+target_include_directories(cauchy_benchmark_nonlinear_stage PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+target_link_libraries(cauchy_benchmark_nonlinear_stage PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
 if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_executable(cauchy_benchmark_rhs_execution EXCLUDE_FROM_ALL Cauchy/benchmark_RHSExecution.cpp Cauchy/RHSExecutionBenchmark.cpp)
+    target_include_directories(cauchy_benchmark_rhs_execution PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+    target_link_libraries(cauchy_benchmark_rhs_execution PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+    target_link_options(cauchy_benchmark_rhs_execution PRIVATE
+        "LINKER:--wrap=_ZNK4DNDS3CFV16FiniteVolumePlan8BindHaloERNS_7Algebra8DofFieldIdLm18446744073709551615EEE"
+        "LINKER:--wrap=_ZNK4DNDS3CFV16FiniteVolumePlan15BindTrackedHaloERNS_7Algebra8DofFieldIdLm18446744073709551615EEE"
+        "LINKER:--wrap=_ZN4DNDS7Runtime6Detail9CopyBytesEPKvNS0_6DeviceEPvS4_mNS0_16ExecutionContextE"
+        "LINKER:--wrap=_ZNK4DNDS3CFV29VariationalReconstructionPlan22DoReconstructionIterToERKNS_7Algebra8DofFieldIdLm18446744073709551615EEES6_RNS0_23ReconstructionWorkspaceERKNS0_28ReconstructionBoundaryValuesENS0_20ReconstructionRegionE")
     add_executable(cauchy_benchmark_coefficient_rhs EXCLUDE_FROM_ALL Cauchy/benchmark_CoefficientRHSCost.cpp)
     target_include_directories(cauchy_benchmark_coefficient_rhs PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
     target_link_libraries(cauchy_benchmark_coefficient_rhs PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
