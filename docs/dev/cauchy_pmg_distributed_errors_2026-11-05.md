@@ -104,8 +104,32 @@ migrated to own their bounded local error preflights rather than relying on
 an outer catch around potentially collective work.
 
 After rebuilding and installing DNDS/Geom/CFV/Cauchy Python bindings, the np2
-selection passed three tests on each rank: the distinct numerical rejection,
-configured implicit step and conservative SSPRK path. No MPI skip is credited.
+selection passed three tests on each rank: the distinct numerical rejection
+and two coordinated Simulation owner/reversed-subgroup cases. No MPI skip is credited.
 Python log: `/tmp/cauchy-pmg-failure-python-tests-20261105.log`.
 Local runner uses OpenMPI 5.0.9 and single OMP/OpenBLAS threads. This is focused
 CPU validation; no new CUDA/NCCL failure-recovery claim is made.
+
+## Bounded physical follow-up
+
+The unchanged NACA/SA pMG2 controls ran locally at np8 for 600.315 seconds,
+ending at the wall guard with iteration 350 last reported. The density defect
+was 5.782e-10; no accepted final step was produced. This remains partial,
+non-converged evidence, not a demonstrated pMG speedup. The RANS component
+was not part of the configured density-only convergence criterion.
+
+The unchanged cylinder fine-grid controls at np2 now fail promptly after
+7.585 seconds, following iteration 90. The fatal message identifies
+`PrepareJacobian` rejecting a Roe characteristic basis:
+`Roe Jacobian requires a valid physical characteristic basis`. The former
+600-second stall is no longer reproduced: the error reaches MPI_Abort without
+an unrelated simulation Allreduce. This identifies the failing check in this
+replay, not the exact state that initiated the earlier cluster stall. The
+aggressive CFL50/unlimited-P3 cylinder case is still not a converged baseline.
+
+Both rows identify functional commit `7dff3897` and executable SHA256
+`a03d7bb531c7b357832b1fe0bf969089731d8ebb142905fc33b1bf7aafd2bd8c`.
+Raw records, input snapshots, resolved settings, logs and progress stay under
+`data/out/cauchy-cpu-next/pmg-physical/20261105-fix-audit-local/`.
+Compact records are retained in the plan repository's matching experiment
+directory. No cross-machine timing comparison or numerical retuning was done.

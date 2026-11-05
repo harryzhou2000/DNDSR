@@ -110,6 +110,7 @@ namespace DNDS::Geom
         std::string name;
         /// Legacy fn callbacks retain their consuming failure semantics.
         /// Native field adapters additionally provide a staged preparation.
+        /// This preflight must be rank-local and must not initiate MPI.
         std::function<void(const PermutationTransfer &)> preflight;
         /// A collective adapter coordinates local preparation before each
         /// internal transfer. The bundle agrees only on returned readiness;
