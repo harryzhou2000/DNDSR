@@ -737,3 +737,21 @@ The common Runtime failure helper itself is unchanged; its earlier bounded
 off-mode abort test remains the fail-fast implementation gate. Remaining E1
 work is the archive/serializer/compatibility and bare-map classification, plus
 any separately identified cold wrapper; this phase alone does not close E1.
+
+## E1 bare entity-space mapping protocol
+
+Bare owned/sibling/ghost-map creation must agree the entity kind and validate
+counts/source before constructing a distributed numbering map. The existing
+single reduction carries both the mandatory kind agreement and local validity;
+it remains active under either optional preflight policy. Sibling construction
+previously performed this agreement twice by calling the public owned entry
+after its own validation. A private map-construction helper removes that
+duplicate without changing public signatures, map ownership or inherited policy.
+
+The existing policy fixture now counts **exactly one** sibling Allreduce in
+both modes, retaining its independent connectivity/halo/order checks. All
+**6/6** mesh-policy and entity-field registrations pass at np1/2/4 (1.74s),
+including zero-owned participants and retained descriptor/binding invariants.
+This classifies/closes the bare-map item. Archive/serializer/compatibility
+policies and E3–E7 remain pending; file/schema protocol agreements may not be
+removed as if they were repeated transfer safety checks.

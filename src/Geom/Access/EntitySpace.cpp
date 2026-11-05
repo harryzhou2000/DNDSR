@@ -8,8 +8,9 @@ namespace DNDS::Geom
 {
     namespace
     {
-        // Native setup must agree on recoverable input errors before entering
-        // the next mapping collective, including ranks with zero owned rows.
+        // Kind agreement is a required mapping protocol, even with optional
+        // preflight disabled. Piggyback input validity in that same reduction
+        // before any map construction, including on ranks with zero owned rows.
         void CheckNativeSpaceInput(const MPIInfo &mpi, EntityKind kind, index owned, bool valid)
         {
             DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native entity space requires a communicator");
@@ -28,6 +29,11 @@ namespace DNDS::Geom
     EntitySpace EntitySpace::CreateOwned(EntityKind kind, MPIInfo mpi, index owned)
     {
         CheckNativeSpaceInput(mpi, kind, owned, true);
+        return CreateOwnedMaps(kind, mpi, owned);
+    }
+
+    EntitySpace EntitySpace::CreateOwnedMaps(EntityKind kind, MPIInfo mpi, index owned)
+    {
         auto global = std::make_shared<GlobalOffsetsMapping>();
         global->setMPIAlignBcast(mpi, owned);
         std::vector<index> empty;
@@ -42,7 +48,7 @@ namespace DNDS::Geom
     EntitySpace EntitySpace::CreateSibling(EntityKind kind, index owned) const
     {
         CheckNativeSpaceInput(_mpi, kind, owned, Valid());
-        auto result = CreateOwned(kind, _mpi, owned);
+        auto result = CreateOwnedMaps(kind, _mpi, owned);
         result._identity = _identity;
         result._versions.RebindPrepared(_versions);
         result._stamp = _stamp;

@@ -52,6 +52,9 @@ namespace DNDS::Geom
                     std::shared_ptr<OffsetAscendIndexMapping> ghostMap,
                     Runtime::VersionTracker versions);
         static void CheckCommunicator(MPI_Comm actual, MPI_Comm expected);
+        // Construct maps only after the public entry has collectively validated
+        // kind/count/source. Sibling creation must not agree the inputs twice.
+        static EntitySpace CreateOwnedMaps(EntityKind kind, MPIInfo mpi, index owned);
         // MeshAdjacencyRead owns read leases for both numbering epochs, so
         // these private map operations need no generation mutex per incidence.
         // Public descriptor queries still validate on every call.

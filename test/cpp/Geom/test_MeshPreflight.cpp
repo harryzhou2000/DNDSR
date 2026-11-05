@@ -100,7 +100,13 @@ TEST_CASE("Cold mesh preparation shares an explicit policy without changing conn
         CHECK(rebound.SameOrder(cells));
         CHECK(cells.ChecksCollectivePreflight() == enabled); // retained descriptor unchanged
         CHECK(rebound.ChecksCollectivePreflight() == !enabled);
-        auto sibling = cells.CreateSibling(G::EntityKind::Cell, cells.NumOwned());
+        const auto sibling = [&]
+        {
+            Count count;
+            auto result = cells.CreateSibling(G::EntityKind::Cell, cells.NumOwned());
+            CHECK(reductions.load() == 1); // Required kind agreement; no repeated CreateOwned preflight.
+            return result;
+        }();
         CHECK(sibling.ChecksCollectivePreflight() == enabled);
         int value = 0;
         {

@@ -136,6 +136,15 @@ preparation entry points require separate classification and propagation;
 they must not be counted as safety-free merely because final halos inherit
 the context. Required file, schema and payload protocols remain enabled.
 
+Bare `EntitySpace` construction always agrees the entity kind before exchanging
+rank-offset maps. That is a required mapping protocol, not a repeated payload
+safety preflight. Local count/source validity is piggybacked on the same
+reduction. Sibling construction executes it once and shares the validated map
+construction implementation; it does not call the public owned constructor
+and repeat the agreement. `WithGhosts` retains its required validation before
+collective ghost-map discovery. Neither operation changes the source order or
+the policy inherited by the new descriptor.
+
 `geom_test_mesh_preflight` compares on/off topology and direct halo payloads,
 including empty owners and a self-periodic mesh. PMPI counts prove four repeated
 local stages and three repeated halo starts use zero safety reductions in off
