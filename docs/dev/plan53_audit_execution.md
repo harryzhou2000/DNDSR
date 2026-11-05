@@ -118,8 +118,7 @@ reduction. No other implementation checkout or MG/IV work was used.
 
 ## Still pending
 
-E1's remaining cold-entry-point classification/propagation and E2's memory/timing
-assessment remain open, as do the bounded
+E1's remaining cold-entry-point classification/propagation remains open, as do the bounded
 E3–E7 measurements, independent frozen Euler seam comparisons, selected scoped
 readability work, per-suite high-rank rationale/curation and the sanitizer
 ownership pass. Formatter default discovery now includes Cauchy and Physics;
@@ -232,8 +231,8 @@ E1 is not closed by these gates. Archive/serializer failure coordination, bare
 entity-space creation, compatibility importers and remaining cold wrappers still
 need collective-purpose classification and policy propagation where optional.
 Do not remove required schema/file/data exchanges or count their presence as
-a repeated prepared-transfer regression. E2 measurements, E3–E7 and independent
-Euler/sanitizer/readability work remain queued without changing the goal scope.
+a repeated prepared-transfer regression. E2 process-memory measurements are
+recorded below; E3–E7 and independent Euler/sanitizer/readability work stay open.
 
 ## E2: operation-selected reconstruction storage
 
@@ -260,7 +259,7 @@ document the public C++/Python API. `StorageReport` separates logical payload,
 unique allocation extents (including metadata), and the known Runtime face-system
 scratch/peak. It does not estimate native Eigen/std scratch, allocator overhead,
 process RSS or a universal memory/performance speedup. Isolated process-memory
-and matched timing measurements remain queued with E3–E7.
+acceptance is recorded below; matched timing measurements stay with E3–E7.
 
 Focused new fixtures cover 2D/3D degrees 1–3, Jacobi/SOR, split direct-MPI overlap,
 WBAP, empty owners, rotated and self-periodic meshes, sampling without matrix
@@ -351,9 +350,33 @@ repository; its SHA256 is
 The final complete 16-registration rerun above passes; the initial failure is
 not counted as acceptance.
 
-This closes the owned-builder/topology/assembler core, not all E1 propagation.
-Importer entry points, partition/reorder companion stages and production loader
-selection still need wiring to the same policy. Source-level Python descriptor
-bindings are added, but their runtime gate and dependent CFV/Cauchy rebuild are
-queued with that remaining cross-module work. No CUDA or matched setup timing
-claim is made by these local C++ correctness tests.
+At `602ac520` this closed the owned-builder/topology/assembler core, not all
+E1 propagation. Importer/transition/loader and Python-runtime follow-up was
+subsequently committed as `4197fee8`, with acceptance above. No CUDA or matched
+setup timing claim is made by these local C++ correctness tests.
+
+## E2 isolated-process memory acceptance
+
+The [bounded storage assessment](plan53_validation/e2-storage/README.md) closes
+the remaining CPU E2 allocation/process-memory evidence. P3 generated 2D/3D
+meshes have 8,192/2,048 owned cells per rank at np2/OMP1. Full, sweep-only and
+sweep-plus-WBAP profiles run in separate MPI process groups, with two trials
+in opposite profile orders. All twelve final rows pass finite-value, bitwise
+digest and table-omission checks. An independent reducer validates every raw
+log hash, row identity, omitted-table report and recorded affinity. Earlier
+pilot and pre-affinity runs are preserved locally without relabeling them.
+
+Sweeps+WBAP retains 67.12/141.71 MiB versus full 99.74/189.61 MiB in 2D/3D;
+sweeps alone retains 46.87/107.86 MiB. Both current and whole-process peak RSS
+decrease. Known Runtime preparation scratch and peak, per-table payload and
+unique allocation extents, and prior/current process high-water remain separate
+quantities. Eigen/std temporaries are not inferred from Runtime byte counts.
+Workspace allocations occur after the memory observations.
+
+No matched setup speedup is claimed: 2D WBAP timing changes direction between
+the two shared-host trials. The opt-in probe adds no CTest entry. Source/binary/
+cache hashes, actual CPU affinities, MPI provided level, compressed raw logs
+and measured-source snapshot are retained in roughly 40 KiB of evidence/report.
+Twenty tooling tests pass (2.950 s); the new target is excluded from ordinary
+builds/CTest. E3–E7 require their own bounded
+matched measurements; this record does not close them or Euler/sanitizer work.
