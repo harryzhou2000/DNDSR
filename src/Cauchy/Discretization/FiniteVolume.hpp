@@ -242,8 +242,10 @@ namespace DNDS::Cauchy
         /// and coordinates collective call order. Failed scratch is discarded.
         /// This updates state ghosts and reconstruction scratch, never owned
         /// means. Each output physical allocation must be distinct from inputs.
-        /// implicit.collectiveChecks=false delegates distributed failure
-        /// coordination to the caller; entry/binding preflights still agree.
+        /// implicit.collectiveChecks=false omits optional stage/launch safety
+        /// agreements and aborts on local rejection; matching call order stays
+        /// the caller's responsibility. Required setup protocols and numerical
+        /// reductions remain. Access checking is an independent engine choice.
         void Evaluate(EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace,
                       Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
         /// Same synchronous collective/access contract as Evaluate. Only this

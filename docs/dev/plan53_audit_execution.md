@@ -968,3 +968,28 @@ OMP1 benchmark modes also pass. This is a correctness gate, not performance
 acceptance. The recorder will run frozen baseline/candidate executables serially
 in one unpinned BSSCA allocation with opposite version/storage orders. Actual
 preparation-plus-reuse sequences and terminal complete-field checks are required.
+
+## E3 composed-RHS publication instrumentation gate
+
+The opt-in GNU-compatible link-wrapper target observes actual calls to CFV
+`CommitReconstruction` inside the composed flow5 `Evaluate` path. Production
+libraries have no extra profiling branch or timer. CPU-inline execution keeps
+the thread-local recorder and wrapped calls on the same thread. Alternating
+instrumented/uninstrumented batches expose timer overhead; counters, validation
+and reductions are outside the measured publication call. Workspaces remain
+warm between batches. This measures steady repeated RHS evaluation, not cold
+initial reconstruction.
+
+Both local np2/OMP1 width12 runs pass two opposite-order trials. With five
+fixed VR sweeps and P3, actual calls per RHS are five without limiting and eight
+with descending WBAP; logical bytes match every owned coefficient row. Outputs
+are finite and owned means retain their generation. The private flux-seed copy
+and optional PP reference copies are explicitly outside this publication timer;
+its fraction must not be described as all reconstruction-copy traffic. Whole
+equation/split-field RHS attribution remains separate from this flow5 gate.
+
+Corrected the equation Evaluate docstring's stale claim that entry/launch
+preflights always agree. Disabled optional preflight omits those agreements
+and fails fast locally; required construction protocols/numerical reductions
+and independent access checking remain. This documentation change adds no
+behavior and requires no extra runtime test.

@@ -275,6 +275,13 @@ target_link_libraries(cauchy_benchmark_geom_acquisition PRIVATE cauchy cfv geom 
 add_executable(cauchy_benchmark_jacobian EXCLUDE_FROM_ALL Cauchy/benchmark_Jacobian.cpp)
 target_include_directories(cauchy_benchmark_jacobian PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
 target_link_libraries(cauchy_benchmark_jacobian PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_executable(cauchy_benchmark_coefficient_rhs EXCLUDE_FROM_ALL Cauchy/benchmark_CoefficientRHSCost.cpp)
+    target_include_directories(cauchy_benchmark_coefficient_rhs PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+    target_link_libraries(cauchy_benchmark_coefficient_rhs PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+    target_link_options(cauchy_benchmark_coefficient_rhs PRIVATE
+        "LINKER:--wrap=_ZNK4DNDS3CFV29VariationalReconstructionPlan20CommitReconstructionERNS0_23ReconstructionWorkspaceE")
+endif()
 add_executable(cauchy_experiment_multidomain_iv EXCLUDE_FROM_ALL Cauchy/experiment_MultidomainIV.cpp)
 target_include_directories(cauchy_experiment_multidomain_iv PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
 target_link_libraries(cauchy_experiment_multidomain_iv PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
