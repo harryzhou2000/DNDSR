@@ -536,3 +536,30 @@ rank-asymmetric rejection cases are retained and pass in this batch.
 This closes the coordinate-edit portion only. Smoothing, archive/serializer
 coordination, compatibility decoding, bare map construction classification and
 the separate distributed-interface context remain in the E1 audit queue.
+
+## E1 smoothing and refinement facades
+
+Native boundary-smoothing preparation, local/global RBF and elasticity now
+inherit the source context in their optional local stages and Krylov scratch
+creation. Their separate replicated-constraint context retains that policy.
+Required constraint-count exchange, payload replication, numerical dot products
+and convergence remain intact. Facade smoothing removes a repeated mutation
+availability check with no intervening mutation; it still checks ownership
+before staging, fresh-workspace identity before solve and generations before
+publication. Elevation/bisection facades select the source policy, including
+when publishing into a fresh destination.
+
+Existing local-RBF and global-RBF/elasticity fixtures add a disabled-preflight
+subcase with their independent Hermite displacement, boundary/interior and
+identity checks. The facade test adds successful unchecked runs for all three
+solvers (including no-op/stale-cache replacement), while preserving every
+recoverable failure check in the original enabled-mode subcase. Off-mode
+failure cannot be tested as a recoverable exception. The periodic/3D and empty-
+participant fixtures are unchanged. All **9/9** smoothing, OpenFOAM/refinement
+and mesh-policy registrations pass at np1/2/4 (2.92 s), superseding the earlier
+six-entry 2.12 s intermediate gate. No RBF arithmetic/constraint order changes
+or timing improvements are claimed.
+
+Remaining E1 classification/propagation covers archive/serializer coordination,
+compatibility decoding, bare map construction and distributed interface search.
+Other pending packages and independent Euler comparisons are unchanged.

@@ -6,10 +6,13 @@ namespace DNDS::Geom
 {
     void UnstructuredMesh::BuildO2FromO1Elevation(UnstructuredMesh &source)
     {
-        CheckCollectiveMutationAvailable(true);
+        const auto communication = source.PreparationCommunication();
+        const bool checks = !communication || communication->ChecksCollectivePreflight();
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, checks);
+        CheckCollectiveMutationAvailable(checks);
         std::optional<Runtime::VersionTracker::ReadLease> retained;
         std::shared_ptr<const UnstructuredMeshState> input;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             DNDS_check_throw_info(!versions.SameController(source.versions), "derivation destination requires an independent mesh controller");
             DNDS_check_throw_info(source.HasNativeState() && source.getDim() == getDim(), "native derivation requires matching dimension and native source");
@@ -24,10 +27,13 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::BuildBisectO1FormO2(UnstructuredMesh &source)
     {
-        CheckCollectiveMutationAvailable(true);
+        const auto communication = source.PreparationCommunication();
+        const bool checks = !communication || communication->ChecksCollectivePreflight();
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, checks);
+        CheckCollectiveMutationAvailable(checks);
         std::optional<Runtime::VersionTracker::ReadLease> retained;
         std::shared_ptr<const UnstructuredMeshState> input;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             DNDS_check_throw_info(!versions.SameController(source.versions), "derivation destination requires an independent mesh controller");
             DNDS_check_throw_info(source.HasNativeState() && source.getDim() == getDim(), "native derivation requires matching dimension and native source");
@@ -42,14 +48,16 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::ElevatedNodesGetBoundarySmooth(const std::function<bool(t_index)> &FiFBndIdNeedSmooth)
     {
-        CheckCollectiveMutationAvailable(true);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        const auto communication = PreparationCommunication();
+        const bool checks = !communication || communication->ChecksCollectivePreflight();
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, checks);
+        CheckCollectiveMutationAvailable(checks);
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { DNDS_check_throw_info(_nativeState, "boundary smoothing requires native mesh authority"); });
         {
-            CheckCollectiveMutationAvailable(true);
             const auto stamp = versions.Stamp();
             auto work = NativeMeshSmoothing::PrepareBoundary(_nativeState, mpi, NativeSmoothingFacade::Options(elevationInfo), FiFBndIdNeedSmooth);
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             { stamp.Validate(); });
             _nativeSmoothing = std::move(work);
             return;

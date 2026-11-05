@@ -73,6 +73,11 @@ namespace DNDS::Geom
     class NativeMeshSmoothing
     {
     public:
+        /// Collective setup/solve operations inherit the source preparation
+        /// policy. Disabled preflight preserves local checks but aborts on a
+        /// failed phase. Constraint replication, solver norms and convergence
+        /// remain required; every rank enters the same method/options in order.
+        /// Publication is detached; the source mesh and workspace stay immutable.
         static std::shared_ptr<const NativeSmoothingWorkspace> PrepareBoundary(
             std::shared_ptr<const UnstructuredMeshState> source, const MPIInfo &mpi,
             NativeSmoothingOptions options, const std::function<bool(t_index)> &selected);

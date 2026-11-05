@@ -25,7 +25,7 @@ namespace
         }
         return R::Array<I>::FromSharedStorage(builder.Commit());
     }
-    std::shared_ptr<const G::NativeMeshState> Disk(const DNDS::MPIInfo &mpi, bool independentOwners, int dimension = 2, bool partialBoundary = false)
+    std::shared_ptr<const G::NativeMeshState> Disk(const DNDS::MPIInfo &mpi, bool independentOwners, int dimension = 2, bool partialBoundary = false, bool preflight = true)
     {
         auto owner = [&](int kind, int logical)
         { return independentOwners ? (3 * logical + kind) % mpi.size : 0; };
@@ -98,7 +98,10 @@ namespace
         }
         G::NativeMeshInput input{mpi, dimension, cells, nodes, boundaries, Rows(cones), Rows(bndCones), coords, info, bndInfo, {}};
         input.ids.emplace(G::EntityKind::Node, std::move(ids));
-        auto primary = G::ConstructNativeMesh(std::move(input));
+        G::NativeMeshBuildOptions options;
+        if (!preflight)
+            options.communication = std::make_shared<R::CommunicationContext>(mpi.comm, false);
+        auto primary = G::ConstructNativeMesh(std::move(input), options);
         auto elevated = G::NativeMeshRefinement::Elevate(*primary, mpi);
         return G::PrepareNativeMeshTopology(*elevated.state, mpi);
     }
@@ -109,9 +112,11 @@ TEST_CASE("Native smoothing Hermite boundary oracle and detached local RBF")
     DNDS::MPIInfo mpi;
     mpi.setWorld();
     bool independentOwners = true;
+    bool preflight = true;
     SUBCASE("independent family ownership") {}
     SUBCASE("empty peers") { independentOwners = false; }
-    auto source = Disk(mpi, independentOwners);
+    SUBCASE("independent ownership without optional preflight") { preflight = false; }
+    auto source = Disk(mpi, independentOwners, 2, false, preflight);
     auto old = source->Snapshot(R::Device::Host()).AcquireRead();
     G::NativeSmoothingOptions options;
     options.MaxIncludedAngle = 50;
@@ -146,6 +151,7 @@ TEST_CASE("Native smoothing Hermite boundary oracle and detached local RBF")
     CHECK_THROWS(alias.Write());
     auto smoothed = G::NativeMeshSmoothing::LocalRBF(*workspace, mpi, options);
     CHECK(smoothed->MeshNamespace() == source->MeshNamespace());
+    CHECK(smoothed->Entities(G::EntityKind::Node).ChecksCollectivePreflight() == preflight);
     auto current = smoothed->Snapshot(R::Device::Host()).AcquireRead();
     for (I node = 0; node < source->NumOwned(G::EntityKind::Node); ++node)
     {
@@ -190,11 +196,12 @@ TEST_CASE("Native global RBF and elasticity preserve exact boundary constraints"
 {
     DNDS::MPIInfo mpi;
     mpi.setWorld();
-    bool empty = false, partialBoundary = false;
+    bool empty = false, partialBoundary = false, preflight = true;
     SUBCASE("independent owners") {}
     SUBCASE("empty peers") { empty = true; }
     SUBCASE("unselected boundary stays fixed in elasticity") { partialBoundary = true; }
-    auto source = Disk(mpi, !empty, 2, partialBoundary);
+    SUBCASE("independent ownership without optional preflight") { preflight = false; }
+    auto source = Disk(mpi, !empty, 2, partialBoundary, preflight);
     G::NativeSmoothingOptions options;
     options.MaxIncludedAngle = 50;
     options.RBFRadius = 1.2;
@@ -218,6 +225,7 @@ TEST_CASE("Native global RBF and elasticity preserve exact boundary constraints"
         auto result = method == 0 ? G::NativeMeshSmoothing::GlobalRBF(*problem, mpi, options) : G::NativeMeshSmoothing::Elasticity(*problem, mpi, options);
         const auto &before = source->BorrowHostView(), &after = result->BorrowHostView();
         CHECK(result->MeshNamespace() == source->MeshNamespace());
+        CHECK(result->Entities(G::EntityKind::Node).ChecksCollectivePreflight() == preflight);
         for (I node = 0; node < source->NumOwned(G::EntityKind::Node); ++node)
         {
             const auto original = before.Coord(node), smoothed = after.Coord(node);
@@ -318,9 +326,12 @@ TEST_CASE("Native facade smoothing stages work, rejects readers and stale caches
 {
     DNDS::MPIInfo mpi;
     mpi.setWorld();
+    bool preflight = true;
+    SUBCASE("recoverable checked failures") {}
+    SUBCASE("unchecked successful publication") { preflight = false; }
     for (int method = 0; method < 3; ++method)
     {
-        auto source = Disk(mpi, true);
+        auto source = Disk(mpi, true, 2, false, preflight);
         auto mesh = G::UnstructuredMesh::FromNative(mpi, source);
         mesh->elevationInfo.MaxIncludedAngle = 50;
         mesh->elevationInfo.RBFRadius = 1.2;
@@ -342,15 +353,18 @@ TEST_CASE("Native facade smoothing stages work, rejects readers and stale caches
                 mesh->ElevatedNodesSolveInternalSmoothV2();
         };
         std::optional<G::MeshReadAccess> retained;
-        if (mpi.rank == 0)
+        if (preflight && mpi.rank == 0)
             retained.emplace(mesh->AcquireRead(G::MeshReadRequirements::CellFlux()));
-        CHECK_THROWS(solve());
+        if (preflight)
+            CHECK_THROWS(solve());
         CHECK(mesh->CurrentNativeState() == staged);
         retained.reset();
         solve();
         CHECK(mesh->CurrentNativeState() != staged);
         CHECK(mesh->CurrentNativeState()->MeshNamespace() == source->MeshNamespace());
-        CHECK_THROWS(solve());
+        CHECK(mesh->Entities(G::EntityKind::Node).ChecksCollectivePreflight() == preflight);
+        if (preflight)
+            CHECK_THROWS(solve());
         mesh->ElevatedNodesGetBoundarySmooth([](auto)
                                              { return false; });
         const auto none = mesh->CurrentNativeState();
@@ -360,7 +374,8 @@ TEST_CASE("Native facade smoothing stages work, rejects readers and stale caches
                                              { return zone == G::BC_ID_DEFAULT_WALL; });
         mesh->TransformCoords([](const auto &point)
                               { return G::tPoint(point + G::tPoint{.1, 0, 0}); });
-        CHECK_THROWS(solve());
+        if (preflight)
+            CHECK_THROWS(solve());
         mesh->ElevatedNodesGetBoundarySmooth([](auto zone)
                                              { return zone == G::BC_ID_DEFAULT_WALL; });
         CHECK_NOTHROW(solve());

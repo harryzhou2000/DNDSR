@@ -108,6 +108,16 @@ before peers enter unmatched coordinate transfers. Required transform/option
 broadcasts, boundary-mask reverse union, global changed/selection decisions and
 coordinate halo refresh remain. No geometry kernel's element access changes.
 
+Local/global RBF and elasticity smoothing carry the same policy through
+boundary preparation, solver scratch creation, coordinate publication and their
+separate replicated-constraint communication namespace. Required constraint
+counts, replication, solver dot products and convergence remain. The facade
+validates mutation availability once before staging, rather than twice without
+an intervening mutation. Elevation/bisection facade calls use the source's
+policy even when the destination is a fresh empty mesh. Smoothing equations,
+constraint ordering and the documented native/legacy rounding difference stay
+unchanged.
+
 This remains a staged E1 implementation. Archive/serializer error coordination,
 bare entity-space creation, legacy compatibility decoders and other cold
 preparation entry points require separate classification and propagation;

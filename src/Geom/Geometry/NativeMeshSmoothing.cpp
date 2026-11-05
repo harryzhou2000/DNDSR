@@ -24,11 +24,13 @@ namespace DNDS::Geom
                 ghosts = Runtime::Array<T>::FromStorage(Runtime::RowLayout::Dense(ghosts.RowCount(), owned.Layout().Width()), ghosts.Storage());
             return {owned, std::move(ghosts)};
         }
-        void Options(const MPIInfo &mpi, const NativeSmoothingOptions &options)
+        void Options(const MPIInfo &mpi, const NativeSmoothingOptions &options,
+                     const std::shared_ptr<Runtime::CommunicationContext> &communication)
         {
             DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native smoothing requires a communicator");
+            Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
             std::string signature;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 int rank, size;
                 MPI_Comm_rank(mpi.comm, &rank); MPI_Comm_size(mpi.comm, &size);
@@ -45,7 +47,7 @@ namespace DNDS::Geom
             MPI_Bcast(&length, 1, MPI_INT, 0, mpi.comm);
             std::string expected = mpi.rank == 0 ? signature : std::string(size_t(length), '\0');
             MPI_Bcast(expected.data(), length, MPI_CHAR, 0, mpi.comm);
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             { DNDS_check_throw_info(expected == signature, "native smoothing options differ across ranks"); });
         }
         Runtime::ElementSchema ElementSchema()
@@ -65,6 +67,7 @@ namespace DNDS::Geom
         };
         BoundaryCloud Constraints(const NativeSmoothingWorkspace &workspace, const MPIInfo &mpi)
         {
+            const auto communication = workspace.Source()->PreparationCommunication();
             // Keep ascending owned-node order. Legacy unordered_set iteration
             // ordered the same constraints differently, affecting tied-neighbor
             // order and floating-point reductions/accumulation in global RBF.
@@ -74,7 +77,7 @@ namespace DNDS::Geom
             auto roles = workspace.Constraints().ReadCombined();
             const auto &view = workspace.Source()->BorrowHostView();
             std::vector<std::vector<real>> selected;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
             for (index node = 0; node < nodes.NumOwned(); ++node)
             {
@@ -89,7 +92,7 @@ namespace DNDS::Geom
             index localCount = index(selected.size());
             std::vector<index> counts(size_t(mpi.size)), offsets(size_t(mpi.size) + 1);
             MPI_Allgather(&localCount, 1, DNDS_MPI_INDEX, counts.data(), 1, DNDS_MPI_INDEX, mpi.comm);
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
             for (int rank = 0; rank < mpi.size; ++rank)
             {
@@ -101,7 +104,7 @@ namespace DNDS::Geom
             // algorithm. This is not a mesh topology or remapping allocation.
             std::optional<Runtime::Array<real>> boundary;
             std::vector<Runtime::RowRequest> requests;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
             boundary.emplace(Runtime::RowLayout::Dense(selected.size(),6));
             auto write = boundary->Write();
@@ -111,7 +114,10 @@ namespace DNDS::Geom
             for (int rank = 0; rank < mpi.size; ++rank)
                 for (index row = 0; row < counts[size_t(rank)]; ++row)
                     requests.push_back({rank,row,offsets[size_t(rank)] + row}); });
-            auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
+            // Separate payload namespace, with the source safety policy. The
+            // replicated constraint dataset remains the established RBF method.
+            auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm,
+                                                                           !communication || communication->ChecksCollectivePreflight());
             Runtime::RowTransferPlan route(context, selected.size(), size_t(offsets.back()), requests);
             Runtime::Array<real> points(Runtime::RowLayout::Dense(size_t(offsets.back()), 6));
             Runtime::TransferOptions transfer;
@@ -150,10 +156,10 @@ namespace DNDS::Geom
         {
             Runtime::Array<real> values;
             MPIInfo mpi;
-            void Init(size_t rows, const MPIInfo &comm)
+            void Init(size_t rows, const MPIInfo &comm, const std::shared_ptr<Runtime::CommunicationContext> &communication)
             {
                 mpi = comm;
-                FieldTransferDetail::LocalStage(mpi, [&]
+                FieldTransferDetail::LocalStage(mpi, communication, [&]
                                                 { values = Runtime::Array<real>(Runtime::RowLayout::Dense(rows,3)); SetConstant(0); });
             }
             void SetConstant(real value)
@@ -210,13 +216,14 @@ namespace DNDS::Geom
         std::shared_ptr<const UnstructuredMeshState> source, const MPIInfo &mpi, NativeSmoothingOptions options,
         const std::function<bool(t_index)> &selected)
     {
-        Options(mpi, options);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        const auto communication = source ? source->PreparationCommunication() : nullptr;
+        Options(mpi, options, communication);
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             DNDS_check_throw_info(source && selected, "native smoothing requires a source and boundary selector");
             source->CheckRequirements(MeshReadRequirements::CellFlux()); });
         auto owned = NativeMeshAssembler::CaptureOwned(*source, mpi);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { DNDS_check_throw_info((owned.dimension == 2 || owned.dimension == 3) && owned.faceInfo && owned.relations[size_t(MeshRelation::FaceNodes)],
                                                                 "native smoothing requires two- or three-dimensional face topology"); });
         const auto sourceNodes = source->Entities(EntityKind::Node);
@@ -258,7 +265,7 @@ namespace DNDS::Geom
             }
             return result;
         };
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             for (index face = 0; face < faceSpace.NumLocal(); ++face)
             {
@@ -289,7 +296,7 @@ namespace DNDS::Geom
                 }
             } });
         std::optional<Runtime::Array<real>> normalRows;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             Runtime::RowBuilder builder(clusters.size(),sizeof(real));
             for (size_t node = 0; node < clusters.size(); ++node)
@@ -305,7 +312,7 @@ namespace DNDS::Geom
         Runtime::Array<real> displacement(Runtime::RowLayout::Dense(size_t(nodes.NumOwned()), 3));
         Runtime::Array<uint8_t> roles(Runtime::RowLayout::Dense(size_t(nodes.NumOwned()), 1));
         index moved = 0;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             auto output = displacement.Write(); auto mask = roles.Write();
             for (size_t node = 0; node < size_t(nodes.NumOwned()); ++node)
@@ -395,8 +402,9 @@ namespace DNDS::Geom
     std::shared_ptr<const UnstructuredMeshState> NativeMeshSmoothing::LocalRBF(
         const NativeSmoothingWorkspace &workspace, const MPIInfo &mpi, NativeSmoothingOptions options)
     {
-        Options(mpi, options);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        const auto communication = workspace._source ? workspace._source->PreparationCommunication() : nullptr;
+        Options(mpi, options, communication);
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { workspace.Validate(mpi); });
         const auto source = workspace.Source();
         if (!workspace.TotalMoved())
@@ -409,14 +417,14 @@ namespace DNDS::Geom
         const auto &points = boundaryData.values;
         auto data = points.Read();
         PointCloudKDTree cloud;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             cloud.pts.resize(points.RowCount());
             for (size_t row = 0; row < points.RowCount(); ++row) cloud.pts[row] = tPoint{data.View()(row,0),data.View()(row,1),data.View()(row,2)}; });
         using Tree = nanoflann::KDTreeSingleIndexAdaptor<nanoflann::L2_Simple_Adaptor<real, PointCloudKDTree>, PointCloudKDTree, 3, index>;
         Tree tree(3, cloud);
         Runtime::Array<real> coordinates(Runtime::RowLayout::Dense(size_t(nodes.NumOwned()), 3));
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             auto write = coordinates.Write();
             for (index node = 0; node < nodes.NumOwned(); ++node)
@@ -456,7 +464,7 @@ namespace DNDS::Geom
             } });
         auto prepared = Halo(nodes, coordinates, Runtime::ElementSchema::Arithmetic<real>());
         std::shared_ptr<const UnstructuredMeshState> result;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { result = source->WithGeometry(std::move(prepared), {}, view.Periodic()); });
         return result;
     }
@@ -473,8 +481,9 @@ namespace DNDS::Geom
         // This is scoped reproducibility evidence, not an accuracy guarantee.
         // Full causes/ablation evidence: dndsr-next-plan repository,
         // experiments/euler-migration-parity/RBF_CAUSE.md.
-        Options(mpi, options);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        const auto communication = workspace._source ? workspace._source->PreparationCommunication() : nullptr;
+        Options(mpi, options, communication);
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { workspace.Validate(mpi); });
         if (!workspace.TotalMoved())
             return workspace.Source();
@@ -484,7 +493,7 @@ namespace DNDS::Geom
         auto problem = Constraints(workspace, mpi);
         auto data = problem.values.Read();
         PointCloudKDTree cloud;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             for (size_t row = 0; row < problem.values.RowCount(); ++row)
                 cloud.pts.push_back(tPoint{data.View()(row,0),data.View()(row,1),data.View()(row,2)}); });
@@ -493,9 +502,9 @@ namespace DNDS::Geom
         std::vector<std::vector<std::pair<index, real>>> matrix(problem.nodes.size());
         Runtime::Array<real> radii(Runtime::RowLayout::Dense(problem.nodes.size(), 1));
         SmoothingField coefficients, rhs;
-        coefficients.Init(problem.nodes.size(), mpi);
-        rhs.Init(problem.nodes.size(), mpi);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        coefficients.Init(problem.nodes.size(), mpi, communication);
+        rhs.Init(problem.nodes.size(), mpi, communication);
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             auto radius = radii.Write(); auto b = rhs.values.Write();
             for (size_t row = 0; row < problem.nodes.size(); ++row)
@@ -518,7 +527,7 @@ namespace DNDS::Geom
             } });
         std::vector<Runtime::RowRequest> coefficientRequests;
         std::map<index, size_t> compactColumns;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             for (const auto &row : matrix)
                 for (auto [column,value] : row) compactColumns.emplace(column,0);
@@ -534,7 +543,7 @@ namespace DNDS::Geom
         const auto coefficientLayout = Runtime::RowLayout::Dense(coefficientRequests.size(), 3);
         Runtime::PayloadPlan coefficientPayload(coefficientRoute, coefficients.values.Layout(), coefficientLayout, Runtime::ElementSchema::Arithmetic<real>());
         Linear::GMRES_LeftPreconditioned<SmoothingField> solver(5, [&](auto &field)
-                                                                { field.Init(problem.nodes.size(), mpi); });
+                                                                { field.Init(problem.nodes.size(), mpi, communication); });
         solver.solve(
             [&](SmoothingField &x, SmoothingField &result)
             {
@@ -571,7 +580,7 @@ namespace DNDS::Geom
         Runtime::Array<real> increments(Runtime::RowLayout::Dense(size_t(nodes.NumOwned()), 3));
         std::vector<index> insideNodes;
         PointCloudKDTree interior;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             auto write = increments.Write();
             for (index node = 0; node < nodes.NumOwned(); ++node)
@@ -583,7 +592,7 @@ namespace DNDS::Geom
                 { insideNodes.push_back(node); interior.pts.push_back(view.Coord(node)); }
             } });
         Tree destinations(3, interior);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             auto write = increments.Write();
             for (size_t boundary = 0; boundary < cloud.pts.size(); ++boundary)
@@ -606,7 +615,7 @@ namespace DNDS::Geom
                         write.View()(size_t(insideNodes[size_t(matches[found].first)]),component) += basis(Eigen::Index(found))*coefficientRead.View()(boundary,component);
             } });
         Runtime::Array<real> coordinates(Runtime::RowLayout::Dense(size_t(nodes.NumOwned()), 3));
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             auto read = increments.Read(); auto write = coordinates.Write();
             for (index node = 0; node < nodes.NumOwned(); ++node)
@@ -618,7 +627,7 @@ namespace DNDS::Geom
                 } });
         auto prepared = Halo(nodes, coordinates, Runtime::ElementSchema::Arithmetic<real>());
         std::shared_ptr<const UnstructuredMeshState> result;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { result = source->WithGeometry(std::move(prepared), {}, view.Periodic()); });
         return result;
     }
@@ -626,8 +635,9 @@ namespace DNDS::Geom
     std::shared_ptr<const UnstructuredMeshState> NativeMeshSmoothing::Elasticity(
         const NativeSmoothingWorkspace &workspace, const MPIInfo &mpi, NativeSmoothingOptions options)
     {
-        Options(mpi, options);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        const auto communication = workspace._source ? workspace._source->PreparationCommunication() : nullptr;
+        Options(mpi, options, communication);
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { workspace.Validate(mpi); });
         if (!workspace.TotalMoved())
             return workspace.Source();
@@ -658,9 +668,9 @@ namespace DNDS::Geom
         auto prescribed = workspace.Displacement().ReadCombined();
         std::vector<std::map<index, tJacobi>> matrix(size_t(nodes.NumOwned()));
         SmoothingField rhs, solution;
-        rhs.Init(size_t(nodes.NumOwned()), mpi);
-        solution.Init(size_t(nodes.NumOwned()), mpi);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        rhs.Init(size_t(nodes.NumOwned()), mpi, communication);
+        solution.Init(size_t(nodes.NumOwned()), mpi, communication);
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             auto b = rhs.values.Write();
             for (index cell = 0; cell < cellSpace.NumLocal(); ++cell)
@@ -738,7 +748,7 @@ namespace DNDS::Geom
             } });
         EntityGhostMapping nodeRoute(nodes);
         Linear::GMRES_LeftPreconditioned<SmoothingField> solver(5, [&](auto &field)
-                                                                { field.Init(size_t(nodes.NumOwned()), mpi); });
+                                                                { field.Init(size_t(nodes.NumOwned()), mpi, communication); });
         solver.solve(
             [&](SmoothingField &x, SmoothingField &result)
             {
@@ -770,7 +780,7 @@ namespace DNDS::Geom
             [](int, real residual, real reference)
             { return residual < reference * 1e-10; });
         Runtime::Array<real> coordinates(Runtime::RowLayout::Dense(size_t(sourceNodes.NumOwned()), 3));
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             auto read = solution.values.Read(); auto write = coordinates.Write();
             for (index node = 0; node < sourceNodes.NumOwned(); ++node)
@@ -783,7 +793,7 @@ namespace DNDS::Geom
                 } });
         auto prepared = Halo(sourceNodes, coordinates, Runtime::ElementSchema::Arithmetic<real>());
         std::shared_ptr<const UnstructuredMeshState> result;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { result = source->WithGeometry(std::move(prepared), {}, source->BorrowHostView().Periodic()); });
         return result;
     }
