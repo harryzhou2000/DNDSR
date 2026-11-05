@@ -1020,3 +1020,17 @@ The revised plan-level flag passes the same three np1/2/4 Jacobian UTs
 gates. The baseline `Sample` and evaluated `Point` fields are restored exactly;
 only one boolean per retained plan/geometry is added. Further performance
 acceptance remains pending; do not overwrite the first candidate's evidence.
+
+## Residual small-row incidence storage
+
+The final source pass found `AssertOnFaces` still using a vector of maps for
+small cell incidence rows. It now reserves compact vectors, appends ordered
+incidences and sorts once for multiset equality. Duplicate self-periodic
+incidences are retained; the two-entry face support is counted directly.
+Unavailable outer rows, ownership bounds and boundary-side sentinels keep
+their previous checks. No global-sized scratch or per-entity tree is introduced.
+
+The unchanged native mesh-assertion suite passes at np1/2/4 (three registrations,
+0.66 seconds), including valid and malformed incidence multiplicities, partial
+outer rows and self-periodicity. This is contained storage cleanup under an
+explicit audit, not a claimed mesh-setup speedup or reduced validation scope.

@@ -142,7 +142,11 @@ namespace DNDS::Geom
         // exact entity maps, including unavailable outer ghost references.
         auto faceCells = MeshAdjacencyRead::Current(*this, Adj::Face2Cell, requirements);
         auto cellFaces = MeshAdjacencyRead::Current(*this, Adj::Cell2Face, requirements);
-        std::vector<std::map<index, size_t>> incoming(size_t(view.NumCell()));
+        // Small adjacency rows are multisets of incidences, not trees. Sort
+        // compact vectors once; duplicates retain self-periodic multiplicity.
+        std::vector<std::vector<index>> incoming(size_t(view.NumCell()));
+        for (index iCell = 0; iCell < view.NumCell(); ++iCell)
+            incoming[iCell].reserve(view.CellFaces(iCell).size());
         for (index face = 0; face < view.NumFaceProc(); ++face)
         {
             const auto support = view.FaceCells(face);
@@ -158,16 +162,16 @@ namespace DNDS::Geom
                     continue; // Outer faces need not have complete local cell closure.
                 const auto cell = support[side];
                 if (cell < view.NumCell())
-                    ++incoming[size_t(cell)][face];
+                    incoming[cell].push_back(face);
             }
             if (face < view.NumFace())
             {
-                std::map<index, size_t> multiplicities;
-                for (auto cell : support)
-                    if (cell != UnInitIndex)
-                        ++multiplicities[cell];
-                for (const auto &[cell, count] : multiplicities)
+                for (index side = 0; side < index(support.size()); ++side)
                 {
+                    const auto cell = support[side];
+                    if (cell == UnInitIndex || (side && cell == support[0]))
+                        continue;
+                    const auto count = std::count(support.begin(), support.end(), cell);
                     DNDS_check_throw_info(cell >= 0 && cell < view.NumCellProc(), "owned face cell is unavailable");
                     const auto reverse = view.CellFaces(cell);
                     const auto occurrences = size_t(std::count(reverse.begin(), reverse.end(), face));
@@ -178,15 +182,18 @@ namespace DNDS::Geom
         }
         for (index cell = 0; cell < view.NumCell(); ++cell)
         {
-            std::map<index, size_t> outgoing;
+            std::vector<index> outgoing;
+            outgoing.reserve(view.CellFaces(cell).size());
             for (auto face : view.CellFaces(cell))
             {
                 DNDS_check_throw_info(face >= 0 && face < view.NumFaceProc(), "owned cell face is unavailable");
-                ++outgoing[face];
+                outgoing.push_back(face);
             }
             // Count ordered incidences, not unique faces: a self-periodic
             // face appears twice on both sides of this equality.
-            DNDS_check_throw_info(outgoing == incoming[size_t(cell)],
+            std::sort(outgoing.begin(), outgoing.end());
+            std::sort(incoming[cell].begin(), incoming[cell].end());
+            DNDS_check_throw_info(outgoing == incoming[cell],
                                   "owned cell and face incidences disagree in identity or multiplicity");
         }
         // An owned face may touch a ghost cell whose OTHER face slots are
