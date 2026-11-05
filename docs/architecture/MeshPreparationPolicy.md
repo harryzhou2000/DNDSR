@@ -86,6 +86,19 @@ the publication policy; descriptor rebinding and inspection remain available.
 All ranks must select the same mode. Disabled-mode input failures abort rather
 than becoming recoverable Python exceptions.
 
+Boundary extraction, nodal wall distance, local ordering and setup replacement
+also inherit the selected policy. The Python setup/partition/reorder wrappers
+preserve it through in-place publication. Local checks stay outside numerical
+loops. Boundary extraction reserves its source read inside the coordinated
+local stage; a failing source acquisition cannot leave peers entering routes.
+
+Native serial/parallel output inherits the mode while constructing its own
+context on the supplied communicator. That communicator may be an isolated,
+congruent communicator, so the implementation must not reuse a source-bound
+request. Periodic-image union/reverse reduction, output numbering, row counts
+and reader gathering remain required. Only the selected serial reader holds
+global output payload; the policy does not change that storage contract.
+
 This remains a staged E1 implementation. Archive/serializer error coordination,
 bare entity-space creation, legacy compatibility decoders and other cold
 preparation entry points require separate classification and propagation;

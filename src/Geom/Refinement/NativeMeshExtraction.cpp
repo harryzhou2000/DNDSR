@@ -26,7 +26,7 @@ namespace DNDS::Geom
         {
             Runtime::PayloadPlan payload(route, source.Layout(), Runtime::ElementSchema::For<T>());
             std::optional<Runtime::Array<T>> result;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, context, [&]
                                             { result.emplace(payload.DestinationLayout()); });
             Runtime::TransferOptions options;
             options.mode = Runtime::TransferMode::Transient;
@@ -41,11 +41,17 @@ namespace DNDS::Geom
     NativeMeshDerivedResult NativeMeshExtraction::ExtractBoundary(const UnstructuredMeshState &source, const MPIInfo &mpi,
                                                                   NativeMeshBuildOptions options)
     {
-        auto sourceRead = source.Snapshot(Runtime::Device::Host()).AcquireRead();
-        const auto sourceView = sourceRead.HostView();
+        if (!options.communication)
+            options.communication = source.PreparationCommunication();
+        auto context = options.communication ? options.communication : std::make_shared<Runtime::CommunicationContext>(mpi.comm);
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, context->ChecksCollectivePreflight());
+        std::optional<MeshReadAccess> sourceRead;
+        FieldTransferDetail::LocalStage(mpi, context, [&]
+                                        { sourceRead.emplace(source.Snapshot(Runtime::Device::Host()).AcquireRead()); });
+        const auto sourceView = sourceRead->HostView();
         if (!options.audit)
             options.audit = source.AuditOptions();
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, context, [&]
                                         {
             DNDS_check_throw_info(sourceView.Dimension() >= 2 && sourceView.Dimension() <= 3,
                                   "native boundary extraction requires two- or three-dimensional input");
@@ -53,7 +59,6 @@ namespace DNDS::Geom
                 DNDS_check_throw_info(FaceIDIsExternalBC(sourceView.GetBndInfo(row).zone) ||
                                           (sourceView.IsPeriodic() && FaceIDIsPeriodic(sourceView.GetBndInfo(row).zone)),
                                       "native boundary extraction requires external or declared periodic boundary zones"); });
-        auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
         const auto oldNodes = source.Entities(EntityKind::Node);
         const auto oldBoundaries = source.Entities(EntityKind::Bnd);
         std::vector<std::vector<index>> cones;
@@ -62,7 +67,7 @@ namespace DNDS::Geom
         selectedBoundaries.reserve(size_t(oldBoundaries.NumOwned()));
         cones.reserve(size_t(oldBoundaries.NumOwned()));
         images.reserve(size_t(oldBoundaries.NumOwned()));
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, context, [&]
                                         {
             for (size_t row = 0; row < size_t(oldBoundaries.NumOwned()); ++row)
             {
@@ -86,7 +91,7 @@ namespace DNDS::Geom
             // owned/ghost face pair. Read its oriented cone directly; fetching
             // the same face from its owner adds a route and payload transfers
             // without supplying any information absent from this snapshot.
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, context, [&]
                                             {
                 for (index iRow = 0; iRow < index(cones.size()); ++iRow)
                 {
@@ -126,7 +131,7 @@ namespace DNDS::Geom
         }
         std::vector<index> requested;
         std::vector<Runtime::RowRequest> requests;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, context, [&]
                                         {
             for (const auto &row : cones) requested.insert(requested.end(), row.begin(), row.end());
             std::sort(requested.begin(), requested.end());
@@ -136,7 +141,7 @@ namespace DNDS::Geom
         Runtime::RowTransferPlan discovery(context, size_t(oldNodes.NumOwned()), requested.size(), requests);
         std::vector<index> selected;
         std::vector<std::vector<index>> send;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, context, [&]
                                         {
             for (const auto &peer : discovery.SendRows()) selected.insert(selected.end(), peer.begin(), peer.end());
             std::sort(selected.begin(), selected.end());
@@ -151,7 +156,7 @@ namespace DNDS::Geom
         std::optional<Array> labels;
         std::optional<Runtime::Array<real>> coordinates;
         NativeMeshDerivedResult result;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, context, [&]
                                         {
             labels.emplace(Runtime::RowLayout::Dense(selected.size(), 1));
             coordinates.emplace(Runtime::RowLayout::Dense(selected.size(), 3));
@@ -181,7 +186,7 @@ namespace DNDS::Geom
         auto route = Runtime::RowTransferPlan::Known(context, selected.size(), requested.size(), std::move(send), discovery.ReceiveRows());
         auto newGlobals = Fetch(route, *labels, mpi, context);
         std::optional<NativeMeshInput> input;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, context, [&]
                                         {
             auto read = newGlobals.Read();
             for (auto &row : cones)
@@ -210,6 +215,7 @@ namespace DNDS::Geom
                 input->cellNodesPbi = Runtime::Array<NodePeriodicBits>::FromSharedStorage(builder.Commit());
                 input->boundaryNodesPbi = Runtime::Array<NodePeriodicBits>(Runtime::RowLayout::Ragged({}));
             } });
+        options.communication = context;
         result.state = ConstructNativeMesh(std::move(*input), options);
         return result;
     }

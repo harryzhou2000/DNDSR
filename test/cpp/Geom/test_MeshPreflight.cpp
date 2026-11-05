@@ -4,6 +4,10 @@
 #include "NativePeriodicFixtures.hpp"
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Access/EntityField.hpp"
+#include "Geom/IO/NativeMeshOutput.hpp"
+#include "Geom/IO/NativeMeshSerialOutput.hpp"
+#include "Geom/Refinement/NativeMeshExtraction.hpp"
+#include "Geom/Transition/LocalCellOrdering.hpp"
 #include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
 #include "NativeReorderChecks.hpp"
 #include <atomic>
@@ -50,7 +54,11 @@ namespace
 TEST_CASE("Cold mesh preparation shares an explicit policy without changing connectivity or halos")
 {
     std::vector<I> expected;
+    std::vector<I> expectedOutput;
+    std::vector<double> expectedCoordinates;
+    std::vector<I> expectedOrdering;
     int enabledSetup = 0;
+    int enabledOutput = 0;
     for (bool enabled : {true, false})
     {
         auto context = std::make_shared<R::CommunicationContext>(mpi.comm, enabled);
@@ -68,6 +76,15 @@ TEST_CASE("Cold mesh preparation shares an explicit policy without changing conn
             expected = actual;
         else
             CHECK(actual == expected);
+        G::LocalCellOrderingSettings ordering;
+        ordering.subregions = 2;
+        ordering.coreSplit = G::CellCoreSplit::CellNodeCell;
+        ordering.aggregateSendRegions = true;
+        const auto permutation = G::BuildLocalCellOrdering(*mesh, ordering);
+        if (enabled)
+            expectedOrdering = permutation.oldToNew;
+        else
+            CHECK(permutation.oldToNew == expectedOrdering);
         {
             G::AdjacencyRegistry registry(mpi);
             Count count;
@@ -130,6 +147,43 @@ TEST_CASE("Cold mesh preparation shares an explicit policy without changing conn
         for (I iGhost = 0; iGhost < cells.NumGhost(); ++iGhost)
             for (I j = 0; j < 2; ++j)
                 CHECK(ghostRead.View()(iGhost, j) == 2 * cells.LocalToGlobal(cells.NumOwned() + iGhost) + j);
+        MPI_Comm outputComm = MPI_COMM_NULL;
+        MPI_Comm_dup(mpi.comm, &outputComm);
+        {
+            // Output legitimately uses an isolated congruent communicator;
+            // retain the mode, never reuse requests from the original comm.
+            Count count;
+            const DNDS::MPIInfo outputMPI(outputComm);
+            auto output = G::NativeMeshOutput::Build(*mesh->CurrentNativeState(), outputMPI);
+            auto serial = G::NativeMeshSerialOutput::Build(*mesh->CurrentNativeState(), outputMPI, mpi.size - 1);
+            std::vector<I> rows = output.connectivity;
+            rows.insert(rows.end(), output.offsets.begin(), output.offsets.end());
+            auto indices = serial.cellNodes.Read();
+            for (I iCell = 0; iCell < I(serial.cellNodes.RowCount()); ++iCell)
+                for (I iNode : indices.View()[iCell])
+                    rows.push_back(iNode);
+            std::vector<double> points;
+            for (const auto *array : {&output.coordinates, &serial.coordinates})
+            {
+                auto values = array->Read();
+                for (I iNode = 0; iNode < I(array->RowCount()); ++iNode)
+                    for (I component = 0; component < 3; ++component)
+                        points.push_back(values.View()(iNode, component));
+            }
+            if (enabled)
+            {
+                enabledOutput = reductions;
+                expectedOutput = rows;
+                expectedCoordinates = points;
+            }
+            else
+            {
+                CHECK(reductions.load() < enabledOutput);
+                CHECK(rows == expectedOutput);
+                CHECK(points == expectedCoordinates);
+            }
+        }
+        MPI_Comm_free(&outputComm);
     }
 }
 
@@ -184,6 +238,10 @@ TEST_CASE("CGNS owned import partition refinement reorder and publication inheri
         else
             CHECK(actual == expected);
         mesh->CurrentNativeState()->Audit({true, true});
+        auto extracted = G::NativeMeshExtraction::ExtractBoundary(*mesh->CurrentNativeState(), mpi);
+        CHECK(extracted.state->Entities(G::EntityKind::Cell).NumGlobal() == mesh->Entities(G::EntityKind::Bnd).NumGlobal());
+        for (auto kind : {G::EntityKind::Node, G::EntityKind::Cell, G::EntityKind::Bnd})
+            CHECK(extracted.state->Entities(kind).ChecksCollectivePreflight() == enabled);
     }
 }
 

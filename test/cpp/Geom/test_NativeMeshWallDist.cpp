@@ -8,7 +8,7 @@
 namespace G = DNDS::Geom;
 namespace R = DNDS::Runtime;
 using I = DNDS::index;
-static DNDS::ssp<G::UnstructuredMesh> Fixture(DNDS::MPIInfo mpi, bool curved = false)
+static DNDS::ssp<G::UnstructuredMesh> Fixture(DNDS::MPIInfo mpi, bool curved = false, bool collectivePreflight = true)
 {
     const bool ownsNodes = mpi.rank == mpi.size - 1;
     const bool ownsCell = mpi.rank == 0;
@@ -42,9 +42,30 @@ static DNDS::ssp<G::UnstructuredMesh> Fixture(DNDS::MPIInfo mpi, bool curved = f
             bndInfo.Write().View()(0, 0) = G::ElemInfo{curved ? G::Elem::Line3 : G::Elem::Line2, 24};
     }
     G::NativeMeshInput input{mpi, 2, cells, nodes, boundaries, cone(ownsCell, curved ? std::vector<I>{0, 1, 2, 3, 4, 5} : std::vector<I>{0, 1, 2}), cone(ownsBoundary, curved ? std::vector<I>{0, 1, 3} : std::vector<I>{0, 1}), points, cellInfo, bndInfo, {}};
-    auto source = G::ConstructNativeMesh(input, {1, true});
+    auto communication = std::make_shared<R::CommunicationContext>(mpi.comm, collectivePreflight);
+    auto source = G::ConstructNativeMesh(input, {1, true, std::nullopt, communication});
     source = G::PrepareNativeMeshTopology(*source, mpi);
     return G::UnstructuredMesh::FromNative(mpi, source);
+}
+
+TEST_CASE("Disabled-preflight wall distance keeps the analytic remote-wall result")
+{
+    DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+    auto mesh = Fixture(mpi, false, false);
+    G::UnstructuredMesh::WallDistOptions options;
+    options.method = 0;
+    mesh->BuildNodeWallDist([](auto)
+                            { return true; }, options);
+    auto requirements = G::MeshReadRequirements::Primary();
+    requirements.wallDistance = true;
+    auto read = mesh->AcquireRead(requirements);
+    const auto view = read.HostView();
+    for (I iNode = 0; iNode < view.NumNodeProc(); ++iNode)
+    {
+        const auto expected = G::tPoint{0, view.Coord(iNode)[1], 0};
+        CHECK(view.NodeWallDist(iNode).isApprox(expected, 1e-12));
+    }
+    CHECK_FALSE(mesh->Entities(G::EntityKind::Node).ChecksCollectivePreflight());
 }
 
 TEST_CASE("Native wall distance uses remote boundary selection and retains geometry identity")

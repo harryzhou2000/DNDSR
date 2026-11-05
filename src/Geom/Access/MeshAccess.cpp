@@ -331,13 +331,16 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::ReplaceNativeForSetup(std::shared_ptr<const UnstructuredMeshState> source)
     {
-        CheckCollectiveMutationAvailable(true);
+        const auto communication = source ? source->PreparationCommunication() : PreparationCommunication();
+        const bool checks = !communication || communication->ChecksCollectivePreflight();
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, checks);
+        CheckCollectiveMutationAvailable(checks);
         std::shared_ptr<UnstructuredMeshState> prepared;
         std::shared_ptr<const uint8_t> identity;
         Periodicity periodic;
         bool nextPeriodic = false;
         std::string signature;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             int actualRank = -1, actualSize = 0;
             MPI_Comm_rank(mpi.comm, &actualRank);
@@ -383,10 +386,10 @@ namespace DNDS::Geom
         int size = mpi.rank == 0 ? int(signature.size()) : 0;
         MPI_Bcast(&size, 1, MPI_INT, 0, mpi.comm);
         std::string expected;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { expected = mpi.rank == 0 ? signature : std::string(size_t(size), '\0'); });
         MPI_Bcast(expected.data(), size, MPI_CHAR, 0, mpi.comm);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { DNDS_check_throw_info(signature == expected, "native setup source metadata differs across ranks"); });
         MeshMutationToken mutation(this, versions, Runtime::Change::All);
         mutation.Commit();

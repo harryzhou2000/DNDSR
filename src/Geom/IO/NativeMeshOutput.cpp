@@ -7,12 +7,16 @@ namespace DNDS::Geom
 {
     NativeMeshOutput NativeMeshOutput::Build(const UnstructuredMeshState &source, const MPIInfo &mpi)
     {
+        // Output may use an isolated congruent communicator. Retain the
+        // source policy while constructing the context on the caller's comm.
+        auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm,
+                                                                       !source.PreparationCommunication() || source.PreparationCommunication()->ChecksCollectivePreflight());
         NativeMeshOutput output;
         std::optional<MeshReadAccess> retained;
         std::optional<EntitySpace> nodes, cells;
         Runtime::Array<uint8_t> ownedMask, ghostMask;
         std::string signature;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, context, [&]
                                         {
             source.Validate();
             retained.emplace(source.Snapshot(Runtime::Device::Host()).AcquireRead());
@@ -41,10 +45,10 @@ namespace DNDS::Geom
         int length = int(signature.size());
         MPI_Bcast(&length, 1, MPI_INT, 0, mpi.comm);
         std::string expected;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, context, [&]
                                         { expected = mpi.rank == 0 ? signature : std::string(size_t(length), '\0'); });
         MPI_Bcast(expected.data(), length, MPI_CHAR, 0, mpi.comm);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, context, [&]
                                         {
             DNDS_check_throw_info(signature == expected, "native output mesh identity, distribution or periodic frames differ between ranks");
             const auto view = retained->HostView();
@@ -73,7 +77,7 @@ namespace DNDS::Geom
         if (view.IsPeriodic())
         {
             std::vector<Runtime::RowRequest> requests;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, context, [&]
                                             {
                 for (index row = nodes->NumOwned(); row < nodes->NumLocal(); ++row)
                 {
@@ -82,8 +86,7 @@ namespace DNDS::Geom
                 } });
             // Output may run on an isolated congruent communicator. The
             // immutable maps describe rank/row addresses, not the MPI context.
-            auto communication = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
-            route.emplace(communication, size_t(nodes->NumOwned()), size_t(nodes->NumGhost()), requests);
+            route.emplace(context, size_t(nodes->NumOwned()), size_t(nodes->NumGhost()), requests);
             Runtime::PayloadPlan reverse(route->Reverse(), ghostMask.Layout(), ownedMask.Layout(), Runtime::ElementSchema::Arithmetic<uint8_t>());
             reverse.Bind(ghostMask, ownedMask, Runtime::Reducer::Builtin<uint8_t>(Runtime::Reduction::BitOr),
                          Runtime::TransferTransport::Direct, {Runtime::TransferMode::Transient})
@@ -91,7 +94,7 @@ namespace DNDS::Geom
                 .Wait();
         }
         index localNodes = nodes->NumOwned();
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, context, [&]
                                         {
             if (!view.IsPeriodic()) return;
             auto mask = ownedMask.Read();
@@ -111,7 +114,7 @@ namespace DNDS::Geom
         if (mpi.rank == 0)
             output.cellOffset = 0;
         Runtime::Array<index> labels, ghostLabels;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, context, [&]
                                         {
             output.coordinates = Runtime::Array<real>(Runtime::RowLayout::Dense(size_t(localNodes), 3));
             output.pointSourceRows.resize(size_t(localNodes));
@@ -152,7 +155,7 @@ namespace DNDS::Geom
                 .Begin()
                 .Wait();
         }
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, context, [&]
                                         {
             auto owned = labels.Read(), ghost = ghostLabels.Read();
             output.offsets.reserve(size_t(localCells) + 1);

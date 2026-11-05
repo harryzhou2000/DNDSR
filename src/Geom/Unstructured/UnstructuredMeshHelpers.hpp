@@ -392,11 +392,14 @@ namespace DNDS::Geom
         const PrepareMeshOptions &opts = {})
     {
         const auto mpi = mesh.getMPI();
-        FieldTransferDetail::LocalStage(mpi, [&]
+        const auto communication = mesh.PreparationCommunication();
+        const bool checks = !communication || communication->ChecksCollectivePreflight();
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, checks);
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { DNDS_check_throw_info(mesh.HasNativeState() && reader.mesh.get() == &mesh &&
                                                                     (opts.reorderCells == 0 || opts.reorderCells == 1),
                                                                 "native preparation requires the bound output adapter and supported reorder option"); });
-        mesh.CheckCollectiveMutationAvailable();
+        mesh.CheckCollectiveMutationAvailable(checks);
         auto prepared = PrepareNativeMeshForSolverOwned(
             NativeMeshAssembler::CaptureOwned(*mesh.CurrentNativeState(), mpi), mpi, opts);
         mesh.ReplaceNativeForSetup(std::move(prepared));

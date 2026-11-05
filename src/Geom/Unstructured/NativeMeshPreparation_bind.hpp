@@ -13,10 +13,12 @@ namespace DNDS::Geom
         m.def("prepare_native_mesh_setup", [](ssp<UnstructuredMesh> mesh, int parts, int innerParts, int layers, bool edges, bool inPlace)
               {
             const auto mpi = mesh->mpi;
+            const auto communication = mesh->PreparationCommunication();
+            Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
             py::gil_scoped_release release;
             std::array<int, 5> settings{parts, innerParts, layers, int(edges), int(inPlace)}, expected = settings;
             MPI_Bcast(expected.data(), int(expected.size()), MPI_INT, 0, mpi.comm);
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             { DNDS_check_throw_info(settings == expected && parts >= 0 && innerParts > 0 && layers > 0,
                                                                   "native setup options differ across ranks or invalid counts"); });
             auto target = inPlace ? mesh : UnstructuredMesh::FromNative(mpi, mesh->CurrentNativeState());
@@ -70,15 +72,19 @@ namespace DNDS::Geom
         m.def("prepare_native_topology", [](const UnstructuredMesh &mesh, bool faces, bool edges, int ghostLayers)
               {
             const auto mpi = mesh.mpi;
+            const auto communication = mesh.PreparationCommunication();
+            Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
             std::shared_ptr<const UnstructuredMeshState> source;
-            FieldTransferDetail::LocalStage(mpi, [&] { source = mesh.CurrentNativeState(); });
+            FieldTransferDetail::LocalStage(mpi, communication, [&] { source = mesh.CurrentNativeState(); });
             py::gil_scoped_release release;
             return UnstructuredMesh::FromNative(mpi, NativeMeshPreparation::PrepareTopology(*source, mpi, faces, edges, ghostLayers)); }, py::arg("mesh"), py::arg("faces") = true, py::arg("edges") = false, py::arg("ghost_layers") = 1, "Collectively complete missing native topology and refresh closure. Existing families/IDs are retained, including empty families.");
         m.def("partition_native_mesh", [](const UnstructuredMesh &mesh, const std::string &method, int ufactor, int seed, int edgeWeight, int cuts, int ghostLayers, bool deferFaces)
               {
             const auto mpi = mesh.mpi;
+            const auto communication = mesh.PreparationCommunication();
+            Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
             std::shared_ptr<const UnstructuredMeshState> source;
-            FieldTransferDetail::LocalStage(mpi, [&] { source = mesh.CurrentNativeState(); });
+            FieldTransferDetail::LocalStage(mpi, communication, [&] { source = mesh.CurrentNativeState(); });
             const NativePartitionOptions options{method, ufactor, seed, edgeWeight, cuts, ghostLayers, deferFaces};
             py::gil_scoped_release release;
             auto result = NativeMeshPreparation::Partition(*source, mpi, options);
@@ -86,8 +92,10 @@ namespace DNDS::Geom
         m.def("reorder_native_mesh", [](const UnstructuredMesh &mesh, int parts, int innerParts, int ghostLayers)
               {
             const auto mpi = mesh.mpi;
+            const auto communication = mesh.PreparationCommunication();
+            Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
             std::shared_ptr<const UnstructuredMeshState> source;
-            FieldTransferDetail::LocalStage(mpi, [&] { source = mesh.CurrentNativeState(); });
+            FieldTransferDetail::LocalStage(mpi, communication, [&] { source = mesh.CurrentNativeState(); });
             py::gil_scoped_release release;
             auto result = NativeMeshTransition::ReorderLocalCells(*source, mpi, parts, innerParts, ghostLayers);
             return UnstructuredMesh::FromNative(mpi, std::move(result.state)); }, py::arg("mesh"), py::arg("n_parts") = 1, py::arg("n_parts_inner") = 1, py::arg("ghost_layers") = 1, "Collectively return a detached native local cell permutation. Prepare before allocating external fields; C++ callers can explicitly apply all returned family transfers.");

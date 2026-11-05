@@ -17,12 +17,16 @@ namespace DNDS::Geom
 
     NativeMeshSerialOutput NativeMeshSerialOutput::Build(const UnstructuredMeshState &source, const MPIInfo &mpi, int reader)
     {
+        // Output may use an isolated congruent communicator. Retain the
+        // source policy while constructing the context on the caller's comm.
+        auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm,
+                                                                       !source.PreparationCommunication() || source.PreparationCommunication()->ChecksCollectivePreflight());
         NativeMeshSerialOutput result;
         std::optional<EntitySpace> cells, nodes;
         std::optional<MeshReadAccess> retained;
         Runtime::Array<index> globalCones;
         std::string signature;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, context, [&]
                                         {
             source.Validate();
             DNDS_check_throw_info(reader >= 0 && reader < mpi.size, "native serial-output reader rank is invalid");
@@ -73,18 +77,17 @@ namespace DNDS::Geom
         int length = int(signature.size());
         MPI_Bcast(&length, 1, MPI_INT, 0, mpi.comm);
         std::string expected;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, context, [&]
                                         { expected = mpi.rank == 0 ? signature : std::string(size_t(length), '\0'); });
         MPI_Bcast(expected.data(), length, MPI_CHAR, 0, mpi.comm);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, context, [&]
                                         { DNDS_check_throw_info(signature == expected, "native serial-output mesh, reader rank or periodic frames differ across ranks"); });
 
-        auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
         auto route = [&](const std::shared_ptr<GlobalOffsetsMapping> &global)
         {
             std::vector<std::vector<index>> send, receive;
             std::vector<index> pull;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, context, [&]
                                             {
                 send.resize(size_t(mpi.size));
                 receive.resize(size_t(mpi.size));
@@ -115,7 +118,7 @@ namespace DNDS::Geom
             using Array = std::decay_t<decltype(values)>;
             Runtime::PayloadPlan payload(transfer, values.Layout(), schema);
             std::optional<Array> output;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, context, [&]
                                             { output.emplace(payload.DestinationLayout()); });
             Runtime::TransferOptions options;
             options.mode = Runtime::TransferMode::Transient;

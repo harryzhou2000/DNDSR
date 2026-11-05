@@ -82,7 +82,7 @@ def test_native_cgns_disabled_preflight_reaches_topology(tmp_path):
     primary = Geom.read_native_cgns(
         mpi, _fixture(tmp_path), 2, complete_node_star=True, collective_preflight=False
     )
-    mesh = Geom.with_native_topology(primary)
+    mesh = Geom.prepare_native_mesh_setup(primary, reorder_parts=2, in_place=True)
     _check(mesh)
     for kind in (Geom.EntityKind.Cell, Geom.EntityKind.Node, Geom.EntityKind.Face, Geom.EntityKind.Boundary):
         assert not mesh.entities(kind).collective_preflight

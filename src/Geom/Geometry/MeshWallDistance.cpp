@@ -13,11 +13,14 @@ namespace DNDS::Geom
 {
     void UnstructuredMesh::BuildNodeWallDist(const std::function<bool(Geom::t_index)> &fBndIsWall, WallDistOptions options)
     {
-        CheckCollectiveMutationAvailable(true);
+        const auto communication = PreparationCommunication();
+        const bool checks = !communication || communication->ChecksCollectivePreflight();
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, checks);
+        CheckCollectiveMutationAvailable(checks);
         std::unique_ptr<MeshReadAccess> retained;
         std::optional<UnstructuredMeshView> nativeView;
         Runtime::VersionStamp stamp;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             DNDS_check_throw_info(HasNativeState(), "wall distance requires native mesh authority");
             DNDS_check_throw_info((options.method == 0 || options.method == 20 || options.method == 1) &&
@@ -33,7 +36,7 @@ namespace DNDS::Geom
         auto expectedMinimum = options.minWallDist;
         MPI_Bcast(expectedParameters.data(), int(expectedParameters.size()), MPI_INT, 0, mpi.comm);
         MPI_Bcast(&expectedMinimum, 1, MPI_DOUBLE, 0, mpi.comm);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { DNDS_check_throw_info(parameters == expectedParameters && options.minWallDist == expectedMinimum, "wall distance options differ across ranks"); });
         auto coordinate = [&](index node) -> tPoint
         { return tPoint(nativeView->Coord(node)); };
@@ -50,7 +53,7 @@ namespace DNDS::Geom
         std::vector<index> wallNodes;
         Runtime::Array<real> wallOwned;
         std::optional<Runtime::Array<real>::WriteLease> wallWrite;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             wallOwned = Runtime::Array<real>(Runtime::RowLayout::Dense(size_t(NumNode()), 3));
             wallWrite.emplace(wallOwned.Write()); });
@@ -58,7 +61,7 @@ namespace DNDS::Geom
         { return Eigen::Map<tPoint>(wallWrite->View().Row(size_t(row))); };
         for (index node = 0; node < NumNode(); ++node)
             wall(node) = tPoint{std::pow(veryLargeReal, 0.25), 0, 0};
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             for (index iBnd = 0; iBnd < NumBnd(); iBnd++)
             {
@@ -160,16 +163,16 @@ namespace DNDS::Geom
         {
             using T = typename std::decay_t<decltype(local)>::value_type;
             int count = 0;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             { DNDS_check_throw_info(local.size() <= size_t(INT_MAX / components), "wall surface exceeds MPI count range"); count = int(local.size()) * components; });
             std::vector<int> counts(size_t(mpi.size)), offsets(size_t(mpi.size) + 1, 0);
             MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, mpi.comm);
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 for (int rank = 0; rank < mpi.size; ++rank)
                 { DNDS_check_throw_info(counts[size_t(rank)] >= 0 && counts[size_t(rank)] <= INT_MAX - offsets[size_t(rank)], "wall gather exceeds MPI count range"); offsets[size_t(rank) + 1] = offsets[size_t(rank)] + counts[size_t(rank)]; } });
             std::vector<T> result;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             { result.resize(size_t(offsets.back() / components)); });
             MPI_Allgatherv(local.data(), count, datatype, result.data(), counts.data(), offsets.data(), datatype, mpi.comm);
             return result;
@@ -178,7 +181,7 @@ namespace DNDS::Geom
         auto trianglesFull = gather(Triangles, MPI_DOUBLE, 9);
         const auto nodeSpace = Entities(EntityKind::Node);
         Runtime::Array<uint8_t> selectedOwned, selectedGhost;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             selectedOwned = Runtime::Array<uint8_t>(Runtime::RowLayout::Dense(size_t(NumNode()), 1));
             selectedGhost = Runtime::Array<uint8_t>(Runtime::RowLayout::Dense(size_t(NumNodeGhost()), 1));
@@ -274,7 +277,7 @@ namespace DNDS::Geom
         // Every execution batch coordinates failures before peers advance.
         const int batches = options.wallDistExecution == 1 ? mpi.size : std::max(1, options.wallDistExecution);
         for (int batch = 0; batch < batches; ++batch)
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 if (options.wallDistExecution == 0 || mpi.rank % batches == batch) executeSearch(); });
 
@@ -283,7 +286,7 @@ namespace DNDS::Geom
         EntityGhostMapping nodeRoute(nodeSpace);
         auto wallGhost = nodeRoute.TransferRows(nodeSpace, wallOwned, Runtime::ElementSchema::Arithmetic<real>());
         std::shared_ptr<const UnstructuredMeshState> prepared;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             wallGhost = Runtime::Array<real>::FromStorage(Runtime::RowLayout::Dense(wallGhost.RowCount(), 3), wallGhost.Storage());
             prepared = _nativeState->WithWallDistance({wallOwned, wallGhost}); });

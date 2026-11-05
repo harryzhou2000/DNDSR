@@ -195,19 +195,23 @@ namespace DNDS::Geom
     }
     std::shared_ptr<UnstructuredMesh> UnstructuredMesh::ExtractBoundary() const
     {
+        const auto communication = PreparationCommunication();
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
         DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native boundary extraction requires a communicator");
         std::shared_ptr<const UnstructuredMeshState> source;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { source = CurrentNativeState(); });
         return FromNative(mpi, NativeMeshExtraction::ExtractBoundary(*source, mpi).state);
     }
     void UnstructuredMesh::ConstructBndMesh(UnstructuredMesh &bMesh)
     {
+        const auto communication = PreparationCommunication();
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
         std::shared_ptr<const UnstructuredMeshState> source;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { DNDS_check_throw_info(HasNativeState(), "boundary extraction requires native mesh authority");
                                           source = CurrentNativeState(); });
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             int communicator = MPI_UNEQUAL;
             if (bMesh.mpi.comm != MPI_COMM_NULL) MPI_Comm_compare(mpi.comm, bMesh.mpi.comm, &communicator);
@@ -221,7 +225,7 @@ namespace DNDS::Geom
         EntityGhostMapping route(nodes);
         Runtime::ArrayPair<index> parents{ancestry, route.TransferRows(nodes, ancestry, Runtime::ElementSchema::Arithmetic<index>())};
         std::vector<index> sourceToBoundary, boundaryToSource, cellParents;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             std::unordered_map<index, index> sourceRows;
             sourceRows.reserve(size_t(NumNodeProc()));
@@ -311,15 +315,21 @@ namespace DNDS::Geom
     }
     void UnstructuredMesh::ReorderLocalCells(int parts, int inner, int ghostLayers)
     {
-        CheckCollectiveMutationAvailable();
+        const auto communication = PreparationCommunication();
+        const bool checks = !communication || communication->ChecksCollectivePreflight();
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, checks);
+        CheckCollectiveMutationAvailable(checks);
         std::shared_ptr<const UnstructuredMeshState> source;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { source = CurrentNativeState(); });
         ReplaceNativeForSetup(NativeMeshTransition::ReorderLocalCells(*source, mpi, parts, inner, ghostLayers).state);
     }
     void UnstructuredMesh::ReorderLocalCells(const LocalCellOrderingSettings &settings, int ghostLayers)
     {
-        CheckCollectiveMutationAvailable();
+        const auto communication = PreparationCommunication();
+        const bool checks = !communication || communication->ChecksCollectivePreflight();
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, checks);
+        CheckCollectiveMutationAvailable(checks);
         ReplaceNativeForSetup(NativeMeshTransition::ReorderLocalCells(*this, settings, ghostLayers).state);
     }
 }

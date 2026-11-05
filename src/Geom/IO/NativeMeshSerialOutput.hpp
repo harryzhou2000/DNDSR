@@ -20,6 +20,9 @@ namespace DNDS::Geom
         std::shared_ptr<GlobalOffsetsMapping> cellGlobal, nodeGlobal;
         std::shared_ptr<OffsetAscendIndexMapping> cellPull, nodePull;
 
+        /// Collective on mpi.comm, inheriting the source preflight policy on
+        /// this congruent communicator. Only readerRank gathers global rows;
+        /// required schedule/count exchanges remain. Off-mode failures abort.
         static NativeMeshSerialOutput Build(const UnstructuredMeshState &source, const MPIInfo &mpi, int readerRank = 0);
         /// For facade writers: reject stale geometry/topology/order while
         /// detached gathered arrays remain readable after source destruction.

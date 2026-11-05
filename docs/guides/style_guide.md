@@ -11,11 +11,10 @@ the short guardrails in `AGENTS.md`.
 - Use `#pragma once` in headers; no `#ifndef` guards.
 - Preserve include order; do not auto-sort includes.
 
-The clang-format configuration lives at `src/.clang-format`.
-
-```bash
-clang-format -i src/DNDS/SomeFile.hpp
-```
+The clang-format configuration lives at `src/.clang-format`. The commit hook
+formats staged C++ files. Do not run a formatter manually unless explicitly
+needed; use `scripts/run-clang-format.sh` for an authorized explicit run.
+Formatting-only changes do not require rebuilding numerical binaries.
 
 ### Include Order
 
@@ -40,7 +39,7 @@ clang-format -i src/DNDS/SomeFile.hpp
 
 ### Core Type Aliases
 
-From `Defines.hpp`:
+From `DNDS/Core/Defines.hpp`:
 
 ```cpp
 using real = double;
@@ -51,18 +50,20 @@ template <typename T> using ssp = std::shared_ptr<T>;
 
 ### Error Handling
 
-Use the project's assert/check macros from `DNDS/Errors.hpp`:
+Use the project's assert/check macros from `DNDS/Core/Errors.hpp`:
 
 ```cpp
-DNDS_assert(expr);                         // debug-only, calls std::abort()
-DNDS_assert_info(expr, info_string);       // debug-only with message
-DNDS_assert_infof(expr, fmt_string, ...);  // debug-only with printf format
+DNDS_assert(expr);                         // maximum level, calls std::abort()
+DNDS_assert_info(expr, info_string);        // maximum level, with message
+DNDS_assert_infof(expr, fmt_string, ...);   // maximum level, printf format
 DNDS_check_throw(expr);                    // always active, throws std::runtime_error
 DNDS_check_throw_info(expr, info_string);  // always active with message
 ```
 
-Avoid raw `assert()`. Use `DNDS_assert` for debug checks and
-`DNDS_check_throw` for runtime validation that must remain in release builds.
+Avoid raw `assert()`. The unqualified `DNDS_assert*` macros use the maximum
+assertion level and remain active in the default Release configuration. Prefer
+`DNDS_check_throw_info` for recoverable, non-hot configuration/input/runtime
+validation; do not rely on a Release build silently removing assertions.
 
 ### Templates and Eigen
 
@@ -80,7 +81,7 @@ Configuration lives at the project root:
   list of disabled checks). Used by both command-line `clang-tidy` and
   clangd in editors.
 - `/.clang-tidy-fix` — narrow subset intended to be run with `--fix`.
-- `/.clang-format` — formatting rules.
+- `/src/.clang-format` — formatting rules for C++ source/tests.
 - `/.clangd` — editor-only flag tweaks (CUDA/OpenMP handling);
   intentionally does **not** duplicate the tidy check list.
 
@@ -220,8 +221,8 @@ working links.
 For macros, use `@ref DNDS_assert` (macros live in the global scope):
 
 ```cpp
-/// Uses @ref DNDS_assert for debug-only bounds checking.
-/// In release builds, use @ref DNDS_check_throw instead.
+/// Uses @ref DNDS_assert for an invariant at the maximum assertion level.
+/// Use @ref DNDS_check_throw for a recoverable runtime input error.
 ```
 
 #### What NOT to cross-reference

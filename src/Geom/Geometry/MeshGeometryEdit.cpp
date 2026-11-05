@@ -27,9 +27,12 @@ namespace DNDS::Geom
     void UnstructuredMesh::PublishNativeGeometry(std::shared_ptr<const UnstructuredMeshState> prepared,
                                                  Runtime::VersionStamp sourceStamp, Runtime::Change changes)
     {
-        CheckCollectiveMutationAvailable(true);
+        const auto communication = prepared ? prepared->PreparationCommunication() : PreparationCommunication();
+        const bool checks = !communication || communication->ChecksCollectivePreflight();
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, checks);
+        CheckCollectiveMutationAvailable(checks);
         std::shared_ptr<UnstructuredMeshState> next;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             sourceStamp.Validate();
             DNDS_check_throw_info(_nativeState && prepared, "native geometry publication requires source and destination");

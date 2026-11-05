@@ -18,6 +18,9 @@ namespace DNDS::Geom
         /// used only by omitted periodic rows are compacted away. The source is
         /// read directly through its immutable host publication: only referenced
         /// face and node rows are staged, never the complete owned mesh state.
+        /// Null communication inherits the source preparation policy. An explicit
+        /// override must be agreed by every rank at a drained setup boundary.
+        /// Disabled safety agreement retains local checks and aborts on failure.
         static NativeMeshDerivedResult ExtractBoundary(const UnstructuredMeshState &source, const MPIInfo &mpi,
                                                        NativeMeshBuildOptions options = {});
     };

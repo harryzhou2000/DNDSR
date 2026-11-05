@@ -4,6 +4,7 @@
 #include "Geom/Transition/SerialAdjReordering.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include <map>
+#include <utility>
 
 namespace DNDS::Geom
 {
@@ -30,9 +31,17 @@ namespace DNDS::Geom
     inline LocalCellOrderingResult BuildLocalCellOrdering(UnstructuredMesh &mesh, LocalCellOrderingSettings settings = {})
     {
         const auto mpi = mesh.getMPI();
+        const auto communication = mesh.PreparationCommunication();
+        const bool checks = !communication || communication->ChecksCollectivePreflight();
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, checks);
+        const auto localStage = [&](auto &&action)
+        {
+            Runtime::CommunicationDetail::LocalStage(mpi.comm, checks, std::forward<decltype(action)>(action),
+                                                     "local cell ordering failed on another rank");
+        };
         std::optional<Runtime::VersionTracker::ReadLease> pin;
-        MPI::LocalStage(mpi, [&]
-                        {
+        localStage([&]
+                   {
         pin.emplace(mesh.versions.Read());
         (void)mesh.CurrentNativeState();
         DNDS_check_throw_info(settings.subregions >= 1 &&
@@ -47,8 +56,8 @@ namespace DNDS::Geom
         tLocalMatStruct graph;
         std::vector<uint8_t> dependent;
         std::vector<std::vector<int>> destinations;
-        MPI::LocalStage(mpi, [&]
-                        {
+        localStage([&]
+                   {
         auto adjacency = ReadPublishedAdjacency(mesh, Adj::Cell2CellFace);
         graph.resize(size_t(nCell));
         dependent.assign(size_t(nCell), 0);
@@ -77,8 +86,8 @@ namespace DNDS::Geom
                     destinations[iCell].push_back(peer);
         }
         LocalCellOrderingResult result;
-        MPI::LocalStage(mpi, [&]
-                        {
+        localStage([&]
+                   {
         result.oldToNew.assign(size_t(nCell), -1);
         result.subregionStarts.push_back(0);
         std::vector<int> regions(size_t(nCell), 0);

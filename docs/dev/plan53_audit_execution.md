@@ -401,3 +401,79 @@ call. These counts motivate a matched measurement; shared-host pilot times do
 not close E7. Required allocated-node comparisons and the retain/change decision
 remain open. Source, binary hashes and pilot log are in the isolated local
 assessment workspace; the other implementation checkout/MG/IV jobs are excluded.
+
+## E1 follow-up: output, boundary, local setup and wall distance
+
+Native boundary extraction now inherits the source context (or an explicit
+agreed override), including its guarded source-read acquisition and temporary
+node-label transfer. Serial and parallel output create their own context on
+the requested congruent communicator while retaining the source policy. Output
+numbering, periodic image union/reverse reduction and reader gathering remain
+required. No output shape/order change is intended. Local cell ordering,
+in-place setup replacement, wall-distance preparation and geometry publication
+also honor the selected mode. Python setup/partition/reorder wrappers preserve
+it; mutation ownership and generation checks remain active.
+
+The small on/off policy fixture compares periodic output connectivity and
+coordinates with an isolated congruent output communicator, including a serial
+reader on the last rank, and checks lower optional reduction counts. It also
+compares subregion/core/send-grouped local permutations. The owned ingress test
+checks extracted boundary count and inherited policy. A separate existing
+remote-wall fixture supplies the analytic wall-distance oracle in off mode;
+its empty owners and original checked failure cases remain intact.
+
+Local CPU validation:
+
+1. Fifteen output/extraction/reorder/policy registrations pass at np1/2/4
+   (4.85 s). After the wall-distance/publication update, eight wall/policy
+   registrations pass at np1/2/4/8 (2.45 s), including the analytic remote-wall
+   result. Earlier eight-registration extraction/policy gate passed at 2.50 s.
+2. DNDS, Geom, CFV and EulerP bindings rebuilt and installed from this checkout.
+   Five CGNS/owned-setup Python tests pass on each of two ranks (0.15 s/rank),
+   now exercising disabled-policy in-place setup publication. Twenty tooling
+   tests pass (2.969 s).
+
+The final combined fresh-link batch passes **20/20** registrations (6.45 s):
+policy and wall-distance at np1/2/4/8; extraction, serial/current output and
+local reorder at np1/2/4. This supersedes the overlapping batch counts above;
+they must not be added as independent coverage or timing savings.
+
+The first build command requested a nonexistent output target after successfully
+building the policy/extraction executables; it was corrected to the registered
+serial/current-output targets. The first new wall fixture used the wrong scope
+for the nested WallDistOptions type; the corrected build and rerun pass. These
+are build-harness failures, not passing tests. No CUDA acceptance is claimed.
+
+The style guide's stale debug-only assertion and manual-formatter guidance is
+corrected against Core/Errors.hpp and the current commit-hook policy. This is
+documentation, not an assertion-level or kernel-performance change.
+
+Remaining E1 classification includes archive/serializer coordination, base
+EntitySpace map construction, compatibility decoding, geometry transform and
+smoothing frontends, and distributed interface search's separate coupling
+context. These must not be closed by the output/halo checks above. E3–E7,
+independent Euler comparisons, sanitizer and focused readability/test-rank
+curation remain in scope.
+
+## E7 allocated-node execution: submitted, acceptance pending
+
+The isolated BSSCA source is pinned to `df5a3a75`, built with 16 login-node
+workers, Release GCC12.2, canonical externals/venv and scoped Open MPI3.1.4.
+Linkage has no unresolved symbols and resolves both MPI libraries to that
+installation. The old canonical source is only a dependency/object-store
+provider; it is not the benchmark source or numerical baseline. Source and
+binary hashes are retained in the task's build record.
+
+Job **12442096** requests one exclusive, scheduler-selected amd_256 node,
+32 ranks maximum, OMP1, 180G and 15min. Serial np32/np8 batches each measure
+32/5,000 cells per rank with four forward/reverse phase-order trials. Per-row
+limit is 300s, campaign limit 850s. No named-node constraint or other job
+inspection is used. The latest observed state is **PENDING (Priority)** with
+no allocated node and no numerical record; submission is not acceptance.
+Do not submit a duplicate while this job remains live.
+
+The exact run plan, driver/scripts and submission handle are under this
+checkout's ignored independent workspace `workspace/plan53-targeted-assessment`;
+the remote task is `cauchy-audit-fix-plan53-20261105` under the canonical
+workspace/worktrees. Poll only this job, retain failure/partial rows and fetch
+compact terminal evidence before drawing the E7 retain/change conclusion.
