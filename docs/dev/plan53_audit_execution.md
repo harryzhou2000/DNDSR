@@ -781,3 +781,29 @@ timing. Build uses16 login workers and shared canonical dependencies. Do not
 mark matched rows complete until actual job/records are verified. The complete
 RHS fraction/copy-count audit and ownership recommendation remain open; no
 reacting RHS or buffer-swap speedup is implied by this CFV field measurement.
+
+## E7 allocated-node attribution and retain recommendation
+
+Job12442096 completed0:0 in41s on one Slurm-selected amd_512 node,o2414. All
+four declared np8/32,32/5000cells-per-rank rows and16 trials passed, with exact
+split/All outputs, unchanged input generations, finite records and matching
+raw-log hashes. Source remains the declared df5a3a75, not the later audit tip.
+Normal/reversed phase order and separate allocation counting are retained.
+
+Primary/CellFlux acquisition costs about8us with47new calls/5816bytes each;
+RHS acquisition about28us with145/29968. The broad capture occurs before view
+restriction. The fixed overhead matters at32cells/rank but one acquisition is
+under0.1% of reconstruction at5000cells/rank. These are entry/kernel phase
+measurements, not whole-RHS speedup. The measured recommendation is **retain
+the ownership API in this phase**, with a future requirement-aware capture
+candidate only if small-partition workload justifies it. No unprotected view,
+epoch bypass or ownership redesign is introduced. E7's assessment is complete.
+
+The [report and compact evidence](plan53_validation/e7-acquisition/README.md)
+also record the scheduler diagnosis: the80-node job was already deprioritized
+and left unchanged. Other users' jobs are hidden. After adding the authorized
+amd_512 partition to E7, it backfilled there; no node pin/cancel/resubmit. The
+user additionally permits amd_1T/amd_2T when the original partition is blocked
+and suitable idle resources/access are verified. These alternatives do not
+change the same-allocation serial comparison requirement. E3–E6 and remaining
+I/O-policy/readability/test-rank work remain open.
