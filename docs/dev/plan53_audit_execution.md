@@ -513,3 +513,26 @@ Compressed logs, actual flags, commands and executable hashes are retained in
 E1's remaining cold paths, E3–E7, independent old/new Euler parity and final
 readability/rank-curation work remain open. The latest exact-job poll still
 reports E7 job 12442096 PENDING (Priority), with no allocated node/results.
+
+## E1 coordinate edits and native edit scopes
+
+Coordinate callbacks, rigid/affine transforms and both rectification routines
+now select the source preparation context before their optional validation.
+`MeshEdit` Begin/Commit and its halo-representation stages do the same. Required
+transform/option broadcasts, changed/selection reductions, boundary-mask union
+and coordinate refresh remain active. Source acquisitions previously outside
+the coordinated phase now run inside it. Validation is in setup prologues;
+there is no added per-element checking or numerical regrouping.
+
+The existing CGNS policy fixture additionally runs all five coordinate-edit
+entry points and a native edit, checking identical coordinates under both
+policies, context retention, fewer optional reductions and an independent
+owned/ghost coordinate formula after refresh. No new test executable or rank
+matrix is introduced. All **9/9** policy/geometry-edit/native-edit registrations
+pass at np1/2/4 (2.41 s). Existing analytic periodic-frame/wall-vector checks,
+signed-zero bit patterns, affine/rectification oracles and enabled-mode
+rank-asymmetric rejection cases are retained and pass in this batch.
+
+This closes the coordinate-edit portion only. Smoothing, archive/serializer
+coordination, compatibility decoding, bare map construction classification and
+the separate distributed-interface context remain in the E1 audit queue.

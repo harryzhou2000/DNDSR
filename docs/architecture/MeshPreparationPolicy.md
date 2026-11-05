@@ -99,6 +99,15 @@ request. Periodic-image union/reverse reduction, output numbering, row counts
 and reader gathering remain required. Only the selected serial reader holds
 global output payload; the policy does not change that storage contract.
 
+Coordinate callbacks, rigid/affine transforms, near-plane/boundary rectification
+and `MeshEdit` Begin/Commit inherit the source policy too. These remain collective
+setup operations: every rank calls them in the same order, including empty
+owners. Source reads are acquired inside the coordinated local stage. A callback
+failure is recoverable across ranks only with preflight enabled; off mode aborts
+before peers enter unmatched coordinate transfers. Required transform/option
+broadcasts, boundary-mask reverse union, global changed/selection decisions and
+coordinate halo refresh remain. No geometry kernel's element access changes.
+
 This remains a staged E1 implementation. Archive/serializer error coordination,
 bare entity-space creation, legacy compatibility decoders and other cold
 preparation entry points require separate classification and propagation;

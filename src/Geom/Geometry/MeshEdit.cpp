@@ -28,7 +28,7 @@ namespace DNDS::Geom
         {
             EntityGhostMapping route(space);
             auto ghost = route.TransferRows(space, pair.owned, schema);
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, space.Communication(), [&]
                                             {
                 if (!pair.owned.Layout().IsVariable())
                     ghost = Runtime::Array<T>::FromStorage(Runtime::RowLayout::Dense(ghost.RowCount(), pair.owned.Layout().Width()), ghost.Storage());
@@ -53,14 +53,16 @@ namespace DNDS::Geom
         MeshEdit result;
         result._source = std::move(source);
         auto &mesh = *result._source;
-        FieldTransferDetail::LocalStage(mesh.mpi, [&]
+        const auto communication = mesh.PreparationCommunication();
+        Runtime::CommunicationDetail::AgreePolicy(mesh.mpi.comm, !communication || communication->ChecksCollectivePreflight());
+        FieldTransferDetail::LocalStage(mesh.mpi, communication, [&]
                                         {
             DNDS_check_throw_info(mesh.HasNativeState(), "mesh edit requires native authority; explicitly publish/import a legacy mesh before editing");
             DNDS_check_throw_info(ghostLayers >= 1, "mesh edit requires positive ghost_layers");
             result._requirements = mesh.CurrentNativeRequirements();
             result._sourceRead = std::make_unique<MeshReadAccess>(mesh.AcquireRead(result._requirements));
             result._stamp = result._sourceRead->Stamp(); });
-        FieldTransferDetail::LocalStage(mesh.mpi, [&]
+        FieldTransferDetail::LocalStage(mesh.mpi, communication, [&]
                                         {
             const auto &state = mesh._nativeState->Snapshot(Runtime::Device::Host()).Live();
             auto &data = result._nativeCandidate.emplace();
@@ -157,7 +159,9 @@ namespace DNDS::Geom
         // before any peer enters validation or publication collectives.
         DNDS_check_throw_info(_source, "cannot commit a moved-from mesh edit");
         auto &mesh = *_source;
-        FieldTransferDetail::LocalStage(mesh.mpi, [&]
+        const auto communication = mesh.PreparationCommunication();
+        Runtime::CommunicationDetail::AgreePolicy(mesh.mpi.comm, !communication || communication->ChecksCollectivePreflight());
+        FieldTransferDetail::LocalStage(mesh.mpi, communication, [&]
                                         {
             Check();
             for (index node = 0; node < NumNode(); ++node)
@@ -193,7 +197,7 @@ namespace DNDS::Geom
             const auto cells = mesh.Entities(EntityKind::Cell);
             auto &pair = *data.relations[size_t(MeshRelation::CellCells)];
             std::optional<Runtime::Array<index>> globals;
-            FieldTransferDetail::LocalStage(mesh.mpi, [&]
+            FieldTransferDetail::LocalStage(mesh.mpi, communication, [&]
                                             {
                 MeshAdjacencyRead read(Adj::Cell2Cell, cells, cells, Adj_PointToLocal, pair.owned, &pair.ghost);
                 Runtime::RowBuilder rows(size_t(cells.NumOwned()), sizeof(index));
@@ -210,7 +214,7 @@ namespace DNDS::Geom
                 globals.emplace(Runtime::Array<index>::FromSharedStorage(rows.Commit())); });
             EntityGhostMapping route(cells);
             auto ghost = route.TransferRows(cells, *globals, Runtime::ElementSchema::Arithmetic<index>());
-            FieldTransferDetail::LocalStage(mesh.mpi, [&]
+            FieldTransferDetail::LocalStage(mesh.mpi, communication, [&]
                                             {
                 auto read = ghost.Read();
                 Runtime::RowBuilder rows(ghost.RowCount(), sizeof(index));
@@ -232,7 +236,7 @@ namespace DNDS::Geom
                 }
                 pair.ghost = Runtime::Array<index>::FromSharedStorage(rows.Commit()); });
         }
-        FieldTransferDetail::LocalStage(mesh.mpi, [&]
+        FieldTransferDetail::LocalStage(mesh.mpi, communication, [&]
                                         {
             prepared = std::shared_ptr<UnstructuredMeshState>(new UnstructuredMeshState(*mesh._nativeState));
             // Only the explicit historical facade key is an authority alias.
@@ -252,8 +256,8 @@ namespace DNDS::Geom
             prepared->_versions.RebindPrepared(mesh.versions); });
         _closed = true;
         _sourceRead.reset();
-        mesh.CheckCollectiveMutationAvailable(true);
-        FieldTransferDetail::LocalStage(mesh.mpi, [&]
+        mesh.CheckCollectiveMutationAvailable(!communication || communication->ChecksCollectivePreflight());
+        FieldTransferDetail::LocalStage(mesh.mpi, communication, [&]
                                         { _stamp.Validate(); });
         auto mask = Runtime::Change::Allocation;
         if (changes & Coordinates)
@@ -270,7 +274,7 @@ namespace DNDS::Geom
         {
             // Owner containers were allocated before mutation. Only stamp and
             // shared-owner assignment remains after the generation commit.
-            FieldTransferDetail::LocalStage(mesh.mpi, [&]
+            FieldTransferDetail::LocalStage(mesh.mpi, communication, [&]
                                             { prepared->BindPreparedEpoch(mesh.versions); });
         }
         catch (...)

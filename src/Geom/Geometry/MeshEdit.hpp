@@ -10,6 +10,10 @@ namespace DNDS::Geom
     /// Initial topology support is CellCells neighbor-order permutation only.
     /// Legacy callers explicitly publish/import before Begin; no whole legacy
     /// candidate workspace is allocated or used by an edit.
+    /// Begin/Commit inherit the source's agreed communication policy. Disabled
+    /// safety preflight retains local validation and aborts on failure; it does
+    /// not provide rank-asymmetric rollback. All ranks call Commit in order.
+    /// Changes are unioned globally before required halo refresh/publication.
     class MeshEdit
     {
         std::shared_ptr<UnstructuredMesh> _source;

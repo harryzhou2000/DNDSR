@@ -8,6 +8,7 @@
 #include "Geom/IO/NativeMeshSerialOutput.hpp"
 #include "Geom/Refinement/NativeMeshExtraction.hpp"
 #include "Geom/Transition/LocalCellOrdering.hpp"
+#include "Geom/Geometry/MeshEdit.hpp"
 #include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
 #include "NativeReorderChecks.hpp"
 #include <atomic>
@@ -190,6 +191,8 @@ TEST_CASE("Cold mesh preparation shares an explicit policy without changing conn
 TEST_CASE("CGNS owned import partition refinement reorder and publication inherit preflight")
 {
     std::vector<I> expected;
+    std::vector<double> expectedEditedCoordinates;
+    int enabledEdits = 0;
     for (bool enabled : {true, false})
     {
         CAPTURE(enabled);
@@ -242,6 +245,51 @@ TEST_CASE("CGNS owned import partition refinement reorder and publication inheri
         CHECK(extracted.state->Entities(G::EntityKind::Cell).NumGlobal() == mesh->Entities(G::EntityKind::Bnd).NumGlobal());
         for (auto kind : {G::EntityKind::Node, G::EntityKind::Cell, G::EntityKind::Bnd})
             CHECK(extracted.state->Entities(kind).ChecksCollectivePreflight() == enabled);
+        {
+            // Exercise callback/affine/rigid transforms and both rectification
+            // protocols, then native edit publication with remote-owned nodes.
+            // Existing geometry tests retain their independent analytic oracles;
+            // here identical inputs compare the two communication policies.
+            Count count;
+            mesh->TransformCoords([](const G::tPoint &point) -> G::tPoint
+                                  { return point + G::tPoint{0.125, 0.25, 1e-10}; });
+            Eigen::Matrix3d linear = Eigen::Matrix3d::Identity();
+            linear(0, 0) = 2;
+            mesh->ApplyAffineGeometryTransform(linear, G::tPoint{0.5, 0, 0});
+            mesh->ApplyGeometryTransform(G::RotZ(0.2), 1.25);
+            mesh->RectifyNearPlaneCoordinates(4, 1e-6);
+            mesh->RectifyBoundaryCoordinates([](G::t_index)
+                                             { return 3; });
+            auto edit = G::MeshEdit::Begin(mesh);
+            for (I iNode = 0; iNode < edit.NumNode(); ++iNode)
+            {
+                auto point = edit.Coord(iNode);
+                point[2] = 0.25 + 0.01 * point[0];
+                edit.SetCoord(iNode, point);
+            }
+            edit.Commit();
+            std::vector<double> points;
+            auto read = mesh->AcquireRead();
+            const auto view = read.HostView();
+            for (I iNode = 0; iNode < view.NumNodeProc(); ++iNode)
+            {
+                const G::tPoint point = view.Coord(iNode);
+                CHECK(point[2] == doctest::Approx(0.25 + 0.01 * point[0]));
+                for (I component = 0; component < 3; ++component)
+                    points.push_back(point[component]);
+            }
+            CHECK(mesh->PreparationCommunication() == context);
+            if (enabled)
+            {
+                enabledEdits = reductions;
+                expectedEditedCoordinates = points;
+            }
+            else
+            {
+                CHECK(reductions.load() < enabledEdits);
+                CHECK(points == expectedEditedCoordinates);
+            }
+        }
     }
 }
 

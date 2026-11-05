@@ -6,6 +6,17 @@ namespace DNDS::Geom
 {
     namespace
     {
+        // Coordinate edits are collective setup operations, not kernel reads.
+        // Agree the selected mode before optional validation; required option
+        // broadcasts, mutation epochs and numerical decisions remain separate.
+        std::shared_ptr<Runtime::CommunicationContext> CheckGeometryEdit(UnstructuredMesh &mesh)
+        {
+            auto communication = mesh.PreparationCommunication();
+            const bool checks = !communication || communication->ChecksCollectivePreflight();
+            Runtime::CommunicationDetail::AgreePolicy(mesh.mpi.comm, checks);
+            mesh.CheckCollectiveMutationAvailable(checks);
+            return communication;
+        }
         template <class F>
         Runtime::ArrayPair<real> GeometryRows(const UnstructuredMeshView &view, F &&value)
         {
@@ -48,14 +59,16 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::TransformNativeCoords(const std::function<tPoint(const tPoint &)> &transform)
     {
-        CheckCollectiveMutationAvailable(true);
+        const auto communication = CheckGeometryEdit(*this);
         const auto stamp = versions.Stamp();
         std::shared_ptr<const UnstructuredMeshState> prepared;
         {
-            auto sourceRead = AcquireRead(_nativeState->Requirements());
-            const auto view = sourceRead.HostView();
+            std::optional<MeshReadAccess> sourceRead;
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
+                                            { sourceRead.emplace(AcquireRead(_nativeState->Requirements())); });
+            const auto view = sourceRead->HostView();
             std::optional<Runtime::Array<real>> coordinates;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 DNDS_check_throw_info(!view.IsPeriodic(), "arbitrary native coordinate transforms require nonperiodic topology; use ApplyGeometryTransform for periodic rigid transforms");
                 coordinates.emplace(Runtime::RowLayout::Dense(size_t(view.NumNode()), 3));
@@ -69,7 +82,7 @@ namespace DNDS::Geom
             const auto nodes = Entities(EntityKind::Node);
             EntityGhostMapping route(nodes);
             auto ghost = route.TransferRows(nodes, *coordinates, Runtime::ElementSchema::Arithmetic<real>());
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 ghost = Runtime::Array<real>::FromStorage(Runtime::RowLayout::Dense(ghost.RowCount(), 3), ghost.Storage());
                 prepared = _nativeState->WithGeometry({std::move(*coordinates), std::move(ghost)}, {}, view.Periodic()); });
@@ -79,8 +92,8 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::ApplyGeometryTransform(const Eigen::Matrix3d &rotation, real scale)
     {
-        CheckCollectiveMutationAvailable(true);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        const auto communication = CheckGeometryEdit(*this);
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { DNDS_check_throw_info(HasNativeState(), "geometry transform requires native mesh authority");
                 DNDS_check_throw_info(rotation.allFinite() && std::isfinite(scale) && scale > 0 &&
                                                                     (rotation.transpose() * rotation - Eigen::Matrix3d::Identity()).norm() < 1e-10 &&
@@ -95,7 +108,7 @@ namespace DNDS::Geom
         MPI_Bcast(expected.data(), int(expected.size()), MPI_DOUBLE, 0, mpi.comm);
         std::shared_ptr<const UnstructuredMeshState> prepared;
         const auto stamp = versions.Stamp();
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             DNDS_check_throw_info(parameters == expected, "native geometry transform differs across ranks");
             const auto view = _nativeState->BorrowHostView();
@@ -123,9 +136,9 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::ApplyAffineGeometryTransform(const Eigen::Matrix3d &linear, const tPoint &offset)
     {
-        CheckCollectiveMutationAvailable(true);
+        const auto communication = CheckGeometryEdit(*this);
         Eigen::Matrix3d inverse;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             DNDS_check_throw_info(HasNativeState(), "affine geometry transform requires native mesh authority");
             DNDS_check_throw_info(linear.allFinite() && offset.allFinite(), "affine geometry transform must be finite");
@@ -145,7 +158,7 @@ namespace DNDS::Geom
             // Keep source geometry, topology and metadata alive through staging;
             // publication occurs only after this operation releases its read.
             std::unique_ptr<MeshReadAccess> sourceRead;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 DNDS_check_throw_info(parameters == expected, "affine geometry transform differs across ranks");
                 sourceRead = std::make_unique<MeshReadAccess>(AcquireRead(_nativeState->Requirements()));
@@ -181,8 +194,8 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::RectifyNearPlaneCoordinates(int components, real threshold)
     {
-        CheckCollectiveMutationAvailable(true);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        const auto communication = CheckGeometryEdit(*this);
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             DNDS_check_throw_info(HasNativeState(), "near-plane rectification requires native mesh authority");
             DNDS_check_throw_info(components >= 0 && components <= 7 && std::isfinite(threshold) && threshold >= 0,
@@ -194,11 +207,13 @@ namespace DNDS::Geom
         const auto stamp = versions.Stamp();
         std::shared_ptr<const UnstructuredMeshState> prepared;
         {
-            auto sourceRead = AcquireRead(_nativeState->Requirements());
-            const auto view = sourceRead.HostView();
+            std::optional<MeshReadAccess> sourceRead;
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
+                                            { sourceRead.emplace(AcquireRead(_nativeState->Requirements())); });
+            const auto view = sourceRead->HostView();
             std::optional<Runtime::Array<real>> coordinates;
             int changed = 0;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 DNDS_check_throw_info(components == expectedComponents && threshold == expectedThreshold,
                                       "near-plane rectification options differ across ranks");
@@ -223,7 +238,7 @@ namespace DNDS::Geom
             const auto nodes = Entities(EntityKind::Node);
             EntityGhostMapping route(nodes);
             auto ghost = route.TransferRows(nodes, *coordinates, Runtime::ElementSchema::Arithmetic<real>());
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 ghost = Runtime::Array<real>::FromStorage(Runtime::RowLayout::Dense(ghost.RowCount(), 3), ghost.Storage());
                 prepared = _nativeState->WithGeometry({std::move(*coordinates), std::move(ghost)}, {}, view.Periodic()); });
@@ -234,20 +249,22 @@ namespace DNDS::Geom
     void UnstructuredMesh::RectifyBoundaryCoordinates(std::function<int(t_index)> componentForZone,
                                                       bool volumeBoundary)
     {
-        CheckCollectiveMutationAvailable(true);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        const auto communication = CheckGeometryEdit(*this);
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { DNDS_check_throw_info(HasNativeState(), "boundary rectification requires native mesh authority"); });
         const auto stamp = versions.Stamp();
         const auto nodes = Entities(EntityKind::Node);
         std::optional<Runtime::Array<uint8_t>> owned, ghost;
         std::shared_ptr<const UnstructuredMeshState> prepared;
         {
-            auto sourceRead = AcquireRead(_nativeState->Requirements());
-            const auto view = sourceRead.HostView();
+            std::optional<MeshReadAccess> sourceRead;
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
+                                            { sourceRead.emplace(AcquireRead(_nativeState->Requirements())); });
+            const auto view = sourceRead->HostView();
             int selectedMode = volumeBoundary ? 1 : 0, expectedMode = selectedMode;
             int selected = 0;
             MPI_Bcast(&expectedMode, 1, MPI_INT, 0, mpi.comm);
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 DNDS_check_throw_info(selectedMode == expectedMode, "native rectification mode differs across ranks");
                 owned.emplace(Runtime::RowLayout::Dense(size_t(nodes.NumOwned()), 1));
@@ -285,7 +302,7 @@ namespace DNDS::Geom
             Runtime::PayloadPlan forward(route, owned->Layout(), ghost->Layout(), Runtime::ElementSchema::Arithmetic<uint8_t>());
             forward.Bind(*owned, *ghost, Runtime::TransferTransport::Direct, {Runtime::TransferMode::Transient}).Begin().Wait();
             int changed = 0;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 auto local = owned->Read(), remote = ghost->Read();
                 for (index node = 0; node < view.NumNodeProc(); ++node)
@@ -298,7 +315,7 @@ namespace DNDS::Geom
             MPI_Allreduce(MPI_IN_PLACE, &changed, 1, MPI_INT, MPI_MAX, mpi.comm);
             if (!changed)
                 return;
-            FieldTransferDetail::LocalStage(mpi, [&]
+            FieldTransferDetail::LocalStage(mpi, communication, [&]
                                             {
                 auto local = owned->Read(), remote = ghost->Read();
                 auto coordinates = GeometryRows(view, [&](index node)
