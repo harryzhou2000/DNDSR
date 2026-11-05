@@ -3292,9 +3292,14 @@ namespace DNDS::Euler
      *
      *  @param u         Conservative variable DOF array.
      *  @param uRec      Reconstruction coefficients (may be modified for order reduction).
-     *  @param uRecBeta  Per-cell limiter coefficient (output).
-     *  @param nLim      Total number of limited cells across all MPI ranks (output).
-     *  @param betaMin   Global minimum beta value (output).
+     *  RANS never participates in flow base selection, order reduction or beta.
+     *  Two-equation scalar coefficients are bounded separately about their means,
+     *  with a common scalar factor and the existing 0.9 safety margin. SA follows
+     *  USE_NS_SA_NUT_REDUCED_ORDER; otherwise negative SA reconstruction is retained.
+     *
+     *  @param uRecBeta  Per-cell flow/species compression coefficient (output).
+     *  @param nLim      Number of cells with flow beta < 1; excludes scalar-only repairs.
+     *  @param betaMin   Minimum flow beta; excludes scalar-only repairs.
      *  @param flag      Evaluation mode flags.
      */
     void EulerEvaluator<model>::EvaluateURecBeta(
@@ -3398,7 +3403,34 @@ namespace DNDS::Euler
                 return hf;
             };
 
-            // alter uRec if necessary
+            // Scalar PP is independent of the flow base, and runs even when flow
+            // passes immediately. Scale about the mean, not a lower-order base.
+#ifdef USE_NS_SA_NUT_REDUCED_ORDER
+            constexpr bool limitSA = true;
+#else
+            constexpr bool limitSA = false;
+#endif
+            if constexpr (Traits::has2EQ || (Traits::hasSA && limitSA))
+            {
+                constexpr int nScalars = Traits::has2EQ ? 2 : 1;
+                const auto scalars = Eigen::seqN(I4 + 1, Eigen::fix<nScalars>);
+                const auto scalarIncrement = (quadBase * uRec[iCell](EigenAll, scalars)).eval();
+                real thetaScalar = 1;
+                for (int scalar = 0; scalar < nScalars; ++scalar)
+                {
+                    const real mean = u[iCell](I4 + 1 + scalar);
+                    DNDS_assert_info(std::isfinite(mean) && mean >= 0,
+                                     "reconstruction PP requires finite nonnegative RANS means");
+                    for (int q = 0; q < scalarIncrement.rows(); ++q)
+                        if (mean + scalarIncrement(q, scalar) < 0)
+                            thetaScalar = std::min(thetaScalar, mean / (-scalarIncrement(q, scalar) + verySmallReal));
+                }
+                DNDS_assert(thetaScalar >= 0 && thetaScalar <= 1 && std::isfinite(thetaScalar));
+                if (thetaScalar < 1)
+                    uRec[iCell](EigenAll, scalars) *= real(0.9) * thetaScalar;
+            }
+
+            // Flow/species PP: retain the existing staged base-selection algorithm.
             int curOrder = vfv->GetCellOrder(iCell);
             Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed> uRecBase = uRec[iCell];
             Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed> recBase; // * has to call checkRecBaseGood() to hold valid value
@@ -3407,12 +3439,6 @@ namespace DNDS::Euler
                 recBase = (quadBase * uRecBase).rowwise() + u[iCell].transpose();
                 if (recBase(EigenAll, 0).minCoeff() < rhoEps) // TODO: add relaxation to eps values
                     return false;
-                if constexpr (Traits::hasSA)
-                    if (recBase(EigenAll, I4 + 1).minCoeff() < rhoEps)
-                        return false;
-                if constexpr (Traits::has2EQ)
-                    if (recBase(EigenAll, I4 + 1).minCoeff() < rhoEps || recBase(EigenAll, I4 + 2).minCoeff() < rhoEps)
-                        return false;
                 Eigen::Vector<real, Eigen::Dynamic> ek =
                     0.5 * (recBase(EigenAll, Seq123).array().square().rowwise().sum()) / recBase(EigenAll, 0).array();
                 Eigen::Vector<real, Eigen::Dynamic> rhoE_base_q = rhoE_base_perQ(recBase);
@@ -3449,7 +3475,12 @@ namespace DNDS::Euler
                 uRecBase = vfv->template DownCastURecOrder<nVarsFixed>(curOrder, iCell, uRec, 0);
                 if (checkRecBaseGood())
                     break;
-                uRec[iCell] = uRecBase; // uRec[iCell] could be altered
+                // Reject this order for flow/species only. RANS coefficients have
+                // their own correction above and must survive every failed base.
+                if constexpr (Traits::hasSA || Traits::has2EQ)
+                    uRec[iCell](EigenAll, Seq01234) = uRecBase(EigenAll, Seq01234);
+                else
+                    uRec[iCell] = uRecBase;
                 curOrder--;
             }
 
@@ -3463,44 +3494,6 @@ namespace DNDS::Euler
                 for (int iG = 0; iG < rhoS.size(); iG++)
                     if (recInc(iG, 0) < 0) // negative increment
                         theta1 = std::min(theta1, (recBase(iG, 0) - rhoEps) / (-recInc(iG, 0) + verySmallReal));
-#ifdef USE_NS_SA_NUT_REDUCED_ORDER
-            if constexpr (Traits::hasSA)
-            {
-                static real v1Eps = smallReal * settings.refUPrim(I4 + 1);
-                Eigen::Vector<real, Eigen::Dynamic> v1S = recInc(EigenAll, I4 + 1) + recBase(EigenAll, I4 + 1);
-                real v1Min = v1S.minCoeff();
-                if (v1Min < v1Eps)
-                    for (int iG = 0; iG < rhoS.size(); iG++)
-                        if (recInc(iG, I4 + 1) < 0) // negative increment
-                            theta1 = std::min(theta1, (recBase(iG, I4 + 1) - v1Eps) / (-recInc(iG, I4 + 1) + verySmallReal))
-                                // * 0 // to gain fully reduced order
-                                ;
-            }
-#endif
-            if constexpr (Traits::has2EQ)
-            {
-                real thetaC = 1;
-                static real v1Eps = smallReal * settings.refUPrim(I4 + 1);
-                static real v2Eps = smallReal * settings.refUPrim(I4 + 2);
-                Eigen::Vector<real, Eigen::Dynamic> v1S = recInc(EigenAll, I4 + 1) + recBase(EigenAll, I4 + 1);
-                Eigen::Vector<real, Eigen::Dynamic> v2S = recInc(EigenAll, I4 + 2) + recBase(EigenAll, I4 + 2);
-                real v1Min = v1S.minCoeff();
-                real v2Min = v2S.minCoeff();
-                if (v1Min < v1Eps)
-                    for (int iG = 0; iG < rhoS.size(); iG++)
-                        if (recInc(iG, I4 + 1) < 0) // negative increment
-                            thetaC = std::min(thetaC, (recBase(iG, I4 + 1) - v1Eps) / (-recInc(iG, I4 + 1) + verySmallReal));
-                if (v2Min < v2Eps)
-                    for (int iG = 0; iG < rhoS.size(); iG++)
-                        if (recInc(iG, I4 + 2) < 0) // negative increment
-                            thetaC = std::min(thetaC, (recBase(iG, I4 + 2) - v2Eps) / (-recInc(iG, I4 + 2) + verySmallReal));
-                // theta1 = std::min(theta1, thetaC);
-                if (thetaC < 1) // 2eq's pp not disturbing main flow
-                {
-                    uRec[iCell](EigenAll, {I4 + 1, I4 + 2}) *= thetaC * 0.9;
-                }
-            }
-
             // only compresses main flow part and rhoY_i species, avoiding RANS part
             recInc(EigenAll, Seq01234) *= theta1;
             if constexpr (Traits::isExtended)

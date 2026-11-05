@@ -289,6 +289,24 @@ TEST_CASE("GetSource_SST: shear gradient golden")
     CHECK(std::isfinite(source(I4 + 2)));
 }
 
+TEST_CASE("GetSource_SST: omega production blends inner and outer coefficients")
+{
+    // Constant-density simple shear removes cross diffusion and isolates gamma.
+    const auto U = buildState(1, 1, 0, 0, 1, 1e-4, 2);
+    const auto gradient = buildShearGrad(U, 3);
+    constexpr real gammaInner = 0.075 / 0.09 - 0.5 * 0.41 * 0.41 / 0.3;
+    constexpr real gammaOuter = 0.0828 / 0.09 - 0.856 * 0.41 * 0.41 / 0.3;
+    for (const bool inner : {true, false})
+    {
+        Eigen::Vector<real, nVars> source = Eigen::Vector<real, nVars>::Zero();
+        GetSource_SST<dim>(U, gradient, 1e-5, inner ? 1e-5 : 1e6,
+                           1e100, source, 0, g_kOmegaSSTConfig);
+        const real expected = (inner ? gammaInner : gammaOuter) * 9 -
+                              (inner ? 0.075 : 0.0828) * 4;
+        CHECK(source(I4 + 2) == doctest::Approx(expected).epsilon(1e-12));
+    }
+}
+
 TEST_CASE("GetSource_RealizableKe: shear gradient golden")
 {
     auto U = buildState(g_rho, g_u, 0, 0, g_p, g_k, g_epsilon);

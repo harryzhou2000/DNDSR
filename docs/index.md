@@ -14,6 +14,9 @@ records the NS_EX/NS_EX_3D absolute-velocity source convention and focused tests
 The [2026-11-05 Euler gradient correction](dev/euler_gradient_buffers_2026-11-05.md)
 documents limited-gradient preparation, explicit reuse and boundary-stage timing.
 
+The [Euler RANS reconstruction PP correction](dev/euler_rans_reconstruction_pp_2026-11-05.md)
+separates spatial flow beta from scalar limiting and preserves coupled increment scaling.
+
 ## Core Modules
 
 | Module     | Directory    | Description                                              |

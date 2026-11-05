@@ -419,6 +419,118 @@ TEST_CASE("Euler two-equation turbulent normal stress follows the physical face 
         }
 }
 
+template <EulerModel model>
+static void checkReconstructionPPSeparation()
+{
+    using Eval = EulerEvaluator<model>;
+    constexpr int nVars = Eval::nVarsFixed;
+    const auto root = projectRoot();
+    const auto path = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json", "rans_pp_" + std::to_string(model),
+                                          {{"vfvSettings", {{"maxOrder", 3}, {"intOrder", 5}}},
+                                           {"dataIOControl", {{"meshDirectBisect", 0}, {"meshFile", root + "/data/mesh/IV10_10.cgns"}}}});
+    EulerSolver<NS> fixture(g_mpi);
+    fixture.ConfigureFromJson(path, true);
+    fixture.ReadMeshAndInitialize();
+    auto vr = fixture.getVFV();
+    auto mesh = fixture.getMesh();
+    EulerEvaluatorSettings<model> settings(nVars);
+    EulerEvaluatorSettings<NS> flowSettings(5);
+    Eval eval(mesh, vr, std::make_shared<BoundaryHandler<model>>(nVars), settings);
+    EulerEvaluator<NS> flowEval(mesh, vr, std::make_shared<BoundaryHandler<NS>>(5), flowSettings);
+    ArrayDOFV<nVars> mean;
+    ArrayDOFV<5> flowMean;
+    ArrayRECV<nVars> rec;
+    ArrayRECV<5> flowRec;
+    ArrayDOFV<1> beta, flowBeta;
+    vr->BuildUDof(mean, nVars);
+    vr->BuildUDof(flowMean, 5);
+    vr->BuildURec(rec, nVars);
+    vr->BuildURec(flowRec, 5);
+    vr->BuildUDof(beta, 1);
+    vr->BuildUDof(flowBeta, 1);
+    for (bool compressToMean : {true, false})
+        for (int scenario = 0; scenario < 3; ++scenario)
+        {
+            // 0: tiny constant scalar; 1: negative scalar extrapolation;
+            // 2: flow needs fallback, but admissible RANS modes must survive.
+            CAPTURE(model);
+            CAPTURE(compressToMean);
+            CAPTURE(scenario);
+            std::vector<Eigen::MatrixXd> original;
+            for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+            {
+                mean[iCell].setOnes();
+                mean[iCell].template head<5>() << 1, .1, .2, 0, 2.6;
+                mean[iCell](5) = scenario == 2 ? 1 : 1e-14;
+                flowMean[iCell] = mean[iCell].template head<5>();
+                rec[iCell].setZero();
+                rec[iCell](0, 0) = scenario == 2 ? 100 : .01;
+                rec[iCell](rec[iCell].rows() - 1, 0) = .002;
+                if (scenario != 0)
+                    for (int v = 5; v < nVars; ++v)
+                    {
+                        rec[iCell](0, v) = .001;
+                        rec[iCell](rec[iCell].rows() - 1, v) = .0001;
+                    }
+                flowRec[iCell] = rec[iCell].template leftCols<5>();
+                original.emplace_back(rec[iCell]);
+            }
+            DNDS::index nLim = 0, nFlowLim = 0;
+            real minBeta = 1, minFlowBeta = 1;
+            const int flag = Eval::EvaluateURecBeta_LOCAL_STATS |
+                             (compressToMean ? Eval::EvaluateURecBeta_COMPRESS_TO_MEAN : Eval::EvaluateURecBeta_DEFAULT);
+            eval.EvaluateURecBeta(mean, rec, beta, nLim, minBeta, flag);
+            flowEval.EvaluateURecBeta(flowMean, flowRec, flowBeta, nFlowLim, minFlowBeta, flag);
+            CHECK(nLim == nFlowLim);
+            for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
+            {
+                CHECK((rec[iCell].template leftCols<5>() - flowRec[iCell]).norm() < 1e-12);
+                CHECK(beta[iCell](0) == doctest::Approx(flowBeta[iCell](0)).epsilon(1e-12));
+                CHECK((mean[iCell].template head<5>() - flowMean[iCell]).norm() == 0);
+                CHECK(mean[iCell](5) == (scenario == 2 ? 1 : 1e-14));
+                if (scenario != 2)
+                {
+                    CHECK(beta[iCell](0) == 1);
+                    CHECK((rec[iCell].template leftCols<5>() - original[iCell].leftCols(5)).norm() == 0);
+                }
+                else
+                    CHECK(beta[iCell](0) < 1);
+                constexpr bool scalarPP = Eval::Traits::has2EQ
+#ifdef USE_NS_SA_NUT_REDUCED_ORDER
+                                          || Eval::Traits::hasSA
+#endif
+                    ;
+                if (scenario != 1 || !scalarPP)
+                    CHECK((rec[iCell].rightCols(nVars - 5) - original[iCell].rightCols(nVars - 5)).norm() == 0);
+                if constexpr (scalarPP)
+                {
+                    auto checkPoint = [&](const auto &basis)
+                    {
+                        const auto value = (mean[iCell] + (basis * rec[iCell]).transpose()).eval();
+                        for (int v = 5; v < nVars; ++v)
+                            CHECK(value(v) >= 0);
+                    };
+                    for (int q = 0; q < vr->GetCellQuad(iCell).GetNumPoints(); ++q)
+                        checkPoint(vr->GetIntPointDiffBaseValue(iCell, -1, -1, q, 0, 1));
+                    const auto faces = mesh->cell2face[iCell];
+                    for (DNDS::rowsize j = 0; j < faces.size(); ++j)
+                    {
+                        const auto face = faces[j];
+                        const int side = mesh->CellIsFaceBack(iCell, face, j) ? 0 : 1;
+                        for (int q = 0; q < vr->GetFaceQuad(face).GetNumPoints(); ++q)
+                            checkPoint(vr->GetIntPointDiffBaseValue(iCell, face, side, q, 0, 1));
+                    }
+                }
+            }
+        }
+}
+
+TEST_CASE("Euler reconstruction PP keeps RANS out of flow beta and order fallback")
+{
+    checkReconstructionPPSeparation<NS_SA>();
+    checkReconstructionPPSeparation<NS_2EQ>();
+}
+
 TEST_CASE("Euler gradients: EvaluateDt prepares limited buffers and direct FV explicitly reuses them")
 {
     using Eval = EulerEvaluator<NS>;

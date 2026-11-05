@@ -860,13 +860,19 @@ namespace DNDS::Euler
         /**
          * @brief Evaluate the positivity-preserving reconstruction limiter (beta).
          *
-         * For each cell, computes the maximum compression factor beta such that
-         * u_mean + beta * uRec remains physically realizable (positive density and sensible internal energy).
+         * Selects an admissible flow/species base B and updates the target H as
+         * B + beta*(H-B), preserving positive density and sensible internal energy
+         * at the checked quadratures. COMPRESS_TO_MEAN selects P0 as B; otherwise
+         * the existing staged lower-order base search is used.
+         * RANS coefficients are corrected independently of flow base selection and
+         * beta, including the early exit for admissible flow. Two-equation scalars
+         * use a mean-preserving nonnegative reconstruction; SA keeps the selected
+         * USE_NS_SA_NUT_REDUCED_ORDER policy. Flow fallback never overwrites RANS.
          *
          * @param[in]  u          Cell-centered conservative DOFs.
-         * @param[in]  uRec       Reconstruction coefficients.
-         * @param[out] uRecBeta   Per-cell compression factor in [0,1].
-         * @param[out] nLim       Number of cells where beta < 1 (local with LOCAL_STATS).
+         * @param[in,out] uRec    Reconstruction coefficients, limited in place.
+         * @param[out] uRecBeta   Flow/species compression factor in [0,1].
+         * @param[out] nLim       Number of cells where flow beta < 1 (local with LOCAL_STATS); excludes scalar-only limiting.
          * @param[out] betaMin    Global minimum beta value (local with LOCAL_STATS).
          * @param[in]  flag       Bitwise combination of COMPRESS_TO_MEAN and LOCAL_STATS; zero uses the default policy.
          */
