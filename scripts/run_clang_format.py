@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run clang-format over DNDSR C++ sources.
 
-The style lives in /.clang-format at the project root and is used
-unchanged.  This script only decides which files to format and runs
-clang-format in parallel.
+The parent style lives in /.clang-format at the project root; clang-format
+also honors reviewed directory-local overrides. This script only decides
+which files to format and runs clang-format in parallel.
 
 Quick usage::
 

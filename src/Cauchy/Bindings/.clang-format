@@ -1,0 +1,6 @@
+# Limit the readability policy to these Python bindings, not numerical kernels.
+BasedOnStyle: InheritParentConfig
+ColumnLimit: 120
+AllowShortLambdasOnASingleLine: None
+LambdaBodyIndentation: OuterScope
+BreakStringLiterals: false

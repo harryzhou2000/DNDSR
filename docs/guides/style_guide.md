@@ -11,17 +11,19 @@ the short guardrails in `AGENTS.md`.
 - Use `#pragma once` in headers; no `#ifndef` guards.
 - Preserve include order; do not auto-sort includes.
 
-The clang-format configuration lives at `src/.clang-format`. The commit hook
+The main clang-format configuration lives at `/.clang-format`. Cauchy's Python
+bindings have a directory-local 120-column/outer-scope-lambda override; numerical
+kernels retain the parent policy. The commit hook
 formats staged C++ files. Do not run a formatter manually unless explicitly
 needed; use `scripts/run-clang-format.sh` for an authorized explicit run.
 Formatting-only changes do not require rebuilding numerical binaries.
 
 ### Include Order
 
-1. Project macros (`"DNDS/Macros.hpp"`, `"DNDS/Defines.hpp"`)
+1. Project macros (`"DNDS/Core/Macros.hpp"`, `"DNDS/Core/Defines.hpp"`)
 2. Standard library headers
 3. External library headers (Eigen, fmt, nlohmann_json, etc.)
-4. Project headers (quoted, relative to `src/`): `"DNDS/Runtime/Array.hpp"`, `"Geom/Unstructured/UnstructuredMesh.hpp"`
+4. Project headers (quoted, relative to `src/`): `"DNDS/Runtime/Array/Array.hpp"`, `"Geom/Unstructured/UnstructuredMesh.hpp"`
 
 ### Naming Conventions
 
@@ -81,7 +83,8 @@ Configuration lives at the project root:
   list of disabled checks). Used by both command-line `clang-tidy` and
   clangd in editors.
 - `/.clang-tidy-fix` — narrow subset intended to be run with `--fix`.
-- `/src/.clang-format` — formatting rules for C++ source/tests.
+- `/.clang-format` — formatting rules for C++ source/tests; local overrides
+  explicitly delimit reviewed subdirectories.
 - `/.clangd` — editor-only flag tweaks (CUDA/OpenMP handling);
   intentionally does **not** duplicate the tidy check list.
 

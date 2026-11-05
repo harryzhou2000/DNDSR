@@ -886,3 +886,20 @@ retained allocation identity. A six-row matched follow-up is declared in the
 assessment plan and recorder `--candidate`; candidate and controls must run in
 the same allocation/invocation. At this commit that follow-up remains unrun.
 Complete-RHS fractions and the final copy/ownership decision remain open.
+
+## Scoped binding readability policy
+
+The approved remedy order starts with a local formatter policy. Only
+`src/Cauchy/Bindings/` receives a 120-column limit, expanded lambdas and
+outer-scope lambda indentation; parent numerical formatting is unchanged.
+Both binding files were formatted through the repository wrapper, then passed
+its second check with clang-format18.1.3. Ordinary and raw string contents
+are preserved (`BreakStringLiterals: false`); long documentation strings may
+therefore exceed the column limit.
+
+Clang18 raw lexical-token comparison against the preceding commit finds the
+same5,541 and2,741 non-whitespace/non-comment tokens respectively, including
+identical string tokens. This is a formatting-only change; no binaries were
+rebuilt and no new runtime test result is claimed. The style guide and wrapper
+description now identify the real root policy and this bounded override.
+The remaining manual readability inventory is not closed by these two files.
