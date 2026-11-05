@@ -392,6 +392,9 @@ namespace
                     begin();
                     finish();
                     completion.get();
+                    // Compare actual completion timestamps, not a constant
+                    // zero: communication may outlast the worker's core work.
+                    exposed = std::max(0., fullReady - computeEnd);
                 }
                 else
                 {
