@@ -127,8 +127,9 @@ namespace DNDS::Euler::RANS
     /** @brief Menter k-omega SST kernel configuration. */
     struct KOmegaSSTConfig
     {
-        real turbulentViscosityLimit = 1e5; ///< Upper multiplier in mu_t <= limit * mu.
-        real productionLimit = 20;          ///< Upper multiplier in Pk <= limit * betaStar * rho*k*omega.
+        real turbulentViscosityLimit = 1e5;   ///< Upper multiplier in mu_t <= limit * mu.
+        real productionLimit = 20;            ///< Upper multiplier in Pk <= limit * betaStar * rho*k*omega.
+        bool implicitAdditionalSinks = false; ///< Include stabilizing frozen-coefficient production/cross-diffusion derivatives; RHS unchanged.
 
         DNDS_DECLARE_CONFIG(KOmegaSSTConfig)
         {
@@ -136,6 +137,7 @@ namespace DNDS::Euler::RANS
                        DNDS::Config::range(0.0));
             DNDS_FIELD(productionLimit, "SST production limit multiplier",
                        DNDS::Config::range(0.0));
+            DNDS_FIELD(implicitAdditionalSinks, "Add nonnegative frozen-coefficient SST source sink derivatives to the implicit diagonal; does not change the RHS");
         }
     };
 
@@ -704,7 +706,9 @@ namespace DNDS::Euler::RANS
      * @param d         Wall distance.
      * @param lLES      LES length scale for DES/DDES shielding (set to a large value to disable DES).
      * @param[out] source  Output source vector; entries at I4+1 and I4+2 are set.
-     * @param mode      Source computation mode: 0 = full source, 1 = implicit diagonal (destruction only).
+     * @param mode      Source computation mode: 0 = full source, 1 = nonnegative implicit diagonal.
+     *                  The diagonal contains destruction only by default, with optional
+     *                  frozen-coefficient sink derivatives via implicitAdditionalSinks.
      */
     template <int dim, class TU, class TDiffU, class TSource>
     void GetSource_SST(TU &&UMeanXy, TDiffU &&DiffUxy, real muf, real d, real lLES, TSource &source, int mode, const KOmegaSSTConfig &config)
@@ -760,8 +764,9 @@ namespace DNDS::Euler::RANS
         real Pk = -(rhoMuiuj.array() * diffU.array()).sum();
         real PkTilde = Pk;
 #if KW_SST_PROD_LIMITS == 1
-        PkTilde = std::max(PkTilde, verySmallReal);
-        PkTilde = std::min(Pk, config.productionLimit * betaStar * rho * k * omegaaa); // CFD++'s limiting: 10 times
+        // Signed production is intentional: expansion can destroy k. The
+        // original SST limiter is an upper cap, not a positivity clamp.
+        PkTilde = std::min(Pk, config.productionLimit * betaStar * rho * k * omegaaa);
 #endif
 
         real gammaC = gamma1 * F1 + gamma2 * (1 - F1);
@@ -788,6 +793,19 @@ namespace DNDS::Euler::RANS
         {
             source(I4 + 1) = betaStar * omegaaa * FDES;
             source(I4 + 2) = 2 * beta * omegaaa;
+            if (config.implicitAdditionalSinks)
+            {
+                // Return -dS/d(rho*k,rho*omega) with rho, primitive gradients,
+                // mut, F1/F2 and FDES frozen. Keep only extra nonnegative
+                // diagonal terms, so this remains a robust approximation,
+                // not a full SST Jacobian. Positive cross-diffusion C/omega
+                // has a negative derivative; negative C stays explicit.
+                if (Pk < config.productionLimit * betaStar * rho * k * omegaaa)
+                    source(I4 + 1) += std::max((2. / 3.) * diffU.trace(), real(0));
+                const real crossDiffusion = 2 * (1 - F1) * rho * sigO2 / omegaaa *
+                                            diffKO(EigenAll, 0).dot(diffKO(EigenAll, 1));
+                source(I4 + 2) += std::max(crossDiffusion, real(0)) / (rho * omegaaa);
+            }
         }
     }
 

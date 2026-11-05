@@ -419,6 +419,64 @@ TEST_CASE("Euler two-equation turbulent normal stress follows the physical face 
         }
 }
 
+TEST_CASE("Viscous wall perturbations match prescribed turbulence ghost values")
+{
+    using Eval = EulerEvaluator<NS_2EQ>;
+    const auto root = projectRoot();
+    const auto path = writeTempConfig<NS>(root + "/cases/euler/euler_config_IV.json", "rans_wall_jacobian",
+                                          {{"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}}},
+                                           {"dataIOControl", {{"meshDirectBisect", 0}, {"meshFile", root + "/data/mesh/IV10_10.cgns"}}}});
+    EulerSolver<NS> fixture(g_mpi);
+    fixture.ConfigureFromJson(path, true);
+    fixture.ReadMeshAndInitialize();
+    EulerEvaluatorSettings<NS_2EQ> settings(7);
+    Eval eval(fixture.getMesh(), fixture.getVFV(), std::make_shared<BoundaryHandler<NS_2EQ>>(7), settings);
+    eval.dWall[0].setConstant(1);
+    Eval::TU state;
+    state << 1.2, .3, .2, .1, 10, .4, 2;
+    const Eval::TVec normal = Eval::TVec::UnitX();
+    const Eval::TMat base = Eval::TMat::Identity();
+    for (auto model : {RANSModel::RANS_KOSST, RANSModel::RANS_KOWilcox})
+    {
+        eval.settings.ransModel = model;
+        for (int j : {5, 6})
+        {
+            Eval::TU direction = Eval::TU::Unit(j);
+            auto perturbation = direction;
+            const auto linear = eval.generateBoundaryValue(perturbation, state, 0, 0, -1,
+                                                           normal, base, Geom::tPoint::Zero(), 0,
+                                                           Geom::BC_ID_DEFAULT_WALL, false, 0, 1);
+            constexpr real h = 1e-5;
+            Eval::TU plus = state + h * direction, minus = state - h * direction;
+            // Hold the cell mean (wall target, viscosity, distance) fixed.
+            const auto rightPlus = eval.generateBoundaryValue(plus, state, 0, 0, -1,
+                                                              normal, base, Geom::tPoint::Zero(), 0,
+                                                              Geom::BC_ID_DEFAULT_WALL, false);
+            const auto rightMinus = eval.generateBoundaryValue(minus, state, 0, 0, -1,
+                                                               normal, base, Geom::tPoint::Zero(), 0,
+                                                               Geom::BC_ID_DEFAULT_WALL, false);
+            CHECK((linear - (rightPlus - rightMinus) / (2 * h)).norm() < 1e-9);
+            CHECK(linear(j) == -1);
+        }
+    }
+    // The same early-return branch is shared by SA. Keep its wall derivative
+    // consistent too, holding fixUL=false as in the implicit matrix assembly.
+    EulerEvaluatorSettings<NS_SA> saSettings(6);
+    EulerEvaluator<NS_SA> saEval(fixture.getMesh(), fixture.getVFV(), std::make_shared<BoundaryHandler<NS_SA>>(6), saSettings);
+    EulerEvaluator<NS_SA>::TU saState = state.head<6>(), direction = EulerEvaluator<NS_SA>::TU::Unit(5);
+    auto perturbation = direction;
+    const auto linear = saEval.generateBoundaryValue(perturbation, saState, 0, 0, -1,
+                                                     normal, base, Geom::tPoint::Zero(), 0,
+                                                     Geom::BC_ID_DEFAULT_WALL, false, 0, 1);
+    constexpr real h = 1e-5;
+    EulerEvaluator<NS_SA>::TU plus = saState + h * direction, minus = saState - h * direction;
+    const auto rightPlus = saEval.generateBoundaryValue(plus, saState, 0, 0, -1, normal, base,
+                                                        Geom::tPoint::Zero(), 0, Geom::BC_ID_DEFAULT_WALL, false);
+    const auto rightMinus = saEval.generateBoundaryValue(minus, saState, 0, 0, -1, normal, base,
+                                                         Geom::tPoint::Zero(), 0, Geom::BC_ID_DEFAULT_WALL, false);
+    CHECK((linear - (rightPlus - rightMinus) / (2 * h)).norm() < 1e-9);
+}
+
 template <EulerModel model>
 static void checkReconstructionPPSeparation()
 {

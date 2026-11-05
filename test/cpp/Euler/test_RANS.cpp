@@ -354,6 +354,45 @@ TEST_CASE("GetSource_SST mode=1: implicit diagonal non-negative")
     CHECK(source(I4 + 2) >= 0.0);
 }
 
+TEST_CASE("SST optional sink diagonal matches frozen-gradient derivatives and preserves RHS")
+{
+    auto U = buildState(1.3, .2, .1, 0, 1, .8, 2.4);
+    Eigen::Matrix<real, dim, nVars> gradient = Eigen::Matrix<real, dim, nVars>::Zero();
+    // Isotropic expansion: zero deviatoric strain, negative k-production.
+    for (int d = 0; d < dim; ++d)
+        gradient(d, d + 1) = U(0) * .2;
+    gradient(0, I4 + 1) = U(0) * .3;
+    auto config = g_kOmegaSSTConfig;
+    config.implicitAdditionalSinks = true;
+    for (real omegaGradient : {real(.7), real(-.7)})
+    {
+        CAPTURE(omegaGradient);
+        gradient(0, I4 + 2) = U(0) * omegaGradient;
+        auto evaluate = [&](const auto &state, int mode, const auto &settings)
+        {
+            Eigen::Vector<real, nVars> result = Eigen::Vector<real, nVars>::Zero();
+            // Far-wall limit freezes F1=F2=0 and pure RANS FDES=1.
+            GetSource_SST<dim>(state, gradient, 1e-5, 1e12, 1e100, result, mode, settings);
+            return result;
+        };
+        CHECK((evaluate(U, 0, config) - evaluate(U, 0, g_kOmegaSSTConfig)).norm() == 0);
+        const auto diagonal = evaluate(U, 1, config);
+        const auto original = evaluate(U, 1, g_kOmegaSSTConfig);
+        for (int j : {I4 + 1, I4 + 2})
+        {
+            auto plus = U, minus = U;
+            constexpr real h = 1e-5;
+            plus(j) += h;
+            minus(j) -= h;
+            const real negativeDerivative = -(evaluate(plus, 0, config)(j) - evaluate(minus, 0, config)(j)) / (2 * h);
+            if (j == I4 + 1 || omegaGradient > 0)
+                CHECK(diagonal(j) == doctest::Approx(negativeDerivative).epsilon(1e-8));
+            else
+                CHECK(diagonal(j) == original(j)); // destabilizing derivative stays explicit
+        }
+    }
+}
+
 // ===================================================================
 // Viscous flux: zero gradient -> zero flux
 // ===================================================================

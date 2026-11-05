@@ -17,6 +17,9 @@ documents limited-gradient preparation, explicit reuse and boundary-stage timing
 The [Euler RANS reconstruction PP correction](dev/euler_rans_reconstruction_pp_2026-11-05.md)
 separates spatial flow beta from scalar limiting and preserves coupled increment scaling.
 
+The [SST convergence audit](dev/euler_sst_convergence_2026-11-05.md)
+records source linearization, wall perturbation checks and O2 numerical trials.
+
 ## Core Modules
 
 | Module     | Directory    | Description                                              |

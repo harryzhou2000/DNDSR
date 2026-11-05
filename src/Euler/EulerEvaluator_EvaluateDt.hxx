@@ -2652,7 +2652,16 @@ namespace DNDS::Euler
         }
 
         if (linMode == 1)
+        {
+            // The turbulence wall values are prescribed (frozen here), so
+            // delta(qGhost) = -delta(qInterior). Returning before applying
+            // this reflection cancels their wall penalty in the Roe Jacobian.
+            if constexpr (Traits::hasSA)
+                URxy(I4 + 1) *= -1;
+            if constexpr (Traits::has2EQ)
+                URxy({I4 + 1, I4 + 2}) *= -1;
             return URxy;
+        }
 
         if (bTypeEuler == EulerBCType::BCWallIsothermal)
         {
