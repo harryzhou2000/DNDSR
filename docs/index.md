@@ -38,6 +38,7 @@ gates. The placement foundation mock alone is not a fluid validation.
 
 | Topic | Guide |
 | --- | --- |
+| Configuration publication, threading and native/Python library boundaries | [Configuration registration](architecture/Configuration.md) |
 | Shared thermodynamics, chemistry workers, transport and RANS | [Shared Physics](architecture/Physics.md) |
 | Mesh ownership, relation semantics, construction closure and ghost assembly | [Mesh connectivity and construction](architecture/MeshConnectivity.md) |
 | Owned construction API and mesh access examples | [Native mesh construction](architecture/NativeMesh.md) |
@@ -58,6 +59,7 @@ gates. The placement foundation mock alone is not a fluid validation.
 | Completed CFV/Geom work orders and validation limits | [Facility completion ledger](dev/fv_completion_2026-10-31.md) |
 | Entity-associated fields and migration layouts | [EntityField](architecture/EntityField.md) |
 | Physical table formats, strides and local dense adapters | [Physical Array layouts](architecture/PhysicalArrayLayouts.md) |
+| Python Cauchy logical-state, FV and linear operator composition | [Python Cauchy operators](guides/python_cauchy_operators.md) |
 | Canonical and compatibility source paths | [Source organization](architecture/source_organization.md) |
 | Mesh Python access and operations | [Python mesh guide](guides/python_geom_guide.md) |
 

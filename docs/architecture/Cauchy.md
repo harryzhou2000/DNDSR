@@ -6,9 +6,14 @@ For the current extended-physics capability summary, use
 historical scope and validation limits. Physical correctness and usable solver
 capabilities take priority over broad UT matrices or strict performance tuning.
 
-Status2026-11-04: foundation, optional checked eager execution and the
-single-domain CPU flow solver include native implicit linear/nonlinear solves,
-BDF/Trapz/ESDIRK/DITR, full/subset polynomial FAS and persistent-ID restart in focused tests.
+Current CPU scope, November 5: optional checked eager execution, native
+linear/nonlinear solves, method-owned BDF/Trapz/ESDIRK/DITR state, full/subset
+polynomial FAS and persistent-ID restart have focused distributed coverage.
+The production C++ and Python frontends coordinate multiple flow5 domains,
+including rigid interfaces and shared or disjoint domain communicators.
+Single-domain extended equations support the RANS/mixture profiles listed in
+[CauchyState.md](CauchyState.md), including coupled chemistry and physical
+Strang/CVODE source splitting. Native archives/output retain all equation blocks.
 Euler-derived PP and native LVR have focused distributed coverage; qualified
 physical studies and performance limits are recorded in the plan repo. The
 Mach20+3WBAP nonconvergence is expected and is not pursued as a solver defect;
@@ -196,8 +201,9 @@ Array independently retains storage after frontend destruction. All control
 ranks call `advance`, including ranks with no local domain. Destroy communicator
 owners on an MPI-permitted thread before finalization. The initial Python tests
 cover shared meshes and reversed split communicators; the geometric rotating-IV
-fixture is in the C++ suite. The production executable still has the single-
-domain output/restart frontend restriction described below.
+fixture is in the C++ suite. Production output/restart supports these domain
+placements through one child archive per domain and a coordinated manifest;
+single-domain archives retain their existing file naming and representation.
 
 Python `Domain.advance`/`Simulation.advance` use the same C++ engine and release
 the GIL. `defaults.execution.overlap=true` enables native halo/core overlap;
@@ -207,22 +213,25 @@ still obey the normal lease contract and must be released before conflicting
 stepping or publication. Domain tests cover inline/worker execution and shared/
 split simulation ownership. Configured ideal-mixture Domains also expose shared
 flow/species fields, full residual reports, implicit stepping and explicit-worker
-derived refresh. Their guarded output/restart and other missing profiles are
-listed in [CauchyState.md](CauchyState.md); this is not RANS or CUDA acceptance.
+derived refresh. The supported RANS/mixture profiles and explicit missing
+profiles are listed in [CauchyState.md](CauchyState.md). Short physical checks
+do not establish broad RANS acceptance, and Cauchy CUDA remains deferred.
 
 Runtime arrays, transfers, streams/events and native CFV reconstruction,
 gradient, limiter and sampling APIs are exposed separately. CFV has All/Core/
 HaloDependent calls for explicitly ordered halo/core/wait/dependent sequences.
 Some synchronous CPU wrappers retain the GIL; these are not a complete Python
-CPU-worker enqueue API. Cauchy's standalone equation-state/auxiliary/RHS/Jacobian/
-SGS/ILU/FAS and visualization bindings remain incomplete. Their future Python
-frontend should call the same C++ operators and retain their owners, never
-duplicate numerical algorithms or infer missing stream dependencies.
+CPU-worker enqueue API. The [Cauchy operator frontend](../guides/python_cauchy_operators.md)
+exposes logical state, optional auxiliary/RHS preparation, approximate matrices,
+SGS/ILU/linear solves, nonlinear corrections, spatial FAS and visualization
+through the same native C++ entrypoints. It retains their owners and releases
+the GIL around native work; it never infers external stream dependencies.
 
-The current executable remains a development frontend. Production integration
-will replace its raw MPI lifecycle, manual history stream and positional CLI
-with DNDS MPI initialization/finalization, segmented `CsvLog`, and `argparse`
-with typed JSON overrides and recorded effective configuration.
+The production executable uses DNDS MPI initialization/finalization, segmented
+`CsvLog` histories and `argparse` with typed JSON overrides and recorded effective
+configuration. It visits domains in the agreed global order and uses the
+coordinated restart/output controller. Domain objects and communicator owners
+are destroyed before MPI finalization on every exit path.
 
 `CoordinatedSchedule` is a scalar mock of the frozen-trace contract, not a fluid
 integrator. All domains read the same old trace snapshot for a round. Only each
@@ -254,8 +263,9 @@ pointer from the end of a flow row. Coupled equations remain coupled regardless
 of physical block separation. The coupled matrix/vector adapter maps logical
 component ordering across blocks without a persistent flattened state. The
 configured ideal-mixture Domain now uses full-state FV/implicit stages and
-publication with separate flow/species arrays. Checkpoint/output and several
-extended numerical profiles remain guarded until their adapters are connected;
+publication with separate flow/species arrays. Native checkpoint/output
+preserve every block; the remaining extended flux/limiter/interface profiles
+remain guarded until their adapters are connected.
 RANS and incompressible physical models are not supplied by the bundle container.
 
 Checkpoint writing calls native `Runtime::WriteArray` on the owned field;

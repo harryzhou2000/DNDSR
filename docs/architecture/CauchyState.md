@@ -9,6 +9,10 @@ Initial, prescribed boundary and physical reference inputs share the
 [state-input conversion facility](CauchyStateInput.md). Unit-system reference
 scales and the resolved physical reference state have separate meanings.
 
+The [Python operator guide](../guides/python_cauchy_operators.md) describes shared
+logical handles, configured native FV/linear composition, communicator lifetime,
+GIL boundaries and caller-owned halo/collective ordering.
+
 Current CPU scope (November 5): configured flow5, SA/Wilcox/SST/realizable-k-epsilon
 and optional ideal-mixture chemistry share logical DOF bindings, implicit time
 equations, native archives and observation. Extended profiles use Rusanov,

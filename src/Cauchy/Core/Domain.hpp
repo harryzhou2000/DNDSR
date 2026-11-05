@@ -152,6 +152,10 @@ namespace DNDS::Cauchy
         const std::string &Name() const { return _name; }
         const EquationSystem &Equation() const { return _equation; }
         const FiniteVolume &Discretization() const { return _fv; }
+        /// Shared worker capacity for standalone native operators. A copy
+        /// retains the pool, never an acquired worker. Serialize operator and
+        /// Domain use or provide sufficient capacity; no implicit pool exists.
+        std::optional<Physics::Chemistry::ChemicalWorkerPool> ChemicalWorkers() const { return _workers; }
         const Algebra::DofBundle &State() const { return _accepted.Fields(); }
         const EquationDofs &Dofs() const { return _accepted; }
         /// Synchronous local point refresh using this domain's explicit worker

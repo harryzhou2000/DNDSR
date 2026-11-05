@@ -378,6 +378,10 @@ namespace DNDS::Cauchy
         FiniteVolume(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const EquationSystem &equation);
         const CFV::FiniteVolumePlan &Metrics() const;
         const EquationSystem &Equation() const;
+        /// Immutable resolved spatial controls, including source-free settings
+        /// for a split Domain. Custom controllers copy this for their own
+        /// nonlinear/hierarchy controls; changing a copy cannot mutate this plan.
+        const DomainSettings &Settings() const;
         const CFV::VariationalReconstructionPlan &Reconstruction() const;
         const Geom::UnstructuredMesh &Mesh() const;
         const RigidMotion &Motion() const;

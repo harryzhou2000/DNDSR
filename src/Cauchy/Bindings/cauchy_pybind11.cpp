@@ -5,6 +5,11 @@
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include <pybind11/stl.h>
 
+namespace DNDS::Cauchy::Bindings
+{
+    void BindEquationOperators(pybind11::module_ &module);
+}
+
 PYBIND11_MODULE(cauchy_pybind11, m)
 {
     namespace py = pybind11;
@@ -74,6 +79,8 @@ PYBIND11_MODULE(cauchy_pybind11, m)
              py::arg("mesh"), py::arg("config_json") = "{}", py::arg("name") = "fluid", py::call_guard<py::gil_scoped_release>())
         .def_property_readonly("flow", [](C::Domain &domain)
                                { return R::PythonArray::Share(domain.Flow().Owned()); }, "Shared owned flow Array; follows normal retained-view/access contracts.")
+        .def_property_readonly("dofs", [](const C::Domain &domain)
+                               { return domain.Dofs(); }, "Shallow logical state handle. Arrays and row metadata are shared with the accepted state; clone for independent operator input. Release views and serialize mutation with Domain/Simulation work.")
         .def_property_readonly("fields", [](C::Domain &domain)
                                {
             std::map<std::string, R::PythonArray> result;
@@ -178,4 +185,5 @@ PYBIND11_MODULE(cauchy_pybind11, m)
         .def("interface_diagnostics", &C::Simulation::GetInterfaceDiagnostics, py::call_guard<py::gil_scoped_release>(), "Collective query/rematch/map counts and maximum physical projection gap. Does not change the solution or traces.")
         .def_property_readonly("resolved_json", [](const C::Simulation &simulation)
                                { return simulation.Config().Root().dump(); });
+    C::Bindings::BindEquationOperators(m);
 }

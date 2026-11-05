@@ -1,0 +1,197 @@
+# Python Cauchy equation operators
+
+Python and the C++ frontend use the same native CPU operators. `Domain` and
+`Simulation` remain the production time controllers. `EquationOperators`
+provides the existing lower-level FV and linear entrypoints for testing,
+tuning and custom orchestration; it does not implement another numerical loop.
+CUDA Cauchy kernels remain unavailable.
+
+## Ownership and access
+
+```text
+Python Simulation -> Domain -> accepted EquationDofs
+                         ^                 |
+                 EquationOperators         +-> shared schema and row space
+                         |                 +-> physical fields
+                         +-> shared FV plans       +-> owned Runtime Array
+                         +-> worker capacity       +-> ghost Runtime Array
+                         +-> native workspaces          +-> shared allocation
+```
+
+`domain.dofs` returns a shallow logical handle. Its `fields` mapping contains
+native `DoubleDofField` handles, sharing both owned and ghost allocations.
+`clone()` copies owned values into independent storage; it does not refresh
+ghosts. `zeros_like()` creates independent residual/update scratch with the
+same grouping and physical layouts. Zero-filled scratch need not be an
+admissible physical state.
+
+`blocks` describes logical component names. `locate_block(name)` returns
+`(physical_field_name, first_component, component_number)`. Physical AoS/SoA/
+AoSoA layouts and full parent pitches stay intact. `EquationDofs.from_fields`
+explicitly binds ordered native fields and `(block, field, offset)` tuples,
+using a prototype's immutable equation schema and row space. It shares storage;
+it does not copy values or infer a physical profile from component counts.
+
+The Python operator owner retains its originating Domain. A Domain borrowed
+from Simulation retains that Simulation, including its domain communicators.
+Workspaces and linear solvers retain the operator owner. Copied Runtime arrays
+retain their allocations and metadata independently. Bare native views still
+obey the ordinary lease lifetime contract; a NumPy snapshot is a copy.
+
+```text
+EquationStageSolver -> EquationOperators -> Domain -> optional Simulation
+                   -> original state + workspace + engine
+                   -> copied native stream
+PolynomialMultigrid -> finest EquationStageSolver + original mesh
+```
+
+Release debug views before conflicting native work. Serialize workspace use,
+matrix preparation, worker acquisition and Domain/Simulation mutation. Do not
+replace the bound field allocations/shapes; build a new workspace after such
+a change. For live Simulation state, advance through Simulation so that
+accepted clocks and interface traces remain coordinated.
+
+## Native residual and auxiliary preparation
+
+```python
+from DNDSR.Cauchy import EquationOperators, AuxiliaryRequest
+from DNDSR.DNDS import Runtime as R
+
+operators = EquationOperators(domain)
+state = domain.dofs.clone()
+residual = state.zeros_like()
+engine = R.EagerEngine(host_threads=2, tracking=R.AccessTrackingContext())
+stream = engine.cpu_stream()
+workspace = operators.build_workspace(state)
+operators.evaluate(state, residual, workspace, engine, stream, time=domain.time)
+
+request = AuxiliaryRequest()
+request.mean_thermodynamics = True
+request.face_spectral_radius = True
+request.cell_spectral_sum = True
+auxiliary = operators.build_auxiliary_values(request)
+operators.prepare_correction_aux(state, workspace, auxiliary, engine, stream,
+                                 time=domain.time)
+```
+
+`evaluate` accepts stale input halos, performs canonical exchanges and
+configured core/halo overlap internally, and returns CPU-visible owned output.
+It updates input ghosts and reconstruction scratch, never owned input means.
+The output halo can remain stale. All domain ranks call collectively in the
+same order from an MPI-authorized controller thread. Python releases the GIL
+during native work; inline and worker execution share the same C++ sequence.
+Return joins the relevant stream. An external pending producer must already
+be joined; the wrapper does not infer arbitrary cross-stream dependencies.
+
+The equation workspace supports the native equation-state profile, including
+P3 VR, component WBAP, Euler reconstruction PP and supported RANS/mixture
+transport and sources. Unsupported characteristic/LVR/flux/interface profiles
+still fail explicitly, including when a flow5 Domain itself has a more capable
+specialized flow5 workspace. For Strang domains, these operators expose the resolved
+source-free transport profile, as used inside the Domain.
+
+`build_mean_workspace` / `evaluate_mean` use separate zero-reconstruction
+physical-step scratch. `reconstruction_guess` and `flux_reconstruction` return
+shared unlimited/filtered coefficient fields. `reset_reconstruction` is local;
+`restore_reconstruction` validates and publishes an explicit snapshot
+collectively. Retain a clone when preserving values across another evaluation.
+
+`build_mean_gradients` and `prepare_aux_values` expose explicit gradient and
+auxiliary preparation independently of reconstruction. Two-equation RANS
+uses current mean gradients. `prepare_correction_aux` also refreshes the
+equation workspace's frozen source-quadrature publication for a Jacobian,
+without advancing its polynomial guess. `validate_aux_values` checks the
+current state, time and output versions. A debug write invalidates provenance.
+Optional outputs are absent rather than silently allocated by consumers.
+When `derived_quantities` is nonempty, a thermodynamics request adds the
+required p/a/diffusivity columns to that derived bundle and omits the separate
+`mean_thermodynamics` table. Inspect `derived_owned.quantities` for its column
+order; `validate_aux_values` accepts either prepared representation.
+
+## Approximate matrices and linear solves
+
+Build a `LinearProblem` from the exact state schema/row space, request block or
+entry diagonal and assembled or semi-matrix-free off-diagonals, then call
+`prepare_jacobian`. The supplied inverse pseudo-time is an owned scalar Runtime
+array. `JacobianPreparation` describes physical mass, RHS scaling and optional
+named-selection-resolved component indices. Nonconstant chemical reconstruction
+also needs the completed equation workspace as `source_workspace`.
+
+Preparation is synchronous and local. It consumes ready halos and explicit
+auxiliary data and performs no hidden EOS policy selection or halo exchange.
+After changing coefficients, explicitly invert diagonals or factor ILU before
+their low-level uses. The numerical snapshot follows the existing Euler-style
+approximate operator; it is not the complete differentiated nonlinear residual.
+
+`build_linear_solver` constructs the existing native SGS, left-GMRES or
+standalone ILU controller using the canonical halo binder. `solve` is collective
+and handles its own input exchanges. Always inspect `report.usable`,
+`report.converged` and residuals. `solution` shares reusable scratch; clone it
+before another solve if the old values are needed.
+
+Low-level `apply`, `begin_sgs`, `apply_sgs` and `apply_ilu` perform no MPI.
+Their caller is responsible for current input ghosts and matching matrix
+generations. Staged SGS permits real input exchange during lower Core work:
+
+```python
+from DNDSR.Cauchy import LinearRegion
+
+bindings = [operators.metrics.BindHalo(old.fields[name])
+            for name in old.field_names]  # physical registry order on all ranks
+active = [binding.begin() for binding in bindings]
+sweep = problem.begin_sgs(rhs, old, forward, update)
+sweep.lower(LinearRegion.Core)
+for transfer in active:
+    transfer.wait()
+sweep.lower(LinearRegion.HaloDependent)
+sweep.upper(LinearRegion.HaloDependent)
+sweep.upper(LinearRegion.Core)
+sweep.finish()
+```
+
+The default freezes remote old values across both scans. The optional middle
+exchange remains an explicit exposed communication point. Never call phases
+concurrently or let forward/output alias input. Abandoning unfinished numerical
+work can invalidate scratch; accepted state is not silently repaired.
+
+## Native nonlinear correction and spatial FAS
+
+`build_stage_solver(state, workspace, engine, stream, implicit_json="{}")`
+binds the production equation nonlinear controller to its original state and
+workspace. It retains those Python owners and the engine; the native stream
+value is copied. Optional JSON overrides affect only `implicit` controls and
+use the production configuration schema/defaults/validation. Spatial and
+physical controls come from the immutable FV plan. Use named
+`implicit.residualComponents`; `state.resolve_components` separately resolves
+explicit update-component masks for low-level `NonlinearSolveControl`.
+
+`correct_once` is exactly one native pseudo-time/Jacobian/linear/PP update. It
+does not contain a nonlinear convergence loop and does not decide acceptance.
+`solve` invokes the common native nonlinear loop. Both receive frozen
+`source=resOther`, `inverse_dt` and `rhs_scale` in the normalized defect
+`resOther + rhs_scale*F(U) - inverse_dt*U`. The physical rate F is volume
+normalized; the FV residual entrypoint above is integrated. Do not substitute
+the integrated residual directly into that time-equation formula.
+
+`build_multigrid(mesh, stage_solver)` uses the native p-hierarchy and its
+configured `implicit.multigrid` controls. The supplied mesh and operator owner
+must be the original finest ones. The returned hierarchy retains the finest
+solver, its state/workspace/engine owners and the mesh. `apply_cycle` performs
+one spatial FAS update; `solve` uses the shared finest convergence controller.
+Keep other-coupledStage source terms frozen throughout the complete cycle.
+Invoke separate cycles per coupledStage for DITR; no temporal hierarchy is
+introduced. A caller building its own iteration loop owns CFL progression,
+convergence and trial rollback. Native Domain/Simulation remain the simple
+way to obtain method-owned stage/step history and accepted-step transactions.
+
+## Scope and verification
+
+The Python interface is a thin operator composition boundary, not a binding of
+every internal point kernel or a new Python callback nonlinear controller.
+Method-owned ODE history and accepted-step transactions still run through native
+Domain/Simulation. The binding tests compare nonconstant P3/WBAP residuals
+against the Domain path, compose explicit auxiliary/Jacobian/matrix/linear work,
+and compare staged/unsplit SGS with actual active MPI, one native correction and
+a spatial FAS cycle. Independent physical
+and matrix oracles remain in C++ tests. None of this establishes Cauchy GPU
+execution or a new physical validation campaign.

@@ -385,6 +385,7 @@ namespace DNDS::Cauchy
     }
     const CFV::FiniteVolumePlan &FiniteVolume::Metrics() const { return _data->metrics; }
     const EquationSystem &FiniteVolume::Equation() const { return _data->equation; }
+    const DomainSettings &FiniteVolume::Settings() const { return _data->settings; }
     const CFV::VariationalReconstructionPlan &FiniteVolume::Reconstruction() const { return _data->reconstruction; }
     const Geom::UnstructuredMesh &FiniteVolume::Mesh() const { return *_data->mesh; }
     const RigidMotion &FiniteVolume::Motion() const { return _data->motion; }
