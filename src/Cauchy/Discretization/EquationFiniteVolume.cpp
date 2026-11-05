@@ -641,16 +641,16 @@ namespace DNDS::Cauchy
         {
             ValidateWorkspace(state, work);
             PrepareAuxValues(state, auxiliary, *work.meanGradients, engine, stream, time, work.workers);
-            MPI::LocalStage(mpi, [&]
-                            {
+            Metrics().Communication()->LocalStage([&]
+                                                  {
                 auto evaluator = _data->equation.MakePointEvaluator(work.workers ? work.workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {true});
                 work.PrepareVolumeSource(state, nullptr, evaluator);
                 work.PublishSourceState(state, time); });
             return;
         }
         std::optional<EquationAuxiliaryPreparation> preparation;
-        MPI::LocalStage(mpi, [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             ValidateWorkspace(state, work);
             DNDS_check_throw_info(stream.Context().device == R::Device::Host(), "equation correction requires a CPU stream");
             PreflightHalo(state);
@@ -666,8 +666,8 @@ namespace DNDS::Cauchy
                           { preparation->Apply(CFV::ReconstructionRegion::Core); });
         for (auto &transfer : transfers)
             transfer.Wait();
-        MPI::LocalStage(mpi, [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             if (_data->settings.CheckHaloFreshness())
                 for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                     work.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), work.meanEpoch);
@@ -691,8 +691,8 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::InitializeConservative(EquationDofs &state, const std::vector<real> &values) const
     {
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             Metrics().Validate();
             _data->equation.ValidateStateSchema(state);
             _data->equation.ResolveKernelProfile(state.Device());
@@ -720,8 +720,8 @@ namespace DNDS::Cauchy
                                           std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
                                           const std::map<std::string, real> &ransConservative) const
     {
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             Metrics().Validate();
             _data->equation.ValidateStateSchema(state);
             _data->equation.ResolveKernelProfile(state.Device());
@@ -761,8 +761,8 @@ namespace DNDS::Cauchy
     {
         auto inner = BuildEquationWorkspaceImpl(state, std::move(workers), true);
         std::shared_ptr<EquationMeanWorkspace> result;
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        { result = std::make_shared<EquationMeanWorkspace>(EquationMeanWorkspace{std::move(inner)}); });
+        Metrics().Communication()->LocalStage([&]
+                                              { result = std::make_shared<EquationMeanWorkspace>(EquationMeanWorkspace{std::move(inner)}); });
         return result;
     }
     std::shared_ptr<FiniteVolume::EquationWorkspace> FiniteVolume::BuildEquationWorkspaceImpl(EquationDofs &state,
@@ -770,8 +770,8 @@ namespace DNDS::Cauchy
     {
         const MPIInfo mpi(Metrics().Communicator());
         std::string operationControls;
-        MPI::LocalStage(mpi, [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             _data->equation.ValidateStateSchema(state);
             _data->equation.ResolveKernelProfile(state.Device());
             DNDS_check_throw_info(state.Space().Same(Metrics().Space()), "equation FV state belongs to another row space");
@@ -802,8 +802,8 @@ namespace DNDS::Cauchy
                 {"rans", _data->equation.HasRANS() ? Json(_data->equation.RANS().Settings()) : Json()}}.dump(); });
         AgreeEquationBinding(state, mpi.comm, operationControls);
         std::shared_ptr<EquationWorkspace> result;
-        MPI::LocalStage(mpi, [&]
-                        { result = std::make_shared<EquationWorkspace>(_data, state, std::move(workers), meanOnly); });
+        Metrics().Communication()->LocalStage([&]
+                                              { result = std::make_shared<EquationWorkspace>(_data, state, std::move(workers), meanOnly); });
         result->BindHalos(state);
         if (!meanOnly && _data->equation.HasRANS() && _data->equation.RANS().ComponentNumber() == 2)
             result->meanGradients.emplace(BuildMeanGradients(state));
@@ -831,8 +831,8 @@ namespace DNDS::Cauchy
     }
     FiniteVolume::ReconstructionRestore FiniteVolume::ReserveReconstructionRestore(std::shared_ptr<EquationWorkspace> work, const EquationDofs &guess) const
     {
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        { DNDS_check_throw_info(bool(work), "null equation reconstruction workspace"); });
+        Metrics().Communication()->LocalStage([&]
+                                              { DNDS_check_throw_info(bool(work), "null equation reconstruction workspace"); });
         auto &reference = *work;
         return ReserveReconstructionRestoreImpl(reference, guess, std::move(work));
     }
@@ -854,8 +854,8 @@ namespace DNDS::Cauchy
             }
         };
         std::shared_ptr<Reservation> reservation;
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
                 reservation = std::make_shared<Reservation>();
                 reservation->owner = std::move(retained);
                 DNDS_check_throw_info(work.owner == _data, "foreign equation reconstruction workspace");
@@ -874,9 +874,9 @@ namespace DNDS::Cauchy
                 for (index iBlock = 0; iBlock < guess.BlockNumber(); ++iBlock)
                     reservation->output.push_back(reservation->destination->Block(iBlock)); });
         std::optional<ReconstructionRestore> restore;
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        { restore.emplace(ReconstructionRestore([reservation, &work]() noexcept
-                                                                {
+        Metrics().Communication()->LocalStage([&]
+                                              { restore.emplace(ReconstructionRestore([reservation, &work]() noexcept
+                                                                                      {
             reservation->started = true;
             for (index iBlock = 0; iBlock < index(reservation->input.size()); ++iBlock)
             {
@@ -911,8 +911,8 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::LimitReconstructionPP(const EquationDofs &state, EquationWorkspace &work) const
     {
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             ValidateWorkspace(state, work);
             DNDS_check_throw_info(work.positivity, "equation reconstruction PP was not requested");
             work.positivity->Apply(state, work.coefficients, work.fluxCoefficients, true); });
@@ -945,11 +945,11 @@ namespace DNDS::Cauchy
         const MPIInfo mpi(Metrics().Communicator());
         // Observe only this lane's producer prefix. MPI remains on the caller's
         // controller thread, including when the CPU launcher uses worker threads.
-        MPI::LocalStage(mpi, [&]
-                        { stream.Record().WaitHost(); });
+        Metrics().Communication()->LocalStage([&]
+                                              { stream.Record().WaitHost(); });
         std::optional<EquationPointEvaluator> evaluator;
-        MPI::LocalStage(mpi, [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             DNDS_check_throw_info(work.owner == _data && std::isfinite(time) && stream.Context().device == R::Device::Host(),
                                   "foreign equation workspace, invalid time or missing CPU backend");
             ValidateWorkspace(state, work);
@@ -968,10 +968,7 @@ namespace DNDS::Cauchy
                 {viscous || _data->equation.HasRANS(), viscous, viscous, work.chemical, false})); });
         const auto local = [&](auto &&action)
         {
-            if (_data->settings.implicit.collectiveChecks)
-                MPI::LocalStage(mpi, action);
-            else
-                action();
+            Metrics().Communication()->LocalStage(std::forward<decltype(action)>(action));
         };
         const auto begin = [&](std::vector<R::TransferBinding> &bindings)
         {
@@ -1146,8 +1143,8 @@ namespace DNDS::Cauchy
     {
         Vector3 force{};
         const MPIInfo mpi(Metrics().Communicator());
-        MPI::LocalStage(mpi, [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             DNDS_check_throw_info(work.owner == _data && work.boundaryMomentumCurrent,
                 "equation boundary force requires a completed RHS evaluation");
             for (const int zone : zones)

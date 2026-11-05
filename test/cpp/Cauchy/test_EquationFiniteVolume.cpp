@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <numeric>
 #include <limits>
+#include <atomic>
 
 namespace C = DNDS::Cauchy;
 namespace A = DNDS::Algebra;
@@ -25,6 +26,14 @@ namespace R = DNDS::Runtime;
 namespace P = DNDS::Physics;
 using I = DNDS::index;
 static DNDS::MPIInfo mpi;
+static std::atomic<bool> countReductions{false};
+static std::atomic<int> reductions{0};
+extern "C" int MPI_Allreduce(const void *send, void *receive, int count, MPI_Datatype type, MPI_Op operation, MPI_Comm comm)
+{
+    if (countReductions)
+        ++reductions;
+    return PMPI_Allreduce(send, receive, count, type, operation, comm);
+}
 namespace
 {
     void Compare(const C::EquationDofs &a, const C::EquationDofs &b, double tolerance)
@@ -158,6 +167,67 @@ TEST_CASE("Equation FV uses the established P3/gradient/WBAP flow5 kernels acros
             C::EquationDofOperations::Fill(replacement, .125);
             fv.RestoreReconstructionGuess(*work, replacement);
             Compare(coefficients, replacement, 1e-15);
+        }
+    }
+}
+
+TEST_CASE("Equation FV local stages and physical-field halos inherit the agreed safety policy")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    std::optional<C::EquationDofs> reference;
+    int checkedReductions = 0;
+    for (bool checks : {true, false})
+    {
+        C::DomainSettings settings;
+        settings.implicit.collectiveChecks = checks;
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.reconstructionIterations = 2;
+        settings.numerics.reconstructionTolerance = 0;
+        settings.numerics.limiter = "WBAP";
+        settings.numerics.characteristicLimiter = false;
+        settings.numerics.faceFallback = false;
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(5));
+        {
+            auto write = state.WriteOwned();
+            const auto flow = write.Block("flow");
+            for (I iCell = 0; iCell < flow.RowCount(); ++iCell)
+            {
+                const auto point = fv.Metrics().GetCellCent(iCell);
+                const auto value = equation.Gas().Conservative({1 + .02 * std::sin(6.283185307179586 * point[0]), .2, -.1, .05, 1});
+                for (I component = 0; component < 5; ++component)
+                    flow(iCell, component) = value[component];
+            }
+        }
+        auto result = C::EquationDofOperations::NewVector(state);
+        auto work = fv.BuildEquationWorkspace(state);
+        R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateCPUStream();
+        struct CountingScope
+        {
+            CountingScope()
+            {
+                reductions = 0;
+                countReductions = true;
+            }
+            ~CountingScope() { countReductions = false; }
+        };
+        {
+            CountingScope count;
+            fv.Evaluate(state, result, *work, engine, stream);
+        }
+        if (checks)
+        {
+            checkedReductions = reductions;
+            reference = result;
+        }
+        else
+        {
+            CHECK(checkedReductions > 0);
+            CHECK(reductions.load() == 0); // Fixed sweeps; no numerical norm requested.
+            Compare(result, *reference, 0);
         }
     }
 }
@@ -448,6 +518,7 @@ TEST_CASE("Distributed prescribed mixture boundaries match independent nonconsta
     for (int scenario = 0; scenario < 2; ++scenario)
     {
         settings.execution.overlap = scenario;
+        settings.implicit.collectiveChecks = scenario == 0;
         C::FiniteVolume fv(mesh, settings, equation);
         auto state = mixture.State(fv.Metrics().Space(), scenario ? 2 : 1);
         fv.InitializeConstant(state, boundary.primitive, boundary.massFractions, temperature / mixture.scales.T0, mixture.workers);

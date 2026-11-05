@@ -632,3 +632,25 @@ listed archive/compatibility/map/interface paths. E3 matched measurements and
 E4–E7 remain open. BSSCA job 12442096 remains PENDING (Priority), no node or
 executed row, after its second bounded polling window; it is left queued
 unchanged without duplicate submission.
+
+## E1 whole-equation FV and mean-gradient policy
+
+Whole-equation workspace, warm-restore, correction/source preparation, PP and
+force-diagnostic local stages now inherit the metric communication context,
+as do mean-gradient setup and auxiliary completion. The two previously separate
+unchecked-phase lambdas delegate to the same local-stage helper; a rejected
+off-mode phase aborts instead of throwing while peers can enter later payloads.
+Required exact equation/schema/grouping/control agreement and numerical norms,
+timestep selection, force/statistics reductions remain unchanged. No pointwise
+physics, reconstruction, gradient or source arithmetic is moved into Runtime.
+
+A small counted P3 equation-FV test uses two fixed sweeps, componentwise WBAP
+and worker execution: off mode has **zero reductions**, since this path requests
+no numerical norm; on/off RHS values match bitwise at np1/2/4. An existing
+prescribed-mixture boundary scenario now exercises off mode while retaining
+its independent thermodynamic/face-integration oracle and layout/launcher
+comparison. The original checked negative cases are not disabled or rewritten
+as unchecked exceptions. All **9/9** equation-FV, RANS-FV and auxiliary-preparation
+registrations pass at np1/2/4 (60.69 s). This closes the whole-equation FV local-
+stage portion, not the remaining nonlinear/archive/interface scope or an
+independent old/new Euler validation.

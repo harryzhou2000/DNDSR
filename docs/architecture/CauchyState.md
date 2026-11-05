@@ -161,12 +161,12 @@ spatial/time operator exists for that model. FV has the established perfect-gas
 adapter and the explicit whole-equation mixture profile described below.
 Requesting another device fails explicitly,
 without host fallback. In checked execution a rank-local schema mismatch is
-coordinated before communication. Flow5 FV entry/preparation stages inherit the
+coordinated before communication. FV entry/preparation stages inherit the
 metric communication context: with `implicit.collectiveChecks=false`, their
 local failures abort before dependent collective/payload work. Successful local
-stages add no safety agreement. The extended equation adapter still has the
-separate coordinated-entry/caller-ordered phase contract described below; this
-is not a blanket promise of recoverable unchecked distributed exceptions.
+stages add no safety agreement. This applies to whole-equation mean-gradient,
+auxiliary, reconstruction and restore stages too; it is not a promise of
+recoverable unchecked distributed exceptions.
 The raw-field overload remains the trusted compressible stage/scratch adapter.
 
 The Domain frontend uses the semantic binding. Perfect gas retains its established
@@ -305,9 +305,12 @@ any field transfer. A collective exact descriptor check rejects inconsistent
 schema/physical grouping before constructing halo bindings; physical payload
 layouts may differ among ranks. Geometry versions, bindings and leases are
 checked outside point loops. Ghost updates are allowed; owned means do not
-change. Discard scratch after a failed evaluation. With
-`implicit.collectiveChecks=false`, the caller handles distributed failures
-between phases; entry/binding checks remain coordinated.
+change. Discard scratch after a failed checked evaluation. Local FV stages
+inherit the immutable metric communication context. With
+`implicit.collectiveChecks=false`, local rejection aborts before unmatched
+payload/collective work; successful stages add no safety agreement. Required
+schema, grouping and schedule agreement and numerical norms remain collective.
+This does not change the separate nonlinear driver's caller-ordered contract.
 
 This is a functional residual path, not a completed extended production Domain.
 It explicitly rejects face fallback, characteristic WBAP, other prepared

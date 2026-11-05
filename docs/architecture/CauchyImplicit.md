@@ -1133,9 +1133,12 @@ mode retains recoverable phase agreement. Constructor policy selection is
 agreed before optional stages, and subsequent calls use the immutable metric
 context. Required channel/LVR schedule agreement and admissibility, reconstruction
 norm, force/error and timestep reductions remain. These are prologue/control
-changes; numerical kernel access and arithmetic are unchanged. Extended equation,
-nonlinear and archive paths retain their separately documented contracts until
-their remaining stages are audited.
+changes; numerical kernel access and arithmetic are unchanged. Whole-equation
+FV and mean-gradient/auxiliary stages now follow the same context policy too,
+including reserve/restore and volume-source preparation. Required equation
+binding, method/configuration and numerical agreement remains. Nonlinear and
+archive paths retain their separately documented contracts until their remaining
+stages are audited.
 
 
 ## Method-owned buffers and completed halo publications

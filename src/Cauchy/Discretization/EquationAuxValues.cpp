@@ -42,8 +42,8 @@ namespace DNDS::Cauchy
     {
         EquationMeanGradients result;
         const MPIInfo mpi(Metrics().Communicator());
-        MPI::LocalStage(mpi, [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             _data->equation.ValidateStateSchema(state);
             DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && state.Device() == R::Device::Host(), "mean gradient state space/backend differs");
             result._data = std::make_shared<EquationMeanGradients::Data>(_data, state);
@@ -78,8 +78,8 @@ namespace DNDS::Cauchy
         const MPIInfo mpi(Metrics().Communicator());
         const bool overlap = _data->settings.execution.overlap;
         std::optional<EquationPointEvaluator> evaluator;
-        MPI::LocalStage(mpi, [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             stream.Record().WaitHost();
             DNDS_check_throw_info(gradients._data && gradients._data->owner.lock() == _data && stream.Context().device == R::Device::Host(), "foreign mean gradient workspace or non-CPU stream");
             gradients._data->binding.Check(state);
@@ -97,10 +97,7 @@ namespace DNDS::Cauchy
         work.ghostsReady = false;
         const auto stage = [&](auto &&action)
         {
-            if (_data->settings.implicit.collectiveChecks)
-                MPI::LocalStage(mpi, action);
-            else
-                action();
+            Metrics().Communication()->LocalStage(std::forward<decltype(action)>(action));
         };
         const auto begin = [&](const auto &bindings)
         {
@@ -222,8 +219,8 @@ namespace DNDS::Cauchy
     real FiniteVolume::StableStep(const EquationDofs &state, const AuxiliaryValues &values, real cfl, real time) const
     {
         real dt = std::numeric_limits<real>::max();
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             DNDS_check_throw_info(std::isfinite(cfl) && cfl > 0, "positive CFL required");
             ValidateAuxValues(state, values, time);
             DNDS_check_throw_info(values.cellSpectralSum, "CFL selection requires prepared cell spectral sums");
