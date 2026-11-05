@@ -245,6 +245,7 @@ namespace DNDS::Cauchy
                                   CFV::Detail::OtherPointInCell(topology, iFace, side, metric.GetCellCent(other == UnInitIndex ? iCell : other)),
                                   CFV::Detail::OtherFrameInCell(topology, iFace, side), condition};
                     sample.auxiliaryFace = auxiliaryFace;
+                    sample.identityRotation = (sample.rotation.array() == Geom::tGPoint::Identity().array()).all();
                     sample.face = iFace;
                     const index entry = index(data->samples.size());
                     // Cached basis derivatives live in each parent's frame.

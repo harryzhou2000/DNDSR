@@ -949,3 +949,22 @@ matrix-action and SGS elementwise parity, finite values and unchanged mean
 generation (logs in the isolated assessment workspace). These are functional
 gates only. An allocated-node baseline/candidate comparison, additional frozen
 operator UTs and the E6 retain/change recommendation remain pending.
+
+## E6 exact identity-transform candidate gate
+
+FV setup now classifies each sample's equation-frame rotation by exact
+coefficient equality with the identity matrix; there is no near-identity
+tolerance. Flow5 Jacobian preparation/evaluation skips state rotation and the
+dense right multiplication only for that exact case. General periodic
+rotations, quadrature samples, frozen radii, Roe dissipation, moving-frame
+derivatives and selected-component projection retain their existing paths.
+No thermodynamic/geometry cache, face regrouping or source approximation is
+introduced. Whole-equation chemistry/RANS preparation is unchanged.
+
+Existing Jacobian tests pass at np1/2/4 (CTest OMP2), covering independent
+frozen-flux differences and assembled/evaluated actions/SGS/ILU, physical/moving
+boundaries, self/rotated periodicity, layouts and component selection. Both np2
+OMP1 benchmark modes also pass. This is a correctness gate, not performance
+acceptance. The recorder will run frozen baseline/candidate executables serially
+in one unpinned BSSCA allocation with opposite version/storage orders. Actual
+preparation-plus-reuse sequences and terminal complete-field checks are required.

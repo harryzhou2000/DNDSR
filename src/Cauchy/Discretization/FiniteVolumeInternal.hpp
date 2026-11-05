@@ -39,6 +39,9 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         real viscousDistance = 0;
         index face = UnInitIndex;
         index boundaryPoint = UnInitIndex;
+        // Exact setup-time classification: translations preserve the equation
+        // frame; any nonidentity periodic rotation retains the general path.
+        bool identityRotation = true;
     };
     template <class View>
     FlowState Load(const View &input, index iCell)

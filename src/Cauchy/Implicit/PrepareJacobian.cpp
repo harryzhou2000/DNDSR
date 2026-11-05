@@ -21,6 +21,7 @@ namespace DNDS::Cauchy
             Vector3 normal, location;
             Eigen::Matrix3d rotation;
             real weight;
+            bool identityRotation;
         };
         struct Geometry
         {
@@ -60,7 +61,7 @@ namespace DNDS::Cauchy
                 JacobianDetail::BuildStencilRows(fv._data->offsets, fv._data->samples, prepared->columns, prepared->rows,
                                                  [&](const auto &sample, index entry)
                                                  {
-                                                     return Point{sample.other, sample.auxiliaryFace, entry, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, metric.GetFaceWeight(sample.point)};
+                                                     return Point{sample.other, sample.auxiliaryFace, entry, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, metric.GetFaceWeight(sample.point), sample.identityRotation};
                                                  });
                 geometry = std::move(prepared);
             }
@@ -75,7 +76,7 @@ namespace DNDS::Cauchy
             output.setZero();
             for (const auto &point : geometry->rows[iRow][iBlock])
             {
-                const auto right = RotateState(means[point.other], point.rotation);
+                const auto right = point.identityRotation ? means[point.other] : RotateState(means[point.other], point.rotation);
                 Matrix dissipation = Matrix::Identity() * (radius[point.auxiliary][0] + radius[point.auxiliary][1]);
                 if (roe)
                 {
@@ -88,9 +89,14 @@ namespace DNDS::Cauchy
                 }
                 const auto derivative = equation.PrepareFluxJacobian(right, point.normal, frame.GridVelocity(point.location));
                 const Matrix other = (.5 * scale * point.weight) * (Eigen::Map<const Matrix>(derivative.data()) - dissipation);
-                Matrix rotation = Matrix::Identity();
-                rotation.block<3, 3>(1, 1) = point.rotation;
-                output.noalias() += other * rotation;
+                if (point.identityRotation)
+                    output += other;
+                else
+                {
+                    Matrix rotation = Matrix::Identity();
+                    rotation.block<3, 3>(1, 1) = point.rotation;
+                    output.noalias() += other * rotation;
+                }
             }
             // Project after the periodic rotation: selected components refer
             // to the stored, mesh-bound equation frame on both endpoints.
@@ -264,6 +270,7 @@ namespace DNDS::Cauchy
                     continue; // Euler's scalar diagonal does not linearize BCs.
                 }
                 const auto right = sample.other == UnInitIndex ? FiniteVolumeDetail::BoundaryExterior(sample, _data->equation.Gas(), left, time, frame, incoming)
+                                   : sample.identityRotation   ? Load(mean, sample.other)
                                                                : RotateState(Load(mean, sample.other), sample.rotation);
                 Matrix dissipation = Matrix::Identity() * (convection + diffusion);
                 if (controls.roeDissipation)
@@ -311,9 +318,12 @@ namespace DNDS::Cauchy
                 }
                 else
                 {
-                    Matrix rotation = Matrix::Identity();
-                    rotation.block<3, 3>(1, 1) = sample.rotation;
-                    other = (other * rotation).eval();
+                    if (!sample.identityRotation)
+                    {
+                        Matrix rotation = Matrix::Identity();
+                        rotation.block<3, 3>(1, 1) = sample.rotation;
+                        other = (other * rotation).eval();
+                    }
                     if (sample.other == iCell)
                         own += other;
                     else if (blocks)
