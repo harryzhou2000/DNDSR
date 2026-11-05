@@ -844,6 +844,17 @@ target_link_libraries(euler_migration_probe PRIVATE
     euler_library_NS euler_library_fast_NS euler_library_NS_SA euler_library_fast_NS_SA
     euler_library_NS_3D euler_library_fast_NS_3D cfv geom dnds ${DNDS_EXTERNAL_LIBS})
 
+# Opt-in independent old/new probes; no second source tree in ordinary tests.
+add_executable(euler_frozen_transport_probe EXCLUDE_FROM_ALL Euler/FrozenTransportProbe.cpp)
+target_include_directories(euler_frozen_transport_probe PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+target_link_libraries(euler_frozen_transport_probe PRIVATE dnds ${DNDS_EXTERNAL_LIBS})
+if(DNDS_USE_CANTERA)
+    add_executable(euler_frozen_physics_probe EXCLUDE_FROM_ALL Euler/FrozenPhysicsProbe.cpp)
+    target_include_directories(euler_frozen_physics_probe PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+    target_link_libraries(euler_frozen_physics_probe PRIVATE euler_library_NS_EX euler_library_fast_NS_EX
+        euler_library_NS_SA euler_library_fast_NS_SA cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+endif()
+
 # EulerEvaluator pipeline test: needs full Euler libraries for NS, NS_SA, NS_3D
 euler_add_mpi_test(evaluator_pipeline "Euler/test_EulerEvaluator.cpp"
     "euler_library_NS;euler_library_fast_NS;euler_library_NS_SA;euler_library_fast_NS_SA;euler_library_NS_3D;euler_library_fast_NS_3D;cfv;geom;dnds")

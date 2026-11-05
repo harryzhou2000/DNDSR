@@ -119,9 +119,10 @@ reduction. No other implementation checkout or MG/IV work was used.
 ## Still pending
 
 E1's remaining cold-entry-point classification/propagation remains open, as do the bounded
-E3–E7 measurements, independent frozen Euler seam comparisons, selected scoped
-readability work, per-suite high-rank rationale/curation and the sanitizer
-ownership pass. Formatter default discovery now includes Cauchy and Physics;
+E3–E7 measurements, selected scoped readability work and per-suite high-rank
+rationale/curation. The bounded CPU sanitizer and independent frozen Euler
+gates are recorded below; neither is a whole-platform qualification.
+Formatter default discovery now includes Cauchy and Physics;
 no repository-wide formatting was performed. Pending queue entries are not
 completed merely because neighboring fixes or test labels exist.
 
@@ -680,3 +681,31 @@ baseline retains the default on policy.
 This closes the interface/search local-stage portion. Archive/compatibility,
 bare entity-space and nonlinear-stage classification remain open. The separate
 Euler probes and E3–E7 measurements do not become complete from these tests.
+
+## Independent original/current Euler seam preservation
+
+The exact original Euler source archive at `4e9c3acb` and current audit physics
+at `ba456643` compile the same opt-in frozen probe against independent numeric
+implementations. Baseline conservative bits are imported by persistent cell ID
+before current evaluation, with unchanged owned/ghost mean and coefficient
+bits checked after all calls. Both source conversions are recorded separately.
+All **eight** reacting/SA, np1/2, zero/nonzero-reconstruction pairs match
+**bit-for-bit across366,400 values** with no tolerance. Full source/Jacobian,
+source-filter, transport, diffusion and species-repair records are retained,
+including nonzero activity checks rather than only finite-value acceptance.
+
+The separate physical2D/3D viscous/QCR point complement has **16/16 exact**
+records. Active-correction, zero-ratio and adiabatic controls pass. SA uses the
+common explicit historical version1, with34 negative transported states;
+intentional current-version0 rotation changes are not relabeled as preservation.
+No full3D mesh, trajectory or performance result is claimed. This closes the
+bounded independent seam gate requested by this audit, not E6 performance.
+
+The [compact evidence](plan53_validation/euler-frozen/README.md) describes
+source/build provenance, the exact command protocol and the preserved harness/
+validator/build failures. Probes remain opt-in, with no extra normal CTest
+registrations. The component comparator rejects missing IDs/nonfinite data and
+distinguishes vector RHS fields from matrix fields explicitly. All **22/22**
+tooling tests pass (final rerun2.984s), including its two critical verifier regressions.
+The latest E7 job12442096 check remains PENDING(Priority), no assigned node,
+runtime00:00:00 and no declared output logs; it is left queued unchanged.
