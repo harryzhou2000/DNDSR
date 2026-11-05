@@ -93,6 +93,8 @@ namespace
         const int degree = std::stoi(argv[2]), trials = std::stoi(argv[6]);
         const std::string grouping = argv[3], layout = argv[4];
         const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+        int provided = MPI_THREAD_SINGLE;
+        MPI_Query_thread(&provided);
         DNDS_check_throw_info(width >= 4 && width <= 512 && width * width >= mpi.size && (degree == 2 || degree == 3) &&
                                   (grouping == "flow5" || grouping == "split5+12") && (layout == "aos" || layout == "soa") &&
                                   repetitions >= 8 && repetitions <= 100000 && trials > 0 && trials <= 8,
@@ -165,7 +167,7 @@ namespace
             MPI_Allreduce(local, low, 2, MPI_INT64_T, MPI_MIN, mpi.comm);
             MPI_Allreduce(local, high, 2, MPI_INT64_T, MPI_MAX, mpi.comm);
             if (mpi.rank == 0)
-                std::cout << "PLAN53_COEFFICIENT_COPY " << J{{"trial", trial}, {"np", mpi.size}, {"width", width}, {"degree", degree}, {"modes", plan.NRecDOF()}, {"grouping", grouping}, {"layout", layout}, {"owned_min", low[0]}, {"owned_max", high[0]}, {"logical_read_write_bytes_min", low[1]}, {"logical_read_write_bytes_max", high[1]}, {"preflight", false}, {"retained_binding_payload_exact", true}, {"phases", measurements}}.dump() << std::endl;
+                std::cout << "PLAN53_COEFFICIENT_COPY " << J{{"trial", trial}, {"np", mpi.size}, {"width", width}, {"degree", degree}, {"modes", plan.NRecDOF()}, {"grouping", grouping}, {"layout", layout}, {"owned_min", low[0]}, {"owned_max", high[0]}, {"logical_read_write_bytes_min", low[1]}, {"logical_read_write_bytes_max", high[1]}, {"preflight", false}, {"mpi_thread_provided", provided}, {"mean_generations_unchanged", true}, {"coefficient_allocation_retained", true}, {"retained_binding_payload_exact", true}, {"phases", measurements}}.dump() << std::endl;
         }
     }
 }

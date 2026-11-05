@@ -755,3 +755,29 @@ including zero-owned participants and retained descriptor/binding invariants.
 This classifies/closes the bare-map item. Archive/serializer/compatibility
 policies and E3–E7 remain pending; file/schema protocol agreements may not be
 removed as if they were repeated transfer safety checks.
+
+## E3 bounded matched recorder and source gate
+
+The opt-in coefficient benchmark now records actual provided MPI thread level,
+unchanged mean generations and retained coefficient allocation explicitly.
+Numerical phases and work counts are unchanged. The new recorder validates
+trial inventory, arguments, logical byte counts, persistent-binding payload
+oracles and finite positive timings, and preserves all failed/unrun rows.
+No ordinary CTest registrations or production transfer API are added.
+
+Both local np2 recorder pilots pass (P3 flow5 AoS and P2 separate5+12 SoA,
+100 copies/two opposite-order trials),0.265/0.365s total invocation wall time.
+Actual thread support is MULTIPLE. Those shared-host times are only a launch/
+recording gate. An initial shell command selected a nonexistent checkout-local
+venv and exited127 before creating outputs; the canonical venv then ran the
+declared pilots. The launch note is preserved with the pilot record.
+
+The committed driver and Slurm script declare one unpinned exclusive node,
+np8/32,32/5000 cells per rank, P2/P3, full flow5 and two-field5+12 payloads,
+canonical AoS plus two larger split/P3 SoA controls. Eighteen serial rows each
+have four alternating-order trials,500 copies/five numerical repetitions,
+300s row and850s campaign bounds. Setup/warmup/reset/validation stay outside
+timing. Build uses16 login workers and shared canonical dependencies. Do not
+mark matched rows complete until actual job/records are verified. The complete
+RHS fraction/copy-count audit and ownership recommendation remain open; no
+reacting RHS or buffer-swap speedup is implied by this CFV field measurement.
