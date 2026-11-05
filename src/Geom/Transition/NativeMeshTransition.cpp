@@ -1303,6 +1303,7 @@ namespace DNDS::Geom
                     moved = found->second;
                 } });
         NativeOwnedMeshData owned;
+        owned.communication = source.communication;
         owned.identity = source.identity;
         owned.requirements = source.requirements;
         owned.cellCellsComplete = source.cellCellsComplete;

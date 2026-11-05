@@ -47,6 +47,7 @@ gates. The placement foundation mock alone is not a fluid validation.
 | Configuration publication, threading and native/Python library boundaries | [Configuration registration](architecture/Configuration.md) |
 | Shared thermodynamics, chemistry workers, transport and RANS | [Shared Physics](architecture/Physics.md) |
 | Mesh ownership, relation semantics, construction closure and ghost assembly | [Mesh connectivity and construction](architecture/MeshConnectivity.md) |
+| Explicit communication policy in owned mesh preparation | [Mesh preparation policy](architecture/MeshPreparationPolicy.md) |
 | Owned construction API and mesh access examples | [Native mesh construction](architecture/NativeMesh.md) |
 | Shared Runtime arrays, placement, access and transfers | [Runtime Array](architecture/ArrayRuntime.md) |
 | Fixed-record setup request/reply routing | [Sparse batch exchange](architecture/SparseBatchExchange.md) |

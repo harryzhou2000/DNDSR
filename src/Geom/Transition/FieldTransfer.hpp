@@ -30,6 +30,12 @@ namespace DNDS::Geom
         {
             MPI::LocalStage(mpi, std::forward<F>(action), "field preparation failed before collective payload; source retained");
         }
+        template <class F>
+        void LocalStage(const MPIInfo &mpi, const std::shared_ptr<Runtime::CommunicationContext> &communication, F &&action)
+        {
+            Runtime::CommunicationDetail::LocalStage(mpi.comm, !communication || communication->ChecksCollectivePreflight(),
+                                                     std::forward<F>(action), "field preparation failed before collective payload; source retained");
+        }
 
         template <class Value>
         struct Prepared final : PreparedCompanion

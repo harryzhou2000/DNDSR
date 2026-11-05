@@ -42,6 +42,9 @@ namespace DNDS::Geom
         /// Unset means full audit for fresh input, or inherit the source policy
         /// for refinement/extraction. Set explicitly to override that policy.
         std::optional<MeshAuditOptions> audit;
+        /// Agreed execution context; inherited by descriptors and temporary
+        /// transfer plans. Null inherits the input cell descriptor's policy.
+        std::shared_ptr<Runtime::CommunicationContext> communication;
     };
 
     /// Collective owned primary construction over sparse native relations.

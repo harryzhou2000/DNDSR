@@ -126,6 +126,9 @@ namespace DNDS::Geom
         index NumGhost(EntityKind kind) const;
         index NumGlobal(EntityKind kind) const;
         EntitySpace Entities(EntityKind kind) const;
+        /// Immutable execution metadata, available without validating geometry
+        /// or acquiring a mesh read scope. Null means enabled compatibility.
+        std::shared_ptr<Runtime::CommunicationContext> PreparationCommunication() const;
         MeshReadRequirements Requirements() const { return _requirements; }
         index OriginalEntityId(EntityKind kind, index row) const;
         /// Retain the immutable combined owned/ghost ID allocation. Consumers

@@ -9,27 +9,13 @@ namespace DNDS::Geom
         /// Agree on recoverable local errors before the next MPI stage. This
         /// includes local relation construction, which validates retained rows.
         template <class F>
-        auto LocalStage(const MPIInfo &mpi, const char *stage, F &&action)
+        auto LocalStage(const EntitySpace &space, const char *stage, F &&action)
         {
             using Result = decltype(action());
             std::optional<Result> result;
-            std::string detail;
-            try
-            {
-                result.emplace(action());
-            }
-            catch (const std::exception &error)
-            {
-                detail = error.what();
-            }
-            catch (...)
-            {
-                detail = "unknown local error";
-            }
-            int valid = bool(result);
-            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
-            DNDS_check_throw_info(valid, std::string(stage) + ": native mesh setup failed on a rank" +
-                                             (detail.empty() ? std::string{} : "; " + detail));
+            const auto message = std::string(stage) + ": native mesh setup failed on a rank";
+            space.LocalStage([&]
+                             { result.emplace(action()); }, message.c_str());
             return std::move(*result);
         }
 
@@ -130,7 +116,7 @@ namespace DNDS::Geom
             std::vector<index> candidateCells;
             std::vector<size_t> starts;
             std::optional<Runtime::Array<index>> types, bits;
-            LocalStage(mpi, "periodic boundary candidate preparation", [&]
+            LocalStage(input.cells, "periodic boundary candidate preparation", [&]
                        {
                 starts.push_back(0);
                 for (index boundary = 0; boundary < candidates.NumOwned(); ++boundary)
@@ -153,12 +139,12 @@ namespace DNDS::Geom
                 types = IndexRows(cellTypes, 1);
                 bits = IndexRows(cellBits);
                 return true; });
-            auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
+            auto context = input.cells.Communication() ? input.cells.Communication() : std::make_shared<Runtime::CommunicationContext>(mpi.comm);
             Runtime::RowTransferPlan route(context, size_t(input.cells.NumOwned()), candidateCells.size(), requests);
             auto fetch = [&](const Runtime::Array<index> &values)
             {
                 Runtime::PayloadPlan payload(route, values.Layout(), Runtime::ElementSchema::Arithmetic<index>());
-                auto output = LocalStage(mpi, "periodic boundary payload allocation", [&]
+                auto output = LocalStage(input.cells, "periodic boundary payload allocation", [&]
                                          { return Runtime::Array<index>(payload.DestinationLayout()); });
                 Runtime::TransferOptions options;
                 options.mode = Runtime::TransferMode::Transient;
@@ -169,7 +155,7 @@ namespace DNDS::Geom
                 return output;
             };
             auto cones = fetch(input.cellNodes), metadata = fetch(*types), frames = fetch(*bits);
-            return LocalStage(mpi, "periodic physical boundary occurrences", [&]
+            return LocalStage(input.cells, "periodic physical boundary occurrences", [&]
                               {
                 auto nodes = cones.Read(), info = metadata.Read(), pbi = frames.Read();
                 auto boundaryNodes = input.boundaryNodes.Read();
@@ -227,7 +213,7 @@ namespace DNDS::Geom
             const auto mpi = input.mpi;
             std::vector<Runtime::RowRequest> requests;
             Runtime::Array<index> types(Runtime::RowLayout::Dense(size_t(input.cells.NumOwned()), 1));
-            LocalStage(mpi, "boundary face request preparation", [&]
+            LocalStage(input.cells, "boundary face request preparation", [&]
                        {
                 auto metadata = input.cellInfo.Read();
                 auto write = types.Write();
@@ -244,7 +230,7 @@ namespace DNDS::Geom
             // Containment may name a remote cell that is not in the initial
             // cell closure. Fetch just those candidate rows in global node IDs;
             // no complete remote mesh or additional entity map is needed.
-            auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
+            auto context = input.cells.Communication() ? input.cells.Communication() : std::make_shared<Runtime::CommunicationContext>(mpi.comm);
             Runtime::RowTransferPlan route(context, size_t(input.cells.NumOwned()), size_t(input.boundaries.NumOwned()),
                                            requests, {input.cells.Stamp(), input.boundaries.Stamp()});
             auto fetch = [&](const Runtime::Array<index> &source)
@@ -261,7 +247,7 @@ namespace DNDS::Geom
             };
             auto candidateNodes = fetch(input.cellNodes);
             auto candidateTypes = fetch(types);
-            LocalStage(mpi, "exact boundary face validation", [&]
+            LocalStage(input.cells, "exact boundary face validation", [&]
                        {
                 auto nodes = candidateNodes.Read(), elementTypes = candidateTypes.Read();
                 auto boundaryNodes = input.boundaryNodes.Read();
@@ -334,8 +320,16 @@ namespace DNDS::Geom
     {
         const auto mpi = input.mpi;
         const auto audit = options.audit.value_or(MeshAuditOptions{});
+        const auto communication = options.communication ? options.communication : input.cells.Communication();
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
+        if (communication)
+            communication->LocalStage([&]
+                                      {
+                input.cells = input.cells.WithCommunication(communication);
+                input.nodes = input.nodes.WithCommunication(communication);
+                input.boundaries = input.boundaries.WithCommunication(communication); });
         DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native mesh builder requires a communicator");
-        LocalStage(mpi, "input validation", [&]
+        LocalStage(input.cells, "input validation", [&]
                    {
             int actualRank = -1, actualSize = 0;
             MPI_Comm_rank(mpi.comm, &actualRank);
@@ -403,7 +397,7 @@ namespace DNDS::Geom
         if (input.periodic)
         {
             std::array<real, 60> values{}, root{};
-            LocalStage(mpi, "periodic geometry validation", [&]
+            LocalStage(input.cells, "periodic geometry validation", [&]
                        {
                 size_t offset = 0;
                 for (size_t frame = 0; frame < 4; ++frame)
@@ -419,16 +413,16 @@ namespace DNDS::Geom
                 return true; });
             root = values;
             MPI_Bcast(root.data(), int(root.size()), DNDS_MPI_REAL, 0, mpi.comm);
-            LocalStage(mpi, "periodic geometry agreement", [&]
+            LocalStage(input.cells, "periodic geometry agreement", [&]
                        { DNDS_check_throw_info(values == root, "periodic geometry differs between ranks"); return true; });
         }
 
-        auto referenced = LocalStage(mpi, "initial node closure", [&]
+        auto referenced = LocalStage(input.cells, "initial node closure", [&]
                                      { return ReferencedGhostNodes(input); });
         const auto nodes = input.nodes.WithGhosts(std::move(referenced));
-        auto cellNodes = LocalStage(mpi, "cell cone", [&]
+        auto cellNodes = LocalStage(input.cells, "cell cone", [&]
                                     { return MeshAdjacency(Adj::Cell2Node, input.cells, nodes, input.cellNodes); });
-        auto boundaryNodes = LocalStage(mpi, "boundary cone", [&]
+        auto boundaryNodes = LocalStage(input.cells, "boundary cone", [&]
                                         { return MeshAdjacency(Adj::Bnd2Node, input.boundaries, nodes, input.boundaryNodes); });
         auto nodeCells = AdjacencyRegistry::Inverse(cellNodes.Read(), mpi);
         auto nodeBoundaries = AdjacencyRegistry::Inverse(boundaryNodes.Read(), mpi);
@@ -447,9 +441,9 @@ namespace DNDS::Geom
             nodeBoundaries = MeshAdjacency::WithGhostValues(nodeBoundaries.Kind(), nodes, input.boundaries,
                                                             nodeBoundaries.Owned(), std::move(pendingBoundaries.ghost));
         }
-        auto cellCells = LocalStage(mpi, "cell neighbor composition", [&]
+        auto cellCells = LocalStage(input.cells, "cell neighbor composition", [&]
                                     { return AdjacencyRegistry::Compose(cellNodes.Read(), nodeCells.Read(), true); });
-        auto containment = LocalStage(mpi, "boundary cell containment", [&]
+        auto containment = LocalStage(input.cells, "boundary cell containment", [&]
                                       { return AdjacencyRegistry::ComposeAll(boundaryNodes.Read(), nodeCells.Read()); });
         const auto boundaryCellKind = containment.Kind();
         std::optional<MeshAdjacency> periodicExact, physicalBoundary;
@@ -463,7 +457,7 @@ namespace DNDS::Geom
         }
         else
         {
-            LocalStage(mpi, "external boundary incidence", [&]
+            LocalStage(input.cells, "external boundary incidence", [&]
                        {
             auto read = containment.Read();
             for (index row = 0; row < read.NumOwned(); ++row)
@@ -471,9 +465,10 @@ namespace DNDS::Geom
             return true; });
             ValidateBoundaryFaces(input, containment.Read());
         }
-        auto data = LocalStage(mpi, "owned topology output", [&]
+        auto data = LocalStage(input.cells, "owned topology output", [&]
                                {
             NativeOwnedMeshData result;
+            result.communication = communication;
             result.audit = audit;
             result.identity = std::move(input.identity);
             result.provenance = std::move(input.provenance);
@@ -516,7 +511,7 @@ namespace DNDS::Geom
         for (auto kind : {EntityKind::Cell, EntityKind::Node, EntityKind::Bnd})
         {
             const auto &space = data.spaces.at(kind);
-            auto owned = LocalStage(mpi, "persistent ID initialization", [&]
+            auto owned = LocalStage(input.cells, "persistent ID initialization", [&]
                                     {
                 const auto supplied = input.ids.find(kind);
                 if (supplied != input.ids.end()) return supplied->second;
@@ -525,7 +520,7 @@ namespace DNDS::Geom
                 for (index row = 0; row < space.NumOwned(); ++row)
                     write.View()(size_t(row), 0) = space.LocalToGlobal(row);
                 return generated; });
-            LocalStage(mpi, "owned persistent IDs", [&]
+            LocalStage(input.cells, "owned persistent IDs", [&]
                        {
                 index maximum = -1;
                 auto read = owned.Read();

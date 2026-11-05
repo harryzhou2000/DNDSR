@@ -21,16 +21,16 @@ namespace DNDS::Geom
             auto ghost = publication.routes.at(kind).TransferRows(space, owned, schema);
             return {owned, std::move(ghost)};
         }
-        void Agree(const MPIInfo &mpi, const std::string &signature)
+        void Agree(const MPIInfo &mpi, const NativeOwnedMeshData &owned, const std::string &signature)
         {
             int length = int(signature.size());
             MPI_Bcast(&length, 1, MPI_INT, 0, mpi.comm);
             std::string expected;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            { expected = mpi.rank == 0 ? signature : std::string(size_t(length), '\0'); });
+            owned.LocalStage(mpi, [&]
+                             { expected = mpi.rank == 0 ? signature : std::string(size_t(length), '\0'); });
             MPI_Bcast(expected.data(), length, MPI_CHAR, 0, mpi.comm);
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            { DNDS_check_throw_info(signature == expected, "native assembly inventory differs across ranks"); });
+            owned.LocalStage(mpi, [&]
+                             { DNDS_check_throw_info(signature == expected, "native assembly inventory differs across ranks"); });
         }
         template <class T>
         void CheckRows(const Runtime::Array<T> &array, const EntitySpace &space)
@@ -68,9 +68,10 @@ namespace DNDS::Geom
 
     std::shared_ptr<const UnstructuredMeshState> AssembleNativeMesh(const MPIInfo &mpi, NativeOwnedMeshData owned, int cellLayers)
     {
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !owned.communication || owned.communication->ChecksCollectivePreflight());
         GhostSpec recipe;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        owned.LocalStage(mpi, [&]
+                         {
             DNDS_check_throw_info(cellLayers >= 0, "mesh finalization cell depth must be nonnegative");
             recipe = owned.ghostSpec ? *owned.ghostSpec : DefaultNativeMeshGhostSpec(owned, std::max(cellLayers, 1));
             if (owned.ghostSpec && cellLayers > 0)
@@ -119,16 +120,19 @@ namespace DNDS::Geom
                 recipe.chains = std::move(expanded);
             } });
         // All ranks must agree even if this recipe needs no depth override.
-        Agree(mpi, std::to_string(cellLayers));
+        Agree(mpi, owned, std::to_string(cellLayers));
         return NativeMeshAssembler::Build(mpi, std::move(owned), recipe);
     }
 
     NativeOwnedMeshData NativeMeshAssembler::CaptureOwned(const UnstructuredMeshState &source, const MPIInfo &mpi)
     {
         NativeOwnedMeshData result;
+        const auto cell = source._spaces.find(EntityKind::Cell);
+        if (cell != source._spaces.end())
+            result.communication = cell->second.identity.Communication();
         std::string inventory;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        result.LocalStage(mpi, [&]
+                          {
             source.Validate();
             const auto &snapshot = source.Snapshot(Runtime::Device::Host()).Live();
             result.retainedRead = std::make_shared<MeshReadAccess>(source.Snapshot(Runtime::Device::Host()).AcquireRead());
@@ -209,7 +213,7 @@ namespace DNDS::Geom
             for (const auto &[key, unused] : result.namedRelations) inventory += key.Signature();
             inventory += result.provenance ? "p" + result.provenance->Signature() : "p;";
             DNDS_check_throw_info(inventory.size() <= size_t(INT_MAX), "native capture inventory exceeds MPI range"); });
-        Agree(mpi, inventory);
+        Agree(mpi, result, inventory);
         for (const auto &[kind, family] : source._spaces)
             result.spaces.emplace(kind, family.identity.WithGhosts({}));
         return result;
@@ -218,9 +222,10 @@ namespace DNDS::Geom
     std::shared_ptr<const UnstructuredMeshState> NativeMeshAssembler::Build(const MPIInfo &mpi, NativeOwnedMeshData owned,
                                                                             const GhostSpec &specification)
     {
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !owned.communication || owned.communication->ChecksCollectivePreflight());
         std::string schedule;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        owned.LocalStage(mpi, [&]
+                         {
             DNDS_check_throw_info(owned.dimension >= 1 && owned.dimension <= 3, "invalid native assembly dimension");
             DNDS_check_throw_info(owned.spaces.count(EntityKind::Node) && owned.spaces.count(EntityKind::Cell) && owned.spaces.count(EntityKind::Bnd), "native assembly primary families missing");
             DNDS_check_throw_info(owned.dimension != 1 || (owned.spaces.at(EntityKind::Bnd).NumGlobal() == 0 &&
@@ -230,6 +235,9 @@ namespace DNDS::Geom
             for (const auto &[kind, space] : owned.spaces)
             {
                 space.Validate();
+                DNDS_check_throw_info(space.ChecksCollectivePreflight() ==
+                                          (!owned.communication || owned.communication->ChecksCollectivePreflight()),
+                                      "owned assembly entity preparation policy differs from its pipeline");
                 EntitySpace::CheckCommunicator(space._mpi.comm, mpi.comm);
                 DNDS_check_throw_info(space.Kind() == kind && space.MeshIdentity() == identity && space.NumGhost() == 0, "native assembly spaces must be owned-only siblings");
                 DNDS_check_throw_info(owned.ids.count(kind), "native assembly persistent IDs missing");
@@ -316,11 +324,11 @@ namespace DNDS::Geom
                 schedule += frames.str();
             }
             DNDS_check_throw_info(schedule.size() <= size_t(INT_MAX), "native assembly schedule exceeds MPI range"); });
-        Agree(mpi, schedule);
+        Agree(mpi, owned, schedule);
         AdjacencyRegistry connectivity(mpi);
         std::map<AdjacencyDescriptor, RArray> relations;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        owned.LocalStage(mpi, [&]
+                         {
             for (size_t slot = 0; slot < owned.relations.size(); ++slot)
                 if (owned.relations[slot]) relations.emplace(FacadeKey(slot), *owned.relations[slot]);
             for (const auto &[key, values] : owned.namedRelations)
@@ -335,8 +343,8 @@ namespace DNDS::Geom
                 auto inverse = AdjacencyRegistry::Inverse(read, mpi);
                 relations.emplace(FacadeKey(size_t(slot)), inverse.Owned());
             }
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        owned.LocalStage(mpi, [&]
+                         {
             for (const auto &[key, values] : relations)
                 try
                 {
@@ -347,8 +355,8 @@ namespace DNDS::Geom
                     throw std::runtime_error("native assembly registration [" + key.Signature() + "]: " + error.what());
                 } });
         std::optional<CompiledGhostTree> tree;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        owned.LocalStage(mpi, [&]
+                         {
             auto resolved = specification;
             // Legacy shorthand keys select fixed facade slots. Full named
             // descriptors retain their exact path/selection/periodic semantics.
@@ -369,8 +377,8 @@ namespace DNDS::Geom
         while (true)
         {
             int changed = 0;
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            owned.LocalStage(mpi, [&]
+                             {
                 std::map<EntityKind, std::vector<index>> known;
                 for (const auto &[kind, values] : discovery.ghostIndices)
                 {
@@ -457,8 +465,8 @@ namespace DNDS::Geom
             localized.emplace(key, result);
             return result;
         };
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        owned.LocalStage(mpi, [&]
+                         {
             for (size_t slot = 0; slot < owned.relations.size(); ++slot)
                 if (owned.relations[slot])
                 {
@@ -488,8 +496,8 @@ namespace DNDS::Geom
         for (const auto &[kind, values] : owned.ids)
         {
             auto pair = Ghost(values, kind, publication, Runtime::ElementSchema::Arithmetic<index>());
-            FieldTransferDetail::LocalStage(mpi, [&]
-                                            {
+            owned.LocalStage(mpi, [&]
+                             {
                 auto read = pair.ReadCombined();
                 RArray combined(Runtime::RowLayout::Dense(read.View().RowCount(), 1));
                 { auto write = combined.Write(); for (size_t row = 0; row < read.View().RowCount(); ++row) write.View()(row, 0) = read.View()(row, 0); }
@@ -497,8 +505,8 @@ namespace DNDS::Geom
                 spaces.emplace(kind, publication.spaces.at(kind)); });
         }
         auto result = UnstructuredMeshState::FromNative(mpi, std::move(data), std::move(spaces), std::move(ids), owned.requirements);
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        {
+        owned.LocalStage(mpi, [&]
+                         {
             if (!owned.localPartitionStarts.empty())
                 result = result->WithLocalPartitions(std::move(owned.localPartitionStarts)); });
         return result;

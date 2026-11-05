@@ -42,7 +42,8 @@ namespace DNDS::Geom::OverlapTest
 
     /// Independent Cartesian input and edge-length oracle; no file reader or
     /// legacy mesh allocation participates in this fixture.
-    inline Fixture BuildNativeFixture(MPIInfo mpi, bool emptyPeers = false, Index width = 10)
+    inline Fixture BuildNativeFixture(MPIInfo mpi, bool emptyPeers = false, Index width = 10,
+                                      std::shared_ptr<R::CommunicationContext> communication = {})
     {
         Fixture result;
         DNDS_check_throw_info(width > 0 && width <= 1024, "Cartesian fixture width must be in 1..1024");
@@ -132,7 +133,7 @@ namespace DNDS::Geom::OverlapTest
             }
             input.ids.emplace(space.Kind(), std::move(ids));
         }
-        auto state = ConstructNativeMesh(std::move(input), {1, true});
+        auto state = ConstructNativeMesh(std::move(input), {1, true, std::nullopt, std::move(communication)});
         state = PrepareNativeMeshTopology(*state, mpi, true, false);
         result.mesh = UnstructuredMesh::FromNative(mpi, std::move(state));
         DNDS_check_throw_info(result.mesh->HasNativeState(), "native overlap fixture was not published");

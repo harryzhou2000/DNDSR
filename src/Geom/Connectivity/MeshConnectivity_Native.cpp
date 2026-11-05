@@ -350,9 +350,11 @@ namespace DNDS::Geom
 
     MeshAdjacency AdjacencyRegistry::Inverse(const MeshAdjacencyRead &cone, const MPIInfo &mpi)
     {
-        int sourceOwnerLocal = cone.Source().NumOwned() ? mpi.rank : -1;
-        int sourceOwner = -1;
-        MPI_Allreduce(&sourceOwnerLocal, &sourceOwner, 1, MPI_INT, MPI_MAX, mpi.comm);
+        int ownerPolicy[]{cone.Source().NumOwned() ? mpi.rank : -1,
+                          int(cone.Source().ChecksCollectivePreflight()), -int(cone.Source().ChecksCollectivePreflight())};
+        MPI_Allreduce(MPI_IN_PLACE, ownerPolicy, 3, MPI_INT, MPI_MAX, mpi.comm);
+        DNDS_check_throw_info(ownerPolicy[1] == -ownerPolicy[2], "inverse preparation policies differ between ranks");
+        const int sourceOwner = ownerPolicy[0];
         int localOnly = sourceOwner < 0 ||
                         (mpi.rank == sourceOwner && cone.Source().NumOwned() == cone.Source().NumGlobal() &&
                          cone.Target().NumOwned() == cone.Target().NumGlobal()) ||
@@ -390,7 +392,7 @@ namespace DNDS::Geom
             {
                 validLocal = 0;
             }
-            MPI_Allreduce(MPI_IN_PLACE, &validLocal, 1, MPI_INT, MPI_MIN, mpi.comm);
+            cone.Source().Preflight(validLocal, "local inverse relation validation failed on a rank");
             DNDS_check_throw_info(validLocal, "local inverse relation/communicator validation failed on a rank");
             return MeshAdjacency(cone.Kind().Inverted(), cone.Target(), cone.Source(), BuildNativeRows(support));
         }
@@ -428,7 +430,7 @@ namespace DNDS::Geom
         {
             valid = 0;
         }
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+        cone.Source().Preflight(valid, "inverse relation/communicator validation failed on a rank");
         DNDS_check_throw_info(valid, "inverse relation/communicator validation failed on a rank");
         // Each peer receives one ragged batch of (target-owned row, source
         // global ID) contributions. Only the owning rank sees that incidence;
@@ -448,7 +450,7 @@ namespace DNDS::Geom
             if (receivePresence[size_t(peer)])
                 receive[size_t(peer)].push_back(index(peer));
         }
-        auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
+        auto context = cone.Source().Communication() ? cone.Source().Communication() : std::make_shared<Runtime::CommunicationContext>(mpi.comm);
         auto route = Runtime::RowTransferPlan::Known(context, size_t(mpi.size), size_t(mpi.size),
                                                      std::move(send), std::move(receive),
                                                      {cone.Source().Stamp(), cone.Target().Stamp()});
@@ -479,7 +481,7 @@ namespace DNDS::Geom
                     support[size_t(targetRow)].push_back(sourceGlobal);
             }
         }
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+        cone.Source().Preflight(valid, "inverse relation/communicator validation failed on a rank");
         DNDS_check_throw_info(valid, "inverse contribution payload contains an invalid row or source entity");
         for (size_t row = 0; row < support.size(); ++row)
         {
@@ -508,7 +510,7 @@ namespace DNDS::Geom
         {
             valid = 0;
         }
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+        _source.Preflight(valid, "native halo route has stale/wrong source order or nonglobal relation payload");
         DNDS_check_throw_info(valid, "native halo route has stale/wrong source order or nonglobal relation payload");
         Runtime::PayloadPlan payload(halo._route, _owned.Layout(), Runtime::ElementSchema::Arithmetic<index>(), layout);
         Runtime::Array<index> ghosts(payload.DestinationLayout());

@@ -44,9 +44,7 @@ namespace DNDS::Runtime
             DNDS_check_throw_info(comm != MPI_COMM_NULL, "communication context needs a communicator");
             DNDS_check_throw_info(MPI_Comm_dup(comm, &_state->comm) == MPI_SUCCESS,
                                   "cannot duplicate communication context");
-            int policy[]{int(collectivePreflight), -int(collectivePreflight)};
-            MPI_Allreduce(MPI_IN_PLACE, policy, 2, MPI_INT, MPI_MIN, _state->comm);
-            DNDS_check_throw_info(policy[0] == -policy[1], "collective preflight policy differs between ranks");
+            CommunicationDetail::AgreePolicy(_state->comm, collectivePreflight);
             _state->collectivePreflight = collectivePreflight;
             int flag = 0;
             int *limit = nullptr;
@@ -69,25 +67,8 @@ namespace DNDS::Runtime
         template <class F>
         void LocalStage(F &&run, const char *message = "communication preparation failed on a rank") const
         {
-            std::exception_ptr failure;
-            try
-            {
-                std::forward<F>(run)();
-            }
-            catch (...)
-            {
-                failure = std::current_exception();
-            }
-            try
-            {
-                Preflight(!failure, message);
-            }
-            catch (...)
-            {
-                if (failure)
-                    std::rethrow_exception(failure);
-                throw;
-            }
+            CommunicationDetail::LocalStage(_state->comm, _state->collectivePreflight,
+                                            std::forward<F>(run), message);
         }
         /// Local reservation. The binding collectively checks success before it
         /// posts messages. Retain the returned owner through request retirement.

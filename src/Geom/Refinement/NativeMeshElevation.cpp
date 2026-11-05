@@ -49,6 +49,8 @@ namespace DNDS::Geom
         auto owned = source;
         if (!options.audit)
             options.audit = owned.audit;
+        if (!options.communication)
+            options.communication = owned.communication;
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {
             for (const auto *metadata : {&*owned.cellInfo, &*owned.bndInfo})

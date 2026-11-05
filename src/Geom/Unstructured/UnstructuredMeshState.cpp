@@ -6,6 +6,11 @@
 
 namespace DNDS::Geom
 {
+    std::shared_ptr<Runtime::CommunicationContext> UnstructuredMeshState::PreparationCommunication() const
+    {
+        const auto cell = _spaces.find(EntityKind::Cell);
+        return cell == _spaces.end() ? nullptr : cell->second.identity.Communication();
+    }
     size_t UnstructuredMeshState::ArrayBytes() const
     {
         Validate();
@@ -38,23 +43,10 @@ namespace DNDS::Geom
     namespace
     {
         template <class F>
-        void PublicationStage(const MPIInfo &mpi, F &&action)
+        void PublicationStage(const MPIInfo &mpi, const std::shared_ptr<Runtime::CommunicationContext> &context, F &&action)
         {
-            std::exception_ptr error;
-            int valid = 1;
-            try
-            {
-                action();
-            }
-            catch (...)
-            {
-                error = std::current_exception();
-                valid = 0;
-            }
-            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
-            if (error)
-                std::rethrow_exception(error);
-            DNDS_check_throw_info(valid, "native mesh publication failed validation on another rank");
+            Runtime::CommunicationDetail::LocalStage(mpi.comm, !context || context->ChecksCollectivePreflight(),
+                                                     std::forward<F>(action), "native mesh publication failed validation on another rank");
         }
 
         void CheckPersistentIds(const MPIInfo &mpi, const EntitySpace &space, const Runtime::Array<index> &ids)
@@ -93,7 +85,7 @@ namespace DNDS::Geom
                 if (incoming[size_t(peer)])
                     receive[size_t(peer)].push_back(index(peer));
             }
-            auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
+            auto context = space.Communication() ? space.Communication() : std::make_shared<Runtime::CommunicationContext>(mpi.comm);
             auto route = Runtime::RowTransferPlan::Known(context, size_t(mpi.size), size_t(mpi.size), std::move(send), std::move(receive));
             Runtime::Array<index> received(route.DestinationLayout(outgoing.Layout()));
             Runtime::TransferOptions options{Runtime::TransferMode::Transient, context, 0};
@@ -101,7 +93,7 @@ namespace DNDS::Geom
                 .Bind(outgoing, received, Runtime::TransferTransport::Direct, options)
                 .Begin()
                 .Wait();
-            PublicationStage(mpi, [&]
+            PublicationStage(mpi, space.Communication(), [&]
                              {
                 std::unordered_set<index> unique;
                 auto values = received.Read();
@@ -121,7 +113,7 @@ namespace DNDS::Geom
                 .Bind(ids, expected, Runtime::TransferTransport::Direct, options)
                 .Begin()
                 .Wait();
-            PublicationStage(mpi, [&]
+            PublicationStage(mpi, space.Communication(), [&]
                              {
                 auto ownerIds = expected.Read();
                 for (index row = 0; row < space.NumGhost(); ++row)
@@ -135,6 +127,9 @@ namespace DNDS::Geom
         std::map<EntityKind, Runtime::Array<index>> ids, MeshReadRequirements requirements)
     {
         DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "native mesh publication requires a communicator");
+        const auto cell = spaces.find(EntityKind::Cell);
+        const auto communication = cell != spaces.end() ? cell->second.Communication() : nullptr;
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
         auto result = std::shared_ptr<UnstructuredMeshState>(new UnstructuredMeshState);
         auto requestedIdentity = std::move(data.identity);
         result->_requirements = requirements;
@@ -145,7 +140,7 @@ namespace DNDS::Geom
         MPI_Allreduce(MPI_IN_PLACE, audits, 4, MPI_INT, MPI_MIN, mpi.comm);
         DNDS_check_throw_info(audits[0] == -audits[2] && audits[1] == -audits[3],
                               "native publication audit options differ between ranks");
-        PublicationStage(mpi, [&]
+        PublicationStage(mpi, communication, [&]
                          {
         int rank = -1, size = 0;
         MPI_Comm_rank(mpi.comm, &rank);
@@ -159,6 +154,9 @@ namespace DNDS::Geom
             DNDS_check_throw_info(pair && found != spaces.end(), "native publication entity family is missing");
             const auto &space = found->second;
             space.Validate();
+            DNDS_check_throw_info(space.ChecksCollectivePreflight() ==
+                                      (!communication || communication->ChecksCollectivePreflight()),
+                                  "native publication entity preparation policies differ");
             EntitySpace::CheckCommunicator(space._mpi.comm, mpi.comm);
             DNDS_check_throw_info(space.Kind() == kind && space.MeshIdentity() == nodes->second.MeshIdentity() &&
                                       pair->owned.Layout().RowCount() == size_t(space.NumOwned()) &&
@@ -269,7 +267,7 @@ namespace DNDS::Geom
         MPI_Allreduce(MPI_IN_PLACE, range, 2, MPI_INT, MPI_MIN, mpi.comm);
         DNDS_check_throw_info(range[0] == -range[1], "native publication requirements differ between ranks");
         std::string schedule;
-        PublicationStage(mpi, [&]
+        PublicationStage(mpi, communication, [&]
                          {
             schedule += result->_provenance ? "p" + result->_provenance->Signature() + ";" : "p;";
             for (const auto &[key, relation] : result->_namedRelations)
@@ -281,16 +279,16 @@ namespace DNDS::Geom
         int length = int(schedule.size());
         MPI_Bcast(&length, 1, MPI_INT, 0, mpi.comm);
         std::string expected;
-        PublicationStage(mpi, [&]
+        PublicationStage(mpi, communication, [&]
                          { expected = mpi.rank == 0 ? schedule : std::string(size_t(length), '\0'); });
         MPI_Bcast(expected.data(), length, MPI_CHAR, 0, mpi.comm);
-        PublicationStage(mpi, [&]
+        PublicationStage(mpi, communication, [&]
                          { DNDS_check_throw_info(schedule == expected, "named relation definitions differ between ranks"); });
         if (result->_audit.persistentIdentity)
             for (const auto &[kind, values] : result->_originalIds)
                 CheckPersistentIds(mpi, result->_spaces.at(kind).identity, values);
         std::map<EntityKind, index> localMaxima;
-        PublicationStage(mpi, [&]
+        PublicationStage(mpi, communication, [&]
                          {
             for (const auto &[kind, read] : result->_originalReads)
             {
@@ -307,12 +305,13 @@ namespace DNDS::Geom
     void UnstructuredMeshState::Audit(MeshAuditOptions options) const
     {
         const auto &mpi = _spaces.at(EntityKind::Node).identity._mpi;
+        const auto &communication = _spaces.at(EntityKind::Node).identity.Communication();
         int flags[]{int(options.persistentIdentity), int(options.closure),
                     -int(options.persistentIdentity), -int(options.closure)};
         MPI_Allreduce(MPI_IN_PLACE, flags, 4, MPI_INT, MPI_MIN, mpi.comm);
         DNDS_check_throw_info(flags[0] == -flags[2] && flags[1] == -flags[3], "native checkpoint audit options differ between ranks");
         std::string schedule;
-        PublicationStage(mpi, [&]
+        PublicationStage(mpi, communication, [&]
                          {
             Validate();
             schedule = _meshIdentity.meshNamespace + ":" + std::to_string(_hostView.Dimension()) + ":" +
@@ -325,10 +324,10 @@ namespace DNDS::Geom
         int length = int(schedule.size());
         MPI_Bcast(&length, 1, MPI_INT, 0, mpi.comm);
         std::string expected;
-        PublicationStage(mpi, [&]
+        PublicationStage(mpi, communication, [&]
                          { expected = mpi.rank == 0 ? schedule : std::string(size_t(length), '\0'); });
         MPI_Bcast(expected.data(), length, MPI_CHAR, 0, mpi.comm);
-        PublicationStage(mpi, [&]
+        PublicationStage(mpi, communication, [&]
                          {
             DNDS_check_throw_info(schedule == expected, "native checkpoint audit namespace or inventory differs between ranks");
             _hostRead->Validate(_requirements, options); });

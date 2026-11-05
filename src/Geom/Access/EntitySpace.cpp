@@ -46,6 +46,7 @@ namespace DNDS::Geom
         result._identity = _identity;
         result._versions.RebindPrepared(_versions);
         result._stamp = _stamp;
+        result._communication = _communication;
         return result;
     }
 
@@ -66,6 +67,17 @@ namespace DNDS::Geom
         EntitySpace result(_kind, _mpi, _owned, count, _identity, _stamp,
                            _global, std::move(ghost), _versions);
         result._publishedMaps = true;
+        result._communication = _communication;
+        return result;
+    }
+
+    EntitySpace EntitySpace::WithCommunication(std::shared_ptr<Runtime::CommunicationContext> context) const
+    {
+        Validate();
+        DNDS_check_throw_info(context, "mesh preparation needs an explicit communication context");
+        CheckCommunicator(context->Communicator(), _mpi.comm);
+        auto result = *this;
+        result._communication = std::move(context);
         return result;
     }
 
@@ -202,7 +214,7 @@ namespace DNDS::Geom
 
     Runtime::RowTransferPlan EntitySpace::BuildRowTransferPlan() const
     {
-        return BuildRowTransferPlan(std::make_shared<Runtime::CommunicationContext>(_mpi.comm));
+        return BuildRowTransferPlan(_communication ? _communication : std::make_shared<Runtime::CommunicationContext>(_mpi.comm));
     }
     Runtime::RowTransferPlan EntitySpace::BuildRowTransferPlan(std::shared_ptr<Runtime::CommunicationContext> context) const
     {

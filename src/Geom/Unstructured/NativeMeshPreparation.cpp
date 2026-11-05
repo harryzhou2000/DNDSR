@@ -46,8 +46,8 @@ namespace DNDS::Geom
         const auto mpi = input.mpi;
         auto owned = NativeMeshBuilder::Build(std::move(input), options);
         GhostSpec recipe;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        { recipe = DefaultNativeMeshGhostSpec(owned, options.cellLayers, options.completeNodeStar); });
+        owned.LocalStage(mpi, [&]
+                         { recipe = DefaultNativeMeshGhostSpec(owned, options.cellLayers, options.completeNodeStar); });
         return NativeMeshAssembler::Build(mpi, std::move(owned), recipe);
     }
 
@@ -55,12 +55,14 @@ namespace DNDS::Geom
         const UnstructuredMeshState &source, const MPIInfo &mpi,
         bool faces, bool edges, int ghostLayers, const std::map<EntityKind, index> &generatedIdStarts)
     {
-        FieldTransferDetail::LocalStage(mpi, [&]
+        const auto communication = source.PreparationCommunication();
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { DNDS_check_throw_info(ghostLayers > 0, "topology finalization requires positive default cell layers"); });
         auto owned = NativeMeshTopology::Build(NativeMeshAssembler::CaptureOwned(source, mpi), mpi, faces, edges, generatedIdStarts);
         GhostSpec recipe;
-        FieldTransferDetail::LocalStage(mpi, [&]
-                                        { recipe = ExtendNativeMeshGhostSpecForTopology(owned, faces, edges, ghostLayers); });
+        owned.LocalStage(mpi, [&]
+                         { recipe = ExtendNativeMeshGhostSpecForTopology(owned, faces, edges, ghostLayers); });
         owned.ghostSpec = std::move(recipe);
         auto result = AssembleNativeMesh(mpi, std::move(owned), ghostLayers);
         if (!result->Requirements().faces)
@@ -74,13 +76,16 @@ namespace DNDS::Geom
 
     void UnstructuredMesh::PrepareNativeTopology(bool faces, bool edges, int ghostLayers)
     {
-        CheckCollectiveMutationAvailable(true);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        const auto communication = PreparationCommunication();
+        const bool checks = !communication || communication->ChecksCollectivePreflight();
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, checks);
+        CheckCollectiveMutationAvailable(checks);
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { DNDS_check_throw_info(_nativeState, "native topology preparation requires a native mesh"); });
         const auto stamp = versions.Stamp();
         auto result = NativeMeshPreparation::PrepareTopology(*_nativeState, mpi, faces, edges, ghostLayers);
         std::shared_ptr<UnstructuredMeshState> prepared;
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             stamp.Validate();
             prepared = std::shared_ptr<UnstructuredMeshState>(new UnstructuredMeshState(*result)); });
@@ -123,15 +128,17 @@ namespace DNDS::Geom
     std::shared_ptr<const UnstructuredMeshState> NativeMeshPreparation::PrepareTopology(
         const UnstructuredMeshState &source, const MPIInfo &mpi, bool faces, bool edges, int ghostLayers)
     {
+        const auto communication = source.PreparationCommunication();
+        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
         std::array<int, 5> flags{int(faces), int(edges), ghostLayers, 0, 0};
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
             source.Validate();
             flags[3] = source.Requirements().faces;
             flags[4] = source.Requirements().edges; });
         auto expected = flags;
         MPI_Bcast(expected.data(), int(expected.size()), MPI_INT, 0, mpi.comm);
-        FieldTransferDetail::LocalStage(mpi, [&]
+        FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         { DNDS_check_throw_info(flags == expected && ghostLayers > 0, "native preparation topology options differ across ranks"); });
         return PrepareNativeMeshTopology(source, mpi, faces, edges, ghostLayers);
     }

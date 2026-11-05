@@ -12,8 +12,8 @@ namespace DNDS::Geom
         std::optional<MeshAdjacency> initial;
         std::optional<Runtime::Array<ElemInfo>> metadata;
         std::optional<Runtime::Array<NodePeriodicBits>> periodic;
-        MPI::LocalStage(mpi, [&]
-                        {
+        source.LocalStage(mpi, [&]
+                          {
             const auto cells = source.spaces.at(EntityKind::Cell), nodes = source.spaces.at(EntityKind::Node);
             DNDS_check_throw_info(cells.NumGhost() == 0 && nodes.NumGhost() == 0 && source.cellInfo &&
                                       source.relations[size_t(MeshRelation::CellNodes)],
@@ -21,8 +21,8 @@ namespace DNDS::Geom
             auto rows = *source.relations[size_t(MeshRelation::CellNodes)];
             initial.emplace(Adj::Cell2Node, cells, nodes, std::move(rows));
             metadata = source.cellInfo; });
-        MPI::LocalStage(mpi, [&]
-                        {
+        source.LocalStage(mpi, [&]
+                          {
             if (source.periodic)
             {
                 DNDS_check_throw_info(source.cellNodesPbi, "periodic construction closure requires incidence images");
@@ -40,14 +40,14 @@ namespace DNDS::Geom
         DNDS_check_throw_info(flags[0] == -flags[1] && flags[2] == -flags[3] && flags[4] == -flags[5],
                               "construction closure inputs differ between ranks");
         AdjacencyRegistry setup(mpi);
-        MPI::LocalStage(mpi, [&]
-                        { setup.Register(initial->Read()); });
+        source.LocalStage(mpi, [&]
+                          { setup.Register(initial->Read()); });
         std::optional<MeshAdjacency> support;
         GhostSpec spec;
         if (useCellCells)
         {
-            MPI::LocalStage(mpi, [&]
-                            {
+            source.LocalStage(mpi, [&]
+                              {
                 const auto cells = source.spaces.at(EntityKind::Cell);
                 support.emplace(Adj::Cell2Cell, cells, cells,
                                 *source.relations[size_t(MeshRelation::CellCells)]);
@@ -61,14 +61,14 @@ namespace DNDS::Geom
         else
         {
             if (useNodeCells)
-                MPI::LocalStage(mpi, [&]
-                                { support.emplace(Adj::Node2Cell, source.spaces.at(EntityKind::Node),
-                                                  source.spaces.at(EntityKind::Cell),
-                                                  *source.relations[size_t(MeshRelation::NodeCells)]); });
+                source.LocalStage(mpi, [&]
+                                  { support.emplace(Adj::Node2Cell, source.spaces.at(EntityKind::Node),
+                                                    source.spaces.at(EntityKind::Cell),
+                                                    *source.relations[size_t(MeshRelation::NodeCells)]); });
             else
                 support.emplace(AdjacencyRegistry::Inverse(initial->Read(), mpi));
-            MPI::LocalStage(mpi, [&]
-                            { setup.Register(support->Read()); });
+            source.LocalStage(mpi, [&]
+                              { setup.Register(support->Read()); });
             spec = GhostSpec{{{EntityKind::Cell, {Adj::Cell2Node, support->Kind()}, EntityKind::Cell},
                               {EntityKind::Cell, {Adj::Cell2Node, support->Kind(), Adj::Cell2Node}, EntityKind::Node}}};
         }

@@ -38,6 +38,8 @@ namespace DNDS::Geom
         auto owned = source;
         if (!options.audit)
             options.audit = owned.audit;
+        if (!options.communication)
+            options.communication = owned.communication;
         AdjacencyRegistry closure(mpi);
         FieldTransferDetail::LocalStage(mpi, [&]
                                         {

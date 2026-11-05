@@ -118,7 +118,7 @@ reduction. No other implementation checkout or MG/IV work was used.
 
 ## Still pending
 
-E1's remaining cold mesh-construction propagation and E2's memory/timing
+E1's remaining importer/transition/loader propagation and E2's memory/timing
 assessment remain open, as do the bounded
 E3–E7 measurements, independent frozen Euler seam comparisons, selected scoped
 readability work, per-suite high-rank rationale/curation and the sanitizer
@@ -173,9 +173,9 @@ incorrectly assumed the facade's slice monkeypatch was present; using the native
 write-lease API fixes that harness mismatch. No library defect or data corruption
 was inferred from it.
 
-Cold primary/topology/assembler preparation still has separate local-stage
-agreements outside the explicit EntitySpace context. Their policy propagation
-remains an E1 follow-up; the work above is not a claim that every mesh setup
+At the `16b9a447` checkpoint, cold primary/topology/assembler preparation had
+separate local-stage agreements outside the explicit EntitySpace context. Their
+policy propagation was an E1 follow-up; the work above is not a claim that every mesh setup
 agreement has been removed. At that checkpoint no CUDA acceptance, E2
 storage-profile completion, or E3–E7 matched performance result was claimed.
 
@@ -245,3 +245,59 @@ Final CPU acceptance after the pin/validation review:
 These local correctness checks ran alongside compilation and do not establish
 matched performance. CUDA execution, sanitizer acceptance, isolated RSS and
 memory/timing assessment remain unclaimed.
+
+## E1 follow-up: owned mesh preparation core
+
+`NativeMeshBuildOptions::communication` selects an agreed context for an owned
+build; null inherits the input cell descriptor's context. A descriptor with no
+context keeps enabled compatibility behavior. The builder binds all input
+families to the selected context. Owned records retain it for early preparation
+checks, and topology, temporary closure, face interpolation, ghost traversal,
+assembly, identity audits and final publication inherit it. Context selection
+is not entity identity, row ordering or serialized mesh metadata.
+
+`EntitySpace::WithCommunication` returns a descriptor sharing the same maps and
+stamps; retained handles are unchanged. Sibling/ghost/interpolated descriptors
+retain the context. Its no-argument row-plan factory now inherits that context;
+the explicit-context factory remains available. Registry registration and owned
+topology/publication reject mixed policies. Actual policy choices agree at
+public setup boundaries before optional stages; a registry freezes this
+agreement for its collective lifetime. Required ownership, schedule, schema,
+reuse, discovery and numerical collectives stay intact.
+
+The common Runtime local-stage implementation is shared by communication
+contexts and Geom stages. Default enabled mode preserves originating exceptions
+and peer rejection; disabled mode keeps local checks and fail-fast abort on a
+local error. No conditional indexing/check was added to a mesh or Array kernel.
+The [mesh preparation policy](../architecture/MeshPreparationPolicy.md) documents
+the C++ entry point, descriptor semantics and caller responsibilities.
+
+Sixteen focused C++ registrations pass (5.60 s): Runtime row transfer and native
+connectivity, builder and topology at np1/2/4, plus the new mesh-policy suite at
+np1/2/4/8. The new suite compares on/off connectivity and direct halo values,
+empty ownership, self-periodic topology, rebinding without map changes, and
+inconsistent context selection. PMPI counts assert **zero** reductions in four
+successful repeated disabled local stages and three repeated disabled halo
+starts; enabled mode has four and three respectively. Mutation-availability
+preflight also has zero/one reductions with disabled/enabled agreement. Total setup retains
+required reductions and is checked to decrease, not to become MPI-free. All
+20 tooling tests pass (3.153 s), including aggregate dependency validation.
+The complete-state topology wrappers and default `RegisterMesh` inherit the
+policy before their first optional stages. Registration has one required policy
+agreement plus two enabled safety reductions, or only that one required
+agreement in off mode; the PMPI test asserts these counts separately.
+
+The first wider batch lacked `IV10_10.cgns` in the isolated fixture directory:
+three native-connectivity registrations failed on CGNS open, while their other
+assertions passed. The existing fixture was copied from the canonical mesh
+repository; its SHA256 is
+`b23eededff36f6f2322469d8ec38f6d437ed75b7964cd20035828224c65bb586`.
+The final complete 16-registration rerun above passes; the initial failure is
+not counted as acceptance.
+
+This closes the owned-builder/topology/assembler core, not all E1 propagation.
+Importer entry points, partition/reorder companion stages and production loader
+selection still need wiring to the same policy. Source-level Python descriptor
+bindings are added, but their runtime gate and dependent CFV/Cauchy rebuild are
+queued with that remaining cross-module work. No CUDA or matched setup timing
+claim is made by these local C++ correctness tests.

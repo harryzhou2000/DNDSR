@@ -112,6 +112,11 @@ namespace DNDS::Geom
         UnstructuredMesh(const UnstructuredMesh &) = delete;
         UnstructuredMesh &operator=(const UnstructuredMesh &) = delete;
         bool HasNativeState() const { return bool(_nativeState); }
+        /// Immutable setup metadata; no geometry validation, read lease or MPI.
+        std::shared_ptr<Runtime::CommunicationContext> PreparationCommunication() const
+        {
+            return _nativeState ? _nativeState->PreparationCommunication() : nullptr;
+        }
         std::shared_ptr<const UnstructuredMeshState> CurrentNativeState() const
         {
             Native().Validate();
@@ -135,12 +140,12 @@ namespace DNDS::Geom
             return UnstructuredMeshLegacyRead(AcquireRead(requirements, context));
         }
         index OriginalEntityId(EntityKind kind, index row) const { return Native().OriginalEntityId(kind, row); }
-        /// Collective preflight; caller serializes submission/publication.
-        void CheckCollectiveMutationAvailable(bool = true) const
+        /// Caller serializes submission/publication and coordinates the safety
+        /// mode on all ranks. Off mode retains local checks and aborts on failure.
+        void CheckCollectiveMutationAvailable(bool collectivePreflight = true) const
         {
-            int available = versions.CanMutate();
-            MPI_Allreduce(MPI_IN_PLACE, &available, 1, MPI_INT, MPI_MIN, mpi.comm);
-            DNDS_check_throw_info(available, "mesh mutation blocked by an active reader, writer or failed transition");
+            Runtime::CommunicationDetail::Preflight(versions.CanMutate(), mpi.comm, collectivePreflight,
+                                                    "mesh mutation blocked by an active reader, writer or failed transition");
         }
         int getDim() const { return _nativeState ? Native().BorrowHostView().Dimension() : dim; }
         bool IsPeriodic() const { return _nativeState ? Native().BorrowHostView().IsPeriodic() : isPeriodic; }

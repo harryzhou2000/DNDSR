@@ -231,6 +231,9 @@ namespace DNDS::Geom
             .def("owner", &EntitySpace::Owner)
             .def("owner_local_row", &EntitySpace::OwnerLocalRow)
             .def("same_domain", &EntitySpace::SameDomain)
+            .def("with_communication", &EntitySpace::WithCommunication, py::arg("context"),
+                 "Return a local descriptor copy sharing numbering with an agreed congruent context. Coordinate matching choices on all ranks at a drained setup boundary before collective use.")
+            .def_property_readonly("collective_preflight", &EntitySpace::ChecksCollectivePreflight)
             .def("same_order", &EntitySpace::SameOrder);
         m.def("borrow_legacy_field_indexing", [](ArrayTransformer<real, 1> &transformer, const EntitySpace &space)
               { LegacyFieldBridge::BorrowIndexing(transformer, space, true); }, py::arg("transformer"), py::arg("entities"), "Attach cloned entity maps to a scalar real field transformer. Caller owns sizing, TransAttach and MPI request setup.");

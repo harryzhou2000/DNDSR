@@ -67,23 +67,32 @@ namespace DNDS::Geom
 
     void AdjacencyRegistry::ValidateCollectively(const std::function<void()> &validate) const
     {
-        int valid = 1;
-        try
+        if (!_policyAgreed)
         {
-            validate();
+            Runtime::CommunicationDetail::AgreePolicy(_mpi.comm, !_communication || _communication->ChecksCollectivePreflight());
+            _policyAgreed = true;
         }
-        catch (...)
-        {
-            valid = 0;
-        }
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _mpi.comm);
-        DNDS_check_throw_info(valid, "native connectivity setup validation failed on a rank");
+        Runtime::CommunicationDetail::LocalStage(_mpi.comm, !_communication || _communication->ChecksCollectivePreflight(), [&]
+                                                 {
+            if (_communication)
+                EntitySpace::CheckCommunicator(_mpi.comm, _communication->Communicator());
+            validate(); }, "native connectivity setup validation failed on a rank");
     }
     void AdjacencyRegistry::Register(MeshAdjacencyRead relation)
     {
         relation.Validate();
         relation.CheckCommunicator(_mpi.comm);
         const auto kind = relation.Kind();
+        if (_spaces.empty())
+        {
+            DNDS_check_throw_info(!_policyAgreed || relation.Source().ChecksCollectivePreflight() ==
+                                                        (!_communication || _communication->ChecksCollectivePreflight()),
+                                  "registry preparation policy is already frozen; use a fresh registry");
+            _communication = relation.Source().Communication();
+        }
+        for (const auto *space : {&relation.Source(), &relation.Target()})
+            DNDS_check_throw_info(space->ChecksCollectivePreflight() == (!_communication || _communication->ChecksCollectivePreflight()),
+                                  "native setup registry entity preparation policies differ");
         DNDS_check_throw_info(!_relations.count(kind), "duplicate native setup relation");
         for (const auto *space : {&relation.Source(), &relation.Target()})
         {
@@ -152,7 +161,7 @@ namespace DNDS::Geom
             DNDS_check_throw_info(context, "reused native fetch route requires its communication context");
             return retain(Transfer(*reusedRoute, values, context));
         }
-        context = std::make_shared<Runtime::CommunicationContext>(_mpi.comm);
+        context = _communication ? _communication : std::make_shared<Runtime::CommunicationContext>(_mpi.comm);
         Runtime::RowTransferPlan route(context, size_t(relation.NumOwned()), globals.size(), requests,
                                        {relation.Source().Stamp(), relation.Target().Stamp()});
         return retain(Transfer(route, values, context));
@@ -324,7 +333,7 @@ namespace DNDS::Geom
             {
                 valid = 0;
             }
-            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _mpi.comm);
+            Runtime::CommunicationDetail::Preflight(valid, _mpi.comm, !_communication || _communication->ChecksCollectivePreflight(), "native ghost traversal local expansion failed on a rank");
             DNDS_check_throw_info(valid, "native ghost traversal local expansion failed on a rank");
 
             std::vector<std::vector<index>> requested(relations.size());
@@ -385,7 +394,7 @@ namespace DNDS::Geom
                 for (size_t row = 0; row < requested[group.relationSlots.front()].size(); ++row)
                     requests.push_back({source.Owner(requested[group.relationSlots.front()][row]),
                                         source.OwnerLocalRow(requested[group.relationSlots.front()][row]), row});
-                group.context = std::make_shared<Runtime::CommunicationContext>(_mpi.comm);
+                group.context = _communication ? _communication : std::make_shared<Runtime::CommunicationContext>(_mpi.comm);
                 group.route.emplace(group.context, size_t(model.NumOwned()),
                                     requested[group.relationSlots.front()].size(), requests,
                                     std::vector<Runtime::VersionStamp>{source.Stamp()});
@@ -455,6 +464,7 @@ namespace DNDS::Geom
         Runtime::VersionTracker versions;
         EntitySpace result(kind, anchor._mpi, owned, 0, anchor._identity, versions.Stamp(), global, ghosts, versions);
         result._publishedMaps = true;
+        result._communication = anchor._communication;
         return result;
     }
 
@@ -464,6 +474,7 @@ namespace DNDS::Geom
     {
         const auto mpi = cone.MPI();
         AdjacencyRegistry setup(mpi);
+        setup._communication = cone.Source().Communication();
         std::optional<ConnectivityRows::SubEntityRows> rows;
         std::vector<std::vector<NodePeriodicBits>> nodeBits, parentBits;
 
@@ -807,6 +818,8 @@ namespace DNDS::Geom
     }
     void AdjacencyRegistry::RegisterMesh(UnstructuredMesh &mesh, MeshReadRequirements requirements)
     {
+        if (!_policyAgreed && _relations.empty() && !_communication)
+            _communication = mesh.PreparationCommunication();
         std::shared_ptr<MeshReadAccess> read;
         ValidateCollectively([&]
                              {
@@ -917,6 +930,7 @@ namespace DNDS::Geom
             EntitySpace next(kind, _mpi, space.NumOwned(), index(globals.size()), space._identity, space._stamp,
                              space._global, std::move(ghosts), space._versions);
             next._publishedMaps = true;
+            next._communication = space._communication;
             result.spaces.emplace(kind, std::move(next));
             result.routes.emplace(kind, EntityGhostMapping(result.spaces.at(kind)));
         }

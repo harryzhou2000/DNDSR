@@ -44,6 +44,7 @@ namespace DNDS::Geom
         std::shared_ptr<GlobalOffsetsMapping> _global;
         std::shared_ptr<OffsetAscendIndexMapping> _ghostMap;
         bool _publishedMaps = false;
+        std::shared_ptr<Runtime::CommunicationContext> _communication;
 
         EntitySpace(EntityKind kind, MPIInfo mpi, index owned, index ghost,
                     std::shared_ptr<const uint8_t> identity, Runtime::VersionStamp stamp,
@@ -76,6 +77,7 @@ namespace DNDS::Geom
             _global = std::move(other._global);
             _ghostMap = std::move(other._ghostMap);
             _publishedMaps = other._publishedMaps;
+            _communication = std::move(other._communication);
             return *this;
         }
         /// Collective native construction, with no legacy mesh/Array storage.
@@ -89,6 +91,22 @@ namespace DNDS::Geom
         /// required remote rows, in current rank-offset numbering. Existing
         /// descriptors and plans continue referring to the previous order.
         EntitySpace WithGhosts(std::vector<index> globals) const;
+        /// Execution policy is independent of entity numbering. Return a new
+        /// descriptor sharing the exact maps/epochs and an agreed congruent
+        /// context; retained descriptors are unchanged. Use only at a drained,
+        /// coordinated setup boundary. Siblings/ghost replacements inherit it.
+        EntitySpace WithCommunication(std::shared_ptr<Runtime::CommunicationContext> context) const;
+        const std::shared_ptr<Runtime::CommunicationContext> &Communication() const { return _communication; }
+        bool ChecksCollectivePreflight() const { return !_communication || _communication->ChecksCollectivePreflight(); }
+        void Preflight(bool valid, const char *message) const
+        {
+            Runtime::CommunicationDetail::Preflight(valid, _mpi.comm, ChecksCollectivePreflight(), message);
+        }
+        template <class F>
+        void LocalStage(F &&run, const char *message = "mesh preparation failed on a rank") const
+        {
+            Runtime::CommunicationDetail::LocalStage(_mpi.comm, ChecksCollectivePreflight(), std::forward<F>(run), message);
+        }
         EntityKind Kind() const { return _kind; }
         /// Opaque process-local identity; never serialize this value.
         uint64_t MeshIdentity() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(_identity.get())); }

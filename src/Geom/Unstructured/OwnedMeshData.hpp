@@ -11,6 +11,17 @@ namespace DNDS::Geom
     /// separate assembler operation with a caller-supplied GhostSpec.
     struct NativeOwnedMeshData
     {
+        /// Optional immutable safety policy for this preparation pipeline.
+        /// Null retains enabled compatibility behavior. Not mesh identity/I/O.
+        /// Keep all spaces on the same policy; a context change on this detached
+        /// record also requires WithCommunication on its entity descriptors.
+        std::shared_ptr<Runtime::CommunicationContext> communication;
+        template <class F>
+        void LocalStage(const MPIInfo &mpi, F &&run, const char *message = "mesh preparation failed on a rank") const
+        {
+            Runtime::CommunicationDetail::LocalStage(mpi.comm, !communication || communication->ChecksCollectivePreflight(),
+                                                     std::forward<F>(run), message);
+        }
         MeshIdentity identity;
         MeshReadRequirements requirements;
         /// True only when Cell2Cell was built as the exact Cell->Node->Cell

@@ -56,6 +56,8 @@ namespace DNDS::Geom
     class AdjacencyRegistry
     {
         MPIInfo _mpi;
+        std::shared_ptr<Runtime::CommunicationContext> _communication;
+        mutable bool _policyAgreed = false;
         std::unordered_map<AdjacencyDescriptor, std::shared_ptr<MeshAdjacencyRead>, AdjacencyDescriptorHash> _relations;
         std::unordered_map<EntityKind, EntitySpace> _spaces;
         mutable std::unordered_map<AdjacencyDescriptor, Runtime::Array<index>, AdjacencyDescriptorHash> _fetchValues;
@@ -76,7 +78,8 @@ namespace DNDS::Geom
         static EntitySpace MakeSpace(EntityKind kind, index owned, const EntitySpace &anchor);
 
     public:
-        explicit AdjacencyRegistry(MPIInfo mpi) : _mpi(mpi) {}
+        explicit AdjacencyRegistry(MPIInfo mpi, std::shared_ptr<Runtime::CommunicationContext> communication = {})
+            : _mpi(mpi), _communication(std::move(communication)) {}
         /// Native setup mathematics; composition requires the intermediate
         /// support rows to be present. Legacy DSL entry points forward here.
         static MeshAdjacency Inverse(const MeshAdjacencyRead &cone, const MPIInfo &mpi);
