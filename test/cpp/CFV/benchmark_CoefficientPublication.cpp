@@ -57,6 +57,13 @@ namespace
         for (I iCell = 0; iCell < src.RowCount(); ++iCell)
             std::copy(src[iCell].begin(), src[iCell].end(), dst[iCell].begin());
     }
+    void NativeCopy(Field &field)
+    {
+        // Bounded candidate, no swap/rebinding: these matching unpadded layouts
+        // make the whole-buffer Runtime copy exactly the same logical payload.
+        // Production commit remains unchanged until the measured decision.
+        field.work.coefficients.Owned().CopyFrom(field.work.temporary.Owned()).Wait();
+    }
     void CheckCopy(Field &field, const DNDS::Geom::EntitySpace &cells)
     {
         // A pre-existing binding must still address the published allocation.
@@ -121,6 +128,7 @@ namespace
             {"production_commit", repetitions, true, [&](Field &field)
              { plan.CommitReconstruction(field.work); }},
             {"bare_row_copy", repetitions, true, Copy},
+            {"native_array_copy", repetitions, true, NativeCopy},
             {"sweep_without_commit", kernels, false, [&](Field &field)
              { plan.DoReconstructionIterTo(field.mean, field.work.coefficients, field.work, field.boundary); }},
             {"wbap_without_commit", kernels, false, [&](Field &field)

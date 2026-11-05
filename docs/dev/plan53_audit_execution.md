@@ -861,3 +861,28 @@ mixture/RANS source checks remain. An initial build listed the wrong RANS
 target name after successfully building the first two targets; the registered
 `dnds_test_cauchy_rans_fv` target then built and its batch passed. No performance
 gain is claimed; E6's candidate/reuse assessment remains pending.
+
+## E3 matched baseline and bounded native-copy candidate
+
+Job12442563 completed0:0 in2m16s on a Slurm-selected amd_512 node,o2415,
+source43e099fe. All18 rows/72 trials/288 phase records and all18 raw-log hashes
+were independently checked. The [compact report](plan53_validation/e3-matched/README.md)
+records actual flags/MPI/thread level/binding, normal/reverse order and the
+preserved two killed login-build attempts before successful incremental16-way
+completion. No other job was changed and no node was pinned.
+
+At5000cells/rank, flow5 publication costs1.7–2.0% of one sweep; separate5+12
+CFV fields cost14–21%, with most time present in the bare-copy control. This
+is not a complete-RHS fraction or reacting performance result. Source inspection
+records K+p per-field commits plus one separate flux-seed copy and policy-
+dependent PP copies; mean snapshots are distinct. A handle swap would change
+external aliases/bindings and is not adopted on this evidence.
+
+The contained follow-up compares Runtime `Array::CopyFrom().Wait()` on matching
+unpadded layouts, retaining allocations/bindings, against the same production
+commit and row loop. Production is unchanged. Both np2 pilot rows pass with
+five phases/two trials and exact post-copy halo payloads, unchanged means and
+retained allocation identity. A six-row matched follow-up is declared in the
+assessment plan and recorder `--candidate`; candidate and controls must run in
+the same allocation/invocation. At this commit that follow-up remains unrun.
+Complete-RHS fractions and the final copy/ownership decision remain open.

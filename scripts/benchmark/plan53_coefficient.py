@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--raw", type=Path, required=True)
     parser.add_argument("--expected-source")
     parser.add_argument("--pilot", action="store_true")
+    parser.add_argument("--candidate", action="store_true", help="bounded follow-up of native whole-array copy, not another full matrix")
     args = parser.parse_args()
     source = Path(__file__).resolve().parents[2]
     binary, launcher = args.binary.resolve(), args.mpiexec.resolve()
@@ -37,6 +38,12 @@ def main():
     if args.pilot:
         rows = [{"np": 2, "width": 16, "degree": degree, "grouping": grouping, "layout": layout}
                 for degree, grouping, layout in ((3, "flow5", "aos"), (2, "split5+12", "soa"))]
+    elif args.candidate:
+        rows = [{"np": np, "width": width, "degree": degree, "grouping": grouping, "layout": layout}
+                for np, width, degree, grouping, layout in
+                ((32, 32, 3, "flow5", "aos"), (32, 400, 3, "flow5", "aos"),
+                 (32, 400, 2, "split5+12", "aos"), (32, 400, 3, "split5+12", "aos"),
+                 (8, 200, 3, "split5+12", "aos"), (32, 400, 3, "split5+12", "soa"))]
     else:
         for np, width in ((32, 32), (32, 400), (8, 16), (8, 200)):
             for degree in (2, 3):
@@ -51,7 +58,7 @@ def main():
     args.records.mkdir(parents=True, exist_ok=False)
     args.raw.mkdir(parents=True, exist_ok=False)
     manifest = {
-        "purpose": __doc__, "pilot": args.pilot, "host": socket.gethostname(), "source": str(source), "revision": head,
+        "purpose": __doc__, "pilot": args.pilot, "candidate": args.candidate, "host": socket.gethostname(), "source": str(source), "revision": head,
         "source_status": subprocess.check_output(["git", "status", "--porcelain"], cwd=source, text=True),
         "binary": str(binary), "binary_sha256": sha(binary), "cache_sha256": sha(binary.parents[2] / "CMakeCache.txt"),
         "source_sha256": {name: sha(source / name) for name in
@@ -95,7 +102,7 @@ def main():
                 if (result["preflight"] or not result["retained_binding_payload_exact"] or not result["mean_generations_unchanged"]
                         or not result["coefficient_allocation_retained"] or result["mpi_thread_provided"] < 1):
                     raise ValueError("binding/input/MPI contract failed")
-                expected = {"production_commit", "bare_row_copy", "sweep_without_commit", "wbap_without_commit"}
+                expected = {"production_commit", "bare_row_copy", "native_array_copy", "sweep_without_commit", "wbap_without_commit"}
                 if result["phases"].keys() != expected:
                     raise ValueError("phase inventory differs")
                 for phase in result["phases"].values():

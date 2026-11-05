@@ -11,6 +11,14 @@
 set -e -o pipefail
 task_root=${1:?task root with source and runtime.sh}
 revision=${2:?exact source commit}
+mode=${3:-baseline}
+extra=()
+if [[ "$mode" == candidate ]]; then
+    extra+=(--candidate)
+elif [[ "$mode" != baseline ]]; then
+    echo "unknown assessment mode: $mode" >&2
+    exit 2
+fi
 source "$task_root/runtime.sh"
 export OMPI_CC=gcc OMPI_CXX=g++ OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 DNDS_DISABLE_ASYNC_MPI=0
 hostname
@@ -24,4 +32,4 @@ timeout --signal=TERM --kill-after=10s 850s \
     --binary "$task_root/source/build-cpu/test/cpp/cfv_benchmark_coefficient_publication" \
     --mpiexec "$BSSCA_MPI_ROOT/bin/mpirun" \
     --records "$task_root/results-e3-$SLURM_JOB_ID/records" \
-    --raw "$task_root/results-e3-$SLURM_JOB_ID/raw" --expected-source "$revision"
+    --raw "$task_root/results-e3-$SLURM_JOB_ID/raw" --expected-source "$revision" "${extra[@]}"
