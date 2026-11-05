@@ -50,6 +50,23 @@ Before compiling or submitting, establish:
 If fields are missing, inspect and prepare without launching. Ask at the first
 operation whose correctness depends on the missing value.
 
+## Node Selection and Performance Comparisons
+
+Let the scheduler choose the first available node meeting the requested
+resources. **Never pin a particular node unless the user explicitly requests
+node pinning for the current work.** This applies to submission and later job
+updates, including `--nodelist`, `-w`, `ReqNodeList`, and equivalent constraints.
+A pilot's node, a tighter runtime estimate, or a desire to match hardware does
+not authorize pinning. Node counts, resource requests and MPI CPU/core binding
+remain ordinary allocation settings.
+
+Assume uniform performance across eligible cluster nodes for ordinary runs.
+For more delicate performance comparisons, run the compared workloads serially
+within one allocation, so they share its hardware without competing with one
+another. Do not turn that comparison procedure into a named-node requirement
+for later production runs. Record the actual allocated nodes and qualify timing
+estimates; keep the declared wall-time bounds.
+
 ## Subagent Policy
 
 When subagents are available, dispatch regular or mechanical cluster work to

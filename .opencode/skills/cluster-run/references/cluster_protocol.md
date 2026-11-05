@@ -9,6 +9,12 @@ live read-only inspection. Record the evidence used. Ask for missing facts
 that affect the next operation, not for installation of a helper repository.
 Provisioning or profile maintenance remains separately authorized work.
 
+Follow the skill's [node-selection rule](../SKILL.md#node-selection-and-performance-comparisons):
+request resources and let the scheduler select the first available eligible
+nodes. Do not set named-node constraints without the user's explicit request
+for the current work. Assume uniform node performance for ordinary execution;
+serialize delicate comparison runs within one allocation.
+
 Capture the following facts in as few remote calls as practical. Treat all
 scheduler capacity and queue observations as time-sensitive.
 
