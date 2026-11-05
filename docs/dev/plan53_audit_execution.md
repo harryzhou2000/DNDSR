@@ -1034,3 +1034,17 @@ The unchanged native mesh-assertion suite passes at np1/2/4 (three registrations
 0.66 seconds), including valid and malformed incidence multiplicities, partial
 outer rows and self-periodicity. This is contained storage cleanup under an
 explicit audit, not a claimed mesh-setup speedup or reduced validation scope.
+
+## E3 flow5 composed-RHS attribution
+
+Job `12442797` completed `0:0`, all six cases/36 timer-on/off records and six
+raw hashes verified. The [report](plan53_validation/e3-rhs/README.md) records
+actual synchronous publication fractions and complete Evaluate times. Large
+flow5 cases spend roughly 1.3–3.1% of local RHS time in publication; small
+partitions show roughly 4.7–6.0%. Every batch has the intended five/eight
+publications per unlimited/P3-WBAP RHS and unchanged owned means.
+
+Retain flow5 production copying and stable bindings. This closes its measured
+publication fraction, not split-field/reacting RHS attribution or excluded
+flux-seed/PP traffic. First build attempt found an unregenerated target; cache
+regeneration and the same16-worker build succeeded before submission.
