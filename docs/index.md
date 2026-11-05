@@ -34,6 +34,8 @@ Native linear operators, Jacobian assembly, staged SGS and local ILU are describ
 in [Cauchy implicit operator contracts](architecture/CauchyImplicit.md).
 The [Cauchy positivity policy](architecture/CauchyPositivity.md) specifies
 thermal constraints, component scopes and preserved Euler repair ordering.
+The [Cauchy audit fix record](dev/cauchy_audit_fix.md) tracks the shared SST
+blend correction and independent RANS reconstruction positivity policy.
 The initial CPU single-domain flow solver uses native CFV P3/WBAP; numerical
 case qualification and implicit/physical multi-domain execution remain separate
 gates. The placement foundation mock alone is not a fluid validation.

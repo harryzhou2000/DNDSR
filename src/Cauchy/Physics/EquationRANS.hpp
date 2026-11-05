@@ -101,80 +101,48 @@ namespace DNDS::Cauchy
     /// never guesses from the initial condition or one of several boundaries.
     RANSStateView ResolveRANSStatePolicy(const EquationSystem &equation, const RANSStateSettings &settings);
 
-    /// Reconstruction-only Euler scalar policy. The reference admissibility
-    /// threshold is the flow density floor, as in checkRecBaseGood. Compression
-    /// floors are separately supplied smallReal*referencePrimitive[j] values.
-    /// Keeping these thresholds distinct preserves the legacy algorithm.
+    /// Reconstruction-only scalar policy, independent of flow/species PP.
+    /// Nonnegative quadrature values are obtained by scaling the entire RANS
+    /// polynomial about its cell mean, with a common factor for the scalar pair.
+    /// Zero is the floor; no density or far-field reference enters this rule.
     struct RANSReconstructionView
     {
         Physics::RANS::ModelKind kind = Physics::RANS::ModelKind::None;
         int components = 0;
-        real referenceFloor = 0;
-        std::array<real, 2> compressionFloors{};
 
-        struct Limit
+        /// mean(q,j) must return the cell mean for every q. Active scalar
+        /// limiting requires finite nonnegative means and finite point values.
+        /// SA is untouched unless USE_NS_SA_NUT_REDUCED_ORDER is enabled.
+        /// The 0.9 safety factor applies only when theta < 1; tiny positive
+        /// constant states therefore remain unchanged. Flow beta is independent.
+        template <class Mean, class Higher>
+        DNDS_DEVICE_CALLABLE real Compute(const Mean &mean, const Higher &higher, index first, index begin, index end) const
         {
-            real flowDensityFraction = 1;
-            real coefficientScale = 1;
-        };
-
-        /// Scalar part of Euler's reference-polynomial quality test. This is
-        /// deliberately stricter than nonnegative mean admissibility; a zero
-        /// scalar mean can force complete reference-order fallback.
-        template <class Row>
-        DNDS_DEVICE_CALLABLE bool ReferenceAdmissible(const Row &values) const
-        {
-            for (int j = 0; j < components; ++j)
-                if (!(values[j] >= referenceFloor))
-                    return false;
-            return true;
-        }
-
-        /// Evaluate the minimum base-to-high scalar ratio at the same points
-        /// used by thermal PP. For two-equation RANS, multiply the ENTIRE pair
-        /// of coefficient columns by .9*theta when limited, not just their
-        /// difference from the reference. This unusual legacy choice is kept;
-        /// point-value fallback still applies during flux/property evaluation.
-        /// SA's optional reduced-order flag instead contributes theta to the
-        /// flow/species density fraction; it does not damp SA coefficients here.
-        /// Caller skips this calculation when the original polynomial passed
-        /// the full reference-quality test, and rejects a nonfinite/out-of-range
-        /// result before changing coefficients. No buffers or owners are retained.
-        template <class Base, class Higher>
-        DNDS_DEVICE_CALLABLE Limit Compute(const Base &base, const Higher &higher, index first, index begin, index end) const
-        {
-            if (!components)
-                return {};
+            if (!components || begin == end)
+                return 1;
 #ifndef USE_NS_SA_NUT_REDUCED_ORDER
             if (kind == Physics::RANS::ModelKind::SA)
-                return {};
+                return 1;
 #endif
             real theta = 1;
             for (int j = 0; j < components; ++j)
             {
-                bool below = false;
-                for (index q = begin; q < end; ++q)
-                    below = below || higher(q, first + j) < compressionFloors[j];
-                if (!below)
-                    continue;
+                const real value = mean(begin, first + j);
+                DNDS_assert(std::isfinite(value) && value >= 0);
                 for (index q = begin; q < end; ++q)
                 {
-                    const real value = base(q, first + j);
-                    const real delta = higher(q, first + j) - value;
-                    if (delta < 0)
-                        theta = std::min(theta, (value - compressionFloors[j]) / (-delta + verySmallReal));
+                    if (higher(q, first + j) < 0)
+                        theta = std::min(theta, value / (value - higher(q, first + j) + verySmallReal));
                 }
             }
-            return kind == Physics::RANS::ModelKind::SA ? Limit{theta, 1} : Limit{1, theta < 1 ? .9 * theta : 1};
+            return theta < 1 ? .9 * theta : 1;
         }
     };
 
-    /// Prepare reconstruction thresholds from the same conservative reference
-    /// as mean repair. referenceConservative["rho"] is required here. There is
-    /// no unit-density fallback, independent density setting, or inference from
-    /// an initial condition/boundary. Conservative mean repair needs no density.
-    RANSReconstructionView ResolveRANSReconstructionPolicy(const EquationSystem &equation,
-                                                           const RANSStateSettings &settings, real densityFloor);
+    /// Scalar reconstruction bounds depend only on the selected model.
+    /// Prescribed reference states remain relevant to mean repair, not this
+    /// zero-floor polynomial correction.
+    RANSReconstructionView ResolveRANSReconstructionPolicy(const EquationSystem &equation);
 
     /// Gather into the shared bounded point scratch. Logical flow/RANS row
     /// views preserve AoS/SoA/AoSoA strides. Derivative accessors are indexed

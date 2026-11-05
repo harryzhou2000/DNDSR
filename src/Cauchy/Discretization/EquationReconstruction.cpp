@@ -57,8 +57,7 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(owner->positivitySamples, "equation PP sampling geometry is unavailable");
             if (owner->equation.HasRANS())
             {
-                rans = ResolveRANSReconstructionPolicy(owner->equation, owner->settings.numerics.ransState,
-                                                       owner->settings.numerics.densityFloor);
+                rans = ResolveRANSReconstructionPolicy(owner->equation);
                 index first = 0;
                 for (const auto &block : owner->equation.Schema().blocks)
                 {
@@ -85,14 +84,7 @@ namespace DNDS::Cauchy
         template <class Values>
         bool ReferenceGood(const Values &values, index q, const EquationThermalView &bounds) const
         {
-            struct ScalarRow
-            {
-                const Values &values;
-                index row, first;
-                real operator[](index j) const { return values(row, first + j); }
-            } scalars{values, q, ransFirst};
-            return bounds.Admissible(EquationPositivityDetail::PointRow<Values>{values, q}) &&
-                   rans.ReferenceAdmissible(scalars);
+            return bounds.Admissible(EquationPositivityDetail::PointRow<Values>{values, q});
         }
     };
     FiniteVolume::EquationPositivityWorkspace::EquationPositivityWorkspace(std::shared_ptr<const Data> owner,
@@ -146,8 +138,9 @@ namespace DNDS::Cauchy
                     for (index iCell = 0; iCell < cells; ++iCell)
                         if (degrees(iCell, 0) < 0)
                             for (index j = 0; j < input.ComponentNumber(); ++j)
-                                for (int mode = keep; mode < modes; ++mode)
-                                    coefficients(iCell, j * modes + mode) = 0;
+                                if (bounds.CompressesReconstructionComponent(j))
+                                    for (int mode = keep; mode < modes; ++mode)
+                                        coefficients(iCell, j * modes + mode) = 0;
                 }
                 data.Sample(input, *data.reference, data.baseValues);
                 const SampleRead read(data.prototype, data.baseValues, points);
@@ -169,8 +162,10 @@ namespace DNDS::Cauchy
                         if (good)
                             degrees(iCell, 0) = order;
                         else
-                            for (index j = 0; j < coefficients.ComponentNumber(); ++j)
-                                coefficients(iCell, j) = reference(iCell, j);
+                            for (index component = 0; component < input.ComponentNumber(); ++component)
+                                if (bounds.CompressesReconstructionComponent(component))
+                                    for (int mode = 0; mode < modes; ++mode)
+                                        coefficients(iCell, component * modes + mode) = reference(iCell, component * modes + mode);
                     }
             }
             data.Sample(input, flux, data.higherValues);
@@ -196,8 +191,6 @@ namespace DNDS::Cauchy
             const auto degrees = degreeRead.View<R::FixedRows<1>>();
             for (index iCell = 0; iCell < cells; ++iCell)
             {
-                if (degrees(iCell, 0) == n.cfv.maxOrder)
-                    continue; // Preserve Euler's full-polynomial early exit.
                 const EquationPositivityDetail::PointRow<decltype(means)> mean{means, iCell};
                 struct MeanValues
                 {
@@ -205,17 +198,19 @@ namespace DNDS::Cauchy
                     real operator()(index, index j) const { return value[j]; }
                 } base{mean};
                 const index begin = data.owner->positivityOffsets[iCell], end = data.owner->positivityOffsets[iCell + 1];
-                const auto scalarLimit = baseRead ? data.rans.Compute(baseRead->View(), higher, data.ransFirst, begin, end)
-                                                  : data.rans.Compute(base, higher, data.ransFirst, begin, end);
-                DNDS_check_throw_info(std::isfinite(scalarLimit.coefficientScale) && scalarLimit.coefficientScale >= 0 && scalarLimit.coefficientScale <= 1 &&
-                                          std::isfinite(scalarLimit.flowDensityFraction) && scalarLimit.flowDensityFraction >= 0 && scalarLimit.flowDensityFraction <= 1,
-                                      "invalid RANS reconstruction compression: check scalar reference floors and admissible base");
-                if (scalarLimit.coefficientScale < 1)
+                // RANS was excluded from every flow base test/write above.
+                // Correct its original polynomial about the mean even when
+                // flow is already admissible and will take the early exit.
+                const real scale = data.rans.Compute(base, higher, data.ransFirst, begin, end);
+                DNDS_check_throw_info(std::isfinite(scale) && scale >= 0 && scale <= 1, "invalid RANS reconstruction compression");
+                if (scale < 1)
                     for (int component = 0; component < data.rans.components; ++component)
                         for (int mode = 0; mode < modes; ++mode)
-                            coefficients(iCell, (data.ransFirst + component) * modes + mode) *= scalarLimit.coefficientScale;
-                const auto beta = baseRead ? bounds.ReconstructionFraction(mean, baseRead->View(), higher, begin, end, n.positivityBetaPower, n.positivityBetaCutoff, scalarLimit.flowDensityFraction)
-                                           : bounds.ReconstructionFraction(mean, base, higher, begin, end, n.positivityBetaPower, n.positivityBetaCutoff, scalarLimit.flowDensityFraction);
+                            coefficients(iCell, (data.ransFirst + component) * modes + mode) *= scale;
+                if (degrees(iCell, 0) == n.cfv.maxOrder)
+                    continue;
+                const auto beta = baseRead ? bounds.ReconstructionFraction(mean, baseRead->View(), higher, begin, end, n.positivityBetaPower, n.positivityBetaCutoff)
+                                           : bounds.ReconstructionFraction(mean, base, higher, begin, end, n.positivityBetaPower, n.positivityBetaCutoff);
                 DNDS_check_throw_info(std::isfinite(beta) && beta >= 0 && beta <= 1, "invalid equation reconstruction PP beta");
                 if (beta < 1)
                 {

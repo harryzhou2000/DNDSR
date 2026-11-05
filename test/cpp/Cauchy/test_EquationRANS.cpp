@@ -154,41 +154,27 @@ TEST_CASE("RANS scalar repairs retain the Euler componentwise and exponential ru
     }
 }
 
-TEST_CASE("RANS reconstruction ratios retain distinct reference and compression thresholds")
+TEST_CASE("RANS reconstruction scales about the mean with a zero scalar floor")
 {
     struct Samples
     {
         std::array<std::array<double, 3>, 2> values;
         double operator()(I q, I j) const { return values[q][j]; }
     };
-    const Samples base{std::array{std::array{9., .2, .4}, std::array{9., .2, .4}}};
+    const Samples mean{std::array{std::array{9., .2, .4}, std::array{9., .2, .4}}};
     const Samples higher{std::array{std::array{9., -.2, .5}, std::array{9., .3, -.4}}};
     for (const auto *name : {"SA", "KOmegaWilcox", "KOmegaSST", "RealizableKE"})
     {
-        const auto equation = Equation(name);
-        C::RANSReconstructionView policy{equation.RANS().Kind(), equation.RANS().ComponentNumber(), .01, {.02, .04}};
-        CHECK(policy.ReferenceAdmissible(std::array<double, 2>{.015, .03}));
-        CHECK_FALSE(policy.ReferenceAdmissible(std::array<double, 2>{.005, .03}));
-        const auto result = policy.Compute(base, higher, 1, 0, 2);
-        if (policy.components == 2)
-        {
-            // (.2-.02)/(.2-(-.2)) = (.4-.04)/(.4-(-.4)) = .45.
-            // Euler damps both entire scalar coefficient columns by .9*.45.
-            CHECK(result.coefficientScale == doctest::Approx(.405).epsilon(1e-14));
-            CHECK(result.flowDensityFraction == 1);
-        }
-        else
-        {
-            CHECK(result.coefficientScale == 1);
-#ifdef USE_NS_SA_NUT_REDUCED_ORDER
-            CHECK(result.flowDensityFraction == doctest::Approx(.45).epsilon(1e-14));
-#else
-            CHECK(result.flowDensityFraction == 1);
+        const auto policy = C::ResolveRANSReconstructionPolicy(Equation(name));
+        double expected = .45; // .9 * min(.2/(.2+.2), .4/(.4+.4))
+#ifndef USE_NS_SA_NUT_REDUCED_ORDER
+        if (policy.kind == DNDS::Physics::RANS::ModelKind::SA)
+            expected = 1;
 #endif
-        }
-        const auto unchanged = policy.Compute(base, base, 1, 0, 2);
-        CHECK(unchanged.coefficientScale == 1);
-        CHECK(unchanged.flowDensityFraction == 1);
+        CHECK(policy.Compute(mean, higher, 1, 0, 2) == doctest::Approx(expected).epsilon(1e-14));
+        CHECK(policy.Compute(mean, mean, 1, 0, 2) == 1);
+        const Samples tiny{std::array{std::array{9., 1e-30, 1e-30}, std::array{9., 1e-30, 1e-30}}};
+        CHECK(policy.Compute(tiny, tiny, 1, 0, 2) == 1);
     }
 }
 
@@ -207,16 +193,13 @@ TEST_CASE("Named RANS initialization and numerical reference resolve against the
         CHECK_THROWS(C::ResolveRANSStatePolicy(equation, settings));
         settings.referenceConservative = {{"rhoK", .1}, {"rhoOmega", 4}};
         CHECK(C::ResolveRANSStatePolicy(equation, settings).omegaLowerLimit == .04);
-        CHECK_THROWS(C::ResolveRANSReconstructionPolicy(equation, settings, 1e-12));
         settings.referenceConservative["rho"] = .25;
-        const auto reconstruction = C::ResolveRANSReconstructionPolicy(equation, settings, 1e-12);
-        CHECK(reconstruction.compressionFloors[0] == doctest::Approx(DNDS::smallReal * .4).scale(1e-30));
-        CHECK(reconstruction.compressionFloors[1] == doctest::Approx(DNDS::smallReal * 16).scale(1e-30));
+        CHECK(C::ResolveRANSReconstructionPolicy(equation).components == 2);
         CHECK(C::ResolveRANSStatePolicy(equation, settings).omegaLowerLimit == .04);
         const auto roundTrip = C::Json(settings).get<C::RANSStateSettings>();
         CHECK(roundTrip.referenceConservative == settings.referenceConservative);
         settings.referenceConservative["rho"] = 0;
-        CHECK_THROWS(C::ResolveRANSReconstructionPolicy(equation, settings, 1e-12));
+        CHECK_THROWS(C::ResolveRANSStatePolicy(equation, settings));
     }
 }
 

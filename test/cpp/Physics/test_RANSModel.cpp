@@ -130,3 +130,24 @@ TEST_CASE("RANS transport source and diffusion are independent of Cartesian fram
     invalid.viscosityReference = 0;
     CHECK_THROWS(R::Model{invalid});
 }
+
+TEST_CASE("SST omega production independently blends inner and outer shear coefficients")
+{
+    R::ModelSettings settings;
+    settings.model = "KOmegaSST";
+    settings.desScale = 1e100;
+    const R::Model model(settings);
+    auto point = Fixture();
+    point.state << 1, 1, 0, 0, 3, 1e-4, 2;
+    point.gradient.setZero();
+    point.gradient(1, 1) = 3; // du/dy: production divided by nu_t is shear squared.
+    point.molecularViscosity = 1e-5;
+    constexpr double innerGamma = .075 / .09 - .5 * .41 * .41 / .3;
+    constexpr double outerGamma = .0828 / .09 - .856 * .41 * .41 / .3;
+    for (bool inner : {true, false})
+    {
+        point.wallDistance = inner ? 1e-5 : 1e6;
+        const double expected = (inner ? innerGamma : outerGamma) * 9 - (inner ? .075 : .0828) * 4;
+        CHECK(model.Source(point)[1] == doctest::Approx(expected).epsilon(1e-12));
+    }
+}

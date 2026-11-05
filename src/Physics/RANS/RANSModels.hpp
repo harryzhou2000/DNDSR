@@ -801,7 +801,7 @@ namespace DNDS::Physics::RANS
         PkTilde = std::min(Pk, config.productionLimit * betaStar * rho * k * omegaaa); // CFD++'s limiting: 10 times
 #endif
 
-        real gammaC = gamma1 * F1 + gamma1 * (1 - F1);
+        real gammaC = gamma1 * F1 + gamma2 * (1 - F1);
         real sigK = sigK1 * F1 + sigK2 * (1 - F1);
         real sigO = sigO1 * F1 + sigO2 * (1 - F1);
         real beta = beta1 * F1 + beta2 * (1 - F1);

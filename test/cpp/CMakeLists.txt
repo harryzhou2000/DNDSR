@@ -207,6 +207,10 @@ add_dependencies(dnds_unit_tests dnds_test_cauchy_config_shared)
 dnds_add_unit_test(cauchy_physics "Cauchy/test_PerfectGas.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_unit_test(cauchy_state_input "Cauchy/test_StateInput.cpp" "cauchy;physics;cfv;geom;dnds")
 dnds_add_unit_test(cauchy_rans_state "Cauchy/test_EquationRANS.cpp" "cauchy;physics;cfv;geom;dnds")
+# Header-policy-only executable: the feature switch must not mix with a Cauchy
+# library compiled without it. No Cauchy implementation is linked here.
+dnds_add_unit_test(cauchy_rans_reconstruction_reduced "Cauchy/test_RANSReconstructionReduced.cpp" "physics;dnds")
+target_compile_definitions(dnds_test_cauchy_rans_reconstruction_reduced PRIVATE USE_NS_SA_NUT_REDUCED_ORDER)
 dnds_add_unit_test(cauchy_derived_fields "Cauchy/test_DerivedFields.cpp" "cauchy;cfv;geom;dnds")
 if(DNDS_USE_CANTERA)
     set_property(TEST dnds_cauchy_derived_fields APPEND PROPERTY ENVIRONMENT

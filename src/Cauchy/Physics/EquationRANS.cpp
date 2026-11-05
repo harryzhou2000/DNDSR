@@ -51,22 +51,9 @@ namespace DNDS::Cauchy
     {
         return PrepareRANSStatePolicy(equation, ResolveReference(equation, settings).values, settings.saUpperLimit, settings.omegaLowerFactor);
     }
-    RANSReconstructionView ResolveRANSReconstructionPolicy(const EquationSystem &equation,
-                                                           const RANSStateSettings &settings, real densityFloor)
+    RANSReconstructionView ResolveRANSReconstructionPolicy(const EquationSystem &equation)
     {
-        DNDS_check_throw_info(std::isfinite(densityFloor) && densityFloor > 0, "invalid RANS reference-polynomial density floor");
-        const auto reference = ResolveReference(equation, settings);
-        DNDS_check_throw_info(reference.density.has_value(), "RANS reconstruction requires explicit rho in referenceConservative");
-        const auto names = equation.RANS().ComponentNames();
-        for (int j = 0; j < equation.RANS().ComponentNumber(); ++j)
-            DNDS_check_throw_info(settings.referenceConservative.count(names[j]), "RANS reconstruction requires all named scalar reference values");
-        RANSReconstructionView policy{equation.RANS().Kind(), equation.RANS().ComponentNumber(), densityFloor, {}};
-        for (int j = 0; j < policy.components; ++j)
-        {
-            policy.compressionFloors[j] = smallReal * (reference.values[j] / *reference.density);
-            DNDS_check_throw_info(std::isfinite(policy.compressionFloors[j]), "nonfinite primitive RANS reconstruction reference");
-        }
-        return policy;
+        return {equation.RANS().Kind(), equation.RANS().ComponentNumber()};
     }
     RANSStateView PrepareRANSStatePolicy(const EquationSystem &equation, const std::array<real, 2> &farfield,
                                          real saUpperLimit, real lowerFactor)

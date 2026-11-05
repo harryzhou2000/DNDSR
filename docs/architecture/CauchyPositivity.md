@@ -164,34 +164,25 @@ point inside a cell.
 - `EulerEvaluator.hpp::CompressInc/AddFixedIncrement`: final density/energy
   repair, scalar RANS repair, addition and species mean repair.
 
-RANS reference selection checks every scalar against the flow density floor,
-as Euler's `checkRecBaseGood` does. Compression uses different thresholds:
-`smallReal * referencePrimitive[j]`. The current input is
-`numerics.ransState.referenceConservative`, containing explicit `rho` and all
-named conservative RANS components. Primitive references divide those scalars
-by the supplied rho. Missing/invalid rho fails when reconstruction PP needs
-the conversion. There is no unit-density or scaling-density fallback. The
-conservative omega mean floor does not need density and remains unchanged.
-These values are code-unit physical-state references, not the independent
-`rho0/U0/L0/T0` nondimensionalization scales.
+RANS reconstruction is independent of flow/species base selection and beta.
+For nonnegative cell-mean scalar q and polynomial increment d(q,x), choose
+`theta = min(1, q / (-d(q,x)))` over negative reconstructed values. Scale the
+entire scalar coefficient columns by `0.9*theta` only when theta is below one.
+The floor is zero; tiny positive constant states remain unchanged. Two-equation
+models share one theta across the pair. SA follows this rule only with
+`USE_NS_SA_NUT_REDUCED_ORDER`; otherwise its polynomial is untouched.
 
-For two-equation RANS, the minimum scalar base-to-high ratio determines theta;
-when limited, Euler multiplies both **entire coefficient columns** by `.9*theta`.
-It does not blend only their difference from the reference. This distinction
-is intentionally preserved even with a nonconstant reference. Scalar damping
-does not lower thermal beta or enter its diagnostic count. During RHS/property
-evaluation, the separate component-wise fallback of negative RANS point values
-to their cell means remains active. No stronger positivity theorem is claimed
-for the whole-coefficient rule with a nonconstant reference.
+The scalar correction runs before flow's full-polynomial early exit. Rejected
+flow bases and their coefficient writes operate only on flow/species columns,
+so they cannot erase RANS coefficients. Scalar-only repairs do not affect
+thermal beta or its diagnostic count. Species stay coupled to thermal PP.
 
-The SA `USE_NS_SA_NUT_REDUCED_ORDER` switch contributes its scalar ratio to the
-flow/species density fraction, without separately damping SA coefficients here,
-matching Euler. Its point fallback retains the existing compile-time control.
-Without that switch, SA still participates in reference-order quality checks.
-A nonnegative scalar mean below the reference-quality threshold can force
-complete order fallback; coefficient damping cannot raise a zero mean. An
-out-of-range/nonfinite scalar ratio fails explicitly rather than being clamped
-to hide incompatible reference thresholds.
+Reconstruction no longer needs primitive far-field scalar floors or a reference
+density conversion. `numerics.ransState.referenceConservative` remains the
+explicit physical-state reference for mean repair (including the conservative
+omega floor). It is separate from nondimensionalization scales, and this change
+introduces no unit-density fallback. Point-value RANS fallback in property/flux
+operators and temporal increment/mean repair keep their existing policies.
 
 The homogeneous mixture fixture demonstrates convergence of a short discrete
 reacting step, with selected H2/H2O residuals and actual species evolution. It

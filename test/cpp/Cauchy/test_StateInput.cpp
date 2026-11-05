@@ -151,9 +151,9 @@ TEST_CASE("Initial boundary and reference adapters share conversion without dens
     CHECK(normalized.settings.initialPrimitive == normalized.settings.boundaries.at("101").primitive);
     CHECK(normalized.settings.initialRANS == normalized.settings.boundaries.at("101").ransConservative);
     CHECK(normalized.settings.numerics.ransState.referenceConservative.at("rho") == doctest::Approx(.45));
-    const auto policy = C::ResolveRANSReconstructionPolicy(equation, normalized.settings.numerics.ransState, 1e-12);
-    CHECK(policy.compressionFloors[0] / DNDS::smallReal == doctest::Approx(.02).epsilon(1e-13));
-    CHECK(policy.compressionFloors[1] / DNDS::smallReal == doctest::Approx(.4).epsilon(1e-13));
+    const auto &reference = normalized.settings.numerics.ransState.referenceConservative;
+    CHECK(reference.at("rhoK") / reference.at("rho") == doctest::Approx(.02).epsilon(1e-13));
+    CHECK(reference.at("rhoOmega") / reference.at("rho") == doctest::Approx(.4).epsilon(1e-13));
     const auto parsed = C::SimulationConfig::Resolve({{"defaults", C::Json(settings)}}, 1);
     CHECK(parsed.Domains()[0].settings.referenceState == settings.referenceState);
     auto bad = settings;
