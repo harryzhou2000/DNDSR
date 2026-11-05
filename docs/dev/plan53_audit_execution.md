@@ -993,3 +993,30 @@ preflights always agree. Disabled optional preflight omits those agreements
 and fails fast locally; required construction protocols/numerical reductions
 and independent access checking remain. This documentation change adds no
 behavior and requires no extra runtime test.
+
+## E6 first matched result and metadata-footprint correction
+
+Job `12442736` completed `0:0` in 54 seconds on `amd_512` node `o2409`.
+All twelve rows/36 trials/324 phase records, complete-field oracles and raw-log
+hashes pass; baseline/candidate cache, benchmark source and flags match.
+The [report](plan53_validation/e6-sample-flag/README.md) retains actual combined
+reuse sequences rather than adding isolated medians.
+
+Large np32 assembled preparation improves 23.691→18.289 ms and the measured
+preparation+inverse+five-pair sequence improves 36.606→28.992 ms. Evaluated
+storage remains slower in all measured preparation+reuse sequences. However,
+auxiliary preparation regresses despite unchanged arithmetic. Do not accept
+this first candidate globally on the Jacobian-only improvement.
+
+The revision removes per-sample/per-point booleans and classifies exact
+rotation presence once in the FV plan and frozen geometry. Sample/Point payload
+layouts return to the baseline shape. Ordinary/translational meshes retain
+the shortcut; any rotated incidence keeps its plan on the general path.
+This is a bounded response to a measured concern, not a claimed causal fix
+or speedup before its own correctness and matched performance gate.
+
+The revised plan-level flag passes the same three np1/2/4 Jacobian UTs
+(1.75 seconds, configured OMP2) and both np2/OMP1 complete-field benchmark
+gates. The baseline `Sample` and evaluated `Point` fields are restored exactly;
+only one boolean per retained plan/geometry is added. Further performance
+acceptance remains pending; do not overwrite the first candidate's evidence.

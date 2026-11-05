@@ -21,7 +21,6 @@ namespace DNDS::Cauchy
             Vector3 normal, location;
             Eigen::Matrix3d rotation;
             real weight;
-            bool identityRotation;
         };
         struct Geometry
         {
@@ -29,6 +28,7 @@ namespace DNDS::Cauchy
             std::shared_ptr<const Algebra::DofSpace::Partition> partition;
             std::vector<std::vector<index>> columns;
             std::vector<std::vector<std::vector<Point>>> rows;
+            bool hasRotatedFrames = false;
         };
         std::shared_ptr<const Geometry> geometry;
         EquationSystem equation;
@@ -56,12 +56,13 @@ namespace DNDS::Cauchy
                 prepared->owner = fv._data;
                 prepared->partition = output.Space().Pin();
                 prepared->columns = output.Columns();
+                prepared->hasRotatedFrames = fv._data->hasRotatedFrames;
                 auto read = fv.Metrics().AcquireRead();
                 const auto metric = read.HostView();
                 JacobianDetail::BuildStencilRows(fv._data->offsets, fv._data->samples, prepared->columns, prepared->rows,
                                                  [&](const auto &sample, index entry)
                                                  {
-                                                     return Point{sample.other, sample.auxiliaryFace, entry, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, metric.GetFaceWeight(sample.point), sample.identityRotation};
+                                                     return Point{sample.other, sample.auxiliaryFace, entry, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, metric.GetFaceWeight(sample.point)};
                                                  });
                 geometry = std::move(prepared);
             }
@@ -76,7 +77,7 @@ namespace DNDS::Cauchy
             output.setZero();
             for (const auto &point : geometry->rows[iRow][iBlock])
             {
-                const auto right = point.identityRotation ? means[point.other] : RotateState(means[point.other], point.rotation);
+                const auto right = geometry->hasRotatedFrames ? RotateState(means[point.other], point.rotation) : means[point.other];
                 Matrix dissipation = Matrix::Identity() * (radius[point.auxiliary][0] + radius[point.auxiliary][1]);
                 if (roe)
                 {
@@ -89,7 +90,7 @@ namespace DNDS::Cauchy
                 }
                 const auto derivative = equation.PrepareFluxJacobian(right, point.normal, frame.GridVelocity(point.location));
                 const Matrix other = (.5 * scale * point.weight) * (Eigen::Map<const Matrix>(derivative.data()) - dissipation);
-                if (point.identityRotation)
+                if (!geometry->hasRotatedFrames)
                     output += other;
                 else
                 {
@@ -270,7 +271,7 @@ namespace DNDS::Cauchy
                     continue; // Euler's scalar diagonal does not linearize BCs.
                 }
                 const auto right = sample.other == UnInitIndex ? FiniteVolumeDetail::BoundaryExterior(sample, _data->equation.Gas(), left, time, frame, incoming)
-                                   : sample.identityRotation   ? Load(mean, sample.other)
+                                   : !_data->hasRotatedFrames  ? Load(mean, sample.other)
                                                                : RotateState(Load(mean, sample.other), sample.rotation);
                 Matrix dissipation = Matrix::Identity() * (convection + diffusion);
                 if (controls.roeDissipation)
@@ -318,7 +319,7 @@ namespace DNDS::Cauchy
                 }
                 else
                 {
-                    if (!sample.identityRotation)
+                    if (_data->hasRotatedFrames)
                     {
                         Matrix rotation = Matrix::Identity();
                         rotation.block<3, 3>(1, 1) = sample.rotation;

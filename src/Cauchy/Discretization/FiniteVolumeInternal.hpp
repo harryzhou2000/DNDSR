@@ -39,9 +39,6 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         real viscousDistance = 0;
         index face = UnInitIndex;
         index boundaryPoint = UnInitIndex;
-        // Exact setup-time classification: translations preserve the equation
-        // frame; any nonidentity periodic rotation retains the general path.
-        bool identityRotation = true;
     };
     template <class View>
     FlowState Load(const View &input, index iCell)
@@ -122,6 +119,10 @@ namespace DNDS::Cauchy
         Geom::EntityWorkPartition partition;
         std::vector<index> offsets;
         std::vector<Sample> samples;
+        // Coarse exact dispatch avoids growing the frequently traversed Sample
+        // structure. One rotated image retains the general Jacobian path for
+        // the whole plan; ordinary/translated meshes skip identity products.
+        bool hasRotatedFrames = false;
         std::vector<index> boundaryEntries;
         std::shared_ptr<Detail::BoundaryPointLayout> boundaryLayout;
         std::vector<index> gradientBoundaryPoints;
