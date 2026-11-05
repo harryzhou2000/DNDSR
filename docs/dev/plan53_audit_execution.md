@@ -118,14 +118,20 @@ reduction. No other implementation checkout or MG/IV work was used.
 
 ## Still pending
 
-E3 complete-RHS copy attribution and E4–E6 matched assessments remain open.
-E1's cold-entry-point classification and E2's capability/memory gates are
-recorded below; a final cross-layer source audit is still required. E7's
-allocated-node assessment is complete, with a retain recommendation. The
-bounded CPU sanitizer and independent frozen Euler gates are recorded below;
-neither is a whole-platform qualification. Scoped readability and per-suite
-rank curation have concrete changes below, with the remaining manual source
-review still open.
+This paragraph tracks the latest state; the dated entries below preserve their
+earlier pending observations. E3 flow5 attribution and E4/E5's bounded mock
+scheduling assessment have completed, as have revised E6 matched acceptance
+and its equation/RANS correctness complement. E7 retains the existing ownership
+API. Split-mixture RHS attribution completed as job12442922. E5 still lacks
+separate staging clocks and a composed-RHS net-benefit assessment; its mock
+overlap result is not substituted for that acceptance. Optional coalescing and
+producer-ready-delay assessment are unrun, with no production adoption.
+
+The [targeted source disposition](plan53_validation/source-disposition.md)
+records the final boundary/readability review and its limits. That review found
+one residual EntityGhostMapping policy gap, corrected below; its focused and
+routine validation is in progress. The bounded CPU sanitizer and independent
+frozen Euler gates remain pinned evidence, not whole-platform qualification.
 Formatter default discovery now includes Cauchy and Physics;
 no repository-wide formatting was performed. Pending queue entries are not
 completed merely because neighboring fixes or test labels exist.
@@ -1141,3 +1147,53 @@ smoke also passes. The recorder checks the ten-species mechanism's hash and
 microbenchmark as reacting performance. Allocation/transport/source costs are
 not inferred from the previous5+12 field study. Matched split attribution is
 still pending and will run only the same bounded small/large cases.
+
+## E4/E5 matched scheduling result
+
+Job12442855 completed0:0 in44seconds, one scheduler-selected amd_512 node,
+24 verified rows/72 trials. The [report](plan53_validation/e45-scheduling/README.md)
+retains exact payload/core oracles, source generations, per-rank physical-core
+placement, PMPI counts and compact raw records. Grouping halves successful
+preflight counts without changing request counts. At32rows/rank the checked
+Direct stage changes31.76→25.28us; at5000rows/rank grouping has no consistent
+winner. Retain separate production starts; leave the CPU group opt-in.
+
+With the same two-physical-core allocation per rank, the large HostPacked mock
+stage changes35.088ms caller→30.212ms compute worker or29.959ms MPI worker.
+SERIALIZED ownership is verified for the dedicated-worker candidate; caller
+MULTIPLE control is34.988ms. Existing compute-worker overlap captures most of
+the benefit here. No production MPI executor is added. The report explicitly
+distinguishes host interval overlap, useful complete-stage improvement and
+unmeasured whole-RHS benefit. Full-array staging has byte accounting only;
+the compute-worker exposed-wait field is an unmeasured placeholder. These
+limits leave E5's stronger end-to-end/staging acceptance open.
+
+## Final policy/source review: companion mappings
+
+The final targeted source review found that EntityGhostMapping::CaptureSource
+unconditionally reduced a safety-only condition, and BeginRows constructed an
+isolated default-on context even when its mapping disabled optional checks.
+Capture now uses the route context's Preflight; async companion namespaces
+inherit its immutable policy. Required fresh-context agreement, payload/schema
+protocols, source-order checks and explicit direct transient transport remain.
+No element indexing, ownership, mapping identity or numerical kernel changes.
+
+The existing mesh-policy case now checks two simultaneous same-tag companion
+transfers with independent payload expectations. PMPI asserts their total
+reduction count equals twice the blocking path plus exactly two mandatory
+context-policy agreements, and the disabled blocking path omits optional
+checks. No extra negative-case matrix or CTest registration is added. The
+source-matched focused np1/2/4 policy gate passes3/3 in0.92seconds. A following
+incremental aggregate build and existing routine gate remain in progress.
+
+## E3 split-mixture matched attribution
+
+Job12442922 completed0:0 in2m47s on scheduler-selected amd_512 node n1810,
+sourcef773d320. All six cases/36 timer-on/off records and raw hashes verify.
+The [report](plan53_validation/e3-split-mixture/README.md) describes actual
+mixture transport/chemistry, explicit scales and separate flow5+species fields,
+with10/16 publications per unlimited/WBAP RHS. Publication occupies about
+0.5–1.7% of large-case local RHS time. Retain production copying/stable bindings;
+no handle swap or speculative copy-dispatch threshold is added. E3's requested
+representative flow5 and split-mixture attribution is complete, with flux-seed/
+PP traffic and physical advancement explicitly outside the measurement.
