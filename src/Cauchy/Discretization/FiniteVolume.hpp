@@ -518,6 +518,10 @@ namespace DNDS::Cauchy
         /// Synchronous collective: invoke on an MPI-authorized controller thread.
         /// Queued work is observed on success and before borrowed scopes unwind
         /// on exceptions; failed scratch allocations require replacement.
+        /// Local preparation inherits Metrics().Communication()'s safety mode.
+        /// Disabled preflight still validates locally and aborts on rejection;
+        /// it does not provide recoverable rank-asymmetric failures. Numerical
+        /// decisions and required protocols remain collective in either mode.
         void Evaluate(CFV::FVField &state, CFV::FVField &residual, Workspace &workspace,
                       Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
         /// Equation-independent entry; dispatch/semantic checks occur outside

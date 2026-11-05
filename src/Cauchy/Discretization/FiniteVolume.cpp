@@ -163,8 +163,11 @@ namespace DNDS::Cauchy
     };
     FiniteVolume::FiniteVolume(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const EquationSystem &equation)
     {
-        MPI::LocalStage(mesh->getMPI(), [&]
-                        {
+        // Agree the actual selection before optional stages can diverge. The
+        // metric plan retains this immutable policy for subsequent operators.
+        R::CommunicationDetail::AgreePolicy(mesh->getMPI().comm, settings.implicit.collectiveChecks);
+        R::CommunicationDetail::LocalStage(mesh->getMPI().comm, settings.implicit.collectiveChecks, [&]
+                                           {
             settings.numerics.ValidatePositivity();
             DNDS_check_throw_info(settings.initialState.is_null() && settings.referenceState.is_null(),
                                   "resolve tagged physical inputs before constructing FiniteVolume directly");
@@ -177,11 +180,11 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(settings.numerics.limiter != "LVR" || (settings.numerics.reconstruction == "variational" && settings.numerics.cfv.maxOrder >= 2),
                                   "LVR requires degree2/3 variational reconstruction");
             DNDS_check_throw_info(settings.numerics.viscousGradient == "primitive" || settings.numerics.viscousGradient == "polynomial",
-                                  "unknown Cauchy viscous gradient scheme"); });
+                                  "unknown Cauchy viscous gradient scheme"); }, "invalid Cauchy finite-volume setup");
         auto data = std::make_shared<Data>(std::move(mesh), ResolveSweepOrdering(settings), equation);
         if (equation.HasRANS())
-            MPI::LocalStage(data->mesh->getMPI(), [&]
-                            {
+            data->metrics.Communication()->LocalStage([&]
+                                                      {
                 data->wallDistance.emplace(WallDistanceSamples::Construct(data->mesh, settings.numerics.cfv.intOrder, settings.numerics.wallDistanceFloor));
                 data->ransCellLength = data->metrics.BuildCellMaxLenScale(); });
         const bool limitedVR = settings.numerics.limiter == "LVR" && (settings.numerics.limitedVR.alphaMax > 0 || settings.numerics.limitedVR.contactAlphaMax > 0);
@@ -190,8 +193,8 @@ namespace DNDS::Cauchy
         auto geometry = data->metrics.AcquireRead();
         const auto metric = geometry.HostView();
         std::set<int> localZones;
-        MPI::LocalStage(data->mesh->getMPI(), [&]
-                        {
+        data->metrics.Communication()->LocalStage([&]
+                                                  {
         data->offsets.resize(size_t(data->metrics.NumCell()) + 1, 0);
         index count = 0;
         for (index iCell = 0; iCell < data->metrics.NumCell(); ++iCell)
@@ -256,8 +259,8 @@ namespace DNDS::Cauchy
                 }
             }
         } });
-        MPI::LocalStage(data->mesh->getMPI(), [&]
-                        {
+        data->metrics.Communication()->LocalStage([&]
+                                                  {
         for (auto iFace : data->stencilFaces)
         {
             const auto cells = topology.FaceCells(iFace);
@@ -405,8 +408,8 @@ namespace DNDS::Cauchy
     std::shared_ptr<FiniteVolume::Workspace> FiniteVolume::BuildWorkspace(EquationDofs &state, AuxiliaryRequest request) const
     {
         CFV::FVField *field = nullptr;
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        { field = &RequireState(state); });
+        Metrics().Communication()->LocalStage([&]
+                                              { field = &RequireState(state); });
         return BuildWorkspace(*field, request);
     }
     std::shared_ptr<FiniteVolume::Workspace> FiniteVolume::BuildWorkspace(CFV::FVField &state, AuxiliaryRequest request) const
@@ -428,8 +431,8 @@ namespace DNDS::Cauchy
     }
     std::shared_ptr<FiniteVolume::Workspace> FiniteVolume::BuildWorkspaceImpl(CFV::FVField &state, AuxiliaryRequest request, bool meanOnly) const
     {
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        { DNDS_check_throw_info(!_data->equation.HasMixture() && !_data->equation.HasRANS(), "flow-only workspace cannot bind an extended equation state"); Metrics().ValidateField(state, 5); });
+        Metrics().Communication()->LocalStage([&]
+                                              { DNDS_check_throw_info(!_data->equation.HasMixture() && !_data->equation.HasRANS(), "flow-only workspace cannot bind an extended equation state"); Metrics().ValidateField(state, 5); });
         request.meanThermodynamics = true;
         const bool wave = _data->settings.numerics.riemann.useStencil && _data->flux.UsesTransverseSignal();
         const bool pressure = _data->settings.numerics.riemann.useStencil && _data->flux.UsesPressureStencil();
@@ -468,14 +471,14 @@ namespace DNDS::Cauchy
         {
             const MPIInfo mpi(Metrics().Communicator());
             std::string local, reference;
-            MPI::LocalStage(mpi, [&]
-                            {
+            Metrics().Communication()->LocalStage([&]
+                                                  {
                 local = Json(_data->settings).dump();
                 DNDS_check_throw_info(local.size() <= size_t(INT_MAX), "LVR setup configuration exceeds MPI count range"); });
             int length = mpi.rank == 0 ? int(local.size()) : 0;
             MPI_Bcast(&length, 1, MPI_INT, 0, mpi.comm);
-            MPI::LocalStage(mpi, [&]
-                            { reference = mpi.rank == 0 ? local : std::string(size_t(length), '\0'); });
+            Metrics().Communication()->LocalStage([&]
+                                                  { reference = mpi.rank == 0 ? local : std::string(size_t(length), '\0'); });
             MPI_Bcast(reference.data(), length, MPI_CHAR, 0, mpi.comm);
             // Layer counts change the collective/halo schedule. Exact setup
             // agreement also rejects silent threshold/model mismatches; no
@@ -574,16 +577,16 @@ namespace DNDS::Cauchy
     FiniteVolume::ReconstructionRestore FiniteVolume::ReserveReconstructionRestore(std::shared_ptr<Workspace> workspace, const R::Array<real> &coefficients,
                                                                                    const R::Array<real> *limitedVRHistory) const
     {
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        { DNDS_check_throw_info(bool(workspace), "null reconstruction workspace"); });
+        Metrics().Communication()->LocalStage([&]
+                                              { DNDS_check_throw_info(bool(workspace), "null reconstruction workspace"); });
         auto &reference = *workspace;
         return ReserveReconstructionRestoreImpl(reference, coefficients, limitedVRHistory, std::move(workspace));
     }
     FiniteVolume::ReconstructionRestore FiniteVolume::ReserveReconstructionRestoreImpl(Workspace &workspace, const R::Array<real> &coefficients,
                                                                                        const R::Array<real> *limitedVRHistory, std::shared_ptr<Workspace> retained) const
     {
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             DNDS_check_throw_info(workspace.owner == _data.get() && coefficients.GetDevice() == R::Device::Host() &&
                                       !coefficients.Layout().IsVariable() && coefficients.RowCount() == Metrics().NumCell() &&
                                       coefficients.Layout().Width() == workspace.reconstruction.coefficients.Width(),
@@ -626,8 +629,8 @@ namespace DNDS::Cauchy
             }
         };
         std::shared_ptr<Reservation> reservation;
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             reservation = std::make_shared<Reservation>();
             reservation->owner = std::move(retained);
             reservation->source.emplace(coefficients.Read());
@@ -641,9 +644,9 @@ namespace DNDS::Cauchy
         const auto from = reservation->historySource ? reservation->historySource->View<R::UniformTableRows>() : ReadView{};
         const auto to = reservation->historyDestination ? reservation->historyDestination->View<R::UniformTableRows>() : WriteView{};
         std::optional<ReconstructionRestore> restore;
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        { restore.emplace(ReconstructionRestore([reservation, &workspace, input, output, from, to]() noexcept
-                                                                {
+        Metrics().Communication()->LocalStage([&]
+                                              { restore.emplace(ReconstructionRestore([reservation, &workspace, input, output, from, to]() noexcept
+                                                                                      {
             reservation->started = true;
             for (index iCell = 0; iCell < output.RowCount(); ++iCell)
                 for (index j = 0; j < output.RowSize(iCell); ++j)
@@ -662,15 +665,12 @@ namespace DNDS::Cauchy
     void FiniteVolume::Evaluate(EquationDofs &state, CFV::FVField &residual, Workspace &work,
                                 R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
-        // Match the existing checked/unchecked orchestration policy. With
-        // checks disabled callers coordinate rank-local exceptions themselves.
+        // Retain local validation in both modes. An unchecked rank-local
+        // failure aborts before peers can enter the following halo protocol.
         CFV::FVField *field = nullptr;
         const auto validate = [&]
         { field = &RequireState(state); };
-        if (_data->settings.implicit.collectiveChecks)
-            MPI::LocalStage(MPIInfo(Metrics().Communicator()), validate);
-        else
-            validate();
+        Metrics().Communication()->LocalStage(validate);
         EvaluateImpl(*field, &residual, work, engine, stream, time);
     }
     const R::Array<real> *FiniteVolume::LimitedVRHistory(const Workspace &work) const
@@ -727,15 +727,15 @@ namespace DNDS::Cauchy
     void FiniteVolume::RefreshSamplingInputs(CFV::FVField &state, Workspace &work, R::EagerEngine &engine,
                                              const R::ExecutionStream &stream) const
     {
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             Metrics().ValidateField(state,5);
             DNDS_check_throw_info(work.owner==_data.get()&&state.Owned().SharedStorage()==work.ownedStorage&&
                                   state.Ghost().SharedStorage()==work.ghostStorage,"sampling workspace/state binding differs"); });
         work.meanHalo.Begin(++work.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()).Wait();
         if (_data->settings.CheckHaloFreshness())
-            MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                            { work.meanHalo.RequireCurrent(state, work.meanEpoch); });
+            Metrics().Communication()->LocalStage([&]
+                                                  { work.meanHalo.RequireCurrent(state, work.meanEpoch); });
         auto operation = engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream.Context());
         operation.Wait();
     }
@@ -745,8 +745,8 @@ namespace DNDS::Cauchy
         std::optional<AuxiliaryPreparation> auxiliaryPreparation;
         std::optional<R::Array<real>::ReadLease> incomingRead;
         std::optional<RHSScalarView> incomingView;
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
         Metrics().ValidateField(state, 5);
         if(residual) Metrics().ValidateField(*residual, 5);
         DNDS_check_throw_info(!HasInterfaces()||work.incoming,"FV evaluation needs a ready interface packet");
@@ -964,8 +964,8 @@ namespace DNDS::Cauchy
             meanOperation->Wait();
         else
             work.meanHalo.Begin(work.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()).Wait();
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             if (_data->settings.CheckHaloFreshness())
                 work.meanHalo.RequireCurrent(state, work.meanEpoch);
             if (auxiliaryPreparation)
@@ -999,8 +999,8 @@ namespace DNDS::Cauchy
         if (work.limitedVR)
         {
             if (_data->settings.numerics.characteristicLimiter)
-                MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                                { work.characteristicFallbacks += PrepareFaceCharacteristics(state, work.characteristic); });
+                Metrics().Communication()->LocalStage([&]
+                                                      { work.characteristicFallbacks += PrepareFaceCharacteristics(state, work.characteristic); });
             work.limitedVR->Build(*_data, state, _data->settings.numerics.characteristicLimiter ? &work.characteristic : nullptr, engine, stream);
         }
         // Keep the previous unlimited polynomial as the initial guess.
@@ -1060,8 +1060,8 @@ namespace DNDS::Cauchy
         }
         if (!work.meanOnly && _data->settings.numerics.limiter == "WBAP")
         {
-            MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                            {
+            Metrics().Communication()->LocalStage([&]
+                                                  {
             work.PrepareFlux();
             if (_data->settings.numerics.characteristicLimiter)
                 work.characteristicFallbacks += PrepareFaceCharacteristics(state, work.characteristic); });
@@ -1230,8 +1230,8 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::Initialize(CFV::FVField &state, const FlowProfileSettings &profile, const FlowState &primitive) const
     {
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             Metrics().ValidateField(state, 5);
             auto meshRead = _data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
             const auto mesh = meshRead.HostView();
@@ -1248,8 +1248,8 @@ namespace DNDS::Cauchy
     {
         std::array<FlowState, 3> errors{};
         real volume = 0;
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             auto meshRead = _data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
             const auto mesh = meshRead.HostView();
             auto geometry = Metrics().AcquireRead();
@@ -1293,8 +1293,8 @@ namespace DNDS::Cauchy
     {
         const MPIInfo mpi(Metrics().Communicator());
         std::optional<AuxiliaryPreparation> preparation;
-        MPI::LocalStage(mpi, [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             Metrics().ValidateField(state, 5);
             DNDS_check_throw_info(work.owner == _data.get() && state.Owned().SharedStorage() == work.ownedStorage &&
                                       state.Ghost().SharedStorage() == work.ghostStorage && stream.Context().device == R::Device::Host(),
@@ -1308,8 +1308,8 @@ namespace DNDS::Cauchy
             engine.Submit(stream, [&](auto)
                           { preparation->Apply(CFV::ReconstructionRegion::Core); });
         transfer.Wait();
-        MPI::LocalStage(mpi, [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             if (_data->settings.CheckHaloFreshness())
                 work.meanHalo.RequireCurrent(state, work.meanEpoch);
             engine.Submit(stream, [&](auto)
@@ -1328,8 +1328,8 @@ namespace DNDS::Cauchy
     {
         const auto &controls = _data->settings.numerics;
         auto &flux = work.Flux();
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             DNDS_check_throw_info(work.owner == _data.get() && controls.positivity && _data->positivitySamples &&
                                   work.ownedStorage == state.Owned().SharedStorage() && work.ghostStorage == state.Ghost().SharedStorage(),
                                   "reconstruction PP requires this plan's bound state and enabled workspace");
@@ -1449,8 +1449,8 @@ namespace DNDS::Cauchy
         _data->reconstruction.CommitReconstruction(flux);
         // Check the published polynomial itself, not just algebraically blended
         // samples: this also detects indexing/cancellation mistakes in storage.
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             _data->positivitySamples->Evaluate(state, flux.coefficients, work.positivityValues);
             auto points = work.positivityValues.Read(); const auto p = points.View<R::UniformTableRows>();
             for (index q = 0; q < p.RowCount(); ++q)
@@ -1488,8 +1488,8 @@ namespace DNDS::Cauchy
     void FiniteVolume::WriteVisualization(const CFV::FVField &state, const Workspace &work, const std::string &prefix, real time, int hdfDeflateLevel) const
     {
         const auto frame = _data->motion.At(time);
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             DNDS_check_throw_info(hdfDeflateLevel >= 0 && hdfDeflateLevel <= 9, "VTKHDF compression level must be in [0,9]");
             DNDS_check_throw_info(!HasInterfaces()||work.incoming,"surface output needs incoming interface values");
             if(work.incoming) ValidateBoundaryInputs(*work.incoming,time); });
@@ -1516,8 +1516,8 @@ namespace DNDS::Cauchy
                 if (i < 9) return value.velocity[i - 6];
                 real speed = 0; for (auto component : value.velocity) speed += component * component;
                 return std::sqrt(speed) / value.soundSpeed; }, {}, {}, {}, {}, {}, {}, time, Metrics().Communicator(), &outputSettings);
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             std::ofstream surface(prefix + "_surface_rank" + std::to_string(_data->mesh->mpi.rank) + ".csv");
             DNDS_check_throw_info(bool(surface), "cannot open Cauchy surface output");
             surface << "cell_id,zone,x,y,z,nx,ny,nz,weight,rho,p,u,v,w\n" << std::setprecision(17);
@@ -1548,8 +1548,8 @@ namespace DNDS::Cauchy
     bool FiniteVolume::Admissible(const CFV::FVField &state) const
     {
         int valid = 1;
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             Metrics().ValidateField(state, 5);
             auto read = state.Owned().Read();
             const auto input = read.View<R::UniformTableRows>();

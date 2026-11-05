@@ -422,8 +422,8 @@ namespace DNDS::Cauchy
     real FiniteVolume::StableStep(const CFV::FVField &state, const AuxiliaryValues &values, real cfl, real time) const
     {
         real dt = std::numeric_limits<real>::max();
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        {
+        Metrics().Communication()->LocalStage([&]
+                                              {
             DNDS_check_throw_info(std::isfinite(cfl) && cfl > 0, "positive CFL required");
             ValidateAuxValues(state, values, time);
             DNDS_check_throw_info(values.cellSpectralSum, "CFL selection requires prepared cell spectral sums");
@@ -450,8 +450,8 @@ namespace DNDS::Cauchy
         AuxiliaryRequest request;
         request.meanThermodynamics = request.cellSpectralSum = true;
         auto values = BuildAuxiliaryValues(request);
-        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
-                        { PrepareAuxValues(state, values); });
+        Metrics().Communication()->LocalStage([&]
+                                              { PrepareAuxValues(state, values); });
         return StableStep(state, values, cfl);
     }
 }

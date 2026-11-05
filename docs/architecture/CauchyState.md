@@ -161,8 +161,12 @@ spatial/time operator exists for that model. FV has the established perfect-gas
 adapter and the explicit whole-equation mixture profile described below.
 Requesting another device fails explicitly,
 without host fallback. In checked execution a rank-local schema mismatch is
-coordinated before communication. With `implicit.collectiveChecks=false`, the
-caller must coordinate failures before other ranks enter dependent collectives.
+coordinated before communication. Flow5 FV entry/preparation stages inherit the
+metric communication context: with `implicit.collectiveChecks=false`, their
+local failures abort before dependent collective/payload work. Successful local
+stages add no safety agreement. The extended equation adapter still has the
+separate coordinated-entry/caller-ordered phase contract described below; this
+is not a blanket promise of recoverable unchecked distributed exceptions.
 The raw-field overload remains the trusted compressible stage/scratch adapter.
 
 The Domain frontend uses the semantic binding. Perfect gas retains its established

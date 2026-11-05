@@ -598,3 +598,37 @@ local stages are optional already.
 WBAP is one identified call, not an exhaustive Cauchy inventory: remaining
 constructor/workspace/restore and positivity stages also require classification,
 with protocol and numerical collectives retained independently of policy.
+
+## E1 flow5 FV stage policy and numerical-reduction gate
+
+The flow5 FV constructor now agrees the selected policy before optional local
+validation, then uses the immutable metric communication context. Workspace and
+warm-restore validation, mean/auxiliary/gradient completion, characteristic and
+WBAP preparation, reconstruction PP checking, initialization, output and CFL/
+error preparation inherit it. The semantic flow5 entry no longer propagates
+an unchecked rank-local exception while peers may enter halos: rejected local
+stages abort in off mode. Enabled mode retains coordinated exceptions. This
+changes controller/prologue behavior, not row-loop arithmetic or view access.
+
+Required channel/LVR configuration agreement and all numerical reductions are
+unchanged. The existing P3 three-sweep/WBAP fixture now counts PMPI reductions
+around evaluation: off mode has **exactly two**, the global admissibility
+decision and final reconstruction update norm. Enabled mode has more; both
+modes produce elementwise bit-identical RHS values at np1/2/4. This count is for
+that fixture, not a promise that every solver configuration has two collectives.
+Other physical diagnostics and optional numerical convergence legitimately add
+required reductions.
+
+All **9/9** full flow5-FV, equation-FV and auxiliary-preparation registrations
+pass at np1/2/4 (75.55 s). These retain the existing restart/PP/viscous/layout/
+CPU-launcher checks, beyond the small counted fixture. The first build invocation
+used abbreviated nonexistent target names and exited without tests; the exact
+registered targets were then built successfully. No failed launch is counted as
+passing. Public docstrings and Cauchy architecture guides distinguish this
+flow5 fail-fast contract from the remaining extended/nonlinear contracts.
+
+E1 is still open for extended equation/nonlinear stages and the previously
+listed archive/compatibility/map/interface paths. E3 matched measurements and
+E4–E7 remain open. BSSCA job 12442096 remains PENDING (Priority), no node or
+executed row, after its second bounded polling window; it is left queued
+unchanged without duplicate submission.

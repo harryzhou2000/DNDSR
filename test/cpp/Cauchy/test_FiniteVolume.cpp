@@ -11,11 +11,20 @@
 #include <unistd.h>
 #include <hdf5.h>
 #include <cstring>
+#include <atomic>
 
 namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
 namespace A = DNDS::Algebra;
 static DNDS::MPIInfo mpi;
+static std::atomic<bool> countReductions{false};
+static std::atomic<int> reductions{0};
+extern "C" int MPI_Allreduce(const void *send, void *receive, int count, MPI_Datatype type, MPI_Op operation, MPI_Comm comm)
+{
+    if (countReductions)
+        ++reductions;
+    return PMPI_Allreduce(send, receive, count, type, operation, comm);
+}
 TEST_CASE("Default Cauchy CGNS loader propagates the configured preflight policy")
 {
     const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
@@ -53,6 +62,7 @@ TEST_CASE("Cauchy collective switch reaches prepared halos without changing the 
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 3);
     std::vector<double> reference;
+    int checkedReductions = 0;
     for (const bool checks : {true, false})
     {
         C::DomainSettings settings;
@@ -78,7 +88,25 @@ TEST_CASE("Cauchy collective switch reaches prepared halos without changing the 
         auto workspace = fv.BuildWorkspace(state);
         R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(state, result, *workspace, engine, stream);
+        reductions = 0;
+        struct CountingScope
+        {
+            CountingScope() { countReductions = true; }
+            ~CountingScope() { countReductions = false; }
+        };
+        {
+            CountingScope count;
+            fv.Evaluate(state, result, *workspace, engine, stream);
+        }
+        if (checks)
+            checkedReductions = reductions;
+        else
+        {
+            CHECK(reductions.load() < checkedReductions);
+            // Keep the global admissibility decision and final sweep-update
+            // norm. Successful off-mode starts/stages add no safety agreement.
+            CHECK(reductions.load() == 2);
+        }
         const auto read = result.Owned().Read();
         for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
             for (int j = 0; j < 5; ++j)

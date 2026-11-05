@@ -1125,6 +1125,18 @@ propagates `implicit.collectiveChecks` into prepared CFV/Runtime halos; do not
 merge timings across these definitions. Required setup protocols, solve-entry
 agreement and numerical reductions remain enabled.
 
+The audit branch further propagates this policy through flow5 FV local stages:
+workspace/restore validation, auxiliary/gradient completion, characteristic and
+WBAP preparation, reconstruction PP checks, initialization, output and CFL/error
+preparation. Disabled-mode local rejection aborts the communicator; enabled
+mode retains recoverable phase agreement. Constructor policy selection is
+agreed before optional stages, and subsequent calls use the immutable metric
+context. Required channel/LVR schedule agreement and admissibility, reconstruction
+norm, force/error and timestep reductions remain. These are prologue/control
+changes; numerical kernel access and arithmetic are unchanged. Extended equation,
+nonlinear and archive paths retain their separately documented contracts until
+their remaining stages are audited.
+
 
 ## Method-owned buffers and completed halo publications
 
