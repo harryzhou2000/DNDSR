@@ -4,6 +4,7 @@
 #include <iostream>
 #include <iomanip>
 #include <fstream>
+#include <sstream>
 
 namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
@@ -69,15 +70,19 @@ int main(int argc, char **argv)
         I steps = 0;
         double dt = 0, omega = 0;
         int split = 0, subdivisions = 0, segments = 0;
+        I outputEvery = 0;
         DNDS::MPI::LocalStage(mpi, [&]
                               {
-            DNDS_check_throw_info(argc==7,"usage: steps dt omega split(0/1) subdivisions circleSegments");
+            DNDS_check_throw_info(argc==7||argc==8,"usage: steps dt omega split(0/1) subdivisions circleSegments [visualizationEvery]");
             steps=std::stoll(argv[1]); dt=std::stod(argv[2]); omega=std::stod(argv[3]);
             split=std::stoi(argv[4]); subdivisions=std::stoi(argv[5]); segments=std::stoi(argv[6]);
+            if(argc==8) outputEvery=std::stoll(argv[7]);
             DNDS_check_throw_info(steps>=1&&steps<=5000&&std::isfinite(dt)&&dt>0&&dt<=.01&&std::isfinite(omega)&&std::abs(omega)<=.1,
                                   "experiment exceeds bounded time controls");
             DNDS_check_throw_info((split==0||split==1)&&(!split||mpi.size>=2)&&subdivisions>=8&&subdivisions<=64&&segments>=16&&segments<=256,
-                                  "invalid experiment placement or mesh resolution"); });
+                                  "invalid experiment placement or mesh resolution");
+            DNDS_check_throw_info(outputEvery>=0&&(!outputEvery||(outputEvery<=steps&&steps/outputEvery<=500)),
+                                  "invalid/beyond-bound visualization cadence"); });
         std::vector<int> a, b;
         for (int rank = mpi.size - 1; rank >= 0; --rank)
         {
@@ -97,10 +102,21 @@ int main(int argc, char **argv)
         {
             C::Simulation simulation(config, mpi.comm, [&](I iDomain, const auto &, const auto &domainMPI)
                                      { return CauchyTest::VortexPatch(domainMPI, iDomain == 1, subdivisions, segments); });
-            double setup = MPI_Wtime() - start, advance = 0, diagnostics = 0;
+            double setup = MPI_Wtime() - start, advance = 0, diagnostics = 0, output = 0;
+            C::Json frames = C::Json::array();
+            const auto snapshot = [&]
+            {
+                const auto begin = MPI_Wtime();
+                std::ostringstream prefix;
+                prefix << "frame" << std::setw(6) << std::setfill('0') << simulation.Step();
+                simulation.WriteVisualization(prefix.str());
+                if (mpi.rank == 0)
+                    frames.push_back({{"step", simulation.Step()}, {"time", simulation.Time()}, {"domains", {prefix.str() + "_domain0.vtkhdf", prefix.str() + "_domain1.vtkhdf"}}});
+                output += MPI_Wtime() - begin;
+            };
             MPI_Allreduce(MPI_IN_PLACE, &setup, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
             if (mpi.rank == 0)
-                std::cout << C::Json{{"controls", {{"np", mpi.size}, {"steps", steps}, {"dt", dt}, {"omega", omega}, {"split", split}, {"subdivisions", subdivisions}, {"segments", segments}, {"setupSeconds", setup}, {"resolved", config.Root()}}}}.dump() << '\n';
+                std::cout << C::Json{{"controls", {{"np", mpi.size}, {"steps", steps}, {"dt", dt}, {"omega", omega}, {"split", split}, {"subdivisions", subdivisions}, {"segments", segments}, {"visualizationEvery", outputEvery}, {"setupSeconds", setup}, {"resolved", config.Root()}}}}.dump() << '\n';
             auto report = [&]
             {
                 const auto begin = MPI_Wtime();
@@ -110,11 +126,15 @@ int main(int argc, char **argv)
                     std::cout << row.dump() << std::endl;
             };
             report();
+            if (outputEvery)
+                snapshot();
             for (I iStep = 0; iStep < steps; ++iStep)
             {
                 const auto begin = MPI_Wtime();
                 simulation.Advance(dt);
                 advance += MPI_Wtime() - begin;
+                if (outputEvery && ((iStep + 1) % outputEvery == 0 || iStep + 1 == steps))
+                    snapshot();
                 if ((iStep + 1) % std::max(I(1), steps / 20) == 0 || iStep + 1 == steps)
                     report();
             }
@@ -142,10 +162,18 @@ int main(int argc, char **argv)
                         }
                     }
                 DNDS_check_throw_info(bool(field),"failed writing rank-local final field"); });
-            double timing[2]{advance, diagnostics};
-            MPI_Allreduce(MPI_IN_PLACE, timing, 2, MPI_DOUBLE, MPI_MAX, mpi.comm);
+            DNDS::MPI::LocalStage(mpi, [&]
+                                  {
+                if (mpi.rank == 0 && outputEvery)
+                {
+                    std::ofstream manifest("frames.json");
+                    manifest << C::Json{{"referenceCoordinates", true}, {"motion", config.Root()["domains"][1]["settings"]["motion"]}, {"frames", frames}}.dump(2) << '\n';
+                    DNDS_check_throw_info(bool(manifest), "failed writing visualization manifest");
+                } });
+            double timing[3]{advance, diagnostics, output};
+            MPI_Allreduce(MPI_IN_PLACE, timing, 3, MPI_DOUBLE, MPI_MAX, mpi.comm);
             if (mpi.rank == 0)
-                std::cout << C::Json{{"complete", true}, {"steps", simulation.Step()}, {"advanceSeconds", timing[0]}, {"diagnosticSeconds", timing[1]}}.dump() << std::endl;
+                std::cout << C::Json{{"complete", true}, {"steps", simulation.Step()}, {"advanceSeconds", timing[0]}, {"diagnosticSeconds", timing[1]}, {"outputSeconds", timing[2]}}.dump() << std::endl;
         }
     }
     catch (const std::exception &error)

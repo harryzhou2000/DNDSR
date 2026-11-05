@@ -132,8 +132,6 @@ namespace DNDS::Cauchy
             const auto &n = settings.numerics;
             _equationThermal.emplace(_equation, n.densityFloor, n.temperatureFloor, n.sensibleEnergyFloor, n.pressureFloor,
                                      _workers ? _workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{});
-            DNDS_check_throw_info(!(time.method == "ssprk3" && n.positivity),
-                                  "extended equation explicit flux-blend PP adapter is not connected yet");
         }
         if (_equation.HasRANS())
             _ransState.emplace(ResolveRANSStatePolicy(_equation, settings.numerics.ransState));
@@ -255,6 +253,8 @@ namespace DNDS::Cauchy
                     {
                         if (rans)
                         {
+                            // Euler's scalar-only repair is permitted here.
+                            // It must never rescale the flow5/species update.
                             std::array<real, 2> old{}, change{}, next{};
                             for (int j = 0; j < _ransState->components; ++j)
                             {
@@ -268,6 +268,10 @@ namespace DNDS::Cauchy
                             for (int j = 0; j < _ransState->components; ++j) state(iCell, j) = next[j];
                             continue;
                         }
+                        // No cellwise thermal increment compression: flow5
+                        // and species retain their conservative residuals.
+                        // Do not clip/normalize species means here either;
+                        // the full raw candidate must pass Admissible below.
                         for (index j = 0; j < state.ComponentNumber(); ++j)
                             state(iCell, j) = historyWeight * base(iCell, j) + stageWeight * (state(iCell, j) + dt * rhs(iCell, j) / metric.GetCellVol(iCell));
                     }
@@ -284,6 +288,10 @@ namespace DNDS::Cauchy
         int safe[2]{1, 1}; // high candidate, low candidate
         if (_positivity)
         {
+            // Compatibility baseline: one domain-global conservative blend.
+            // Deferred explicit PP work should limit shared face-flux
+            // corrections using both adjacent cells, including MPI faces.
+            // A cell-local increment factor is not a conservative substitute.
             const auto reconstruction = _fv.PositivityReconstructionStats(*_workspace);
             _lastBetaCells += reconstruction.first;
             _lastBeta = std::min(_lastBeta, reconstruction.second);

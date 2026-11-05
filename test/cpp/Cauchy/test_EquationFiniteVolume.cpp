@@ -35,7 +35,10 @@ namespace
             const auto u = x.Block(iBlock), v = y.Block(iBlock);
             for (I iCell = 0; iCell < I(a.Space().OwnedRows()); ++iCell)
                 for (I j = 0; j < u.ComponentNumber(); ++j)
-                    CHECK(u(iCell, j) == doctest::Approx(v(iCell, j)).epsilon(tolerance).scale(1));
+                    if (tolerance == 0)
+                        CHECK(u(iCell, j) == v(iCell, j));
+                    else
+                        CHECK(u(iCell, j) == doctest::Approx(v(iCell, j)).epsilon(tolerance).scale(1));
         }
     }
     void ConservativeIntegral(const C::EquationDofs &residual)
@@ -679,6 +682,137 @@ TEST_CASE("Tagged mixture state initializes distributed Domain and prescribed bo
         CHECK(rhoY[k] == doctest::Approx(expected[5 + k]).epsilon(2e-12));
 }
 
+TEST_CASE("Explicit mixture rejects inadmissible raw flow or species and retries without increment compression")
+{
+    MixtureFixture mixture;
+    bool reactive = false;
+    SUBCASE("Flow density rejection") {}
+    SUBCASE("Species rejection with conserved flow5") { reactive = true; }
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    C::DomainSettings settings;
+    settings.equation.eos = "idealGasMixture";
+    settings.equation.mixture.mechanismFile = mixture.prototype.mechanismFile();
+    settings.equation.referenceScales = {{"rho0", mixture.scales.rho0}, {"U0", mixture.scales.U0}, {"L0", mixture.scales.L0}, {"T0", mixture.scales.T0}};
+    settings.equation.source = reactive ? "chemical" : "none";
+    if (reactive)
+    {
+        for (const auto &name : mixture.material.SpeciesNames())
+            settings.initialMassFractions[name] = 1e-6;
+        settings.initialMassFractions["H2"] = .027;
+        settings.initialMassFractions["O2"] = .22;
+        settings.initialMassFractions["H2O"] = .02;
+        settings.initialMassFractions["N2"] = 1 - .267 - (mixture.species - 4) * 1e-6;
+    }
+    else
+        settings.initialMassFractions = {{"O2", .22}, {"N2", .78}};
+    settings.initialTemperature = (reactive ? 1400 : 1000) / mixture.scales.T0;
+    settings.numerics.reconstruction = "constant";
+    settings.numerics.faceFallback = false;
+    settings.numerics.positivity = true;
+    settings.execution.hostThreads = 2;
+    settings.execution.layout = "soa";
+    const auto config = C::SimulationConfig::ResolveCollective({{"defaults", C::Json(settings)}}, mpi.comm);
+    const auto factory = [&](auto, const auto &, const auto &)
+    { return mesh; };
+    C::Simulation simulation(config, mpi.comm, factory);
+    auto &domain = simulation.GetDomain(0);
+    {
+        auto state = domain.Dofs().NumericAlias();
+        auto write = state.WriteOwned();
+        for (I iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+        {
+            const auto values = write.Block(iBlock);
+            for (I iCell = 0; iCell < values.RowCount(); ++iCell)
+            {
+                const double density = reactive ? 1. : domain.Discretization().Metrics().GetCellCent(iCell)[0] < .5 ? .2
+                                                                                                                    : 2.;
+                for (I j = 0; j < values.ComponentNumber(); ++j)
+                    values(iCell, j) *= density;
+            }
+        }
+    }
+    const auto original = domain.Dofs().Clone();
+    const C::EquationDofOperations::Binding accepted(domain.Dofs());
+    double criticalDt = std::numeric_limits<double>::infinity();
+    {
+        const auto &rhs = domain.ResidualState();
+        const auto initial = original.ReadOwned(), residual = rhs.ReadOwned();
+        const auto values = initial.Block(reactive ? "species" : "flow"), rate = residual.Block(reactive ? "species" : "flow");
+        for (I iCell = 0; iCell < values.RowCount(); ++iCell)
+            for (I j = 0; j < (reactive ? values.ComponentNumber() : 1); ++j)
+                if (values(iCell, j) > 0 && rate(iCell, j) < 0)
+                    criticalDt = std::min(criticalDt, -values(iCell, j) * domain.Discretization().Metrics().GetCellVol(iCell) / rate(iCell, j));
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &criticalDt, 1, MPI_DOUBLE, MPI_MIN, mpi.comm);
+    REQUIRE(std::isfinite(criticalDt));
+    REQUIRE(criticalDt > 0);
+    CHECK_THROWS(simulation.Advance(2 * criticalDt));
+    CHECK_NOTHROW(accepted.Check(domain.Dofs(), true));
+    CHECK(simulation.Time() == 0);
+    CHECK(simulation.Step() == 0);
+    double dt = criticalDt;
+    bool completed = false;
+    std::string lastRejection;
+    for (int retry = 0; retry < 16; ++retry, dt *= .5)
+    {
+        try
+        {
+            simulation.Advance(dt);
+            completed = true;
+            break;
+        }
+        catch (const std::exception &failure)
+        {
+            lastRejection = failure.what();
+            CHECK_NOTHROW(accepted.Check(domain.Dofs(), true));
+            CHECK(simulation.Time() == 0);
+        }
+    }
+    INFO("criticalDt=" << criticalDt << ", nextDt=" << dt << ", lastRejection=" << lastRejection);
+    REQUIRE(completed);
+    CHECK(simulation.Time() == dt);
+    CHECK(simulation.Step() == 1);
+    C::Simulation direct(config, mpi.comm, factory);
+    auto fresh = direct.GetDomain(0).Dofs().NumericAlias();
+    {
+        const auto source = original.ReadOwned();
+        auto destination = fresh.WriteOwned();
+        for (I iBlock = 0; iBlock < original.BlockNumber(); ++iBlock)
+        {
+            const auto input = source.Block(iBlock);
+            const auto output = destination.Block(iBlock);
+            for (I iCell = 0; iCell < input.RowCount(); ++iCell)
+                for (I j = 0; j < input.ComponentNumber(); ++j)
+                    output(iCell, j) = input(iCell, j);
+        }
+    }
+    direct.Advance(dt);
+    Compare(domain.Dofs(), direct.GetDomain(0).Dofs(), 0);
+    auto oracle = original.Clone();
+    auto rhs = C::EquationDofOperations::NewVector(oracle);
+    const auto &fv = domain.Discretization();
+    auto work = fv.BuildEquationWorkspace(oracle, domain.ChemicalWorkers());
+    R::EagerEngine engine(2);
+    const auto stream = engine.CreateCPUStream();
+    const double history[3]{0, .75, 1. / 3}, weight[3]{1, .25, 2. / 3}, stageTime[3]{0, dt, .5 * dt};
+    for (int stage = 0; stage < 3; ++stage)
+    {
+        fv.Evaluate(oracle, rhs, *work, engine, stream, stageTime[stage]);
+        const auto base = original.ReadOwned(), residual = rhs.ReadOwned();
+        auto output = oracle.WriteOwned();
+        for (I iBlock = 0; iBlock < oracle.BlockNumber(); ++iBlock)
+        {
+            const auto initial = base.Block(iBlock), rate = residual.Block(iBlock);
+            const auto values = output.Block(iBlock);
+            for (I iCell = 0; iCell < values.RowCount(); ++iCell)
+                for (I j = 0; j < values.ComponentNumber(); ++j)
+                    values(iCell, j) = history[stage] * initial(iCell, j) + weight[stage] *
+                                                                                (values(iCell, j) + dt * rate(iCell, j) / fv.Metrics().GetCellVol(iCell));
+        }
+    }
+    Compare(domain.Dofs(), oracle, 0);
+}
+
 TEST_CASE("Configured mixture Domains advance every block through production time and publication paths")
 {
     MixtureFixture mixture;
@@ -741,7 +875,7 @@ TEST_CASE("Configured mixture Domains advance every block through production tim
                                                                                          : "aosoa32";
         input["defaults"]["execution"]["overlap"] = bool(scenario);
         input["defaults"]["execution"]["hostThreads"] = scenario ? 2 : 0;
-        input["defaults"]["numerics"]["positivity"] = scenario != 0;
+        input["defaults"]["numerics"]["positivity"] = true;
         if (scenario == 2)
         {
             input["defaults"]["numerics"]["reconstruction"] = "variational";

@@ -37,6 +37,26 @@ namespace
         }
     }
 }
+TEST_CASE("Production DITR controller uses common limits unless an override is supplied")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    C::DomainSettings settings;
+    settings.numerics.reconstruction = "constant";
+    settings.implicit.iterations = settings.implicit.minIterations = 3;
+    C::TimeSettings time;
+    time.method = "ditr";
+    C::Domain inherited("inherited", mesh, settings, time);
+    inherited.Advance(.01);
+    REQUIRE(inherited.LastImplicitStages().size() == 1);
+    CHECK(inherited.LastImplicitStages()[0].converged);
+    CHECK(inherited.LastImplicitStages()[0].iterations == 3);
+    time.ditr.iterations = time.ditr.minIterations = 1;
+    C::Domain overridden("overridden", mesh, settings, time);
+    overridden.Advance(.01);
+    REQUIRE(overridden.LastImplicitStages().size() == 1);
+    CHECK(overridden.LastImplicitStages()[0].converged);
+    CHECK(overridden.LastImplicitStages()[0].iterations == 1);
+}
 TEST_CASE("Native physical implicit methods preserve uniform periodic flow and transactional commit")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);

@@ -17,7 +17,7 @@ Current CPU scope (November 5): configured flow5, SA/Wilcox/SST/realizable-k-eps
 and optional ideal-mixture chemistry share logical DOF bindings, implicit time
 equations, native archives and observation. Extended profiles use Rusanov,
 polynomial viscosity, component WBAP and Euler-compatible implicit/rec PP;
-missing characteristic/LVR/interface and explicit-PP adapters
+missing characteristic/LVR/interface adapters
 fail explicitly. QCR and the existing SA/SST DES formulas are connected below.
 The short flame comparison is a converged discrete sanity run; the NACA pair
 is capped and does not establish converged aerodynamics. CUDA remains deferred.
@@ -171,8 +171,10 @@ FV/implicit stages, dynamic reports and full-state publication. Native checkpoin
 and output preserve all logical components; the independent mean trial also
 supports whole-equation physical-dt PP. Polynomial FAS preserves all logical
 blocks through the shared hierarchy. Extended interface packets and explicit
-flux blending still require adapters and reject rather than processing
-flow5 alone. `CoupledField()` explicitly
+flux blending still require adapters. Explicit extended stages instead use
+uncompressed flow5/species residuals and reject the whole trial when
+inadmissible. Separate RANS exponential repair is permitted without rescaling
+those components. `CoupledField()` explicitly
 refuses split or permuted physical segments instead of silently flattening them. Generic mock
 tests exercise 17/21-component coupled BDF/block solves and separate physical
 bindings; those tests are not RANS, species or incompressible implementations.
@@ -952,8 +954,11 @@ If no nodal wall field is published, Domain asks Geom to build it from the
 configured no-slip zones before constructing geometry-dependent operators.
 A caller-supplied wall field is retained. Release mesh read views before
 Domain construction; wall-field presence must agree across ranks.
-Implicit and explicit full-state updates apply the model scalar bounds;
-explicit flux-blend PP remains unavailable for this profile. Physical-dt PP
+Implicit full-state updates apply Euler's model scalar repairs. Explicit
+SSPRK3 uses the uncompressed flow5/species update and rejects an inadmissible
+stage for whole-step smaller-dt retry. RANS exponential scalar repair and mean
+bounds remain separate; no thermal flow5 increment compression is applied.
+Explicit flux-blend PP remains unavailable for this profile. Physical-dt PP
 uses the separate logical-state mean trial described in
 [the positivity policy](CauchyPositivity.md).
 

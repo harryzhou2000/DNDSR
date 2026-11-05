@@ -186,9 +186,13 @@ both `initialResidual` and `referenceResidual`, plus the selected-component
 `residualTargetRatio`; CSV and Python use that ratio rather than recomputing an
 all-component initial-reference ratio. A zero requested target means exact
 zero; an unmet zero target reports the largest finite ratio. DITR uses the same
-controller and named component selection. Pending configuration consolidation,
-its existing `time.ditr` iteration/tolerance keys explicitly override the
-corresponding shared policy fields; they do not introduce another loop. RANS/species never enter the default criterion;
+controller and named component selection. DITR inherits each domain's
+`implicit.iterations`, `minIterations`, `relativeTolerance` and
+`absoluteTolerance`. Explicitly supplied `time.ditr` counterparts remain
+deprecated compatibility overrides; missing/null fields inherit, including
+after JSON round trips. Explicit zero tolerances/minimum are valid overrides.
+The combined minimum/maximum is checked before stepping. These fields do not
+introduce another loop. RANS/species never enter the default criterion;
 a homogeneous reactor must explicitly select reacting components or all. Align
 linear relaxation and VR warmup too before calling a baseline matched.
 

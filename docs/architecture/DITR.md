@@ -60,9 +60,13 @@ density; reacting cases must explicitly select species/all. A finite admissible
 capped iterate may be accepted by default, retaining converged=false; explicit
 implicit.rejectUnconvergedStages rejects it.
 
-Pending configuration consolidation, time.ditr iteration/minimum/tolerance keys
-explicitly override those fields of the shared policy. They do not create an
-outer loop. Named components, norm/reference and pseudo-CFL come from implicit.
+Iteration limits and tolerances default to the domain's common `implicit`
+controls. Explicit numeric `time.ditr` iteration/minimum/tolerance keys are
+deprecated overrides; omitted/null keys inherit. Explicit zero is retained for
+minimum iterations and tolerances. JSON serialization preserves inheritance
+with null, so writing defaults does not turn them into overrides. Inherited and
+overridden bounds must be consistent. They do not create an outer loop.
+Named components, norm/reference and pseudo-CFL come from implicit.
 There is no inner convergence tolerance for each individual correction.
 
 Tests independently check two incomplete Euler-form iterations, both variants'

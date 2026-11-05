@@ -9,6 +9,7 @@
 #include "Physics/StateInput.hpp"
 #include "Physics/Chemistry/ReactorStepSettings.hpp"
 #include <map>
+#include <optional>
 
 namespace DNDS::Cauchy
 {
@@ -330,7 +331,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(roeDissipation, "Use full equation-owned characteristic dissipation; requires block diagonal");
             DNDS_FIELD(collectiveChecks, "Coordinate local failures between implicit kernels; false also disables optional halo freshness audits, retaining mandatory transfer preflight");
             DNDS_FIELD(requireConvergedReconstruction, "Require the requested VR tolerance as well as the mean equation target; false preserves Euler-style fixed-sweep acceptance");
-            DNDS_FIELD(rejectUnconvergedStages, "Reject a finite admissible stage or DITR outer solve at its iteration cap; false advances the final iterate like Euler while retaining an unconverged report");
+            DNDS_FIELD(rejectUnconvergedStages, "Reject a finite admissible stage or coupled DITR solve at its iteration cap; false advances the final iterate like Euler while retaining an unconverged report");
             config.field_section(&T::linear, "linear", "Linear solve controls");
             config.field_section(&T::sgs, "sgs", "Symmetric relaxation controls");
             config.field_section(&T::ilu, "ilu", "Rank-local factorization controls");
@@ -434,18 +435,21 @@ namespace DNDS::Cauchy
     {
         std::string variant = "U2R2";
         real fraction = .55, theta = .9146;
-        index iterations = 100, minIterations = 0;
-        real relativeTolerance = 1e-8, absoluteTolerance = 1e-10;
+        /// Deprecated compatibility overrides, not a second iteration policy.
+        /// Missing/null values inherit each domain's common implicit controls.
+        std::optional<index> iterations, minIterations;
+        std::optional<real> relativeTolerance, absoluteTolerance;
         void Validate() const;
+        ImplicitSettings ResolveControls(const ImplicitSettings &common) const;
         DNDS_DECLARE_CONFIG(DITRTimeSettings)
         {
             DNDS_FIELD(variant, "U2R2 or U2R1 interpolation; U2R1 is available for reaction-dominated stepping");
             DNDS_FIELD(fraction, "Intermediate time fraction; CPU positive-scale profile requires (0,2/3)");
             DNDS_FIELD(theta, "Positive H+theta*I intermediate-equation weight");
-            DNDS_FIELD(iterations, "Maximum corrections in the single DITR nonlinear loop; implicit.rejectUnconvergedStages selects cap rejection");
-            DNDS_FIELD(minIterations, "Minimum paired intermediate/endpoint corrections before convergence");
-            DNDS_FIELD(relativeTolerance, "Selected-component I+H residual target relative to the configured reference norm");
-            DNDS_FIELD(absoluteTolerance, "Selected-component absolute I+H residual target");
+            config.field_optional(&T::iterations, "iterations", "Deprecated maximum-corrections override; null inherits implicit.iterations");
+            config.field_optional(&T::minIterations, "minIterations", "Deprecated minimum paired-corrections override; null inherits implicit.minIterations");
+            config.field_optional(&T::relativeTolerance, "relativeTolerance", "Deprecated I+H relative-target override; null inherits implicit.relativeTolerance");
+            config.field_optional(&T::absoluteTolerance, "absoluteTolerance", "Deprecated I+H absolute-target override; null inherits implicit.absoluteTolerance");
         }
     };
     struct PhysicalTimePositivitySettings
@@ -491,7 +495,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(finalTime, "Positive physical-time target; zero uses the step target");
             DNDS_FIELD(cfl, "Positive CFL enables adaptive global stepping, capped by dt");
             DNDS_FIELD(wallSeconds, "Collective graceful wall stop; zero disables it");
-            DNDS_FIELD(maxRetries, "Maximum timestep halvings after a rejected candidate");
+            DNDS_FIELD(maxRetries, "C++ frontend maximum whole-step dt halvings after rejection; zero reports failure. Direct/Python callers own retries");
             DNDS_FIELD(steadyTolerance, "Relative accepted-state residual target; zero means physical transient");
             DNDS_FIELD(steadyMinSteps, "Minimum accepted steps before a steady stop");
             config.field_section(&T::ditr, "ditr", "Coupled U2R2/U2R1 time equations");

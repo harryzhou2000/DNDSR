@@ -218,7 +218,7 @@ TEST_CASE("Mixture BDF2 restart restores species history and warm reconstruction
 }
 TEST_CASE("Physical Strang source composes with transport and preserves retry and restart history semantics")
 {
-    for (const std::string method : {"esdirk2", "bdf2"})
+    for (const std::string method : {"ssprk3", "esdirk2", "bdf2"})
     {
         CAPTURE(method);
         auto settings = MixtureSettings();

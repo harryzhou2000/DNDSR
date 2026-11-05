@@ -13,6 +13,14 @@ The pending descriptor is thread-local. Recursion into the same type fails
 explicitly; registering a different nested section remains supported. After
 publication, reading metadata is safe concurrently.
 
+`ConfigSectionBuilder::field_optional` registers scalar compatibility overrides
+as `std::optional<T>`. Missing keys retain the current value; explicit null
+clears it, and serialized null preserves inheritance through a default/round-trip
+configuration. Numeric zero remains an explicit value. Integers use the same
+checked conversion as ordinary fields. Schema uses scalar-or-null alternatives;
+the owning configuration resolves inherited values and validates cross-field
+bounds. This metadata is never queried inside numerical kernels.
+
 ## Shared-library boundary
 
 Each linked module retains its own complete registry metadata. On compilers

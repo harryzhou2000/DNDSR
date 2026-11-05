@@ -218,9 +218,29 @@ namespace DNDS::Cauchy
     void DITRTimeSettings::Validate() const
     {
         DNDS_check_throw_info((variant == "U2R2" || variant == "U2R1") && std::isfinite(fraction) && fraction > 0 && fraction < real(2) / 3 &&
-                                  std::isfinite(theta) && theta > 0 && iterations > 0 && minIterations >= 0 && minIterations <= iterations &&
-                                  std::isfinite(relativeTolerance) && relativeTolerance >= 0 && std::isfinite(absoluteTolerance) && absoluteTolerance >= 0,
+                                  std::isfinite(theta) && theta > 0 && (!iterations || *iterations > 0) && (!minIterations || *minIterations >= 0) &&
+                                  (!iterations || !minIterations || *minIterations <= *iterations) &&
+                                  (!relativeTolerance || (std::isfinite(*relativeTolerance) && *relativeTolerance >= 0)) &&
+                                  (!absoluteTolerance || (std::isfinite(*absoluteTolerance) && *absoluteTolerance >= 0)),
                               "invalid/unavailable DITR positive-stage-scale controls");
+    }
+    ImplicitSettings DITRTimeSettings::ResolveControls(const ImplicitSettings &common) const
+    {
+        Validate();
+        auto result = common;
+        if (iterations)
+            result.iterations = *iterations;
+        if (minIterations)
+            result.minIterations = *minIterations;
+        if (relativeTolerance)
+            result.relativeTolerance = *relativeTolerance;
+        if (absoluteTolerance)
+            result.absoluteTolerance = *absoluteTolerance;
+        DNDS_check_throw_info(result.iterations > 0 && result.minIterations >= 0 && result.minIterations <= result.iterations &&
+                                  std::isfinite(result.relativeTolerance) && result.relativeTolerance >= 0 &&
+                                  std::isfinite(result.absoluteTolerance) && result.absoluteTolerance >= 0,
+                              "DITR overrides conflict with the common implicit iteration/tolerance controls");
+        return result;
     }
     void PhysicalTimePositivitySettings::Validate() const
     {
@@ -531,9 +551,8 @@ namespace DNDS::Cauchy
         for (const auto &domain : data->domains)
         {
             DNDS_check_throw_info(data->time.method != "ssprk3" || !domain.settings.implicit.multigrid.levels, "polynomial FAS requires an implicit time method");
-            if (domain.settings.equation.eos == "idealGasMixture" || domain.settings.equation.rans.model != "none")
-                DNDS_check_throw_info(!(data->time.method == "ssprk3" && domain.settings.numerics.positivity),
-                                      "extended equation explicit flux-blend PP adapter is not connected yet");
+            if (data->time.method == "ditr")
+                data->time.ditr.ResolveControls(domain.settings.implicit);
         }
         DNDS_check_throw_info(data->output.interval >= 0 && data->output.historyInterval > 0 && data->output.historySegmentRows > 0 && !data->output.prefix.empty(), "invalid Cauchy output controls");
         DNDS_check_throw_info(data->output.hdfDeflateLevel >= 0 && data->output.hdfDeflateLevel <= 9, "Cauchy output hdfDeflateLevel must be in [0,9]");

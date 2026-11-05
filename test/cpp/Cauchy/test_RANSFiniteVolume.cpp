@@ -7,9 +7,11 @@
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/Implicit/LinearProblem.hpp"
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
+#include "Cauchy/Core/Simulation.hpp"
 #include "../CFV/ReconstructionFixture.hpp"
 #include "CartesianFixture.hpp"
 #include "Geom/Quadratures/Quadrature.hpp"
+#include <limits>
 
 namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
@@ -71,6 +73,108 @@ namespace
             bindings = {{"flow", "coupled", components}, {"rans", "coupled", 0}};
         }
         return {fv.Equation().Schema(), std::move(fields), std::move(bindings)};
+    }
+}
+
+TEST_CASE("Explicit RANS repairs scalars separately from the uncompressed flow5 update")
+{
+    auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    mesh->BuildNodeWallDist([](auto)
+                            { return false; });
+    for (int workers : {0, 2})
+    {
+        auto settings = Settings();
+        settings.boundaries.clear();
+        settings.equation.rans.model = "KOmegaWilcox";
+        settings.initialPrimitive = {1, 0, 0, 0, 1};
+        settings.initialRANS = {{"rhoK", .02}, {"rhoOmega", 100}};
+        settings.numerics.ransState.referenceConservative = {{"rho", 1}, {"rhoK", .02}, {"rhoOmega", 100}};
+        settings.numerics.positivity = true;
+        settings.execution.hostThreads = workers;
+        settings.execution.layout = workers ? "soa" : "aos";
+        settings.execution.overlap = bool(workers);
+        const auto config = C::SimulationConfig::ResolveCollective({{"defaults", C::Json(settings)}}, mpi.comm);
+        const auto factory = [&](auto, const auto &, const auto &)
+        { return mesh; };
+        C::Simulation simulation(config, mpi.comm, factory);
+        auto &domain = simulation.GetDomain(0);
+        const auto original = domain.Dofs().Clone();
+        double criticalDt = std::numeric_limits<double>::infinity();
+        {
+            const auto &rhs = domain.ResidualState();
+            const auto initial = original.ReadOwned(), residual = rhs.ReadOwned();
+            const auto values = initial.Block("rans"), rate = residual.Block("rans");
+            for (I iCell = 0; iCell < values.RowCount(); ++iCell)
+                for (I j = 0; j < values.ComponentNumber(); ++j)
+                    if (rate(iCell, j) < 0)
+                        criticalDt = std::min(criticalDt, -values(iCell, j) * domain.Discretization().Metrics().GetCellVol(iCell) / rate(iCell, j));
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &criticalDt, 1, MPI_DOUBLE, MPI_MIN, mpi.comm);
+        REQUIRE(std::isfinite(criticalDt));
+        REQUIRE(criticalDt > 0);
+        // The raw first stage has a negative RANS scalar. Its independent
+        // scalar repair is allowed, but must not compress any flow component.
+        const double dt = 2 * criticalDt;
+        simulation.Advance(dt);
+        CHECK(simulation.Time() == dt);
+        CHECK(simulation.Step() == 1);
+        CHECK(domain.PreviousTimeStep() == dt);
+        // Independent Shu-Osher assembly over the public spatial operator:
+        // raw flow5 plus the separate Euler exponential scalar repair.
+        auto oracle = original.Clone();
+        auto rhs = C::EquationDofOperations::NewVector(oracle);
+        const auto &fv = domain.Discretization();
+        auto work = fv.BuildEquationWorkspace(oracle);
+        R::EagerEngine engine(workers);
+        const auto stream = engine.CreateCPUStream();
+        const double history[3]{0, .75, 1. / 3}, weight[3]{1, .25, 2. / 3}, stageTime[3]{0, dt, .5 * dt};
+        int repaired = 0;
+        for (int stage = 0; stage < 3; ++stage)
+        {
+            fv.Evaluate(oracle, rhs, *work, engine, stream, stageTime[stage]);
+            const auto base = original.ReadOwned(), residual = rhs.ReadOwned();
+            auto output = oracle.WriteOwned();
+            for (I iBlock = 0; iBlock < oracle.BlockNumber(); ++iBlock)
+            {
+                const auto initial = base.Block(iBlock), rate = residual.Block(iBlock);
+                const auto values = output.Block(iBlock);
+                for (I iCell = 0; iCell < values.RowCount(); ++iCell)
+                    for (I j = 0; j < values.ComponentNumber(); ++j)
+                    {
+                        const double old = values(iCell, j);
+                        double next = history[stage] * initial(iCell, j) + weight[stage] *
+                                                                               (values(iCell, j) + dt * rate(iCell, j) / fv.Metrics().GetCellVol(iCell));
+                        if (oracle.Schema().blocks[iBlock].name == "rans")
+                        {
+                            const double change = next - old;
+                            if (old + change < 0)
+                            {
+                                next = old + (old * std::exp(change / (old + 1e-6)) - old);
+                                ++repaired;
+                            }
+                            else
+                                next = old + change;
+                            if (j == 1)
+                                next = std::max(next, 1.); // .01 * prescribed rhoOmega.
+                        }
+                        values(iCell, j) = next;
+                    }
+            }
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &repaired, 1, MPI_INT, MPI_SUM, mpi.comm);
+        CHECK(repaired > 0);
+        const auto result = domain.Dofs().ReadOwned(), expected = oracle.ReadOwned(), before = original.ReadOwned();
+        for (I iBlock = 0; iBlock < oracle.BlockNumber(); ++iBlock)
+        {
+            const auto actual = result.Block(iBlock), raw = expected.Block(iBlock);
+            for (I iCell = 0; iCell < actual.RowCount(); ++iCell)
+                for (I j = 0; j < actual.ComponentNumber(); ++j)
+                {
+                    CHECK(actual(iCell, j) == raw(iCell, j));
+                    if (oracle.Schema().blocks[iBlock].name == "flow")
+                        CHECK(actual(iCell, j) == doctest::Approx(before.Block(iBlock)(iCell, j)).epsilon(2e-13).scale(1));
+                }
+        }
     }
 }
 

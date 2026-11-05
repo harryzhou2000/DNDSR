@@ -47,7 +47,6 @@ namespace DNDS::Cauchy
         std::vector<EquationNonlinearIterationReport> _lastImplicit;
         index _lastCoupledIterations = 0;
         real _lastCoupledTargetRatio = 0;
-        DITRTimeSettings _ditrControl;
         std::vector<index> _ditrComponents;
         ImplicitSettings _implicitControls;
         real _coupledReconstructionTolerance = 0;
@@ -193,6 +192,11 @@ namespace DNDS::Cauchy
         /// Build the configured time-method candidate at this accepted time. Domain ranks enter
         /// together. Inadmissible stages fail collectively without changing the
         /// accepted field/clock. dt may be rejected by the caller and retried.
+        /// Explicit SSPRK never compresses a per-cell flow5/species increment.
+        /// Separate RANS exponential repair/mean bounds remain permitted. The
+        /// flow5 path may use one conservative global flux blend; otherwise
+        /// inadmissible stages reject for whole-step smaller-dt retry. Discard
+        /// a failed candidate before retry; stages restart at accepted time.
         /// time.steady instead uses BDF1's infinite-dt limit: finite dt is ignored,
         /// and physical time is frozen. By default an iteration cap advances
         /// the final admissible iterate like Euler; LastImplicitStages retains

@@ -22,6 +22,8 @@ distributed gates and the measured gains and regressions by shape.
 ## Architecture entry points
 
 Cauchy development starts at the [solver contracts and ledger](architecture/Cauchy.md).
+The [multidomain input and restart guide](guides/cauchy_multidomain.md) gives the
+configuration shape, CGNS/HDF loader boundaries and simulation archive layout.
 The [equation-state contract](architecture/CauchyState.md) documents semantic
 segments, shared storage, leases and explicit physical/backend dispatch.
 The [physical state input guide](architecture/CauchyStateInput.md) specifies

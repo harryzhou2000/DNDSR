@@ -456,6 +456,58 @@ namespace DNDS
             ConfigRegistry<T>::registerField(std::move(meta));
         }
 
+        /// Register a nullable scalar override. Missing fields retain their
+        /// existing value; explicit null clears the override. The owning
+        /// configuration resolves inheritance, so defaults never manufacture
+        /// an explicit value. Integer conversion uses the ordinary checked path.
+        template <typename V, typename... Tags>
+        void field_optional(std::optional<V> T::*member, const char *jsonKey, const char *desc, Tags &&...tags)
+        {
+            static_assert(std::is_arithmetic_v<V> || std::is_same_v<V, std::string>);
+            FieldMeta meta;
+            meta.name = jsonKey;
+            meta.description = desc;
+            meta.typeTag = ConfigTypeTagOf<V>::value;
+            detail::applyTags(meta, std::forward<Tags>(tags)...);
+            auto rangeChecker = detail::makeRangeChecker<T, V>(meta);
+            meta.readField = [member, jsonKey, rangeChecker](const nlohmann::ordered_json &j, void *obj)
+            {
+                const auto &value = j.at(jsonKey);
+                auto &target = static_cast<T *>(obj)->*member;
+                if (value.is_null())
+                    target.reset();
+                else
+                {
+                    auto converted = detail::readConfigValue<V>(value);
+                    if (rangeChecker)
+                        rangeChecker(value, jsonKey);
+                    target = std::move(converted);
+                }
+            };
+            meta.writeField = [member, jsonKey](nlohmann::ordered_json &j, const void *obj)
+            {
+                const auto &value = static_cast<const T *>(obj)->*member;
+                j[jsonKey] = value ? nlohmann::ordered_json(*value) : nlohmann::ordered_json(nullptr);
+            };
+            meta.schemaEntry = [member, desc, type = meta.typeTag, minimum = meta.minimum, maximum = meta.maximum, info = meta.auxInfo]()
+            {
+                const T defaults{};
+                const auto &value = defaults.*member;
+                nlohmann::ordered_json scalar{{"type", schemaTypeString(type)}};
+                if (minimum)
+                    scalar["minimum"] = *minimum;
+                if (maximum)
+                    scalar["maximum"] = *maximum;
+                nlohmann::ordered_json schema{{"oneOf", {scalar, {{"type", "null"}}}},
+                                              {"default", value ? nlohmann::ordered_json(*value) : nlohmann::ordered_json(nullptr)},
+                                              {"description", desc}};
+                for (const auto &entry : info)
+                    schema["x-" + entry.first] = entry.second;
+                return schema;
+            };
+            ConfigRegistry<T>::registerField(std::move(meta));
+        }
+
         // ---- field_alias(): convenience alias for field() with different JSON key ----
 
         /// @brief Register a field whose JSON key differs from the C++ member name.

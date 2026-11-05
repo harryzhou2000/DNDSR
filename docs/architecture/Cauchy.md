@@ -491,8 +491,9 @@ Focused PP tests cover shifted negative energy references, a supplied nonlinear
 thermal bound, a composition-dependent affine bound, high-kinetic-energy
 roundoff, reconstruction/stage activation, periodic global conservation,
 collective rejection/retry, and exact inactive-PP trajectories. These are
-current-flow and policy tests; species/RANS/source-term constraints still
-require equation-specific implementation before those profiles are advertised.
+flow5 policy tests. Extended equations retain uncompressed explicit residual
+updates with whole-step rejection and caller-controlled smaller-dt retry;
+see [the explicit acceptance contract](CauchyPositivity.md#explicit-stage-acceptance-and-retry).
 
 Checkpoint format4 records structured numerical/physical metadata, canonical
 `cell_ids`, owned means and physical time history. Reconstruction coefficients

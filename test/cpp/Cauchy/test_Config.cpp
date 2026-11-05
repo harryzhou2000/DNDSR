@@ -3,6 +3,33 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("DITR inherits common controls and only supplied compatibility fields override them")
+{
+    C::Json input{{"time", {{"method", "ditr"}}},
+                  {"defaults", {{"implicit", {{"iterations", 17}, {"minIterations", 3}, {"relativeTolerance", 2e-5}, {"absoluteTolerance", 7e-9}}}}}};
+    const auto inherited = C::SimulationConfig::Resolve(input, 1);
+    const auto common = inherited.Domains()[0].settings.implicit;
+    auto controls = inherited.Time().ditr.ResolveControls(common);
+    CHECK(controls.iterations == 17);
+    CHECK(controls.minIterations == 3);
+    CHECK(controls.relativeTolerance == 2e-5);
+    CHECK(controls.absoluteTolerance == 7e-9);
+    CHECK(inherited.Root()["time"]["ditr"]["iterations"].is_null());
+    input["time"]["ditr"] = {{"iterations", 9}, {"minIterations", 0}, {"relativeTolerance", 0}, {"absoluteTolerance", nullptr}};
+    const auto explicitValues = C::SimulationConfig::Resolve(input, 1);
+    controls = explicitValues.Time().ditr.ResolveControls(common);
+    CHECK(controls.iterations == 9);
+    CHECK(controls.minIterations == 0);
+    CHECK(controls.relativeTolerance == 0);
+    CHECK(controls.absoluteTolerance == 7e-9);
+    const auto roundtrip = C::SimulationConfig::Resolve({{"defaults", C::Json(explicitValues.Domains()[0].settings)}, {"time", C::Json(explicitValues.Time())}}, 1);
+    CHECK(roundtrip.Time().ditr.iterations == 9);
+    CHECK_FALSE(roundtrip.Time().ditr.absoluteTolerance.has_value());
+    input["time"]["ditr"] = {{"iterations", 2}};
+    CHECK_THROWS(C::SimulationConfig::Resolve(input, 1)); // Inherited minimum is three.
+    input["time"]["ditr"] = {{"iterations", 2.5}};
+    CHECK_THROWS(C::SimulationConfig::Resolve(input, 1)); // No narrowing to an integer override.
+}
 TEST_CASE("Chemical source splitting is explicit and keeps Euler reactor defaults")
 {
     CHECK(C::TimeSettings{}.sourceSplitting == "coupled");

@@ -14,7 +14,6 @@ namespace DNDS::Cauchy
     void Domain::InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh)
     {
         _steady = time.steady;
-        _implicitControls = settings.implicit;
         _coupledReconstructionTolerance = settings.implicit.requireConvergedReconstruction &&
                                                   settings.numerics.reconstruction == "variational"
                                               ? settings.numerics.reconstructionTolerance
@@ -27,7 +26,8 @@ namespace DNDS::Cauchy
         }
         const MPIInfo mpi(_fv.Metrics().Communicator());
         MPI::LocalStage(mpi, [&]
-                        { time.ditr.Validate(); _ditrControl = time.ditr;
+                        { time.ditr.Validate();
+                          _implicitControls = time.method == "ditr" ? time.ditr.ResolveControls(settings.implicit) : settings.implicit;
                           _ditrComponents = _equation.Schema().ResolveComponents(settings.implicit.residualComponents); });
         _coupledFactory = [this, mesh, settings, mpi](EquationDofs &middle)
         {
@@ -265,14 +265,7 @@ namespace DNDS::Cauchy
             MPI::LocalStage(mpi, [&]
                             {
                 if (!_coupledResidual) _coupledResidual.emplace(EquationDofOperations::NewVector(endpoint)); });
-            // Temporary compatibility mapping: there is only one loop/policy.
-            // Configuration consolidation is a separate user decision; these
-            // existing explicit DITR keys currently override the shared policy.
-            auto settings = _implicitControls;
-            settings.iterations = _ditrControl.iterations;
-            settings.minIterations = _ditrControl.minIterations;
-            settings.relativeTolerance = _ditrControl.relativeTolerance;
-            settings.absoluteTolerance = _ditrControl.absoluteTolerance;
+            const auto &settings = _implicitControls;
             EquationNonlinearIterationReport initial;
             initial.residual.resize(size_t(endpoint.ComponentNumber()));
             const auto report = NonlinearDetail::Iterate(settings, endpoint.Schema(), mpi.rank, 0, {}, std::move(initial), _coupledReconstructionTolerance, [&]

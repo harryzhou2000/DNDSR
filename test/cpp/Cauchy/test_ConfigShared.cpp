@@ -18,4 +18,11 @@ TEST_CASE("Hidden consumers serialize complete configuration registered in the s
     const auto roundtrip = C::SimulationConfig::Resolve({{"defaults", serialized}}, 1);
     CHECK(roundtrip.Domains().front().settings.initialPrimitive[0] == .8);
     CHECK(roundtrip.Domains().front().settings.numerics.cfv.intOrder == 6);
+    const auto ditr = C::SimulationConfig::Resolve({{"time", {{"method", "ditr"}, {"ditr", {{"relativeTolerance", 0}}}}}}, 1);
+    const C::Json serializedTime = ditr.Time();
+    CHECK(serializedTime["ditr"]["iterations"].is_null());
+    CHECK(serializedTime["ditr"]["relativeTolerance"] == 0);
+    const auto inherited = ditr.Time().ditr.ResolveControls(ditr.Domains().front().settings.implicit);
+    CHECK(inherited.iterations == ditr.Domains().front().settings.implicit.iterations);
+    CHECK(inherited.relativeTolerance == 0);
 }

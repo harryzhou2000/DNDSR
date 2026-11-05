@@ -1,6 +1,6 @@
 # Cauchy positivity policy
 
-The CPU policy preserves Euler's implemented numerical sequence. A thermal
+The implicit CPU policy preserves Euler's implemented numerical sequence. A thermal
 criterion and the components multiplied by its factor are different concepts.
 RANS positivity does not determine the thermal factor, but Euler applies that
 factor to the entire nonlinear increment/RHS. Reconstruction has a different
@@ -46,10 +46,10 @@ or nonfinite repair is an explicit failure, not a successful PP update.
 | Operation | Factor calculation | Application |
 | --- | --- | --- |
 | Reconstruction beta | Density, sensible energy and temperature at the configured cell/face/source quadrature points | Flow5 and species coefficient difference from the selected reference polynomial; not RANS |
-| RHS compression | Thermal trial `U + rhsScale*dTau*defect/V` | Entire solve defect, as Euler's `cres *= alpha` |
-| dTau compression | Same thermal trial | Replace scalar dTau by `max(alpha,smallReal)*dTau`; no second component-wise RHS scaling |
-| Increment compression | Thermal trial with the selected nonlinear correction | Entire correction, including RANS and species, before final repair |
-| Final increment repair | Density and thermal bound of the proposed update | Entire correction, then separate RANS repair, addition, and species mean repair |
+| Implicit RHS compression | Thermal trial `U + rhsScale*dTau*defect/V` | Entire solve defect, as Euler's `cres *= alpha` |
+| Implicit dTau compression | Same thermal trial | Replace scalar dTau by `max(alpha,smallReal)*dTau`; no second component-wise RHS scaling |
+| Implicit increment compression | Thermal trial with the selected nonlinear correction | Entire correction, including RANS and species, before final repair |
+| Implicit final increment repair | Density and thermal bound of the proposed update | Entire correction, then separate RANS repair, addition, and species mean repair |
 | Physical dt restriction | Thermal trial with `dt*scale*R/V` | A scalar global timestep restriction; no independent RANS/species positivity scale |
 
 Thermal factors depend on species through energy, even though there is no
@@ -59,6 +59,60 @@ also accepts the logical extended state; it uses the same mixture reference
 energies and `compress=1`, with no independent species/RANS positivity minimum.
 This is a timestep proposal, not a proof that every explicit stage is positive.
 Extended explicit flux blending remains unavailable.
+
+## Explicit stage acceptance and retry
+
+SSPRK3 uses the uncompressed conservative residual for flow5 and species in each
+Shu-Osher stage. It never applies cellwise thermal increment compression or
+species mean repair to make that stage acceptable. The user permits Euler's
+separate RANS exponential increment repair and model scalar mean bounds; those
+act only on the RANS block and never rescale flow5/species. Reconstruction
+limiting and temporary property-state validation remain spatial operations.
+The raw species candidate must satisfy nonnegative independent densities and
+their sum no greater than rho (the implicit last species is the remainder).
+Failing this check rejects the trial; no clipping/normalization of accepted
+explicit species values is allowed.
+
+The established perfect-gas flow5 path may blend low/high residuals with one
+globally shared factor. Both sides of a face use the same factor, retaining
+flux cancellation. Extended equations currently have no such flux-blend adapter:
+an inadmissible stage rejects the complete physical-step trial. `numerics.positivity`
+still selects their reconstruction PP; it does not enable increment repair.
+
+For each cell, form the complete low/high SSPRK stage candidates with the
+same history weights and dt. `AdmissibleFraction(low, high)` bisects their
+conservative-state segment for 56 iterations against density and thermal
+interior bounds, retaining a small numerical safety margin. If every high
+candidate is admissible, alpha is one. Otherwise the low candidates must be
+admissible everywhere and alpha is the minimum local fraction over all cells
+and MPI ranks. Apply that single alpha to the residuals, not a per-cell factor
+to updates. The search re-evaluates state predicates, never the face fluxes.
+
+**Deferred direction:** replace the domain-global factor with a conservative
+local flux-correction scheme. A face must use one shared correction coefficient
+for its two adjacent cells, including across MPI partitions, and satisfy both
+cells' coupled density/thermal/species constraints. The admissible low-order
+update, source and boundary treatment, and multi-stage guarantee need a separate
+design and validation. No local algorithm is implemented here; independently
+compressing cell increments is not a substitute. The global blend remains a
+simple baseline until that explicit PP work is undertaken.
+
+The caller retries from the accepted state with smaller dt. `Simulation::Advance`
+discards every domain's failed trial without changing accepted values, time or
+step count. The production C++ frontend halves dt up to `time.maxRetries`
+(default zero, meaning report the rejection). Direct Domain/Python callers
+perform the same discard/retry explicitly; use `DiscardStep()` after a failed
+`PrepareStep()` and supply the reduced dt. The next trial restores the accepted
+reconstruction guess and restarts all three stages. Backend/allocation failures
+can poison private scratch and require rebuilding the Domain; they are not
+ordinary positivity rejections. No timestep restriction proves every later
+stage admissible.
+
+Physical Strang splitting also accepts SSPRK3 transport: chemical half-step,
+source-free SSPRK3 transport, then chemical half-step. The external CVODE
+reactor retains its separate Euler-compatible species-output convention; it
+does not apply a compressed increment to the explicit transport stages. Overall
+Strang composition is second order regardless of the transport method's order.
 
 The extended trial uses `EquationMeanWorkspace`, separate from the normal VR
 workspace, over the same FV plans and CPU engine. Its coefficients stay zero,
@@ -75,6 +129,8 @@ The wrapper validates schema/mapping and finite increments before the existing
 global minimum/count reductions. Domain lazily owns the independent trial
 workspace/residual and applies growth capping from the last committed dt.
 
+## Implicit compression details
+
 The relaxed density target is
 `rhoTarget = relax*densityFloor + (1-relax)*rho`. Density compression is applied
 first. For a decreasing sensible energy the relaxed energy target is
@@ -83,7 +139,7 @@ additional compression is `(alphaRho*alphaEnergy)^(compress*power)*(1-1e-5)`
 when the unpowered factor is below one. Internal/increment control uses
 `compress=2`; physical-dt control uses `compress=1`.
 
-Final increment repair uses the unrelaxed bound, the legacy `.99` safety factor
+Implicit final increment repair uses the unrelaxed bound, the legacy `.99` safety factor
 and, if needed, successive `.9` pull-ups with a finite iteration cap. Afterwards
 RANS uses the model-specific exponential negative-update repair (and the SA
 floor where enabled), then its mean bounds. Species means are repaired against
