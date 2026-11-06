@@ -6,6 +6,7 @@
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
 #include "Cauchy/Discretization/WallDistanceSamples.hpp"
 #include "Cauchy/Physics/EquationRANS.hpp"
+#include "DNDS/Algebra/DofHalo.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 
 namespace DNDS::Cauchy::FiniteVolumeDetail
@@ -30,13 +31,18 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         real viscousDistance = 0;
         index face = UnInitIndex;
         index boundaryPoint = UnInitIndex;
+        /// Exact setup-time frame test. Ordinary and translated-periodic faces
+        /// keep components unchanged; even a small nonidentity rotation remains
+        /// active. Default true keeps hand-built samples conservative.
+        bool changesFrame = true;
     };
     template <class View>
     FlowState Load(const View &input, index iCell)
     {
         FlowState state;
+        const auto row = input[iCell];
         for (int j = 0; j < 5; ++j)
-            state[j] = input(iCell, j);
+            state[j] = row[j];
         return state;
     }
     inline FlowState RotateState(FlowState state, const Geom::tGPoint &rotation)
@@ -123,13 +129,19 @@ namespace DNDS::Cauchy
         Geom::EntityWorkPartition partition;
         std::vector<index> offsets;
         std::vector<Sample> samples;
+        std::shared_ptr<const std::vector<std::vector<index>>> jacobianColumns;
         std::vector<index> boundaryEntries;
+        std::vector<int> boundaryZones;
         std::shared_ptr<Detail::BoundaryPointLayout> boundaryLayout;
         std::vector<index> gradientBoundaryPoints;
         bool hasInterfaces = false;
         std::vector<index> stencilFaces;
         std::vector<index> faceEntries;
         std::vector<index> auxiliaryCoreFaces, auxiliaryDependentFaces;
+        // Unique faces required by each cell-output region. A face shared
+        // across the regions may occur in both; each region remains callable
+        // independently, without a hidden prior-core publication contract.
+        std::vector<index> rhsCoreFaces, rhsDependentFaces;
         std::vector<index> auxiliaryCellOffsets, auxiliaryCellFaces;
         std::vector<real> auxiliaryFaceArea;
         std::optional<CFV::PolynomialSamplingPlan> positivitySamples;
@@ -138,6 +150,22 @@ namespace DNDS::Cauchy
         std::optional<ThermalBounds> thermalBounds;
         std::optional<WallDistanceSamples> wallDistance;
         Runtime::Array<real> ransCellLength;
+        Runtime::TransferBinding BindHalo(CFV::FVField &field) const
+        {
+            return metrics.BindHalo(field, HaloTransferOptions());
+        }
+        Algebra::DofHalo<> BindTrackedHalo(CFV::FVField &field) const
+        {
+            return metrics.BindTrackedHalo(field, HaloTransferOptions());
+        }
+        Runtime::TransferOptions HaloTransferOptions() const
+        {
+            Runtime::TransferOptions options;
+            DNDS_check_throw_info(settings.execution.transferPreflight == "collective" || settings.execution.transferPreflight == "abortOnFailure", "invalid Cauchy transfer preflight policy");
+            if (settings.execution.transferPreflight == "abortOnFailure")
+                options.preflight = Runtime::TransferPreflight::AbortOnFailure;
+            return options;
+        }
         const ThermalBounds &PerfectGasBounds() const
         {
             DNDS_check_throw_info(thermalBounds, "flow-only thermal policy is unavailable for this equation");
@@ -145,7 +173,7 @@ namespace DNDS::Cauchy
         }
         Data(ssp<Geom::UnstructuredMesh> source, DomainSettings controls, EquationSystem physics)
             : mesh(std::move(source)), settings(std::move(controls)), equation(std::move(physics)), motion(settings.motion, settings.mesh.dimension), flux(Riemann::RiemannFlux::Resolve(settings.numerics.flux)),
-              boundary(settings.boundaries, equation), metrics(CFV::FiniteVolumePlan::ConstructMetrics(mesh, settings.numerics.cfv.intOrder)),
+              boundary(settings.boundaries, equation), metrics(CFV::FiniteVolumePlan::ConstructMetrics(mesh, settings.numerics.cfv.intOrder, false, settings.numerics.RHSIntegrationOrder())),
               reconstruction(CFV::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings.numerics.cfv)),
               gradient(CFV::GradientPlan::Prepare(*mesh, metrics, settings.numerics.gradient == "greenGauss" ? CFV::GradientMethod::GreenGauss : settings.numerics.gradient == "ggmp" ? CFV::GradientMethod::GGMP
                                                                                                                                                                                       : CFV::GradientMethod::LeastSquares)),

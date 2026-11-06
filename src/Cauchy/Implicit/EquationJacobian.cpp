@@ -33,6 +33,7 @@ namespace DNDS::Cauchy
         RigidFrame frame;
         real scale;
         std::vector<bool> active;
+        bool allComponents = true;
         EquationJacobian(const FiniteVolume &fv, const EquationDofs &state, LinearProblemContext &output, JacobianPreparation controls, real time)
             : components(state.ComponentNumber()), independent(fv._data->equation.HasMixture() ? fv._data->equation.Mixture().SpeciesNumber() - 1 : 0),
               means(output.HasAssembledOffDiagonal() ? 0 : components, output.HasAssembledOffDiagonal() ? 0 : fv.Metrics().NumCellProc()), pressureDerivative(components, fv.Metrics().NumCellProc()),
@@ -40,7 +41,10 @@ namespace DNDS::Cauchy
         {
             const Algebra::ComponentSelection selection(components, controls.updateComponents);
             for (index j = 0; j < components; ++j)
+            {
                 active.push_back(selection.Includes(j));
+                allComponents = allComponents && active.back();
+            }
             index first = 0;
             for (const auto &block : state.Schema().blocks)
             {
@@ -88,9 +92,12 @@ namespace DNDS::Cauchy
         auto RowSpaceIdentity() const -> std::shared_ptr<const Algebra::DofSpace::Partition> override { return geometry->partition; }
         const std::vector<std::vector<index>> &Columns() const override { return geometry->columns; }
         /// Add dF(rotated U)/dU minus frozen scalar dissipation, already
-        /// weighted/scaled. Different periodic images remain separate terms.
+        /// weighted/scaled by default. weighted=false returns the unweighted
+        /// block for a local stationary-face hoist; the caller applies each
+        /// original point's .5*scale*weight separately. Different periodic
+        /// images remain separate terms.
         template <class Means>
-        void Add(const Point &point, Eigen::Ref<Eigen::MatrixXd> output, const Means &values) const
+        void Add(const Point &point, Eigen::Ref<Eigen::MatrixXd> output, const Means &values, bool weighted = true) const
         {
             FlowState flow{};
             for (int j = 0; j < 5; ++j)
@@ -103,7 +110,7 @@ namespace DNDS::Cauchy
             real speed = 0;
             for (int d = 0; d < 3; ++d)
                 speed += (flow[1 + d] / flow[0] - grid[d]) * point.normal[d];
-            const real factor = .5 * scale * point.weight;
+            const real factor = weighted ? .5 * scale * point.weight : 1;
             const real lambda = radius[point.auxiliary][0] + radius[point.auxiliary][1];
             for (index column = 0; column < components; ++column)
             {
@@ -158,6 +165,113 @@ namespace DNDS::Cauchy
             for (const auto &point : geometry->rows[iRow][iBlock])
                 Add(point, output, source);
         }
+
+        /// Closed-form convection block at a frozen mean, with the same EOS
+        /// pressure row supplied by preparation. Compute d(v.n)/dU once rather
+        /// than repeating conservative velocity conversions for every column.
+        /// The pointwise directional implementation above remains the oracle;
+        /// two-equation turbulent stress retains that generic path for now.
+        /// No gamma closure, source approximation or eigenvalue change occurs.
+        template <class Means>
+        void AddFrozenFluxBlock(const Point &point, Eigen::Ref<Eigen::MatrixXd> output, const Means &values, bool weighted = true) const
+        {
+            if (kineticFirst >= 0)
+            {
+                Add(point, output, values, weighted);
+                return;
+            }
+            FlowState flow{};
+            for (int j = 0; j < 5; ++j)
+                flow[j] = values(point.other, flowFirst + j);
+            const Geom::tPoint momentum{flow[1], flow[2], flow[3]};
+            const auto rotated = (point.rotation * momentum).eval();
+            for (int d = 0; d < 3; ++d)
+                flow[1 + d] = rotated[d];
+            const auto grid = frame.GridVelocity(point.location);
+            const real inverseDensity = 1 / flow[0];
+            real normalVelocity = 0, gridNormalVelocity = 0, scalarSpeed = 0;
+            for (int d = 0; d < 3; ++d)
+            {
+                const real velocity = flow[1 + d] / flow[0];
+                normalVelocity += velocity * point.normal[d];
+                gridNormalVelocity += grid[d] * point.normal[d];
+                scalarSpeed += (velocity - grid[d]) * point.normal[d];
+            }
+            const real relativeVelocity = normalVelocity - gridNormalVelocity;
+            FlowState speedDerivative{};
+            speedDerivative[0] = -normalVelocity * inverseDensity;
+            for (int j = 0; j < 3; ++j)
+            {
+                for (int d = 0; d < 3; ++d)
+                    speedDerivative[1 + j] += point.rotation(d, j) * point.normal[d];
+                speedDerivative[1 + j] *= inverseDensity;
+            }
+            const real factor = weighted ? .5 * scale * point.weight : 1;
+            const real lambda = radius[point.auxiliary][0] + radius[point.auxiliary][1];
+            // With no component rotation/projection, J = D + q h^T + t g^T:
+            // h=d(v.n)/dU and g is the prepared conservative EOS pressure row.
+            // Keep distinct flow/passive relative speeds, moving-grid work and
+            // arbitrary logical block offsets. No gamma-equivalent closure.
+            // Exact identity is intentional: a small physical rotation must
+            // still take the fully transformed path below.
+            if (allComponents && (point.rotation.array() == Eigen::Matrix3d::Identity().array()).all())
+            {
+                for (index column = 0; column < components; ++column)
+                {
+                    const real deltaSpeed = column >= flowFirst && column < flowFirst + 5
+                                                ? speedDerivative[column - flowFirst]
+                                                : 0;
+                    const real dp = pressureDerivative(column, point.other);
+                    output(flowFirst, column) += factor * (flow[0] * deltaSpeed + (column == flowFirst ? relativeVelocity - lambda : 0));
+                    for (int d = 0; d < 3; ++d)
+                        output(flowFirst + 1 + d, column) += factor * (flow[1 + d] * deltaSpeed + dp * point.normal[d] +
+                                                                       (column == flowFirst + 1 + d ? relativeVelocity - lambda : 0));
+                    output(flowFirst + 4, column) += factor * ((flow[4] + pressure[point.other]) * deltaSpeed + dp * normalVelocity +
+                                                               (column == flowFirst + 4 ? relativeVelocity - lambda : 0));
+                    const auto passive = [&](index begin, index end)
+                    {
+                        for (index row = begin; row < end; ++row)
+                            output(row, column) += factor * (values(point.other, row) * deltaSpeed +
+                                                             (row == column ? scalarSpeed - lambda : 0));
+                    };
+                    passive(0, flowFirst);
+                    passive(flowFirst + 5, components);
+                }
+                return;
+            }
+            for (index column = 0; column < components; ++column)
+            {
+                if (!active[column])
+                    continue;
+                FlowState direction{};
+                real deltaSpeed = 0;
+                if (column >= flowFirst && column < flowFirst + 5)
+                {
+                    const index j = column - flowFirst;
+                    deltaSpeed = speedDerivative[j];
+                    if (j >= 1 && j <= 3)
+                        for (int d = 0; d < 3; ++d)
+                            direction[1 + d] = point.rotation(d, j - 1);
+                    else
+                        direction[j] = 1;
+                }
+                const real dp = pressureDerivative(column, point.other);
+                FlowState derivative{};
+                derivative[0] = direction[0] * relativeVelocity + flow[0] * deltaSpeed;
+                for (int d = 0; d < 3; ++d)
+                    derivative[1 + d] = direction[1 + d] * relativeVelocity + flow[1 + d] * deltaSpeed + dp * point.normal[d];
+                derivative[4] = direction[4] * relativeVelocity + (flow[4] + pressure[point.other]) * deltaSpeed + dp * normalVelocity;
+                for (index row = 0; row < components; ++row)
+                {
+                    if (!active[row])
+                        continue;
+                    const real value = row >= flowFirst && row < flowFirst + 5
+                                           ? derivative[row - flowFirst] - lambda * direction[row - flowFirst]
+                                           : PrepareAdvectedScalarFluxDerivative(values(point.other, row), real(row == column), scalarSpeed, deltaSpeed) - lambda * real(row == column);
+                    output(row, column) += factor * value;
+                }
+            }
+        }
     };
 
     std::shared_ptr<LinearProblemContext> FiniteVolume::BuildLinearProblem(const EquationDofs &prototype, DiagonalStorage diagonal, OffDiagonalStorage offDiagonal) const
@@ -168,7 +282,7 @@ namespace DNDS::Cauchy
         _data->equation.ResolveKernelProfile(prototype.Device());
         DNDS_check_throw_info(prototype.Space().Same(Metrics().Space()), "equation linear prototype row space differs");
         return std::make_shared<LinearProblemContext>(prototype.Space(), prototype.ComponentNumber(),
-                                                      FiniteVolumeDetail::JacobianColumns(_data->offsets, _data->samples), _data->partition.Core(), diagonal, offDiagonal);
+                                                      *_data->jacobianColumns, _data->partition.Core(), diagonal, offDiagonal);
     }
     void FiniteVolume::PrepareJacobian(const EquationDofs &state, const AuxiliaryValues &auxiliary, const R::Array<real> &inversePseudoTime,
                                        LinearProblemContext &output, JacobianPreparation controls, real time, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
@@ -182,7 +296,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(std::isfinite(controls.physicalMass) && controls.physicalMass >= 0 && std::isfinite(controls.residualScale) && controls.residualScale >= 0, "invalid integrated equation Jacobian controls");
         DNDS_check_throw_info(inversePseudoTime.GetDevice() == R::Device::Host() && inversePseudoTime.RowCount() == owned && !inversePseudoTime.Layout().IsVariable() && inversePseudoTime.Layout().Width() == 1, "equation inverse pseudo-time shape/backend differs");
         DNDS_check_throw_info(auxiliary.faceSpectralRadius && _data->equation.HasMixture() == bool(workers), "equation Jacobian requires face signals and a matching worker backend");
-        DNDS_check_throw_info(output.Columns() == FiniteVolumeDetail::JacobianColumns(_data->offsets, _data->samples), "equation Jacobian stencil differs from cell-face-cell incidence");
+        output.ValidateColumns(_data->jacobianColumns);
         const auto checkAlias = [&](const R::Array<real> &input)
         {
             DNDS_check_throw_info(!Algebra::Detail::Overlaps(input.Storage(), output.Diagonal().Storage()) &&
@@ -246,7 +360,7 @@ namespace DNDS::Cauchy
         if (off)
             b.emplace(off->View());
         EquationFVDetail::PointScratch point(nv);
-        Eigen::MatrixXd own(nv, nv), other(nv, nv);
+        Eigen::MatrixXd own(nv, nv), other(nv, nv), unweighted(nv, nv);
         const auto rotation = snapshot->frame.NegativeSourceJacobian();
         const real rotationBound = Geom::tPoint{snapshot->frame.angularVelocity[0], snapshot->frame.angularVelocity[1], snapshot->frame.angularVelocity[2]}.norm();
         try
@@ -255,7 +369,7 @@ namespace DNDS::Cauchy
             // cell. Never cache a complete N*N flux matrix per cell/face.
             for (index iCell = 0; iCell < all; ++iCell)
             {
-                EquationFVDetail::Gather(blocks, iCell, point);
+                EquationFVDetail::Gather(blocks, iCell, point, false);
                 for (index j = 0; j < nv; ++j)
                 {
                     DNDS_check_throw_info(std::isfinite(point.values[j]), "nonfinite equation Jacobian mean");
@@ -324,25 +438,63 @@ namespace DNDS::Cauchy
                 if (b)
                     for (index j = 0; j < b->BlockNumber(iCell); ++j)
                         (*b)(iCell, j).setZero();
-                for (index entry = _data->offsets[iCell]; entry < _data->offsets[iCell + 1]; ++entry)
+                for (index first = _data->offsets[iCell]; first < _data->offsets[iCell + 1];)
                 {
-                    const auto &sample = _data->samples[entry];
-                    const real weight = metric.GetFaceWeight(sample.point), lambda = radius(sample.auxiliaryFace, 0) + radius(sample.auxiliaryFace, 1);
-                    own.diagonal().array() += .5 * controls.residualScale * weight * lambda;
-                    if (sample.other == UnInitIndex)
-                        continue; // Active Euler scalar-BC approximation.
-                    if (!b && sample.other != iCell)
-                        continue;
-                    other.setZero();
-                    snapshot->Add({sample.other, sample.auxiliaryFace, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, weight}, other, inputValues);
-                    if (sample.other == iCell)
-                        own += other;
-                    else
+                    index end = first + 1;
+                    const auto &reference = _data->samples[first];
+                    while (end < _data->offsets[iCell + 1] && _data->samples[end].face == reference.face)
+                        ++end;
+                    // Frozen cell means/EOS derivatives and one face signal
+                    // make these derivatives identical on a stationary planar
+                    // face. Hoist only the unweighted block, preserving every
+                    // quadrature weight and the original accumulation order.
+                    // Curved normals, moving frames and different periodic
+                    // images retain the full pointwise path. No RHS, metric,
+                    // source or approximate-Jacobian policy is changed.
+                    bool shared = !snapshot->frame.moving && end > first + 1 &&
+                                  reference.other != UnInitIndex && (b || reference.other == iCell);
+                    for (index entry = first + 1; shared && entry < end; ++entry)
                     {
-                        const auto &columns = output.Columns()[iCell];
-                        const auto found = std::find(columns.begin(), columns.end(), sample.other);
-                        (*b)(iCell, found - columns.begin()) += other;
+                        const auto &sample = _data->samples[entry];
+                        shared = sample.other == reference.other && sample.auxiliaryFace == reference.auxiliaryFace &&
+                                 (sample.normal.array() == reference.normal.array()).all() &&
+                                 (sample.rotation.array() == reference.rotation.array()).all();
                     }
+                    if (shared)
+                    {
+                        unweighted.setZero();
+                        snapshot->AddFrozenFluxBlock({reference.other, reference.auxiliaryFace, {reference.normal[0], reference.normal[1], reference.normal[2]}, {reference.ownPoint[0], reference.ownPoint[1], reference.ownPoint[2]}, reference.rotation, 1}, unweighted, inputValues, false);
+                    }
+                    for (index entry = first; entry < end; ++entry)
+                    {
+                        const auto &sample = _data->samples[entry];
+                        const real weight = metric.GetFaceWeight(sample.point), lambda = radius(sample.auxiliaryFace, 0) + radius(sample.auxiliaryFace, 1);
+                        own.diagonal().array() += .5 * controls.residualScale * weight * lambda;
+                        if (sample.other == UnInitIndex)
+                            continue; // Active Euler scalar-BC approximation.
+                        if (!b && sample.other != iCell)
+                            continue;
+                        if (shared)
+                        {
+                            const real factor = .5 * controls.residualScale * weight;
+                            for (index j = 0; j < nv * nv; ++j)
+                                other.data()[j] = factor * unweighted.data()[j];
+                        }
+                        else
+                        {
+                            other.setZero();
+                            snapshot->AddFrozenFluxBlock({sample.other, sample.auxiliaryFace, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, weight}, other, inputValues);
+                        }
+                        if (sample.other == iCell)
+                            own += other;
+                        else
+                        {
+                            const auto &columns = output.Columns()[iCell];
+                            const auto found = std::find(columns.begin(), columns.end(), sample.other);
+                            (*b)(iCell, found - columns.begin()) += other;
+                        }
+                    }
+                    first = end;
                 }
                 for (index j = 0; j < nv; ++j)
                     for (index i = 0; i < nv; ++i)

@@ -680,6 +680,119 @@ TEST_CASE("Native block matrix shares immutable row metadata and retains access 
     CHECK(empty.RowNumber() == 0);
 }
 
+TEST_CASE("Fixed and dynamic diagonal inverse retain the guarded LU and singular SVD policies")
+{
+    Eigen::Matrix<double, 6, 6> matrix = Eigen::Matrix<double, 6, 6>::Identity() * 4;
+    matrix(0, 1) = .1;
+    matrix(0, 4) = .3;
+    matrix(4, 1) = -.2;
+    for (bool singular : {false, true})
+    {
+        if (singular)
+            matrix.row(1) = matrix.row(0);
+        const auto fixed = Direct::InvertDiagonalBlock(matrix);
+        const auto dynamic = Direct::InvertDiagonalBlock(Eigen::MatrixXd(matrix));
+        CHECK(fixed.usedSVD == singular);
+        CHECK(dynamic.usedSVD == singular);
+        CHECK((fixed.value - dynamic.value).norm() < 1e-13);
+        CHECK((matrix * fixed.value * matrix - matrix).norm() < 1e-12);
+        if (!singular)
+            CHECK((matrix * fixed.value - Eigen::Matrix<double, 6, 6>::Identity()).norm() < 1e-13);
+    }
+}
+
+TEST_CASE("Owned logical table recognition retains pitch and rejects changed component ordering")
+{
+    namespace R = DNDS::Runtime;
+    R::Array<real> values(R::RowLayout::Dense(3, 6, 9));
+    auto write = values.Write();
+    const auto parent = write.View<R::UniformTableRows>();
+    std::vector<Algebra::DofComponentColumn<real>> columns;
+    for (DNDS::index j = 0; j < 6; ++j)
+        columns.push_back({parent, {}, j});
+    const Algebra::DofComponentView<real> logical{columns.data(), 3, 0, 6};
+    const auto table = Algebra::TryOwnedTable(logical);
+    REQUIRE(table.has_value());
+    CHECK(table->stride == 9);
+    (*table)(1, 4) = 7;
+    CHECK(logical(1, 4) == 7);
+    for (auto &column : columns)
+        column.ghost = parent;
+    const Algebra::DofComponentView<real> ghost{columns.data(), 0, 3, 6};
+    const auto ghostTable = Algebra::TryGhostTable(ghost);
+    REQUIRE(ghostTable.has_value());
+    CHECK((*ghostTable)(1, 4) == 7);
+    CHECK_FALSE(Algebra::TryOwnedTable(ghost).has_value());
+    std::swap(columns[0].component, columns[1].component);
+    CHECK_FALSE(Algebra::TryOwnedTable(logical).has_value());
+}
+
+TEST_CASE("Native small-block LU specializations solve coupled blocks on all uniform layouts")
+{
+    namespace R = DNDS::Runtime;
+    for (int width : {5, 6, 7})
+    {
+        auto symbolic = std::make_shared<Direct::SerialSymLUStructure>(g_mpi, 2);
+        const std::vector<std::vector<DNDS::index>> adjacency{{1}, {0}};
+        symbolic->ObtainSymmetricSymbolicFactorization(adjacency, {0, 2}, 0);
+        Direct::NativeBlockLU native(symbolic, width);
+        Eigen::MatrixXd dense = Eigen::MatrixXd::Zero(2 * width, 2 * width);
+        {
+            auto write = native.Matrix().Write();
+            const auto blocks = write.View();
+            for (DNDS::index iCell = 0; iCell < 2; ++iCell)
+            {
+                Eigen::MatrixXd diagonal = Eigen::MatrixXd::Identity(width, width) * (4 + iCell);
+                diagonal(0, 4) = .3;
+                diagonal(4, 1) = -.2;
+                const Eigen::MatrixXd other = Eigen::MatrixXd::Identity(width, width) * -.4;
+                blocks(iCell, 0) = diagonal;
+                blocks(iCell, 1) = other;
+                dense.block(width * iCell, width * iCell, width, width) = diagonal;
+                dense.block(width * iCell, width * (1 - iCell), width, width) = other;
+            }
+        }
+        native.Factorize();
+        const Eigen::VectorXd expected = Eigen::VectorXd::LinSpaced(2 * width, 1, 2 * width);
+        const Eigen::VectorXd b = dense * expected;
+        for (const auto &layout : {R::RowLayout::Dense(2, width, width + 3), R::RowLayout::ColMajor(2, width, {8, 1}), R::RowLayout::TiledColMajor(2, width, 32)})
+        {
+            R::Array<DNDS::real> rhs(layout), forward(layout), output(layout);
+            {
+                auto write = rhs.Write();
+                const auto values = write.View<R::UniformTableRows>();
+                for (DNDS::index iCell = 0; iCell < 2; ++iCell)
+                    for (DNDS::index j = 0; j < width; ++j)
+                        values(iCell, j) = b[width * iCell + j];
+            }
+            for (bool logical : {false, true})
+            {
+                if (logical)
+                {
+                    const auto read = rhs.Read();
+                    auto middle = forward.Write(), write = output.Write();
+                    std::vector<Algebra::DofComponentColumn<const real>> inputColumns;
+                    std::vector<Algebra::DofComponentColumn<real>> middleColumns, outputColumns;
+                    for (DNDS::index j = 0; j < width; ++j)
+                    {
+                        inputColumns.push_back({read.View<R::UniformTableRows>(), {}, j});
+                        middleColumns.push_back({middle.View<R::UniformTableRows>(), {}, j});
+                        outputColumns.push_back({write.View<R::UniformTableRows>(), {}, j});
+                    }
+                    native.SolveRows({inputColumns.data(), 2, 0, width}, {middleColumns.data(), 2, 0, width}, {outputColumns.data(), 2, 0, width});
+                }
+                else
+                    native.Solve(rhs, forward, output);
+                const auto read = output.Read();
+                const auto values = read.View<R::UniformTableRows>();
+                for (DNDS::index iCell = 0; iCell < 2; ++iCell)
+                    for (DNDS::index j = 0; j < width; ++j)
+                        CHECK(values(iCell, j) == doctest::Approx(expected[width * iCell + j]).epsilon(1e-13));
+            }
+        }
+    }
+}
+
 TEST_CASE("Native block LU solves strided DOFs and rejects stale matrices and aliases")
 {
     namespace R = DNDS::Runtime;
@@ -717,7 +830,20 @@ TEST_CASE("Native block LU solves strided DOFs and rejects stale matrices and al
                 fillBlocks(symbolic->upperTriStructure[i], 1 + DNDS::index(symbolic->lowerTriStructure[i].size()));
             }
         }
-        native.Factorize({4, NCells});
+        if (fill == 1)
+        {
+            // External assembly can fill factors directly without publishing
+            // an intermediate matrix. The reference matrix remains untouched.
+            auto read = native.Matrix().Read();
+            const auto source = read.View();
+            native.FillAndFactorize([&](const auto &target)
+                                    {
+                for (DNDS::index iCell = 0; iCell < NCells; ++iCell)
+                    for (DNDS::index j = 0; j < source.BlockNumber(iCell); ++j)
+                        target(iCell, j) = source(iCell, j); }, {4, NCells});
+        }
+        else
+            native.Factorize({4, NCells});
         CHECK(native.FactorsCurrent());
         CHECK(native.LastInverseFallbacks() == 0);
         for (const auto &shape : {R::RowLayout::Dense(NCells, BS, BS + 3), R::RowLayout::ColMajor(NCells, BS, {8, 1}),

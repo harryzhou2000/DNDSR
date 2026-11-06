@@ -4,6 +4,15 @@
 
 namespace DNDS::Cauchy
 {
+    /// Conservative scalar convection with an explicitly supplied, nonnegative
+    /// dissipation speed. The caller prepares/fixes that velocity-like speed;
+    /// this operation has no acoustic/EOS or flow5 Riemann dependency. Inputs
+    /// are rho*q and mesh-relative normal velocities, not primitive q.
+    DNDS_DEVICE_CALLABLE inline real AdvectedScalarFlux(real left, real right, real normalVelocityLeft,
+                                                        real normalVelocityRight, real dissipationSpeed)
+    {
+        return .5 * (normalVelocityLeft * left + normalVelocityRight * right - dissipationSpeed * (right - left));
+    }
     /// Physical compressible ALE flux derivative at a ready thermodynamic
     /// point. Pressure and its conservative directional derivative are explicit
     /// EOS/energy inputs. No acoustic approximation, gamma substitution, property

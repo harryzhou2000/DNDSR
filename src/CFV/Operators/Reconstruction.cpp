@@ -488,12 +488,18 @@ namespace DNDS::CFV
           _meshRead(std::make_shared<Geom::MeshReadAccess>(_data->metrics._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux())))
     {
         if (_data->settings.cacheDiffBase)
+        {
             _basis.emplace(_data->faceBasis.Read());
+            _basisView = _basis->View<R::TableRows>();
+        }
+        // Freeze plain pointers once while the enclosing read scopes pin both
+        // metadata and allocations. Face queries acquire no new Array views.
+        _momentView = _moments.View<R::TableRows>();
     }
     ReconstructionBasisHostView ReconstructionBasisRead::HostView() const
     {
         DNDS_check_throw_info(bool(_basis), "face basis caching was disabled");
-        return {_basis->View<R::TableRows>(), _geometry.HostView().faceOffsets, _data->n, _data->cachedDerivatives};
+        return {_basisView, _geometry.HostView().faceOffsets, _data->n, _data->cachedDerivatives};
     }
     Math::ReconstructionBasisView ReconstructionBasisRead::FaceBasis(index face, int side, index point,
                                                                      int derivativeOrder, Math::SmallMatrix &scratch) const
@@ -501,13 +507,13 @@ namespace DNDS::CFV
         const Math::TaylorBasis polynomial(_data->metrics.Dimension(), _data->settings.maxOrder);
         const int rows = polynomial.DerivativeNumber(derivativeOrder);
         if (_basis && rows <= _data->cachedDerivatives)
-            return {_basis->View<R::TableRows>()[2 * point + side].data(), rows, _data->n, _data->cachedDerivatives};
+            return {_basisView[2 * point + side].data(), rows, _data->n, _data->cachedDerivatives};
         const auto mesh = _meshRead->HostView();
         const index cell = mesh.FaceCells(face)[side];
         const auto geometry = _geometry.HostView();
         const auto position = Detail::FacePointInCell(mesh, face, side, geometry.GetFacePoint(point));
         polynomial.Reconstruction(scratch, position, geometry.GetCellCent(cell), geometry.cells(cell, 7),
-                                  _moments.View<R::TableRows>()[cell], derivativeOrder);
+                                  _momentView[cell], derivativeOrder);
         return {scratch.data(), int(scratch.rows()), _data->n, int(scratch.rows())};
     }
     ReconstructionBasisRead VariationalReconstructionPlan::AcquireBasisRead() const

@@ -49,10 +49,21 @@ namespace DNDS::Cauchy
             const auto &fv = discrete.Metrics();
             if (equation.HasMixture() || equation.HasRANS())
             {
-                Algebra::DofBundle fields(fv.Space());
-                for (const auto &block : equation.Schema().blocks)
-                    fields.Add(block.name, fv.BuildField(FlowLayout(settings, index(block.components.size()))));
-                auto state = EquationDofs::Separate(equation.Schema(), std::move(fields));
+                const auto allocate = [&]
+                {
+                    if (settings.execution.fieldGrouping == "coupled")
+                    {
+                        index components = 0;
+                        for (const auto &block : equation.Schema().blocks)
+                            components += index(block.components.size());
+                        return EquationDofs::Coupled(equation.Schema(), fv.BuildField(FlowLayout(settings, components)), "equations");
+                    }
+                    Algebra::DofBundle fields(fv.Space());
+                    for (const auto &block : equation.Schema().blocks)
+                        fields.Add(block.name, fv.BuildField(FlowLayout(settings, index(block.components.size()))));
+                    return EquationDofs::Separate(equation.Schema(), std::move(fields));
+                };
+                auto state = allocate();
                 if (!initialConservative.empty())
                     discrete.InitializeConservative(state, initialConservative);
                 else
@@ -113,7 +124,7 @@ namespace DNDS::Cauchy
     Domain::Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const ResolvedPhysicalInputs &inputs, const TimeSettings &time, EquationSetup setup)
         : _name(std::move(name)), _equation(std::move(setup.equation)), _workers(std::move(setup.workers)), _fv(PrepareWallField(mesh, _equation, inputs.settings), SpatialSettings(inputs.settings, time), _equation),
           _accepted(BuildState(_fv, _equation, inputs.settings, _workers, inputs.initialConservative)), _trial(_accepted.Clone()),
-          _residualState(EquationDofOperations::NewVector(_accepted)), _residual(FlowField(_residualState)), _initial(EquationDofOperations::NewVector(_accepted)),
+          _residualState(EquationDofOperations::NewVector(_accepted)), _initial(EquationDofOperations::NewVector(_accepted)),
           _workspace(_equation.HasMixture() || _equation.HasRANS() ? nullptr : _fv.BuildWorkspace(_trial, TimeAuxiliary(time))),
           _equationWorkspace(_equation.HasMixture() || _equation.HasRANS() ? _fv.BuildEquationWorkspace(_trial, _workers) : nullptr),
           _engine(size_t(inputs.settings.execution.hostThreads), inputs.settings.execution.checkAccess ? std::make_shared<R::AccessTrackingContext>() : nullptr),
@@ -219,7 +230,7 @@ namespace DNDS::Cauchy
             for (index iField = 0; iField < _accepted.PhysicalFieldNumber(); ++iField)
             {
                 auto input = _accepted.PhysicalField(iField);
-                halos.push_back(_fv.Metrics().BindHalo(input));
+                halos.push_back(_fv.BindHalo(input));
             }
             _timeMeanHalo = std::move(halos);
             _timeAuxiliary = std::move(prepared);
@@ -288,7 +299,8 @@ namespace DNDS::Cauchy
                 throw StepRejected("Cauchy explicit extended-equation stage is inadmissible; accepted state unchanged");
             return;
         }
-        _fv.Evaluate(_trial, _residual, *_workspace, _engine, _stream, stageTime);
+        auto &residual = _residualState.CoupledField();
+        _fv.Evaluate(_trial, residual, *_workspace, _engine, _stream, stageTime);
         _lastFallbacks += _fv.LastFaceFallbacks(*_workspace);
         _lastCharacteristicFallbacks += _fv.LastCharacteristicFallbacks(*_workspace);
         auto geometry = _fv.Metrics().AcquireRead();
@@ -308,7 +320,7 @@ namespace DNDS::Cauchy
             MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
                             {
                 const auto initialRead = _initial.CoupledField().Owned().Read(), stateRead = _trial.CoupledField().Owned().Read();
-                const auto highRead = _residual.Owned().Read(), lowRead = _fv.LowOrderResidual(*_workspace).Owned().Read();
+                const auto highRead = residual.Owned().Read(), lowRead = _fv.LowOrderResidual(*_workspace).Owned().Read();
                 const auto initial = initialRead.View<R::UniformTableRows>(), state = stateRead.View<R::UniformTableRows>();
                 const auto high = highRead.View<R::UniformTableRows>(), low = lowRead.View<R::UniformTableRows>();
                 for (index iCell = 0; iCell < _fv.Metrics().NumCell(); ++iCell)
@@ -360,7 +372,7 @@ namespace DNDS::Cauchy
                 {
                     const real residual = alpha == 1 ? rhs(iCell, j) : (1 - alpha) * low(iCell, j) + alpha * rhs(iCell, j);
                     stage(iCell, j) = historyWeight * initial(iCell, j) + stageWeight * (stage(iCell, j) + dt * residual / metrics.GetCellVol(iCell));
-                } }, R::ReadAs<R::UniformTableRows>(_initial.CoupledField().Owned()), R::ReadAs<R::UniformTableRows>(_residual.Owned()), R::ReadWriteAs<R::UniformTableRows>(_trial.CoupledField().Owned()));
+                } }, R::ReadAs<R::UniformTableRows>(_initial.CoupledField().Owned()), R::ReadAs<R::UniformTableRows>(residual.Owned()), R::ReadWriteAs<R::UniformTableRows>(_trial.CoupledField().Owned()));
         _stream.Record().WaitHost();
         if (!_fv.Admissible(_trial.CoupledField()))
             throw StepRejected("Cauchy SSPRK3 stage is inadmissible; accepted state unchanged");
@@ -609,7 +621,7 @@ namespace DNDS::Cauchy
     const CFV::FVField &Domain::Residual()
     {
         ResidualState();
-        return _residual;
+        return FlowField(_residualState);
     }
     const EquationDofs &Domain::ResidualState()
     {
@@ -622,7 +634,7 @@ namespace DNDS::Cauchy
             _fv.Evaluate(_trial, _residualState, *_equationWorkspace, _engine, _stream, _time);
         else
         {
-            _fv.Evaluate(_trial, _residual, *_workspace, _engine, _stream, _time);
+            _fv.Evaluate(_trial, _residualState.CoupledField(), *_workspace, _engine, _stream, _time);
             _lastFallbacks = _fv.LastFaceFallbacks(*_workspace);
         }
         return _residualState;

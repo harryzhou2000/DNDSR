@@ -14,6 +14,34 @@ to inline CPU, worker CPU and CUDA execution.
 
 ## Distributed exceptions
 
+MPI `TransferOptions::preflight` defaults to `Collective`: each launch agrees
+local access/route/stream validity before posting requests. The explicit
+`AbortOnFailure` option retains these local checks but removes their global
+agreement; any local rejection calls `MPI::Abort` immediately. It cannot be
+caught for recovery or retried. Binding construction still collectively agrees
+this policy, layouts and routing. All ranks must follow the same transfer order,
+complete producers and join consumers, including ranks with empty payloads.
+Checked streams retain dependency validation; portable MPI still observes the
+appropriate device producer stream. Stream-native providers keep their own
+protocol. This option neither suppresses numerical reductions nor makes MPI
+stream-ordered or graph-capturable.
+
+```cpp
+Runtime::TransferOptions options;
+options.preflight = Runtime::TransferPreflight::AbortOnFailure;
+auto binding = payload.Bind(source, destination,
+                            Runtime::TransferTransport::Direct, options);
+// All participating ranks build the binding and launch in matching order.
+auto operation = binding.Begin();
+// Independent owned-only work may execute before Wait().
+operation.Wait();
+```
+
+Python exposes the same choice with `options = TransferOptions()` followed by
+`options.preflight = TransferPreflight.AbortOnFailure`. Neither API
+relaxes producer readiness or lease conflicts. A conflicting lease in this
+mode terminates MPI rather than returning an exception to the caller.
+
 `MPI::LocalStage` is a preflight around **local work only**. Every rank reaches
 its single agreement after that work returns or throws. Its action must not
 contain communication, collective I/O, a domain solve or an MPI-containing

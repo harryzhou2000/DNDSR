@@ -28,7 +28,8 @@ namespace DNDS::Cauchy
                     periodic->frames.translation[d + 1].map()[d] = domain.settings.mesh.periodicLengths[d];
                 }
             }
-            auto owned = Geom::ReadAndDeriveNativeMeshFromCGNSOwned(mpi, domain.settings.mesh.dimension, domain.settings.mesh.file, partition, mapper, periodic);
+            auto owned = Geom::ReadAndDeriveNativeMeshFromCGNSOwned(mpi, domain.settings.mesh.dimension, domain.settings.mesh.file, partition, mapper, periodic,
+                                                                    domain.settings.mesh.elevation, domain.settings.mesh.bisect);
             Geom::PrepareMeshOptions prepare;
             prepare.buildSerialOut = false;
             prepare.reorderCells = 1;

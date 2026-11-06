@@ -43,6 +43,25 @@ static DNDS::real Polynomial(const tPoint &p, int degree)
         v += .02 * p[0] * p[0] * p[1] - .03 * p[1] * p[1] * p[1];
     return v;
 }
+TEST_CASE("Midpoint face publication preserves integrated measures and cell metrics")
+{
+    const auto mesh = Mesh();
+    const auto full = C::FiniteVolumePlan::ConstructMetrics(mesh, 5);
+    const auto midpoint = C::FiniteVolumePlan::ConstructMetrics(mesh, 5, false, 1);
+    const auto aRead = full.AcquireRead(), bRead = midpoint.AcquireRead();
+    const auto a = aRead.HostView(), b = bRead.HostView();
+    for (DNDS::index iCell = 0; iCell < full.NumCellProc(); ++iCell)
+        for (DNDS::index j = 0; j < 8; ++j)
+            CHECK(a.cells(iCell, j) == b.cells(iCell, j));
+    for (DNDS::index iFace = 0; iFace < full.NumFaceProc(); ++iFace)
+    {
+        CHECK(b.FaceQuadratureEnd(iFace) - b.FaceQuadratureBegin(iFace) == 1);
+        DNDS::real area = 0;
+        for (DNDS::index iPoint = a.FaceQuadratureBegin(iFace); iPoint < a.FaceQuadratureEnd(iFace); ++iPoint)
+            area += a.GetFaceWeight(iPoint);
+        CHECK(b.GetFaceWeight(b.FaceQuadratureBegin(iFace)) == doctest::Approx(area).epsilon(1e-14));
+    }
+}
 TEST_CASE("Runtime FV matches legacy VR sweeps and reproduces cell-average polynomials")
 {
     auto mesh = Mesh();

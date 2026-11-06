@@ -28,7 +28,6 @@ namespace DNDS::Cauchy
         FiniteVolume _fv;
         EquationDofs _accepted, _trial;
         EquationDofs _residualState;
-        CFV::FVField _residual;
         EquationDofs _initial;
         std::shared_ptr<FiniteVolume::Workspace> _workspace;
         std::shared_ptr<FiniteVolume::EquationWorkspace> _equationWorkspace, _equationObservationWorkspace;
@@ -162,6 +161,8 @@ namespace DNDS::Cauchy
         bool RefreshDerived(DerivedFields &fields, bool onlyIfStale = false) const;
         /// Coarse debugging/input boundary. Release writers before a trial and
         /// all views before commit; aliases intentionally block conflicting writes.
+        /// Legacy/debug convenience for a dedicated physical flow5 field.
+        /// Coupled extended tables use Dofs().ReadOwned().Block("flow") instead.
         CFV::FVField &Flow() { return FlowField(_accepted); }
         const CFV::FVField &Flow() const { return FlowField(_accepted); }
         real Time() const { return _time; }
@@ -227,6 +228,8 @@ namespace DNDS::Cauchy
         /// workspace is overwritten at the next residual/stage; share/copy
         /// explicitly if it must outlive that operation. Invalidates any
         /// prepared trial because the reconstruction/trial workspace is reused.
+        /// Requires a dedicated physical flow5 field, like Flow(). Use
+        /// ResidualState() for coupled extended-equation allocations.
         const CFV::FVField &Residual();
         /// Full logical integrated residual; shares the same overwriteable
         /// workspace and candidate-invalidating semantics as Residual().

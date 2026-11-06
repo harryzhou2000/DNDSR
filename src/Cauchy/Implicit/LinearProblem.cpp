@@ -191,10 +191,15 @@ namespace DNDS::Cauchy
         const auto remote = ghost ? ghost->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{};
         const auto xGhost = Algebra::MakeEigenRowMatrices(remote, _components, 1);
         offDiagonal.WithBlocks([&](const auto &blocks)
-                               { Detail::ApplyBlockRows(x, xGhost, y, matrix, blocks, *_pattern,
-                                                        region == LinearRegion::All ? _pattern->order : region == LinearRegion::Core ? _pattern->core
-                                                                                                                                     : _pattern->dependent,
-                                                        _components, _diagonalStorage == DiagonalStorage::Block); });
+                               {
+            const auto &rows = region == LinearRegion::All ? _pattern->order : region == LinearRegion::Core ? _pattern->core : _pattern->dependent;
+            if (_components == 5 && _diagonalStorage == DiagonalStorage::Block)
+                Detail::ApplyBlockRows<5>(Algebra::MakeEigenRowMatrices<5, 1>(owned.View<R::UniformTableRows>(), 5, 1),
+                                          Algebra::MakeEigenRowMatrices<5, 1>(remote, 5, 1),
+                                          Algebra::MakeEigenRowMatrices<5, 1>(destination.View<R::UniformTableRows>(), 5, 1),
+                                          Algebra::MakeEigenRowMatrices<5, 5>(d, 5, 5), blocks, *_pattern, rows, 5, true);
+            else
+                Detail::ApplyBlockRows(x, xGhost, y, matrix, blocks, *_pattern, rows, _components, _diagonalStorage == DiagonalStorage::Block); });
     }
     void LinearProblemContext::ApplySGS(const Field &rhs, const Field &input, Field &forward, Field &output) const
     {

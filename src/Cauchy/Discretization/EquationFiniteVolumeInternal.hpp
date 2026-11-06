@@ -34,13 +34,17 @@ namespace DNDS::Cauchy::EquationFVDetail
             return {count ? values.data() + first : nullptr, count};
         }
     };
-    inline void Gather(const std::vector<EquationBlockReadView> &blocks, index iCell, PointScratch &point)
+    inline void Gather(const std::vector<EquationBlockReadView> &blocks, index iCell, PointScratch &point, bool clearGradient = true)
     {
         index first = 0;
         for (const auto &block : blocks)
-            for (index j = 0; j < block.ComponentNumber(); ++j)
-                point.values[first++] = block(iCell, j);
-        point.gradient.setZero();
+        {
+            const auto row = block[iCell];
+            for (index j = 0; j < row.size(); ++j)
+                point.values[first++] = row[j];
+        }
+        if (clearGradient)
+            point.gradient.setZero();
     }
     inline std::vector<EquationBlockReadView> BlockViews(const EquationDofs &state, const EquationDofs::ReadScope &scope)
     {

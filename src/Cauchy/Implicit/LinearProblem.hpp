@@ -5,6 +5,7 @@
 #include "DNDS/Algebra/ComponentSelection.hpp"
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace DNDS::Cauchy
@@ -71,6 +72,7 @@ namespace DNDS::Cauchy
         };
         Algebra::DofSpace _space;
         std::shared_ptr<const Pattern> _pattern;
+        std::shared_ptr<const std::vector<std::vector<index>>> _validatedColumns;
         index _components;
         DiagonalStorage _diagonalStorage;
         Runtime::Array<real> _diagonal, _inverse;
@@ -119,6 +121,16 @@ namespace DNDS::Cauchy
         index Components() const { return _components; }
         DiagonalStorage DiagonalMode() const { return _diagonalStorage; }
         const std::vector<std::vector<index>> &Columns() const { return Layout().columns; }
+        /// Validate an immutable producer stencil once, then compare identity.
+        /// Caller serializes preparation with context use. Retaining the token
+        /// prevents address reuse; a new mesh/order supplies a new token.
+        void ValidateColumns(const std::shared_ptr<const std::vector<std::vector<index>>> &columns)
+        {
+            if (_validatedColumns == columns && columns)
+                return;
+            DNDS_check_throw_info(columns && *columns == Columns(), "linear producer stencil differs");
+            _validatedColumns = columns;
+        }
         const std::vector<index> &Order() const { return Layout().order; }
         const std::vector<index> &Core() const { return Layout().core; }
         const std::vector<index> &HaloDependent() const { return Layout().dependent; }
@@ -265,7 +277,11 @@ namespace DNDS::Cauchy
         /// Rank-local incomplete/full factor structure. Off-rank columns stay
         /// in Apply but are excluded from local factors. Core-first ordering
         /// is optional and precedes symbolic fill; local parts are independent.
-        void PrepareILUStructure(int fill = 0, bool coreFirst = true, const std::vector<index> &localParts = {});
+        /// Select rank-local factor ordering before symbolic fill. RCM is
+        /// computed within each independent local part, then optionally stably
+        /// grouped core first. Physical mesh/DOF row order is unchanged.
+        void PrepareILUStructure(int fill = 0, bool coreFirst = true, const std::vector<index> &localParts = {},
+                                 const std::string &ordering = "natural");
         /// Copy current native coefficients into the prepared factor template,
         /// then factor numerically. No inverse/SGS state or MPI halo is changed.
         void FactorizeILU();

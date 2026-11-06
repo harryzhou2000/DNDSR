@@ -860,6 +860,9 @@ TEST_CASE("Local Eigen matrices honor physical component stride without packing"
         }
         const auto read = values.Read();
         const auto matrices = DNDS::Algebra::MakeEigenRowMatrices(read.View<R::UniformTableRows>(), 2, 3);
+        const auto fixed = DNDS::Algebra::MakeEigenRowMatrices<2, 3>(read.View<R::UniformTableRows>(), 2, 3);
+        static_assert(decltype(fixed[0])::RowsAtCompileTime == 2 && decltype(fixed[0])::ColsAtCompileTime == 3);
+        CHECK(fixed[1].isApprox(matrices[1]));
         static_assert(std::is_const_v<std::remove_pointer_t<decltype(matrices[0].data())>>);
         for (DNDS::index iRow = 0; iRow < 9; ++iRow)
             CHECK(matrices[iRow].sum() == 600 * iRow + 15);

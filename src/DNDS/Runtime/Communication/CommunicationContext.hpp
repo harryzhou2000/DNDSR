@@ -71,6 +71,15 @@ namespace DNDS::Runtime
         Transient
     };
 
+    /// MPI launch validation, agreed collectively when the binding is built.
+    /// AbortOnFailure retains local checks but posts requests without a global
+    /// agreement. Any local launch failure aborts MPI; it cannot be recovered.
+    enum class TransferPreflight
+    {
+        Collective,
+        AbortOnFailure
+    };
+
     struct TransferOptions
     {
         TransferMode mode = TransferMode::Persistent;
@@ -85,5 +94,6 @@ namespace DNDS::Runtime
         /// Default rejects Direct endpoints from cudaMallocAsync/VMM pools;
         /// select explicit packing or validate the MPI build before opting in.
         bool allowStreamOrderedDeviceMemory = false;
+        TransferPreflight preflight = TransferPreflight::Collective;
     };
 }

@@ -1,6 +1,10 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
+#include <cstdlib>
 #include "Cauchy/Implicit/LinearSolver.hpp"
+#include "Cauchy/Physics/EquationSystem.hpp"
+#include "Cauchy/Config/SimulationConfig.hpp"
+#include "Cauchy/State/EquationDofs.hpp"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include <Eigen/LU>
 #include <optional>
@@ -182,7 +186,14 @@ TEST_CASE("Cauchy linear controls and rank-local access failures reject collecti
     { return fixture.Bind(field); };
     settings.method = "invalid";
     CHECK_THROWS(C::LinearSolver(fixture.problem, fixture.rhs, bind, settings));
+    settings.method = "ilu";
+    settings.iluOrdering = "unknown";
+    CHECK_THROWS(C::LinearSolver(fixture.problem, fixture.rhs, bind, settings));
+    settings.iluOrdering = "natural";
     settings.method = "gmres";
+    settings.stopping = "fixedCount";
+    CHECK_THROWS(C::LinearSolver(fixture.problem, fixture.rhs, bind, settings));
+    settings.stopping = "residual";
     settings.preconditioner = "ilu";
     settings.exchangeBetweenSweeps = true;
     CHECK_THROWS(C::LinearSolver(fixture.problem, fixture.rhs, bind, settings));
@@ -207,6 +218,82 @@ TEST_CASE("Cauchy linear controls and rank-local access failures reject collecti
     CHECK_THROWS(solver.Solve(fixture.rhs));
     writer.reset();
     CHECK(solver.Solve(fixture.rhs).converged);
+}
+TEST_CASE("Fixed-count stationary corrections preserve iterates without diagnostic actions or products")
+{
+    const auto schema = C::EquationSystem::Resolve(C::EquationSettings{}).Schema();
+    for (const auto *method : {"sgs", "ilu"})
+    {
+        Fixture fixture(std::string(method) == "sgs" ? 1 : 2);
+        const auto bind = [&](Field &field)
+        { return fixture.Bind(field); };
+        C::LinearSolveSettings settings;
+        settings.method = method;
+        settings.maxIterations = 2;
+        settings.relativeTolerance = settings.absoluteTolerance = 0;
+        settings.exchangeBetweenSweeps = settings.method == "sgs";
+        const C::LinearExecution execution{settings.method == "ilu", false};
+        C::LinearSolver reference(fixture.problem, fixture.rhs, bind, settings, execution);
+        auto logicalRHS = C::EquationDofs::Coupled(schema, fixture.rhs);
+        settings.stopping = "fixedCount";
+        settings.relativeTolerance = 1e20; // Explicit fixed count ignores tolerance.
+        C::LinearSolver fixed(fixture.problem, fixture.rhs, bind, settings, execution);
+        C::EquationLinearSolver logical(fixture.problem, logicalRHS, bind, settings, execution);
+        const auto rhsVersion = fixture.rhs.Owned().Version();
+        for (bool warm : {false, true})
+        {
+            const auto checked = reference.Solve(fixture.rhs, warm ? &fixture.rhs : nullptr);
+            REQUIRE(checked.iterations == 2);
+            const auto report = fixed.Solve(fixture.rhs, warm ? &fixture.rhs : nullptr);
+            const auto equationReport = logical.Solve(logicalRHS, warm ? &logicalRHS : nullptr);
+            for (const auto *value : {&report, &equationReport})
+            {
+                CHECK(value->stop == DNDS::Linear::LinearStop::FixedCount);
+                CHECK(value->usable);
+                CHECK_FALSE(value->converged);
+                CHECK(value->iterations == 2);
+                CHECK(std::isnan(value->initialTrueResidual));
+                CHECK(std::isnan(value->trueResidual));
+                CHECK(value->innerProductBatches == 0);
+                CHECK(value->operatorApplications == (settings.method == "ilu" ? (warm ? 2 : 1) : 0));
+            }
+            const auto a = reference.Solution().Owned().Read(), b = fixed.Solution().Owned().Read();
+            const auto c = logical.Solution().ReadOwned();
+            const auto expected = a.View<R::UniformTableRows>(), actual = b.View<R::UniformTableRows>();
+            const auto equation = c.Block("flow");
+            for (DNDS::index iCell = 0; iCell < 4; ++iCell)
+                for (DNDS::index j = 0; j < 5; ++j)
+                {
+                    CHECK(actual(iCell, j) == expected(iCell, j));
+                    CHECK(equation(iCell, j) == expected(iCell, j));
+                }
+        }
+        CHECK(fixture.rhs.Owned().Version() == rhsVersion);
+    }
+}
+TEST_CASE("Fixed-count final finite check agrees on a rank-local nonfinite update")
+{
+    Fixture fixture;
+    C::LinearSolveSettings settings;
+    settings.stopping = "fixedCount";
+    settings.maxIterations = 0;
+    Field guess(fixture.space, 5);
+    {
+        auto write = guess.Owned().Write();
+        const auto values = write.View<R::UniformTableRows>();
+        for (DNDS::index iCell = 0; iCell < 4; ++iCell)
+            for (DNDS::index j = 0; j < 5; ++j)
+                values(iCell, j) = fixture.rank == 0 ? std::numeric_limits<double>::quiet_NaN() : 0;
+    }
+    const bool fatalLocal = std::getenv("DNDS_TEST_LINEAR_FATAL_LOCAL") != nullptr;
+    C::LinearSolver solver(fixture.problem, fixture.rhs, [&](Field &field)
+                           { return fixture.Bind(field); }, settings, {false, !fatalLocal});
+    const auto report = solver.Solve(fixture.rhs, &guess);
+    CHECK_FALSE(report.usable);
+    CHECK_FALSE(report.converged);
+    CHECK(report.stop == DNDS::Linear::LinearStop::NonFinite);
+    CHECK(report.iterations == 0);
+    CHECK(report.innerProductBatches == 0);
 }
 TEST_CASE("Evaluated block publication validates row identity, column ordinals and active read scopes")
 {

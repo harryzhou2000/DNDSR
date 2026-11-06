@@ -43,10 +43,14 @@ namespace DNDS::Cauchy
         /// One finest update, with bounded CorrectOnce smoothing at each level.
         /// No convergence loop/reference reset; pseudoCFL comes from the caller.
         /// Other-stage inputs in source must remain frozen throughout the cycle.
+        /// Optional rate is the caller's already evaluated finest dU/dt, as in
+        /// CorrectOnce. Caller guarantees current owned means/time/stage and
+        /// reconstruction provenance. It is consumed only by the first finest
+        /// smoother; further corrections evaluate their updated states normally.
         NonlinearIterationReport ApplyCycle(const CFV::FVField &source, real mass, real rhsScale, real time,
-                                            int stage = 0, real pseudoCFL = 0);
+                                            int stage = 0, real pseudoCFL = 0, const CFV::FVField *rate = nullptr);
         EquationNonlinearIterationReport ApplyCycle(const EquationDofs &source, real mass, real rhsScale, real time,
-                                                    int stage = 0, real pseudoCFL = 0);
+                                                    int stage = 0, real pseudoCFL = 0, const EquationDofs *rate = nullptr);
         /// Frozen stage trace shared with coarse levels after checking their
         /// canonical boundary quadrature order. Local alias binding only; no MPI.
         void SetBoundaryInputs(const BoundaryInputs &input);

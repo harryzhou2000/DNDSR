@@ -4,6 +4,8 @@
 #include "Solver/FAS.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include <tuple>
+#include <cstdlib>
+#include <cstdio>
 
 namespace DNDS::Cauchy
 {
@@ -184,6 +186,13 @@ namespace DNDS::Cauchy
             using Level = Multigrid::StateFASLevel<State>;
             using Transfer = Multigrid::StateFASTransfer<State>;
             using Cycle = Multigrid::StateFASCycle<State, Operations>;
+            struct SpatialRate
+            {
+                State rate;
+                std::optional<typename Operations::Binding> stateStamp;
+                real time = 0, scale = 0;
+                explicit SpatialRate(const State &input) : rate(Operations::NewVector(input)) {}
+            };
             static void IdentityTransfer(const State &input, State &output, const MPIInfo &mpi, bool collectiveChecks = true)
             {
                 // Only construction-validated equal cell orders may use this
@@ -237,6 +246,16 @@ namespace DNDS::Cauchy
             real mass = 0, rhsScale = 1, time = 0;
             int stage = 0;
             Report *report = nullptr;
+            // Opt-in local timings only: no barriers/reductions or clock calls
+            // in ordinary runs. Profiles belong to this synchronous hierarchy.
+            bool profileEnabled = std::getenv("DNDS_CAUCHY_PROFILE_PMG") != nullptr;
+            bool profileAllRanks = std::getenv("DNDS_CAUCHY_PROFILE_ALL_RANKS") != nullptr;
+            std::vector<NonlinearProfile> smootherProfiles;
+            std::vector<real> operatorSeconds;
+            std::vector<index> operatorCalls;
+            std::vector<index> cachedRateUses;
+            std::shared_ptr<SpatialRate> fineRate;
+            std::vector<std::shared_ptr<SpatialRate>> cachedRates;
             PolynomialHierarchy(const FiniteVolume &discrete, State &input, Solver &solver, const DomainSettings &controls)
                 : fine(discrete), state(input), value(Operations::NewVector(input)), fineSolver(&solver),
                   settings(controls.implicit), mpi(discrete.Metrics().Communicator())
@@ -249,29 +268,77 @@ namespace DNDS::Cauchy
             Level MakeLevel(State input, Solver &solver, index level)
             {
                 auto *relax = &solver;
-                const auto smooth = [this, relax, level](auto &u, const auto &source, index count, const std::vector<index> &components)
+                // The finest convergence evaluation already advances its VR
+                // guess: consume that exact rate for the first correction,
+                // rather than performing a second set of configured VR sweeps.
+                // Direct-gradient levels may also reuse their preceding tau
+                // evaluation because they have no iterative VR history.
+                const auto cached = !level || settings.multigrid.reuseCoarseRate ? std::make_shared<SpatialRate>(input) : nullptr;
+                if (cached)
+                    cachedRates.push_back(cached);
+                if (!level)
+                    fineRate = cached;
+                const auto smooth = [this, relax, level, cached](auto &u, const auto &source, index count, const std::vector<index> &components)
                 {
                     for (index correction = 0; correction < count; ++correction)
                     {
-                        const auto step = relax->CorrectOnce(u, source, mass, rhsScale, time, stage, {1, smootherCFL[level], nullptr, components});
+                        const State *rate = nullptr;
+                        if (cached && cached->stateStamp)
+                        {
+                            cached->stateStamp->Check(u, true);
+                            DNDS_check_throw_info(cached->time == time && cached->scale == rhsScale,
+                                                  "FAS spatial rate belongs to another time/equation scale");
+                            rate = &cached->rate;
+                            if (profileEnabled)
+                                ++cachedRateUses[level];
+                        }
+                        NonlinearProfile timing;
+                        const auto step = relax->CorrectOnce(u, source, mass, rhsScale, time, stage,
+                                                             {1, smootherCFL[level], profileEnabled ? &timing : nullptr, components}, rate);
+                        if (cached)
+                            cached->stateStamp.reset();
+                        if (profileEnabled)
+                        {
+                            for (index phase = 0; phase < NonlinearProfile::PhaseNumber; ++phase)
+                                smootherProfiles[level].seconds[phase] += timing.seconds[phase];
+                            smootherProfiles[level].residualEvaluations += timing.residualEvaluations;
+                        }
                         NonlinearDetail::AccumulateWork(*report, step);
                     }
                     return count;
                 };
                 return {std::move(input),
-                        [this, relax](auto &u, auto &out)
-                        { relax->EvaluateEquation(u, out, mass, rhsScale, time); },
+                        [this, relax, level, cached](auto &u, auto &out)
+                        { TimedOperator(*relax, u, out, mass, level, level ? cached.get() : nullptr); },
                         [smooth](auto &u, const auto &source, index count)
                         { return smooth(u, source, count, {}); },
-                        [this, relax](auto &u, const auto &delta)
+                        [this, relax, cached](auto &u, const auto &delta)
                         {
+                            if (cached)
+                                cached->stateStamp.reset();
                             const auto [limited, alpha] = relax->ApplyCorrection(u, delta, settings.multigrid.damping, settings.multigrid.updateComponents);
                             report->incrementLimited += limited;
                             report->minimumIncrementAlpha = std::min(report->minimumIncrementAlpha, alpha);
                         },
                         smooth,
-                        [this, relax](auto &u, auto &out)
-                        { relax->EvaluateEquation(u, out, 0, rhsScale, time); }};
+                        [this, relax, level, cached](auto &u, auto &out)
+                        { TimedOperator(*relax, u, out, 0, level, level ? cached.get() : nullptr); }};
+            }
+            void TimedOperator(Solver &solver, State &input, State &output, real equationMass, index level, SpatialRate *cached = nullptr)
+            {
+                const real start = profileEnabled ? MPI_Wtime() : 0;
+                solver.EvaluateEquation(input, output, equationMass, rhsScale, time, cached ? &cached->rate : nullptr);
+                if (cached)
+                {
+                    cached->stateStamp.emplace(input);
+                    cached->time = time;
+                    cached->scale = rhsScale;
+                }
+                if (profileEnabled)
+                {
+                    operatorSeconds[level] += MPI_Wtime() - start;
+                    ++operatorCalls[level];
+                }
             }
             void BuildCycle()
             {
@@ -307,6 +374,10 @@ namespace DNDS::Cauchy
                        const DomainSettings &controls, const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers = std::nullopt)
             {
                 smootherCFL.assign(size_t(settings.multigrid.levels + 1), settings.pseudoCFL);
+                smootherProfiles.resize(smootherCFL.size());
+                operatorSeconds.resize(smootherCFL.size());
+                operatorCalls.resize(smootherCFL.size());
+                cachedRateUses.resize(smootherCFL.size());
                 smootherBaseCFL = {settings.pseudoCFL};
                 smootherMaxCFL = {settings.maxPseudoCFL};
                 levelDefinitions.push_back(MakeLevel(state, *fineSolver, 0));
@@ -327,17 +398,25 @@ namespace DNDS::Cauchy
             }
             void BindEquation(const State &source, real equationMass, real equationScale, real equationTime, int equationStage, real pseudoCFL)
             {
-                MPI::LocalStage(mpi, [&]
-                                {
+                const auto validate = [&]
+                {
                     Operations::CheckCompatible(state, source);
                     Operations::RequireDistinct(state, source);
                     DNDS_check_throw_info(std::isfinite(equationMass) && equationMass >= 0 && std::isfinite(equationScale) && equationScale > 0 &&
                                               std::isfinite(equationTime) && (pseudoCFL == 0 || (std::isfinite(pseudoCFL) &&
-                                              pseudoCFL >= settings.pseudoCFL && pseudoCFL <= settings.maxPseudoCFL)), "invalid polynomial FAS equation coefficients"); });
-                std::array<real, 4> minimum{equationMass, equationScale, equationTime, pseudoCFL}, maximum = minimum;
-                MPI_Allreduce(MPI_IN_PLACE, minimum.data(), 4, MPI_DOUBLE, MPI_MIN, mpi.comm);
-                MPI_Allreduce(MPI_IN_PLACE, maximum.data(), 4, MPI_DOUBLE, MPI_MAX, mpi.comm);
-                DNDS_check_throw_info(minimum == maximum, "polynomial FAS coefficients differ between ranks");
+                                              pseudoCFL >= settings.pseudoCFL && pseudoCFL <= settings.maxPseudoCFL)), "invalid polynomial FAS equation coefficients"); };
+                if (settings.collectiveChecks)
+                {
+                    MPI::LocalStage(mpi, validate);
+                    std::array<real, 4> minimum{equationMass, equationScale, equationTime, pseudoCFL}, maximum = minimum;
+                    MPI_Allreduce(MPI_IN_PLACE, minimum.data(), 4, MPI_DOUBLE, MPI_MIN, mpi.comm);
+                    MPI_Allreduce(MPI_IN_PLACE, maximum.data(), 4, MPI_DOUBLE, MPI_MAX, mpi.comm);
+                    DNDS_check_throw_info(minimum == maximum, "polynomial FAS coefficients differ between ranks");
+                }
+                else
+                    validate();
+                for (auto &cached : cachedRates)
+                    cached->stateStamp.reset();
                 mass = equationMass;
                 rhsScale = equationScale;
                 time = equationTime;
@@ -345,7 +424,7 @@ namespace DNDS::Cauchy
             }
             auto Measure(const State &source)
             {
-                fineSolver->EvaluateEquation(state, value, mass, rhsScale, time);
+                TimedOperator(*fineSolver, state, value, mass, 0, fineRate.get());
                 auto norms = Profile::Norms(state);
                 std::vector<real> sum(norms.size() + 1, 0);
                 MPI::LocalStage(mpi, [&]
@@ -372,11 +451,22 @@ namespace DNDS::Cauchy
                 }
                 return norms;
             }
-            Report ApplyCycle(const State &source, real mass, real rhsScale, real time, int stage, real pseudoCFL)
+            Report ApplyCycle(const State &source, real mass, real rhsScale, real time, int stage, real pseudoCFL, const State *rate = nullptr)
             {
                 BindEquation(source, mass, rhsScale, time, stage, pseudoCFL);
                 if (!cycle)
                     BuildCycle();
+                if (rate)
+                {
+                    // Same contract as CorrectOnce: an external method owns
+                    // time/stage/VR provenance. Internal Solve passes only the
+                    // immediately preceding measured state, checked below.
+                    if (rate != &fineRate->rate)
+                        Operations::Copy(fineRate->rate, *rate);
+                    fineRate->stateStamp.emplace(state);
+                    fineRate->time = time;
+                    fineRate->scale = rhsScale;
+                }
                 const real cfl = pseudoCFL == 0 ? settings.pseudoCFL : pseudoCFL;
                 for (index level = 0; level < index(smootherCFL.size()); ++level)
                     smootherCFL[level] = std::min(smootherMaxCFL[level], smootherBaseCFL[level] * (cfl / settings.pseudoCFL));
@@ -407,11 +497,23 @@ namespace DNDS::Cauchy
                 auto residual = Profile::Norms(state);
                 Report initial;
                 initial.residual = residual;
-                return NonlinearDetail::Iterate(control, fine.Equation().Schema(), mpi.rank, stage, {}, std::move(initial), fineSolver->ReconstructionTolerance(), [&]
-                                                { residual = Measure(source); }, [&](auto &norms)
-                                                { norms = residual; }, [&]
-                                                { return fineSolver->ReconstructionStats(); }, [&](auto &total)
-                                                { NonlinearDetail::AccumulateWork(total, ApplyCycle(source, mass, rhsScale, time, stage, total.pseudoCFL)); });
+                const real start = profileEnabled ? MPI_Wtime() : 0;
+                const auto result = NonlinearDetail::Iterate(control, fine.Equation().Schema(), mpi.rank, stage, {}, std::move(initial), fineSolver->ReconstructionTolerance(), [&]
+                                                             { residual = Measure(source); }, [&](auto &norms)
+                                                             { norms = residual; }, [&]
+                                                             { return fineSolver->ReconstructionStats(); }, [&](auto &total)
+                                                             {
+                                                    fineRate->stateStamp->Check(state, true);
+                                                    NonlinearDetail::AccumulateWork(total, ApplyCycle(source, mass, rhsScale, time, stage, total.pseudoCFL, &fineRate->rate)); });
+                if (profileEnabled && (!mpi.rank || profileAllRanks))
+                {
+                    Json levels = Json::array();
+                    for (index level = 0; level < index(smootherProfiles.size()); ++level)
+                        levels.push_back({{"level", level}, {"smoother_seconds", smootherProfiles[level].seconds}, {"smoother_rhs_calls", smootherProfiles[level].residualEvaluations}, {"cached_rate_uses", cachedRateUses[level]}, {"operator_seconds", operatorSeconds[level]}, {"operator_calls", operatorCalls[level]}});
+                    const auto record = Json{{"rank", mpi.rank}, {"local_seconds", MPI_Wtime() - start}, {"cycles", result.multigridCycles}, {"levels", levels}}.dump();
+                    std::fprintf(stdout, "CAUCHY_PMG_PROFILE %s\n", record.c_str());
+                }
+                return result;
             }
             void SetBoundaryInputs(const BoundaryInputs &input)
             {
@@ -434,6 +536,11 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(level >= 0 && level < 2, "polynomial coarse level must be zero or one");
         auto lower = fine;
         lower.implicit = fine.implicit.ResolveCoarseLevel(level + 1);
+        // Euler's coarse loop omits EvaluateCellRHSAlpha before the solve.
+        // Match that default; explicit opt-in retains coarse RHS/dTau PP.
+        // Reconstruction and final-increment admissibility are independent.
+        if (!fine.implicit.multigrid.coarseRHSFPP)
+            lower.implicit.positivity.rhsFPPMode = "none";
         lower.numerics.reconstruction = "gradient";
         lower.numerics.firstOrderConvection = level > 0;
         lower.numerics.cfv.maxOrder = 1;
@@ -469,15 +576,15 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(_equationData, "logical pMG call requires an equation hierarchy");
         return _equationData->Solve(source, mass, rhsScale, time, stage);
     }
-    NonlinearIterationReport PolynomialMultigrid::ApplyCycle(const CFV::FVField &source, real mass, real rhsScale, real time, int stage, real pseudoCFL)
+    NonlinearIterationReport PolynomialMultigrid::ApplyCycle(const CFV::FVField &source, real mass, real rhsScale, real time, int stage, real pseudoCFL, const CFV::FVField *rate)
     {
         DNDS_check_throw_info(_data, "field pMG call requires a field hierarchy");
-        return _data->ApplyCycle(source, mass, rhsScale, time, stage, pseudoCFL);
+        return _data->ApplyCycle(source, mass, rhsScale, time, stage, pseudoCFL, rate);
     }
-    EquationNonlinearIterationReport PolynomialMultigrid::ApplyCycle(const EquationDofs &source, real mass, real rhsScale, real time, int stage, real pseudoCFL)
+    EquationNonlinearIterationReport PolynomialMultigrid::ApplyCycle(const EquationDofs &source, real mass, real rhsScale, real time, int stage, real pseudoCFL, const EquationDofs *rate)
     {
         DNDS_check_throw_info(_equationData, "logical pMG call requires an equation hierarchy");
-        return _equationData->ApplyCycle(source, mass, rhsScale, time, stage, pseudoCFL);
+        return _equationData->ApplyCycle(source, mass, rhsScale, time, stage, pseudoCFL, rate);
     }
     void PolynomialMultigrid::SetBoundaryInputs(const BoundaryInputs &input)
     {

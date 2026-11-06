@@ -14,17 +14,25 @@ namespace DNDS::Cauchy
     struct LinearSolveSettings
     {
         std::string method = "sgs", preconditioner = "sgs";
+        /// residual: tolerance checks/reporting. fixedCount: SGS/ILU execute
+        /// exactly maxIterations, omit diagnostic residuals and check only the
+        /// returned update's finiteness. Tolerances are ignored in fixedCount.
+        std::string stopping = "residual";
         index maxIterations = 10;
         int subspace = 20, sgsSweeps = 1, iluFill = 0;
         bool iluCoreFirst = true, exchangeBetweenSweeps = false;
         real relativeTolerance = .1, absoluteTolerance = 1e-12;
+        std::string iluOrdering = "natural";
     };
     struct LinearExecution
     {
         bool overlap = true;
         /// Checked mode coordinates local kernel failures before more MPI.
         /// False is caller-ordered eager mode: callers own distributed failure
-        /// handling. Constructor/control and solve-entry agreement stay enabled.
+        /// handling and identical per-call controls/order. Setup agreement stays
+        /// enabled; repeated solve-entry checks follow this switch.
+        /// A nonfinite fixed-count result aborts the communicator in unchecked
+        /// mode; checked mode returns a globally agreed NonFinite report.
         bool collectiveChecks = true;
     };
     /// Domain-local CPU linear orchestration. Owns reusable native vectors and
@@ -52,7 +60,8 @@ namespace DNDS::Cauchy
         /// the same local ILU factors. Standard GMRES must not vary that policy.
         Linear::LinearIterationReport Solve(const Field &rhs, const Field *initialGuess = nullptr);
         /// Borrowed result, overwritten by the next Solve. Always inspect its
-        /// report; only converged or finite iteration-limited results are usable.
+        /// report; finite fixed-count or iteration-limited results are usable
+        /// without being certified converged. Unevaluated residual norms are NaN.
         const Field &Solution() const;
     };
 

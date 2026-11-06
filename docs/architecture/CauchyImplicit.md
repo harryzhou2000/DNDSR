@@ -1,5 +1,57 @@
 # Cauchy native implicit operator contracts
 
+## Auxiliary ordering and retained linearization
+
+The equation FV workspace owns an integrated face-flux table. Each RHS call
+evaluates unique faces needed by its output cells, then gathers signed fluxes
+into those cells. Opposite periodic incidences rotate vector components and
+reverse sign; side ordinals also distinguish self-periodic faces. `All` visits
+each local stencil face once. `Core` and `HaloDependent` remain independently
+callable and may both evaluate a face at their shared boundary; neither relies
+on hidden freshness from a preceding region call. The core read scope still
+excludes input ghosts. All workspace calls must be serialized as before.
+
+Jacobian topology is an immutable FV-owned stencil. A linear context checks
+the full stencil on its first preparation with that token, then compares the
+retained identity. The existing mesh/metric stamps still reject changed
+geometry or numbering. Numeric ILU preparation fills the private factor
+buffer directly, including fill zeros, and retains the original operator for
+matrix actions. It uses the existing symbolic ordering and decomposition.
+Direct-FV midpoint source values share the owned mean allocation; source
+derivatives continue to use the limited polynomial sampling facility.
+
+Equation implicit evaluation prepares mean thermodynamics, face signals and
+cell spectral sums during the mean halo exchange, before reconstruction and
+RHS. The explicit `Evaluate(..., AuxiliaryValues &, ...)` overload publishes
+these buffers; RHS receives read views, not a mutable solver-owned evaluator.
+The no-aux standalone overload retains its narrower reconstruction/RHS scope.
+Pseudo-time uses the prepared mean-based cell spectral sums; preparation must
+not be repeated in the subsequent matrix/linear block. In particular, future
+RHS-refined face signals must survive until Jacobian setup. Preparation and
+RHS outputs are distinct publications, not untracked in-kernel mutation.
+
+`EquationNonlinearSolver::EvaluateRate` and `EvaluateEquation` retain their
+auxiliary input state/time/ghost generations. A cached `CorrectOnce` on that
+same publication reuses them. A foreign cached rate still follows the existing
+explicit correction-preparation fallback; the caller owns rate provenance.
+Owned-only local freshness decisions assume coordinated mutations and call
+order across ranks, as the existing eager contract requires. No new Allreduce
+is introduced for this cache choice. `PreparedAuxValues()` is a read-only
+diagnostic view of the last linearization; after an update it describes the
+pre-update state. It does not silently refresh.
+
+RHS can consume prepared mean pressure/sound speed for the Riemann mean-state
+inputs; reconstructed face thermodynamics are still evaluated at the face.
+The extended Jacobian currently rejects Roe characteristic dissipation, so it
+does not yet produce Euler's RHS-refined `lambdaFace0/123/4` outputs. Do not
+claim that option works merely because aux ordering is now correct. Such
+outputs need their own optional write bundle and provenance; scalar mean-based
+spectra and their pre-RHS pseudo-time estimate must remain separate.
+
+Cantera auxiliary and RHS passes acquire worker contexts sequentially. Aux
+publication releases its worker before the RHS evaluator acquires one; this
+supports a pool with a single context without copying/recreating Cantera state.
+
 ## Time-method revision in progress
 
 `Solver/TimeIntegration` now exposes normalized `TimeEquationCoefficients`,
@@ -43,12 +95,27 @@ other-stage terms are unchanged throughout a cycle. Temporal-pMG is deferred.
 
 Coarse controls are defined centrally by `PolynomialMultigrid::CoarseSettings`.
 The first coarse level uses direct-gradient second-order convection. The bottom
-level also prepares direct gradients, but `firstOrderConvection=true` suppresses
-only the polynomial contribution to convective face values. Viscous derivatives
-and RANS/chemical volume-source reconstruction remain present. Choosing
-`reconstruction=constant` instead removed these gradients and changed the coarse
-operator; that was corrected on November 5, 2026. Both flow5 and logical equation
-RHS profiles use the same policy, with no change to finest defaults.
+level still prepares direct gradients for RANS/volume sources, but
+`firstOrderConvection=true` uses cell means and jump-only face viscosity.
+Reconstructed face derivatives are not used in P0; there is no retained-gradient
+P0 alternative. Source gradients remain a separate input. Both flow5 and
+logical equation RHS profiles use this policy, with no change to finest defaults.
+
+The viscous face-jump correction uses the centroid separation projected onto
+the face normal, bounded by the adjacent-cell volume/face-area scale, also on
+the P0-convection level. Like Euler, P0 zeros reconstructed face gradients;
+Cauchy retains the user-selected normal-distance length while Euler uses the
+full centroid distance there. Neither this face-jump length nor coarse convection order
+changes the mesh wall-distance provider used by RANS.
+
+Direct P1/P0 residuals use one reference-center sample per face and per
+cell-source evaluation, matching Euler's midpoint rule. Cell volumes and face
+measures are still integrated using the configured geometry order; midpoint
+publication changes physics evaluation points/counts, not mesh measures.
+`NumericsSettings::RHSIntegrationOrder()` selects this separately from
+`cfv.intOrder`, which retains its metric/VR setup role. Wall-distance samples
+follow the residual quadrature. High-order variational residuals keep their
+configured quadrature, and additional PP test points remain independent.
 
 See [the distributed exception contract](RuntimeCallerContract.md#distributed-exceptions).
 Only an agreed `StepRejected` may drive a smaller-dt retry. General exceptions
@@ -250,7 +317,7 @@ and inter-domain prescribed point values retain their existing meanings.
 `Cauchy/Multigrid/PolynomialMultigrid` connects the generic
 [FAS cycle](FAS.md) to same-cell spatial operators. `implicit.multigrid.levels=0`
 disables it. Level1 is direct-gradient second order, level2 additionally uses
-first-order convection; physical viscosity/gradient calculation, equation and
+first-order convection and jump-only face viscosity; source gradients, equation and
 boundary conditions remain enabled. The finest operator requires variational
 degree2 or3. This follows the supported Euler pMG fidelity hierarchy, without
 copying its recursive orchestration lambda. No spatial coarsening or new mesh
@@ -304,14 +371,95 @@ separate DITR coupledStage cycles freeze their current resOther independently;
 no temporal coarsening or nested stage-convergence loop is introduced.
 
 `implicit.collectiveChecks` also controls the optional agreement around local
-cycle algebra and identity copies. With it disabled, those operations perform
-no collective; required stage-entry, transfer and numerical norm protocols are
-unchanged. Callers then own coordinated failure handling, as for other eager
-equation operators. Shape/binding checks remain local and outside cell loops.
+cycle algebra, identity copies, and repeated nonlinear/linear entry checks.
+Repeated equation-FV entry and correction-auxiliary CPU joins/preparation
+follow that same switch. Disabling agreement does not skip the local actions
+or the stream join, and does not disable transfer access validation.
+With it disabled, coefficient/component agreement is a caller obligation;
+local shape, binding, coefficient and admissibility checks still execute.
+By default, transfer preflight and numerical norm/PP reductions remain required.
+`execution.transferPreflight="abortOnFailure"` explicitly removes per-launch
+transfer agreements while retaining local access/route/stream checks and
+aborting MPI on failure. `"collective"` remains the default independently of
+`implicit.collectiveChecks`; setup is collective in both modes. This is a
+domain halo-binding policy, shared by mean, reconstruction, auxiliary, limiter
+and linear-solver work, with no numerical-policy or transport-layout change.
+Callers must issue identical controls and operation order on every domain rank
+and propagate failures to the fail-fast frontend, as for other unchecked eager
+equation operators. Do not catch a rank-local failure and continue into MPI.
+With checks enabled, entry agreement detects mismatched controls before work.
+Shape/binding checks remain outside cell loops.
+
+`implicit.multigrid.coarseRHSFPP` defaults to `false`, matching Euler's
+coarse pMG loop, which omits RHS/dTau alpha limiting before its linear solve.
+False forces the resolved coarse `positivity.rhsFPPMode` to `"none"` after each
+level's partial solver overrides. The finest policy is unchanged. Set true
+to use the inherited/per-level RHS or dTau limiting policy on coarse levels.
+This is a numerical-method choice, not a diagnostic validation switch;
+reconstruction PP and final increment compression/repair remain independently
+active according to their existing controls. No alpha-statistics reduction
+is needed for a skipped coarse RHS/dTau limiter.
+
+`implicit.ilu.ordering` selects `"natural"` (default) or `"rcm"` using the same
+CorrectRCM algorithm as Euler's orderingCode4. Ordering is rank-local and
+computed independently within each supplied local part on its induced graph.
+If `implicit.ilu.coreFirst=true`, the selected order is then stably grouped
+core before dependent rows before symbolic fill. To compare directly with
+Euler's ungrouped CorrectRCM factors select `ordering="rcm", coreFirst=false`.
+The mesh, physical DOF rows, halo routes and matrix columns are unchanged;
+only factor permutation/fill changes. This can change incomplete-factor
+corrections and convergence. No ordering work or new collective is added to
+numeric factorization/triangular solves. Direct C++ callers can append ordering
+to `PrepareILUStructure(fill, coreFirst, localParts, ordering)`; existing calls
+remain natural. Python linear settings expose `ilu_ordering`.
+
+`implicit.multigrid.reuseCoarseRate` reuses the immediately preceding coarse tau
+evaluation for that level's first correction. Native pMG coarse levels use
+direct-gradient reconstruction, so reevaluation at unchanged means does not
+advance VR history. The cached rate owns a separate numerical vector, records
+the owned binding/generation, physical time and equation scale, and is consumed
+once. New cycle bindings, physical corrections and subsequent corrections
+invalidate it. The existing cached-rate correction entry refreshes auxiliary
+values and source-Jacobian provenance. Set this option false for a direct
+coarse-level comparison. Profile `cached_rate_uses` counts reuse separately from
+the existing smoother residual-entry count.
+
+At the finest level, `Solve` retains the spatial rate from its convergence
+evaluation for the first correction at the same owned state. This removes a
+duplicate set of configured VR sweeps, matching Euler's use of the available
+residual for the initial update. Later smoothing corrections reevaluate their
+updated states; a coarse correction invalidates the retained rate. The generic
+FAS recursion, selected components and tau algebra are unchanged. For one finest
+pre-correction and no post-correction, N cycles need2N+1 finest spatial
+evaluations including the final observation, rather than3N+1.
+
+`EvaluateEquation` can publish the unscaled spatial `dU/dt` as a separate output
+in the same evaluation. It does not reconstruct that rate by subtracting
+`mass*U` from the defect, which could lose accuracy for a mass-dominated time
+equation. Both physical and logical equation adapters implement it. An explicit
+`ApplyCycle(..., rate)` accepts the same method-owned rate contract as
+`CorrectOnce`: caller guarantees current means, time/stage and reconstruction
+provenance, with no intervening mutation or VR update. DITR supplies its existing
+stage rate this way. A standalone cycle without a supplied rate still evaluates
+its first smoother normally.
+
+P1/P0 direct FV uses one face/source midpoint with preintegrated geometric
+measures. High-order VR retains configured quadrature. Interface trace packets
+must match each level's sample positions: high-order packets cannot simply be
+aliased to coarse midpoint packets. Mismatches are rejected; explicit coarse
+interface sampling remains required for that combined feature.
+
+`execution.fieldGrouping` selects physical allocation independently of equation
+blocks and `execution.layout`: `equationBlocks` retains separate flow/RANS/species
+fields; `coupled` stores all logical components in one uniform table. Numerical
+operators still address the same blocks, and implicit blocks couple the full
+state in either case. One coupled field needs one canonical halo binding instead
+of one per physical field. No packing or loss of stride information is implied.
 
 Direct nonlinear users can select the same behavior with
-`NonlinearSolveControl::updateComponents`. Selection is validated and agreed in
-the existing stage-entry reductions, including in caller-ordered eager mode.
+`NonlinearSolveControl::updateComponents`. Selection is always validated locally;
+cross-rank agreement follows `implicit.collectiveChecks`. Unchecked callers
+must provide the same selection, coefficients, limit and cached-input mode.
 Standalone `ApplyCorrection` callers must agree its optional selection and
 scale before entering. All public defaults retain full-state behavior.
 
@@ -563,8 +711,12 @@ It supports standalone SGS, stationary rank-local ILU defect correction, and
 restarted left-GMRES with a fixed SGS or local ILU preconditioner. Select
 `implicit.linear.method="ilu"` for `x_next=x+M_local^-1*(b-A*x)` with frozen
 factors. The first zero-started correction solves the local RHS; later
-corrections refresh `x`'s halo before forming its global defect. `preconditioner`
-applies only to GMRES. Setting both linear tolerances to zero requests the fixed
+corrections refresh `x`'s halo before forming its global defect.
+The matrix and linear RHS stay frozen during these iterations: `A*x` and
+`b-A*x` are linear operations on the increment, not another nonlinear FV RHS,
+reconstruction or auxiliary refresh. Such physical work belongs to the enclosing
+nonlinear correction. VR Jacobi/SOR iterations have separate controls.
+`preconditioner` applies only to GMRES. Setting both linear tolerances to zero requests the fixed
 iteration count, unless the true residual becomes exactly zero. The norm is
 Euclidean on the cell-integrated defect, whereas nonlinear norms are volume
 normalized; an absolute cutoff must be chosen for that scale. For the transient
@@ -575,12 +727,34 @@ the optional SGS middle exchange is explicitly exposed. Matrix read scopes pin
 coefficients throughout a solve. Both overlapping core/dependent and unsplit
 wait-then-All execution use the same numerical order.
 
+`implicit.linear.stopping="fixedCount"` is an explicit SGS/ILU smoothing mode;
+the default `"residual"` keeps the tolerance checks and true-residual reporting
+above. Fixed-count mode ignores tolerances and always performs `iterations`
+corrections, including for a zero RHS. It omits convergence norms and matrix
+actions used only for reporting. ILU still forms `b-A*x` before each correction
+after the first zero-started one (also before the first with a warm guess);
+SGS keeps its existing old/forward/output and optional middle-exchange policy.
+Both paths share exactly the same correction kernels. No nonlinear stopping
+or PP policy changes. GMRES rejects this mode.
+
+Every domain rank validates finite owned update entries. With collective
+checks enabled, one final agreement makes a bad update unusable on all ranks.
+With checks disabled, a bad local update aborts the domain communicator
+immediately, without another collective; a good update needs no agreement.
+This is not an inner product or a convergence measurement.
+Successful reports use `LinearStop::FixedCount`, `usable=true`,
+`converged=false`, with unevaluated residual norms left NaN and zero
+`innerProductBatches`. Callers
+must not compare those NaN norms to a tolerance or interpret the stop as
+linear convergence. Python exposes the same setting, stop and report semantics.
+
 All domain ranks construct/call the solver together with agreed controls.
 Callers serialize access, release conflicting debug/Python views, and bind each
 input to the intended entity ghost mapping. Checked execution coordinates local
 kernel errors before more MPI; disabling those checks is caller-ordered eager
-execution and transfers distributed failure handling to the caller. Control and
-solve-entry checks remain collective. A preflight rejection is reusable; a
+execution and transfers distributed failure handling to the caller. Setup
+agreement stays collective; repeated solve-entry agreement follows that switch.
+A preflight rejection is reusable; a
 failure after iteration starts invalidates that workspace for reuse. Reports
 distinguish convergence, finite iteration limits and unusable breakdowns. The
 borrowed solution changes at the next solve; it cannot serve as that solve's RHS.
@@ -712,7 +886,12 @@ that choice, retaining the configured Riemann, boundary and stencil policies
 with zero reconstruction and viscosity disabled. Its distinct opaque type
 cannot be supplied as the normal nonlinear/VR workspace. It shares immutable
 geometry/plans and allocates scratch once; it never changes the accepted VR
-guess. Unused characteristic matrices, PP samples and low-order blend outputs
+guess. This zero-polynomial physical-dt probe retains the parent's integration
+and trace points, matching Euler's non-direct `frhsOuter` path; it is distinct
+from configuring a standalone P0 FV operator, which uses midpoint. Even on flat
+meshes with constant face/source integrands, the different summation counts
+can change roundoff, so their test oracle checks a machine-epsilon bound rather
+than bit equality. Unused characteristic matrices, PP samples and low-order blend outputs
 are not allocated there. Normal workspaces also allocate those optional
 channels when their corresponding options are enabled. Workspace mode
 agreement precedes binding setup.
@@ -838,7 +1017,7 @@ Convergence always uses the uncompressed defect. Reconstruction quadrature PP
 now uses the Euler rule by default (explicit Segment compatibility remains).
 Physical-dt PP remains phase work. This is not yet the full PP suite.
 
-`implicit.positivity.rhsReduction` selects Euler's `cell` (default),
+`implicit.positivity.rhsFPPReduction` selects Euler's `cell` (default),
 `minimumLimited` (`MIN_IF_NOT_ONE`) or `minimumAll` (`MIN_ALL`) policy. Select
 the global fraction before applying either RHS compression or dTau compression.
 The limited-cell counter counts the original alpha<1 triggers, even when every
@@ -985,10 +1164,11 @@ flowchart TD
     Time[EquationTimeStepper: history and stage equation] --> Equation[EquationNonlinearSolver: bound trial state]
     Field[Existing flow5 NonlinearSolver] --> Policy[Shared nonlinear iteration policy]
     Equation --> Policy
-    Policy --> Residual[Evaluate integrated FV residual and reconstruction]
+    Policy --> Auxiliary[Prepare explicit auxiliary inputs from means]
+    Auxiliary --> Residual[Reconstruction, limiting and integrated FV residual]
     Residual --> Norm[All-component norms; explicit stopping selection]
-    Norm --> Auxiliary[Prepare explicit auxiliary bundle and pseudo-time]
-    Auxiliary --> Jacobian[Physical coupled Jacobian, including source quadrature]
+    Norm --> PseudoTime[Form pseudo-time from prepared spectral sums]
+    PseudoTime --> Jacobian[Physical coupled Jacobian, including source quadrature]
     Jacobian --> Linear[EquationLinearSolver: SGS or GMRES with SGS/ILU]
     Linear --> Candidate[Separate candidate; actual EOS and species validation]
     Candidate --> Commit[Agree admissibility, then copy owned means]
@@ -1008,13 +1188,42 @@ fixed correction cap and optional profiling use the shared iteration policy.
 The equation adapter requires the implemented EquationWorkspace profile and
 rejects unavailable Roe dissipation. Its bounded corrections and equation
 application also serve polynomial FAS. It retains actual mean halos
-and high-order source samples from each residual evaluation. Subsequent aux
+and high-order source samples from each residual evaluation. Auxiliary
 preparation is stateless with explicit outputs; the source Jacobian consumes
 the current reconstruction publication rather than evaluating only the mean.
 The final VR iteration count and already-reduced update norm are observable.
 Strict VR acceptance needs a positive reconstruction tolerance. With fixed
 sweeps and no norm measurement, its update diagnostic is infinity; constant or
 direct-gradient reconstruction reports zero. Reading diagnostics adds no MPI.
+
+Auxiliary preparation belongs before its RHS consumers, not beside matrix
+assembly. The equation FV overload accepts an explicit `AuxiliaryValues`
+output and prepares it using the same mean exchange as reconstruction. Core
+preparation can overlap that exchange; dependent preparation completes before
+RHS reads the publication. Independent reconstruction work may also overlap.
+`RHSAuxiliaryViews` is the flow5 kernel's packed read-only input contract for
+mean thermodynamics, wave-jump indicators and pressure statistics. Extend this
+bundle for future cached temperature or masks. The equation RHS currently
+consumes prepared mean pressure and sound speed; stencil-dependent equation
+fluxes explicitly reject unsupported preparation profiles.
+
+Auxiliary values are not exclusively time-step/Jacobian data. Treat prepared
+RHS inputs as an explicit read-only bundle, with their producer completed
+before the relevant RHS region executes. Future RHS-refined signals belong
+in a distinct explicit output bundle; they must not be overwritten by a
+post-RHS mean preparation or aliased with an active read input. The logical
+dependency is mean exchange/preparation -> reconstruction/RHS -> residual
+arithmetic and pseudo-time -> matrix/linear correction. Independent core work
+may overlap without changing those data dependencies.
+
+An RHS-refined eigenvalue is a separate explicit output, not a reason to rerun
+mean-based preparation after RHS. Euler updates its characteristic face
+eigenvalues when `useRoeJacobian` is enabled; the equation Jacobian still rejects
+that unsupported option. Its current mean-based spectral sums remain inputs
+to pseudo-time and its face signals remain inputs to matrix assembly. A cached
+rate correction preserves a matching auxiliary publication rather than
+overwriting it. The match is local binding, mean/ghost generations and time;
+the collective caller must choose the same evaluation schedule on every rank.
 
 The caller constructs/calls/destroys this CPU adapter collectively in domain
 order, serializes its bound state, workspace and engine, and retains MPI owners
@@ -1023,7 +1232,8 @@ be distinct; debug views must not conflict with its reads/writes. All ranks
 agree solve coefficients, correction caps and arbitrary-length component
 selections before iteration. Checked mode coordinates local failures between
 operators. Caller-ordered mode delegates that intermediate error coordination
-to the caller; entry agreement and numerical reductions still run.
+to the caller; repeated entry agreement follows the same switch, while setup
+agreement and numerical reductions still run.
 Construction and Solve join their supplied CPU lane's incoming prefix before
 reading means. Dependencies on other lanes remain the caller's responsibility.
 
@@ -1151,6 +1361,92 @@ Diagonal inversion is timed once after a real Jacobian fill because repeated
 calls otherwise measure cached no-ops. Numeric factorization is repeated;
 its elapsed time includes copying native matrix blocks into the local factor.
 
+`cauchy_benchmark_block_lu_comparison` isolates numeric block factorization or
+triangular solve against Euler's actual `JacobianLocalLU<6>`, with identical
+local graph, symbolic fill, matrix and RHS. Choose exactly one mode per timed
+invocation: `factor`, `solve` (physical Array entry), or `logical-solve`
+(EquationDofs-style component access). Symbolic preparation and MPI payloads
+are excluded. Factor mode resets both numeric matrices each repetition.
+Solutions and RHS generation are checked before and after each timing batch.
+This synthetic six-component matrix benchmark does not measure a physical
+Jacobian or distributed linear convergence.
+
+The native guarded inverse preserves fixed matrix dimensions supplied by its
+arithmetic specialization. Healthy pivots stay fixed-size through partial-pivot
+LU; only the SVD fallback converts to HardEigen's dynamic interface. Scaling
+and the reciprocal-condition threshold remain unchanged. Logical triangular
+entry can recognize a complete ordered AoS parent through `Algebra::TryOwnedTable`
+once before the scans, retaining the original payload leases and shared CRTP
+algorithm. Split, permuted, subset, SoA and AoSoA component views keep the
+generic gather path. No scalar access bypasses lifetime or layout validation.
+
+Logical matrix action uses the same exact-parent recognition independently for
+owned and ghost descriptors. Only when input, required ghost and output parts
+are complete ordered AoS tables does it reuse direct Eigen maps and static
+5/6/7-component arithmetic. Recognition occurs before scanning rows; the
+enclosing scopes still own leases and the mesh-derived core/halo partition is
+unchanged. Generic split/permuted/column-major layouts retain their original
+gather arithmetic. The mock distributed action test exercises core work during
+an active ghost write, then dependent work after completion, against independent
+dense row formulas for block and diagonal-entry matrices.
+
+`DNDS_CAUCHY_PROFILE_LINEAR=1` enables local per-instance controller counters
+for factorization (including gathering matrix entries), action with halo,
+triangular solves, SGS, norm products/reductions, owned algebra and total.
+The same flag prints `CAUCHY_ILU_PROFILE` every32 numeric factorizations,
+separating coefficient gathering from native copy/decomposition. These local
+timings are nested in the controller's factor phase, not additional costs.
+Symbolic preparation also compiles lower/upper factor slots to immutable
+operator-column slots; numeric gathering zeros only fill-in and copies each
+present block once. Rebuilding the ILUState rebuilds that mapping. Matrix
+generation checks and native factor storage/leases remain authoritative.
+Records print every32 calls. Instance IDs reflect setup order, not a global
+mesh/domain identity. Timings are rank0-local and subphases lie inside total;
+no extra MPI is introduced. This is diagnostic instrumentation, not a clean
+production timing result.
+
+`DNDS_CAUCHY_PROFILE_EQUATION_FV=1` similarly records boundary preparation,
+gradients, VR sweeps, PP, RHS kernels, source sampling, source evaluation and
+complete Evaluate per workspace. Kernel scopes run on their actual CPU worker;
+no extra stream join is inserted. Sampling is nested inside source; cached-rate
+corrections may refresh source outside Evaluate. Hence these counters cannot
+be added as independent pieces of Evaluate. Workspace flags identify mean-only
+probes and first-order convection. Existing serialization requirements on a
+workspace apply. Both switches are default-off and query no clocks when off.
+
+`DNDS_CAUCHY_PROFILE_ALL_RANKS=1` extends existing equation-FV, linear-solver
+and pMG records to every domain rank. It does not itself enable timers. Records
+carry the actual rank; FV also records owned-cell count. No collective or
+barrier is added. The absent option retains rank0-only reporting. Compare
+critical-rank phase distributions rather than adding independent phase maxima,
+and retain instrumented runs separately from production timing evidence.
+ILU records additionally retain each rank's factor block count and cumulative
+guarded-inverse fallback count, rather than inferring all-rank behavior from
+rank0's last factorization alone.
+
+Correction auxiliary preparation retains an already published source sample
+and RANS destruction diagonal when the validated owned means and flux polynomial
+have the same allocation, shape/binding, value generations and physical time.
+Read leases exclude an active producer whose generation has not advanced yet.
+Geometry/schema validation and auxiliary preparation still run, and no MPI or
+stream command is conditionally omitted. Means/polynomial/time changes require
+fresh local sampling and destruction evaluation. Chemical source rates are not
+reevaluated by this correction-only preparation.
+
+Equation auxiliary preparation uses the same setup-time exact frame-identity
+predicate as RHS. Ordinary and translational-periodic faces skip identity
+matrix products on gathered states/gradients. Every nonidentity rotation,
+however small, still applies the full scalar/vector gradient transforms.
+This does not skip a halo, property request or quadrature point.
+
+The equation nonlinear solver requests the existing optional
+`meanThermodynamics` auxiliary output alongside face spectra and cell sums.
+The core/dependent preparation refreshes owned/ghost mean pressure, sound speed
+and diffusion bound once per call, then faces consume those rows. This explicit
+3-column buffer is neither a persistent derived-field freshness shortcut nor
+a separately exchanged payload. Face-average turbulent transport remains a
+distinct point evaluation. General callers can still omit the buffer.
+
 `evaluate` includes five fixed Jacobi VR sweeps, auxiliary preparation, RHS,
 leases and transfers. `raw_rhs` retains its input/output scopes across the
 batch and calls the stateless operator with explicit fallback diagnostics.
@@ -1167,7 +1463,8 @@ oracles. Fixed means do not imply settled finite-sweep reconstruction.
 PP and physical ODE/nonlinear controllers are outside this benchmark. The
 `checked` argument selects both scheduled-access checking and the linear
 wrapper's optional collective-error preflights; required shape/route checks,
-solve-entry agreement and numerical reductions remain enabled.
+setup agreement and numerical reductions remain enabled. Repeated solve-entry
+agreement follows the same switch as intermediate error coordination.
 
 
 ## Method-owned buffers and completed halo publications
@@ -1204,9 +1501,9 @@ Extra halo audits are controlled by `execution.haloFreshnessChecks` (default
 `false`). They are also disabled by `implicit.collectiveChecks=false`, even
 when explicitly requested. This gates the extra Begin diagnostic collective
 and the post-exchange freshness audits; no new freshness reduction occurs by
-default. Mandatory transfer preflights remain: the companion folds its binding
-validity into the existing MPI check, so one invalid rank cannot leave peers
-posting requests. Completion still publishes the local version record. As with
+default. The companion folds binding validity into the selected transfer
+preflight: collective rejection in the default mode, immediate MPI abort in
+`abortOnFailure` mode. Completion still publishes the local version record. As with
 other eager operations, callers remain responsible for common scheduling and
 producer readiness. The companion rejects CUDA until a stream-ready
 publication protocol is implemented. It introduces no output-halo refresh.

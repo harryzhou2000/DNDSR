@@ -115,6 +115,7 @@ namespace DNDS::Cauchy
         for (index iCell = 0; iCell < cells; ++iCell)
             DNDS_check_throw_info(bounds.Admissible(EquationPositivityDetail::PointRow<decltype(means)>{means, iCell}), "equation reconstruction PP requires admissible means");
         data.Sample(input, flux, data.higherValues);
+        bool allGood = true;
         {
             const SampleRead read(data.prototype, data.higherValues, points);
             const auto values = read.View();
@@ -129,7 +130,18 @@ namespace DNDS::Cauchy
                 for (index q = data.owner->positivityOffsets[iCell]; q < data.owner->positivityOffsets[iCell + 1]; ++q)
                     good = good && data.ReferenceGood(values, q, bounds);
                 degrees(iCell, 0) = good ? n.cfv.maxOrder : -1;
+                allGood = allGood && good;
             }
+        }
+        // Same full-polynomial early exit as the per-cell Euler policy. The
+        // actual coefficients generated these samples and remain unchanged;
+        // no write scope, repeat sampling or publication is needed. This is
+        // local only: the enclosing operator owns collective ordering.
+        if (allGood)
+        {
+            data.limited = 0;
+            data.minimum = 1;
+            return;
         }
         if (data.reference)
         {

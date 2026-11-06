@@ -178,11 +178,11 @@ namespace DNDS::Cauchy
                                                        const Riemann::AcousticState &leftMeanData, const Riemann::AcousticState &rightMeanData,
                                                        const Vector3 &normal, const Vector3 &gridVelocity) const
     {
-        Gas(); // General-EOS Roe/shock/AUSM data need a distinct physical producer.
         PreparedRiemannData data{};
         data.required = flux.RequiredInputs();
         if (!data.required.meanStates)
             return data;
+        Gas(); // General-EOS Roe/shock/AUSM data need a distinct physical producer.
         data.leftMean = leftMeanData;
         data.rightMean = rightMeanData;
         const auto &leftMean = leftMeanData.flow.conservative, &rightMean = rightMeanData.flow.conservative;

@@ -2,9 +2,15 @@
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include "DNDS/MPI/Failure.hpp"
 #include <array>
 #include <optional>
 #include <utility>
+#include <cstdlib>
+#include <chrono>
+#include <cstdio>
+#include <iostream>
+#include "DNDS/Serializer/JsonUtil.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -12,9 +18,81 @@ namespace DNDS::Cauchy
     namespace A = Algebra;
     namespace
     {
+        /// Opt-in controller diagnosis. Local clocks only, no extra MPI or
+        /// numeric-policy changes. Counters are per solver instance; disabled
+        /// runs do not query a clock. Nested total includes all named phases.
+        struct LinearProfile
+        {
+            enum Phase
+            {
+                Factor,
+                Action,
+                Triangular,
+                SGS,
+                Products,
+                Algebra,
+                Total,
+                PhaseNumber
+            };
+            bool enabled = std::getenv("DNDS_CAUCHY_PROFILE_LINEAR") != nullptr;
+            bool allRanks = std::getenv("DNDS_CAUCHY_PROFILE_ALL_RANKS") != nullptr;
+            std::array<real, PhaseNumber> seconds{};
+            std::array<index, PhaseNumber> calls{};
+            index instance = 0, solves = 0;
+            LinearProfile()
+            {
+                if (enabled)
+                {
+                    static thread_local index next = 0;
+                    instance = next++;
+                }
+            }
+            class Scope
+            {
+                using Clock = std::chrono::steady_clock;
+                LinearProfile *_profile;
+                Phase _phase;
+                Clock::time_point _start{};
+
+            public:
+                Scope(LinearProfile &profile, Phase phase) : _profile(profile.enabled ? &profile : nullptr), _phase(phase)
+                {
+                    if (_profile)
+                        _start = Clock::now();
+                }
+                ~Scope()
+                {
+                    if (_profile)
+                    {
+                        _profile->seconds[_phase] += std::chrono::duration<real>(Clock::now() - _start).count();
+                        ++_profile->calls[_phase];
+                    }
+                }
+            };
+            void Record(int rank)
+            {
+                if (!enabled)
+                    return;
+                ++solves;
+                if ((!rank || allRanks) && solves % 32 == 0)
+                {
+                    const auto record = nlohmann::ordered_json{{"rank", rank}, {"solver_instance", instance}, {"solves", solves}, {"phases", {"factor", "action", "triangular", "sgs", "products", "algebra", "total"}}, {"seconds", seconds}, {"calls", calls}}.dump();
+                    std::fprintf(stdout, "CAUCHY_LINEAR_PROFILE %s\n", record.c_str());
+                }
+            }
+        };
         bool UsesILU(const LinearSolveSettings &settings)
         {
             return settings.method == "ilu" || (settings.method == "gmres" && settings.preconditioner == "ilu");
+        }
+        template <class Rows>
+        bool FiniteRows(Rows values, index components)
+        {
+            bool valid = true;
+            for (index iRow = 0; iRow < values.RowCount(); ++iRow)
+                for (index j = 0; j < components; ++j)
+                    valid &= std::isfinite(values(iRow, j));
+            return valid;
         }
         struct FieldLinearOperations : Linear::FieldKrylovOperations
         {
@@ -22,6 +100,11 @@ namespace DNDS::Cauchy
             using Iteration = LinearProblemContext::SGSIteration;
             static index Width(const State &state) { return index(state.Width()); }
             static void Agree(const State &, MPI_Comm) {}
+            static bool LocalFinite(const State &state)
+            {
+                const auto read = state.Owned().Read();
+                return FiniteRows(read.View<R::UniformTableRows>(), Width(state));
+            }
             template <class S, class F>
             static void VisitFields(S &state, F &&visit) { visit(state); }
             static std::vector<real> LocalProducts(const State &x, const std::vector<const State *> &probes)
@@ -50,6 +133,12 @@ namespace DNDS::Cauchy
             using Iteration = LinearProblemContext::EquationSGSIteration;
             static index Width(const State &state) { return state.ComponentNumber(); }
             static void Agree(const State &state, MPI_Comm communicator) { AgreeEquationBinding(state, communicator); }
+            static bool LocalFinite(const State &state)
+            {
+                const auto read = state.ReadOwned();
+                const auto layout = read.ComponentLayout();
+                return FiniteRows(layout.View(), Width(state));
+            }
             template <class S, class F>
             static void VisitFields(S &state, F &&visit)
             {
@@ -130,6 +219,7 @@ namespace DNDS::Cauchy
                 }
             };
             bool failed = false;
+            mutable LinearProfile profile;
             StateLinearSolverData(std::shared_ptr<LinearProblemContext> matrix, const Field &prototype, LinearSolveSettings controls, LinearExecution policy)
                 : problem(std::move(matrix)), mpi(problem->Space().Communicator()), settings(std::move(controls)), execution(policy),
                   old(Ops::NewVector(prototype)), next(Ops::NewVector(prototype)), forward(Ops::NewVector(prototype)), action(Ops::NewVector(prototype)), residual(Ops::NewVector(prototype))
@@ -156,6 +246,7 @@ namespace DNDS::Cauchy
             }
             void Apply(Field &input, Field &output)
             {
+                const LinearProfile::Scope timing(profile, LinearProfile::Action);
                 auto exchange = Exchange(Halo(input));
                 if (execution.overlap)
                     Stage([&]
@@ -166,6 +257,7 @@ namespace DNDS::Cauchy
             }
             void Sweep(const Field &rhs, Field &input, Field &output, bool knownZero)
             {
+                const LinearProfile::Scope timing(profile, LinearProfile::SGS);
                 std::optional<Exchange> exchange;
                 if (!knownZero)
                     exchange.emplace(Exchange(Halo(input)));
@@ -220,11 +312,28 @@ namespace DNDS::Cauchy
             }
             std::vector<real> Products(const Field &x, const std::vector<const Field *> &probes) const
             {
+                const LinearProfile::Scope timing(profile, LinearProfile::Products);
                 std::vector<real> local, global(probes.size());
                 Stage([&]
                       { local = Ops::LocalProducts(x, probes); });
                 MPI_Allreduce(local.data(), global.data(), int(global.size()), MPI_DOUBLE, MPI_SUM, mpi.comm);
                 return global;
+            }
+            bool Finite(const Field &x) const
+            {
+                const LinearProfile::Scope timing(profile, LinearProfile::Products);
+                int valid = 1;
+                Stage([&]
+                      { valid = Ops::LocalFinite(x); });
+                if (execution.collectiveChecks)
+                    MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+                else if (!valid)
+                {
+                    // Unchecked production execution cannot return a local
+                    // failure while peers continue into the next exchange.
+                    MPI::Abort(mpi.comm, "nonfinite fixed-count linear correction");
+                }
+                return valid;
             }
             static void CheckIdle(const Field &state, bool ghosts)
             {
@@ -235,11 +344,18 @@ namespace DNDS::Cauchy
             const Field &Solution() const { return gmres ? gmres->Solution() : *solution; }
             Linear::LinearIterationReport Solve(const Field &rhs, const Field *initialGuess)
             {
+                struct FinishProfile
+                {
+                    LinearProfile &profile;
+                    int rank;
+                    ~FinishProfile() { profile.Record(rank); }
+                } finish{profile, mpi.rank};
+                const LinearProfile::Scope totalTiming(profile, LinearProfile::Total);
                 auto &data = *this;
                 std::optional<R::Array<real>::ReadLease> diagonal;
                 std::optional<LinearProblemContext::OffDiagonalReadAccess> offDiagonal;
-                MPI::LocalStage(data.mpi, [&]
-                                {
+                data.Stage([&]
+                           {
             DNDS_check_throw_info(!data.failed, "linear workspace failed; rebuild it before reuse");
             data.problem->Validate(); rhs.Validate();
             Ops::CheckCompatible(data.old, rhs);
@@ -265,6 +381,7 @@ namespace DNDS::Cauchy
             offDiagonal.emplace(data.problem->ReadOffDiagonal());
             if (UsesILU(data.settings))
             {
+                const LinearProfile::Scope timing(data.profile, LinearProfile::Factor);
                 if (!data.problem->ILUFactorsCurrent()) data.problem->FactorizeILU();
             }
             else data.problem->InvertDiagonal(); });
@@ -278,22 +395,21 @@ namespace DNDS::Cauchy
                     auto &x = *data.solution;
                     data.Stage([&]
                                {
+                const LinearProfile::Scope timing(data.profile, LinearProfile::Algebra);
                 if (!initialGuess) Clear(x);
                 else Ops::CopyGuess(x, *initialGuess); });
                     Linear::LinearIterationReport report;
-                    const auto norm = [&](const Field &field)
-                    { ++report.innerProductBatches; return std::sqrt(data.Products(field, {&field})[0]); };
-                    const real normB = norm(rhs), target = std::max(data.settings.absoluteTolerance, data.settings.relativeTolerance * normB);
-                    const auto residual = [&]
+                    // Defect formation is independent of stopping/reporting:
+                    // fixed-count ILU needs it only before later corrections.
+                    const auto formDefect = [&]
                     {
                         data.Apply(x, data.action);
                         ++report.operatorApplications;
                         data.Stage([&]
-                                   { Ops::LinearCombination(data.residual, real(1), rhs, real(-1), data.action); });
-                        return norm(data.residual);
+                                   { const LinearProfile::Scope timing(data.profile, LinearProfile::Algebra);
+                                     Ops::LinearCombination(data.residual, real(1), rhs, real(-1), data.action); });
                     };
-                    report.initialTrueResidual = report.trueResidual = initialGuess ? residual() : normB;
-                    while (std::isfinite(report.trueResidual) && report.trueResidual > target && report.iterations < data.settings.maxIterations)
+                    const auto correct = [&]
                     {
                         if (data.settings.method == "ilu")
                         {
@@ -304,15 +420,41 @@ namespace DNDS::Cauchy
                             const auto &defect = !initialGuess && report.iterations == 0 ? rhs : data.residual;
                             data.Stage([&]
                                        {
-                                data.problem->ApplyILU(defect, data.forward, data.action);
+                                {
+                                    const LinearProfile::Scope timing(data.profile, LinearProfile::Triangular);
+                                    data.problem->ApplyILU(defect, data.forward, data.action);
+                                }
+                                const LinearProfile::Scope timing(data.profile, LinearProfile::Algebra);
                                 Ops::LinearCombination(data.next, real(1), x, real(1), data.action); });
                             ++report.preconditionerApplications;
                         }
                         else
                             data.Sweep(rhs, x, data.next, !initialGuess && report.iterations == 0);
                         data.Stage([&]
-                                   { Ops::Copy(x, data.next); });
+                                   { const LinearProfile::Scope timing(data.profile, LinearProfile::Algebra); Ops::Copy(x, data.next); });
                         ++report.iterations;
+                    };
+                    if (data.settings.stopping == "fixedCount")
+                    {
+                        while (report.iterations < data.settings.maxIterations)
+                        {
+                            if (data.settings.method == "ilu" && (initialGuess || report.iterations != 0))
+                                formDefect();
+                            correct();
+                        }
+                        report.usable = data.Finite(x);
+                        report.stop = report.usable ? Linear::LinearStop::FixedCount : Linear::LinearStop::NonFinite;
+                        return report; // Residual diagnostics stay unevaluated (NaN).
+                    }
+                    const auto norm = [&](const Field &field)
+                    { ++report.innerProductBatches; return std::sqrt(data.Products(field, {&field})[0]); };
+                    const real normB = norm(rhs), target = std::max(data.settings.absoluteTolerance, data.settings.relativeTolerance * normB);
+                    const auto residual = [&]
+                    { formDefect(); return norm(data.residual); };
+                    report.initialTrueResidual = report.trueResidual = initialGuess ? residual() : normB;
+                    while (std::isfinite(report.trueResidual) && report.trueResidual > target && report.iterations < data.settings.maxIterations)
+                    {
+                        correct();
                         report.trueResidual = residual();
                     }
                     report.converged = std::isfinite(report.trueResidual) && report.trueResidual <= target;
@@ -347,18 +489,20 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(prototype.Space().Same(problem->Space()) && Ops::Width(prototype) == problem->Components() && prototype.Device() == R::Device::Host(),
                                   "linear solver prototype differs from its CPU problem");
             DNDS_check_throw_info(bindHalo && (settings.method == "sgs" || settings.method == "ilu" || settings.method == "gmres") &&
+                                      (settings.stopping == "residual" || (settings.stopping == "fixedCount" && settings.method != "gmres")) &&
                                       (settings.preconditioner == "sgs" || settings.preconditioner == "ilu") && settings.maxIterations >= 0 &&
                                       settings.subspace > 0 && settings.subspace < INT_MAX && settings.sgsSweeps > 0 && settings.iluFill >= -1 && settings.iluFill <= 5 &&
+                                      (settings.iluOrdering == "natural" || settings.iluOrdering == "rcm") &&
                                       std::isfinite(settings.relativeTolerance) && settings.relativeTolerance >= 0 &&
                                       std::isfinite(settings.absoluteTolerance) && settings.absoluteTolerance >= 0,
                                   "invalid linear solver controls");
             DNDS_check_throw_info(!(UsesILU(settings) && settings.exchangeBetweenSweeps),
                                   "local ILU has no inter-scan exchange"); });
-            const std::array<int64_t, 12> integers{settings.method == "gmres" ? 1 : settings.method == "ilu" ? 2
+            const std::array<int64_t, 14> integers{settings.method == "gmres" ? 1 : settings.method == "ilu" ? 2
                                                                                                              : 0,
                                                    settings.preconditioner == "ilu", settings.maxIterations, settings.subspace,
                                                    settings.sgsSweeps, settings.iluFill, settings.iluCoreFirst, settings.exchangeBetweenSweeps,
-                                                   execution.overlap, execution.collectiveChecks, problem->Components(), int(problem->OffDiagonalMode())};
+                                                   execution.overlap, execution.collectiveChecks, problem->Components(), int(problem->OffDiagonalMode()), settings.stopping == "fixedCount", settings.iluOrdering == "rcm"};
             auto lowest = integers, highest = integers;
             const std::array<real, 2> tolerances{settings.relativeTolerance, settings.absoluteTolerance};
             auto lowTolerance = tolerances, highTolerance = tolerances;
@@ -373,7 +517,7 @@ namespace DNDS::Cauchy
                             {
             data = std::make_shared<Data>(problem, prototype, settings, execution);
             data->inputs.reserve(size_t(settings.subspace) + 4);
-            if (UsesILU(settings)) problem->PrepareILUStructure(settings.iluFill, settings.iluCoreFirst); });
+            if (UsesILU(settings)) problem->PrepareILUStructure(settings.iluFill, settings.iluCoreFirst, {}, settings.iluOrdering); });
             const auto bind = [&](Field &field)
             {
                 typename Data::Input input{&field, {}};

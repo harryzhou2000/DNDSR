@@ -79,7 +79,7 @@ namespace DNDS::CFV
             .def_readonly("rawCondition", &HardEigen::SVDInverseDiagnostics::rawCondition)
             .def_readonly("retainedCondition", &HardEigen::SVDInverseDiagnostics::retainedCondition);
         py::class_<FiniteVolumePlan>(m, "FiniteVolumePlan")
-            .def_static("ConstructMetrics", &FiniteVolumePlan::ConstructMetrics, py::arg("mesh"), py::arg("intOrder") = 5, py::arg("axisymmetric") = false,
+            .def_static("ConstructMetrics", &FiniteVolumePlan::ConstructMetrics, py::arg("mesh"), py::arg("intOrder") = 5, py::arg("axisymmetric") = false, py::arg("faceIntOrder") = 0,
                         "Collective CPU preparation. All ranks must call with matching settings.")
             .def("Validate", &FiniteVolumePlan::Validate)
             .def("NumCell", &FiniteVolumePlan::NumCell)
@@ -89,7 +89,7 @@ namespace DNDS::CFV
             .def("BuildField", py::overload_cast<index>(&FiniteVolumePlan::BuildField, py::const_))
             .def("BuildFieldWithLayout", py::overload_cast<Runtime::RowLayout, Runtime::Device>(&FiniteVolumePlan::BuildField, py::const_),
                  py::arg("prototype"), py::arg("device") = Runtime::Device::Host())
-            .def("BindHalo", &FiniteVolumePlan::BindHalo, "Collective persistent direct MPI binding; explicitly begin/wait on each field stage.")
+            .def("BindHalo", &FiniteVolumePlan::BindHalo, py::arg("field"), py::arg("options") = Runtime::TransferOptions{}, "Collective persistent direct MPI binding; explicitly begin/wait on each field stage.")
             .def("GetCellVol", &FiniteVolumePlan::GetCellVol)
             .def("GetCellCent", &FiniteVolumePlan::GetCellCent)
             .def("BuildCellMaxLenScale", &FiniteVolumePlan::BuildCellMaxLenScale,

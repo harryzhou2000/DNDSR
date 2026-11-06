@@ -13,7 +13,10 @@ namespace DNDS::Linear
         IterationLimit,
         ArnoldiBreakdown,
         PreconditionerBreakdown,
-        NonFinite
+        NonFinite,
+        /// Requested stationary corrections completed; no convergence norm
+        /// was evaluated. Only the returned update's finiteness is certified.
+        FixedCount
     };
     struct KrylovSettings
     {

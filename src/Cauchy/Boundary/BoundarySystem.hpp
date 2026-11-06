@@ -89,5 +89,12 @@ namespace DNDS::Cauchy
         explicit BoundarySystem(const std::map<std::string, BoundarySettings> &settings);
         const BoundaryCondition &At(int zone) const;
         void ValidateUsed(const std::set<int> &zones) const;
+        /// Check distinct resolved producers, independent of mesh quadrature
+        /// count. This is also valid for standalone auxiliary preparation.
+        void ValidateEquationProducers(const std::vector<int> &usedZones) const
+        {
+            for (const int zone : usedZones)
+                At(zone).ValidateEquationProducer();
+        }
     };
 }

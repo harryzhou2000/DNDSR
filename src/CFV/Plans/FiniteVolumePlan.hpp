@@ -154,7 +154,10 @@ namespace DNDS::CFV
         /// axisymmetric uses radius=y>=0 and measures r*dA/r*ds, without 2*pi.
         /// Equation source terms and cylindrical component connections remain
         /// with the equation adapter; this option changes integration only.
-        static FiniteVolumePlan ConstructMetrics(ssp<Geom::UnstructuredMesh> mesh, int intOrder = 5, bool axisymmetric = false);
+        /// faceIntOrder=0 follows intOrder. faceIntOrder=1 publishes one
+        /// reference-center point per face, with the face measure still
+        /// integrated at intOrder. Cell volumes/centers are unaffected.
+        static FiniteVolumePlan ConstructMetrics(ssp<Geom::UnstructuredMesh> mesh, int intOrder = 5, bool axisymmetric = false, int faceIntOrder = 0);
         void Validate() const;
         FiniteVolumeRead AcquireRead() const;
         index NumCell() const;
@@ -173,10 +176,10 @@ namespace DNDS::CFV
         /// Uniform physical prototype; derive owned/ghost pitches independently.
         FVField BuildField(Runtime::RowLayout prototype, Runtime::Device device = Runtime::Device::Host()) const;
         /// Collective binding, retained by caller for persistent repeated pulls.
-        Runtime::TransferBinding BindHalo(FVField &field) const;
+        Runtime::TransferBinding BindHalo(FVField &field, Runtime::TransferOptions options = {}) const;
         /// CPU direct transfer with completed-publication provenance. Callers
         /// provide coherent exchange epochs; no remote freshness is inferred.
-        Algebra::DofHalo<real, uint64_t> BindTrackedHalo(FVField &field) const;
+        Algebra::DofHalo<real, uint64_t> BindTrackedHalo(FVField &field, Runtime::TransferOptions options = {}) const;
         void ValidateField(const FVField &field, index width) const;
         MPI_Comm Communicator() const;
         real GetCellVol(index iCell) const;
@@ -257,6 +260,7 @@ namespace DNDS::CFV
         FiniteVolumeRead _geometry;
         std::optional<Runtime::Array<real>::ReadLease> _basis;
         Runtime::Array<real>::ReadLease _moments;
+        Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::TableRows> _basisView, _momentView;
         std::shared_ptr<Geom::MeshReadAccess> _meshRead;
         explicit ReconstructionBasisRead(std::shared_ptr<const Detail::ReconstructionData> data);
         friend class VariationalReconstructionPlan;

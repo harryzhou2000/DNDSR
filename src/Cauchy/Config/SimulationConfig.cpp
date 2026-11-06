@@ -280,13 +280,15 @@ namespace DNDS::Cauchy
                                   std::isfinite(pseudoGrowth) && pseudoGrowth >= 1 && std::isfinite(relaxation) && relaxation > 0 && relaxation <= 1,
                               "invalid implicit nonlinear/diagonal/pseudo-time controls");
         DNDS_check_throw_info((linear.method == "sgs" || linear.method == "ilu" || linear.method == "gmres") && (linear.preconditioner == "sgs" || linear.preconditioner == "ilu") &&
+                                  (linear.stopping == "residual" || (linear.stopping == "fixedCount" && linear.method != "gmres")) &&
                                   linear.iterations > 0 && linear.subspace > 0 && linear.subspace < INT_MAX &&
                                   nonnegative(linear.relativeTolerance) && nonnegative(linear.absoluteTolerance) && sgs.sweeps > 0 && ilu.fill >= -1 && ilu.fill <= 5 &&
+                                  (ilu.ordering == "natural" || ilu.ordering == "rcm") &&
                                   !((linear.method == "ilu" || (linear.method == "gmres" && linear.preconditioner == "ilu")) && sgs.exchangeBetweenSweeps),
                               "invalid implicit linear/SGS/ILU controls");
-        DNDS_check_throw_info((positivity.rhsMode == "none" || positivity.rhsMode == "rhs" || positivity.rhsMode == "dTau") &&
-                                  (positivity.rhsReduction == "cell" || positivity.rhsReduction == "minimumLimited" || positivity.rhsReduction == "minimumAll") &&
-                                  nonnegative(positivity.rhsScale) && std::isfinite(positivity.rhsRelax) && positivity.rhsRelax > 0 && positivity.rhsRelax <= 1 &&
+        DNDS_check_throw_info((positivity.rhsFPPMode == "none" || positivity.rhsFPPMode == "rhs" || positivity.rhsFPPMode == "dTau") &&
+                                  (positivity.rhsFPPReduction == "cell" || positivity.rhsFPPReduction == "minimumLimited" || positivity.rhsFPPReduction == "minimumAll") &&
+                                  nonnegative(positivity.rhsFPPScale) && std::isfinite(positivity.rhsFPPRelax) && positivity.rhsFPPRelax > 0 && positivity.rhsFPPRelax <= 1 &&
                                   std::isfinite(positivity.incrementRelax) && positivity.incrementRelax > 0 && positivity.incrementRelax <= 1 &&
                                   positivity.compressionPower > 0 && positivity.compressionPower <= INT_MAX / 2,
                               "invalid implicit Euler-PP controls");
@@ -342,6 +344,8 @@ namespace DNDS::Cauchy
         require(s.execution.device == "cpu", "residual/BC/reconstruction backend " + s.execution.device);
         require(s.execution.layout == "aos" || s.execution.layout == "soa" || s.execution.layout == "aosoa32", "flow layout " + s.execution.layout);
         require(s.execution.communication == "mpi-direct", "transport " + s.execution.communication);
+        require(s.execution.transferPreflight == "collective" || s.execution.transferPreflight == "abortOnFailure", "transfer preflight " + s.execution.transferPreflight);
+        require(s.execution.fieldGrouping == "equationBlocks" || s.execution.fieldGrouping == "coupled", "field grouping " + s.execution.fieldGrouping);
         require(s.equation.system == "compressible", "equation " + s.equation.system);
         const bool mixture = s.equation.eos == "idealGasMixture";
         const bool rans = s.equation.rans.model != "none", extended = mixture || rans;
@@ -373,8 +377,11 @@ namespace DNDS::Cauchy
         if (extended)
         {
             require(s.initialProfile.kind == "constant", "nonconstant extended equation initialization");
-            require(Riemann::RiemannFlux::Resolve(s.numerics.flux).Kind() == Riemann::Solver::Rusanov && !s.numerics.faceFallback,
-                    "extended equation flux preparation/face fallback");
+            const auto flux = Riemann::RiemannFlux::Resolve(s.numerics.flux);
+            require((!mixture || flux.Kind() == Riemann::Solver::Rusanov) && !s.numerics.faceFallback,
+                    "extended equation thermodynamic flux preparation/face fallback");
+            require(!s.numerics.riemann.useStencil || (!flux.UsesTransverseSignal() && !flux.UsesPressureStencil()),
+                    "extended equation wave/pressure stencil auxiliary inputs");
             require(s.numerics.limiter == "none" || (s.numerics.limiter == "WBAP" && !s.numerics.characteristicLimiter), "extended equation limiter");
             require(s.equation.transport != "NewtonianFourier" || s.numerics.viscousGradient == "polynomial", "extended equation viscous gradient");
             require(!s.implicit.roeDissipation, "extended equation Roe Jacobian");

@@ -237,6 +237,36 @@ TEST_CASE("Auxiliary core completes during a real mean halo write and full publi
         }
     }
 }
+TEST_CASE("High-order logical auxiliary maxima match the full pointwise flow path")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 6);
+    for (bool moving : {false, true})
+    {
+        C::DomainSettings settings;
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.cfv.intOrder = 5;
+        settings.equation.transport = "NewtonianFourier";
+        settings.equation.viscosity = .03;
+        if (moving)
+            settings.motion.angularVelocity = {0, 0, .4};
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        const auto geometry = fv.Metrics().AcquireRead();
+        const auto metric = geometry.HostView();
+        if (fv.Metrics().NumFaceProc())
+            REQUIRE(metric.FaceQuadratureEnd(0) - metric.FaceQuadratureBegin(0) > 1);
+        auto state = fv.Metrics().BuildField(5);
+        Initialize(fv, state, equation);
+        fv.BindHalo(state).Begin().Wait();
+        auto reference = fv.BuildAuxiliaryValues({true, true, true, true, true, true, true});
+        auto observed = fv.BuildAuxiliaryValues({true, true, true, true, true, true, true});
+        fv.PrepareAuxValues(state, reference, .25);
+        const auto logical = C::EquationDofs::Coupled(equation.Schema(), state);
+        fv.PrepareAuxValues(logical, observed, .25);
+        Compare(Save(reference), observed);
+    }
+}
 TEST_CASE("Auxiliary abandonment rebind and phase errors never publish a complete result")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 2);

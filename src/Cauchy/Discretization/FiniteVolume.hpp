@@ -246,12 +246,24 @@ namespace DNDS::Cauchy
         /// This updates state ghosts and reconstruction scratch, never owned
         /// means. Each output physical allocation must be distinct from inputs.
         /// implicit.collectiveChecks=false delegates distributed failure
-        /// coordination to the caller; entry/binding preflights still agree.
+        /// coordination to the caller. Entry/binding checks still run locally;
+        /// mandatory transfer access preflights still agree before MPI payloads.
         void Evaluate(EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace,
                       Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
+        /// Prepare the requested auxiliary outputs during the mean exchange,
+        /// before reconstruction/RHS. RHS reads this explicit publication;
+        /// the caller may then consume its spectra for pseudo-time/Jacobian
+        /// setup without recomputing and overwriting RHS-refined signals.
+        /// Buffers must be distinct from state/residual and retained through
+        /// this synchronous call. The no-aux overload retains its old scope.
+        void Evaluate(EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace,
+                      AuxiliaryValues &auxiliary, Runtime::EagerEngine &engine,
+                      const Runtime::ExecutionStream &stream, real time = 0) const;
         /// Same synchronous collective/access contract as Evaluate. Only this
         /// trial's private scratch and distinct residual are written; state
         /// owned values and ordinary reconstruction are unchanged.
+        /// This zero-polynomial physical-dt probe retains parent quadrature,
+        /// as in Euler; it is not a separately configured P0 FV operator.
         void EvaluateMean(EquationDofs &state, EquationDofs &residual, EquationMeanWorkspace &workspace,
                           Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
         const EquationDofs &ReconstructionGuess(const EquationWorkspace &workspace) const;
@@ -380,6 +392,9 @@ namespace DNDS::Cauchy
                              const EquationWorkspace *sourceReconstruction = nullptr) const;
         FiniteVolume(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const EquationSystem &equation);
         const CFV::FiniteVolumePlan &Metrics() const;
+        /// Bind through the metric space with this domain's explicit MPI
+        /// launch policy. Setup remains collective in either policy.
+        Runtime::TransferBinding BindHalo(CFV::FVField &field) const;
         const EquationSystem &Equation() const;
         /// Immutable resolved spatial controls, including source-free settings
         /// for a split Domain. Custom controllers copy this for their own
@@ -532,6 +547,8 @@ namespace DNDS::Cauchy
         /// policy, zero polynomial and viscosity explicitly ignored. No VR,
         /// WBAP or reconstruction PP. Uses only its independent typed scratch;
         /// accepted means, clock and the normal VR workspace are unchanged.
+        /// Retains parent quadrature/trace points as Euler's zero-polynomial
+        /// physical-dt probe does. Standalone constant FV instead uses midpoint.
         void EvaluateMean(CFV::FVField &state, CFV::FVField &residual, MeanWorkspace &workspace,
                           Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
         /// Collective Euler compress=1 bound from dt*scale*meanResidual/volume.
@@ -631,7 +648,8 @@ namespace DNDS::Cauchy
         std::shared_ptr<EquationWorkspace> BuildEquationWorkspaceImpl(EquationDofs &state,
                                                                       std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, bool meanOnly) const;
         void EvaluateEquationImpl(EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace,
-                                  Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time) const;
+                                  Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time,
+                                  AuxiliaryValues *auxiliary = nullptr) const;
         void ValidateEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &workspace, real time) const;
         void AddEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &workspace,
                                        const Runtime::Array<real>::WriteLease &diagonal, DiagonalStorage storage,

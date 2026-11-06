@@ -31,6 +31,7 @@ namespace DNDS::Cauchy::NonlinearDetail
         LinearSolveSettings result;
         result.method = settings.linear.method;
         result.preconditioner = settings.linear.preconditioner;
+        result.stopping = settings.linear.stopping;
         result.maxIterations = settings.linear.iterations;
         result.subspace = settings.linear.subspace;
         result.relativeTolerance = settings.linear.relativeTolerance;
@@ -39,6 +40,7 @@ namespace DNDS::Cauchy::NonlinearDetail
         result.exchangeBetweenSweeps = settings.sgs.exchangeBetweenSweeps;
         result.iluFill = settings.ilu.fill;
         result.iluCoreFirst = settings.ilu.coreFirst;
+        result.iluOrdering = settings.ilu.ordering;
         return result;
     }
     /// Exact controller agreement, including component lists larger than a

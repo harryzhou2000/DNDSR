@@ -180,8 +180,10 @@ companion on an MPI-permitted controller, and retains the context until before
 MPI finalization. A checked CPU stream waits for its producer prefix;
 caller-ordered eager mode requires CPU producers already complete. Begin's
 extra diagnostic collective defaults off. Binding validity is folded into the
-existing MPI transfer preflight even with that diagnostic disabled; this adds
-no reduction. CUDA is explicitly unsupported here until stream-ready receipt
+selected MPI transfer preflight even with that diagnostic disabled; this adds
+no reduction. Default collective validation rejects before requests. Explicit
+`TransferOptions::preflight=TransferPreflight::AbortOnFailure` checks locally
+and aborts MPI on failure, with no recoverable rejection. CUDA is explicitly unsupported here until stream-ready receipt
 semantics are provided. Destruction may drain MPI; do not retire these owners
 on arbitrary worker/device callbacks.
 

@@ -176,8 +176,8 @@ namespace DNDS::Cauchy
                         for (index iCell = 0; iCell < output.RowCount(); ++iCell)
                             for (index j = 0; j < output.RowSize(iCell); ++j) output(iCell, j) = input(iCell, j); });
                     auto &means = domain._trial.CoupledField();
-                    domain._fv.Metrics().BindHalo(means).Begin().Wait();
-                    domain._fv.Metrics().BindHalo(*coefficients[iDomain]).Begin().Wait();
+                    domain._fv.BindHalo(means).Begin().Wait();
+                    domain._fv.BindHalo(*coefficients[iDomain]).Begin().Wait();
                     ports[iDomain] = {&domain._fv, &means, &*coefficients[iDomain]}; });
                 StateEpoch epoch;
                 epoch.acceptedStep = uint64_t(step);

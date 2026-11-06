@@ -28,16 +28,19 @@ namespace DNDS::CFV
             for (const auto weight : weights)
                 DNDS_check_throw_info(std::isfinite(weight) && weight >= 0, "invalid zone boundary derivative weight");
     }
-    FiniteVolumePlan FiniteVolumePlan::ConstructMetrics(ssp<UnstructuredMesh> mesh, int intOrder, bool axisymmetric)
+    FiniteVolumePlan FiniteVolumePlan::ConstructMetrics(ssp<UnstructuredMesh> mesh, int intOrder, bool axisymmetric, int faceIntOrder)
     {
         DNDS_check_throw_info(mesh, "finite-volume metrics require a mesh");
         const auto mpi = mesh->getMPI();
         auto communication = std::make_shared<R::CommunicationContext>(mpi.comm);
+        if (faceIntOrder == 0)
+            faceIntOrder = intOrder;
         std::shared_ptr<Detail::FiniteVolumeData> data;
         // All local allocation/geometry failures agree before the halo collective.
         MPI::LocalStage(mpi, [&]
                         {
             DNDS_check_throw_info(intOrder >= 2 && intOrder <= INT_ORDER_MAX, "invalid FV integration order");
+            DNDS_check_throw_info(faceIntOrder == 1 || faceIntOrder == intOrder, "FV face integration must be midpoint or the metric order");
             auto read = mesh->AcquireRead(MeshReadRequirements::CellFlux());
             const auto view = read.HostView();
             DNDS_check_throw_info(view.Dimension() == 2 || view.Dimension() == 3, "FV requires 2D/3D geometry");
@@ -64,7 +67,7 @@ namespace DNDS::CFV
             for (index iFace = 0; iFace < view.NumFaceProc(); ++iFace)
             {
                 offset(iFace, 0) = count;
-                count += Quadrature(view.GetFaceElement(iFace), intOrder).GetNumPoints();
+                count += Quadrature(view.GetFaceElement(iFace), faceIntOrder).GetNumPoints();
             }
             offset(view.NumFaceProc(), 0) = count;
             data->faceQuadrature = R::Array<real>(R::RowLayout::Dense(count, 7));
@@ -115,10 +118,25 @@ namespace DNDS::CFV
             {
                 view.GetCoordsOnFace(iFace, coords);
                 const auto element = view.GetFaceElement(iFace);
-                const Quadrature quadrature(element, intOrder);
+                const Quadrature quadrature(element, faceIntOrder);
+                real integratedArea = 0;
+                if (faceIntOrder == 1)
+                {
+                    const Quadrature measure(element, intOrder);
+                    for (int iG = 0; iG < measure.GetNumPoints(); ++iG)
+                    {
+                        const auto &shape = Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(intOrder).at(iG);
+                        const auto jacobian = ShapeJacobianCoordD01Nj(coords, shape);
+                        const tPoint normal = view.Dimension() == 2 ? FacialJacobianToNormVec<2>(jacobian) : FacialJacobianToNormVec<3>(jacobian);
+                        const auto position = PPhysicsCoordD01Nj(coords, shape);
+                        DNDS_check_throw_info(!axisymmetric || position[1] >= 0, "negative axisymmetric face radius");
+                        integratedArea += normal.norm() * measure.GetWeight(iG) * (axisymmetric ? position[1] : 1.);
+                    }
+                    DNDS_check_throw_info(std::isfinite(integratedArea) && integratedArea >= 0, "invalid integrated midpoint face measure");
+                }
                 for (int iG = 0; iG < quadrature.GetNumPoints(); ++iG)
                 {
-                    const auto &shape = Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(intOrder).at(iG);
+                    const auto &shape = Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(faceIntOrder).at(iG);
                     const tPoint position = PPhysicsCoordD01Nj(coords, shape);
                     const auto jacobian = ShapeJacobianCoordD01Nj(coords, shape);
                     tPoint normal = view.Dimension() == 2 ? FacialJacobianToNormVec<2>(jacobian) : FacialJacobianToNormVec<3>(jacobian);
@@ -128,7 +146,7 @@ namespace DNDS::CFV
                     const index iPoint = offset(iFace, 0) + iG;
                     for (int d = 0; d < 3; ++d) point(iPoint, d) = position[d], point(iPoint, d + 3) = normal[d];
                     DNDS_check_throw_info(!axisymmetric || position[1] >= 0, "negative axisymmetric face radius");
-                    point(iPoint, 6) = det * quadrature.GetWeight(iG) * (axisymmetric ? position[1] : 1.);
+                    point(iPoint, 6) = faceIntOrder == 1 ? integratedArea : det * quadrature.GetWeight(iG) * (axisymmetric ? position[1] : 1.);
                 }
             } });
         data->halo.emplace(data->cells.BuildRowTransferPlan());
@@ -191,18 +209,18 @@ namespace DNDS::CFV
         DNDS_check_throw_info(field.Space().Same(_data->dofs) && index(field.Width()) == width && field.Device() == R::Device::Host(),
                               "FV field belongs to another plan/order, has wrong width, or is not on CPU");
     }
-    R::TransferBinding FiniteVolumePlan::BindHalo(FVField &field) const
+    R::TransferBinding FiniteVolumePlan::BindHalo(FVField &field, R::TransferOptions options) const
     {
         MPI::LocalStage(_data->mesh->getMPI(), [&]
                         { ValidateField(field, field.Width()); });
         return R::PayloadPlan(*_data->halo, field.Owned().Layout(), field.Ghost().Layout(), R::ElementSchema::Arithmetic<real>())
-            .Bind(field.Owned(), field.Ghost(), R::TransferTransport::Direct);
+            .Bind(field.Owned(), field.Ghost(), R::TransferTransport::Direct, std::move(options));
     }
-    Algebra::DofHalo<> FiniteVolumePlan::BindTrackedHalo(FVField &field) const
+    Algebra::DofHalo<> FiniteVolumePlan::BindTrackedHalo(FVField &field, R::TransferOptions options) const
     {
         MPI::LocalStage(_data->mesh->getMPI(), [&]
                         { ValidateField(field, field.Width()); });
-        return Algebra::DofHalo<>(field, *_data->halo);
+        return Algebra::DofHalo<>(field, *_data->halo, std::move(options));
     }
     real FiniteVolumePlan::GetCellVol(index iCell) const
     {

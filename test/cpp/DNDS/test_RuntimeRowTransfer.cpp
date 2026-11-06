@@ -5,17 +5,83 @@
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
 #include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include <optional>
+#include <string>
 
 using namespace DNDS::Runtime;
 
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);
+    if (argc == 2 && std::string(argv[1]) == "--test-abort-transfer-conflict")
+    {
+        int rank = 0, size = 0;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &size);
+        RowTransferPlan route(MPI_COMM_WORLD, 1, 1, {{(rank + 1) % size, 0, 0}});
+        Array<int64_t> source(RowLayout::Dense(1, 5)), destination(RowLayout::Dense(1, 5));
+        TransferOptions options;
+        options.preflight = TransferPreflight::AbortOnFailure;
+        auto binding = PayloadPlan(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<int64_t>()).Bind(source, destination, TransferTransport::Direct, options);
+        // Only rank0 conflicts. Peers may already post requests: the failing
+        // rank must abort MPI immediately, never throw into local recovery.
+        std::optional<Array<int64_t>::WriteLease> write;
+        if (!rank)
+            write.emplace(source.Write());
+        binding.Begin().Wait();
+        MPI_Finalize();
+        return 0; // CTest expects nonzero; reaching this point is a failure.
+    }
     doctest::Context ctx;
     ctx.applyCommandLine(argc, argv);
     int result = ctx.run();
     MPI_Finalize();
     return result;
+}
+
+TEST_CASE("Fail-fast MPI launches preserve padded rows in eager and checked execution")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    RowTransferPlan route(MPI_COMM_WORLD, 3, 2, {{(rank + 1) % size, 2, 0}, {rank, 0, 1}});
+    Array<int64_t> source(RowLayout::Dense(3, 5, 7)), destination(RowLayout::Dense(2, 5, 8));
+    CHECK(TransferOptions{}.preflight == TransferPreflight::Collective);
+    EagerEngine engine(0, std::make_shared<AccessTrackingContext>());
+    const auto stream = engine.CreateCPUStream();
+    for (auto mode : {TransferMode::Persistent, TransferMode::Transient})
+    {
+        TransferOptions options;
+        options.mode = mode;
+        options.preflight = TransferPreflight::AbortOnFailure;
+        auto binding = PayloadPlan(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<int64_t>()).Bind(source, destination, TransferTransport::Direct, options);
+        for (int iteration = 0; iteration < 3; ++iteration)
+        {
+            {
+                auto write = source.Write();
+                for (DNDS::index iRow = 0; iRow < 3; ++iRow)
+                    for (DNDS::index j = 0; j < 5; ++j)
+                        write.At(iRow, j) = 1000 * iteration + 100 * rank + 10 * iRow + j;
+            }
+            auto operation = iteration == 0 ? binding.Begin() : iteration == 1 ? binding.BeginScheduled(stream.Context())
+                                                                               : binding.BeginChecked(stream);
+            operation.Wait();
+            const auto read = destination.Read();
+            for (DNDS::index j = 0; j < 5; ++j)
+            {
+                CHECK(read.At(0, j) == 1000 * iteration + 100 * ((rank + 1) % size) + 20 + j);
+                CHECK(read.At(1, j) == 1000 * iteration + 100 * rank + j);
+            }
+        }
+    }
+    // A disagreement must still fail collectively at binding construction,
+    // before either rank can enter a different launch protocol.
+    if (size > 1)
+    {
+        TransferOptions options;
+        if (!rank)
+            options.preflight = TransferPreflight::AbortOnFailure;
+        CHECK_THROWS(PayloadPlan(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<int64_t>()).Bind(source, destination, TransferTransport::Direct, options));
+    }
 }
 
 TEST_CASE("Large permuted routes preserve row order padding and rank-local collision flags")

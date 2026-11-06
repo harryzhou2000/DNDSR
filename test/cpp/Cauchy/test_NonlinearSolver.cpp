@@ -228,8 +228,8 @@ TEST_CASE("Global Euler RHS alpha policies affect unmarked rows only for minimum
             settings.implicit.iterations = 1;
             settings.implicit.minIterations = 0;
             settings.implicit.relativeTolerance = settings.implicit.absoluteTolerance = 0;
-            settings.implicit.positivity.rhsMode = mode;
-            settings.implicit.positivity.rhsReduction = scope;
+            settings.implicit.positivity.rhsFPPMode = mode;
+            settings.implicit.positivity.rhsFPPReduction = scope;
             const auto equation = C::EquationSystem::Resolve(settings.equation);
             C::FiniteVolume fv(mesh, settings, equation);
             const auto layout = std::string(scope) == "cell" ? R::RowLayout::Dense(0, 5) : std::string(scope) == "minimumLimited" ? R::RowLayout::ColMajor(0, 5)

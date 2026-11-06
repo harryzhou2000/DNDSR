@@ -43,7 +43,10 @@ namespace DNDS::Runtime
             .def(py::init([](const MPIInfo &mpi)
                           { return std::make_shared<CommunicationContext>(mpi.comm); }));
         py::enum_<TransferMode>(m, "TransferMode").value("Persistent", TransferMode::Persistent).value("Transient", TransferMode::Transient);
-        py::class_<TransferOptions>(m, "TransferOptions", "Persistent/transient request policy, independent of transport. Caller matches context/tag across ranks; transient mode remains collective.")
+        py::enum_<TransferPreflight>(m, "TransferPreflight", "Collective launch validation by default; AbortOnFailure keeps local checks and terminates MPI on rejection without a launch agreement.")
+            .value("Collective", TransferPreflight::Collective)
+            .value("AbortOnFailure", TransferPreflight::AbortOnFailure);
+        py::class_<TransferOptions>(m, "TransferOptions", "Persistent/transient request policy, independent of transport. Caller matches context/tag and collective launch order across ranks. Binding setup is always collective; AbortOnFailure launch rejection is fatal and cannot be caught for recovery.")
             .def(py::init([](TransferMode mode, std::shared_ptr<CommunicationContext> context, int tag, std::shared_ptr<TransferProvider> provider)
                           { return TransferOptions{mode, std::move(context), tag, std::move(provider)}; }),
                  py::arg("mode") = TransferMode::Persistent,
@@ -52,7 +55,8 @@ namespace DNDS::Runtime
             .def_readwrite("context", &TransferOptions::context)
             .def_readwrite("tag", &TransferOptions::tag)
             .def_readwrite("provider", &TransferOptions::provider)
-            .def_readwrite("allow_stream_ordered_device_memory", &TransferOptions::allowStreamOrderedDeviceMemory);
+            .def_readwrite("allow_stream_ordered_device_memory", &TransferOptions::allowStreamOrderedDeviceMemory)
+            .def_readwrite("preflight", &TransferOptions::preflight, "Collective by default. AbortOnFailure removes launch agreement, retains local access/route/stream checks, and aborts MPI on failure. Does not make unmatched rank-local launch ordering safe.");
     }
     void BindMPIEagerPython(py::module_ &m)
     {

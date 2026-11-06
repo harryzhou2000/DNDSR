@@ -69,6 +69,8 @@ namespace DNDS::Cauchy
     struct ExecutionSettings
     {
         std::string device = "cpu", layout = "aos", communication = "mpi-direct";
+        std::string fieldGrouping = "equationBlocks";
+        std::string transferPreflight = "collective";
         int hostThreads = 0;
         bool checkAccess = true;
         bool overlap = true;
@@ -77,7 +79,9 @@ namespace DNDS::Cauchy
         {
             DNDS_FIELD(device, "Required numerical backend; no implicit fallback");
             DNDS_FIELD(layout, "Physical flow table: aos, soa, aosoa32");
+            DNDS_FIELD(fieldGrouping, "equationBlocks: separate flow/RANS/species fields; coupled: one physical table with the same logical blocks");
             DNDS_FIELD(communication, "Payload transport");
+            DNDS_FIELD(transferPreflight, "MPI launch validation: collective (default) or abortOnFailure (local checks, fatal MPI abort, no per-launch global agreement); setup remains collective");
             DNDS_FIELD(hostThreads, "CPU worker count; zero means inline execution");
             DNDS_FIELD(checkAccess, "Validate declared scheduled accesses at submission");
             DNDS_FIELD(overlap, "Overlap input halo exchanges with owned-only core work; false waits then runs unsplit kernels");
@@ -88,12 +92,15 @@ namespace DNDS::Cauchy
     {
         std::string file;
         int dimension = 2;
+        int elevation = 0, bisect = 0;
         std::array<real, 3> periodicLengths{0, 0, 0};
         std::map<std::string, int> boundaryIds;
         DNDS_DECLARE_CONFIG(MeshSettings)
         {
             DNDS_FIELD(file, "CGNS input path; an injected mesh needs no file");
             DNDS_FIELD(dimension, "Geometric dimension, independent of flow component count");
+            DNDS_FIELD(elevation, "Native geometry order elevation: 0 keeps input order, 1 elevates to O2", DNDS::Config::range(0, 1));
+            DNDS_FIELD(bisect, "Native uniform bisection passes after partition and optional elevation", DNDS::Config::range(0, 4));
             DNDS_FIELD(periodicLengths, "Translation from PERIODIC_n to its donor; zero disables that direction");
             config.field_schema(&T::boundaryIds, "boundaryIds", "Explicit CGNS boundary name to integer zone",
                                 []() -> Json
@@ -149,6 +156,9 @@ namespace DNDS::Cauchy
         CFV::ReconstructionSettings cfv;
         CFV::LimitedVRSettings limitedVR;
         RiemannSettings riemann;
+        /// Direct linear/constant FV uses center-point flux/source evaluation.
+        /// cfv.intOrder still controls geometric measures and VR setup.
+        int RHSIntegrationOrder() const { return reconstruction == "variational" ? cfv.intOrder : 1; }
         void ValidatePositivity() const;
         DNDS_DECLARE_CONFIG(NumericsSettings)
         {
@@ -161,7 +171,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(characteristicLimiter, "Use equation-provided cell-mean face characteristics for 3WBAP");
             DNDS_FIELD(faceFallback, "Fall back to the cell mean at inadmissible face values; disable for non-PP accuracy studies");
             DNDS_FIELD(reconstructionBoundaryFromPolynomial, "Project current face polynomial through BC each VR sweep; false uses mean-based boundary values");
-            DNDS_FIELD(firstOrderConvection, "Use cell means for convective face values while retaining the selected reconstruction for viscous gradients and volume sources; used by the bottom pMG operator");
+            DNDS_FIELD(firstOrderConvection, "P0 face operator: cell means and jump-only normal viscosity; separate reconstruction remains available for RANS/volume sources. Used by bottom pMG");
             DNDS_FIELD(viscousGradient, "primitive retains the cell-gradient scheme; polynomial uses cached polynomial derivatives and Euler's normal face-jump penalty");
             DNDS_FIELD(viscousLimited, "Use the filtered flux polynomial for polynomial viscosity; false uses the unlimited VR guess");
             DNDS_FIELD(noGRPOnWall, "Disable the polynomial normal jump penalty on no-slip walls, retaining the polynomial gradient");
@@ -226,6 +236,7 @@ namespace DNDS::Cauchy
     struct ImplicitLinearSettings
     {
         std::string method = "gmres", preconditioner = "sgs";
+        std::string stopping = "residual";
         index iterations = 20;
         int subspace = 10;
         real relativeTolerance = .1, absoluteTolerance = 1e-12;
@@ -233,6 +244,7 @@ namespace DNDS::Cauchy
         {
             DNDS_FIELD(method, "sgs stationary sweeps, ilu stationary defect correction, or restarted left-gmres");
             DNDS_FIELD(preconditioner, "Fixed sgs or rank-local ilu for GMRES; unused by stationary methods");
+            DNDS_FIELD(stopping, "residual uses tolerance checks; fixedCount executes exactly iterations for SGS/ILU, omits true-residual reporting and checks the final update is finite; tolerances are ignored");
             DNDS_FIELD(iterations, "Maximum linear iterations per nonlinear correction");
             DNDS_FIELD(subspace, "Restarted GMRES subspace size");
             DNDS_FIELD(relativeTolerance, "Relative true-residual tolerance");
@@ -253,24 +265,26 @@ namespace DNDS::Cauchy
     {
         int fill = 0;
         bool coreFirst = true;
+        std::string ordering = "natural";
         DNDS_DECLARE_CONFIG(ImplicitILUSettings)
         {
             DNDS_FIELD(fill, "Local ILU stencil expansion 0..5, or -1 for complete LU");
             DNDS_FIELD(coreFirst, "Order core before dependent cells before symbolic fill");
+            DNDS_FIELD(ordering, "Rank-local factor ordering: natural or rcm (CorrectRCM), followed by optional stable core grouping; does not reorder mesh/DOFs");
         }
     };
     struct ImplicitPositivitySettings
     {
-        std::string rhsMode = "rhs";
-        std::string rhsReduction = "cell";
-        real rhsScale = 1, rhsRelax = .5, incrementRelax = 1;
+        std::string rhsFPPMode = "rhs";
+        std::string rhsFPPReduction = "cell";
+        real rhsFPPScale = 1, rhsFPPRelax = .5, incrementRelax = 1;
         int compressionPower = 1;
         DNDS_DECLARE_CONFIG(ImplicitPositivitySettings)
         {
-            DNDS_FIELD(rhsMode, "none, rhs compression, or dTau compression; active only with numerics.positivity");
-            DNDS_FIELD(rhsReduction, "cell, minimumLimited or minimumAll; Euler global alpha flags, before RHS/dTau application");
-            DNDS_FIELD(rhsScale, "Euler RHS-PP trial increment multiplier");
-            DNDS_FIELD(rhsRelax, "Euler RHS/dTau density and energy relaxation in (0,1]");
+            DNDS_FIELD(rhsFPPMode, "RHS forecasted positivity preserving: none, rhs (scale solve defect), or dTau (shrink pseudo-step); active only with numerics.positivity");
+            DNDS_FIELD(rhsFPPReduction, "RHS-FPP factor scope: cell keeps local alpha; minimumLimited applies domain minimum only to alpha<1 cells; minimumAll applies it everywhere");
+            DNDS_FIELD(rhsFPPScale, "Euler RHS-FPP trial increment multiplier");
+            DNDS_FIELD(rhsFPPRelax, "Euler RHS/dTau density and energy relaxation in (0,1]");
             DNDS_FIELD(incrementRelax, "Euler accepted-correction relaxation in (0,1]");
             DNDS_FIELD(compressionPower, "Positive integer exponent multiplier in Euler alpha compression");
         }
@@ -298,6 +312,10 @@ namespace DNDS::Cauchy
         int levels = 0;
         index cycles = 50, preSmooth = 1, postSmooth = 1, coarseSmooth = 4;
         real damping = 1;
+        bool reuseCoarseRate = true;
+        /// Match Euler's omission of coarse RHS/dTau PP by default.
+        /// Reconstruction/increment PP remain independently active.
+        bool coarseRHSFPP = false;
         std::vector<index> updateComponents;
         std::map<std::string, MultigridLevelSettings> coarseLevelSettings;
         DNDS_DECLARE_CONFIG(PolynomialMultigridSettings)
@@ -307,6 +325,8 @@ namespace DNDS::Cauchy
             DNDS_FIELD(preSmooth, "Bounded nonlinear corrections before restriction");
             DNDS_FIELD(postSmooth, "Bounded nonlinear corrections after prolongation");
             DNDS_FIELD(coarseSmooth, "Bounded nonlinear corrections at the coarsest level");
+            DNDS_FIELD(reuseCoarseRate, "Reuse a version-validated direct-gradient coarse tau rate for its first correction; independent of finest measured-rate reuse");
+            DNDS_FIELD(coarseRHSFPP, "Opt in to RHS/dTau positivity limiting on coarse levels; default false forces coarse rhsFPPMode=none after level overrides, matching Euler. Reconstruction and increment PP remain unchanged");
             config.field_map_of<MultigridLevelSettings>(&T::coarseLevelSettings, "coarseLevelSettings", "Independent coarse-level controls keyed by 1 or 2; finest uses domain implicit and the common pre/post counts");
             DNDS_FIELD(damping, "Physical coarse-correction multiplier in (0,1]");
             DNDS_FIELD(updateComponents, "Distinct logical equation indices updated by pMG; empty updates all. Other means remain frozen; finest convergence still uses residualComponents");
@@ -356,7 +376,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(pseudoGrowth, "CFL growth factor after each nonlinear correction");
             DNDS_FIELD(relaxation, "Multiplier on each computed correction in (0,1]");
             DNDS_FIELD(roeDissipation, "Use full equation-owned characteristic dissipation; requires block diagonal");
-            DNDS_FIELD(collectiveChecks, "Coordinate local failures between implicit kernels; false also disables optional halo freshness audits, retaining mandatory transfer preflight");
+            DNDS_FIELD(collectiveChecks, "Coordinate local failures between implicit kernels; false also disables optional halo freshness audits; execution.transferPreflight independently selects collective or fatal local launch validation");
             DNDS_FIELD(requireConvergedReconstruction, "Require the requested VR tolerance as well as the mean equation target; false preserves Euler-style fixed-sweep acceptance");
             DNDS_FIELD(rejectUnconvergedStages, "Reject a finite admissible stage or coupled DITR solve at its iteration cap; false advances the final iterate like Euler while retaining an unconverged report");
             config.field_section(&T::linear, "linear", "Linear solve controls");

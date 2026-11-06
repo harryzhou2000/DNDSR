@@ -468,7 +468,7 @@ namespace DNDS::Cauchy
         // Convenience synchronous wrapper. Production Domain owns persistent
         // output buffers and its mean binding; the numerical operator is local.
         auto input = state;
-        auto halo = Metrics().BindHalo(input);
+        auto halo = BindHalo(input);
         halo.Begin().Wait();
         AuxiliaryRequest request;
         request.meanThermodynamics = request.cellSpectralSum = true;

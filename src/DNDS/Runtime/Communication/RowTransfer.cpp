@@ -19,6 +19,13 @@ namespace DNDS::Runtime
             MPI_Allreduce(MPI_IN_PLACE, &all, 1, MPI_INT, MPI_MIN, comm);
             DNDS_check_throw_info(all, message);
         }
+        void CheckLaunch(bool valid, MPI_Comm comm, TransferPreflight policy, const char *message)
+        {
+            if (policy == TransferPreflight::Collective)
+                CheckAll(valid, comm, message);
+            else if (!valid)
+                MPI::Abort(comm, message);
+        }
         void Agree(const std::string &value, MPI_Comm comm, bool valid = true, index *uniformWidth = nullptr)
         {
             int rank = 0;
@@ -620,20 +627,22 @@ namespace DNDS::Runtime
         // exact agreement in one collective; widen before negating INT_MIN.
         const int64_t controls[]{int(state->options.mode), bool(state->options.context), state->options.tag,
                                  bool(state->reducer), int(transport),
-                                 state->reducer ? int(state->reducer->initialization) : 0, bool(state->options.provider), state->options.allowStreamOrderedDeviceMemory};
-        int64_t agreed[17];
-        for (index i = 0; i < 8; ++i)
+                                 state->reducer ? int(state->reducer->initialization) : 0, bool(state->options.provider), state->options.allowStreamOrderedDeviceMemory, int(state->options.preflight)};
+        int64_t agreed[19];
+        for (index i = 0; i < 9; ++i)
         {
             agreed[2 * i] = controls[i];
             agreed[2 * i + 1] = -controls[i];
         }
-        agreed[16] = layoutsValid;
-        MPI_Allreduce(MPI_IN_PLACE, agreed, 17, MPI_INT64_T, MPI_MIN, routeComm);
+        agreed[18] = layoutsValid;
+        MPI_Allreduce(MPI_IN_PLACE, agreed, 19, MPI_INT64_T, MPI_MIN, routeComm);
         bool controlsAgree = true;
-        for (index i = 0; i < 8; ++i)
+        for (index i = 0; i < 9; ++i)
             controlsAgree = controlsAgree && agreed[2 * i] == -agreed[2 * i + 1];
         DNDS_check_throw_info(controlsAgree, "transfer binding policy differs between ranks");
-        DNDS_check_throw_info(agreed[16], "Array layout differs from compiled payload");
+        DNDS_check_throw_info(agreed[18], "Array layout differs from compiled payload");
+        DNDS_check_throw_info(state->options.preflight == TransferPreflight::Collective || state->options.preflight == TransferPreflight::AbortOnFailure,
+                              "invalid MPI transfer preflight policy");
         if (state->options.provider)
         {
             Agree(state->options.provider->Name(), routeComm);
@@ -884,7 +893,7 @@ namespace DNDS::Runtime
         {
             valid = false;
         }
-        CheckAll(valid, _state->comm, "checked MPI stream preflight failed on a rank");
+        CheckLaunch(valid, _state->comm, _state->options.preflight, "checked MPI stream preflight failed on a rank");
         return Start(stream.Context(), true, std::move(tracking), lane);
     }
     void TransferBinding::Enqueue(EagerEngine &engine, const ExecutionStream &stream) const
@@ -953,7 +962,7 @@ namespace DNDS::Runtime
             }
             try
             {
-                CheckAll(valid, _state->comm, "transfer access/stream preflight failed on a rank");
+                CheckLaunch(valid, _state->comm, _state->options.preflight, "transfer access/stream preflight failed on a rank");
             }
             catch (...)
             {
@@ -1025,7 +1034,7 @@ namespace DNDS::Runtime
                     accesses.push_back({*buffer, AccessMode::Write});
             tracking->Submit(lane, accesses, [&](auto submission)
                              { op->checked = submission; begin(); }, [&](bool valid)
-                             { CheckAll(valid, _state->comm, "unordered checked MPI access on a rank"); });
+                             { CheckLaunch(valid, _state->comm, _state->options.preflight, "unordered checked MPI access on a rank"); });
         }
         else
             begin();

@@ -13,9 +13,13 @@ The [Python operator guide](../guides/python_cauchy_operators.md) describes shar
 logical handles, configured native FV/linear composition, communicator lifetime,
 GIL boundaries and caller-owned halo/collective ordering.
 
-Current CPU scope (November 5): configured flow5, SA/Wilcox/SST/realizable-k-epsilon
+Current CPU scope (November 6): configured flow5, SA/Wilcox/SST/realizable-k-epsilon
 and optional ideal-mixture chemistry share logical DOF bindings, implicit time
-equations, native archives and observation. Extended profiles use Rusanov,
+equations, native archives and observation. Perfect-gas extended profiles use the
+same flow5 Riemann dispatcher, including Roe_M1; general-mixture preparation
+currently supports Rusanov. Extended wave/pressure-stencil producers remain
+unavailable, so such flux selections need their explicit supplied scalar inputs
+(`riemann.useStencil=false`) or fail at setup. Extended profiles use
 polynomial viscosity, component WBAP and Euler-compatible implicit/rec PP;
 missing characteristic/LVR/interface adapters
 fail explicitly. QCR and the existing SA/SST DES formulas are connected below.
@@ -25,6 +29,14 @@ Both coupled chemistry and Euler's physical Strang/CVODE composition have
 focused distributed gates and short matched spatial flame checks.
 Earlier implementation checkpoints in this document describe their then-current
 limits; they do not override the current profile summary or runtime guards.
+
+Extended convection is separate from flow5: `AdvectedScalarFlux` consumes
+conservative scalar values, ALE-relative normal velocities and one supplied
+nonnegative dissipation speed. Its formula is
+`0.5*(vnL*qL + vnR*qR - lambdaScalar*(qR-qL))`. The current preparation uses
+Euler's contact-wave magnitude; for Rusanov it explicitly selects the average
+absolute normal velocity rather than its acoustic diagnostic magnitude. Pressure,
+acoustics and EOS recovery remain outside the scalar and Riemann kernels.
 
 ```mermaid
 flowchart TD
@@ -445,8 +457,9 @@ may differ. FV workspace setup uses this same check. The binder receives each
 native physical field in order, reuses the domain's row mapping, and coordinates
 its own failures. Callers keep field handles/layouts and the matrix stable,
 release debug views, and retain MPI owners on the controller. Per-kernel
-`collectiveChecks=false` is caller-ordered eager execution; setup and solve-entry
-checks remain collective. This is synchronous CPU orchestration, not a queued
+`collectiveChecks=false` is caller-ordered eager execution; setup agreement
+remains collective, but repeated solve-entry agreement is the caller's duty.
+This is synchronous CPU orchestration, not a queued
 CUDA implementation.
 
 ```text
@@ -1000,6 +1013,15 @@ cannot supply the isothermal viscosity. Epsilon retains interior reconstructed
 density in its target. These point protocols are tested for both perfect gas
 and temperature-dependent mixture viscosity, independently of spatial model
 activation. The SA zero-interior compile-time wall fix applies only to SA.
+
+With `USE_FIX_ZERO_SA_NUT_AT_WALL`, the face convection pair uses zero SA on
+both sides of a no-slip wall. Viscosity has a distinct input contract inherited
+from Euler: retain the original interior conservative SA value for the normal
+jump against zero exterior SA. The property/transport face mean stays zero SA.
+The retained scalar is point-local scratch; neither the cell mean nor a later
+face sees a mutation. Dropping this original interior value removes the wall SA
+diffusive flux. A focused cube test checks its magnitude independently of the
+volume source and verifies that owned means stay unchanged.
 
 `TurbulentNormalFlux` provides Euler's two-equation `2*rhoK/3` isotropic stress
 and pressure work at the arithmetic conservative face state. Energy work uses

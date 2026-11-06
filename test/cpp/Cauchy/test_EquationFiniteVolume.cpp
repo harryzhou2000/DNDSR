@@ -15,6 +15,7 @@
 #include "../CFV/ReconstructionFixture.hpp"
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
+#include "../CFV/RotatedSectorFixture.hpp"
 #include <cstdlib>
 #include <numeric>
 #include <limits>
@@ -100,6 +101,7 @@ TEST_CASE("Equation FV uses the established P3/gradient/WBAP flow5 kernels acros
         settings.numerics.viscousGradient = "polynomial";
         if (variant == 1)
         {
+            settings.numerics.flux = "Roe_M1";
             settings.equation.transport = "NewtonianFourier";
             settings.equation.viscosity = .002;
             settings.equation.viscosityModel = "sutherland";
@@ -159,6 +161,47 @@ TEST_CASE("Equation FV uses the established P3/gradient/WBAP flow5 kernels acros
             fv.RestoreReconstructionGuess(*work, replacement);
             Compare(coefficients, replacement, 1e-15);
         }
+    }
+}
+
+TEST_CASE("Canonical equation face flux agrees with cell incidence on rotated and self-periodic faces")
+{
+    for (bool rotated : {false, true})
+    {
+        auto mesh = rotated ? CFVTest::Sector(mpi) : CauchyTest::PeriodicQuads(mpi, 1);
+        C::DomainSettings settings;
+        settings.numerics.reconstruction = "constant";
+        settings.numerics.limiter = "none";
+        settings.numerics.faceFallback = false;
+        settings.numerics.characteristicLimiter = false;
+        settings.numerics.viscousGradient = "polynomial";
+        settings.numerics.flux = "Roe_M1";
+        if (rotated)
+            settings.boundaries["12"].kind = settings.boundaries["13"].kind = "extrapolate";
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto raw = fv.Metrics().BuildField(5), expected = fv.Metrics().BuildField(5);
+        {
+            auto write = raw.Owned().Write();
+            const auto values = write.View<R::UniformTableRows>();
+            for (I iCell = 0; iCell < values.RowCount(); ++iCell)
+            {
+                const auto center = fv.Metrics().GetCellCent(iCell);
+                const auto value = equation.Gas().Conservative({1 + .1 * center[0], .2 + .03 * center[1], -.15, .07, 1});
+                for (int j = 0; j < 5; ++j)
+                    values(iCell, j) = value[j];
+            }
+        }
+        auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(5));
+        A::Copy(state.CoupledField(), raw);
+        auto result = C::EquationDofOperations::NewVector(state);
+        auto oldWork = fv.BuildWorkspace(raw);
+        auto work = fv.BuildEquationWorkspace(state);
+        R::EagerEngine engine;
+        const auto stream = engine.CreateCPUStream();
+        fv.Evaluate(raw, expected, *oldWork, engine, stream);
+        fv.Evaluate(state, result, *work, engine, stream);
+        Compare(result, C::EquationDofs::Coupled(equation.Schema(), expected), 2e-12);
     }
 }
 
@@ -296,6 +339,62 @@ TEST_CASE("Spatial initial input averages conservative polynomials on distribute
         CHECK(integral[2] == doctest::Approx(0).epsilon(2e-13));
         CHECK(integral[3] == doctest::Approx(0).epsilon(2e-13));
         CHECK(integral[4] == doctest::Approx(199. / 24).epsilon(2e-13));
+    }
+}
+
+TEST_CASE("High-order assembled face Jacobians match pointwise blocks in stationary and moving frames")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 6);
+    for (bool moving : {false, true})
+    {
+        auto settings = C::DomainSettings{};
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.cfv.intOrder = 5;
+        if (moving)
+            settings.motion.angularVelocity = {0, 0, .2};
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(5));
+        R::Array<double> tau(R::RowLayout::Dense(fv.Metrics().NumCell(), 1));
+        {
+            auto write = state.WriteOwned();
+            const auto flow = write.Block("flow");
+            auto pseudo = tau.Write();
+            for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            {
+                const auto center = fv.Metrics().GetCellCent(iCell);
+                const auto values = equation.Gas().Conservative({1 + .1 * center[0], .3, -.2 + .05 * center[1], .1, 1 + .1 * center[1]});
+                for (int j = 0; j < 5; ++j)
+                    flow(iCell, j) = values[j];
+                pseudo.View()(iCell, 0) = 2 + center[0];
+            }
+        }
+        fv.BindHalo(state.PhysicalField(0)).Begin().Wait();
+        auto auxiliary = fv.BuildAuxiliaryValues({true, true});
+        fv.PrepareAuxValues(state, auxiliary, .3);
+        auto assembled = fv.BuildLinearProblem(state, C::DiagonalStorage::Block);
+        auto pointwise = fv.BuildLinearProblem(state, C::DiagonalStorage::Block, C::OffDiagonalStorage::SemiMatrixFree);
+        const C::JacobianPreparation controls{3, .7, false};
+        fv.PrepareJacobian(state, auxiliary, tau, *assembled, controls, .3);
+        fv.PrepareJacobian(state, auxiliary, tau, *pointwise, controls, .3);
+        const auto geometry = fv.Metrics().AcquireRead();
+        const auto metric = geometry.HostView();
+        if (fv.Metrics().NumFaceProc())
+            REQUIRE(metric.FaceQuadratureEnd(0) - metric.FaceQuadratureBegin(0) > 1);
+        const auto a = assembled->ReadOffDiagonal(), b = pointwise->ReadOffDiagonal();
+        a.WithBlocks([&](const auto &cached)
+                     { b.WithBlocks([&](const auto &reference)
+                                    {
+            for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                for (I iBlock = 0; iBlock < I(assembled->Columns()[iCell].size()); ++iBlock)
+                {
+                    const auto observed = cached(iCell, iBlock);
+                    const auto expected = reference(iCell, iBlock);
+                    for (int j = 0; j < 5; ++j)
+                        for (int i = 0; i < 5; ++i)
+                            CHECK(observed(i, j) == doctest::Approx(expected(i, j)).epsilon(2e-14).scale(1));
+                } }); });
     }
 }
 
@@ -473,6 +572,16 @@ TEST_CASE("Distributed prescribed mixture boundaries match independent nonconsta
         request.faceSpectralRadius = request.cellSpectralSum = true;
         auto auxiliary = fv.BuildAuxiliaryValues(request);
         fv.PrepareAuxValues(state, auxiliary, 0, mixture.workers);
+        request.meanThermodynamics = true;
+        auto cachedAuxiliary = fv.BuildAuxiliaryValues(request);
+        fv.PrepareAuxValues(state, cachedAuxiliary, 0, mixture.workers);
+        {
+            const auto a = auxiliary.faceSpectralRadius->Read(), b = cachedAuxiliary.faceSpectralRadius->Read();
+            const auto direct = a.View<R::UniformTableRows>(), cached = b.View<R::UniformTableRows>();
+            for (I iFace = 0; iFace < direct.RowCount(); ++iFace)
+                for (I j = 0; j < direct.Width(); ++j)
+                    CHECK(cached(iFace, j) == direct(iFace, j));
+        }
         // Independent EOS backend and explicit face integration: no Cauchy
         // boundary, point producer or Riemann flux is used by this oracle.
         auto topologyRead = mesh->AcquireRead(DNDS::Geom::MeshReadRequirements::CellFlux());
@@ -533,6 +642,9 @@ TEST_CASE("Distributed prescribed mixture boundaries match independent nonconsta
                         ur += right[1 + d] / right[0] * normal[d];
                     }
                     const double alpha = std::max(std::abs(ul) + lp[1], std::abs(ur) + rp[1]);
+                    // Flow uses acoustic Rusanov; conservative species use
+                    // the independently specified velocity dissipation.
+                    const double scalarAlpha = .5 * (std::abs(ul) + std::abs(ur));
                     for (I j = 0; j < I(expected.size()); ++j)
                     {
                         double fl = left[j] * ul, fr = right[j] * ur;
@@ -546,7 +658,7 @@ TEST_CASE("Distributed prescribed mixture boundaries match independent nonconsta
                             fl += lp[0] * ul;
                             fr += rp[0] * ur;
                         }
-                        expected[j] -= metric.GetFaceWeight(q) * .5 * (fl + fr - alpha * (right[j] - left[j]));
+                        expected[j] -= metric.GetFaceWeight(q) * .5 * (fl + fr - (j < 5 ? alpha : scalarAlpha) * (right[j] - left[j]));
                     }
                 }
             }
@@ -1700,8 +1812,8 @@ TEST_CASE("Equation implicit PP compresses RHS or pseudo-time and repairs specie
         settings.numerics.temperatureFloor = 300 / mixture.scales.T0;
         settings.implicit.iterations = 1;
         settings.implicit.relativeTolerance = settings.implicit.absoluteTolerance = 0;
-        settings.implicit.positivity.rhsMode = scenario ? "dTau" : "rhs";
-        settings.implicit.positivity.rhsReduction = scenario ? "minimumAll" : "cell";
+        settings.implicit.positivity.rhsFPPMode = scenario ? "dTau" : "rhs";
+        settings.implicit.positivity.rhsFPPReduction = scenario ? "minimumAll" : "cell";
         C::FiniteVolume fv(mesh, settings, mixture.equation);
         auto state = mixture.State(fv.Metrics().Space(), scenario + 1);
         mixture.Fill(state, fv.Metrics(), true);

@@ -199,7 +199,7 @@ namespace CauchyBenchmark
         settings.implicit.linear.method = "sgs";
         settings.implicit.linear.iterations = 5;
         settings.implicit.linear.relativeTolerance = settings.implicit.linear.absoluteTolerance = 0;
-        settings.implicit.positivity.rhsMode = "dTau";
+        settings.implicit.positivity.rhsFPPMode = "dTau";
         auto trial = metrics.BuildField(5), source = metrics.BuildField(5);
         A::Copy(trial, frozen);
         C::AuxiliaryRequest channels;

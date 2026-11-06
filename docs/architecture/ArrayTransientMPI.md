@@ -44,6 +44,14 @@ rank-local tag sequence. All collective preparation and Begin preflights must
 occur in matching participant order, including for independent fields.
 Default options preserve an isolated communicator and persistent requests.
 
+Launch validation is independent of persistent/transient request lifetime.
+`TransferOptions::preflight` defaults to `TransferPreflight::Collective`.
+The explicit `AbortOnFailure` mode omits per-launch global agreement while
+retaining local access, route and stream validation. A rejection aborts MPI;
+it is not a recoverable exception. Binding setup still collectively agrees
+the policy. Both modes require the same participant order and producer/consumer
+discipline. See [the exception contract](RuntimeCallerContract.md#distributed-exceptions).
+
 For an unknown receive shape, compile and infer once:
 
 ```cpp

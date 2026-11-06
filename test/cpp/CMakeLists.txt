@@ -245,6 +245,13 @@ dnds_add_mpi_test(cauchy_foundation "Cauchy/test_Foundation.cpp" "cauchy;cfv;geo
 dnds_add_mpi_test(cauchy_interface_iteration "Cauchy/test_InterfaceIteration.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_linear "Cauchy/test_LinearProblem.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_linear_solver "Cauchy/test_LinearSolver.cpp" "cauchy;cfv;geom;dnds")
+add_test(NAME dnds_cauchy_linear_solver_abort_np2
+    COMMAND ${CMAKE_COMMAND}
+        "-DTEST_COMMAND=${MPIEXEC_EXECUTABLE};${MPIEXEC_NUMPROC_FLAG};2;${MPIEXEC_PREFLAGS};$<TARGET_FILE:dnds_test_cauchy_linear_solver>;--test-case=Fixed-count final finite check*;${MPIEXEC_POSTFLAGS}"
+        "-DEXPECTED_DIAGNOSTIC=nonfinite fixed-count linear correction"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/ExpectMPIFailure.cmake)
+set_tests_properties(dnds_cauchy_linear_solver_abort_np2 PROPERTIES
+    TIMEOUT 30 PROCESSORS 2 ENVIRONMENT "OMP_NUM_THREADS=1;DNDS_TEST_LINEAR_FATAL_LOCAL=1")
 dnds_add_mpi_test(cauchy_nonlinear "Cauchy/test_NonlinearSolver.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_polynomial_multigrid "Cauchy/test_PolynomialMultigrid.cpp" "cauchy;cfv;geom;dnds")
 add_executable(dnds_test_distributed_failure Cauchy/test_DistributedFailure.cpp)
@@ -275,6 +282,12 @@ dnds_add_mpi_test(cauchy_physical_timestep "Cauchy/test_PhysicalTimeStep.cpp" "c
 dnds_add_mpi_test(cauchy_viscous_flux "Cauchy/test_ViscousFlux.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_auxiliary_preparation "Cauchy/test_AuxiliaryPreparation.cpp" "cauchy;cfv;geom;dnds")
 add_executable(cauchy_benchmark_implicit EXCLUDE_FROM_ALL Cauchy/benchmark_Implicit.cpp)
+add_executable(cauchy_benchmark_block_lu_comparison EXCLUDE_FROM_ALL Cauchy/benchmark_BlockLUComparison.cpp)
+target_include_directories(cauchy_benchmark_block_lu_comparison PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+target_link_libraries(cauchy_benchmark_block_lu_comparison PRIVATE cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+add_executable(cauchy_benchmark_equation_adapter EXCLUDE_FROM_ALL Cauchy/benchmark_EquationAdapter.cpp)
+target_include_directories(cauchy_benchmark_equation_adapter PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+target_link_libraries(cauchy_benchmark_equation_adapter PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
 target_include_directories(cauchy_benchmark_implicit PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
 target_link_libraries(cauchy_benchmark_implicit PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
 add_executable(cauchy_experiment_multidomain_iv EXCLUDE_FROM_ALL Cauchy/experiment_MultidomainIV.cpp)
@@ -343,6 +356,13 @@ dnds_add_mpi_test(serializer "DNDS/test_Serializer.cpp" "dnds")
 dnds_add_mpi_test(mpi "DNDS/test_MPI.cpp" "dnds")
 dnds_add_mpi_test(runtime_exchange "DNDS/test_RuntimeExchange.cpp" "dnds")
 dnds_add_mpi_test(runtime_row_transfer "DNDS/test_RuntimeRowTransfer.cpp" "dnds")
+add_test(NAME dnds_runtime_row_transfer_abort_np2
+    COMMAND ${CMAKE_COMMAND}
+        "-DTEST_COMMAND=${MPIEXEC_EXECUTABLE};${MPIEXEC_NUMPROC_FLAG};2;${MPIEXEC_PREFLAGS};$<TARGET_FILE:dnds_test_runtime_row_transfer>;--test-abort-transfer-conflict;${MPIEXEC_POSTFLAGS}"
+        "-DEXPECTED_DIAGNOSTIC=transfer access/stream preflight failed on a rank"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/ExpectMPIFailure.cmake)
+set_tests_properties(dnds_runtime_row_transfer_abort_np2 PROPERTIES
+    TIMEOUT 30 PROCESSORS 2 ENVIRONMENT "OMP_NUM_THREADS=1")
 dnds_add_mpi_test(native_dof_algebra "DNDS/test_NativeDofAlgebra.cpp" "dnds")
 add_dependencies(dnds_unit_tests dnds_test_native_dof_algebra)
 dnds_add_mpi_test(runtime_transient "DNDS/test_RuntimeTransient.cpp" "dnds")
@@ -802,6 +822,56 @@ endif()
 # Common standalone migration probe, also built against pinned legacy sources.
 # It is opt-in: regular unit tests do not require a second solver source tree.
 add_executable(euler_migration_probe EXCLUDE_FROM_ALL Euler/MigrationParityProbe.cpp)
+add_executable(cauchy_benchmark_rhs_comparison EXCLUDE_FROM_ALL Cauchy/benchmark_RHSComparison.cpp)
+target_include_directories(cauchy_benchmark_rhs_comparison PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+target_link_libraries(cauchy_benchmark_rhs_comparison PRIVATE cauchy euler_library_fast_NS cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+add_executable(cauchy_benchmark_spatial_sa EXCLUDE_FROM_ALL Cauchy/benchmark_SpatialSA.cpp)
+target_include_directories(cauchy_benchmark_spatial_sa PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+target_link_libraries(cauchy_benchmark_spatial_sa PRIVATE cauchy euler_library_fast_NS_SA cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+if(Python_EXECUTABLE)
+    # Opt-in extracted operators, not another production implementation. The
+    # source generator fails if the kernel anchors change and records its hash.
+    set(_operator_diagnostic_header "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic/ExtractedEulerSA.hpp")
+    add_custom_command(OUTPUT "${_operator_diagnostic_header}"
+        COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy/extract_operator_diagnostic.py"
+            "${PROJECT_SOURCE_DIR}/src/Euler/EulerEvaluator_EvaluateRHS.hxx" "${_operator_diagnostic_header}"
+        DEPENDS Cauchy/extract_operator_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Euler/EulerEvaluator_EvaluateRHS.hxx"
+        VERBATIM)
+    add_executable(cauchy_diagnostic_operator_phases EXCLUDE_FROM_ALL
+        Cauchy/diagnostic_OperatorPhases.cpp "${_operator_diagnostic_header}")
+    target_include_directories(cauchy_diagnostic_operator_phases PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic" ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+    target_link_libraries(cauchy_diagnostic_operator_phases PRIVATE
+        cauchy euler_library_fast_NS_SA cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+    set(_driver_diagnostic_header "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic/ExtractedEulerDriver.hpp")
+    add_custom_command(OUTPUT "${_driver_diagnostic_header}"
+        COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy/extract_driver_diagnostic.py"
+            "${PROJECT_SOURCE_DIR}/src/Euler/EulerSolver.hxx" "${_driver_diagnostic_header}"
+        DEPENDS Cauchy/extract_driver_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Euler/EulerSolver.hxx"
+        VERBATIM)
+    add_executable(cauchy_diagnostic_driver_phases EXCLUDE_FROM_ALL
+        Cauchy/diagnostic_DriverPhases.cpp "${_driver_diagnostic_header}")
+    set(_nonlinear_diagnostic_header "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic/ExtractedEquationPipeline.cpp")
+    add_custom_command(OUTPUT "${_nonlinear_diagnostic_header}"
+        COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy/extract_pipeline_diagnostic.py"
+            "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/EquationFiniteVolume.cpp" "${_nonlinear_diagnostic_header}"
+        DEPENDS Cauchy/extract_pipeline_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/EquationFiniteVolume.cpp"
+        VERBATIM)
+    target_sources(cauchy_diagnostic_driver_phases PRIVATE "${_nonlinear_diagnostic_header}")
+    set_source_files_properties("${_nonlinear_diagnostic_header}" PROPERTIES HEADER_FILE_ONLY TRUE)
+    set(_equation_nonlinear_diagnostic "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic/ExtractedEquationNonlinear.cpp")
+    add_custom_command(OUTPUT "${_equation_nonlinear_diagnostic}"
+        COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy/extract_nonlinear_diagnostic.py"
+            "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/EquationNonlinearSolver.cpp" "${_equation_nonlinear_diagnostic}"
+        DEPENDS Cauchy/extract_nonlinear_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/EquationNonlinearSolver.cpp"
+        VERBATIM)
+    target_sources(cauchy_diagnostic_driver_phases PRIVATE "${_equation_nonlinear_diagnostic}")
+    set_source_files_properties("${_equation_nonlinear_diagnostic}" PROPERTIES HEADER_FILE_ONLY FALSE)
+    target_include_directories(cauchy_diagnostic_driver_phases PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic" "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy" ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+    target_link_libraries(cauchy_diagnostic_driver_phases PRIVATE
+        cauchy euler_library_fast_NS_SA cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+endif()
 target_include_directories(euler_migration_probe PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
 target_link_libraries(euler_migration_probe PRIVATE
     euler_library_NS euler_library_fast_NS euler_library_NS_SA euler_library_fast_NS_SA

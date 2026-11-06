@@ -64,8 +64,8 @@ namespace DNDS::Cauchy
             work.fields = result.fields; });
         for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
         {
-            result._data->meanHalo.push_back(Metrics().BindHalo(state.PhysicalField(iField)));
-            result._data->gradientHalo.push_back(Metrics().BindHalo(result.fields[iField]));
+            result._data->meanHalo.push_back(BindHalo(state.PhysicalField(iField)));
+            result._data->gradientHalo.push_back(BindHalo(result.fields[iField]));
         }
         return result;
     }
@@ -504,7 +504,11 @@ namespace DNDS::Cauchy
                     {
                         EquationFVDetail::Gather(blocks, sample.other, right);
                         LoadGradients(sample.other, right);
-                        EquationFVDetail::RotatePoint(right, sample.rotation, vectorStarts);
+                        // Setup proves exact identity, including translational
+                        // periodic images. Keep the full transform for every
+                        // genuinely rotated component frame.
+                        if (sample.changesFrame)
+                            EquationFVDetail::RotatePoint(right, sample.rotation, vectorStarts);
                     }
                     const auto rightProperties = sample.other == UnInitIndex ? leftProperties : prepared(sample.other, right);
                     const Riemann::AcousticState rightData{{right.Flow(flowFirst), rightProperties[0]}, rightProperties[1]};
@@ -660,9 +664,7 @@ namespace DNDS::Cauchy
         _data->equation.ResolveKernelProfile(state.Device());
         DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && std::isfinite(time), "equation auxiliary row space/time differs");
         DNDS_check_throw_info(_data->equation.HasMixture() == bool(workers), "equation auxiliary needs exactly its matching worker backend");
-        for (const auto &sample : _data->samples)
-            if (sample.other == UnInitIndex)
-                sample.boundary.ValidateEquationProducer();
+        _data->boundary.ValidateEquationProducers(_data->boundaryZones);
         const auto arrays = EquationAuxiliaryArrays(output);
         const index faces = index(_data->stencilFaces.size());
         const index rows[9]{Metrics().NumCellProc(), faces, faces, faces, Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCellProc() - Metrics().NumCell()};

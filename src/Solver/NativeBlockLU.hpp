@@ -15,18 +15,27 @@ namespace DNDS::Direct
 {
     namespace Detail
     {
-        template <class Scalar>
-        struct NativeFactorView : LocalLUBase<NativeFactorView<Scalar>, Eigen::MatrixXd, std::vector<Eigen::VectorXd>>
+        template <class Scalar, int Size = Eigen::Dynamic>
+        struct NativeFactorView : LocalLUBase<NativeFactorView<Scalar, Size>, Eigen::Matrix<real, Size, Size>, std::vector<Eigen::Matrix<real, Size, 1>>>
         {
-            using Base = LocalLUBase<NativeFactorView<Scalar>, Eigen::MatrixXd, std::vector<Eigen::VectorXd>>;
+            using Matrix = Eigen::Matrix<real, Size, Size>;
+            using Base = LocalLUBase<NativeFactorView<Scalar, Size>, Matrix, std::vector<Eigen::Matrix<real, Size, 1>>>;
             Algebra::BlockMatrixView<Scalar> values;
             std::atomic<index> *fallbacks;
             NativeFactorView(ssp<SerialSymLUStructure> symbolic, Algebra::BlockMatrixView<Scalar> blocks, bool decomposed, std::atomic<index> *count = nullptr)
                 : Base(std::move(symbolic)), values(blocks), fallbacks(count) { this->isDecomposed = decomposed; }
-            auto GetDiag(index iCell) { return values(iCell, 0); }
-            auto GetLower(index iCell, index j) { return values(iCell, 1 + j); }
-            auto GetUpper(index iCell, index j) { return values(iCell, 1 + index(this->symLU->lowerTriStructure[iCell].size()) + j); }
-            Eigen::MatrixXd InvertDiag(const Eigen::MatrixXd &matrix)
+            auto Block(index iCell, index j)
+            {
+                if constexpr (Size == Eigen::Dynamic)
+                    return values(iCell, j);
+                else
+                    return Eigen::Map<std::conditional_t<std::is_const_v<Scalar>, const Matrix, Matrix>>(
+                        values(iCell, j).data(), Size, Size);
+            }
+            auto GetDiag(index iCell) { return Block(iCell, 0); }
+            auto GetLower(index iCell, index j) { return Block(iCell, 1 + j); }
+            auto GetUpper(index iCell, index j) { return Block(iCell, 1 + index(this->symLU->lowerTriStructure[iCell].size()) + j); }
+            Matrix InvertDiag(const Matrix &matrix)
             {
                 // Same diagonal scaling and guarded partial-pivot LU/SVD policy
                 // as the active Euler local block inverse, without its storage.
@@ -174,6 +183,23 @@ namespace DNDS::Direct
             std::unique_ptr<State> _state;
             explicit TriangularSolve(std::unique_ptr<State> state) : _state(std::move(state)) {}
             friend class NativeBlockLU;
+            template <int Size, bool Upper>
+            static void Scan(State &state, index begin, index end)
+            {
+                Detail::NativeFactorView<const real, Size> factor(state.symbolic, state.factors.View(), true);
+                if constexpr (Upper)
+                {
+                    const auto y = Algebra::MakeEigenRowMatrices<Size, 1>(state.middle->View<Runtime::UniformTableRows>(), state.blockSize, 1);
+                    auto x = Algebra::MakeEigenRowMatrices<Size, 1>(state.output->View<Runtime::UniformTableRows>(), state.blockSize, 1);
+                    factor.SolveUpperRange(y, x, begin, end);
+                }
+                else
+                {
+                    const auto b = Algebra::MakeEigenRowMatrices<Size, 1>(state.input.View<Runtime::UniformTableRows>(), state.blockSize, 1);
+                    auto y = Algebra::MakeEigenRowMatrices<Size, 1>(state.middle->View<Runtime::UniformTableRows>(), state.blockSize, 1);
+                    factor.SolveLowerRange(b, y, begin, end);
+                }
+            }
 
         public:
             TriangularSolve(const TriangularSolve &) = delete;
@@ -187,11 +213,15 @@ namespace DNDS::Direct
                 DNDS_check_throw_info(_state, "native triangular solve is finished or moved");
                 auto &state = *_state;
                 state.Check(begin, end, false);
-                const auto b = Algebra::MakeEigenRowMatrices(state.input.View<Runtime::UniformTableRows>(), state.blockSize, 1);
-                auto y = Algebra::MakeEigenRowMatrices(state.middle->View<Runtime::UniformTableRows>(), state.blockSize, 1);
-                Detail::NativeFactorView<const real> factor(state.symbolic, state.factors.View(), true);
                 state.started = true;
-                factor.SolveLowerRange(b, y, begin, end);
+                if (state.blockSize == 5)
+                    Scan<5, false>(state, begin, end);
+                else if (state.blockSize == 6)
+                    Scan<6, false>(state, begin, end);
+                else if (state.blockSize == 7)
+                    Scan<7, false>(state, begin, end);
+                else
+                    Scan<Eigen::Dynamic, false>(state, begin, end);
                 state.Advance(begin, end, false);
                 state.lowerCalled = true;
             }
@@ -200,11 +230,15 @@ namespace DNDS::Direct
                 DNDS_check_throw_info(_state, "native triangular solve is finished or moved");
                 auto &state = *_state;
                 state.Check(begin, end, true);
-                const auto y = Algebra::MakeEigenRowMatrices(state.middle->View<Runtime::UniformTableRows>(), state.blockSize, 1);
-                auto x = Algebra::MakeEigenRowMatrices(state.output->View<Runtime::UniformTableRows>(), state.blockSize, 1);
-                Detail::NativeFactorView<const real> factor(state.symbolic, state.factors.View(), true);
                 state.started = true;
-                factor.SolveUpperRange(y, x, begin, end);
+                if (state.blockSize == 5)
+                    Scan<5, true>(state, begin, end);
+                else if (state.blockSize == 6)
+                    Scan<6, true>(state, begin, end);
+                else if (state.blockSize == 7)
+                    Scan<7, true>(state, begin, end);
+                else
+                    Scan<Eigen::Dynamic, true>(state, begin, end);
                 state.Advance(begin, end, true);
                 state.upperCalled = true;
             }
@@ -240,6 +274,23 @@ namespace DNDS::Direct
         /// legacy full V1 algorithm; caller fills all matrix values first.
         void Factorize(const std::vector<index> &pivotEnds = {})
         {
+            auto input = _matrix.Read();
+            const auto source = input.View();
+            FillAndFactorize([&](const auto &target)
+                             {
+                for (index iCell = 0; iCell < _matrix.RowNumber(); ++iCell)
+                    for (index j = 0; j < source.BlockNumber(iCell); ++j)
+                        target(iCell, j) = source(iCell, j); }, pivotEnds);
+        }
+        /// Fill the private factor buffer directly from an external operator,
+        /// then run the ordinary decomposition. Fill must initialize every
+        /// block, including structural fill zeros, and must not retain target.
+        /// No copy of the external matrix is retained. Its generation belongs
+        /// to the caller; Matrix() mutation still invalidates these factors.
+        template <class Fill>
+        void FillAndFactorize(Fill &&fill, const std::vector<index> &pivotEnds = {})
+        {
+            const auto matrixPin = _matrix.Read();
             _valid = false;
             _fallbacks = 0;
             std::atomic<index> fallbacks{0};
@@ -248,26 +299,46 @@ namespace DNDS::Direct
                                                         std::is_sorted(pivotEnds.begin(), pivotEnds.end())),
                                   "invalid native factor pivot ranges");
             {
-                auto input = _matrix.Read();
                 auto output = _factors.Write();
-                const auto source = input.View();
                 const auto target = output.View();
-                for (index iCell = 0; iCell < _matrix.RowNumber(); ++iCell)
-                    for (index j = 0; j < source.BlockNumber(iCell); ++j)
-                        target(iCell, j) = source(iCell, j);
-                Detail::NativeFactorView<real> factor(_symbolic, target, false, &fallbacks);
-                if (pivotEnds.empty() || !_symbolic->Num())
-                    factor.InPlaceDecompose();
+                fill(target);
+                const auto decompose = [&](auto &factor)
+                {
+                    if (pivotEnds.empty() || !_symbolic->Num())
+                        factor.InPlaceDecompose();
+                    else
+                    {
+                        factor.BeginNumericFactorization();
+                        index begin = 0;
+                        for (auto end : pivotEnds)
+                        {
+                            if (end > begin)
+                                factor.DecomposeRange(begin, end);
+                            begin = end;
+                        }
+                    }
+                };
+                // Specialize the common flow block at the arithmetic boundary;
+                // factors, ordering, leases and generic CRTP scans are shared.
+                if (_matrix.BlockSize() == 5)
+                {
+                    Detail::NativeFactorView<real, 5> factor(_symbolic, target, false, &fallbacks);
+                    decompose(factor);
+                }
+                else if (_matrix.BlockSize() == 6)
+                {
+                    Detail::NativeFactorView<real, 6> factor(_symbolic, target, false, &fallbacks);
+                    decompose(factor);
+                }
+                else if (_matrix.BlockSize() == 7)
+                {
+                    Detail::NativeFactorView<real, 7> factor(_symbolic, target, false, &fallbacks);
+                    decompose(factor);
+                }
                 else
                 {
-                    factor.BeginNumericFactorization();
-                    index begin = 0;
-                    for (auto end : pivotEnds)
-                    {
-                        if (end > begin)
-                            factor.DecomposeRange(begin, end);
-                        begin = end;
-                    }
+                    Detail::NativeFactorView<real> factor(_symbolic, target, false, &fallbacks);
+                    decompose(factor);
                 }
                 _matrixVersion = _matrix.Values().Version();
             }
@@ -318,8 +389,50 @@ namespace DNDS::Direct
                 DNDS_check_throw_info(dimensions.first == rows && dimensions.second == width, "logical triangular vector extent differs");
             auto matrix = _matrix.Read(), factors = _factors.Read();
             DNDS_check_throw_info(CurrentVersions(), "logical triangular factors are absent or stale");
-            Detail::NativeFactorView<const real> factor(_symbolic, factors.View(), true);
-            Eigen::VectorXd value(width), other(width), product(width);
+            const auto contiguousRHS = Algebra::TryOwnedTable(rhs);
+            const auto contiguousForward = Algebra::TryOwnedTable(forward), contiguousResult = Algebra::TryOwnedTable(result);
+            if (contiguousRHS && contiguousForward && contiguousResult)
+            {
+                // Preserve the logical public interface/leases. Resolve a
+                // complete AoS parent in the prologue, not per row or neighbor.
+                if (width == 5)
+                    SolveTableRows<5>(*contiguousRHS, *contiguousForward, *contiguousResult, factors.View());
+                else if (width == 6)
+                    SolveTableRows<6>(*contiguousRHS, *contiguousForward, *contiguousResult, factors.View());
+                else if (width == 7)
+                    SolveTableRows<7>(*contiguousRHS, *contiguousForward, *contiguousResult, factors.View());
+                else
+                    SolveTableRows<Eigen::Dynamic>(*contiguousRHS, *contiguousForward, *contiguousResult, factors.View());
+                return;
+            }
+            if (width == 5)
+                SolveLogicalRows<5>(rhs, forward, result, factors.View());
+            else if (width == 6)
+                SolveLogicalRows<6>(rhs, forward, result, factors.View());
+            else if (width == 7)
+                SolveLogicalRows<7>(rhs, forward, result, factors.View());
+            else
+                SolveLogicalRows<Eigen::Dynamic>(rhs, forward, result, factors.View());
+        }
+
+    private:
+        template <int Size, class Input, class Output>
+        void SolveTableRows(Input rhs, Output forward, Output result, Algebra::BlockMatrixView<const real> blocks) const
+        {
+            Detail::NativeFactorView<const real, Size> factor(_symbolic, blocks, true);
+            const auto b = Algebra::MakeEigenRowMatrices<Size, 1>(rhs, _matrix.BlockSize(), 1);
+            auto y = Algebra::MakeEigenRowMatrices<Size, 1>(forward, _matrix.BlockSize(), 1);
+            auto x = Algebra::MakeEigenRowMatrices<Size, 1>(result, _matrix.BlockSize(), 1);
+            factor.SolveLowerRange(b, y, 0, _matrix.RowNumber());
+            factor.SolveUpperRange(y, x, 0, _matrix.RowNumber());
+        }
+        template <int Size>
+        void SolveLogicalRows(Algebra::DofComponentView<const real> rhs, Algebra::DofComponentView<real> forward,
+                              Algebra::DofComponentView<real> result, Algebra::BlockMatrixView<const real> blocks) const
+        {
+            const index rows = _matrix.RowNumber(), width = _matrix.BlockSize();
+            Detail::NativeFactorView<const real, Size> factor(_symbolic, blocks, true);
+            Eigen::Matrix<real, Size, 1> value(width), other(width), product(width);
             for (index pos = 0; pos < rows; ++pos)
             {
                 const auto iCell = _symbolic->FillingReorderNew2Old(pos);
