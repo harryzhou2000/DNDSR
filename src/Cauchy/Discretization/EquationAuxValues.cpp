@@ -76,9 +76,19 @@ namespace DNDS::Cauchy
         using namespace EquationFVDetail;
         const MPIInfo mpi(Metrics().Communicator());
         const bool overlap = _data->settings.execution.overlap;
+        const auto stage = [&](auto &&action)
+        {
+            if (_data->settings.implicit.collectiveChecks)
+                MPI::LocalStage(mpi, action);
+            else
+                action();
+        };
         std::optional<EquationPointEvaluator> evaluator;
-        MPI::LocalStage(mpi, [&]
-                        {
+        // This entry preflight follows the same optional validation policy as
+        // the later rank-local stages. Halo launches keep their own contract;
+        // unchecked failures must reach the application's fail-fast boundary.
+        stage([&]
+              {
             stream.Record().WaitHost();
             DNDS_check_throw_info(gradients._data && gradients._data->owner.lock() == _data && stream.Context().device == R::Device::Host(), "foreign mean gradient workspace or non-CPU stream");
             gradients._data->binding.Check(state);
@@ -94,13 +104,6 @@ namespace DNDS::Cauchy
         auto &work = *gradients._data;
         work.origin.reset();
         work.ghostsReady = false;
-        const auto stage = [&](auto &&action)
-        {
-            if (_data->settings.implicit.collectiveChecks)
-                MPI::LocalStage(mpi, action);
-            else
-                action();
-        };
         const auto begin = [&](const auto &bindings)
         {
             std::vector<R::TransferOperation> operations;

@@ -374,7 +374,8 @@ no temporal coarsening or nested stage-convergence loop is introduced.
 `implicit.collectiveChecks` also controls the optional agreement around local
 cycle algebra, identity copies, and repeated nonlinear/linear entry checks.
 Repeated equation-FV entry and correction-auxiliary CPU joins/preparation
-follow that same switch. Disabling agreement does not skip the local actions
+follow that same switch, including the gradient-aware auxiliary entry used by
+two-equation RANS. Disabling agreement does not skip the local actions
 or the stream join, and does not disable transfer access validation.
 With it disabled, coefficient/component agreement is a caller obligation;
 local shape, binding, coefficient and admissibility checks still execute.

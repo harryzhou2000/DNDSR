@@ -673,6 +673,7 @@ TEST_CASE("Explicit mean gradients exchange current values across layouts and CP
         auto settings = Settings();
         settings.boundaries.clear();
         settings.execution.overlap = variant == 1;
+        settings.implicit.collectiveChecks = variant == 1;
         settings.numerics.gradient = "leastSquares";
         const auto equation = Equation(settings);
         C::FiniteVolume fv(mesh, settings, equation);
