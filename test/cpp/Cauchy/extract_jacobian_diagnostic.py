@@ -6,6 +6,7 @@ anchors fail explicitly when the implementation structure changes.
 """
 import argparse
 import hashlib
+import re
 from pathlib import Path
 
 
@@ -15,9 +16,15 @@ def extract(source):
 
     def before(anchor, addition):
         nonlocal text
-        if text.count(anchor) != 1:
+        # Match tokens while accepting indentation/wrapping from the commit
+        # formatter. Insert before the complete original line, retaining every
+        # original byte for the round-trip assertion below.
+        pattern = r"\s+".join(re.escape(part) for part in anchor.strip().split())
+        matches = list(re.finditer(pattern, text))
+        if len(matches) != 1:
             raise ValueError(f"expected one Jacobian batch anchor: {anchor!r}")
-        text = text.replace(anchor, addition + anchor, 1)
+        start = text.rfind("\n", 0, matches[0].start()) + 1
+        text = text[:start] + addition + text[start:]
         insertions.append(addition)
 
     before("        ValidateAuxValues(state, auxiliary, time);",
