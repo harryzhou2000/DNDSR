@@ -169,42 +169,44 @@ TEST_CASE("Finest FAS acceptance shares selected-component L1 L2 convergence wit
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
     for (int order : {1, 2})
-    {
-        auto settings = Controls();
-        settings.implicit.normOrder = order;
-        settings.implicit.residualComponents = {"rho"};
-        settings.implicit.residualReference = "runningMaximum";
-        const auto equation = C::EquationSystem::Resolve(settings.equation);
-        C::FiniteVolume fine(mesh, settings, equation);
-        auto state = fine.Metrics().BuildField(5), source = fine.Metrics().BuildField(5);
-        fine.Initialize(state, {}, {1, 0, 0, 0, 1});
-        const auto mean = equation.Gas().Conservative({1, 0, 0, 0, 1});
+        for (bool checked : {false, true})
         {
-            auto write = source.Owned().Write();
-            const auto values = write.View<R::UniformTableRows>();
-            for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+            auto settings = Controls();
+            settings.implicit.collectiveChecks = checked;
+            settings.implicit.normOrder = order;
+            settings.implicit.residualComponents = {"rho"};
+            settings.implicit.residualReference = "runningMaximum";
+            const auto equation = C::EquationSystem::Resolve(settings.equation);
+            C::FiniteVolume fine(mesh, settings, equation);
+            auto state = fine.Metrics().BuildField(5), source = fine.Metrics().BuildField(5);
+            fine.Initialize(state, {}, {1, 0, 0, 0, 1});
+            const auto mean = equation.Gas().Conservative({1, 0, 0, 0, 1});
             {
-                for (int j = 0; j < 5; ++j)
-                    values(iCell, j) = 20 * mean[j];
-                values(iCell, 4) += .1 * (fine.Metrics().Cells().LocalToGlobal(iCell) + 1);
+                auto write = source.Owned().Write();
+                const auto values = write.View<R::UniformTableRows>();
+                for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+                {
+                    for (int j = 0; j < 5; ++j)
+                        values(iCell, j) = 20 * mean[j];
+                    values(iCell, 4) += .1 * (fine.Metrics().Cells().LocalToGlobal(iCell) + 1);
+                }
             }
+            C::AuxiliaryRequest channels;
+            channels.faceSpectralRadius = channels.cellSpectralSum = true;
+            auto work = fine.BuildWorkspace(state, channels);
+            R::EagerEngine engine;
+            const auto stream = engine.CreateCPUStream();
+            C::NonlinearSolver smoother(fine, state, work, engine, stream, settings);
+            C::PolynomialMultigrid solver(mesh, fine, state, smoother, engine, stream, settings);
+            const auto version = state.Owned().Version();
+            const auto report = solver.Solve(source, 20, 1, 0);
+            CHECK(report.converged);
+            CHECK(report.multigridCycles == 0);
+            CHECK(report.initialResidual == report.referenceResidual);
+            CHECK(report.residual[4] == doctest::Approx(order == 1 ? .85 : std::sqrt(.935)).epsilon(1e-12));
+            CHECK(report.residualTargetRatio < 1);
+            CHECK(state.Owned().Version() == version);
         }
-        C::AuxiliaryRequest channels;
-        channels.faceSpectralRadius = channels.cellSpectralSum = true;
-        auto work = fine.BuildWorkspace(state, channels);
-        R::EagerEngine engine;
-        const auto stream = engine.CreateCPUStream();
-        C::NonlinearSolver smoother(fine, state, work, engine, stream, settings);
-        C::PolynomialMultigrid solver(mesh, fine, state, smoother, engine, stream, settings);
-        const auto version = state.Owned().Version();
-        const auto report = solver.Solve(source, 20, 1, 0);
-        CHECK(report.converged);
-        CHECK(report.multigridCycles == 0);
-        CHECK(report.initialResidual == report.referenceResidual);
-        CHECK(report.residual[4] == doctest::Approx(order == 1 ? .85 : std::sqrt(.935)).epsilon(1e-12));
-        CHECK(report.residualTargetRatio < 1);
-        CHECK(state.Owned().Version() == version);
-    }
 }
 TEST_CASE("Coarse FAS rate reuse and fail-fast halos preserve distributed viscous cycle results")
 {

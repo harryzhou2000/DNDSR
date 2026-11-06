@@ -427,11 +427,12 @@ namespace DNDS::Cauchy
                 TimedOperator(*fineSolver, state, value, mass, 0, fineRate.get());
                 auto norms = Profile::Norms(state);
                 std::vector<real> sum(norms.size() + 1, 0);
-                MPI::LocalStage(mpi, [&]
-                                {
-                    const auto geometry = fine.Metrics().AcquireRead(); const auto metric = geometry.HostView();
+                const auto accumulate = [&]
+                {
+                    const auto geometry = fine.Metrics().AcquireRead();
+                    const auto metric = geometry.HostView();
                     Profile::ReadPair(source, value, [&](auto b, auto f)
-                    {
+                                      {
                         for (index iCell = 0; iCell < f.RowCount(); ++iCell)
                         {
                             const real volume = metric.GetCellVol(iCell); sum.back() += volume;
@@ -440,8 +441,15 @@ namespace DNDS::Cauchy
                                 const real difference = b(iCell, j) - f(iCell, j);
                                 sum[j] += settings.normOrder == 1 ? volume * std::abs(difference) : volume * difference * difference;
                             }
-                        }
-                    }); });
+                        } });
+                };
+                // Only the diagnostic preflight is optional. The residual
+                // norm below is a mathematical collective in both modes.
+                // Unchecked failures propagate to the fail-fast frontend.
+                if (settings.collectiveChecks)
+                    MPI::LocalStage(mpi, accumulate);
+                else
+                    accumulate();
                 MPI_Allreduce(MPI_IN_PLACE, sum.data(), int(sum.size()), MPI_DOUBLE, MPI_SUM, mpi.comm);
                 DNDS_check_throw_info(sum.back() > 0 && std::isfinite(sum.back()), "invalid FAS global volume");
                 for (index j = 0; j < index(norms.size()); ++j)
@@ -541,6 +549,9 @@ namespace DNDS::Cauchy
         // Reconstruction and final-increment admissibility are independent.
         if (!fine.implicit.multigrid.coarseRHSFPP)
             lower.implicit.positivity.rhsFPPMode = "none";
+        // P0 drops reconstructed gradients only from its viscous face flux
+        // (which retains the face-jump term). Keep reconstruction available
+        // for all volume-source gradients, including RANS and chemistry.
         lower.numerics.reconstruction = "gradient";
         lower.numerics.firstOrderConvection = level > 0;
         lower.numerics.cfv.maxOrder = 1;
