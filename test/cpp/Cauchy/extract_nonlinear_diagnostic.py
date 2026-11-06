@@ -41,6 +41,15 @@ def main():
     text = replace_once(text, '// Candidate checks precede all state writers.',
         'detailScope.Finish();\n        // Candidate checks precede all state writers.')
     if 'const auto validateCandidate = [&]' in text:
+        # Separate local validation from the existing global minimum. These
+        # clocks only observe the production sequence: no barrier, reordered
+        # collective, or production timer participates in the measurement.
+        text = replace_once(text, 'const auto validateCandidate = [&]\n        {',
+            'const auto validateCandidate = [&]\n        {\n'
+            '            ::DiagnosticTiming::Scope validationScope(::DiagnosticTiming::Block::CandidateValidation);')
+        text = replace_once(text, 'MPI_Allreduce(MPI_IN_PLACE, agreement, 2, MPI_DOUBLE, MPI_MIN, data.mpi.comm);',
+            '{ ::DiagnosticTiming::Scope agreementScope(::DiagnosticTiming::Block::CandidateAgreement);\n'
+            '            MPI_Allreduce(MPI_IN_PLACE, agreement, 2, MPI_DOUBLE, MPI_MIN, data.mpi.comm); }')
         text = replace_once(text, 'const auto validateCandidate = [&]',
             '{ ::DiagnosticTiming::Scope acceptanceScope(::DiagnosticTiming::Block::CandidateAcceptance);\n'
             'const auto validateCandidate = [&]')

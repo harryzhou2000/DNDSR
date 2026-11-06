@@ -240,7 +240,8 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
         constexpr std::array<const char *, DiagnosticTiming::Sample::detailNumber> detailNames{
             "mean-validation", "defect-assembly", "pseudo-time-pp", "correction-local",
             "candidate-acceptance", "correction-statistics", "gradient", "reconstruction",
-            "polynomial-pp", "face-rhs", "source-sampling", "volume-source"};
+            "polynomial-pp", "face-rhs", "source-sampling", "volume-source",
+            "candidate-validation", "candidate-agreement"};
         std::array<double, DiagnosticTiming::Sample::detailNumber * 3> details{};
         for (int repeat = 0; repeat < repetitions; ++repeat)
         {
@@ -300,7 +301,7 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
         std::vector<double> detailRecords(!mpi.rank ? details.size() * mpi.size : 0);
         MPI_Gather(details.data(), int(details.size()), MPI_DOUBLE, detailRecords.data(), int(details.size()), MPI_DOUBLE, 0, mpi.comm);
         if (!mpi.rank)
-            std::cout << "BROAD_DETAIL_TIMES " << C::Json{{"solver", native ? "Cauchy" : "Euler"}, {"instrumented", native}, {"scope_names", detailNames}, {"levels", {"P3", "P1", "P0"}}, {"rank_rows", detailRecords}, {"nested_scopes", {{"mean-validation", "candidate-acceptance"}, {"source-sampling", "volume-source"}}}, {"timing", "external-same-production-calls"}}.dump() << std::endl;
+            std::cout << "BROAD_DETAIL_TIMES " << C::Json{{"solver", native ? "Cauchy" : "Euler"}, {"instrumented", native}, {"scope_names", detailNames}, {"levels", {"P3", "P1", "P0"}}, {"rank_rows", detailRecords}, {"nested_scopes", {{"mean-validation", "candidate-validation"}, {"candidate-validation", "candidate-acceptance"}, {"candidate-agreement", "candidate-acceptance"}, {"source-sampling", "volume-source"}}}, {"timing", "external-same-production-calls"}}.dump() << std::endl;
         std::array<double, 37> rankRecord{};
         std::copy_n(total.begin(), 4, rankRecord.begin());
         std::copy(perLevel.begin(), perLevel.end(), rankRecord.begin() + 4);

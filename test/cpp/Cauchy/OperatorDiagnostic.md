@@ -75,6 +75,14 @@ The matrix/linear subdivision additionally reports `matrix` (Jacobian/matrix
 assembly) and `linear` (full linear driver including factorization). Their
 individual rank maxima must not be added to recover `matrix-linear`.
 
+Candidate-acceptance attribution additionally separates `candidate-validation`
+(the existing local candidate-check lambda) and `candidate-agreement` (its
+existing two-value global minimum). Both are nested inside
+`candidate-acceptance`; `mean-validation` is itself inside local validation.
+The clocks add no barriers, MPI calls or changes to publication ordering.
+Compare subranges on the same rank: a collective's elapsed time includes
+arrival imbalance and is not a measurement of communication latency alone.
+
 ## Fine extracted operators (use after broad localization)
 
 This opt-in executable isolates operators on frozen inputs. It is not a unit

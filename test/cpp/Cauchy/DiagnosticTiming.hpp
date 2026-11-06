@@ -27,7 +27,9 @@ namespace DiagnosticTiming
         PolynomialPP,
         FaceRHS,
         SourceSampling,
-        VolumeSource
+        VolumeSource,
+        CandidateValidation,
+        CandidateAgreement
     };
     struct Sample
     {
@@ -39,7 +41,7 @@ namespace DiagnosticTiming
         std::array<int, 3> levelMatrixLinearCalls{};
         std::array<double, 3> levelMatrix{}, levelLinear{};
         std::array<double, 3> levelAuxiliaryPrepare{}, levelAuxiliaryExchange{}, levelAuxiliaryCompute{};
-        static constexpr int detailNumber = int(Block::VolumeSource) - int(Block::MeanValidation) + 1;
+        static constexpr int detailNumber = int(Block::CandidateAgreement) - int(Block::MeanValidation) + 1;
         std::array<std::array<double, 3>, detailNumber> details{};
     };
     inline thread_local Sample *active = nullptr;
