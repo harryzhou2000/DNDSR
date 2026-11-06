@@ -4,6 +4,7 @@
 #include "DNDS/Algebra/DofBundle.hpp"
 #include "DNDS/Algebra/DofComponentView.hpp"
 #include <array>
+#include <utility>
 
 namespace DNDS::Cauchy
 {
@@ -25,10 +26,19 @@ namespace DNDS::Cauchy
     /// Borrowed component range. Preserve the complete parent layout: changing
     /// its width would change the tile pitch of an AoSoA array incorrectly.
     /// Resolve segments outside kernels; these plain views retain no owner.
-    template <class T, bool Checked = Runtime::AccessBoundsChecks, size_t Width = Runtime::DynamicExtent>
+    template <class T, bool Checked = Runtime::AccessBoundsChecks, size_t Width = Runtime::DynamicExtent,
+              class ParentPolicy = Runtime::UniformTableRows>
     struct EquationBlockArrayView
     {
-        Runtime::ArrayView<T, Checked, Runtime::UniformTableRows> parent;
+        using ParentView = Runtime::ArrayView<T, Checked, ParentPolicy>;
+        using value_type = T;
+        static constexpr size_t row_width = Width, component_stride = ParentView::component_stride;
+        static constexpr size_t row_stride = ParentView::row_stride;
+        static constexpr bool is_dynamic = ParentView::is_dynamic;
+        /// layout_kind is a compile-time guarantee only when !is_dynamic.
+        static constexpr Runtime::RowLayoutKind layout_kind = ParentView::layout_kind;
+        using RowType = Runtime::RowSpan<T, Checked, Width, Runtime::DynamicExtent, component_stride>;
+        ParentView parent;
         index first = 0, components = 0;
         DNDS_DEVICE_CALLABLE index RowCount() const { return parent.RowCount(); }
         DNDS_DEVICE_CALLABLE index ComponentNumber() const
@@ -50,22 +60,37 @@ namespace DNDS::Cauchy
                 DNDS_HD_assert(iComponent >= 0 && iComponent < ComponentNumber());
             return parent(iRow, first + iComponent);
         }
-        DNDS_DEVICE_CALLABLE Runtime::RowSpan<T, Checked, Width> operator[](index iRow) const
+        DNDS_DEVICE_CALLABLE RowType operator[](index iRow) const
         {
             const auto row = parent[iRow];
             return {row.data() + first * row.ElementStride(), ComponentNumber(), row.ElementStride()};
         }
         template <size_t FixedWidth>
-        EquationBlockArrayView<T, Checked, FixedWidth> Fixed() const
+        EquationBlockArrayView<T, Checked, FixedWidth, ParentPolicy> Fixed() const
         {
             DNDS_check_throw_info(ComponentNumber() == index(FixedWidth), "equation block static width differs");
             return {parent, first, components};
         }
+        /// Prologue query/projection only; neither acquires access nor changes
+        /// storage. The enclosing scope must retain the parent through use.
+        bool HasTableLayout() const
+        {
+            return parent.kind == Runtime::RowLayoutKind::Table && !parent.offsets && !parent.sizes;
+        }
+        EquationBlockArrayView<T, Checked, Width, Runtime::TableRows> AsTable() const
+        {
+            DNDS_check_throw_info(HasTableLayout(), "equation block needs AoS table storage");
+            // Keep the complete parent width/pitch, including component ranges
+            // within wider coupled rows. An absent ghost has no parent rows.
+            return {{parent.data, nullptr, parent.rows, parent.width, parent.stride, nullptr, parent.kind}, first, components};
+        }
     };
 
-    struct EquationBlockReadView
+    template <size_t Width = Runtime::DynamicExtent, class ParentPolicy = Runtime::UniformTableRows>
+    struct EquationBlockPairReadView
     {
-        EquationBlockArrayView<const real> owned, ghost;
+        EquationBlockArrayView<const real, Runtime::AccessBoundsChecks, Width, ParentPolicy> owned, ghost;
+        static constexpr size_t row_width = Width, component_stride = decltype(owned)::component_stride;
         DNDS_DEVICE_CALLABLE index RowCount() const { return owned.RowCount() + ghost.RowCount(); }
         DNDS_DEVICE_CALLABLE index ComponentNumber() const { return owned.ComponentNumber(); }
         DNDS_DEVICE_CALLABLE const real &operator()(index iRow, index iComponent) const
@@ -76,7 +101,15 @@ namespace DNDS::Cauchy
         {
             return iRow < owned.RowCount() ? owned[iRow] : ghost[iRow - owned.RowCount()];
         }
+        template <size_t FixedWidth>
+        EquationBlockPairReadView<FixedWidth, ParentPolicy> Fixed() const
+        {
+            return {owned.template Fixed<FixedWidth>(), ghost.template Fixed<FixedWidth>()};
+        }
+        bool HasTableLayout() const { return owned.HasTableLayout() && ghost.HasTableLayout(); }
+        EquationBlockPairReadView<Width, Runtime::TableRows> AsTable() const { return {owned.AsTable(), ghost.AsTable()}; }
     };
+    using EquationBlockReadView = EquationBlockPairReadView<>;
 
     /// Semantic state binding over native fields, with no payload repacking.
     /// Copies share allocations and immutable binding metadata. Clone copies
@@ -158,6 +191,12 @@ namespace DNDS::Cauchy
             ReadScope &operator=(const ReadScope &) = delete;
             EquationBlockReadView Block(index iBlock) const;
             EquationBlockReadView Block(const std::string &name) const;
+            /// Check a known logical block width once, outside point loops.
+            /// This fixes access shape only; parent layout/grouping is unchanged.
+            template <size_t Width>
+            auto Block(index iBlock) const { return Block(iBlock).template Fixed<Width>(); }
+            template <size_t Width>
+            auto Block(const std::string &name) const { return Block(name).template Fixed<Width>(); }
             /// Resolve logical component metadata once for coupled dense-row
             /// kernels. Retain this scope and the returned host layout owner.
             /// This is not a device upload or a payload packing operation.
@@ -181,6 +220,10 @@ namespace DNDS::Cauchy
             WriteScope &operator=(const WriteScope &) = delete;
             EquationBlockArrayView<real> Block(index iBlock) const;
             EquationBlockArrayView<real> Block(const std::string &name) const;
+            template <size_t Width>
+            auto Block(index iBlock) const { return Block(iBlock).template Fixed<Width>(); }
+            template <size_t Width>
+            auto Block(const std::string &name) const { return Block(name).template Fixed<Width>(); }
             Algebra::DofComponentLayout<real> ComponentLayout() const;
             void Complete(const Runtime::Completion &completion);
             /// Only before any values have changed, as for native Array leases.

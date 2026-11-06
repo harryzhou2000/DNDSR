@@ -185,7 +185,9 @@ def test_equation_operator_frontend_composes_native_residual_and_linear_solve(mi
         problem.apply_sgs(rhs, old, forward, unsplit)
         old_halo = [operators.metrics.BindHalo(old.fields[name]) for name in old.field_names]
         active = [binding.begin() for binding in old_halo]
-        iteration = problem.begin_sgs(rhs, old, forward, staged)
+        # A zero-start scan has no old input at all. It can run while an
+        # unrelated old buffer's ghosts are written; no access lease is taken.
+        iteration = problem.begin_sgs_zero(rhs, forward, staged)
         iteration.lower(C.LinearRegion.Core)
         for transfer in active:
             transfer.wait()

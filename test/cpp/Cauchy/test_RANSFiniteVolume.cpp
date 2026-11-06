@@ -316,6 +316,28 @@ TEST_CASE("RANS FV integrates quadrature sources and their positive implicit des
                     fv.PrepareCorrectionAux(state, *work, aux, engine, stream, 0);
                 }
                 fv.PrepareJacobian(state, aux, tau, *matrix, controls, 0, {}, work.get());
+                if (!refresh)
+                {
+                    auto evaluated = fv.BuildLinearProblem(state, C::DiagonalStorage::Block, C::OffDiagonalStorage::SemiMatrixFree);
+                    fv.PrepareJacobian(state, aux, tau, *evaluated, controls, 0, {}, work.get());
+                    const auto producer = evaluated->PreparedOffDiagonalEvaluator();
+                    const auto stored = matrix->OffDiagonal().Read();
+                    // A strided arbitrary direction exercises every flow and
+                    // RANS column, including the two-equation stress coupling.
+                    const I width = state.ComponentNumber();
+                    Eigen::VectorXd storage = Eigen::VectorXd::Zero(2 * width), product(width);
+                    Eigen::Map<Eigen::VectorXd, 0, Eigen::InnerStride<2>> direction(storage.data(), width);
+                    for (I j = 0; j < width; ++j)
+                        direction[j] = -.4 + .13 * j;
+                    for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                        for (I iBlock = 0; iBlock < I(matrix->Columns()[iCell].size()); ++iBlock)
+                        {
+                            producer->ApplyBlock(iCell, iBlock, direction, product);
+                            const auto expected = (stored.View()(iCell, iBlock) * direction).eval();
+                            for (I j = 0; j < width; ++j)
+                                CHECK(product[j] == doctest::Approx(expected[j]).epsilon(3e-12).scale(1));
+                        }
+                }
                 const auto rhsRead = result.ReadOwned();
                 const auto diagonalRead = matrix->Diagonal().Read();
                 const auto rhs = rhsRead.Block("rans"), flowRHS = rhsRead.Block("flow");
@@ -1079,7 +1101,7 @@ TEST_CASE("SA implicit updates repair scalars after flow compression without unf
             const auto flow = read.Block("flow");
             const auto change = write.Block("flow");
             for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
-                change(iCell, 0) = -.01 * flow(iCell, 0);
+                change(iCell, 0) = mpi.rank == 0 ? -.01 * flow(iCell, 0) : 0;
         }
         const C::EquationDofOperations::Binding before(state);
         CHECK_THROWS(solver.ApplyCorrection(state, delta, 1, {0}));
@@ -1192,7 +1214,10 @@ TEST_CASE("SA cached corrections retain pre-RHS auxiliary publication across CPU
         settings.implicit.linear.iterations = 2;
         settings.implicit.diagonal = "block";
         C::FiniteVolume fv(mesh, settings, Equation(settings));
-        auto direct = State(fv, 0), cached = State(fv, workers ? 1 : 0);
+        // Exercise ordered coupled-AoS nonlinear rows against the generic
+        // permuted/split layouts, with identical physical states and controls.
+        auto direct = C::EquationDofs::Coupled(fv.Equation().Schema(), fv.Metrics().BuildField(6));
+        auto cached = State(fv, workers ? 1 : 0);
         Fill(direct, fv, true);
         C::EquationDofOperations::Copy(cached, direct);
         auto source = C::EquationDofOperations::NewVector(direct);

@@ -6,26 +6,21 @@
 
 namespace DNDS::Algebra
 {
-    /// Dense block kernels keep their ordinary Eigen maps for one physical
-    /// field. A logical component view gathers into caller-owned row scratch.
-    /// Scratch is allocated once per operator, never once per row/neighbor.
-    template <class Rows, class Vector>
-    auto ReadEigenRow(Rows rows, index iRow, Vector &) { return rows[iRow]; }
+    /// Explicit CPU packing for a dense numerical kernel. Logical row/scalar
+    /// indexing itself never packs or creates an Eigen map. The caller owns
+    /// and sizes scratch before its loops; the returned reference borrows it
+    /// until the next packing operation into the same scratch.
     template <class T, class Vector>
-    auto ReadEigenRow(DofComponentView<T> rows, index iRow, Vector &scratch)
+    auto PackEigenRow(DofComponentView<T> rows, index iRow, Vector &scratch)
     {
         for (index j = 0; j < rows.ComponentNumber(); ++j)
             scratch[j] = rows(iRow, j);
         return Eigen::Ref<const Vector>(scratch);
     }
-    template <class Rows, class Vector>
-    auto WriteEigenRow(Rows rows, index iRow, Vector &) { return rows[iRow]; }
+    /// Explicit inverse of PackEigenRow. No allocation or synchronization;
+    /// the caller retains the logical output's write lease through this copy.
     template <class Vector>
-    auto WriteEigenRow(DofComponentView<real>, index, Vector &scratch) { return Eigen::Ref<Vector>(scratch); }
-    template <class Rows, class Vector>
-    void PublishEigenRow(Rows, index, const Vector &) {}
-    template <class Vector>
-    void PublishEigenRow(DofComponentView<real> rows, index iRow, const Vector &value)
+    void UnpackEigenRow(DofComponentView<real> rows, index iRow, const Vector &value)
     {
         for (index j = 0; j < rows.ComponentNumber(); ++j)
             rows(iRow, j) = value[j];

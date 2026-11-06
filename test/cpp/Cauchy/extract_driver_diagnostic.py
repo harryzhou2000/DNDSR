@@ -106,7 +106,7 @@ def main():
                 fsolve, DriverDiagnostic::corrections,
                 [&](int iteration, TDof &residual, int stage)
                 {
-                    return DriverDiagnostic::levels ? functor_fstop(iteration, residual, stage, runningEnvironment) : false;
+                    return DriverDiagnostic::levels || DriverDiagnostic::corrections > 1 ? functor_fstop(iteration, residual, stage, runningEnvironment) : false;
                 }, countIncrement, curDtImplicit);
             DNDS_check_throw_info(diagnosticUpdates == DriverDiagnostic::corrections,
                                   "Euler diagnostic did not perform its requested update count");

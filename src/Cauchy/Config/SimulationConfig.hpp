@@ -237,6 +237,7 @@ namespace DNDS::Cauchy
     {
         std::string method = "gmres", preconditioner = "sgs";
         std::string stopping = "residual";
+        std::string componentScaling = "none";
         index iterations = 20;
         int subspace = 10;
         real relativeTolerance = .1, absoluteTolerance = 1e-12;
@@ -245,6 +246,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(method, "sgs stationary sweeps, ilu stationary defect correction, or restarted left-gmres");
             DNDS_FIELD(preconditioner, "Fixed sgs or rank-local ilu for GMRES; unused by stationary methods");
             DNDS_FIELD(stopping, "residual uses tolerance checks; fixedCount executes exactly iterations for SGS/ILU, omits true-residual reporting and checks the final update is finite; tolerances are ignored");
+            DNDS_FIELD(componentScaling, "GMRES metric: none or meanState (Euler volume-averaged absolute conservative magnitudes with a common momentum scale and kinetic energy scale; requires a compressible flow5 block)");
             DNDS_FIELD(iterations, "Maximum linear iterations per nonlinear correction");
             DNDS_FIELD(subspace, "Restarted GMRES subspace size");
             DNDS_FIELD(relativeTolerance, "Relative true-residual tolerance");
@@ -264,11 +266,13 @@ namespace DNDS::Cauchy
     struct ImplicitILUSettings
     {
         int fill = 0;
+        int preconditionerCorrections = 1;
         bool coreFirst = true;
         std::string ordering = "natural";
         DNDS_DECLARE_CONFIG(ImplicitILUSettings)
         {
             DNDS_FIELD(fill, "Local ILU stencil expansion 0..5, or -1 for complete LU");
+            DNDS_FIELD(preconditionerCorrections, "Fixed zero-started ILU defect corrections per GMRES preconditioner call; corrections after the first exchange the iterate halo. Stationary ILU instead uses linear.iterations");
             DNDS_FIELD(coreFirst, "Order core before dependent cells before symbolic fill");
             DNDS_FIELD(ordering, "Rank-local factor ordering: natural or rcm (CorrectRCM), followed by optional stable core grouping; does not reorder mesh/DOFs");
         }
@@ -362,7 +366,7 @@ namespace DNDS::Cauchy
         DNDS_DECLARE_CONFIG(ImplicitSettings)
         {
             DNDS_FIELD(diagonal, "entries or full block diagonal storage");
-            DNDS_FIELD(jacobianAction, "assembled or semiMatrixFree off-diagonal blocks; the diagonal and local ILU factors remain explicit");
+            DNDS_FIELD(jacobianAction, "assembled (canonical) or directEvaluated off-diagonal Ax; semiMatrixFree is a compatibility spelling. Diagonal blocks and ILU factors remain explicit");
             DNDS_FIELD(iterations, "Maximum nonlinear corrections per physical stage");
             DNDS_FIELD(minIterations, "Minimum corrections before accepting a stage");
             DNDS_FIELD(consoleInterval, "Rank-zero nonlinear residual/VR progress interval; zero disables it");

@@ -25,6 +25,17 @@ def main():
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
     text = args.source.read_text()
+    # Phase-local scopes retain all original calls. Source sampling nests
+    # inside volume-source evaluation and is reported separately as such.
+    for phase, block in (('Gradient', 'Gradient'), ('VR', 'Reconstruction'),
+                         ('PP', 'PolynomialPP'), ('RHS', 'FaceRHS'),
+                         ('Sampling', 'SourceSampling'), ('Source', 'VolumeSource')):
+        pattern = (r'const\s+(?:EquationWorkspace::)?PhaseTime\s+timing\('
+                   r'(\*this|work),\s*(?:EquationWorkspace::)?' + phase + r'Phase\);')
+        text, count = re.subn(pattern,
+            lambda match: f'::DiagnosticTiming::Scope detailScope(::DiagnosticTiming::Block::{block});\n' + match.group(0), text)
+        if count != 1:
+            raise ValueError(f'FV detail scope {phase} expected once, got {count}')
     text = replace_once(text,
         "        const EquationWorkspace::PhaseTime timing(work, EquationWorkspace::TotalPhase);",
         "        ::DiagnosticTiming::Level diagnosticLevel(_data->settings.numerics.firstOrderConvection ? 2 : _data->settings.numerics.reconstruction == \"variational\" ? 0 : 1);\n"

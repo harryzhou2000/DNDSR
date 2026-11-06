@@ -32,7 +32,7 @@ namespace
         return value;
     }
     double RHS(int rank, DNDS::index iCell, int j) { return .4 + .1 * rank - .06 * iCell + .05 * j; }
-    struct EvaluatedOff final : C::OffDiagonalEvaluator
+    struct EvaluatedOff : C::OffDiagonalEvaluator
     {
         std::shared_ptr<const A::DofSpace::Partition> partition;
         std::vector<std::vector<DNDS::index>> declaredColumns = columns;
@@ -44,6 +44,35 @@ namespace
         void EvaluateBlock(DNDS::index iRow, DNDS::index iBlock, Eigen::Ref<Eigen::MatrixXd> output) const override
         {
             output = Off(iRow, columns[iRow][iBlock]);
+        }
+        void ApplyBlock(DNDS::index iRow, DNDS::index iBlock, InputVector input, Eigen::Ref<Eigen::VectorXd> output) const override
+        {
+            for (int j = 0; j < 5; ++j)
+                output[j] = (-.1 - .001 * iRow) * input[j];
+            output[1] += .003 * (columns[iRow][iBlock] + 1) * input[4];
+        }
+    };
+    /// Reject dense extraction so a passing SGS/Jv test proves that the
+    /// direct action contract is used, rather than only comparing values from
+    /// two calls through the same dense producer.
+    struct ActionOnlyOff final : EvaluatedOff
+    {
+        using EvaluatedOff::EvaluatedOff;
+        void EvaluateBlock(DNDS::index, DNDS::index, Eigen::Ref<Eigen::MatrixXd>) const override
+        {
+            DNDS_check_throw_info(false, "action-only test producer cannot extract dense blocks");
+        }
+    };
+    // Test-only instrumentation proves that zero products are actually
+    // omitted, rather than merely comparing two numerically identical scans.
+    struct CountedOff final : EvaluatedOff
+    {
+        using EvaluatedOff::EvaluatedOff;
+        mutable DNDS::index products = 0;
+        void ApplyBlock(DNDS::index iRow, DNDS::index iBlock, InputVector input, Eigen::Ref<Eigen::VectorXd> output) const override
+        {
+            ++products;
+            EvaluatedOff::ApplyBlock(iRow, iBlock, input, output);
         }
     };
     struct Fixture
@@ -119,6 +148,131 @@ namespace
         }
     };
 }
+TEST_CASE("SGS and matrix action use direct evaluated products on strided rows")
+{
+    for (int layout : {0, 1, 2})
+    {
+        Fixture assembled(layout), evaluated(layout, true);
+        evaluated.problem->PublishOffDiagonalEvaluator(std::make_shared<ActionOnlyOff>(evaluated.space));
+        C::LinearSolveSettings settings;
+        settings.method = "sgs";
+        settings.stopping = "fixedCount";
+        settings.maxIterations = 2;
+        settings.exchangeBetweenSweeps = true;
+        C::LinearSolver a(assembled.problem, assembled.rhs, [&](Field &field)
+                          { return assembled.Bind(field); }, settings);
+        C::LinearSolver b(evaluated.problem, evaluated.rhs, [&](Field &field)
+                          { return evaluated.Bind(field); }, settings);
+        REQUIRE(a.Solve(assembled.rhs).usable);
+        REQUIRE(b.Solve(evaluated.rhs).usable);
+        Field resultA(assembled.space, assembled.rhs.Owned().Layout());
+        Field resultB(evaluated.space, evaluated.rhs.Owned().Layout());
+        assembled.Bind(assembled.rhs).Begin().Wait();
+        evaluated.Bind(evaluated.rhs).Begin().Wait();
+        assembled.problem->Apply(assembled.rhs, resultA);
+        evaluated.problem->Apply(evaluated.rhs, resultB);
+        const auto xa = a.Solution().Owned().Read(), xb = b.Solution().Owned().Read();
+        const auto ya = resultA.Owned().Read(), yb = resultB.Owned().Read();
+        for (DNDS::index iCell = 0; iCell < 4; ++iCell)
+            for (int j = 0; j < 5; ++j)
+            {
+                CHECK(xa.View<R::UniformTableRows>()(iCell, j) == doctest::Approx(xb.View<R::UniformTableRows>()(iCell, j)).epsilon(2e-14));
+                CHECK(ya.View<R::UniformTableRows>()(iCell, j) == doctest::Approx(yb.View<R::UniformTableRows>()(iCell, j)).epsilon(2e-14));
+            }
+    }
+}
+TEST_CASE("Dedicated zero-start SGS needs no old storage and preserves explicit-zero results")
+{
+    for (int layout : {0, 1, 2})
+        for (bool evaluated : {false, true})
+            for (bool middle : {false, true})
+            {
+                Fixture fixture(layout, evaluated);
+                std::shared_ptr<CountedOff> counter;
+                if (evaluated)
+                {
+                    counter = std::make_shared<CountedOff>(fixture.space);
+                    fixture.problem->PublishOffDiagonalEvaluator(counter);
+                }
+                fixture.problem->InvertDiagonal();
+                const auto shape = fixture.rhs.Owned().Layout();
+                Field zero(fixture.space, shape), forwardA(fixture.space, shape), forwardB(fixture.space, shape);
+                Field resultA(fixture.space, shape), resultB(fixture.space, shape);
+                for (auto *part : {&zero.Owned(), &zero.Ghost()})
+                {
+                    auto write = part->Write();
+                    const auto view = write.View<R::UniformTableRows>();
+                    for (DNDS::index iRow = 0; iRow < view.RowCount(); ++iRow)
+                        for (int j = 0; j < 5; ++j)
+                            view(iRow, j) = 0;
+                }
+                const auto run = [&](auto &rhs, auto &old, auto &forward, auto &result, Field &physicalForward, bool knownZero)
+                {
+                    if (counter)
+                        counter->products = 0;
+                    std::optional<R::Array<double>::WriteLease> unusedOwned, unusedGhost;
+                    if (knownZero)
+                    {
+                        unusedOwned.emplace(zero.Owned().Write());
+                        unusedGhost.emplace(zero.Ghost().Write());
+                    }
+                    auto sweep = knownZero ? fixture.problem->BeginSGSZero(rhs, forward, result, middle)
+                                           : fixture.problem->BeginSGS(rhs, old, forward, result, middle);
+                    sweep.Lower(C::LinearRegion::Core);
+                    sweep.Lower(C::LinearRegion::HaloDependent);
+                    if (counter)
+                        CHECK(counter->products == (knownZero ? 3 : 8));
+                    if (middle)
+                        fixture.Bind(physicalForward).Begin().Wait();
+                    sweep.Upper(C::LinearRegion::HaloDependent);
+                    sweep.Upper(C::LinearRegion::Core);
+                    sweep.Finish();
+                    // Local upper retains all6 local products; with middle
+                    // exchange it additionally consumes both forward ghosts.
+                    if (counter)
+                        CHECK(counter->products == (knownZero ? (middle ? 11 : 9) : 16));
+                };
+                for (bool logical : {false, true})
+                {
+                    if (logical)
+                    {
+                        const auto schema = C::EquationSystem::Resolve(C::EquationSettings{}).Schema();
+                        auto rhs = C::EquationDofs::Coupled(schema, fixture.rhs), old = C::EquationDofs::Coupled(schema, zero);
+                        auto a = C::EquationDofs::Coupled(schema, forwardA), b = C::EquationDofs::Coupled(schema, forwardB);
+                        auto x = C::EquationDofs::Coupled(schema, resultA), y = C::EquationDofs::Coupled(schema, resultB);
+                        run(rhs, old, a, x, forwardA, false);
+                        run(rhs, old, b, y, forwardB, true);
+                    }
+                    else
+                    {
+                        run(fixture.rhs, zero, forwardA, resultA, forwardA, false);
+                        run(fixture.rhs, zero, forwardB, resultB, forwardB, true);
+                    }
+                    const auto a = resultA.Owned().Read(), b = resultB.Owned().Read();
+                    for (DNDS::index iRow = 0; iRow < 4; ++iRow)
+                        for (int j = 0; j < 5; ++j)
+                            CHECK(a.View<R::UniformTableRows>()(iRow, j) == b.View<R::UniformTableRows>()(iRow, j));
+                }
+            }
+}
+TEST_CASE("Residual-stopped SGS publishes zero when a repeated solve needs no sweep")
+{
+    Fixture fixture;
+    C::LinearSolveSettings settings;
+    settings.method = "sgs";
+    settings.maxIterations = 3;
+    C::LinearSolver solver(fixture.problem, fixture.rhs, [&](Field &field)
+                           { return fixture.Bind(field); }, settings);
+    REQUIRE(solver.Solve(fixture.rhs).usable);
+    A::Fill(fixture.rhs, 0.);
+    const auto result = solver.Solve(fixture.rhs);
+    CHECK(result.converged);
+    CHECK(result.iterations == 0);
+    const auto read = solver.Solution().Owned().Read();
+    for (DNDS::index iRow = 0; iRow < 4; ++iRow)
+        for (int j = 0; j < 5; ++j)
+            CHECK(read.View<R::UniformTableRows>()(iRow, j) == 0);
+}
 TEST_CASE("Cauchy coupled linear solvers match a global dense oracle with real persistent halos")
 {
     for (int selection = 0; selection < 16; ++selection)
@@ -178,6 +332,130 @@ TEST_CASE("Cauchy coupled linear solvers match a global dense oracle with real p
         CHECK(solver.Solve(fixture.rhs).converged); // Preflight rejection is reusable.
     }
 }
+
+TEST_CASE("Logical coupled SGS retains physical-field scan values with remote middle exchange")
+{
+    for (int components : {5, 6, 7})
+        for (int layout = 0; layout < 3; ++layout)
+        {
+            Fixture fixture(layout);
+            const auto prototype = layout == 0   ? R::RowLayout::Dense(0, components, components + 3)
+                                   : layout == 1 ? R::RowLayout::ColMajor(0, components, {8, 1})
+                                                 : R::RowLayout::TiledColMajor(0, components, 32);
+            Field rhs(fixture.space, prototype);
+            auto problem = std::make_shared<C::LinearProblemContext>(fixture.space, components, columns,
+                                                                     std::vector<DNDS::index>{1, 0}, C::DiagonalStorage::Block);
+            {
+                auto diagonal = problem->Diagonal().Write();
+                auto off = problem->OffDiagonal().Write();
+                auto write = rhs.Owned().Write();
+                const auto blocks = A::MakeEigenRowMatrices(diagonal.View<R::TableRows>(), components, components);
+                for (DNDS::index iCell = 0; iCell < 4; ++iCell)
+                {
+                    blocks[iCell].setIdentity();
+                    blocks[iCell] *= 3 + .1 * iCell;
+                    for (DNDS::index j = 0; j < components; ++j)
+                    {
+                        blocks[iCell](j, (j + 1) % components) = .02;
+                        write.View<R::UniformTableRows>()(iCell, j) = RHS(fixture.rank, iCell, int(j));
+                    }
+                    for (DNDS::index k = 0; k < DNDS::index(columns[iCell].size()); ++k)
+                        off.View()(iCell, k) = Eigen::MatrixXd::Identity(components, components) * (-.1 - .001 * iCell);
+                }
+            }
+            auto schema = C::EquationSystem::Resolve(C::EquationSettings{}).Schema();
+            for (int j = 5; j < components; ++j)
+                schema.blocks[0].components.push_back({"extra" + std::to_string(j), "mock", "flow"});
+            auto logicalRHS = C::EquationDofs::Coupled(schema, rhs);
+            C::LinearSolveSettings settings;
+            settings.method = "sgs";
+            settings.stopping = "fixedCount";
+            settings.maxIterations = 2;
+            settings.exchangeBetweenSweeps = true;
+            const auto bind = [&](Field &field)
+            { return fixture.Bind(field); };
+            C::LinearSolver fieldSolver(problem, rhs, bind, settings, {true, false});
+            C::EquationLinearSolver logicalSolver(problem, logicalRHS, bind, settings, {true, false});
+            REQUIRE(fieldSolver.Solve(rhs).usable);
+            REQUIRE(logicalSolver.Solve(logicalRHS).usable);
+            const auto physical = fieldSolver.Solution().Owned().Read();
+            const auto logical = logicalSolver.Solution().ReadOwned();
+            const auto values = physical.View<R::UniformTableRows>();
+            const auto logicalLayout = logical.ComponentLayout();
+            for (DNDS::index iCell = 0; iCell < 4; ++iCell)
+                for (DNDS::index j = 0; j < components; ++j)
+                    CHECK(logicalLayout.View()(iCell, j) == doctest::Approx(values(iCell, j)).epsilon(2e-14));
+        }
+}
+
+TEST_CASE("GMRES fixed ILU corrections match one Arnoldi step of the distributed dense preconditioner")
+{
+    Fixture fixture(1);
+    const int count = 20 * fixture.size;
+    Eigen::MatrixXd matrix = Eigen::MatrixXd::Zero(count, count), local = matrix;
+    Eigen::VectorXd b(count);
+    for (int owner = 0; owner < fixture.size; ++owner)
+        for (DNDS::index iCell = 0; iCell < 4; ++iCell)
+        {
+            const DNDS::index row = 20 * owner + 5 * iCell;
+            matrix.block<5, 5>(row, row) = local.block<5, 5>(row, row) = Diagonal(iCell);
+            for (auto other : columns[iCell])
+            {
+                const DNDS::index column = other < 4 ? 20 * owner + 5 * other
+                                                     : 20 * ((owner + fixture.size - 1) % fixture.size) + 5 * (other - 2);
+                matrix.block<5, 5>(row, column) += Off(iCell, other);
+                if (other < 4)
+                    local.block<5, 5>(row, column) += Off(iCell, other);
+            }
+            for (int j = 0; j < 5; ++j)
+                b[row + j] = RHS(owner, iCell, j);
+        }
+    const Eigen::MatrixXd inverse = local.fullPivLu().inverse();
+    const auto schema = C::EquationSystem::Resolve(C::EquationSettings{}).Schema();
+    auto logicalRHS = C::EquationDofs::Coupled(schema, fixture.rhs);
+    for (int corrections : {1, 2})
+    {
+        C::LinearSolveSettings settings;
+        settings.method = "gmres";
+        settings.preconditioner = "ilu";
+        settings.iluPreconditionerCorrections = corrections;
+        settings.maxIterations = settings.subspace = 1;
+        settings.relativeTolerance = settings.absoluteTolerance = 0;
+        settings.iluCoreFirst = false;
+        const auto bind = [&](Field &field)
+        { return fixture.Bind(field); };
+        C::LinearSolver physical(fixture.problem, fixture.rhs, bind, settings, {true, false});
+        C::EquationLinearSolver logical(fixture.problem, logicalRHS, bind, settings, {true, false});
+        // The local rank block is tridiagonal: its ILU(0) is the exact local
+        // inverse. Build B_c=sum_{k=0}^{c-1}(I-M^-1 A)^k M^-1 independently.
+        Eigen::MatrixXd preconditioner = inverse;
+        for (int i = 1; i < corrections; ++i)
+            preconditioner += inverse * (Eigen::MatrixXd::Identity(count, count) - matrix * preconditioner);
+        const Eigen::VectorXd z = preconditioner * b;
+        const Eigen::VectorXd action = preconditioner * matrix * z;
+        const std::vector<double> scales = corrections == 1 ? std::vector<double>{} : std::vector<double>{2, .5, 3, 4, 7};
+        Eigen::VectorXd weightedZ = z, weightedAction = action;
+        if (!scales.empty())
+            for (int i = 0; i < count; ++i)
+                weightedZ[i] /= scales[i % 5], weightedAction[i] /= scales[i % 5];
+        const Eigen::VectorXd expected = z * (weightedAction.dot(weightedZ) / weightedAction.squaredNorm());
+        const auto first = physical.Solve(fixture.rhs, nullptr, scales), second = logical.Solve(logicalRHS, nullptr, scales);
+        REQUIRE(first.usable);
+        REQUIRE(second.usable);
+        CHECK(first.iterations == 1);
+        CHECK(second.iterations == 1);
+        const auto read = physical.Solution().Owned().Read();
+        const auto logicalRead = logical.Solution().ReadOwned();
+        const auto layout = logicalRead.ComponentLayout();
+        for (DNDS::index iCell = 0; iCell < 4; ++iCell)
+            for (int j = 0; j < 5; ++j)
+            {
+                const auto value = expected[20 * fixture.rank + 5 * iCell + j];
+                CHECK(read.View<R::UniformTableRows>()(iCell, j) == doctest::Approx(value).epsilon(2e-12));
+                CHECK(layout.View()(iCell, j) == doctest::Approx(value).epsilon(2e-12));
+            }
+    }
+}
 TEST_CASE("Cauchy linear controls and rank-local access failures reject collectively before transfers")
 {
     Fixture fixture;
@@ -235,6 +513,7 @@ TEST_CASE("Fixed-count stationary corrections preserve iterates without diagnost
         const C::LinearExecution execution{settings.method == "ilu", false};
         C::LinearSolver reference(fixture.problem, fixture.rhs, bind, settings, execution);
         auto logicalRHS = C::EquationDofs::Coupled(schema, fixture.rhs);
+        C::EquationLinearSolver logicalReference(fixture.problem, logicalRHS, bind, settings, execution);
         settings.stopping = "fixedCount";
         settings.relativeTolerance = 1e20; // Explicit fixed count ignores tolerance.
         C::LinearSolver fixed(fixture.problem, fixture.rhs, bind, settings, execution);
@@ -243,7 +522,9 @@ TEST_CASE("Fixed-count stationary corrections preserve iterates without diagnost
         for (bool warm : {false, true})
         {
             const auto checked = reference.Solve(fixture.rhs, warm ? &fixture.rhs : nullptr);
+            const auto checkedLogical = logicalReference.Solve(logicalRHS, warm ? &logicalRHS : nullptr);
             REQUIRE(checked.iterations == 2);
+            REQUIRE(checkedLogical.iterations == 2);
             const auto report = fixed.Solve(fixture.rhs, warm ? &fixture.rhs : nullptr);
             const auto equationReport = logical.Solve(logicalRHS, warm ? &logicalRHS : nullptr);
             for (const auto *value : {&report, &equationReport})
@@ -259,13 +540,19 @@ TEST_CASE("Fixed-count stationary corrections preserve iterates without diagnost
             }
             const auto a = reference.Solution().Owned().Read(), b = fixed.Solution().Owned().Read();
             const auto c = logical.Solution().ReadOwned();
+            const auto d = logicalReference.Solution().ReadOwned();
             const auto expected = a.View<R::UniformTableRows>(), actual = b.View<R::UniformTableRows>();
             const auto equation = c.Block("flow");
+            const auto expectedEquation = d.Block("flow");
             for (DNDS::index iCell = 0; iCell < 4; ++iCell)
                 for (DNDS::index j = 0; j < 5; ++j)
                 {
                     CHECK(actual(iCell, j) == expected(iCell, j));
-                    CHECK(equation(iCell, j) == expected(iCell, j));
+                    // Fixed-count changes reporting, not the adapter's
+                    // arithmetic. Static logical and dynamic physical Eigen
+                    // kernels can differ in their last summation bits.
+                    CHECK(equation(iCell, j) == expectedEquation(iCell, j));
+                    CHECK(equation(iCell, j) == doctest::Approx(expected(iCell, j)).epsilon(2e-14));
                 }
         }
         CHECK(fixture.rhs.Owned().Version() == rhsVersion);

@@ -191,11 +191,19 @@ TEST_CASE("Cauchy implicit controls resolve through the root and reject contradi
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"roeDissipation", true}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"iterations", 0}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"jacobianAction", "unknown"}}}}}}, 2));
-    CHECK(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"jacobianAction", "semiMatrixFree"}}}}}}, 2)
-              .Domains()[0]
-              .settings.implicit.jacobianAction == "semiMatrixFree");
+    for (const std::string name : {"directEvaluated", "semiMatrixFree"})
+        CHECK(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"jacobianAction", name}}}}}}, 2)
+                  .Domains()[0]
+                  .settings.implicit.jacobianAction == name);
+    CHECK(C::ImplicitSettings{}.jacobianAction == "assembled");
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"linear", {{"preconditioner", "ilu"}}}, {"sgs", {{"exchangeBetweenSweeps", true}}}}}}}}, 2));
     CHECK(C::ImplicitILUSettings{}.ordering == "natural");
+    CHECK(C::ImplicitILUSettings{}.preconditionerCorrections == 1);
+    CHECK(C::ImplicitLinearSettings{}.componentScaling == "none");
+    const auto metric = C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"linear", {{"componentScaling", "meanState"}}}, {"ilu", {{"preconditionerCorrections", 2}}}}}}}}, 2);
+    CHECK(metric.Domains().front().settings.implicit.linear.componentScaling == "meanState");
+    CHECK(metric.Domains().front().settings.implicit.ilu.preconditionerCorrections == 2);
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"linear", {{"componentScaling", "unknown"}}}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"ilu", {{"ordering", "unknown"}}}}}}}}, 2));
     CHECK(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"ilu", {{"ordering", "rcm"}}}}}}}}, 2).Domains().front().settings.implicit.ilu.ordering == "rcm");
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"positivity", {{"rhsFPPRelax", 0}}}}}}}}, 2));

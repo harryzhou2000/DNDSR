@@ -39,6 +39,7 @@ namespace DNDS::Cauchy::NonlinearDetail
         result.sgsSweeps = settings.sgs.sweeps;
         result.exchangeBetweenSweeps = settings.sgs.exchangeBetweenSweeps;
         result.iluFill = settings.ilu.fill;
+        result.iluPreconditionerCorrections = settings.ilu.preconditionerCorrections;
         result.iluCoreFirst = settings.ilu.coreFirst;
         result.iluOrdering = settings.ilu.ordering;
         return result;

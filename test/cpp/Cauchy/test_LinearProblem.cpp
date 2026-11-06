@@ -453,6 +453,49 @@ TEST_CASE("Linear diagonal preparation handles general component counts and repo
     CHECK_THROWS(problem.InvertDiagonal());
     CHECK_THROWS(problem.ApplySGS(rhs, input, forward, output));
 }
+TEST_CASE("Common block inverse widths preserve a dense solve and guarded fallback")
+{
+    const A::DofSpace space(1);
+    for (const DNDS::index width : {5, 6, 7, 8})
+    {
+        C::LinearProblemContext problem(space, width, {{}}, {0}, C::DiagonalStorage::Block);
+        Field rhs(space, width), forward(space, width), output(space, width);
+        Eigen::MatrixXd matrix(width, width);
+        Eigen::VectorXd b(width);
+        for (DNDS::index j = 0; j < width; ++j)
+        {
+            b[j] = 1 + .1 * j;
+            for (DNDS::index i = 0; i < width; ++i)
+                matrix(i, j) = i == j ? 3 + .2 * i : .01 * (i + 1) / (j + 1);
+        }
+        {
+            auto diagonal = problem.Diagonal().Write(), source = rhs.Owned().Write();
+            for (DNDS::index j = 0; j < width * width; ++j)
+                diagonal.View()(0, j) = matrix.data()[j];
+            for (DNDS::index j = 0; j < width; ++j)
+                source.View()(0, j) = b[j];
+        }
+        problem.InvertDiagonal();
+        CHECK(problem.LastInverseFallbacks() == 0);
+        auto sweep = problem.BeginSGSZero(rhs, forward, output);
+        sweep.Lower();
+        sweep.Upper();
+        sweep.Finish();
+        const Eigen::VectorXd expected = matrix.fullPivLu().solve(b);
+        {
+            const auto read = output.Owned().Read();
+            for (DNDS::index j = 0; j < width; ++j)
+                CHECK(read.View()(0, j) == doctest::Approx(expected[j]).epsilon(1e-12));
+        }
+        {
+            auto diagonal = problem.Diagonal().Write();
+            for (DNDS::index j = 0; j < width * width; ++j)
+                diagonal.View()(0, j) = 1;
+        }
+        problem.InvertDiagonal();
+        CHECK(problem.LastInverseFallbacks() == 1);
+    }
+}
 TEST_CASE("Staged SGS retains numeric allocations and row metadata after original owners expire")
 {
     const A::DofSpace space(1);

@@ -40,10 +40,10 @@ namespace DNDS::Cauchy
         const auto offDiagonal = ReadOffDiagonal();
         const auto matrices = Algebra::MakeEigenRowMatrices(diagonal.View<R::TableRows>(), _components,
                                                             _diagonalStorage == DiagonalStorage::Block ? _components : 1);
-        offDiagonal.WithBlocks([&](const auto &blocks)
-                               { Detail::ApplyBlockRows(source.View().OwnedPart(), source.View().GhostPart(), destination.View(), matrices, blocks, *_pattern,
-                                                        region == LinearRegion::All ? _pattern->order : region == LinearRegion::Core ? _pattern->core
-                                                                                                                                     : _pattern->dependent,
-                                                        _components, _diagonalStorage == DiagonalStorage::Block); });
+        offDiagonal.WithActions([&](const auto &blocks)
+                                { Detail::ApplyBlockRows(source.View().OwnedPart(), source.View().GhostPart(), destination.View(), matrices, blocks, *_pattern,
+                                                         region == LinearRegion::All ? _pattern->order : region == LinearRegion::Core ? _pattern->core
+                                                                                                                                      : _pattern->dependent,
+                                                         _components, _diagonalStorage == DiagonalStorage::Block); });
     }
 }

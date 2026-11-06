@@ -329,6 +329,130 @@ and physical RANS/flame acceptance remain separate work.
 
 ## Logical rows in coupled linear algebra
 
+### Bounded CPU view specialization
+
+`EquationDofs` remains a dynamic owner. `execution.fieldGrouping` selects
+`equationBlocks` (separate flow/RANS/species allocations) or `coupled` (one
+allocation), independently of `execution.layout`. Storage grouping never changes
+which equations the linear system couples. The same blocked access works for
+either grouping:
+
+```cpp
+auto read = state.ReadOwned();
+auto flow = read.Block<5>("flow").owned; // one width check; static flow5
+auto rans = read.Block("rans").owned;   // dynamic extension width
+auto species = read.Block("species").owned;
+auto tableFlow = flow.AsTable();        // optional: checked AoS projection
+for (DNDS::index iCell = 0; iCell < tableFlow.RowCount(); ++iCell)
+    ConsumeFlow(tableFlow[iCell]);      // static size 5, component stride 1
+```
+
+`AsTable()` rejects SoA/AoSoA; generic code uses the original strided block view.
+Its parent retains the **complete** physical width and pitch. A flow5 subrange
+inside a six-equation row still advances by the six-equation parent's pitch,
+including any padding. Neither projection allocates, copies payloads, changes
+metadata, or acquires another lease. Read blocks provide the same static shape
+for their separate owned/ghost views. An owned-only scope exposes zero ghost
+rows. Retain the originating scope through all actual uses of borrowed views.
+
+Whole-equation kernels use `EquationViewLayout` and
+`DispatchCPUEquationViews<Kind,Width>(kernel, layouts...)` from
+`State/EquationViews.hpp`. The operator hand-builds its preparation branches;
+the helper constructs only the explicitly requested family/width. The default
+is generic. Families and widths 5/6/7 are optional independently per operator,
+and are enabled gradually with correctness/performance evidence. Named row
+blocks resolve in preparation. RHS starts with the generic view. Pointwise
+algebra and products opt into only dynamic-width combined AoS when all operands
+qualify; they retain the generic fallback and the same loop template. Existing
+SGS/action specializations remain local. Matched timing gates each optimization.
+
+The numerical loop is a shared template. Its operator chooses whether to use
+static width, known AoS indexing, or generic strided access. Explicit view
+projections allocate no payloads and preserve physical parent pitch.
+
+```text
+EquationDofs (dynamic physical handles + immutable logical bindings)
+  Read/WriteScope (allocation/shape owners + leases)
+    Block<5>(flow) / Block(rans) / Block(species) (borrowed views)
+      CPU prologue: operator-owned layout/width branches
+        AoS 5/6/7       -> fixed-width row views
+        other AoS       -> dynamic-width table views
+        mixed/SoA/AoSoA -> generic strided block views
+          one templated numerical kernel
+```
+
+The Runtime Array layer also allows explicitly requested
+`FixedRows<N>`/`FixedRows<N,Pitch>`, `ColMajorTable`,
+`FixedWidthRows<ColMajorTable,N>` and `TiledColMajorTable<W>` access policies.
+These policies specialize access, not ownership. They remain available for
+backend-specific kernels. CPU operators choose their own subset of suggested
+specializations; shared construction does not instantiate a mandatory matrix.
+Checks run at projection/dispatch time. Scalar
+bounds assertions follow the ordinary `AccessBoundsChecks` build policy.
+
+Ordinary `view(iCell,j)` and `view[iCell][j]` return references to the original
+allocation, including split and strided storage. Row construction/indexing never
+packs, synchronizes or produces an Eigen map. Dense numerical algorithms may
+explicitly call `Algebra::PackEigenRow`/`UnpackEigenRow` with scratch owned and
+sized by that operator before its loops. The packing reference is overwritten
+by the next pack into the same scratch. Specialized dense/AoS paths may explicitly
+construct `MakeEigenRowMatrices`; this is not an implicit row-view conversion.
+User code can likewise request a checked dense adapter or assemble a compatible
+Eigen map manually, retaining the original leases and full stride information.
+
+Compile-time inspection is available without constructing a row. Runtime
+`ArrayView` exposes `layout_kind`, `is_dynamic`, `row_width`, `row_capacity`,
+`row_stride` and `component_stride`; its `RowSpan` exposes width/capacity and
+component stride. Only use `layout_kind` as a compile-time guarantee when
+`!is_dynamic`. A row span's physical parent layout is intentionally not inferred
+from its element stride: SoA and tiled parents can produce equivalent strided
+rows. Equation block views forward parent layout/stride traits and retain their
+own logical width. Whole-equation views/rows expose `kind`, `row_width`,
+`has_single_parent`, `has_static_layout` and `component_stride`. A generic view
+keeps unknown traits dynamic even when its runtime binding happens to be AoS.
+
+```cpp
+auto row = u[iCell]; // Borrowed, no copy of numerical values.
+using Row = decltype(row);
+if constexpr (Row::has_single_parent)
+{
+    auto *p = row.data();
+    if constexpr (Row::component_stride == 1)
+        value = p[j];
+    else
+        value = p[j * row.ElementStride()];
+}
+// For a split view use row.Flow()/RANS()/Species()/Block(iBlock):
+// each segment supplies data(), ElementStride(), size() and row-width traits.
+```
+
+No single `data()` is supplied for a generic/split whole-equation row: its
+components may belong to unrelated allocations. The explicitly combined row
+families supply this accessor without inventing a packed representation.
+These plain views/rows are trivially copyable and standard-layout, with
+device-callable indexing and no owning handles. This is the useful kernel-ABI
+contract; default member initializers need not satisfy the stricter historical
+C++ POD definition. Their host metadata owners (`EquationViewLayout` and access
+scopes) are not kernel arguments. Runtime Array device access still requires
+device-accessible payload/shape buffers and retained owners/leases through
+execution. Copying a trivially copyable view never uploads its pointed-to data.
+
+For Cauchy CUDA, the chosen direction is dedicated kernels for expected layouts
+and physical profiles, not interpretation of a dynamically registered DOF
+bundle on device. Host dispatch resolves the CPU registry and passes component
+views directly, or a statically composed POD holding inline flow/RANS/species
+views with absent segments represented by a type. Kernels may have different
+loop mappings/staging for AoS, SoA, tiled or split storage; sharing the CPU
+generic blocked-view loop is optional. Keep supported choices bounded and reject
+missing kernels explicitly. Flow5 is initial; flow4 is a later incompressible
+profile. RANS/species presence, widths and layout choices are explicit dispatch
+inputs, not inferred physics from total width. A CUDA compile-only probe of
+generic descriptor-based views proves technical device-callability, not adoption
+of that interface or automatic GPU registry upload. Solver CUDA implementation
+is deferred while the current goal concerns CPU correctness/performance.
+
+### Prepared auxiliary values and logical dense rows
+
 `BeginAuxValues(EquationDofs, outputs, time, workers)` prepares the same optional
 `AuxiliaryValues` packet for separate or coupled equation fields. The CPU scope
 reserves requested outputs before writing, retains owned input through Core,

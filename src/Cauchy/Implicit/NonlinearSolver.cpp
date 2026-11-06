@@ -2,6 +2,7 @@
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
 #include "Cauchy/Implicit/PositivityReduction.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
+#include "Cauchy/Implicit/LinearScaling.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 
 namespace DNDS::Cauchy
@@ -34,7 +35,7 @@ namespace DNDS::Cauchy
               spatial(fv.Metrics().BuildField(state.Owned().Layout())), defect(fv.Metrics().BuildField(state.Owned().Layout())), candidate(fv.Metrics().BuildField(state.Owned().Layout())),
               inversePseudoTime(R::RowLayout::Dense(fv.Metrics().NumCell(), 1)),
               problem(fv.BuildLinearProblem(state, settings.diagonal == "block" ? DiagonalStorage::Block : DiagonalStorage::Entries,
-                                            settings.jacobianAction == "semiMatrixFree" ? OffDiagonalStorage::SemiMatrixFree : OffDiagonalStorage::Assembled))
+                                            (settings.jacobianAction == "directEvaluated" || settings.jacobianAction == "semiMatrixFree") ? OffDiagonalStorage::DirectEvaluated : OffDiagonalStorage::Assembled))
         {
             rhsFPPReduction = settings.positivity.rhsFPPReduction == "cell" ? AlphaReduction::Cell : settings.positivity.rhsFPPReduction == "minimumLimited" ? AlphaReduction::MinimumLimited
                                                                                                                                                              : AlphaReduction::MinimumAll;
@@ -241,7 +242,8 @@ namespace DNDS::Cauchy
             }
             {
                 const NonlinearPhaseTimer linearTimer(control.profile, NonlinearProfile::LinearSolve);
-                report.lastLinear = data.linear->Solve(data.defect);
+                const auto scales = NonlinearDetail::LinearScales(data.settings, state, data.discrete.Metrics());
+                report.lastLinear = data.linear->Solve(data.defect, nullptr, scales);
                 report.linearIterations += report.lastLinear.iterations;
                 DNDS_check_throw_info(report.lastLinear.usable, "implicit linear correction is unusable");
             }

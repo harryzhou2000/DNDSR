@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/State/EquationDofs.hpp"
+#include "Cauchy/State/EquationViews.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/Implicit/LinearSolver.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
@@ -134,6 +135,135 @@ namespace
 }
 static_assert(std::is_trivially_copyable_v<C::EquationBlockArrayView<const double>>);
 static_assert(std::is_trivially_copyable_v<C::EquationBlockReadView>);
+static_assert(C::EquationBlockArrayView<double, R::AccessBoundsChecks, 5, R::TableRows>::RowType::row_width == 5);
+static_assert(C::EquationBlockArrayView<double, R::AccessBoundsChecks, 5, R::TableRows>::RowType::component_stride == 1);
+static_assert(C::EquationBlockArrayView<double, R::AccessBoundsChecks, 5, R::TiledColMajorTable<32>>::RowType::component_stride == 32);
+TEST_CASE("Whole-equation dispatch preserves named blocks and scalar order across bounded view families")
+{
+    Fixture fixture;
+    for (int width : {5, 6, 7, 21, 17})
+        for (int layout = 0; layout < 3; ++layout)
+            for (bool split : {false, true})
+            {
+                auto schema = Schema(width == 17 ? 4 : 5);
+                if (width <= 7)
+                {
+                    schema.blocks.resize(width == 5 ? 1 : 2);
+                    if (width > 5)
+                        schema.blocks[1].components.resize(width - 5);
+                }
+                auto input = fixture.Build(schema, layout, split);
+                Fill(input);
+                auto output = input.Clone();
+                {
+                    const auto read = input.ReadOwned();
+                    auto write = output.WriteOwned();
+                    const C::EquationViewLayout<const double> source(input, read);
+                    const C::EquationViewLayout<double> target(output, write);
+                    const auto kind = source.Combined()
+                                          ? (source.Table() && source.Flow5() ? C::EquationViewKind::CombinedAoS : C::EquationViewKind::Combined)
+                                      : source.Flow5() ? (source.FlowTable() ? C::EquationViewKind::SeparateFlow5AoS : C::EquationViewKind::SeparateFlow5)
+                                                       : C::EquationViewKind::Generic;
+                    const auto kernel = [&](auto u, auto v)
+                    {
+                    using V = decltype(u);
+                    using Row = decltype(u[I(0)]);
+                    static_assert(std::is_trivially_copyable_v<V> && std::is_standard_layout_v<V>);
+                    static_assert(std::is_trivially_copyable_v<Row> && std::is_standard_layout_v<Row>);
+                    static_assert(Row::row_width == V::row_width && Row::component_stride == V::component_stride);
+                    static_assert(Row::has_single_parent == V::combined);
+                    CHECK(V::combined == source.Combined());
+                    CHECK((V::flow_width == 5) == (width != 17 && (!source.Combined() || layout == 0)));
+                    CHECK((V::row_width != R::DynamicExtent) == (source.Combined() && layout == 0 && width <= 7));
+                    const auto generic = source.View();
+                    for (I iCell = 0; iCell < fixture.rows; ++iCell)
+                    {
+                        // A retained row survives a temporary view wrapper.
+                        const auto row = decltype(u)(u)[iCell];
+                        static_assert(std::is_same_v<decltype(row[0]), const double &>);
+                        static_assert(std::is_same_v<decltype(v[iCell][0]), double &>);
+                        CHECK(row.Flow().size() == (width == 17 ? 4 : 5));
+                        CHECK(row.RANS().size() == (width <= 7 ? width - 5 : width == 17 ? 1 : 2));
+                        CHECK(row.Species().size() == (width <= 7 ? 0 : width == 17 ? 12 : 14));
+                        for (I j = 0; j < width; ++j)
+                        {
+                            CHECK(row[j] == Value(mpi.rank, iCell, j));
+                            CHECK(row[j] == generic(iCell, j));
+                            CHECK(&row[j] == &generic(iCell, j));
+                            if constexpr (Row::has_single_parent)
+                                CHECK(&row[j] == row.data() + j * row.ElementStride());
+                            if constexpr (Row::component_stride != R::DynamicExtent)
+                                CHECK(row.ElementStride() == I(Row::component_stride));
+                            v[iCell][j] = 2 * row[j] - 3;
+                        }
+                    } };
+                    if (kind == C::EquationViewKind::CombinedAoS)
+                    {
+                        if (width == 5)
+                            C::DispatchCPUEquationViews<C::EquationViewKind::CombinedAoS, 5>(kernel, source, target);
+                        else if (width == 6)
+                            C::DispatchCPUEquationViews<C::EquationViewKind::CombinedAoS, 6>(kernel, source, target);
+                        else if (width == 7)
+                            C::DispatchCPUEquationViews<C::EquationViewKind::CombinedAoS, 7>(kernel, source, target);
+                        else
+                            C::DispatchCPUEquationViews<C::EquationViewKind::CombinedAoS>(kernel, source, target);
+                    }
+                    else if (kind == C::EquationViewKind::Combined)
+                        C::DispatchCPUEquationViews<C::EquationViewKind::Combined>(kernel, source, target);
+                    else if (kind == C::EquationViewKind::SeparateFlow5AoS)
+                        C::DispatchCPUEquationViews<C::EquationViewKind::SeparateFlow5AoS>(kernel, source, target);
+                    else if (kind == C::EquationViewKind::SeparateFlow5)
+                        C::DispatchCPUEquationViews<C::EquationViewKind::SeparateFlow5>(kernel, source, target);
+                    else
+                        C::DispatchCPUEquationViews<>(kernel, source, target);
+                }
+                CheckValues(output, 2, -3);
+            }
+}
+TEST_CASE("Fixed equation block views preserve parent pitch and component ranges without changing storage")
+{
+    Fixture fixture;
+    for (int layout = 0; layout < 3; ++layout)
+        for (bool split : {false, true})
+        {
+            auto state = fixture.Build(Schema(5), layout, split);
+            Fill(state);
+            const auto read = state.ReadOwned();
+            const auto flow = read.Block<5>("flow");
+            const auto rans = read.Block("rans").owned;
+            const auto species = read.Block("species").owned;
+            static_assert(decltype(flow)::row_width == 5);
+            static_assert(decltype(rans)::row_width == R::DynamicExtent);
+            static_assert(decltype(species)::row_width == R::DynamicExtent);
+            CHECK(flow.owned.parent.Width() == (split ? 5 : 21));
+            CHECK(rans.parent.Width() == (split ? 2 : 21));
+            CHECK(flow.ghost.RowCount() == 0); // Owned-only access never exposes ghost rows.
+            for (I iRow = 0; iRow < fixture.rows; ++iRow)
+            {
+                CHECK(flow[iRow].size() == 5);
+                CHECK(flow[iRow][4] == Value(mpi.rank, iRow, 4));
+                CHECK(rans[iRow][1] == Value(mpi.rank, iRow, 6));
+                CHECK(species[iRow][13] == Value(mpi.rank, iRow, 20));
+            }
+            CHECK_THROWS(read.Block<6>("flow"));
+            if (layout == 0)
+            {
+                const auto table = flow.AsTable();
+                static_assert(decltype(table)::component_stride == 1);
+                CHECK(table.owned.parent.data == flow.owned.parent.data);
+                CHECK(table.owned.parent.stride == flow.owned.parent.stride);
+                const auto extra = rans.AsTable();
+                CHECK(extra.first == (split ? 0 : 5));
+                for (I iRow = 0; iRow < fixture.rows; ++iRow)
+                {
+                    CHECK(table[iRow][4] == Value(mpi.rank, iRow, 4));
+                    CHECK(extra[iRow][1] == Value(mpi.rank, iRow, 6));
+                }
+            }
+            else
+                CHECK_THROWS(flow.owned.AsTable());
+        }
+}
 TEST_CASE("Logical flow4/5 with RANS and many species maps exactly across physical layouts and storage groups")
 {
     Fixture fixture;

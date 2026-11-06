@@ -107,7 +107,8 @@ namespace DNDS::Cauchy
             }
             template <class S, class F>
             static void VisitFields(S &state, F &&visit) { visit(state); }
-            static std::vector<real> LocalProducts(const State &x, const std::vector<const State *> &probes)
+            static std::vector<real> LocalProducts(const State &x, const std::vector<const State *> &probes,
+                                                   const std::vector<real> &inverseScales)
             {
                 std::vector<real> local(probes.size(), 0);
                 const auto read = x.Owned().Read();
@@ -124,7 +125,8 @@ namespace DNDS::Cauchy
                 for (index iRow = 0; iRow < source.RowCount(); ++iRow)
                     for (index j = 0; j < source.RowSize(iRow); ++j)
                         for (index k = 0; k < index(values.size()); ++k)
-                            local[k] += source(iRow, j) * values[k](iRow, j);
+                            local[k] += inverseScales.empty() ? source(iRow, j) * values[k](iRow, j)
+                                                              : (source(iRow, j) * inverseScales[j]) * (values[k](iRow, j) * inverseScales[j]);
                 return local;
             }
         };
@@ -138,6 +140,11 @@ namespace DNDS::Cauchy
                 const auto read = state.ReadOwned();
                 const auto layout = read.ComponentLayout();
                 return FiniteRows(layout.View(), Width(state));
+            }
+            static std::vector<real> LocalProducts(const State &x, const std::vector<const State *> &probes,
+                                                   const std::vector<real> &inverseScales)
+            {
+                return EquationDofOperations::LocalProducts(x, probes, inverseScales);
             }
             template <class S, class F>
             static void VisitFields(S &state, F &&visit)
@@ -219,6 +226,7 @@ namespace DNDS::Cauchy
                 }
             };
             bool failed = false;
+            std::vector<real> inverseComponentScales;
             mutable LinearProfile profile;
             StateLinearSolverData(std::shared_ptr<LinearProblemContext> matrix, const Field &prototype, LinearSolveSettings controls, LinearExecution policy)
                 : problem(std::move(matrix)), mpi(problem->Space().Communicator()), settings(std::move(controls)), execution(policy),
@@ -264,7 +272,10 @@ namespace DNDS::Cauchy
                 std::optional<Iteration> iteration;
                 Stage([&]
                       {
-                iteration.emplace(problem->BeginSGS(rhs, input, forward, output, settings.exchangeBetweenSweeps));
+                if (knownZero)
+                    iteration.emplace(problem->BeginSGSZero(rhs, forward, output, settings.exchangeBetweenSweeps));
+                else
+                    iteration.emplace(problem->BeginSGS(rhs, input, forward, output, settings.exchangeBetweenSweeps));
                 if (knownZero) iteration->Lower();
                 else if (execution.overlap) iteration->Lower(LinearRegion::Core); });
                 if (!knownZero)
@@ -281,12 +292,35 @@ namespace DNDS::Cauchy
             void Precondition(const Field &rhs, Field &output)
             {
                 if (settings.preconditioner == "ilu")
+                {
+                    if (settings.iluPreconditionerCorrections == 1)
+                    {
+                        Stage([&]
+                              { problem->ApplyILU(rhs, forward, output); });
+                        return;
+                    }
+                    // Every application begins at zero, preserving a fixed
+                    // linear preconditioner for ordinary left GMRES. No outer
+                    // nonlinear RHS or changing stopping policy lives here.
                     Stage([&]
-                          { problem->ApplyILU(rhs, forward, output); });
+                          { problem->ApplyILU(rhs, forward, old); });
+                    for (int correction = 1; correction < settings.iluPreconditionerCorrections; ++correction)
+                    {
+                        Apply(old, action);
+                        Stage([&]
+                              {
+                            Ops::LinearCombination(residual, real(1), rhs, real(-1), action);
+                            problem->ApplyILU(residual, forward, action);
+                            Ops::LinearCombination(next, real(1), old, real(1), action);
+                            Ops::Copy(old, next); });
+                    }
+                    Stage([&]
+                          { Ops::Copy(output, old); });
+                }
                 else
                 {
-                    Stage([&]
-                          { Clear(old); });
+                    // First sweep consumes no old array. Only later sweeps
+                    // populate old from the preceding complete result.
                     for (int sweep = 0; sweep < settings.sgsSweeps; ++sweep)
                     {
                         Sweep(rhs, old, next, sweep == 0);
@@ -315,7 +349,7 @@ namespace DNDS::Cauchy
                 const LinearProfile::Scope timing(profile, LinearProfile::Products);
                 std::vector<real> local, global(probes.size());
                 Stage([&]
-                      { local = Ops::LocalProducts(x, probes); });
+                      { local = Ops::LocalProducts(x, probes, inverseComponentScales); });
                 MPI_Allreduce(local.data(), global.data(), int(global.size()), MPI_DOUBLE, MPI_SUM, mpi.comm);
                 return global;
             }
@@ -342,7 +376,7 @@ namespace DNDS::Cauchy
                                                          "linear input has an active access or pending completion"); });
             }
             const Field &Solution() const { return gmres ? gmres->Solution() : *solution; }
-            Linear::LinearIterationReport Solve(const Field &rhs, const Field *initialGuess)
+            Linear::LinearIterationReport Solve(const Field &rhs, const Field *initialGuess, const std::vector<real> &componentScales)
             {
                 struct FinishProfile
                 {
@@ -357,6 +391,16 @@ namespace DNDS::Cauchy
                 data.Stage([&]
                            {
             DNDS_check_throw_info(!data.failed, "linear workspace failed; rebuild it before reuse");
+            DNDS_check_throw_info(componentScales.empty() || index(componentScales.size()) == problem->Components(),
+                                  "linear component scale width differs");
+            std::vector<real> inverse;
+            inverse.reserve(componentScales.size());
+            for (const auto scale : componentScales)
+            {
+                DNDS_check_throw_info(std::isfinite(scale) && scale > 0 && std::isfinite(1 / scale), "invalid linear component scale");
+                inverse.push_back(1 / scale);
+            }
+            inverseComponentScales = std::move(inverse);
             data.problem->Validate(); rhs.Validate();
             Ops::CheckCompatible(data.old, rhs);
             CheckIdle(rhs, false);
@@ -396,8 +440,8 @@ namespace DNDS::Cauchy
                     data.Stage([&]
                                {
                 const LinearProfile::Scope timing(data.profile, LinearProfile::Algebra);
-                if (!initialGuess) Clear(x);
-                else Ops::CopyGuess(x, *initialGuess); });
+                if (initialGuess) Ops::CopyGuess(x, *initialGuess);
+                else if (data.settings.method != "sgs") Clear(x); });
                     Linear::LinearIterationReport report;
                     // Defect formation is independent of stopping/reporting:
                     // fixed-count ILU needs it only before later corrections.
@@ -442,6 +486,9 @@ namespace DNDS::Cauchy
                                 formDefect();
                             correct();
                         }
+                        if (!initialGuess && report.iterations == 0 && data.settings.method == "sgs")
+                            data.Stage([&]
+                                       { Ops::Fill(x, 0); }); // Return a real zero answer if no sweep ran.
                         report.usable = data.Finite(x);
                         report.stop = report.usable ? Linear::LinearStop::FixedCount : Linear::LinearStop::NonFinite;
                         return report; // Residual diagnostics stay unevaluated (NaN).
@@ -458,6 +505,9 @@ namespace DNDS::Cauchy
                         report.trueResidual = residual();
                     }
                     report.converged = std::isfinite(report.trueResidual) && report.trueResidual <= target;
+                    if (!initialGuess && report.iterations == 0 && data.settings.method == "sgs")
+                        data.Stage([&]
+                                   { Ops::Fill(x, 0); });
                     report.stop = !std::isfinite(report.trueResidual) ? Linear::LinearStop::NonFinite : report.converged ? Linear::LinearStop::Converged
                                                                                                                          : Linear::LinearStop::IterationLimit;
                     report.usable = report.stop != Linear::LinearStop::NonFinite && std::isfinite(norm(x));
@@ -492,17 +542,18 @@ namespace DNDS::Cauchy
                                       (settings.stopping == "residual" || (settings.stopping == "fixedCount" && settings.method != "gmres")) &&
                                       (settings.preconditioner == "sgs" || settings.preconditioner == "ilu") && settings.maxIterations >= 0 &&
                                       settings.subspace > 0 && settings.subspace < INT_MAX && settings.sgsSweeps > 0 && settings.iluFill >= -1 && settings.iluFill <= 5 &&
+                                      settings.iluPreconditionerCorrections > 0 &&
                                       (settings.iluOrdering == "natural" || settings.iluOrdering == "rcm") &&
                                       std::isfinite(settings.relativeTolerance) && settings.relativeTolerance >= 0 &&
                                       std::isfinite(settings.absoluteTolerance) && settings.absoluteTolerance >= 0,
                                   "invalid linear solver controls");
             DNDS_check_throw_info(!(UsesILU(settings) && settings.exchangeBetweenSweeps),
                                   "local ILU has no inter-scan exchange"); });
-            const std::array<int64_t, 14> integers{settings.method == "gmres" ? 1 : settings.method == "ilu" ? 2
+            const std::array<int64_t, 15> integers{settings.method == "gmres" ? 1 : settings.method == "ilu" ? 2
                                                                                                              : 0,
                                                    settings.preconditioner == "ilu", settings.maxIterations, settings.subspace,
                                                    settings.sgsSweeps, settings.iluFill, settings.iluCoreFirst, settings.exchangeBetweenSweeps,
-                                                   execution.overlap, execution.collectiveChecks, problem->Components(), int(problem->OffDiagonalMode()), settings.stopping == "fixedCount", settings.iluOrdering == "rcm"};
+                                                   execution.overlap, execution.collectiveChecks, problem->Components(), int(problem->OffDiagonalMode()), settings.stopping == "fixedCount", settings.iluOrdering == "rcm", settings.iluPreconditionerCorrections};
             auto lowest = integers, highest = integers;
             const std::array<real, 2> tolerances{settings.relativeTolerance, settings.absoluteTolerance};
             auto lowTolerance = tolerances, highTolerance = tolerances;
@@ -539,6 +590,8 @@ namespace DNDS::Cauchy
                 bind(data->old);
                 bind(data->forward);
             }
+            else if (settings.method == "gmres" && settings.preconditioner == "ilu" && settings.iluPreconditionerCorrections > 1)
+                bind(data->old);
             return data;
         }
     }
@@ -566,14 +619,14 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(_data, "linear solver was moved");
         return _data->Solution();
     }
-    Linear::LinearIterationReport LinearSolver::Solve(const Field &rhs, const Field *initialGuess)
+    Linear::LinearIterationReport LinearSolver::Solve(const Field &rhs, const Field *initialGuess, const std::vector<real> &componentScales)
     {
         DNDS_check_throw_info(_data, "linear solver was moved");
-        return _data->Solve(rhs, initialGuess);
+        return _data->Solve(rhs, initialGuess, componentScales);
     }
-    Linear::LinearIterationReport EquationLinearSolver::Solve(const EquationDofs &rhs, const EquationDofs *initialGuess)
+    Linear::LinearIterationReport EquationLinearSolver::Solve(const EquationDofs &rhs, const EquationDofs *initialGuess, const std::vector<real> &componentScales)
     {
         DNDS_check_throw_info(_data, "linear solver was moved");
-        return _data->Solve(rhs, initialGuess);
+        return _data->Solve(rhs, initialGuess, componentScales);
     }
 }

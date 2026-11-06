@@ -15,7 +15,19 @@ namespace DiagnosticTiming
         Linear,
         AuxiliaryPrepare,
         AuxiliaryExchange,
-        AuxiliaryCompute
+        AuxiliaryCompute,
+        MeanValidation,
+        DefectAssembly,
+        PseudoTimePP,
+        CorrectionLocal,
+        CandidateAcceptance,
+        CorrectionStatistics,
+        Gradient,
+        Reconstruction,
+        PolynomialPP,
+        FaceRHS,
+        SourceSampling,
+        VolumeSource
     };
     struct Sample
     {
@@ -27,6 +39,8 @@ namespace DiagnosticTiming
         std::array<int, 3> levelMatrixLinearCalls{};
         std::array<double, 3> levelMatrix{}, levelLinear{};
         std::array<double, 3> levelAuxiliaryPrepare{}, levelAuxiliaryExchange{}, levelAuxiliaryCompute{};
+        static constexpr int detailNumber = int(Block::VolumeSource) - int(Block::MeanValidation) + 1;
+        std::array<std::array<double, 3>, detailNumber> details{};
     };
     inline thread_local Sample *active = nullptr;
     inline thread_local int currentLevel = 0;
@@ -47,13 +61,19 @@ namespace DiagnosticTiming
             if (sample)
                 start = MPI_Wtime();
         }
-        ~Scope()
+        Scope(const Scope &) = delete;
+        Scope &operator=(const Scope &) = delete;
+        void Finish()
         {
             if (!sample)
                 return;
             const auto seconds = MPI_Wtime() - start;
-            if (block == Block::Auxiliary || block == Block::AuxiliaryPrepare ||
-                block == Block::AuxiliaryExchange || block == Block::AuxiliaryCompute)
+            // Detail clocks are nested observations only. Never add them to
+            // broad totals or matrix/linear counts, which already enclose them.
+            if (block >= Block::MeanValidation)
+                sample->details[int(block) - int(Block::MeanValidation)][level] += seconds;
+            else if (block == Block::Auxiliary || block == Block::AuxiliaryPrepare ||
+                     block == Block::AuxiliaryExchange || block == Block::AuxiliaryCompute)
             {
                 sample->auxiliary += seconds;
                 ++sample->auxiliaryCalls;
@@ -79,7 +99,9 @@ namespace DiagnosticTiming
                 ++sample->levelMatrixLinearCalls[level];
                 (block == Block::Matrix ? sample->levelMatrix : sample->levelLinear)[level] += seconds;
             }
+            sample = nullptr;
         }
+        ~Scope() { Finish(); }
     };
     template <class Action>
     void MeasureMatrix(Action &&action)

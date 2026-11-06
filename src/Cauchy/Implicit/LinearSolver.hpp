@@ -10,7 +10,8 @@ namespace DNDS::Cauchy
     /// sgs and ilu are stationary iterations; only gmres constructs Krylov
     /// history and uses preconditioner. ILU uses frozen rank-local factors and
     /// x_next=x+M^-1(b-A*x), with a normal halo before evaluating A*x.
-    /// Norms are Euclidean on the integrated RHS, without volume normalization.
+    /// Norms use the integrated RHS, without volume normalization. The default
+    /// metric is Euclidean; Solve may supply explicit component scales.
     struct LinearSolveSettings
     {
         std::string method = "sgs", preconditioner = "sgs";
@@ -20,6 +21,10 @@ namespace DNDS::Cauchy
         std::string stopping = "residual";
         index maxIterations = 10;
         int subspace = 20, sgsSweeps = 1, iluFill = 0;
+        /// Fixed zero-started ILU defect corrections per GMRES application.
+        /// More than one uses the full operator/halo between local solves.
+        /// The count is frozen for Solve; stationary ILU uses maxIterations.
+        int iluPreconditionerCorrections = 1;
         bool iluCoreFirst = true, exchangeBetweenSweeps = false;
         real relativeTolerance = .1, absoluteTolerance = 1e-12;
         std::string iluOrdering = "natural";
@@ -58,7 +63,13 @@ namespace DNDS::Cauchy
         /// iterate; a warm guess is explicit. Every GMRES preconditioner call
         /// resets its iterate to zero and uses a fixed number of SGS sweeps or
         /// the same local ILU factors. Standard GMRES must not vary that policy.
-        Linear::LinearIterationReport Solve(const Field &rhs, const Field *initialGuess = nullptr);
+        /// Optional positive logical component scales define a frozen inner
+        /// product sum(x_j/s_j*y_j/s_j). Empty keeps the Euclidean metric.
+        /// Caller supplies agreed scales across ranks. Their width and
+        /// positivity are checked once per solve;
+        /// no physics or mean-state reduction occurs inside the linear solver.
+        Linear::LinearIterationReport Solve(const Field &rhs, const Field *initialGuess = nullptr,
+                                            const std::vector<real> &componentScales = {});
         /// Borrowed result, overwritten by the next Solve. Always inspect its
         /// report; finite fixed-count or iteration-limited results are usable
         /// without being certified converged. Unevaluated residual norms are NaN.
@@ -90,7 +101,9 @@ namespace DNDS::Cauchy
         EquationLinearSolver &operator=(const EquationLinearSolver &) = delete;
         EquationLinearSolver(EquationLinearSolver &&) noexcept = default;
         EquationLinearSolver &operator=(EquationLinearSolver &&) noexcept = default;
-        Linear::LinearIterationReport Solve(const EquationDofs &rhs, const EquationDofs *initialGuess = nullptr);
+        /// Same optional frozen component-scale metric as LinearSolver.
+        Linear::LinearIterationReport Solve(const EquationDofs &rhs, const EquationDofs *initialGuess = nullptr,
+                                            const std::vector<real> &componentScales = {});
         const EquationDofs &Solution() const;
     };
 }

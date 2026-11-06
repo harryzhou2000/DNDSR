@@ -11,6 +11,22 @@ namespace E = DNDS::Euler;
 using I = DNDS::index;
 constexpr int components = 6;
 
+// The benchmark matrix keeps its diagonal at slot0. Adapt that local storage
+// to the same action protocol used by the production block-row kernel.
+struct OffDiagonalActions
+{
+    static constexpr bool needs_scratch = false;
+    DNDS::Algebra::BlockMatrixView<const double> values;
+    template <int Size, bool Subtract, class Input, class Output, class Scratch>
+    void Accumulate(I iCell, I j, const Input &input, Output &output, Scratch &) const
+    {
+        if constexpr (Subtract)
+            output.noalias() -= values(iCell, 1 + j) * input;
+        else
+            output.noalias() += values(iCell, 1 + j) * input;
+    }
+};
+
 int main(int argc, char **argv)
 {
     DNDS::MPI::Init_thread(&argc, &argv);
@@ -133,8 +149,7 @@ int main(int argc, char **argv)
                     DNDS::Algebra::BlockMatrixView<const double> values;
                     auto operator[](I iCell) const { return values(iCell, 0); }
                 } diagonal{matrix.View()};
-                const auto blocks = [values = matrix.View()](I iCell, I j)
-                { return values(iCell, 1 + j); };
+                const OffDiagonalActions blocks{matrix.View()};
                 DNDS::Cauchy::Detail::ApplyBlockRows(b.View(), b.View().GhostPart(), x.View(), diagonal, blocks, pattern, rows, components, true);
             }
             else

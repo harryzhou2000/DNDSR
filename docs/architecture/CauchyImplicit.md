@@ -97,8 +97,9 @@ Coarse controls are defined centrally by `PolynomialMultigrid::CoarseSettings`.
 The first coarse level uses direct-gradient second-order convection. The bottom
 level still prepares direct gradients for RANS/volume sources, but
 `firstOrderConvection=true` uses cell means and jump-only face viscosity.
-Reconstructed face derivatives are not used in P0; there is no retained-gradient
-P0 alternative. Source gradients remain a separate input. Both flow5 and
+Reconstructed derivatives are not used in P0 viscous face fluxes; there is no
+retained-gradient P0 face alternative. This restriction never suppresses
+volume-source gradients, including RANS and chemistry. Both flow5 and
 logical equation RHS profiles use this policy, with no change to finest defaults.
 
 The viscous face-jump correction uses the centroid separation projected onto
@@ -413,6 +414,34 @@ numeric factorization/triangular solves. Direct C++ callers can append ordering
 to `PrepareILUStructure(fill, coreFirst, localParts, ordering)`; existing calls
 remain natural. Python linear settings expose `ilu_ordering`.
 
+`implicit.ilu.preconditionerCorrections` fixes the number of zero-started
+defect corrections in each GMRES ILU preconditioner call. Its default is1,
+the original local factor solve. For a larger count, subsequent corrections
+exchange the iterate halo and evaluate `b-A*x`,then add the same frozen local
+factor solve. The factors and count remain fixed during GMRES. Stationary ILU
+continues to use `linear.iterations`. This is ordinary linear preconditioning;
+it does not reevaluate the nonlinear RHS. Set2 to match Euler's two corrections
+per ILU preconditioner application. Python exposes `ilu_preconditioner_corrections`.
+
+Linear `Solve(rhs, initialGuess, componentScales)` optionally accepts a positive
+logical component scale vector. The synchronous call freezes its metric
+`sum((x_j/s_j)*(y_j/s_j))`; empty scales retain the Euclidean metric. Callers
+must provide agreed scales and complete prior producers as for other linear
+inputs. The linear layer owns no physical means,mesh or scale estimator.
+The Python argument is `component_scales`.
+
+`implicit.linear.componentScaling="meanState"` prepares Euler's compressible
+flow5 metric before each nonlinear correction's GMRES call. It averages
+absolute conservative components by cell volume,sets all three momentum
+scales to their common Euclidean magnitude,and sets the energy scale to that
+magnitude squared divided by mean density. Other equation components keep
+their own absolute mean scales. Euler's `verySmallReal` regularization is
+applied explicitly to the denominators. It does not provide a physical unit
+fallback. The prepared vector is frozen through that linear solve. Default
+`"none"` does no mean-state work and adds no reduction. Non-compressible
+schemas must supply an appropriate metric through the generic linear API;
+this specific policy requires the named ordered flow5 components.
+
 `implicit.multigrid.reuseCoarseRate` reuses the immediately preceding coarse tau
 evaluation for that level's first correction. Native pMG coarse levels use
 direct-gradient reconstruction, so reevaluation at unchanged means does not
@@ -511,14 +540,22 @@ diagonal-entry or full diagonal blocks. By default full off-diagonal blocks use
 `DNDS::Algebra::BlockMatrixStorage`; diagonal values and inverses are native
 Arrays. No legacy ArrayDOF or EulerJacobian adapter is involved.
 
-`implicit.jacobianAction="semiMatrixFree"` omits the assembled off-diagonal
-Array and regenerates blocks from frozen physical data. This is the same
+`implicit.jacobianAction="directEvaluated"` omits the assembled off-diagonal
+Array and applies off-diagonal flux derivatives from frozen physical data. This is the same
 simplified approximate Jacobian as `"assembled"`, not a Frechet derivative of
 the high-order residual. Both modes support scalar or block diagonals, scalar
 or characteristic Roe dissipation, periodic momentum transforms and physical
-BC/self-periodic diagonal terms. SGS, GMRES action and local ILU filling use
-the same block-read interface. ILU still stores and factors its explicit local
+BC/self-periodic diagonal terms. SGS and GMRES request directional actions;
+local ILU filling requests explicit blocks. ILU still stores and factors its explicit local
 template; this is not matrix-free factorization.
+
+`assembled` remains canonical, especially for ILU/GMRES+ILU. GMRES may explicitly
+use direct-evaluated `A*x` with separately assembled ILU preconditioner factors;
+the operator and preconditioner are distinct objects. This supported option is
+not the canonical performance comparison. The old config spelling
+`semiMatrixFree` and C++/Python enum `SemiMatrixFree` remain compatibility aliases
+for `directEvaluated` / `DirectEvaluated`. Archived experiments retain their
+original input spelling.
 
 The physical evaluator owns mean values, face radii and (for Roe) prepared
 characteristic magnitudes. EquationSystem regenerates physical derivatives and
@@ -537,6 +574,81 @@ counts use a generic dynamic dense matrix. A raw callback/map still requires
 the enclosing read scope to remain alive; custom evaluators must own immutable
 inputs, match exact row identity/columns/components, perform no MPI or hidden
 mutation, and obey the same controller serialization contract.
+
+`ReadOffDiagonal().WithActions(callback)` selects the action adapter once before
+SGS/matrix-vector loops. The physical producers override `ApplyBlock(row,slot,
+direction,output)` with a direct flux derivative rather than building a dense
+block for every neighbor. Equation-state actions use the prepared conservative
+pressure-derivative row and retain passive scalar convection, turbulent stress,
+ALE velocity, periodic momentum rotation and component projection. This changes
+floating-point grouping, so parity is numerical rather than byte identity.
+Input Eigen views retain dynamic component strides; SoA/AoSoA rows do not need
+implicit packing. The kernel allocates one output vector before the scan and
+reuses it for all neighbor actions. The assembled adapter retains the ordinary
+static/dynamic Eigen multiply-add expression and needs no such scratch.
+Every producer must implement the pure-virtual `ApplyBlock` action directly;
+there is no dense fallback. Evaluated SGS/Jv must never materialize an N-by-N
+off-diagonal temporary. `EvaluateBlock` remains a separate, explicit request
+for assembly, factorization or matrix inspection. Both action and block adapters
+borrow the enclosing read scope; neither acquires leases or communicates in a
+neighbor loop.
+
+### TODO: large-species structured Jacobian storage and factors
+
+Future optimization, **not implemented or enabled by current controls**. For
+large mixtures, dense off-diagonal blocks cost O(N²) per graph entry, although
+an intentionally decoupled approximate Jacobian can have much less structure.
+Add an explicit choice of off-diagonal storage with a dense flow5 block and
+diagonal entries for transported RANS/species scalars. This costs 25+Ns scalar
+entries per edge rather than (5+Ns)². A shared scalar coefficient can be stored
+once only when every affected scalar really has the same frozen coefficient;
+otherwise retain one entry per scalar. Diagonal cell blocks can remain dense.
+Common original convection coefficients do not imply common scalar factors:
+different scalar diagonal/source terms can distinguish them during elimination.
+Sharing factor coefficients needs its own equality proof.
+
+Separate the **Jacobian approximation** from the **storage/factor policy**:
+
+1. If the chosen approximate Jacobian omits both directions of flow5/scalar
+   coupling and all cross-scalar coupling, including in each diagonal cell
+   block, it has the direct-sum form `A_flow ⊕ A_scalar1 ⊕ ...`. Elimination,
+   inversion of diagonal blocks and any retained graph fill preserve that
+   component structure. Flow5 block factorization plus scalar factorizations
+   therefore represent the same approximate operator, for both LU and the same
+   ILU fill/drop policy and entity ordering. This does not make ILU an exact
+   solve of the full physical Jacobian. Equivalence is mathematical, not
+   necessarily bitwise. Rank cutoffs/regularization for singular diagonal
+   inverses must also agree; a per-component relative cutoff can differ from
+   one referenced to the full cell block's largest singular value.
+2. Relevant approximation choices include SA, explicitly diagonalized
+   two-equation RANS, and inert scalar transport when reaction is handled in a
+   separate Strang substep. Those model names do not themselves prove closure:
+   the actual diagonal and off-diagonal derivatives must obey the selected
+   decoupling. Thermodynamic composition derivatives, density dependence and
+   chemistry/source couplings must be explicitly omitted or treated elsewhere.
+3. With a general dense diagonal block, its inverse can mix components. The
+   Schur update `A_ij -= L_ik U_kj` can then produce cross-component terms even
+   if the original off-diagonal blocks were structured. Forcing those terms
+   to zero changes the factors/preconditioner. A projected structured ILU/LU
+   may still save substantial memory, but must be explicitly named, opt-in,
+   and assessed for convergence/robustness. Define its projection points in
+   diagonal solves and Schur updates; do not silently truncate stored factors.
+   It is not an equivalent dense LU.
+4. SGS/Jv can directly use a structured assembled approximate operator without
+   promising structured factors. A dense local diagonal inverse remains valid
+   there. The direct evaluated action must also honor the same selected
+   approximation without constructing dense off-diagonal blocks.
+
+Keep physical component selection in Cauchy's Jacobian preparation. A future
+generic numerical storage/factor policy in DNDS/Solver should accept numerical
+component partitions and dense/diagonal subblocks, without knowing flow, RANS,
+species or EOS names. Preserve full dense storage as a reference/alternative,
+and record the approximation and projection policy in configuration/restarts.
+Validate structured actions against explicitly assembled projected operators;
+validate direct-sum factors against dense factors of that same approximate
+operator with identical ordering/fill; measure memory, setup/apply cost and
+nonlinear convergence before adoption. No physical policy changes in this
+optimization are implicit in the present performance work.
 
 Publishing evaluated data validates its complete stencil and exact row identity
 outside the hot loops. A short exclusive diagonal lease guards publication;
@@ -639,6 +751,19 @@ The generic legacy factor algorithm and its first-build arithmetic stay intact.
 `SGSIteration`. Phase calls execute CPU numerical work synchronously. They do
 not post MPI, choose streams or perform rank agreement. The caller serializes
 phase calls and coordinates local failures before later distributed operations.
+
+`BeginSGSZero(rhs, forward, result, middleExchange=false)` is a separate zero-start
+entry. It takes no old-input array and acquires no old-input lease. A statically
+dispatched kernel omits not-yet-processed/remote zero terms in the lower scan;
+the upper scan still uses updated local increments. Without middle exchange,
+remote old upper increments are analytically zero and need no storage or reads.
+With middle exchange, Upper reads the freshly exchanged forward halo normally.
+Output/work leases, split scan ordering and middle-exchange requirements remain.
+An unrelated old array may be dirty, busy or absent. No zero buffer is allocated,
+filled or scanned to establish that condition. Warm starts and later sweeps use
+the ordinary entry. Python exposes `begin_sgs_zero(rhs, forward, output, ...)`.
+The controller avoids clearing the unused initial solution/old vector; if a solve
+returns without any sweep, it explicitly publishes a real zero answer instead.
 
 ```cpp
 auto halo = oldBinding.Begin();
@@ -1243,7 +1368,11 @@ PP enabled, Euler's thermal increment compression and mean-species repair run
 first. The actual EOS then validates temperature and positive pressure, including
 the perfect-gas pressure floor and the model's internal-energy constraints,
 before any bound-state writer is acquired. Rejection by these candidate checks
-preserves owned state and its generations. No new line search or rollback
+preserves owned state and its generations. With PP enabled, candidate-validity agreement shares
+the existing minimum-alpha reduction; local exceptions are retained and every
+rank rejects before publication. PP-disabled correction keeps its ordinary
+candidate agreement. This coalescing removes one successful-path collective
+without changing the thermal policy or disabling validation. No new line search or rollback
 algorithm is introduced. A finite correction-capped report is
 unconverged; the time orchestrator retains the Euler default acceptance policy
 unless rejection is explicitly requested.
@@ -1465,6 +1594,14 @@ PP and physical ODE/nonlinear controllers are outside this benchmark. The
 wrapper's optional collective-error preflights; required shape/route checks,
 setup agreement and numerical reductions remain enabled. Repeated solve-entry
 agreement follows the same switch as intermediate error coordination.
+
+The pMG finest residual measurement follows `implicit.collectiveChecks` too:
+its local accumulation uses a diagnostic agreement only when checks are enabled.
+The volume-weighted residual sum remains a mathematical allreduce in both
+modes, as do required convergence and positivity statistics. Disabling checks
+does not make norms rank-local. A local failure in unchecked mode propagates
+to the fail-fast application boundary; callers must not catch it and continue
+on one rank into a different collective sequence.
 
 
 ## Method-owned buffers and completed halo publications

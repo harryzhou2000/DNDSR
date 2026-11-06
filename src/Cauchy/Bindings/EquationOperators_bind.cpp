@@ -136,7 +136,7 @@ namespace DNDS::Cauchy::Bindings
         py::class_<EquationWorkspace>(m, "EquationWorkspace", "Native FV workspace tied to exact input allocations. Serialize use and drain work before release.");
         py::class_<MeanWorkspace>(m, "EquationMeanWorkspace", "Separate zero-reconstruction physical-step scratch; never the ordinary VR guess.");
         py::enum_<DiagonalStorage>(m, "DiagonalStorage").value("Entries", DiagonalStorage::Entries).value("Block", DiagonalStorage::Block);
-        py::enum_<OffDiagonalStorage>(m, "OffDiagonalStorage").value("Assembled", OffDiagonalStorage::Assembled).value("SemiMatrixFree", OffDiagonalStorage::SemiMatrixFree);
+        py::enum_<OffDiagonalStorage>(m, "OffDiagonalStorage").value("Assembled", OffDiagonalStorage::Assembled).value("DirectEvaluated", OffDiagonalStorage::DirectEvaluated).value("SemiMatrixFree", OffDiagonalStorage::DirectEvaluated);
         py::enum_<LinearRegion>(m, "LinearRegion").value("All", LinearRegion::All).value("Core", LinearRegion::Core).value("HaloDependent", LinearRegion::HaloDependent);
         py::class_<JacobianPreparation>(m, "JacobianPreparation")
             .def(py::init<>())
@@ -156,6 +156,7 @@ namespace DNDS::Cauchy::Bindings
             .def("invert_diagonal", &LinearProblemContext::InvertDiagonal, py::call_guard<py::gil_scoped_release>(), Local)
             .def("apply", py::overload_cast<const EquationDofs &, EquationDofs &, LinearRegion>(&LinearProblemContext::Apply, py::const_), py::arg("input"), py::arg("output"), py::arg("region") = LinearRegion::All, py::call_guard<py::gil_scoped_release>(), Local)
             .def("begin_sgs", py::overload_cast<const EquationDofs &, const EquationDofs &, EquationDofs &, EquationDofs &, bool>(&LinearProblemContext::BeginSGS, py::const_), py::arg("rhs"), py::arg("input"), py::arg("forward"), py::arg("output"), py::arg("middle_exchange") = false, py::call_guard<py::gil_scoped_release>(), Local)
+            .def("begin_sgs_zero", py::overload_cast<const EquationDofs &, EquationDofs &, EquationDofs &, bool>(&LinearProblemContext::BeginSGSZero, py::const_), py::arg("rhs"), py::arg("forward"), py::arg("output"), py::arg("middle_exchange") = false, "Dedicated statically selected zero-start SGS. No old input allocation or read; exchange forward before Upper only if middle_exchange is enabled.", py::call_guard<py::gil_scoped_release>(), Local)
             .def("apply_sgs", py::overload_cast<const EquationDofs &, const EquationDofs &, EquationDofs &, EquationDofs &>(&LinearProblemContext::ApplySGS, py::const_), py::arg("rhs"), py::arg("input"), py::arg("forward"), py::arg("output"), py::call_guard<py::gil_scoped_release>(), Local)
             .def("prepare_ilu", &LinearProblemContext::PrepareILUStructure, py::arg("fill") = 0, py::arg("core_first") = true, py::arg("local_parts") = std::vector<index>{}, py::arg("ordering") = "natural", py::call_guard<py::gil_scoped_release>(), Local)
             .def("factorize_ilu", &LinearProblemContext::FactorizeILU, py::call_guard<py::gil_scoped_release>(), Local)
@@ -169,6 +170,7 @@ namespace DNDS::Cauchy::Bindings
             .def_readwrite("subspace", &LinearSolveSettings::subspace)
             .def_readwrite("sgs_sweeps", &LinearSolveSettings::sgsSweeps)
             .def_readwrite("ilu_fill", &LinearSolveSettings::iluFill)
+            .def_readwrite("ilu_preconditioner_corrections", &LinearSolveSettings::iluPreconditionerCorrections)
             .def_readwrite("ilu_core_first", &LinearSolveSettings::iluCoreFirst)
             .def_readwrite("ilu_ordering", &LinearSolveSettings::iluOrdering)
             .def_readwrite("exchange_between_sweeps", &LinearSolveSettings::exchangeBetweenSweeps)
@@ -196,7 +198,7 @@ namespace DNDS::Cauchy::Bindings
             .def_readonly("inner_product_batches", &Linear::LinearIterationReport::innerProductBatches)
             .def_readonly("preconditioner_applications", &Linear::LinearIterationReport::preconditionerApplications);
         py::class_<EquationLinearSolver>(m, "EquationLinearSolver", "Native SGS/left-GMRES/ILU orchestration. Matching collective calls and producer completion are required. Solution aliases reusable scratch; clone before another solve.")
-            .def("solve", &EquationLinearSolver::Solve, py::arg("rhs"), py::arg("initial_guess") = nullptr, py::call_guard<py::gil_scoped_release>(), Collective)
+            .def("solve", &EquationLinearSolver::Solve, py::arg("rhs"), py::arg("initial_guess") = nullptr, py::arg("component_scales") = std::vector<real>{}, py::call_guard<py::gil_scoped_release>(), Collective)
             .def_property_readonly("solution", [](const EquationLinearSolver &solver)
                                    { return solver.Solution(); });
         py::class_<NonlinearSolveControl>(m, "NonlinearSolveControl")

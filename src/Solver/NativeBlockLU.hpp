@@ -436,21 +436,21 @@ namespace DNDS::Direct
             for (index pos = 0; pos < rows; ++pos)
             {
                 const auto iCell = _symbolic->FillingReorderNew2Old(pos);
-                value = Algebra::ReadEigenRow(rhs, iCell, other);
+                value = Algebra::PackEigenRow(rhs, iCell, other);
                 const auto &columns = _symbolic->lowerTriStructure[iCell];
                 for (index j = 0; j < index(columns.size()); ++j)
-                    value.noalias() -= factor.GetLower(iCell, j) * Algebra::ReadEigenRow(forward, columns[j], other);
-                Algebra::PublishEigenRow(forward, iCell, value);
+                    value.noalias() -= factor.GetLower(iCell, j) * Algebra::PackEigenRow(forward, columns[j], other);
+                Algebra::UnpackEigenRow(forward, iCell, value);
             }
             for (index pos = rows; pos > 0; --pos)
             {
                 const auto iCell = _symbolic->FillingReorderNew2Old(pos - 1);
-                value = Algebra::ReadEigenRow(forward, iCell, other);
+                value = Algebra::PackEigenRow(forward, iCell, other);
                 const auto &columns = _symbolic->upperTriStructure[iCell];
                 for (index j = 0; j < index(columns.size()); ++j)
-                    value.noalias() -= factor.GetUpper(iCell, j) * Algebra::ReadEigenRow(result, columns[j], other);
+                    value.noalias() -= factor.GetUpper(iCell, j) * Algebra::PackEigenRow(result, columns[j], other);
                 product.noalias() = factor.GetDiag(iCell) * value;
-                Algebra::PublishEigenRow(result, iCell, product);
+                Algebra::UnpackEigenRow(result, iCell, product);
             }
         }
     };

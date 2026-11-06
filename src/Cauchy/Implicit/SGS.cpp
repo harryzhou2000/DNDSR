@@ -15,21 +15,28 @@ namespace DNDS::Cauchy
         DiagonalStorage mode;
         // Pin numeric allocation/layout owners, not communicator owners. A
         // numerical scope may retire on a worker; MPI resources stay outside.
-        R::Array<real> rhs, input, inputGhost, forward, forwardGhost, output;
-        R::Array<real>::ReadLease diagonalRead, inverseRead, rhsRead, inputRead;
+        R::Array<real> rhs, forward, forwardGhost, output;
+        std::optional<R::Array<real>> input, inputGhost;
+        R::Array<real>::ReadLease diagonalRead, inverseRead, rhsRead;
         OffDiagonalReadAccess blocksRead;
-        std::optional<R::Array<real>::ReadLease> inputGhostRead, forwardRead, forwardGhostRead;
+        std::optional<R::Array<real>::ReadLease> inputRead, inputGhostRead, forwardRead, forwardGhostRead;
         std::optional<R::Array<real>::WriteLease> forwardWrite, outputWrite;
         uint64_t initialForwardGhost;
         bool middleExchange, started = false;
         int lower = 0, upper = 0; // 0=not started,1=first region complete,2=scan complete
 
-        State(const LinearProblemContext &problem, const Field &b, const Field &old, Field &temporary, Field &result, bool middle)
+        State(const LinearProblemContext &problem, const Field &b, const Field *old, Field &temporary, Field &result, bool middle)
             : pattern(problem._pattern), components(problem._components), mode(problem._diagonalStorage),
-              rhs(b.Owned()), input(old.Owned()), inputGhost(old.Ghost()), forward(temporary.Owned()), forwardGhost(temporary.Ghost()), output(result.Owned()),
-              diagonalRead(problem._diagonal.Read()), inverseRead(problem._inverse.Read()), rhsRead(rhs.Read()), inputRead(input.Read()),
+              rhs(b.Owned()), forward(temporary.Owned()), forwardGhost(temporary.Ghost()), output(result.Owned()),
+              diagonalRead(problem._diagonal.Read()), inverseRead(problem._inverse.Read()), rhsRead(rhs.Read()),
               blocksRead(problem.ReadOffDiagonal()), initialForwardGhost(forwardGhost.Version()), middleExchange(middle)
         {
+            if (old)
+            {
+                input.emplace(old->Owned());
+                inputGhost.emplace(old->Ghost());
+                inputRead.emplace(input->Read());
+            }
             DNDS_check_throw_info(problem._inverseCurrent && problem._diagonal.Version() == problem._diagonalVersion &&
                                       problem._inverse.Version() == problem._inverseVersion,
                                   "linear diagonal inverse is missing or stale");
@@ -60,18 +67,26 @@ namespace DNDS::Cauchy
         void Scan(ForwardView forwardValues, WriteView destination, ReadView ghostValues, const std::vector<index> &rows)
         {
             const auto b = Algebra::MakeEigenRowMatrices(rhsRead.View<R::UniformTableRows>(), components, 1);
-            const auto old = Algebra::MakeEigenRowMatrices(inputRead.View<R::UniformTableRows>(), components, 1);
+            // Zero-start has no old payload. The unused map type is borrowed
+            // from RHS only to share the statically selected kernel signature.
+            const auto old = inputRead ? Algebra::MakeEigenRowMatrices(inputRead->View<R::UniformTableRows>(), components, 1) : b;
             const auto remote = Algebra::MakeEigenRowMatrices(ghostValues, components, 1);
             const auto y = Algebra::MakeEigenRowMatrices(forwardValues, components, 1);
             const auto result = Algebra::MakeEigenRowMatrices(destination, components, 1);
             const auto inv = Algebra::MakeEigenRowMatrices(inverseRead.View<R::TableRows>(), components, mode == DiagonalStorage::Block ? components : 1);
             started = true;
-            blocksRead.WithBlocks([&](const auto &blocks)
-                                  {
-            if (components == 5)
-                Detail::ScanSGSRows<Upper,5>(b,old,y,result,remote,inv,blocks,*pattern,rows,components,mode==DiagonalStorage::Block);
-            else
-                Detail::ScanSGSRows<Upper,Eigen::Dynamic>(b,old,y,result,remote,inv,blocks,*pattern,rows,components,mode==DiagonalStorage::Block); });
+            blocksRead.WithActions([&](const auto &blocks)
+                                   {
+                const auto scan = [&](auto zero)
+                {
+                    constexpr bool Zero = decltype(zero)::value;
+                    if (components == 5)
+                        Detail::ScanSGSRows<Upper,5,Zero>(b,old,y,result,remote,inv,blocks,*pattern,rows,components,mode==DiagonalStorage::Block);
+                    else
+                        Detail::ScanSGSRows<Upper,Eigen::Dynamic,Zero>(b,old,y,result,remote,inv,blocks,*pattern,rows,components,mode==DiagonalStorage::Block);
+                };
+                if (!input && (!Upper || !middleExchange)) scan(std::true_type{});
+                else scan(std::false_type{}); });
         }
     };
 
@@ -87,7 +102,15 @@ namespace DNDS::Cauchy
         ValidateOutputs(rhs, forward);
         ValidateOutputs(rhs, output);
         ValidateOutputs(forward, output);
-        return SGSIteration(std::make_unique<SGSIteration::State>(*this, rhs, input, forward, output, middleExchange));
+        return SGSIteration(std::make_unique<SGSIteration::State>(*this, rhs, &input, forward, output, middleExchange));
+    }
+    LinearProblemContext::SGSIteration LinearProblemContext::BeginSGSZero(const Field &rhs, Field &forward, Field &output, bool middleExchange) const
+    {
+        ValidateMatrix();
+        ValidateOutputs(rhs, forward);
+        ValidateOutputs(rhs, output);
+        ValidateOutputs(forward, output);
+        return SGSIteration(std::make_unique<SGSIteration::State>(*this, rhs, nullptr, forward, output, middleExchange));
     }
     void LinearProblemContext::SGSIteration::Lower(LinearRegion region)
     {
@@ -96,8 +119,8 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info((region == LinearRegion::All && state.lower == 0) || (region == LinearRegion::Core && state.lower == 0) ||
                                   (region == LinearRegion::HaloDependent && state.lower == 1),
                               "SGS lower regions must be All or Core then HaloDependent");
-        if (region != LinearRegion::Core && state.pattern->hasGhostColumns)
-            state.inputGhostRead.emplace(state.inputGhost.Read());
+        if (state.inputGhost && region != LinearRegion::Core && state.pattern->hasGhostColumns)
+            state.inputGhostRead.emplace(state.inputGhost->Read());
         const auto ghost = state.inputGhostRead ? state.inputGhostRead->View<R::UniformTableRows>() : ReadView{};
         const auto target = state.forwardWrite->View<R::UniformTableRows>();
         const auto &rows = region == LinearRegion::All ? state.pattern->order : region == LinearRegion::Core ? state.pattern->core

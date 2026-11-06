@@ -4,6 +4,7 @@
 #include "Cauchy/Implicit/PositivityReduction.hpp"
 #include "Cauchy/Implicit/ResidualConvergence.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
+#include "Cauchy/Implicit/LinearScaling.hpp"
 #include "CartesianFixture.hpp"
 #include <limits>
 #include <cstring>
@@ -13,6 +14,27 @@ namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
 namespace A = DNDS::Algebra;
 static DNDS::MPIInfo mpi;
+TEST_CASE("Mean-state Krylov scaling uses volume averages and one common momentum scale")
+{
+    R::Array<DNDS::real> values(R::RowLayout::Dense(3, 6));
+    const std::array<DNDS::real, 6> state{2, 6, 8, 0, 100, 12};
+    {
+        auto write = values.Write();
+        for (DNDS::index iCell = 0; iCell < 3; ++iCell)
+            for (DNDS::index j = 0; j < 6; ++j)
+                write.View()(iCell, j) = state[j];
+    }
+    struct Metric
+    {
+        DNDS::real GetCellVol(DNDS::index iCell) const { return 1 + .25 * iCell; }
+    };
+    const auto read = values.Read();
+    const auto scales = C::NonlinearDetail::MeanStateScales(read.View<R::UniformTableRows>(), Metric{}, 6, 0, mpi.comm);
+    const std::vector<DNDS::real> expected{2, 10, 10, 10, 50, 12};
+    REQUIRE(scales.size() == expected.size());
+    for (DNDS::index j = 0; j < 6; ++j)
+        CHECK(scales[j] == doctest::Approx(expected[j]).epsilon(1e-14));
+}
 TEST_CASE("Shared nonlinear controller observes coupled updates once and advances CFL once")
 {
     C::ImplicitSettings settings;

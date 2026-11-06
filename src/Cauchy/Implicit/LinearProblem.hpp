@@ -25,7 +25,8 @@ namespace DNDS::Cauchy
     enum class OffDiagonalStorage
     {
         Assembled,
-        SemiMatrixFree
+        DirectEvaluated,
+        SemiMatrixFree = DirectEvaluated // Compatibility spelling.
     };
     /// Immutable physical block producer. Columns and block ordinals belong to
     /// LinearProblemContext. Implementations own frozen numerical inputs; they
@@ -34,11 +35,20 @@ namespace DNDS::Cauchy
     class OffDiagonalEvaluator
     {
     public:
+        using InputVector = Eigen::Ref<const Eigen::VectorXd, 0, Eigen::InnerStride<Eigen::Dynamic>>;
         virtual ~OffDiagonalEvaluator() = default;
         virtual index Components() const = 0;
         virtual std::shared_ptr<const Algebra::DofSpace::Partition> RowSpaceIdentity() const = 0;
         virtual const std::vector<std::vector<index>> &Columns() const = 0;
         virtual void EvaluateBlock(index iRow, index iBlock, Eigen::Ref<Eigen::MatrixXd> output) const = 0;
+        /// Apply one frozen off-diagonal block directly, without constructing
+        /// a components-by-components temporary. This contract has no dense
+        /// fallback: every producer supplies its directional action. Input/output are
+        /// distinct vectors, owned by the enclosing kernel scope. A strided
+        /// input borrows SoA/AoSoA rows without hidden Eigen packing; output
+        /// is contiguous caller scratch, allocated once before the scan.
+        virtual void ApplyBlock(index iRow, index iBlock, InputVector input,
+                                Eigen::Ref<Eigen::VectorXd> output) const = 0;
     };
     /// Integrated residual convention: A=M/dTau+physicalMass*M-residualScale*J_R.
     /// Roe dissipation requires a full diagonal block; scalar dissipation keeps
@@ -58,6 +68,13 @@ namespace DNDS::Cauchy
     /// row space and stencil are immutable; numerical values are filled through
     /// native Array leases. No EOS, mesh mutation, MPI, nonlinear or time policy
     /// is hidden here. The caller serializes numeric preparation and execution.
+    /// TODO(large-species Jacobian): optionally store off-diagonal flow5 dense
+    /// blocks plus scalar extended entries, retaining full diagonal blocks.
+    /// With flow/extension coupling omitted AND extended diagonal blocks also
+    /// diagonal, this is an exact direct-sum representation/factorization of
+    /// that approximate operator. Otherwise ILU fill can generate cross terms;
+    /// projected/compressed factors change the preconditioner and need explicit
+    /// controls and validation. See CauchyImplicit.md, large-species TODO.
     class LinearProblemContext
     {
         using Field = Algebra::DofField<real>;
@@ -182,8 +199,57 @@ namespace DNDS::Cauchy
                     return result;
                 }
             };
+            struct EvaluatedActions
+            {
+                static constexpr bool needs_scratch = true;
+                const OffDiagonalEvaluator *evaluator;
+                template <int Size, bool Subtract, class Input, class Output, class Scratch>
+                void Accumulate(index iRow, index iBlock, const Input &input, Output &output, Scratch &scratch) const
+                {
+                    evaluator->ApplyBlock(iRow, iBlock, input, scratch);
+                    if constexpr (Subtract)
+                        output -= scratch;
+                    else
+                        output += scratch;
+                }
+            };
+            template <class Blocks>
+            struct AssembledActions
+            {
+                static constexpr bool needs_scratch = false;
+                Blocks blocks;
+                template <int Size, bool Subtract, class Input, class Output, class Scratch>
+                void Accumulate(index iRow, index iBlock, const Input &input, Output &output, Scratch &) const
+                {
+                    const auto add = [&](const auto &block)
+                    {
+                        if constexpr (Subtract)
+                            output.noalias() -= block * input;
+                        else
+                            output.noalias() += block * input;
+                    };
+                    if constexpr (Size != Eigen::Dynamic)
+                        add(blocks(iRow, iBlock).template topLeftCorner<Size, Size>());
+                    else
+                        add(blocks(iRow, iBlock));
+                }
+            };
 
         public:
+            /// Resolve storage once outside scans. SGS/Jv request an action,
+            /// while ILU continues to request explicit blocks with WithBlocks.
+            template <class Callback>
+            void WithActions(Callback &&callback) const
+            {
+                DNDS_check_throw_info(_assembled || _evaluator, "off-diagonal read scope is moved");
+                if (_assembled)
+                {
+                    const auto blocks = _assembled->View();
+                    callback(AssembledActions<decltype(blocks)>{blocks});
+                }
+                else
+                    callback(EvaluatedActions{_evaluator.get()});
+            }
             /// Dispatch once outside loops. The callback receives a callable
             /// (row,block): assembled mode returns the ordinary stable map;
             /// evaluated mode returns an owning block value, with flow5 on the
@@ -247,6 +313,11 @@ namespace DNDS::Cauchy
         /// Callers serialize phase calls and do not replace field handles or
         /// routing during the iteration. Synchronous CPU entry points only.
         SGSIteration BeginSGS(const Field &rhs, const Field &input, Field &forward, Field &output, bool middleExchange = false) const;
+        /// Dedicated zero-start application: no input array, read lease, zero
+        /// fill or zero test. A statically selected scan omits old increments.
+        /// Local forward/upper terms remain; remote upper terms are zero
+        /// unless middleExchange requests the freshly exchanged forward halo.
+        SGSIteration BeginSGSZero(const Field &rhs, Field &forward, Field &output, bool middleExchange = false) const;
         /// Same scan/order/communication contract for logical equation fields.
         /// Owns numeric aliases and leases, not an MPI context. The controller
         /// retains communication owners and completes each declared halo phase.
@@ -268,6 +339,7 @@ namespace DNDS::Cauchy
             void Finish();
         };
         EquationSGSIteration BeginSGS(const EquationDofs &rhs, const EquationDofs &input, EquationDofs &forward, EquationDofs &output, bool middleExchange = false) const;
+        EquationSGSIteration BeginSGSZero(const EquationDofs &rhs, EquationDofs &forward, EquationDofs &output, bool middleExchange = false) const;
         /// Two-buffer local symmetric GS application with distinct forward
         /// scratch. Frozen remote inputs are used throughout both scans; there
         /// is no MPI between lower and upper. This unsplit convenience owns all

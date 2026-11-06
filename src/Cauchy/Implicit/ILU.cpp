@@ -134,6 +134,12 @@ namespace DNDS::Cauchy
         const auto d = Algebra::MakeEigenRowMatrices(diagonal.View<R::TableRows>(), _components,
                                                      _diagonalStorage == DiagonalStorage::Block ? _components : 1);
         Clock::time_point gathered{};
+        // TODO(large-species factors): support component-partitioned storage
+        // through the generic factor algebra, not by zeroing dense factors
+        // after elimination. Coupled diagonal blocks can generate cross terms
+        // even if every initial off-diagonal block is flow5+scalar diagonal.
+        // Only the fully decoupled approximate operator closes exactly under
+        // that representation; other projections need an explicit policy.
         _ilu->factors->FillAndFactorize([&](const auto &matrix)
                                         {
             offDiagonal.WithBlocks([&](const auto &blocks)

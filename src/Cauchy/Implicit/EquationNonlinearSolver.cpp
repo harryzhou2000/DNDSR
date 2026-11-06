@@ -5,6 +5,8 @@
 #include "Cauchy/Physics/EquationPositivity.hpp"
 #include "Cauchy/Physics/EquationRANS.hpp"
 #include "Cauchy/Implicit/PositivityReduction.hpp"
+#include "Cauchy/Implicit/LinearScaling.hpp"
+#include <exception>
 
 namespace DNDS::Cauchy
 {
@@ -43,7 +45,7 @@ namespace DNDS::Cauchy
               defect(EquationDofOperations::NewVector(state)), candidate(EquationDofOperations::NewVector(state)),
               inversePseudoTime(R::RowLayout::Dense(fv.Metrics().NumCell(), 1)), workers(std::move(pool)),
               problem(fv.BuildLinearProblem(state, settings.diagonal == "block" ? DiagonalStorage::Block : DiagonalStorage::Entries,
-                                            settings.jacobianAction == "semiMatrixFree" ? OffDiagonalStorage::SemiMatrixFree : OffDiagonalStorage::Assembled)),
+                                            (settings.jacobianAction == "directEvaluated" || settings.jacobianAction == "semiMatrixFree") ? OffDiagonalStorage::DirectEvaluated : OffDiagonalStorage::Assembled)),
               positivity(controls.numerics.positivity), reconstructionTolerance(settings.requireConvergedReconstruction && controls.numerics.reconstruction == "variational" ? controls.numerics.reconstructionTolerance : 0),
               densityFloor(controls.numerics.densityFloor), temperatureFloor(controls.numerics.temperatureFloor), pressureFloor(controls.numerics.pressureFloor)
         {
@@ -113,37 +115,45 @@ namespace DNDS::Cauchy
             auto evaluator = equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {});
             const auto read = state.ReadOwned();
             const auto scalars = rans ? read.Block("rans") : EquationBlockReadView{};
-            const auto layout = read.ComponentLayout();
-            const auto values = layout.View();
+            const EquationViewLayout<const real> layout(state, read);
             const int independent = equation.HasMixture() ? equation.Mixture().SpeciesNumber() - 1 : 0;
             auto rhoY = evaluator.SpeciesInput();
             const auto bounds = thermal ? thermal->View() : EquationThermalView{};
-            for (index iCell = 0; iCell < values.RowCount(); ++iCell)
+            const auto validate = [&](auto values)
             {
-                if (thermal)
-                    DNDS_check_throw_info(bounds.Admissible(EquationPositivityDetail::PointRow<decltype(values)>{values, iCell}), "implicit equation mean violates its thermal/species bounds");
-                for (index j = 0; j < values.ComponentNumber(); ++j)
-                    DNDS_check_throw_info(std::isfinite(values(iCell, j)), "nonfinite implicit equation mean");
-                if (rans)
-                    DNDS_check_throw_info(rans->Admissible(scalars[iCell]), "implicit RANS mean violates its scalar bounds");
-                FlowState flow;
-                for (int j = 0; j < 5; ++j)
-                    flow[j] = values(iCell, flowFirst + j);
-                DNDS_check_throw_info(flow[0] >= densityFloor, "implicit equation density is below its floor");
-                real sum = 0;
-                for (int k = 0; k < independent; ++k)
+                for (index iCell = 0; iCell < values.RowCount(); ++iCell)
                 {
-                    rhoY[k] = values(iCell, speciesFirst + k);
-                    DNDS_check_throw_info(rhoY[k] >= 0, "negative implicit equation species mean");
-                    sum += rhoY[k];
+                    if (thermal)
+                        DNDS_check_throw_info(bounds.Admissible(EquationPositivityDetail::PointRow<decltype(values)>{values, iCell}), "implicit equation mean violates its thermal/species bounds");
+                    for (index j = 0; j < values.ComponentNumber(); ++j)
+                        DNDS_check_throw_info(std::isfinite(values(iCell, j)), "nonfinite implicit equation mean");
+                    if (rans)
+                        DNDS_check_throw_info(rans->Admissible(scalars[iCell]), "implicit RANS mean violates its scalar bounds");
+                    FlowState flow;
+                    for (int j = 0; j < 5; ++j)
+                        flow[j] = values(iCell, flowFirst + j);
+                    DNDS_check_throw_info(flow[0] >= densityFloor, "implicit equation density is below its floor");
+                    real sum = 0;
+                    for (int k = 0; k < independent; ++k)
+                    {
+                        rhoY[k] = values(iCell, speciesFirst + k);
+                        DNDS_check_throw_info(rhoY[k] >= 0, "negative implicit equation species mean");
+                        sum += rhoY[k];
+                    }
+                    DNDS_check_throw_info(sum <= flow[0], "implicit equation species means exceed density");
+                    if (!equation.HasMixture())
+                        DNDS_check_throw_info(ThermallyAdmissible(flow, discrete.ThermalConstraints()), "inadmissible implicit flow mean");
+                    const auto point = evaluator.Evaluate(flow, {independent ? rhoY.data : nullptr, independent});
+                    DNDS_check_throw_info(point.thermo.temperature >= temperatureFloor && point.thermo.pressure > 0 && (equation.HasMixture() || point.thermo.pressure >= pressureFloor),
+                                          "implicit equation mean violates temperature or pressure floor");
                 }
-                DNDS_check_throw_info(sum <= flow[0], "implicit equation species means exceed density");
-                if (!equation.HasMixture())
-                    DNDS_check_throw_info(ThermallyAdmissible(flow, discrete.ThermalConstraints()), "inadmissible implicit flow mean");
-                const auto point = evaluator.Evaluate(flow, {independent ? rhoY.data : nullptr, independent});
-                DNDS_check_throw_info(point.thermo.temperature >= temperatureFloor && point.thermo.pressure > 0 && (equation.HasMixture() || point.thermo.pressure >= pressureFloor),
-                                      "implicit equation mean violates temperature or pressure floor");
-            }
+            };
+            // Resolve physical grouping/layout once. This changes only row
+            // access; all thermal, species and RANS acceptance checks remain.
+            if (layout.Table() && layout.Flow5())
+                DispatchCPUEquationViews<EquationViewKind::CombinedAoS>(validate, layout);
+            else
+                DispatchCPUEquationViews<>(validate, layout);
         }
     };
 
@@ -309,21 +319,32 @@ namespace DNDS::Cauchy
                 {
                     const auto u = state.ReadOwned(), r = data.spatial.ReadOwned(), b = source.ReadOwned();
                     auto write = data.defect.WriteOwned();
-                    const auto ul = u.ComponentLayout(), rl = r.ComponentLayout(), bl = b.ComponentLayout();
-                    const auto wl = write.ComponentLayout();
-                    const auto mean = ul.View(), residual = rl.View(), constant = bl.View();
-                    const auto output = wl.View();
-                    for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
+                    const EquationViewLayout<const real> ul(state, u), rl(data.spatial, r), bl(source, b);
+                    const EquationViewLayout<real> wl(data.defect, write);
+                    const auto assemble = [&](auto mean, auto residual, auto constant, auto output)
                     {
-                        const real volume = metric.GetCellVol(iCell); if (!singleCorrection) local[nv] += volume;
-                        for (index j = 0; j < nv; ++j)
+                        for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
                         {
-                            const real value = rhsScale * residual(iCell, j) + volume * (constant(iCell, j) - mass * mean(iCell, j));
-                            DNDS_check_throw_info(std::isfinite(value), "nonfinite equation implicit defect");
-                            output(iCell, j) = selection.Includes(j) ? value : 0;
-                            if (!singleCorrection) local[j] += data.settings.normOrder == 1 ? std::abs(value) : value * value / volume;
+                            const real volume = metric.GetCellVol(iCell);
+                            if (!singleCorrection)
+                                local[nv] += volume;
+                            for (index j = 0; j < nv; ++j)
+                            {
+                                const real value = rhsScale * residual(iCell, j) + volume * (constant(iCell, j) - mass * mean(iCell, j));
+                                DNDS_check_throw_info(std::isfinite(value), "nonfinite equation implicit defect");
+                                output(iCell, j) = selection.Includes(j) ? value : 0;
+                                if (!singleCorrection)
+                                    local[j] += data.settings.normOrder == 1 ? std::abs(value) : value * value / volume;
+                            }
                         }
-                    }
+                    };
+                    // An operator-local AoS selection avoids per-component
+                    // logical block lookup without packing or changing sums.
+                    if (ul.Table() && rl.Table() && bl.Table() && wl.Table() &&
+                        ul.Flow5() && rl.Flow5() && bl.Flow5() && wl.Flow5())
+                        DispatchCPUEquationViews<EquationViewKind::CombinedAoS>(assemble, ul, rl, bl, wl);
+                    else
+                        DispatchCPUEquationViews<>(assemble, ul, rl, bl, wl);
                 });
                 if (singleCorrection) return; // Defect is ready; no stopping norm is needed.
                 MPI_Allreduce(MPI_IN_PLACE, local.data(), int(nv + 1), MPI_DOUBLE, MPI_SUM, data.mpi.comm);
@@ -403,7 +424,8 @@ namespace DNDS::Cauchy
                 }
                 {
                     const NonlinearDetail::PhaseTimer timer(control.profile, NonlinearProfile::LinearSolve);
-                    report.lastLinear = data.linear->Solve(data.defect);
+                    const auto scales = NonlinearDetail::LinearScales(data.settings, state, data.discrete.Metrics());
+                    report.lastLinear = data.linear->Solve(data.defect, nullptr, scales);
                     report.linearIterations += report.lastLinear.iterations;
                     DNDS_check_throw_info(report.lastLinear.usable, "equation implicit linear correction is unusable");
                 }
@@ -548,16 +570,40 @@ namespace DNDS::Cauchy
                 apply(ul.View(), dl.View(), wl.View()); });
         // Candidate checks precede all state writers. Scalar repair may not
         // silently unfreeze a masked component, even when density changed.
-        MPI::LocalStage(data.mpi, [&]
-                        {
+        const auto validateCandidate = [&]
+        {
             DNDS_check_throw_info(frozen, "equation scalar repair would change a frozen component");
-            data.ValidateMeans(data.candidate); });
+            data.ValidateMeans(data.candidate);
+        };
+        if (data.positivity)
+        {
+            // Carry acceptance with the already-required minimum-alpha
+            // reduction. Every rank still validates before any state writer;
+            // preserve the originating exception and reject on all peers.
+            std::exception_ptr failure;
+            real agreement[2]{1, minimum};
+            try
+            {
+                validateCandidate();
+            }
+            catch (...)
+            {
+                failure = std::current_exception();
+                agreement[0] = 0;
+            }
+            MPI_Allreduce(MPI_IN_PLACE, agreement, 2, MPI_DOUBLE, MPI_MIN, data.mpi.comm);
+            if (failure)
+                std::rethrow_exception(failure);
+            DNDS_check_throw_info(agreement[0] == 1, "equation correction candidate rejected on another rank");
+            minimum = agreement[1];
+        }
+        else
+            MPI::LocalStage(data.mpi, validateCandidate);
         data.Stage([&]
                    { EquationDofOperations::Copy(state, data.candidate); });
         if (data.positivity)
         {
             MPI_Allreduce(MPI_IN_PLACE, &limited, 1, MPI_INT64_T, MPI_SUM, data.mpi.comm);
-            MPI_Allreduce(MPI_IN_PLACE, &minimum, 1, MPI_DOUBLE, MPI_MIN, data.mpi.comm);
         }
         return {limited, minimum};
     }

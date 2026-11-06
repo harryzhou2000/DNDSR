@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
+#include "Cauchy/Physics/EquationFlux.hpp"
 #include <Eigen/Core>
 #include <optional>
 
@@ -109,6 +110,47 @@ namespace DNDS::Cauchy
                     for (int k = 0; k < 5; ++k)
                         if (!active[j] || !active[k])
                             output(j, k) = 0;
+        }
+        void ApplyBlock(index iRow, index iBlock, InputVector input,
+                        Eigen::Ref<Eigen::VectorXd> output) const override
+        {
+            output.setZero();
+            for (const auto &point : geometry->rows[iRow][iBlock])
+            {
+                const auto right = RotateState(means[point.other], point.rotation);
+                FlowState direction{};
+                for (int j = 0; j < 5; ++j)
+                    direction[j] = active[j] ? input[j] : 0;
+                direction = RotateState(direction, point.rotation);
+                const auto &gas = equation.Gas();
+                real dp = direction[4];
+                real speedSquared = 0;
+                for (int d = 0; d < 3; ++d)
+                {
+                    const real velocity = right[1 + d] / right[0];
+                    speedSquared += velocity * velocity;
+                    dp -= velocity * direction[1 + d];
+                }
+                dp = (gas.gamma - 1) * (dp + .5 * speedSquared * direction[0]);
+                const auto derivative = PrepareCompressibleFluxDerivative(right, direction, gas.Pressure(right), dp,
+                                                                          point.normal, frame.GridVelocity(point.location));
+                const Eigen::Map<const Eigen::Matrix<real, 5, 1>> delta(direction.data());
+                Eigen::Matrix<real, 5, 1> dissipation = (radius[point.auxiliary][0] + radius[point.auxiliary][1]) * delta;
+                if (roe)
+                {
+                    const auto basis = equation.PrepareCharacteristics(means[iRow], right, point.normal);
+                    auto characteristic = (Eigen::Map<const Matrix>(basis.forward.data()) * delta).eval();
+                    const auto &signal = magnitudes[point.sample];
+                    for (int j = 0; j < 5; ++j)
+                        characteristic[j] *= signal[j < 3 ? 0 : j - 2];
+                    dissipation.noalias() = Eigen::Map<const Matrix>(basis.inverse.data()) * characteristic;
+                    dissipation += radius[point.auxiliary][1] * delta;
+                }
+                const real factor = .5 * scale * point.weight;
+                for (int j = 0; j < 5; ++j)
+                    if (active[j])
+                        output[j] += factor * (derivative[j] - dissipation[j]);
+            }
         }
     };
 

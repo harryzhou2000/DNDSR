@@ -397,11 +397,29 @@ namespace DNDS::Cauchy
                       EquationPointEvaluator &evaluator, real time, const AuxiliaryValues *auxiliary = nullptr)
         {
             const PhaseTime timing(*this, RHSPhase);
+            const auto mean = region != CFV::ReconstructionRegion::Core ? state.ReadWithGhost() : state.ReadOwned();
+            auto output = result.WriteOwned();
+            const EquationViewLayout<const real> owned(state, mean), remote(state, mean, true);
+            const EquationViewLayout<real> destination(result, output);
+            const auto kernel = [&](auto u, auto ghost, auto rhs)
+            { ApplyRHSRows(state, region, evaluator, time, auxiliary, mean, u, ghost, rhs); };
+            // RHS opts into one ordered AoS family. Arbitrary block bindings
+            // and physical layouts keep the same generic numerical loop.
+            // Ghost shape may be absent during Core; no ghost value is read.
+            if (owned.Table() && remote.Table() && destination.Table() && owned.Flow5() && remote.Flow5() && destination.Flow5())
+                DispatchCPUEquationViews<EquationViewKind::CombinedAoS>(kernel, owned, remote, destination);
+            else
+                DispatchCPUEquationViews<>(kernel, owned, remote, destination);
+        }
+        template <class Input, class Output>
+        void ApplyRHSRows(const EquationDofs &state, CFV::ReconstructionRegion region,
+                          EquationPointEvaluator &evaluator, real time, const AuxiliaryValues *auxiliary,
+                          const EquationDofs::ReadScope &mean, Input owned, Input remote, Output destination)
+        {
             auto geometry = owner->metrics.AcquireRead();
             const auto metric = geometry.HostView();
             auto basisRead = owner->reconstruction.AcquireBasisRead();
             const bool ghosts = region != CFV::ReconstructionRegion::Core;
-            const auto mean = ghosts ? state.ReadWithGhost() : state.ReadOwned();
             // Preparation owns writes; the point kernel holds only numeric
             // read views. These means are not reconstructed thermodynamics.
             std::optional<R::Array<real>::ReadLease> meanProperties;
@@ -413,14 +431,16 @@ namespace DNDS::Cauchy
             }
             const auto rec = ghosts ? fluxCoefficients.ReadWithGhost() : fluxCoefficients.ReadOwned();
             const auto meanBlocks = BlockViews(state, mean), recBlocks = BlockViews(fluxCoefficients, rec);
-            auto output = result.WriteOwned();
             auto boundaryWrite = boundaryMomentumFlux.Write();
             const auto wallFlux = boundaryWrite.View<R::FixedRows<3>>();
             auto faceWrite = faceFlux.Write();
             const auto faceValues = faceWrite.View<R::UniformTableRows>();
-            std::vector<EquationBlockArrayView<real>> outputs;
-            for (index iBlock = 0; iBlock < result.BlockNumber(); ++iBlock)
-                outputs.push_back(output.Block(iBlock));
+            const auto gatherMean = [&](index iCell, PointScratch &point)
+            {
+                for (index j = 0; j < owned.ComponentNumber(); ++j)
+                    point.values[j] = iCell < owned.RowCount() ? owned(iCell, j) : remote(iCell - owned.RowCount(), j);
+                point.gradient.setZero();
+            };
             const int modes = owner->reconstruction.NRecDOF(), dim = owner->metrics.Dimension();
             const bool viscous = !meanOnly && owner->equation.Viscous();
             const int species = owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() : 0;
@@ -439,15 +459,16 @@ namespace DNDS::Cauchy
             const auto boundaryInput = [&](const FiniteVolumeDetail::Sample &sample)
             {
                 if (ransModel && ransModel->ComponentNumber() == 2)
-                    Gather(meanBlocks, sample.cell, cellMean);
+                    gatherMean(sample.cell, cellMean);
                 return RANSBoundaryInput{ransModel, ransFirst, &cellMean, wallRead ? wallValues.cellMean(sample.cell, 0) : 0};
             };
             CFV::Math::SmallMatrix basisScratch;
             const auto reconstruct = [&](index iCell, const FiniteVolumeDetail::Sample &sample, int side, PointScratch &point)
             {
-                Gather(meanBlocks, iCell, point);
+                gatherMean(iCell, point);
                 // P0 uses mean states and only the normal face jump for
-                // viscosity. Source/RANS gradients are sampled separately.
+                // viscosity. This does not suppress volume-source gradients:
+                // RANS/chemistry sampling retains the configured derivatives.
                 if (!owner->settings.numerics.firstOrderConvection)
                 {
                     const auto basis = basisRead.FaceBasis(sample.face, side, sample.point, viscous ? 1 : 0, basisScratch);
@@ -674,14 +695,13 @@ namespace DNDS::Cauchy
                 }
                 if (frame.moving)
                 {
-                    Gather(meanBlocks, iCell, face);
+                    gatherMean(iCell, face);
                     const auto source = frame.RotationSource(face.Flow(flowFirst));
                     for (int j = 0; j < 5; ++j)
                         integrated[flowFirst + j] += metric.GetCellVol(iCell) * source[j];
                 }
-                for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
-                    for (index j = 0; j < outputs[iBlock].ComponentNumber(); ++j)
-                        outputs[iBlock](iCell, j) = integrated[logicalFirst[iBlock] + j];
+                for (index j = 0; j < destination.ComponentNumber(); ++j)
+                    destination(iCell, j) = integrated[j];
             };
             if (region == CFV::ReconstructionRegion::All)
                 for (index iCell = 0; iCell < owner->metrics.NumCell(); ++iCell)

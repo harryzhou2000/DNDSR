@@ -8,6 +8,13 @@ namespace DNDS::Cauchy
     /// Immutable physical snapshot. Evaluated blocks own no MPI, worker, live
     /// input or FV owner. Geometry is retained only for evaluated storage;
     /// assembled filling traverses the existing FV samples directly.
+    /// TODO(large-species Jacobian): an explicit approximation may omit
+    /// flow5<->scalar derivatives and diagonalize extended diagonal blocks.
+    /// Its off-diagonal storage can then be flow5 dense plus scalar entries;
+    /// no EOS/source coupling may be discarded merely to fit that format.
+    /// Keep coupled diagonals as an option, but compressed ILU factors then
+    /// generally need projection (not algebraically equivalent). See the
+    /// large-species TODO in docs/architecture/CauchyImplicit.md.
     struct FiniteVolume::EquationJacobian final : OffDiagonalEvaluator
     {
         struct Point
@@ -164,6 +171,55 @@ namespace DNDS::Cauchy
             } source{means};
             for (const auto &point : geometry->rows[iRow][iBlock])
                 Add(point, output, source);
+        }
+        /// Directional form of Add: retain the prepared EOS pressure row,
+        /// scalar dissipation, turbulent stress and periodic image, without
+        /// constructing components-by-components temporary matrices.
+        void ApplyBlock(index iRow, index iBlock, InputVector input,
+                        Eigen::Ref<Eigen::VectorXd> output) const override
+        {
+            output.setZero();
+            for (const auto &point : geometry->rows[iRow][iBlock])
+            {
+                FlowState flow{}, direction{};
+                real dp = 0;
+                for (index j = 0; j < components; ++j)
+                    if (active[j])
+                        dp += pressureDerivative(j, point.other) * input[j];
+                for (int j = 0; j < 5; ++j)
+                {
+                    flow[j] = means(flowFirst + j, point.other);
+                    direction[j] = active[flowFirst + j] ? input[flowFirst + j] : 0;
+                }
+                flow = FiniteVolumeDetail::RotateState(flow, point.rotation);
+                direction = FiniteVolumeDetail::RotateState(direction, point.rotation);
+                const auto grid = frame.GridVelocity(point.location);
+                auto derivative = PrepareCompressibleFluxDerivative(flow, direction, pressure[point.other], dp, point.normal, grid);
+                if (kineticFirst >= 0)
+                {
+                    const auto stress = TurbulentNormalFluxDerivative(flow, direction, means(kineticFirst, point.other),
+                                                                      active[kineticFirst] ? input[kineticFirst] : 0, point.normal);
+                    for (int j = 0; j < 5; ++j)
+                        derivative[j] += stress[j];
+                }
+                real speed = 0, deltaSpeed = 0;
+                for (int d = 0; d < 3; ++d)
+                {
+                    const real velocity = flow[1 + d] / flow[0];
+                    speed += (velocity - grid[d]) * point.normal[d];
+                    deltaSpeed += (direction[1 + d] - velocity * direction[0]) / flow[0] * point.normal[d];
+                }
+                const real factor = .5 * scale * point.weight;
+                const real lambda = radius[point.auxiliary][0] + radius[point.auxiliary][1];
+                for (index j = 0; j < components; ++j)
+                    if (active[j])
+                    {
+                        const auto k = j - flowFirst;
+                        const real value = k >= 0 && k < 5 ? derivative[k] - lambda * direction[k]
+                                                           : PrepareAdvectedScalarFluxDerivative(means(j, point.other), input[j], speed, deltaSpeed) - lambda * input[j];
+                        output[j] += factor * value;
+                    }
+            }
         }
 
         /// Closed-form convection block at a frozen mean, with the same EOS

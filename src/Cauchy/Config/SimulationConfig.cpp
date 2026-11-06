@@ -273,16 +273,17 @@ namespace DNDS::Cauchy
             updated.push_back(component);
         }
         DNDS_check_throw_info((diagonal == "entries" || diagonal == "block") && (!roeDissipation || diagonal == "block") &&
-                                  (jacobianAction == "assembled" || jacobianAction == "semiMatrixFree") &&
+                                  (jacobianAction == "assembled" || jacobianAction == "directEvaluated" || jacobianAction == "semiMatrixFree") &&
                                   iterations > 0 && minIterations >= 0 && minIterations <= iterations && consoleInterval >= 0 &&
                                   nonnegative(relativeTolerance) && nonnegative(absoluteTolerance) &&
                                   std::isfinite(pseudoCFL) && pseudoCFL > 0 && std::isfinite(maxPseudoCFL) && maxPseudoCFL >= pseudoCFL &&
                                   std::isfinite(pseudoGrowth) && pseudoGrowth >= 1 && std::isfinite(relaxation) && relaxation > 0 && relaxation <= 1,
                               "invalid implicit nonlinear/diagonal/pseudo-time controls");
         DNDS_check_throw_info((linear.method == "sgs" || linear.method == "ilu" || linear.method == "gmres") && (linear.preconditioner == "sgs" || linear.preconditioner == "ilu") &&
+                                  (linear.componentScaling == "none" || linear.componentScaling == "meanState") &&
                                   (linear.stopping == "residual" || (linear.stopping == "fixedCount" && linear.method != "gmres")) &&
                                   linear.iterations > 0 && linear.subspace > 0 && linear.subspace < INT_MAX &&
-                                  nonnegative(linear.relativeTolerance) && nonnegative(linear.absoluteTolerance) && sgs.sweeps > 0 && ilu.fill >= -1 && ilu.fill <= 5 &&
+                                  nonnegative(linear.relativeTolerance) && nonnegative(linear.absoluteTolerance) && sgs.sweeps > 0 && ilu.fill >= -1 && ilu.fill <= 5 && ilu.preconditionerCorrections > 0 &&
                                   (ilu.ordering == "natural" || ilu.ordering == "rcm") &&
                                   !((linear.method == "ilu" || (linear.method == "gmres" && linear.preconditioner == "ilu")) && sgs.exchangeBetweenSweeps),
                               "invalid implicit linear/SGS/ILU controls");
