@@ -1,5 +1,15 @@
 # Extracted CPU operator diagnostic
 
+The private `ExtractedEquationJacobian.cpp` copy observes four disjoint
+assembly batches: input validation/access/allocation setup, thermodynamic
+freezing and diagonal initialization, source Jacobian, and face-block filling.
+The extractor inserts only external scope declarations and checks exact
+round-trip recovery of the original source. It never times each face or
+component separately, changes production timers, or inserts communication.
+These batches are children of the existing matrix range; the reducer checks
+their summed duration against that same rank/level's parent before averaging.
+Do not add independent maxima or count them again in composed totals.
+
 ## Broad production-process batch (preferred starting point)
 
 ```sh

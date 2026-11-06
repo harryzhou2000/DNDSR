@@ -867,6 +867,13 @@ if(Python_EXECUTABLE)
         VERBATIM)
     target_sources(cauchy_diagnostic_driver_phases PRIVATE "${_equation_nonlinear_diagnostic}")
     set_source_files_properties("${_equation_nonlinear_diagnostic}" PROPERTIES HEADER_FILE_ONLY FALSE)
+    set(_equation_jacobian_diagnostic "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic/ExtractedEquationJacobian.cpp")
+    add_custom_command(OUTPUT "${_equation_jacobian_diagnostic}"
+        COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy/extract_jacobian_diagnostic.py"
+            "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/EquationJacobian.cpp" "${_equation_jacobian_diagnostic}"
+        DEPENDS Cauchy/extract_jacobian_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/EquationJacobian.cpp"
+        VERBATIM)
+    target_sources(cauchy_diagnostic_driver_phases PRIVATE "${_equation_jacobian_diagnostic}")
     target_include_directories(cauchy_diagnostic_driver_phases PRIVATE
         "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic" "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy" ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
     target_link_libraries(cauchy_diagnostic_driver_phases PRIVATE

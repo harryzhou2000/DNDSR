@@ -241,7 +241,8 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
             "mean-validation", "defect-assembly", "pseudo-time-pp", "correction-local",
             "candidate-acceptance", "correction-statistics", "gradient", "reconstruction",
             "polynomial-pp", "face-rhs", "source-sampling", "volume-source",
-            "candidate-validation", "candidate-agreement"};
+            "candidate-validation", "candidate-agreement", "jacobian-setup", "jacobian-freeze",
+            "jacobian-source", "jacobian-faces"};
         std::array<double, DiagnosticTiming::Sample::detailNumber * 3> details{};
         for (int repeat = 0; repeat < repetitions; ++repeat)
         {
