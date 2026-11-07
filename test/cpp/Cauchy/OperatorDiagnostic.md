@@ -1,5 +1,19 @@
 # Extracted CPU operator diagnostic
 
+CS performance readings are provisional. Canonical comparisons execute matched
+baseline/candidate members serially within one exclusive single-node BSSCA
+allocation, with frozen source, controls and workload; no named-node pinning.
+
+The private pipeline copy also counts correction-only source refreshes after
+the existing stale-publication guards. `source_refresh_rank_rows` reports six
+integers per rank: P3/P1/P0 refresh calls, then P3/P1/P0 source-point visits,
+summed over `source_refresh_repetitions`. The extra gather happens after elapsed
+timing. There are no point-loop counters or extra timed collectives. An untimed
+positive control forces exactly one stale source publication and validates the
+counter before resetting the timed fixture. Zero counts then mean this specific
+path was unused by the observed workload; they do not show that all source work
+or source quadrature was absent. Euler has no corresponding instrumentation.
+
 The private `ExtractedEquationJacobian.cpp` copy observes four disjoint
 assembly batches: input validation/access/allocation setup, thermodynamic
 freezing and diagonal initialization, source Jacobian, and face-block filling.

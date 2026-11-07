@@ -25,6 +25,14 @@ def main():
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
     text = args.source.read_text()
+    # Count the two correction-only source refresh entrances, once per call.
+    # The production guard and all numerical calls remain byte-for-byte intact.
+    # This counter is not a measurement of source-kernel execution time.
+    refresh = r'if\s*\(work\.SourceSamplesCurrent\(state,\s*time\)\)\s*return;'
+    text, count = re.subn(refresh, lambda match: match.group(0) +
+        '\n                ::DiagnosticTiming::ObserveCorrectionSource(work.sourceOffsets.empty() ? 0 : work.sourceOffsets.back());', text)
+    if count != 2:
+        raise ValueError('expected two correction source refresh guards')
     # Phase-local scopes retain all original calls. Source sampling nests
     # inside volume-source evaluation and is reported separately as such.
     for phase, block in (('Gradient', 'Gradient'), ('VR', 'Reconstruction'),

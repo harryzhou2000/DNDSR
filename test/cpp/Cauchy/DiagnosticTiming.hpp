@@ -45,11 +45,22 @@ namespace DiagnosticTiming
         std::array<int, 3> levelMatrixLinearCalls{};
         std::array<double, 3> levelMatrix{}, levelLinear{};
         std::array<double, 3> levelAuxiliaryPrepare{}, levelAuxiliaryExchange{}, levelAuxiliaryCompute{};
+        // Work audit only. Recorded outside elapsed timing; no extra collective
+        // or pointwise counter is inserted in the source sampling loops.
+        std::array<DNDS::index, 3> correctionSourceCalls{}, correctionSourcePoints{};
         static constexpr int detailNumber = int(Block::JacobianFaces) - int(Block::MeanValidation) + 1;
         std::array<std::array<double, 3>, detailNumber> details{};
     };
     inline thread_local Sample *active = nullptr;
     inline thread_local int currentLevel = 0;
+    inline void ObserveCorrectionSource(DNDS::index points)
+    {
+        if (active)
+        {
+            ++active->correctionSourceCalls[currentLevel];
+            active->correctionSourcePoints[currentLevel] += points;
+        }
+    }
     struct Level
     {
         int previous = currentLevel;

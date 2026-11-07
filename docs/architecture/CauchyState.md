@@ -674,18 +674,23 @@ negative rotation-source derivative; scalar entries use the existing flow5
 angular-speed bound. No equivalent gamma is substituted. Roe characteristics
 are explicitly unavailable in this whole-equation producer.
 
-Chemical Jacobians preserve Euler's volume integration of derivatives at the
-reconstructed source quadrature values. For nonconstant chemistry, pass the
-`sourceReconstruction` workspace from a successful current `Evaluate`. Its
-mean/coefficient binding, generations and time must match; missing/stale input
-fails before matrix writes. The producer reads the RHS's already sampled source
-values and weights, uses the explicit chemistry worker and adds the negative
-integrated derivative in logical order. Coefficients are frozen for this
-approximation; it does not differentiate the reconstruction solve. Constant
+Approximate source Jacobians use one cell-mean state per owned cell and multiply
+the derivative by its cell volume. They do not traverse RHS source quadrature,
+even at high reconstruction degree. RANS additionally consumes center physical
+gradients from the retained reconstruction; P0 face viscosity does not remove
+those source gradients. Chemical derivatives use the explicit chemistry worker
+and are inserted with the negative residual-derivative sign in logical order.
+The empty independent-species case has no chemical derivative.
+
+For RANS or nonconstant chemistry, pass the `sourceReconstruction` workspace
+from current spatial/correction preparation. Its mean/coefficient binding,
+generations and time must match; missing or stale input fails before matrix
+writes. This provenance validates the frozen reconstruction inputs, not a
+high-order integration policy for the approximate matrix. Constant chemical
 reconstruction may omit the workspace and use the equivalent mean/volume term.
-The empty independent-species case has no chemical derivative. Changes confined
-to coefficients invalidate source sampling even if the mean auxiliaries remain
-current. A new RHS attempt invalidates the previous source publication.
+A new RHS attempt invalidates the previous source publication. The true RHS
+source evaluation keeps its configured quadrature independently; this matrix
+does not differentiate the reconstruction solve.
 
 ```text
 PrepareJacobian

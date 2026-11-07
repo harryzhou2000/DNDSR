@@ -228,6 +228,26 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
     if (!mpi.rank)
         std::cout << "BROAD_SPATIAL_ORACLE " << spatialOracle.dump() << std::endl;
 
+    // Untimed positive control for correction-only counters: publish an owned
+    // generation with unchanged values, forcing the existing source refresh
+    // guard to take its stale branch. Reset below restores the timed fixture.
+    {
+        auto write = state.WriteOwned();
+        const auto flow = write.Block("flow");
+        for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            flow(iCell, 0) = flow(iCell, 0);
+    }
+    {
+        DiagnosticTiming::Sample audit;
+        DiagnosticTiming::active = &audit;
+        auto auxiliary = fv.BuildAuxiliaryValues({true, true});
+        fv.PrepareCorrectionAux(state, *work, auxiliary, engine, stream, 0.);
+        DiagnosticTiming::active = nullptr;
+        DNDS_check_throw_info(std::accumulate(audit.correctionSourceCalls.begin(), audit.correctionSourceCalls.end(), DNDS::index(0)) == 1 &&
+                                  std::accumulate(audit.correctionSourcePoints.begin(), audit.correctionSourcePoints.end(), DNDS::index(0)) == work->sourceOffsets.back(),
+                              "correction source audit did not observe the positive control");
+    }
+
     reset();
     composed();
     legacy.reset();
@@ -237,6 +257,7 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
     {
         std::array<double, 8> total{};
         std::array<double, 33> perLevel{};
+        std::array<DNDS::index, 6> sourceRefreshes{};
         constexpr std::array<const char *, DiagnosticTiming::Sample::detailNumber> detailNames{
             "mean-validation", "defect-assembly", "pseudo-time-pp", "correction-local",
             "candidate-acceptance", "correction-statistics", "gradient", "reconstruction",
@@ -277,6 +298,8 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
             DNDS_check_throw_info(matrixLinear >= 0 && correction + 1e-9 >= matrixLinear, "matrix/linear scopes exceed implicit remainder");
             for (int level = 0; level < 3; ++level)
             {
+                sourceRefreshes[level] += observation.correctionSourceCalls[level];
+                sourceRefreshes[3 + level] += observation.correctionSourcePoints[level];
                 for (int detail = 0; detail < DiagnosticTiming::Sample::detailNumber; ++detail)
                     details[3 * detail + level] += observation.details[detail][level];
                 perLevel[2 * level] += observation.levelAuxiliary[level];
@@ -301,8 +324,10 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
             value /= repetitions;
         std::vector<double> detailRecords(!mpi.rank ? details.size() * mpi.size : 0);
         MPI_Gather(details.data(), int(details.size()), MPI_DOUBLE, detailRecords.data(), int(details.size()), MPI_DOUBLE, 0, mpi.comm);
+        std::vector<DNDS::index> sourceRefreshRecords(!mpi.rank ? sourceRefreshes.size() * mpi.size : 0);
+        MPI_Gather(sourceRefreshes.data(), int(sourceRefreshes.size()), DNDS::DNDS_MPI_INDEX, sourceRefreshRecords.data(), int(sourceRefreshes.size()), DNDS::DNDS_MPI_INDEX, 0, mpi.comm);
         if (!mpi.rank)
-            std::cout << "BROAD_DETAIL_TIMES " << C::Json{{"solver", native ? "Cauchy" : "Euler"}, {"instrumented", native}, {"scope_names", detailNames}, {"levels", {"P3", "P1", "P0"}}, {"rank_rows", detailRecords}, {"nested_scopes", {{"mean-validation", "candidate-validation"}, {"candidate-validation", "candidate-acceptance"}, {"candidate-agreement", "candidate-acceptance"}, {"source-sampling", "volume-source"}}}, {"timing", "external-same-production-calls"}}.dump() << std::endl;
+            std::cout << "BROAD_DETAIL_TIMES " << C::Json{{"solver", native ? "Cauchy" : "Euler"}, {"instrumented", native}, {"scope_names", detailNames}, {"levels", {"P3", "P1", "P0"}}, {"rank_rows", detailRecords}, {"source_refresh_columns", {"P3calls", "P1calls", "P0calls", "P3points", "P1points", "P0points"}}, {"source_refresh_rank_rows", sourceRefreshRecords}, {"source_refresh_repetitions", repetitions}, {"nested_scopes", {{"mean-validation", "candidate-validation"}, {"candidate-validation", "candidate-acceptance"}, {"candidate-agreement", "candidate-acceptance"}, {"source-sampling", "volume-source"}}}, {"timing", "external-same-production-calls"}}.dump() << std::endl;
         std::array<double, 37> rankRecord{};
         std::copy_n(total.begin(), 4, rankRecord.begin());
         std::copy(perLevel.begin(), perLevel.end(), rankRecord.begin() + 4);
