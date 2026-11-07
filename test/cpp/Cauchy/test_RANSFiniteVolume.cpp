@@ -478,6 +478,12 @@ TEST_CASE("Zero-SA wall convection retains the interior SA viscous jump")
     DNDS::Physics::RANS::Point point;
     point.state << 1, 0, 0, 0, 2.5, .02, 0;
     point.gradient.setZero();
+    // The constant face state does not remove source gradients. Each axis
+    // has one wall target (.01 after the direct-FV ghost-to-face average)
+    // at distance .25 and one unchanged neighbor at distance .5. Equal-area
+    // inverse-distance LS gives |d(rhoNuTilde)/dx| = .02 on each axis.
+    // Its sign changes between corners; this uniform SA source uses its norm.
+    point.gradient.col(5).setConstant(.02);
     point.molecularViscosity = .001;
     point.gamma = 1.4;
     point.cp = 3.5;
@@ -1289,6 +1295,77 @@ TEST_CASE("SA cached corrections retain pre-RHS auxiliary publication across CPU
         for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
             for (I j = 0; j < 6; ++j)
                 CHECK(xv(iCell, j) == doctest::Approx(yv(iCell, j)).epsilon(2e-10).scale(1e-12));
+    }
+}
+
+TEST_CASE("P0 jump-only face viscosity retains physical gradients in the SA volume source")
+{
+    auto mesh = CFVTest::CartesianHexes(mpi, 4);
+    mesh->BuildNodeWallDist([](auto zone)
+                            { return zone == 7; });
+    for (const auto *reconstruction : {"gradient", "constant"})
+    {
+        CAPTURE(reconstruction);
+        auto settings = Settings();
+        settings.mesh.dimension = 3;
+        settings.numerics.reconstruction = reconstruction;
+        settings.numerics.gradient = "leastSquares";
+        settings.numerics.firstOrderConvection = true;
+        settings.numerics.cfv.maxOrder = 1;
+        settings.numerics.wallDistanceFloor = 2;
+        const auto equation = Equation(settings);
+        C::FiniteVolume fv(mesh, settings, equation);
+        const auto metricsRead = fv.Metrics().AcquireRead();
+        const auto metric = metricsRead.HostView();
+        auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(R::RowLayout::ColMajor(0, 6, {8, 1})));
+        auto combined = C::EquationDofOperations::NewVector(state), sourceOnly = C::EquationDofOperations::NewVector(state);
+        constexpr double shear = .2, nu = .02;
+        {
+            auto write = state.WriteOwned();
+            const auto flow = write.Block("flow"), rans = write.Block("rans");
+            for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            {
+                const auto point = metric.GetCellBary(iCell);
+                const auto value = equation.Gas().Conservative({1, shear * point[1], 0, 0, 1});
+                for (int j = 0; j < 5; ++j)
+                    flow(iCell, j) = value[j];
+                rans(iCell, 0) = nu;
+            }
+        }
+        auto workspace = fv.BuildEquationWorkspace(state);
+        R::EagerEngine engine;
+        const auto stream = engine.CreateCPUStream();
+        fv.Evaluate(state, combined, *workspace, engine, stream);
+        C::EquationDofOperations::Fill(sourceOnly, 0.);
+        fv.AddSource(state, sourceOnly, *workspace);
+        const auto read = sourceOnly.ReadOwned();
+        const auto observed = read.Block("rans");
+        int checked = 0;
+        for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+        {
+            const auto x = metric.GetCellBary(iCell);
+            if (x.minCoeff() <= .25 || x.maxCoeff() >= .75)
+                continue;
+            DNDS::Physics::RANS::Point point;
+            const auto value = equation.Gas().Conservative({1, shear * x[1], 0, 0, 1});
+            for (int j = 0; j < 5; ++j)
+                point.state[j] = value[j];
+            point.state[5] = nu;
+            point.gradient.setZero();
+            point.gradient(1, 1) = shear;
+            point.gradient(1, 4) = shear * shear * x[1];
+            point.wallDistance = 2;
+            point.cellLength = .25;
+            point.molecularViscosity = settings.equation.viscosity;
+            const auto expected = equation.RANS().Source(point)[0] / 64;
+            point.gradient.setZero();
+            const auto withoutGradient = equation.RANS().Source(point)[0] / 64;
+            CHECK(std::abs(expected - withoutGradient) > 1e-10);
+            CHECK(observed(iCell, 0) == doctest::Approx(expected).epsilon(2e-10).scale(1e-12));
+            ++checked;
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &checked, 1, MPI_INT, MPI_SUM, mpi.comm);
+        CHECK(checked == 8);
     }
 }
 

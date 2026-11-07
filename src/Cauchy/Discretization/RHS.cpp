@@ -27,10 +27,12 @@ namespace DNDS::Cauchy
     {
         std::shared_ptr<const FiniteVolume::Data> data;
         CFV::FiniteVolumeRead geometry;
-        CFV::ReconstructionBasisRead basis;
+        std::optional<CFV::ReconstructionBasisRead> basis;
         explicit ReadData(std::shared_ptr<const FiniteVolume::Data> owner)
-            : data(std::move(owner)), geometry(data->metrics.AcquireRead()), basis(data->reconstruction.AcquireBasisRead())
+            : data(std::move(owner)), geometry(data->metrics.AcquireRead())
         {
+            if (data->settings.numerics.reconstruction == "variational")
+                basis.emplace(data->reconstruction.AcquireBasisRead());
             data->partition.Validate();
         }
     };
@@ -42,6 +44,13 @@ namespace DNDS::Cauchy
 
     void FiniteVolume::RHSOperator::Apply(const RHSReadViews &input, const RHSWriteViews &output,
                                           CFV::ReconstructionRegion region, real time) const
+    {
+        ApplyFlux(input, output, region, time);
+        AddSource(input, output, region, time);
+    }
+
+    void FiniteVolume::RHSOperator::ApplyFlux(const RHSReadViews &input, const RHSWriteViews &output,
+                                              CFV::ReconstructionRegion region, real time) const
     {
         DNDS_check_throw_info(_read && std::isfinite(time), "invalid RHS operator or time");
         const auto &data = _read->data;
@@ -55,6 +64,9 @@ namespace DNDS::Cauchy
         if (input.boundary)
             DNDS_check_throw_info(incoming.RowCount() == index(data->boundaryEntries.size()) && incoming.Width() == 5, "RHS interface input shape differs");
         const bool viscous = data->equation.Viscous() && input.includeViscosity;
+        const bool direct = data->settings.numerics.reconstruction != "variational";
+        const auto physicalGradient = input.conservativeGradient.value_or(RHSFieldView{});
+        const auto physicalViscousGradient = input.viscousConservativeGradient.value_or(physicalGradient);
         // P0 always uses the conservative normal jump, without reconstructed
         // face derivatives; higher orders retain their selected formulation.
         const bool polynomialViscosity = viscous && (data->settings.numerics.firstOrderConvection || data->settings.numerics.viscousGradient == "polynomial");
@@ -82,10 +94,18 @@ namespace DNDS::Cauchy
                                       "RHS ghost input is missing or has wrong shape");
         };
         checkField(mean, 5);
-        checkField(coefficient, 5 * modes);
+        if (!direct)
+            checkField(coefficient, 5 * modes);
+        else if (!input.meanOnly && !data->settings.numerics.firstOrderConvection && data->settings.numerics.reconstruction == "gradient")
+        {
+            DNDS_check_throw_info(input.conservativeGradient, "direct P1 RHS requires physical conservative gradients");
+            checkField(physicalGradient, 5 * dim);
+            if (polynomialViscosity)
+                checkField(physicalViscousGradient, 5 * dim);
+        }
         if (viscous && !polynomialViscosity)
             checkField(gradientInput, 5 * dim);
-        if (polynomialViscosity)
+        if (polynomialViscosity && !direct)
             checkField(viscousCoefficient, 5 * modes);
         if (useWave)
             checkField(waveInput, 1);
@@ -94,6 +114,9 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(result.RowCount() == data->metrics.NumCell() && result.Width() == 5, "RHS output shape differs");
         if (produceLow)
             DNDS_check_throw_info(lowOutput.RowCount() == result.RowCount() && lowOutput.Width() == 5, "low-order RHS shape differs");
+        if (output.faceFlux)
+            DNDS_check_throw_info(output.faceFlux->RowCount() == index(data->stencilFaces.size()) && output.faceFlux->Width() == 5,
+                                  "RHS face output shape differs");
         if (hasThermo)
             DNDS_check_throw_info(thermo.Width() == 3 && thermo.RowCount() >= (needGhost ? data->metrics.NumCellProc() : data->metrics.NumCell()),
                                   "RHS thermodynamic cache shape differs");
@@ -109,16 +132,36 @@ namespace DNDS::Cauchy
             for (index entry = data->offsets[iCell]; entry < data->offsets[iCell + 1]; ++entry)
             {
                 const auto &sample = data->samples[entry];
+                const bool writeFace = bool(output.faceFlux);
+                if (writeFace && sample.point == metric.FaceQuadratureBegin(sample.face))
+                    for (int j = 0; j < 5; ++j)
+                        (*output.faceFlux)(sample.auxiliaryFace, j) = 0;
                 auto reconstruct = [&](index cell, int parent)
                 {
                     auto state = Load(mean, cell);
                     auto viscousState = state;
                     FlowGradient gradient{};
-                    if (!data->settings.numerics.firstOrderConvection)
+                    if (direct && !input.meanOnly && data->settings.numerics.reconstruction == "gradient" && !data->settings.numerics.firstOrderConvection)
+                    {
+                        const auto displacement = FiniteVolumeDetail::DirectFVDisplacement(metric, sample, parent != 0);
+                        const auto row = physicalGradient[cell];
+                        const auto viscousRow = physicalViscousGradient[cell];
+                        for (int component = 0; component < 5; ++component)
+                            for (int d = 0; d < dim; ++d)
+                            {
+                                state[component] += row[component * dim + d] * displacement[d];
+                                if (polynomialViscosity)
+                                {
+                                    viscousState[component] += viscousRow[component * dim + d] * displacement[d];
+                                    gradient[component][d] = viscousRow[component * dim + d];
+                                }
+                            }
+                    }
+                    else if (!direct && !input.meanOnly && !data->settings.numerics.firstOrderConvection)
                     {
                         CFV::Math::SmallMatrix basisScratch;
-                        const auto basis = _read->basis.FaceBasis(sample.face, parent == 0 ? sample.side : 1 - sample.side,
-                                                                  sample.point, polynomialViscosity ? 1 : 0, basisScratch);
+                        const auto basis = _read->basis->FaceBasis(sample.face, parent == 0 ? sample.side : 1 - sample.side,
+                                                                   sample.point, polynomialViscosity ? 1 : 0, basisScratch);
                         const auto row = coefficient[cell];
                         const auto viscousRow = polynomialViscosity ? viscousCoefficient[cell] : decltype(viscousCoefficient[cell]){};
                         for (int component = 0; component < 5; ++component)
@@ -136,7 +179,7 @@ namespace DNDS::Cauchy
                                 }
                             }
                     }
-                    if (!input.viscousCoefficients)
+                    if (!(direct ? bool(input.viscousConservativeGradient) : bool(input.viscousCoefficients)))
                         viscousState = state;
                     // Explicit local first-order fallback keeps the mean
                     // unchanged when a high-order face value is inadmissible.
@@ -286,20 +329,29 @@ namespace DNDS::Cauchy
                         {
                         }
                     }
+                FlowState canonical{};
+                if (writeFace)
+                {
+                    const auto &anchor = data->samples[data->faceEntries[sample.auxiliaryFace]];
+                    canonical = sample.side == anchor.side ? flux : RotateState(flux, sample.rotation.transpose());
+                    if (sample.side != anchor.side)
+                        for (auto &value : canonical)
+                            value = -value;
+                }
                 for (int component = 0; component < 5; ++component)
                 {
                     integrated[component] -= metric.GetFaceWeight(sample.point) * flux[component];
+                    if (writeFace)
+                        (*output.faceFlux)(sample.auxiliaryFace, component) -= metric.GetFaceWeight(sample.point) * canonical[component];
                     if (produceLow)
                         integratedLow[component] -= metric.GetFaceWeight(sample.point) * lowFlux[component];
                 }
             }
-            const auto rotationSource = frame.RotationSource(Load(mean, iCell));
             for (int component = 0; component < 5; ++component)
             {
-                const real source = metric.GetCellVol(iCell) * rotationSource[component];
-                result(iCell, component) = frame.moving ? integrated[component] + source : integrated[component];
+                result(iCell, component) = integrated[component];
                 if (produceLow)
-                    lowOutput(iCell, component) = frame.moving ? integratedLow[component] + source : integratedLow[component];
+                    lowOutput(iCell, component) = integratedLow[component];
             }
         };
         if (region == CFV::ReconstructionRegion::All)
@@ -307,6 +359,42 @@ namespace DNDS::Cauchy
                 compute(iCell);
         else
             for (auto iCell : region == CFV::ReconstructionRegion::Core ? data->partition.Core() : data->partition.HaloDependent())
+                compute(iCell);
+    }
+
+    void FiniteVolume::RHSOperator::AddSource(const RHSReadViews &input, const RHSWriteViews &output,
+                                              CFV::ReconstructionRegion region, real time) const
+    {
+        DNDS_check_throw_info(_read && std::isfinite(time), "invalid source operator or time");
+        const auto &data = _read->data;
+        DNDS_check_throw_info(region == CFV::ReconstructionRegion::All || region == CFV::ReconstructionRegion::Core ||
+                                  region == CFV::ReconstructionRegion::HaloDependent,
+                              "invalid source region");
+        DNDS_check_throw_info(input.mean.owned.RowCount() == data->metrics.NumCell() && input.mean.owned.Width() == 5 &&
+                                  output.residual.RowCount() == data->metrics.NumCell() && output.residual.Width() == 5,
+                              "source input/output shape differs");
+        if (output.lowOrder)
+            DNDS_check_throw_info(output.lowOrder->RowCount() == output.residual.RowCount() && output.lowOrder->Width() == 5, "source low-order output shape differs");
+        const auto frame = data->motion.At(time);
+        if (!frame.moving)
+            return;
+        const auto metric = _read->geometry.HostView();
+        const auto compute = [&](index iCell)
+        {
+            const auto source = frame.RotationSource(Load(input.mean, iCell));
+            for (int j = 0; j < 5; ++j)
+            {
+                const real value = metric.GetCellVol(iCell) * source[j];
+                output.residual(iCell, j) += value;
+                if (output.lowOrder)
+                    (*output.lowOrder)(iCell, j) += value;
+            }
+        };
+        if (region == CFV::ReconstructionRegion::All)
+            for (index iCell = 0; iCell < data->metrics.NumCell(); ++iCell)
+                compute(iCell);
+        else
+            for (const auto iCell : region == CFV::ReconstructionRegion::Core ? data->partition.Core() : data->partition.HaloDependent())
                 compute(iCell);
     }
 }

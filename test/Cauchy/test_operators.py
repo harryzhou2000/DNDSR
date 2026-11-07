@@ -111,6 +111,12 @@ def test_equation_operator_frontend_composes_native_residual_and_linear_solve(mi
         assert_state_equal(state, before, rtol=0, atol=0)
         operators.evaluate(state, residual, work, engine, stream)
         assert_state_equal(residual, reference, rtol=3e-10, atol=2e-11)
+        flux = state.zeros_like()
+        faces = operators.build_face_flux_buffer(state)
+        operators.evaluate_flux(state, flux, work, face_flux=faces)
+        operators.add_source(state, flux, work)
+        assert_state_equal(flux, block_values(residual), rtol=3e-10, atol=2e-11)
+        assert np.all(np.isfinite(faces.numpy()))
         assert_state_equal(state, before, rtol=0, atol=0)
         signal = sum(np.sum(np.abs(v)) for v in block_values(residual).values())
         assert MPI.COMM_WORLD.allreduce(signal, op=MPI.SUM) > 1e-6

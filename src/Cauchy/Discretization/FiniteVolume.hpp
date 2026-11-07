@@ -148,6 +148,11 @@ namespace DNDS::Cauchy
         /// Retain its read leases through execution, exactly as for coefficients.
         std::optional<RHSFieldView> viscousCoefficients;
         std::optional<RHSScalarView> boundary;
+        /// Direct FV physical conservative gradients, component*dim+direction.
+        /// Required for direct P1; P0 face flux never reads this input.
+        std::optional<RHSFieldView> conservativeGradient, viscousConservativeGradient;
+        /// Explicit physical-dt/mean trial; no reconstructed point increment.
+        bool meanOnly = false;
     };
     /// Explicit outputs. Diagnostics accumulate across core/dependent calls;
     /// caller initializes them before an evaluation and reduces them afterwards.
@@ -157,6 +162,10 @@ namespace DNDS::Cauchy
         std::optional<RHSOutputView> lowOrder;
         std::atomic<index> *faceFallbacks = nullptr;
         std::map<int, std::array<std::atomic<real>, 3>> *boundaryForces = nullptr;
+        /// Optional integrated negative outward flux in AuxiliaryFaces() order,
+        /// in the prepared anchor cell's axes. Selected faces are overwritten;
+        /// core/dependent sets can overlap. No source term is included.
+        std::optional<RHSOutputView> faceFlux;
     };
     /// CPU cell-centered discretization. Preparation retains immutable geometry,
     /// incidence, quadrature and polynomial data. Each simultaneous residual
@@ -259,6 +268,11 @@ namespace DNDS::Cauchy
         void Evaluate(EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace,
                       AuxiliaryValues &auxiliary, Runtime::EagerEngine &engine,
                       const Runtime::ExecutionStream &stream, real time = 0) const;
+        /// The same mean/gradient/reconstruction/limiter preparation as Evaluate,
+        /// including completed halos, but no flux/source evaluation or dummy
+        /// residual allocation. Use before independent EvaluateFlux/AddSource.
+        void PrepareReconstruction(EquationDofs &state, EquationWorkspace &workspace, Runtime::EagerEngine &engine,
+                                   const Runtime::ExecutionStream &stream, real time = 0) const;
         /// Same synchronous collective/access contract as Evaluate. Only this
         /// trial's private scratch and distinct residual are written; state
         /// owned values and ordinary reconstruction are unchanged.
@@ -350,8 +364,30 @@ namespace DNDS::Cauchy
         public:
             void Apply(const RHSReadViews &input, const RHSWriteViews &output,
                        CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0) const;
+            /// Overwrite selected residual rows with integrated face flux only.
+            /// Optional faceFlux follows the documented canonical face order.
+            void ApplyFlux(const RHSReadViews &input, const RHSWriteViews &output,
+                           CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0) const;
+            /// Add owned-cell volume sources (flow5: rigid-frame source) to
+            /// initialized output rows. No face, reconstruction or MPI work.
+            void AddSource(const RHSReadViews &input, const RHSWriteViews &output,
+                           CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0) const;
         };
         RHSOperator AcquireRHSOperator() const;
+        /// Caller-owned local stencil-face table; no halo. Components follow
+        /// logical equation order for whole-equation calls, flow5 for RHSOperator.
+        Runtime::Array<real> BuildFaceFluxBuffer(index components) const;
+        /// Reuse completed equation PrepareReconstruction/Evaluate publication.
+        /// No halo exchange/reconstruction is hidden here. Input halos and all
+        /// conflicting views must be ready/released. Flux overwrites selected
+        /// owned rows; source adds to initialized owned rows. Output is distinct
+        /// from state and workspace arrays. A face buffer is optional and follows
+        /// AuxiliaryFaces() with the same orientation as RHSWriteViews::faceFlux.
+        /// Caller serializes workspace use and coordinates distributed failures.
+        void EvaluateFlux(const EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace,
+                          CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0,
+                          Runtime::Array<real> *faceFlux = nullptr, const AuxiliaryValues *auxiliary = nullptr) const;
+        void AddSource(const EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace, real time = 0) const;
         /// Allocate a fixed cell-face-cell matrix stencil using the prototype's
         /// native row space. No payload is copied from the prototype. Evaluated
         /// mode omits off-diagonal storage; PrepareJacobian supplies its frozen
@@ -372,8 +408,8 @@ namespace DNDS::Cauchy
                              JacobianPreparation controls = {}, real time = 0) const;
         /// Whole-equation CPU approximation with the same integrated/scalar
         /// dissipation convention. Uses actual conservative EOS derivatives,
-        /// ALE/rotation terms, chemical source derivatives at the RHS volume
-        /// quadrature points and scalar molecular/species diffusion bounds. This is not a
+        /// ALE/rotation terms, mean-state chemical source derivatives and scalar
+        /// molecular/species diffusion bounds. This is not a
         /// derivative of the complete reconstructed viscous/source residual.
         /// Roe characteristics are not connected for this profile and reject.
         /// Frozen evaluated blocks retain numeric snapshots/geometry only;
@@ -381,10 +417,10 @@ namespace DNDS::Cauchy
         /// The caller completes halos, serializes matrix/input bindings and
         /// coordinates failures. No inverses/factors are updated implicitly.
         /// Output writers are reserved together; partial failure poisons them.
-        /// Nonconstant chemical reconstruction requires sourceReconstruction
+        /// RANS/source publication requires sourceReconstruction
         /// from a successful Evaluate at this state/time. Values/coefficients
-        /// must remain unchanged. Source derivatives freeze that reconstruction,
-        /// as in Euler; constant reconstruction may omit this workspace.
+        /// must remain unchanged. RANS derivatives use its current center
+        /// gradients even on P0; chemical derivatives use the cell mean.
         void PrepareJacobian(const EquationDofs &state, const AuxiliaryValues &auxiliary,
                              const Runtime::Array<real> &inversePseudoTime, LinearProblemContext &output,
                              JacobianPreparation controls = {}, real time = 0,
@@ -649,7 +685,7 @@ namespace DNDS::Cauchy
                                                                std::shared_ptr<EquationWorkspace> retained, bool collectiveChecks = true) const;
         std::shared_ptr<EquationWorkspace> BuildEquationWorkspaceImpl(EquationDofs &state,
                                                                       std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, bool meanOnly) const;
-        void EvaluateEquationImpl(EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace,
+        void EvaluateEquationImpl(EquationDofs &state, EquationDofs *residual, EquationWorkspace &workspace,
                                   Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time,
                                   AuxiliaryValues *auxiliary = nullptr) const;
         void ValidateEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &workspace, real time) const;

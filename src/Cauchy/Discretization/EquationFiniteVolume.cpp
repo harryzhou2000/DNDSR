@@ -139,6 +139,10 @@ namespace DNDS::Cauchy
         std::vector<Algebra::DofHalo<>> meanHalo;
         uint64_t meanEpoch = 0;
         std::vector<R::TransferBinding> coefficientHalo, fluxHalo;
+        // Accepted direct-FV physical gradients, separate from source sampling.
+        // WBAP/PP may still use an explicit coefficient compatibility bridge;
+        // the direct RHS never reads that bridge or evaluates a Taylor basis.
+        std::vector<CFV::FVField> directGradients;
         std::shared_ptr<EquationPositivityWorkspace> positivity;
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
         std::vector<index> logicalFirst, vectorStarts;
@@ -164,6 +168,8 @@ namespace DNDS::Cauchy
         real relativeUpdate = 0;
         std::optional<EquationDofOperations::Binding> sourceState, sourceCoefficients;
         real sourceTime = 0;
+        std::optional<EquationDofOperations::Binding> rhsState, rhsCoefficients;
+        real rhsTime = 0;
 
         static std::vector<Field> BuildFields(const Data &data, const EquationDofs &state, bool meanOnly)
         {
@@ -189,7 +195,8 @@ namespace DNDS::Cauchy
                             vectors};
                 Algebra::Fill(field.reconstruction.coefficients, 0.);
                 Algebra::Fill(field.reconstruction.temporary, 0.);
-                if (!meanOnly && data.settings.numerics.reconstruction == "gradient")
+                if (!meanOnly && (data.settings.numerics.reconstruction == "gradient" ||
+                                  (data.equation.HasRANS() && data.settings.numerics.reconstruction == "constant")))
                 {
                     field.gradient.emplace(data.metrics.BuildField(index(physical.Width()) * data.metrics.Dimension()));
                     field.gradientBoundary.emplace(data.gradient.BuildBoundaryValues(index(physical.Width())));
@@ -335,6 +342,11 @@ namespace DNDS::Cauchy
             }
             if (!meanOnly && owner->settings.numerics.positivity)
                 positivity = std::make_shared<EquationPositivityWorkspace>(owner, state, fluxCoefficients, workers);
+            if (owner->settings.numerics.reconstruction != "variational")
+                for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+                    directGradients.push_back(owner->metrics.BuildField(
+                        FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owner->metrics.NumCell(),
+                                                        state.PhysicalField(iField).Width() * owner->metrics.Dimension())));
             BuildSourceSampling();
         }
         void BindHalos(EquationDofs &state)
@@ -347,13 +359,33 @@ namespace DNDS::Cauchy
                     fluxHalo.push_back(owner->BindHalo(limited[iField].reconstruction.coefficients));
             }
         }
+        void RefreshDirectGradients(bool ghost)
+        {
+            if (owner->settings.numerics.reconstruction != "variational")
+                for (index iField = 0; iField < prototype.PhysicalFieldNumber(); ++iField)
+                {
+                    // Constant face reconstruction still needs physical mean
+                    // gradients for RANS sources. They have no face-halo use.
+                    if (owner->settings.numerics.reconstruction == "constant" && fields[iField].gradient)
+                    {
+                        if (!ghost)
+                            Algebra::Copy(directGradients[iField], *fields[iField].gradient);
+                        continue;
+                    }
+                    owner->gradient.ExtractLinearGradients(fluxCoefficients.PhysicalField(iField), owner->reconstruction,
+                                                           directGradients[iField], ghost);
+                }
+        }
 
         void FillBoundary(const EquationDofs &state, bool polynomial, real time, EquationPointEvaluator &evaluator)
         {
             const PhaseTime timing(*this, BoundaryPhase);
             const auto mean = state.ReadOwned(), rec = coefficients.ReadOwned();
             const auto meanBlocks = BlockViews(state, mean), recBlocks = BlockViews(coefficients, rec);
-            auto basisRead = owner->reconstruction.AcquireBasisRead();
+            std::optional<CFV::ReconstructionBasisRead> basisRead;
+            const bool direct = owner->settings.numerics.reconstruction != "variational";
+            if (!direct)
+                basisRead.emplace(owner->reconstruction.AcquireBasisRead());
             CFV::Math::SmallMatrix scratch;
             PointScratch point(state.ComponentNumber()), cellMean(state.ComponentNumber());
             const auto *ransModel = owner->equation.HasRANS() ? &owner->equation.RANS() : nullptr;
@@ -373,7 +405,7 @@ namespace DNDS::Cauchy
                     point.values = cellMean.values;
                     if (polynomial)
                     {
-                        const auto basis = basisRead.FaceBasis(sample.face, sample.side, sample.point, 0, scratch);
+                        const auto basis = basisRead->FaceBasis(sample.face, sample.side, sample.point, 0, scratch);
                         for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
                         {
                             const auto row = recBlocks[iBlock][sample.cell];
@@ -419,7 +451,8 @@ namespace DNDS::Cauchy
                 }
         }
         void ApplyRHS(const EquationDofs &state, EquationDofs &result, CFV::ReconstructionRegion region,
-                      EquationPointEvaluator &evaluator, real time, const AuxiliaryValues *auxiliary = nullptr)
+                      EquationPointEvaluator &evaluator, real time, const AuxiliaryValues *auxiliary = nullptr,
+                      R::Array<real> *faceOutput = nullptr)
         {
             const PhaseTime timing(*this, RHSPhase);
             const auto mean = region != CFV::ReconstructionRegion::Core ? state.ReadWithGhost() : state.ReadOwned();
@@ -427,7 +460,7 @@ namespace DNDS::Cauchy
             const EquationViewLayout<const real> owned(state, mean), remote(state, mean, true);
             const EquationViewLayout<real> destination(result, output);
             const auto kernel = [&](auto u, auto ghost, auto rhs)
-            { ApplyRHSRows(state, region, evaluator, time, auxiliary, mean, u, ghost, rhs); };
+            { ApplyRHSRows(state, region, evaluator, time, auxiliary, mean, u, ghost, rhs, faceOutput); };
             // RHS opts into one ordered AoS family. Arbitrary block bindings
             // and physical layouts keep the same generic numerical loop.
             // Ghost shape may be absent during Core; no ghost value is read.
@@ -439,11 +472,15 @@ namespace DNDS::Cauchy
         template <class Input, class Output>
         void ApplyRHSRows(const EquationDofs &state, CFV::ReconstructionRegion region,
                           EquationPointEvaluator &evaluator, real time, const AuxiliaryValues *auxiliary,
-                          const EquationDofs::ReadScope &mean, Input owned, Input remote, Output destination)
+                          const EquationDofs::ReadScope &mean, Input owned, Input remote, Output destination,
+                          R::Array<real> *faceOutput)
         {
             auto geometry = owner->metrics.AcquireRead();
             const auto metric = geometry.HostView();
-            auto basisRead = owner->reconstruction.AcquireBasisRead();
+            std::optional<CFV::ReconstructionBasisRead> basisRead;
+            const bool direct = owner->settings.numerics.reconstruction != "variational";
+            if (!direct)
+                basisRead.emplace(owner->reconstruction.AcquireBasisRead());
             const bool ghosts = region != CFV::ReconstructionRegion::Core;
             // Preparation owns writes; the point kernel holds only numeric
             // read views. These means are not reconstructed thermodynamics.
@@ -454,11 +491,33 @@ namespace DNDS::Cauchy
                 meanProperties.emplace(auxiliary->meanThermodynamics->Read());
                 preparedMean.emplace(meanProperties->View<R::UniformTableRows>());
             }
-            const auto rec = ghosts ? fluxCoefficients.ReadWithGhost() : fluxCoefficients.ReadOwned();
-            const auto meanBlocks = BlockViews(state, mean), recBlocks = BlockViews(fluxCoefficients, rec);
+            std::optional<EquationDofs::ReadScope> rec;
+            std::vector<EquationBlockReadView> recBlocks;
+            if (!direct)
+            {
+                rec.emplace(ghosts ? fluxCoefficients.ReadWithGhost() : fluxCoefficients.ReadOwned());
+                recBlocks = BlockViews(fluxCoefficients, *rec);
+            }
+            const auto meanBlocks = BlockViews(state, mean);
+            std::vector<EquationBlockLocation> directLocations;
+            for (index iBlock = 0; direct && iBlock < state.BlockNumber(); ++iBlock)
+                directLocations.push_back(state.LocateBlock(iBlock));
+            std::vector<R::Array<real>::ReadLease> directOwned, directGhost;
+            std::vector<RHSFieldView> directViews;
+            if (direct && owner->settings.numerics.reconstruction == "gradient" && !owner->settings.numerics.firstOrderConvection)
+            {
+                DNDS_check_throw_info(directGradients.size() == size_t(state.PhysicalFieldNumber()), "direct FV requires prepared physical gradients");
+                for (const auto &gradient : directGradients)
+                {
+                    directOwned.emplace_back(gradient.Owned().Read());
+                    if (ghosts)
+                        directGhost.emplace_back(gradient.Ghost().Read());
+                    directViews.push_back({directOwned.back().View<R::UniformTableRows>(), ghosts ? directGhost.back().View<R::UniformTableRows>() : RHSScalarView{}});
+                }
+            }
             auto boundaryWrite = boundaryMomentumFlux.Write();
             const auto wallFlux = boundaryWrite.View<R::FixedRows<3>>();
-            auto faceWrite = faceFlux.Write();
+            auto faceWrite = (faceOutput ? *faceOutput : faceFlux).Write();
             const auto faceValues = faceWrite.View<R::UniformTableRows>();
             const auto gatherMean = [&](index iCell, PointScratch &point)
             {
@@ -494,22 +553,42 @@ namespace DNDS::Cauchy
                 // P0 uses mean states and only the normal face jump for
                 // viscosity. This does not suppress volume-source gradients:
                 // RANS/chemistry sampling retains the configured derivatives.
-                if (!owner->settings.numerics.firstOrderConvection)
+                if (!owner->settings.numerics.firstOrderConvection && (!direct || owner->settings.numerics.reconstruction == "gradient"))
                 {
-                    const auto basis = basisRead.FaceBasis(sample.face, side, sample.point, viscous ? 1 : 0, basisScratch);
-                    for (index iBlock = 0; iBlock < index(meanBlocks.size()); ++iBlock)
+                    if (direct)
                     {
-                        const auto row = recBlocks[iBlock][iCell];
-                        for (index j = 0; j < meanBlocks[iBlock].ComponentNumber(); ++j)
-                            for (int mode = 0; mode < modes; ++mode)
-                            {
-                                const real value = row[j * modes + mode];
-                                const index logical = logicalFirst[iBlock] + j;
-                                point.values[logical] += value * basis(0, mode);
-                                if (viscous)
-                                    for (int d = 0; d < dim; ++d)
-                                        point.gradient(logical, d) += value * basis(1 + d, mode);
-                            }
+                        const auto displacement = FiniteVolumeDetail::DirectFVDisplacement(metric, sample, iCell != sample.cell || side != sample.side);
+                        for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+                        {
+                            const auto location = directLocations[iBlock];
+                            const auto row = directViews[location.physicalField][iCell];
+                            for (index j = 0; j < location.componentNumber; ++j)
+                                for (int d = 0; d < dim; ++d)
+                                {
+                                    const real value = row[(location.firstComponent + j) * dim + d];
+                                    point.values[logicalFirst[iBlock] + j] += value * displacement[d];
+                                    if (viscous)
+                                        point.gradient(logicalFirst[iBlock] + j, d) = value;
+                                }
+                        }
+                    }
+                    else
+                    {
+                        const auto basis = basisRead->FaceBasis(sample.face, side, sample.point, viscous ? 1 : 0, basisScratch);
+                        for (index iBlock = 0; iBlock < index(meanBlocks.size()); ++iBlock)
+                        {
+                            const auto row = recBlocks[iBlock][iCell];
+                            for (index j = 0; j < meanBlocks[iBlock].ComponentNumber(); ++j)
+                                for (int mode = 0; mode < modes; ++mode)
+                                {
+                                    const real value = row[j * modes + mode];
+                                    const index logical = logicalFirst[iBlock] + j;
+                                    point.values[logical] += value * basis(0, mode);
+                                    if (viscous)
+                                        for (int d = 0; d < dim; ++d)
+                                            point.gradient(logical, d) += value * basis(1 + d, mode);
+                                }
+                        }
                     }
                 }
                 if (ransModel)
@@ -718,13 +797,6 @@ namespace DNDS::Cauchy
                         integrated[j] += flux[j];
                     entry += metric.FaceQuadratureEnd(sample.face) - metric.FaceQuadratureBegin(sample.face);
                 }
-                if (frame.moving)
-                {
-                    gatherMean(iCell, face);
-                    const auto source = frame.RotationSource(face.Flow(flowFirst));
-                    for (int j = 0; j < 5; ++j)
-                        integrated[flowFirst + j] += metric.GetCellVol(iCell) * source[j];
-                }
                 for (index j = 0; j < destination.ComponentNumber(); ++j)
                     destination(iCell, j) = integrated[j];
             };
@@ -742,6 +814,10 @@ namespace DNDS::Cauchy
             sourceCoefficients.reset();
             if (!sourceSampling)
                 return;
+            // P0 face convection/viscosity does not disable these derivatives.
+            // Direct-FV sources consume physical gradients without a basis.
+            if (ransFirst >= 0 && owner->settings.numerics.reconstruction != "variational")
+                RefreshDirectGradients(false);
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             {
                 if (owner->settings.numerics.reconstruction == "variational")
@@ -762,8 +838,23 @@ namespace DNDS::Cauchy
                                 values(iPoint, j) = means(iCell, j);
                 }
                 if (ransFirst >= 0)
+                {
                     for (int d = 0; d < owner->metrics.Dimension(); ++d)
-                        sourceSampling->Evaluate(state.PhysicalField(iField), fluxCoefficients.PhysicalField(iField), sourceGradients[iField][d], 1 + d);
+                        if (owner->settings.numerics.reconstruction == "variational")
+                            sourceSampling->Evaluate(state.PhysicalField(iField), fluxCoefficients.PhysicalField(iField), sourceGradients[iField][d], 1 + d);
+                        else
+                        {
+                            const auto read = directGradients[iField].Owned().Read();
+                            auto write = sourceGradients[iField][d].Write();
+                            const auto input = read.View<R::UniformTableRows>();
+                            const auto output = write.View<R::UniformTableRows>();
+                            const int dim = owner->metrics.Dimension();
+                            for (index iCell = 0; iCell < owner->metrics.NumCell(); ++iCell)
+                                for (index iPoint = sourceOffsets[iCell]; iPoint < sourceOffsets[iCell + 1]; ++iPoint)
+                                    for (index j = 0; j < output.Width(); ++j)
+                                        output(iPoint, j) = input(iCell, j * dim + d);
+                        }
+                }
             }
         }
         void PublishSourceState(const EquationDofs &state, real time)
@@ -805,9 +896,30 @@ namespace DNDS::Cauchy
         /// High-order RHS source sampling is distinct from the mean-state
         /// approximate source Jacobian. A null result refreshes publication
         /// provenance only; the Jacobian samples its own center gradients.
-        void PrepareVolumeSource(const EquationDofs &state, EquationDofs *result, EquationPointEvaluator &evaluator)
+        void PrepareVolumeSource(const EquationDofs &state, EquationDofs *result, EquationPointEvaluator &evaluator, real time = 0)
         {
             const PhaseTime timing(*this, SourcePhase);
+            // Kinematic and constitutive sources share this additive entrance;
+            // face-only calls never include either kind of source.
+            const auto frame = owner->motion.At(time);
+            if (result && frame.moving)
+            {
+                const auto read = state.ReadOwned();
+                auto write = result->WriteOwned();
+                const auto flow = read.Block("flow");
+                const auto output = write.Block("flow");
+                const auto geometry = owner->metrics.AcquireRead();
+                const auto metric = geometry.HostView();
+                for (index iCell = 0; iCell < owner->metrics.NumCell(); ++iCell)
+                {
+                    FlowState mean{};
+                    for (int j = 0; j < 5; ++j)
+                        mean[j] = flow(iCell, j);
+                    const auto source = frame.RotationSource(mean);
+                    for (int j = 0; j < 5; ++j)
+                        output(iCell, j) += metric.GetCellVol(iCell) * source[j];
+                }
+            }
             if (!sourceSampling)
                 return;
             SampleSourceState(state);
@@ -1173,7 +1285,9 @@ namespace DNDS::Cauchy
                         output(iCell, j) = input(iCell, j);
             }
             work.sourceState.reset();
-            work.sourceCoefficients.reset(); })); });
+            work.sourceCoefficients.reset();
+            work.rhsState.reset();
+            work.rhsCoefficients.reset(); })); });
         return std::move(*restore);
     }
     void FiniteVolume::ResetReconstruction(EquationWorkspace &work) const
@@ -1184,6 +1298,8 @@ namespace DNDS::Cauchy
             Algebra::Fill(field.reconstruction.temporary, 0.);
         work.sourceState.reset();
         work.sourceCoefficients.reset();
+        work.rhsState.reset();
+        work.rhsCoefficients.reset();
     }
     int FiniteVolume::LastReconstructionIterations(const EquationWorkspace &work) const
     {
@@ -1215,26 +1331,33 @@ namespace DNDS::Cauchy
     void FiniteVolume::Evaluate(EquationDofs &state, EquationDofs &residual, EquationWorkspace &work,
                                 R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
-        EvaluateEquationImpl(state, residual, work, engine, stream, time);
+        EvaluateEquationImpl(state, &residual, work, engine, stream, time);
     }
     void FiniteVolume::Evaluate(EquationDofs &state, EquationDofs &residual, EquationWorkspace &work,
                                 AuxiliaryValues &auxiliary, R::EagerEngine &engine,
                                 const R::ExecutionStream &stream, real time) const
     {
-        EvaluateEquationImpl(state, residual, work, engine, stream, time, &auxiliary);
+        EvaluateEquationImpl(state, &residual, work, engine, stream, time, &auxiliary);
+    }
+    void FiniteVolume::PrepareReconstruction(EquationDofs &state, EquationWorkspace &work, R::EagerEngine &engine,
+                                             const R::ExecutionStream &stream, real time) const
+    {
+        EvaluateEquationImpl(state, nullptr, work, engine, stream, time);
     }
     void FiniteVolume::EvaluateMean(EquationDofs &state, EquationDofs &residual, EquationMeanWorkspace &work,
                                     R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
-        EvaluateEquationImpl(state, residual, *work.work, engine, stream, time);
+        EvaluateEquationImpl(state, &residual, *work.work, engine, stream, time);
     }
-    void FiniteVolume::EvaluateEquationImpl(EquationDofs &state, EquationDofs &residual, EquationWorkspace &work,
+    void FiniteVolume::EvaluateEquationImpl(EquationDofs &state, EquationDofs *residual, EquationWorkspace &work,
                                             R::EagerEngine &engine, const R::ExecutionStream &stream, real time,
                                             AuxiliaryValues *auxiliary) const
     {
         const EquationWorkspace::PhaseTime timing(work, EquationWorkspace::TotalPhase);
         work.sourceState.reset();
         work.sourceCoefficients.reset();
+        work.rhsState.reset();
+        work.rhsCoefficients.reset();
         work.relativeUpdate = !work.meanOnly && _data->settings.numerics.reconstruction == "variational" ? std::numeric_limits<real>::infinity() : 0;
         const MPIInfo mpi(Metrics().Communicator());
         // Repeated entry/CPU-join agreement follows the same checked/eager
@@ -1269,12 +1392,15 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(work.owner == _data && std::isfinite(time) && stream.Context().device == R::Device::Host(),
                                   "foreign equation workspace, invalid time or missing CPU backend");
             ValidateWorkspace(state, work);
-            _data->equation.ValidateStateSchema(residual);
-            state.RequireCompatible(residual);
-            EquationDofOperations::RequireDistinct(state, residual);
-            EquationDofOperations::RequireDistinct(work.coefficients, residual);
-            if (!work.limited.empty()) EquationDofOperations::RequireDistinct(work.fluxCoefficients, residual);
-            auto write = residual.WriteOwned(); write.CancelUnmodified();
+            if (residual)
+            {
+                _data->equation.ValidateStateSchema(*residual);
+                state.RequireCompatible(*residual);
+                EquationDofOperations::RequireDistinct(state, *residual);
+                EquationDofOperations::RequireDistinct(work.coefficients, *residual);
+                if (!work.limited.empty()) EquationDofOperations::RequireDistinct(work.fluxCoefficients, *residual);
+                auto write = residual->WriteOwned(); write.CancelUnmodified();
+            }
             PreflightHalo(state); PreflightHalo(work.coefficients);
             if (!work.limited.empty()) PreflightHalo(work.fluxCoefficients);
             _data->partition.Validate();
@@ -1338,7 +1464,9 @@ namespace DNDS::Cauchy
         if (!deferredEvaluator)
             submit([&, variational]
                    { work.FillBoundary(state, variational && _data->settings.numerics.reconstructionBoundaryFromPolynomial, time, *evaluator); });
-        if (!work.meanOnly && overlap && numerics.reconstruction == "gradient" && !deferredEvaluator)
+        const bool directGradientWork = !work.meanOnly && (numerics.reconstruction == "gradient" ||
+                                                           (_data->equation.HasRANS() && numerics.reconstruction == "constant"));
+        if (directGradientWork && overlap && !deferredEvaluator)
             submit([&]
                    { gradient(CFV::ReconstructionRegion::Core); });
         if (firstSweep)
@@ -1371,14 +1499,17 @@ namespace DNDS::Cauchy
                   {
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                 work.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), work.meanEpoch); });
-        if (!work.meanOnly && numerics.reconstruction == "gradient")
+        if (directGradientWork)
         {
             submit([&, rest]
                    { gradient(deferredEvaluator ? CFV::ReconstructionRegion::All : rest); });
             submit([&]
                    {
                 for (auto &field : work.fields)
-                    _data->gradient.ConvertToCoefficients(*field.gradient, _data->reconstruction, field.reconstruction.coefficients); });
+                    if (numerics.reconstruction == "gradient")
+                        _data->gradient.ConvertToCoefficients(*field.gradient, _data->reconstruction, field.reconstruction.coefficients);
+                    else
+                        Algebra::Fill(field.reconstruction.coefficients, 0.); });
             local([&]
                   { stream.Record().WaitHost(); });
         }
@@ -1466,20 +1597,84 @@ namespace DNDS::Cauchy
                   { const EquationWorkspace::PhaseTime timing(work, EquationWorkspace::PPPhase);
                     work.positivity->Apply(state, work.coefficients, work.fluxCoefficients, false); });
         auto operations = begin(work.limited.empty() ? work.coefficientHalo : work.fluxHalo);
-        if (overlap)
-            submit([&]
-                   { work.ApplyRHS(state, residual, CFV::ReconstructionRegion::Core, *evaluator, time, auxiliary); });
-        wait(operations);
-        submit([&, rest]
-               { work.ApplyRHS(state, residual, rest, *evaluator, time, auxiliary); });
+        // Explicit compatibility conversion after limiter/PP, once per row.
+        // The physical-gradient RHS itself never interprets coefficient data.
         submit([&]
-               { work.PrepareVolumeSource(state, &residual, *evaluator); });
+               { work.RefreshDirectGradients(false); });
+        if (overlap && residual)
+            submit([&]
+                   { work.ApplyRHS(state, *residual, CFV::ReconstructionRegion::Core, *evaluator, time, auxiliary); });
+        wait(operations);
+        submit([&]
+               { work.RefreshDirectGradients(true); });
+        if (residual)
+        {
+            submit([&, rest]
+                   { work.ApplyRHS(state, *residual, rest, *evaluator, time, auxiliary); });
+            submit([&]
+                   { work.PrepareVolumeSource(state, residual, *evaluator, time); });
+        }
         local([&]
               { stream.Record().WaitHost(); });
-        if ((work.chemical || work.ransFirst >= 0) && work.sourceSampling)
+        if (residual && (work.chemical || work.ransFirst >= 0) && work.sourceSampling)
             local([&]
                   { work.PublishSourceState(state, time); });
-        work.boundaryMomentumCurrent = true;
+        work.boundaryMomentumCurrent = bool(residual);
+        work.rhsState.emplace(state.NumericAlias());
+        work.rhsCoefficients.emplace(work.fluxCoefficients.NumericAlias());
+        work.rhsTime = time;
+    }
+
+    R::Array<real> FiniteVolume::BuildFaceFluxBuffer(index components) const
+    {
+        Metrics().Validate();
+        DNDS_check_throw_info(components > 0, "face flux requires positive component count");
+        return R::Array<real>(R::RowLayout::Dense(index(_data->stencilFaces.size()), components));
+    }
+    void FiniteVolume::EvaluateFlux(const EquationDofs &state, EquationDofs &residual, EquationWorkspace &work,
+                                    CFV::ReconstructionRegion region, real time, R::Array<real> *faceOutput, const AuxiliaryValues *auxiliary) const
+    {
+        ValidateWorkspace(state, work);
+        state.RequireCompatible(residual);
+        EquationDofOperations::RequireDistinct(state, residual);
+        EquationDofOperations::RequireDistinct(work.fluxCoefficients, residual);
+        DNDS_check_throw_info(work.rhsState && work.rhsCoefficients && work.rhsTime == time, "flux needs a completed spatial preparation at this time");
+        work.rhsState->Check(state, true);
+        work.rhsCoefficients->Check(work.fluxCoefficients, true);
+        DNDS_check_throw_info(region == CFV::ReconstructionRegion::All || region == CFV::ReconstructionRegion::Core ||
+                                  region == CFV::ReconstructionRegion::HaloDependent,
+                              "unknown flux region");
+        if (faceOutput)
+        {
+            DNDS_check_throw_info(faceOutput->GetDevice() == R::Device::Host() && !faceOutput->Layout().IsVariable() &&
+                                      faceOutput->RowCount() == index(_data->stencilFaces.size()) && faceOutput->Layout().Width() == state.ComponentNumber(),
+                                  "equation face output shape/device differs");
+            for (const auto *fields : std::array<const EquationDofs *, 3>{&state, &residual, &work.fluxCoefficients})
+                for (index iField = 0; iField < fields->PhysicalFieldNumber(); ++iField)
+                    DNDS_check_throw_info(!Algebra::Detail::Overlaps(faceOutput->Storage(), fields->PhysicalField(iField).Owned().Storage()) &&
+                                              !Algebra::Detail::Overlaps(faceOutput->Storage(), fields->PhysicalField(iField).Ghost().Storage()),
+                                          "face output aliases equation fields");
+        }
+        if (auxiliary)
+            ValidateAuxValues(state, *auxiliary, time);
+        auto evaluator = _data->equation.MakePointEvaluator(work.workers ? work.workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{},
+                                                            {true, true, true, false, false});
+        work.ApplyRHS(state, residual, region, evaluator, time, auxiliary, faceOutput);
+        work.boundaryMomentumCurrent = region == CFV::ReconstructionRegion::All;
+    }
+    void FiniteVolume::AddSource(const EquationDofs &state, EquationDofs &residual, EquationWorkspace &work, real time) const
+    {
+        ValidateWorkspace(state, work);
+        state.RequireCompatible(residual);
+        EquationDofOperations::RequireDistinct(state, residual);
+        EquationDofOperations::RequireDistinct(work.fluxCoefficients, residual);
+        DNDS_check_throw_info(work.rhsState && work.rhsCoefficients && work.rhsTime == time, "source needs a completed spatial preparation at this time");
+        work.rhsState->Check(state, true);
+        work.rhsCoefficients->Check(work.fluxCoefficients, true);
+        auto evaluator = _data->equation.MakePointEvaluator(work.workers ? work.workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{},
+                                                            {true, false, false, work.chemical, false});
+        work.PrepareVolumeSource(state, &residual, evaluator, time);
+        work.PublishSourceState(state, time);
     }
 
     Vector3 FiniteVolume::LastBoundaryForce(const EquationWorkspace &work, const std::vector<int> &zones) const
@@ -1531,7 +1726,18 @@ namespace DNDS::Cauchy
                 for (int d = 0; d < _data->metrics.Dimension(); ++d)
                 {
                     auto scratch = work.sourceJacobianGradients[iField][d];
-                    work.sourceJacobianSampling->Evaluate(state.PhysicalField(iField), work.fluxCoefficients.PhysicalField(iField), scratch, 1 + d);
+                    if (_data->settings.numerics.reconstruction == "variational")
+                        work.sourceJacobianSampling->Evaluate(state.PhysicalField(iField), work.fluxCoefficients.PhysicalField(iField), scratch, 1 + d);
+                    else
+                    {
+                        const auto read = work.directGradients[iField].Owned().Read();
+                        auto write = scratch.Write();
+                        const auto input = read.View<R::UniformTableRows>();
+                        const auto output = write.View<R::UniformTableRows>();
+                        for (index iCell = 0; iCell < output.RowCount(); ++iCell)
+                            for (index j = 0; j < output.Width(); ++j)
+                                output(iCell, j) = input(iCell, j * _data->metrics.Dimension() + d);
+                    }
                     gradientReads[iField][d].emplace(scratch.Read());
                     gradients[iField][d] = gradientReads[iField][d]->View<R::UniformTableRows>();
                 }

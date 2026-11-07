@@ -233,6 +233,18 @@ namespace DNDS::Cauchy::Bindings
                  { return MeanWorkspace{op.fv.BuildEquationMeanWorkspace(u, op.workers)}; }, py::arg("state"), py::keep_alive<0, 1>(), py::keep_alive<0, 2>(), py::call_guard<py::gil_scoped_release>(), Collective)
             .def("evaluate", [](const EquationOperators &op, EquationDofs &u, EquationDofs &r, EquationWorkspace &w, R::EagerEngine &e, const R::ExecutionStream &s, real t)
                  { op.fv.Evaluate(u, r, *w.value, e, s, t); }, py::arg("state"), py::arg("residual"), py::arg("workspace"), py::arg("engine"), py::arg("stream"), py::arg("time") = 0, py::call_guard<py::gil_scoped_release>(), Collective)
+            .def("build_face_flux_buffer", [](const EquationOperators &op, const EquationDofs &u)
+                 { return R::PythonArray::Share(op.fv.BuildFaceFluxBuffer(u.ComponentNumber())); }, py::arg("state"), "Allocate caller-owned integrated negative outward face flux, in AuxiliaryFaces order and the local anchor cell frame. No source or halo.")
+            .def("prepare_reconstruction", [](const EquationOperators &op, EquationDofs &u, EquationWorkspace &w, R::EagerEngine &e, const R::ExecutionStream &s, real t)
+                 { op.fv.PrepareReconstruction(u, *w.value, e, s, t); }, py::arg("state"), py::arg("workspace"), py::arg("engine"), py::arg("stream"), py::arg("time") = 0, py::call_guard<py::gil_scoped_release>(), Collective)
+            .def("evaluate_flux", [](const EquationOperators &op, const EquationDofs &u, EquationDofs &r, EquationWorkspace &w, R::PythonArray *faces, real t)
+                 {
+                std::optional<R::Array<real>> buffer;
+                if (faces) buffer.emplace(faces->AsArray<real>());
+                py::gil_scoped_release release;
+                op.fv.EvaluateFlux(u, r, *w.value, CFV::ReconstructionRegion::All, t, buffer ? &*buffer : nullptr); }, py::arg("state"), py::arg("residual"), py::arg("workspace"), py::arg("face_flux") = nullptr, py::arg("time") = 0, "Local flux-only overwrite using a completed evaluate publication at the same state/time. Input halos must be ready. Optional face array is shared and overwritten; release views first. No reconstruction or transfer. Caller coordinates failures.")
+            .def("add_source", [](const EquationOperators &op, const EquationDofs &u, EquationDofs &r, EquationWorkspace &w, real t)
+                 { op.fv.AddSource(u, r, *w.value, t); }, py::arg("state"), py::arg("residual"), py::arg("workspace"), py::arg("time") = 0, py::call_guard<py::gil_scoped_release>(), "Local additive volume source using completed evaluate preparation at the same state/time. Includes rotation, RANS and chemistry. P0 retains physical source gradients. Output must be initialized and distinct; no halo exchange or reconstruction. Release views and coordinate failures.")
             .def("evaluate_mean", [](const EquationOperators &op, EquationDofs &u, EquationDofs &r, MeanWorkspace &w, R::EagerEngine &e, const R::ExecutionStream &s, real t)
                  { op.fv.EvaluateMean(u, r, *w.value, e, s, t); }, py::arg("state"), py::arg("residual"), py::arg("workspace"), py::arg("engine"), py::arg("stream"), py::arg("time") = 0, py::call_guard<py::gil_scoped_release>(), Collective)
             .def("reconstruction_guess", [](const EquationOperators &op, const EquationWorkspace &w)

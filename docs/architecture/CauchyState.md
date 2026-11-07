@@ -13,6 +13,56 @@ The [Python operator guide](../guides/python_cauchy_operators.md) describes shar
 logical handles, configured native FV/linear composition, communicator lifetime,
 GIL boundaries and caller-owned halo/collective ordering.
 
+## Direct FV and explicit residual phases
+
+Direct FV `gradient` reconstructs from physical conservative gradients with
+columns `component*dimension+direction`, using displacement from the volume
+barycenter in the parent cell's axes. Its point loop does not query a P1 basis
+or consume Taylor coefficients. P0 (`firstOrderConvection`) reads cell means
+and uses only the normal jump for face viscosity. **Volume sources still need
+and receive physical gradients on P0**; this includes RANS production and its
+approximate implicit source derivative. P1 VR continues to use the VR path.
+Constant face reconstruction with RANS independently prepares the configured
+mean gradients for its volume sources; it does not reconstruct face values or
+add those gradients to P0 face viscosity. Thus selecting constant convection
+does not silently turn off gradient-dependent production or destruction.
+
+The current limiter/PP and warm-guess compatibility boundary remains explicit:
+direct gradients are converted to linear coefficients for those facilities,
+then the accepted linear modes are projected once into physical gradients.
+`GradientPlan::ExtractLinearGradients` performs that projection without basis
+evaluation and supports owned or already exchanged ghost rows. This bridge is
+outside the direct RHS loop; it is not a new interpretation of coefficient units.
+
+For flow5, `RHSOperator::ApplyFlux` overwrites integrated flux residuals and
+`AddSource` adds owned-cell frame sources. `Apply` invokes the same two blocks.
+Raw calls require caller-retained array leases, ready halos, disjoint output,
+and initialization before source-add. `RHSReadViews::conservativeGradient`
+supplies direct P1 gradients; `viscousConservativeGradient` optionally supplies
+distinct unlimited viscous gradients. P0 does not read either face input.
+
+For logical equations, `PrepareReconstruction` prepares means/gradients,
+reconstruction/limiting and halos without allocating a dummy residual or doing
+flux/source work. `EvaluateFlux` and `AddSource` consume that publication (or a
+completed `Evaluate` publication) at the same state, polynomial and time.
+They perform no MPI or reconstruction. Sources share the composed RHS's RANS,
+chemical and rigid-frame functions. Source-add requires initialized output;
+the caller serializes workspace use and coordinates rank-local failures.
+Generation checks reject stale preparations. Full `Evaluate` uses the same
+numerical blocks and the existing coordinated eager/overlap pipeline.
+
+`BuildFaceFluxBuffer(components)` allocates caller-owned local face output.
+Flow5 uses `RHSWriteViews::faceFlux`; logical `EvaluateFlux` accepts its array.
+Rows follow `AuxiliaryFaces()`, storing **integrated negative outward flux**
+in the local anchor cell's axes, not flux density or per-quadrature values.
+Periodic cell accumulation rotates vector components and changes side sign.
+Core/dependent calls overwrite selected faces; their face sets can overlap.
+There is no implicit inter-rank flux transfer or freshness promise for untouched
+rows. Hold output leases through execution and release views before reuse.
+The whole-equation kernel can use this output as its accumulation scratch;
+the flow5 cell-incidence kernel exports values when requested. Without the
+optional output, existing kernel-specific scratch/accumulation remains valid.
+
 Current CPU scope (November 6): configured flow5, SA/Wilcox/SST/realizable-k-epsilon
 and optional ideal-mixture chemistry share logical DOF bindings, implicit time
 equations, native archives and observation. Perfect-gas extended profiles use the

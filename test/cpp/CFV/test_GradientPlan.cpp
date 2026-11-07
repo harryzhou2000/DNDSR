@@ -80,6 +80,14 @@ TEST_CASE("Standalone gradients recover linear fields with physical boundary sam
             const auto reconstruction = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics);
             auto coefficients = metrics.BuildField(2 * reconstruction.NRecDOF());
             plan.ConvertToCoefficients(gradient, reconstruction, coefficients);
+            auto recovered = metrics.BuildField(R::RowLayout::ColMajor(0, 4, {8, 1}));
+            plan.ExtractLinearGradients(coefficients, reconstruction, recovered);
+            {
+                const auto read = recovered.Owned().Read();
+                for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+                    for (I j = 0; j < 4; ++j)
+                        CHECK(read.View<R::UniformTableRows>()(iCell, j) == doctest::Approx(expected[j]).epsilon(1e-11));
+            }
             {
                 auto geometry = metrics.AcquireRead();
                 auto read = coefficients.Owned().Read();

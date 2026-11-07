@@ -83,6 +83,25 @@ during native work; inline and worker execution share the same C++ sequence.
 Return joins the relevant stream. An external pending producer must already
 be joined; the wrapper does not infer arbitrary cross-stream dependencies.
 
+For independent flux/source work, prepare without a dummy residual:
+
+```python
+operators.prepare_reconstruction(state, workspace, engine, stream, time=domain.time)
+face_flux = operators.build_face_flux_buffer(state)
+operators.evaluate_flux(state, residual, workspace, face_flux=face_flux, time=domain.time)
+operators.add_source(state, residual, workspace, time=domain.time)
+```
+
+`evaluate_flux` overwrites owned residual rows; `add_source` adds to initialized
+rows. Both are local, synchronous calls on the prepared state/time and perform
+no reconstruction or communication. Serialize their workspace use and coordinate
+rank-local failures. Changing a prepared mean or coefficient invalidates the
+publication. The optional caller-owned face array holds integrated negative
+outward flux in the local anchor cell's axes, in the C++ `AuxiliaryFaces()` order;
+it contains no source contribution or implicit halo. Release debug views before
+the write. Direct P1 consumes physical gradients; constant/P0 face reconstruction
+keeps gradient-dependent RANS sources independently active.
+
 The equation workspace supports the native equation-state profile, including
 P3 VR, component WBAP, Euler reconstruction PP and supported RANS/mixture
 transport and sources. Unsupported characteristic/LVR/flux/interface profiles

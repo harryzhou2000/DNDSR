@@ -127,6 +127,7 @@ namespace DNDS::Cauchy
         bool fluxReady = false;
         CFV::FVField gradient;
         std::optional<CFV::FVField> conservativeGradient;
+        std::optional<CFV::FVField> directFluxGradient, directViscousGradient;
         CFV::FVField primitive;
         std::unique_ptr<LimitedVRWorkspace> limitedVR;
         std::optional<CFV::FVField> lowResidual;
@@ -170,7 +171,11 @@ namespace DNDS::Cauchy
             // Conservative reconstruction and primitive viscous gradients may
             // both run before VR. Their outputs/BCs must not share scratch.
             if (!meanOnly && data.settings.numerics.reconstruction == "gradient")
+            {
                 conservativeGradient.emplace(data.metrics.BuildField(5 * data.metrics.Dimension()));
+                directFluxGradient.emplace(data.metrics.BuildField(5 * data.metrics.Dimension()));
+                directViscousGradient.emplace(data.metrics.BuildField(5 * data.metrics.Dimension()));
+            }
             if (!meanOnly && data.equation.Viscous() && data.settings.numerics.viscousGradient == "primitive")
                 primitiveBoundary.emplace(data.gradient.BuildBoundaryValues(5));
             if (!meanOnly && data.limitedVRGeometry)
@@ -1258,6 +1263,20 @@ namespace DNDS::Cauchy
             viscousCoefficients = FieldView{viscousOwned->View<R::UniformTableRows>(), {}};
         }
         const auto rhs = AcquireRHSOperator();
+        std::optional<R::Array<real>::ReadLease> directOwned, directGhost, directViscousOwned, directViscousGhost;
+        std::optional<FieldView> directGradient, directViscous;
+        if (work.directFluxGradient)
+        {
+            _data->gradient.ExtractLinearGradients(FluxReconstruction(work), _data->reconstruction, *work.directFluxGradient);
+            directOwned.emplace(work.directFluxGradient->Owned().Read());
+            directGradient = FieldView{directOwned->View<R::UniformTableRows>(), {}};
+            if (polynomialViscosity && !_data->settings.numerics.viscousLimited)
+            {
+                _data->gradient.ExtractLinearGradients(work.reconstruction.coefficients, _data->reconstruction, *work.directViscousGradient);
+                directViscousOwned.emplace(work.directViscousGradient->Owned().Read());
+                directViscous = FieldView{directViscousOwned->View<R::UniformTableRows>(), {}};
+            }
+        }
         RHSAuxiliaryViews auxiliary;
         auxiliary.meanThermodynamics = thermo;
         if (work.auxiliary.cellWaveJump)
@@ -1265,14 +1284,15 @@ namespace DNDS::Cauchy
         if (work.auxiliary.cellPressureMinimum)
             auxiliary.cellPressureMinimum = pressure;
         const auto kernel = [rhs, time, lowOutput, incomingView, produceLow = bool(work.lowResidual), includeViscosity = !work.meanOnly,
-                             forces = &work.forces, diagnostics = &work.fallbacks](CFV::ReconstructionRegion region,
-                                                                                   const auto &mean, const auto &coefficient, const auto &gradientInput,
-                                                                                   const RHSAuxiliaryViews &auxiliaryInput, const std::optional<FieldView> &viscousInput, auto result)
+                             forces = &work.forces, diagnostics = &work.fallbacks, meanOnly = work.meanOnly](CFV::ReconstructionRegion region,
+                                                                                                             const auto &mean, const auto &coefficient, const auto &gradientInput,
+                                                                                                             const RHSAuxiliaryViews &auxiliaryInput, const std::optional<FieldView> &viscousInput,
+                                                                                                             const std::optional<FieldView> &directInput, const std::optional<FieldView> &directViscousInput, auto result)
         {
             RHSWriteViews outputs{result, std::nullopt, diagnostics, forces};
             if (produceLow)
                 outputs.lowOrder = lowOutput;
-            rhs.Apply({mean, coefficient, gradientInput, auxiliaryInput, includeViscosity, viscousInput, incomingView}, outputs, region, time);
+            rhs.Apply({mean, coefficient, gradientInput, auxiliaryInput, includeViscosity, viscousInput, incomingView, directInput, directViscousInput, meanOnly}, outputs, region, time);
         };
         const auto &fluxCoefficients = FluxReconstruction(work);
         auto operation = engine.ChecksAccess() ? work.FluxHalo().BeginChecked(stream) : work.FluxHalo().BeginScheduled(stream.Context());
@@ -1283,8 +1303,8 @@ namespace DNDS::Cauchy
             coreAuxiliary.cellPressureMinimum->ghost = {};
         JoinStreamOnException residualJoin(stream);
         if (overlap)
-            R::SubmitArrays(engine, stream, [kernel, gradientInput = FieldView{gradients.owned, {}}, coreAuxiliary, viscousCoefficients](auto, auto mean, auto rec, auto result)
-                            { kernel(CFV::ReconstructionRegion::Core, FieldView{mean, {}}, FieldView{rec, {}}, gradientInput, coreAuxiliary, viscousCoefficients, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::WriteAs<R::UniformTableRows>(residual->Owned()));
+            R::SubmitArrays(engine, stream, [kernel, gradientInput = FieldView{gradients.owned, {}}, coreAuxiliary, viscousCoefficients, directGradient, directViscous](auto, auto mean, auto rec, auto result)
+                            { kernel(CFV::ReconstructionRegion::Core, FieldView{mean, {}}, FieldView{rec, {}}, gradientInput, coreAuxiliary, viscousCoefficients, directGradient, directViscous, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::WriteAs<R::UniformTableRows>(residual->Owned()));
         operation.Wait();
         if (gradientOperation)
         {
@@ -1298,8 +1318,20 @@ namespace DNDS::Cauchy
             viscousGhost.emplace(work.reconstruction.coefficients.Ghost().Read());
             viscousCoefficients->ghost = viscousGhost->View<R::UniformTableRows>();
         }
-        R::SubmitArrays(engine, stream, [kernel, gradients, auxiliary, overlap, viscousCoefficients](auto, auto mean, auto meanGhost, auto rec, auto recGhost, auto result)
-                        { kernel(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All, FieldView{mean, meanGhost}, FieldView{rec, recGhost}, gradients, auxiliary, viscousCoefficients, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(state.Ghost()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Ghost()), R::WriteAs<R::UniformTableRows>(residual->Owned()));
+        if (work.directFluxGradient)
+        {
+            _data->gradient.ExtractLinearGradients(fluxCoefficients, _data->reconstruction, *work.directFluxGradient, true);
+            directGhost.emplace(work.directFluxGradient->Ghost().Read());
+            directGradient->ghost = directGhost->View<R::UniformTableRows>();
+            if (directViscous)
+            {
+                _data->gradient.ExtractLinearGradients(work.reconstruction.coefficients, _data->reconstruction, *work.directViscousGradient, true);
+                directViscousGhost.emplace(work.directViscousGradient->Ghost().Read());
+                directViscous->ghost = directViscousGhost->View<R::UniformTableRows>();
+            }
+        }
+        R::SubmitArrays(engine, stream, [kernel, gradients, auxiliary, overlap, viscousCoefficients, directGradient, directViscous](auto, auto mean, auto meanGhost, auto rec, auto recGhost, auto result)
+                        { kernel(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All, FieldView{mean, meanGhost}, FieldView{rec, recGhost}, gradients, auxiliary, viscousCoefficients, directGradient, directViscous, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(state.Ghost()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Ghost()), R::WriteAs<R::UniformTableRows>(residual->Owned()));
         // Local read scopes pin geometry/cache pointers through both submitted
         // phases. A later async public wrapper can retain these same scopes;
         // this CPU synchronous convenience observes only its own stream prefix.

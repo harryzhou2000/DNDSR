@@ -136,6 +136,19 @@ TEST_CASE("Equation FV uses the established P3/gradient/WBAP flow5 kernels acros
         fv.Evaluate(raw, expected, *rawWork, engine, stream);
         fv.Evaluate(state, result, *work, engine, stream);
         Compare(result, C::EquationDofs::Coupled(equation.Schema(), expected), 2e-12);
+        auto separate = C::EquationDofOperations::NewVector(state);
+        auto faceFlux = fv.BuildFaceFluxBuffer(state.ComponentNumber());
+        fv.EvaluateFlux(state, separate, *work, DNDS::CFV::ReconstructionRegion::All, 0, &faceFlux);
+        fv.AddSource(state, separate, *work);
+        Compare(result, separate, 2e-12);
+        if (variant == 0)
+        {
+            auto prepared = fv.BuildEquationWorkspace(state);
+            fv.PrepareReconstruction(state, *prepared, engine, stream);
+            fv.EvaluateFlux(state, separate, *prepared);
+            fv.AddSource(state, separate, *prepared);
+            Compare(result, separate, 2e-12);
+        }
         ConservativeIntegral(result);
         if (variant == 1)
         {

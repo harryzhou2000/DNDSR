@@ -55,6 +55,17 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
             state[1 + d] = rotated[d];
         return state;
     }
+    /// Physical displacement from a cell average's barycenter, in that cell's
+    /// own axes. The neighbor center already carries the periodic coordinate
+    /// image; only vectors need the inverse frame map. No Taylor basis here.
+    inline Geom::tPoint DirectFVDisplacement(const CFV::FiniteVolumeHostView &metric, const Sample &sample, bool other)
+    {
+        if (!other)
+            return sample.ownPoint - metric.GetCellBary(sample.cell);
+        const Geom::tPoint delta = sample.ownPoint - sample.otherPoint;
+        return (sample.changesFrame ? Geom::tPoint(sample.rotation.transpose() * delta) : delta) +
+               metric.GetCellCent(sample.other) - metric.GetCellBary(sample.other);
+    }
     /// Canonical rank-owned cell-face-cell columns, retaining remote columns
     /// and folding self-periodic incidences into the eventual diagonal.
     inline std::vector<std::vector<index>> JacobianColumns(const std::vector<index> &offsets, const std::vector<Sample> &samples)

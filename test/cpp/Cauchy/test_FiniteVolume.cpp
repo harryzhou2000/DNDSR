@@ -1918,6 +1918,115 @@ TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen in
     }
 }
 
+TEST_CASE("Direct FV consumes physical gradients without coefficients and splits flux from source")
+{
+    auto mesh = CFVTest::CartesianHexes(mpi, 3);
+    mesh->TransformCoords([](DNDS::Geom::tPoint p) -> DNDS::Geom::tPoint
+                          { return {2 * p[0], .7 * p[1], 1.3 * p[2]}; });
+    for (const bool p0 : {false, true})
+    {
+        C::DomainSettings settings;
+        settings.mesh.dimension = 3;
+        settings.numerics.reconstruction = "gradient";
+        settings.numerics.cfv.maxOrder = 3; // Must not leak a VR width/basis requirement into direct FV.
+        settings.numerics.firstOrderConvection = p0;
+        settings.boundaries["7"].kind = "extrapolate";
+        settings.motion.angularVelocity = {.1, -.2, .15};
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto mean = fv.Metrics().BuildField(5), gradient = fv.Metrics().BuildField(R::RowLayout::ColMajor(0, 15, {8, 1}));
+        auto combined = fv.Metrics().BuildField(5), split = fv.Metrics().BuildField(5);
+        const double g[5][3]{{.01, -.02, .03}, {.02, .01, -.01}, {-.01, .02, .01}, {.01, .01, .02}, {.03, -.01, .02}};
+        const C::FlowState base{1, .2, -.1, .05, 3};
+        const auto geometry = fv.Metrics().AcquireRead();
+        const auto metric = geometry.HostView();
+        {
+            auto u = mean.Owned().Write(), grad = gradient.Owned().Write();
+            for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            {
+                const auto x = metric.GetCellBary(iCell);
+                for (int j = 0; j < 5; ++j)
+                {
+                    u.View()(iCell, j) = base[j];
+                    for (int d = 0; d < 3; ++d)
+                    {
+                        u.View()(iCell, j) += g[j][d] * x[d];
+                        grad.View()(iCell, j * 3 + d) = g[j][d];
+                    }
+                }
+            }
+        }
+        fv.BindHalo(mean).Begin().Wait();
+        fv.BindHalo(gradient).Begin().Wait();
+        auto faces = fv.BuildFaceFluxBuffer(5);
+        const auto u = mean.Owned().Read(), ug = mean.Ghost().Read(), grad = gradient.Owned().Read(), gg = gradient.Ghost().Read();
+        C::RHSReadViews input;
+        input.mean = {u.View<R::UniformTableRows>(), ug.View<R::UniformTableRows>()};
+        if (!p0)
+            input.conservativeGradient = C::RHSFieldView{grad.View<R::UniformTableRows>(), gg.View<R::UniformTableRows>()};
+        std::atomic<DNDS::index> fallbacks{0};
+        const auto op = fv.AcquireRHSOperator();
+        {
+            auto a = combined.Owned().Write(), b = split.Owned().Write(), face = faces.Write();
+            C::RHSWriteViews out{a.View<R::UniformTableRows>(), {}, &fallbacks};
+            op.Apply(input, out, DNDS::CFV::ReconstructionRegion::All, .3);
+            out.residual = b.View<R::UniformTableRows>();
+            out.faceFlux = face.View<R::UniformTableRows>();
+            op.ApplyFlux(input, out, DNDS::CFV::ReconstructionRegion::All, .3);
+            op.AddSource(input, out, DNDS::CFV::ReconstructionRegion::All, .3);
+            if (!p0)
+            {
+                auto missing = input;
+                missing.conservativeGradient.reset();
+                CHECK_THROWS(op.ApplyFlux(missing, out));
+            }
+        }
+        const auto a = combined.Owned().Read(), b = split.Owned().Read(), flux = faces.Read();
+        const auto topologyRead = mesh->AcquireRead(DNDS::Geom::MeshReadRequirements::CellFlux());
+        const auto topology = topologyRead.HostView();
+        const auto frame = fv.Motion().At(.3);
+        for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+        {
+            C::FlowState meanState{}, gathered{}, independent{};
+            for (int j = 0; j < 5; ++j)
+                meanState[j] = u.View()(iCell, j);
+            const auto source = frame.RotationSource(meanState);
+            for (int j = 0; j < 5; ++j)
+                gathered[j] = independent[j] = metric.GetCellVol(iCell) * source[j];
+            const auto cellFaces = topology.CellFaces(iCell);
+            for (DNDS::rowsize slot = 0; slot < DNDS::rowsize(cellFaces.size()); ++slot)
+            {
+                const auto iFace = cellFaces[slot];
+                const auto row = std::lower_bound(fv.AuxiliaryFaces().begin(), fv.AuxiliaryFaces().end(), iFace) - fv.AuxiliaryFaces().begin();
+                const auto parents = topology.FaceCells(iFace);
+                const auto anchor = parents[0] >= 0 && parents[0] < fv.Metrics().NumCell() ? parents[0] : parents[1];
+                for (int j = 0; j < 5; ++j)
+                    gathered[j] += (anchor == iCell ? 1 : -1) * flux.View()(row, j);
+                if (!p0)
+                {
+                    const auto point = metric.GetFaceCent(iFace);
+                    const auto normal = ((topology.CellIsFaceBack(iCell, iFace, slot) ? 1 : -1) * metric.GetFaceMeanNorm(iFace)).eval();
+                    C::FlowState value = base;
+                    for (int j = 0; j < 5; ++j)
+                        for (int d = 0; d < 3; ++d)
+                            value[j] += g[j][d] * point[d];
+                    const auto physical = C::Riemann::PhysicalFlux(equation.PrepareFluxState(value).flow, {normal[0], normal[1], normal[2]}, frame.GridVelocity({point[0], point[1], point[2]}));
+                    for (int j = 0; j < 5; ++j)
+                        independent[j] -= metric.GetFaceArea(iFace) * physical[j];
+                }
+            }
+            for (int j = 0; j < 5; ++j)
+            {
+                CHECK(a.View()(iCell, j) == b.View()(iCell, j));
+                CHECK(a.View()(iCell, j) == doctest::Approx(gathered[j]).epsilon(3e-12).scale(1));
+                if (!p0)
+                    CHECK(a.View()(iCell, j) == doctest::Approx(independent[j]).epsilon(3e-12).scale(1));
+            }
+        }
+        CHECK(fallbacks == 0);
+    }
+}
+
 int main(int argc, char **argv)
 {
     int provided = 0;
