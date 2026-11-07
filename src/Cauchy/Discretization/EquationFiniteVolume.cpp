@@ -265,8 +265,11 @@ namespace DNDS::Cauchy
                 if (owner->equation.HasRANS())
                 {
                     sourceGradients.emplace_back();
-                    for (int d = 0; d < owner->metrics.Dimension(); ++d)
-                        sourceGradients.back()[d] = R::Array<real>(sourceValues.back().Layout());
+                    // One-point direct FV can read its ready physical gradient
+                    // field directly; polynomial/multi-point paths own samples.
+                    if (!sourceValuesAreMeans)
+                        for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                            sourceGradients.back()[d] = R::Array<real>(sourceValues.back().Layout());
                 }
             }
             if (owner->equation.HasRANS())
@@ -842,7 +845,7 @@ namespace DNDS::Cauchy
                     for (int d = 0; d < owner->metrics.Dimension(); ++d)
                         if (owner->settings.numerics.reconstruction == "variational")
                             sourceSampling->Evaluate(state.PhysicalField(iField), fluxCoefficients.PhysicalField(iField), sourceGradients[iField][d], 1 + d);
-                        else
+                        else if (!sourceValuesAreMeans)
                         {
                             const auto read = directGradients[iField].Owned().Read();
                             auto write = sourceGradients[iField][d].Write();
@@ -930,17 +933,31 @@ namespace DNDS::Cauchy
                 sources.push_back(field.Read());
             std::vector<std::array<std::optional<R::Array<real>::ReadLease>, 3>> derivatives(sourceGradients.size());
             for (index iField = 0; iField < index(sourceGradients.size()); ++iField)
-                for (int d = 0; d < owner->metrics.Dimension(); ++d)
-                    derivatives[iField][d].emplace(sourceGradients[iField][d].Read());
+                if (sourceValuesAreMeans)
+                    derivatives[iField][0].emplace(directGradients[iField].Owned().Read());
+                else
+                    for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                        derivatives[iField][d].emplace(sourceGradients[iField][d].Read());
             // Resolve physical layouts once, outside the quadrature loop.
             using SampleView = R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>;
             std::vector<SampleView> samples;
-            std::vector<std::array<SampleView, 3>> gradients(derivatives.size());
+            struct SourceGradientView
+            {
+                SampleView values;
+                int componentStride = 1, direction = 0;
+                real operator()(index iPoint, index component) const
+                {
+                    return values(iPoint, component * componentStride + direction);
+                }
+            };
+            std::vector<std::array<SourceGradientView, 3>> gradients(derivatives.size());
             for (const auto &read : sources)
                 samples.push_back(read.View<R::UniformTableRows>());
             for (index iField = 0; iField < index(derivatives.size()); ++iField)
                 for (int d = 0; d < owner->metrics.Dimension(); ++d)
-                    gradients[iField][d] = derivatives[iField][d]->View<R::UniformTableRows>();
+                    gradients[iField][d] = sourceValuesAreMeans
+                                               ? SourceGradientView{derivatives[iField][0]->View<R::UniformTableRows>(), owner->metrics.Dimension(), d}
+                                               : SourceGradientView{derivatives[iField][d]->View<R::UniformTableRows>(), 1, 0};
             std::optional<WallDistanceRead> wallRead;
             if (owner->wallDistance)
                 wallRead.emplace(owner->wallDistance->AcquireRead());
