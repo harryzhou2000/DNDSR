@@ -345,8 +345,18 @@ TEST_CASE("RANS FV integrates quadrature sources and their positive implicit des
                         auto selected = controls;
                         selected.updateComponents = {4, 5};
                         fv.PrepareJacobian(state, aux, tau, *subset, selected, 0, {}, work.get());
+                        auto selectedAction = fv.BuildLinearProblem(state, C::DiagonalStorage::Block, C::OffDiagonalStorage::DirectEvaluated);
+                        fv.PrepareJacobian(state, aux, tau, *selectedAction, selected, 0, {}, work.get());
                         const auto diagonal = matrix->Diagonal().Read(), subDiagonal = subset->Diagonal().Read();
                         const auto subBlocks = subset->OffDiagonal().Read();
+                        for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                            for (I iBlock = 0; iBlock < I(subset->Columns()[iCell].size()); ++iBlock)
+                            {
+                                selectedAction->PreparedOffDiagonalEvaluator()->ApplyBlock(iCell, iBlock, direction, product);
+                                const auto expected = (subBlocks.View()(iCell, iBlock) * direction).eval();
+                                for (I j = 0; j < width; ++j)
+                                    CHECK(product[j] == doctest::Approx(expected[j]).epsilon(3e-12).scale(1));
+                            }
                         for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
                             for (I column = 0; column < width; ++column)
                                 for (I row = 0; row < width; ++row)
