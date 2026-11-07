@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Discretization/EquationFiniteVolumeInternal.hpp"
+#include "Cauchy/Discretization/WallDistanceSamples.hpp"
 #include "Cauchy/Physics/EquationRANS.hpp"
 #include "Cauchy/Physics/EquationSetup.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
@@ -779,6 +780,92 @@ TEST_CASE("Explicit mean gradients exchange current values across layouts and CP
         }
         CHECK_THROWS(fv.ValidateAuxValues(state, aux));
     }
+}
+
+TEST_CASE("High-order SST auxiliary faces retain quadrature-dependent wall transport")
+{
+    auto mesh = CFVTest::CartesianHexes(mpi, 2);
+    mesh->BuildNodeWallDist([](auto zone)
+                            { return zone == 7; });
+    auto settings = Settings();
+    settings.mesh.dimension = 3;
+    settings.numerics.gradient = "leastSquares";
+    settings.numerics.reconstruction = "variational";
+    settings.numerics.cfv.maxOrder = 2;
+    settings.numerics.cfv.intOrder = 5;
+    auto model = Equation(settings).RANS().Settings();
+    model.model = "KOmegaSST";
+    const auto equation = C::EquationSystem::Resolve(settings.equation).WithRANS(model);
+    C::FiniteVolume fv(mesh, settings, equation);
+    auto state = State(fv, true);
+    constexpr double shear = 20, omega = 20;
+    {
+        auto write = state.WriteOwned();
+        const auto flow = write.Block("flow"), rans = write.Block("rans");
+        for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+        {
+            const auto value = equation.Gas().Conservative({1, 0, shear * fv.Metrics().GetCellCent(iCell)[0], 0, 1});
+            for (int j = 0; j < 5; ++j)
+                flow(iCell, j) = value[j];
+            rans(iCell, 0) = .02;
+            rans(iCell, 1) = omega;
+        }
+    }
+    auto gradients = fv.BuildMeanGradients(state);
+    auto auxiliary = fv.BuildAuxiliaryValues({true, true});
+    R::EagerEngine engine;
+    const auto stream = engine.CreateCPUStream();
+    fv.PrepareAuxValues(state, auxiliary, gradients, engine, stream);
+    const auto geometry = fv.Metrics().AcquireRead();
+    const auto metric = geometry.HostView();
+    const auto topologyRead = mesh->AcquireRead(DNDS::Geom::MeshReadRequirements::CellFlux());
+    const auto topology = topologyRead.HostView();
+    const auto wall = C::WallDistanceSamples::Construct(mesh, settings.numerics.RHSIntegrationOrder(), settings.numerics.wallDistanceFloor);
+    const auto wallRead = wall.AcquireRead();
+    const auto wallValues = wallRead.HostView();
+    const auto read = auxiliary.faceSpectralRadius->Read();
+    const auto observed = read.View<R::TableRows>();
+    // Two cells per axis with extrapolated boundary targets give the LS
+    // velocity slope shear/2. SST transport is insensitive to the velocity
+    // offset itself, but depends on this strain and the sampled wall distance.
+    // Independently reduce all physical samples, not just a face-center value.
+    const auto diffusion = [&](double distance)
+    {
+        DNDS::Physics::RANS::Point point;
+        point.state << 1, 0, 0, 0, 2.5, .02, omega;
+        point.gradient(0, 2) = shear / 2;
+        point.wallDistance = distance;
+        point.molecularViscosity = .001;
+        point.cp = 3.5;
+        const auto transport = equation.RANS().Transport(point);
+        return std::max(4. / 3. * (.001 + transport.viscosity),
+                        (.001 * 3.5 / settings.equation.prandtl + transport.conductivity) / 2.5);
+    };
+    bool wallChangesTransport = false;
+    for (I iAux = 0; iAux < I(fv.AuxiliaryFaces().size()); ++iAux)
+    {
+        const I iFace = fv.AuxiliaryFaces()[iAux];
+        const auto parents = topology.FaceCells(iFace);
+        const I left = parents[0] >= 0 && parents[0] < fv.Metrics().NumCell() ? parents[0] : parents[1];
+        const I right = parents[0] == left ? parents[1] : parents[0];
+        double area = 0, speed = 0, bound = std::max(diffusion(wallValues.cellMean(left, 0)), diffusion(wallValues.cellMean(right == DNDS::UnInitIndex ? left : right, 0)));
+        const I first = metric.FaceQuadratureBegin(iFace), last = metric.FaceQuadratureEnd(iFace);
+        REQUIRE(last - first > 1);
+        for (I q = first; q < last; ++q)
+        {
+            area += metric.GetFaceWeight(q);
+            bound = std::max(bound, diffusion(wallValues.faces(iFace, q - first)));
+            wallChangesTransport |= std::abs(diffusion(wallValues.faces(iFace, q - first)) - diffusion(wallValues.cellMean(left, 0))) > 1e-10;
+            const double otherX = metric.GetCellCent(right == DNDS::UnInitIndex ? left : right)[0];
+            speed = std::max(speed, shear * std::max(metric.GetCellCent(left)[0], otherX) * std::abs(metric.GetFaceNorm(q)[1]) + std::sqrt(1.4));
+        }
+        const double expected = bound * area * (1 / metric.GetCellVol(left) + 1 / metric.GetCellVol(right == DNDS::UnInitIndex ? left : right));
+        CHECK(observed(iAux, 0) == doctest::Approx(speed).epsilon(1e-12));
+        CHECK(observed(iAux, 1) == doctest::Approx(expected).epsilon(2e-11));
+    }
+    int changed = wallChangesTransport;
+    MPI_Allreduce(MPI_IN_PLACE, &changed, 1, MPI_INT, MPI_MAX, mpi.comm);
+    CHECK(changed == 1);
 }
 
 TEST_CASE("Two-equation auxiliary viscosity consumes current conservative mean gradients")
