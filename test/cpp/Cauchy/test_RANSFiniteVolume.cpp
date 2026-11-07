@@ -1338,6 +1338,18 @@ TEST_CASE("P0 jump-only face viscosity retains physical gradients in the SA volu
         fv.Evaluate(state, combined, *workspace, engine, stream);
         C::EquationDofOperations::Fill(sourceOnly, 0.);
         fv.AddSource(state, sourceOnly, *workspace);
+        auto auxiliary = fv.BuildAuxiliaryValues({true, true});
+        fv.PrepareCorrectionAux(state, *workspace, auxiliary, engine, stream, 0);
+        R::Array<double> tau(R::RowLayout::Dense(fv.Metrics().NumCell(), 1));
+        {
+            auto write = tau.Write();
+            for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                write.View()(iCell, 0) = 2;
+        }
+        auto matrix = fv.BuildLinearProblem(state, C::DiagonalStorage::Block);
+        fv.PrepareJacobian(state, auxiliary, tau, *matrix, {3, .7, false}, 0, {}, workspace.get());
+        const auto diagonalRead = matrix->Diagonal().Read();
+        const auto diagonal = diagonalRead.View<R::TableRows>();
         const auto read = sourceOnly.ReadOwned();
         const auto observed = read.Block("rans");
         int checked = 0;
@@ -1358,6 +1370,11 @@ TEST_CASE("P0 jump-only face viscosity retains physical gradients in the SA volu
             point.cellLength = .25;
             point.molecularViscosity = settings.equation.viscosity;
             const auto expected = equation.RANS().Source(point)[0] / 64;
+            const auto destruction = equation.RANS().ImplicitSourceDiagonal(point)[0];
+            // Flow and SA have the same scalar face diagonal here. Subtraction
+            // isolates the mean-state source matrix without copying its oracle
+            // from the implementation's gradient preparation or scratch arrays.
+            CHECK(diagonal(iCell, 35) - diagonal(iCell, 0) == doctest::Approx(.7 * destruction / 64).epsilon(2e-10).scale(1e-12));
             point.gradient.setZero();
             const auto withoutGradient = equation.RANS().Source(point)[0] / 64;
             CHECK(std::abs(expected - withoutGradient) > 1e-10);
