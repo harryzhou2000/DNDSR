@@ -1589,6 +1589,21 @@ and diffusion bound once per call, then faces consume those rows. This explicit
 a separately exchanged payload. Face-average turbulent transport remains a
 distinct point evaluation. General callers can still omit the buffer.
 
+The approximate RANS source Jacobian consumes physical center gradients.
+For direct FV levels these already live in the gradient field: retain its
+read lease and index direction `component * dimension + direction` directly.
+Do not copy the whole field into one scratch array per direction. Variational
+levels still sample their polynomial at cell centers. This view substitution
+changes neither source gradients nor quadrature and preserves strided layouts.
+
+Fixed-count local ILU with no initial guess treats the first correction's
+input iterate as analytically zero. The first factor application writes the
+solution directly without reading or clearing that owned/ghost allocation;
+later corrections form the ordinary defect. Explicit initial guesses,
+residual-controlled solves and Krylov paths retain their respective schedules.
+A zero correction budget returns an actual zero owned solution. This is a
+traffic optimization, not a different preconditioner or an omitted correction.
+
 `evaluate` includes five fixed Jacobi VR sweeps, auxiliary preparation, RHS,
 leases and transfers. `raw_rhs` retains its input/output scopes across the
 batch and calls the stateless operator with explicit fallback diagnostics.
