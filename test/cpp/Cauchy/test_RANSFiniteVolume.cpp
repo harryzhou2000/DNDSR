@@ -1056,6 +1056,74 @@ TEST_CASE("P3 thermal reconstruction compression preserves admissible RANS linea
         }
 }
 
+TEST_CASE("SA reference-quality failure preserves thermally admissible uncompressed coefficients")
+{
+#ifndef USE_NS_SA_NUT_REDUCED_ORDER
+    auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    mesh->BuildNodeWallDist([](auto)
+                            { return false; });
+    for (bool split : {false, true})
+    {
+        auto settings = Settings();
+        settings.boundaries.clear();
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.cfv.intOrder = 4;
+        settings.numerics.positivity = true;
+        settings.numerics.positivityCompressToMean = true;
+        settings.numerics.ransState.referenceConservative = {{"rho", 1}, {"rhoNuTilde", .02}};
+        C::FiniteVolume fv(mesh, settings, Equation(settings));
+        auto state = State(fv, split);
+        fv.InitializeConstant(state, {1, 0, 0, 0, 1}, {}, 0, {}, {{"rhoNuTilde", .02}});
+        auto work = fv.BuildEquationWorkspace(state);
+        auto guess = fv.ReconstructionGuess(*work);
+        C::EquationDofOperations::Fill(guess, 0);
+        const int modes = fv.Reconstruction().NRecDOF();
+        const I cells = fv.Metrics().NumCell();
+        R::Array<I> pointCells(R::RowLayout::Dense(cells, 1));
+        R::Array<double> points(R::RowLayout::Dense(cells, 3));
+        {
+            auto write = guess.WriteOwned();
+            const auto flow = write.Block("flow"), scalar = write.Block("rans");
+            auto cw = pointCells.Write();
+            auto pw = points.Write();
+            const auto c = cw.View();
+            const auto p = pw.View();
+            for (I iCell = 0; iCell < cells; ++iCell)
+            {
+                flow(iCell, 4 * modes) = .001;
+                scalar(iCell, 0) = 1;
+                c(iCell, 0) = iCell;
+                const auto center = fv.Metrics().GetCellCent(iCell);
+                for (int d = 0; d < 3; ++d)
+                    p(iCell, d) = center[d] - (d == 0 ? .125 : 0);
+            }
+        }
+        // Independent face-midpoint sample proves reference-quality failure;
+        // the build's SA policy still permits the uncompressed polynomial.
+        const auto location = state.LocateBlock("rans");
+        DNDS::CFV::PolynomialSamplingPlan sampler(fv.Reconstruction(), pointCells, points, false);
+        R::Array<double> values(R::RowLayout::Dense(cells, I(state.PhysicalField(location.physicalField).Width())));
+        sampler.Evaluate(state.PhysicalField(location.physicalField), guess.PhysicalField(location.physicalField), values);
+        {
+            const auto read = values.Read();
+            for (I iCell = 0; iCell < cells; ++iCell)
+                REQUIRE(read.View()(iCell, location.firstComponent) < 0);
+        }
+        fv.LimitReconstructionPP(state, *work);
+        const auto input = guess.ReadOwned(), output = fv.FluxReconstruction(*work).ReadOwned();
+        for (const auto *name : {"flow", "rans"})
+        {
+            const auto a = input.Block(name), b = output.Block(name);
+            for (I iCell = 0; iCell < cells; ++iCell)
+                for (I j = 0; j < a.ComponentNumber(); ++j)
+                    CHECK(a(iCell, j) == b(iCell, j));
+        }
+        CHECK(fv.PositivityReconstructionStats(*work) == std::make_pair(I(0), 1.));
+    }
+#endif
+}
+
 TEST_CASE("Two-equation PP damps scalar coefficient pairs and rejects scalar-invalid reference polynomials")
 {
     auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
