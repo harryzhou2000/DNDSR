@@ -35,7 +35,7 @@ def extract(source):
     before("            if ((chemical || rans) && sourceReconstruction)\n",
            "            assemblyFreeze.Finish();\n"
            "            ::DiagnosticTiming::Scope assemblySource(::DiagnosticTiming::Block::JacobianSource);\n")
-    before("            for (index iCell = 0; iCell < owned; ++iCell)\n            {\n                if (output.DiagonalMode() == DiagonalStorage::Block)",
+    before("            // A block-shaped output is already the row's dense workspace.",
            "            assemblySource.Finish();\n"
            "            ::DiagnosticTiming::Scope assemblyFaces(::DiagnosticTiming::Block::JacobianFaces);\n")
     restored = text

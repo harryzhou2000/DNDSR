@@ -490,17 +490,11 @@ namespace DNDS::Cauchy
             }
             if ((chemical || rans) && sourceReconstruction)
                 AddEquationSourceJacobian(state, *sourceReconstruction, *diagonal, output.DiagonalMode(), controls.residualScale, evaluator);
-            for (index iCell = 0; iCell < owned; ++iCell)
+            // A block-shaped output is already the row's dense workspace.
+            // Keep its write lease and use the centralized borrowed adapter;
+            // diagonal-line storage retains the existing projection scratch.
+            const auto assembleFaceRow = [&](index iCell, auto &own)
             {
-                if (output.DiagonalMode() == DiagonalStorage::Block)
-                    for (index j = 0; j < nv * nv; ++j)
-                        own.data()[j] = d(iCell, j);
-                else
-                {
-                    own.setZero();
-                    for (index j = 0; j < nv; ++j)
-                        own(j, j) = d(iCell, j);
-                }
                 if (b)
                     for (index j = 0; j < b->BlockNumber(iCell); ++j)
                         (*b)(iCell, j).setZero();
@@ -536,9 +530,26 @@ namespace DNDS::Cauchy
                         if (!snapshot->active[i] || !snapshot->active[j])
                             own(i, j) = real(i == j);
                 DNDS_check_throw_info(own.allFinite(), "nonfinite equation approximate diagonal");
-                for (index j = 0; j < (output.DiagonalMode() == DiagonalStorage::Block ? nv * nv : nv); ++j)
-                    d(iCell, j) = output.DiagonalMode() == DiagonalStorage::Block ? own.data()[j] : own(j, j);
+            };
+            if (output.DiagonalMode() == DiagonalStorage::Block)
+            {
+                const auto matrices = Algebra::MakeEigenRowMatrices(d, nv, nv);
+                for (index iCell = 0; iCell < owned; ++iCell)
+                {
+                    auto block = matrices[iCell];
+                    assembleFaceRow(iCell, block);
+                }
             }
+            else
+                for (index iCell = 0; iCell < owned; ++iCell)
+                {
+                    own.setZero();
+                    for (index j = 0; j < nv; ++j)
+                        own(j, j) = d(iCell, j);
+                    assembleFaceRow(iCell, own);
+                    for (index j = 0; j < nv; ++j)
+                        d(iCell, j) = own(j, j);
+                }
         }
         catch (...)
         {
