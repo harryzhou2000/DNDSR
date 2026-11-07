@@ -1596,6 +1596,20 @@ Do not copy the whole field into one scratch array per direction. Variational
 levels still sample their polynomial at cell centers. This view substitution
 changes neither source gradients nor quadrature and preserves strided layouts.
 
+The same direct-gradient borrowing applies to midpoint RHS volume sources
+when setup proves exactly one source point per owned cell in matching order.
+Their source loop retains one read lease per physical gradient field and
+indexes `component * dimension + direction`; it does not allocate or copy one
+sample array per direction. Polynomial and multipoint sources keep sampled
+storage. The explicit gradient refresh and P0 source derivatives remain.
+
+Assembled frozen flux blocks resolve the existing exact-identity/full-selection
+predicate before momentum and normal-frame products. Only that proven path
+uses the original values directly. Every genuine periodic rotation, partial
+selection and two-equation turbulent-stress path retains its transformations.
+This is independent of EOS dispatch, ALE speed and the one-face-mean geometry
+used by all approximate Jacobians; no high-order quadrature is introduced.
+
 Fixed-count local ILU with no initial guess treats the first correction's
 input iterate as analytically zero. The first factor application writes the
 solution directly without reading or clearing that owned/ghost allocation;
