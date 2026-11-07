@@ -239,10 +239,17 @@ namespace DNDS::Cauchy
             FlowState flow{};
             for (int j = 0; j < 5; ++j)
                 flow[j] = values(point.other, flowFirst + j);
-            const Geom::tPoint momentum{flow[1], flow[2], flow[3]};
-            const auto rotated = (point.rotation * momentum).eval();
-            for (int d = 0; d < 3; ++d)
-                flow[1 + d] = rotated[d];
+            // Resolve the existing rank-two identity predicate before frame
+            // products. Partial selections and every real rotation retain
+            // the transformed path, including arbitrarily small rotations.
+            const bool sameFrame = allComponents && (point.rotation.array() == Eigen::Matrix3d::Identity().array()).all();
+            if (!sameFrame)
+            {
+                const Geom::tPoint momentum{flow[1], flow[2], flow[3]};
+                const auto rotated = (point.rotation * momentum).eval();
+                for (int d = 0; d < 3; ++d)
+                    flow[1 + d] = rotated[d];
+            }
             const auto grid = frame.GridVelocity(point.location);
             const real inverseDensity = 1 / flow[0];
             real normalVelocity = 0, gridNormalVelocity = 0, scalarSpeed = 0;
@@ -257,11 +264,14 @@ namespace DNDS::Cauchy
             FlowState speedDerivative{};
             speedDerivative[0] = -normalVelocity * inverseDensity;
             for (int j = 0; j < 3; ++j)
-            {
-                for (int d = 0; d < 3; ++d)
-                    speedDerivative[1 + j] += point.rotation(d, j) * point.normal[d];
-                speedDerivative[1 + j] *= inverseDensity;
-            }
+                if (sameFrame)
+                    speedDerivative[1 + j] = point.normal[j] * inverseDensity;
+                else
+                {
+                    for (int d = 0; d < 3; ++d)
+                        speedDerivative[1 + j] += point.rotation(d, j) * point.normal[d];
+                    speedDerivative[1 + j] *= inverseDensity;
+                }
             const real factor = weighted ? .5 * scale * point.weight : 1;
             const real lambda = radius[point.auxiliary][0] + radius[point.auxiliary][1];
             // With no component rotation/projection, J = D + q h^T + t g^T:
@@ -270,7 +280,7 @@ namespace DNDS::Cauchy
             // arbitrary logical block offsets. No gamma-equivalent closure.
             // Exact identity is intentional: a small physical rotation must
             // still take the fully transformed path below.
-            if (allComponents && (point.rotation.array() == Eigen::Matrix3d::Identity().array()).all())
+            if (sameFrame)
             {
                 for (index column = 0; column < components; ++column)
                 {
