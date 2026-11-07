@@ -211,9 +211,33 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
         }
         return C::Json{{"relative_l2_difference", relative}, {"native_l2", nativeNorm}, {"Euler_l2", oldNorm}};
     };
+    // Untimed rank-sized workload metadata for arrival-imbalance diagnosis.
+    // Count the actual prepared canonical face/source sets, not a uniform
+    // cells-per-rank cost estimate. No counter is added to a numerical loop.
+    std::array<I, 10> localWork{fv.Metrics().NumCell(), fv.Metrics().NumCellProc() - fv.Metrics().NumCell(),
+                                I(work->owner->partition.Core().size()), I(work->owner->partition.HaloDependent().size()),
+                                I(work->owner->jacobianSamples.size()), I(work->owner->faceEntries.size()), 0, 0, 0,
+                                work->sourceOffsets.empty() ? 0 : work->sourceOffsets.back()};
+    {
+        const auto geometry = fv.Metrics().AcquireRead();
+        const auto metric = geometry.HostView();
+        for (const auto first : work->owner->faceEntries)
+        {
+            const auto &sample = work->owner->samples[first];
+            localWork[8] += metric.FaceQuadratureEnd(sample.face) - metric.FaceQuadratureBegin(sample.face);
+            if (sample.other == DNDS::UnInitIndex)
+            {
+                ++localWork[6];
+                localWork[7] += sample.boundary.kind == C::BoundaryKind::NoSlipWall;
+            }
+        }
+    }
+    std::vector<I> rankWork(!mpi.rank ? localWork.size() * mpi.size : 0);
+    MPI_Gather(localWork.data(), int(localWork.size()), DNDS::DNDS_MPI_INDEX,
+               rankWork.data(), int(localWork.size()), DNDS::DNDS_MPI_INDEX, 0, mpi.comm);
     C::Json resolved = settings;
     if (!mpi.rank)
-        std::cout << "BROAD_WORKLOAD " << C::Json{{"cells", counts[0]}, {"np", mpi.size}, {"minimum_owned_cells", counts[1]}, {"maximum_owned_cells", counts[2]}, {"wall_distance_input", levels ? "actual-production-providers" : "frozen-native-mesh-samples"}, {"raw_wall_provider_difference", wallDifference}, {"native_resolved_settings", resolved}, {"euler_resolved_settings", C::Json(oldConfig)}, {"reconstruction_start", "zero each repetition"}, {"linear_corrections", settings.implicit.linear.iterations}, {"pMG_levels", levels}, {"nonlinear_corrections", corrections}, {"nonlinear_stopping_norm_in_scope", nonlinearController}}.dump() << std::endl;
+        std::cout << "BROAD_WORKLOAD " << C::Json{{"cells", counts[0]}, {"np", mpi.size}, {"minimum_owned_cells", counts[1]}, {"maximum_owned_cells", counts[2]}, {"rank_work_columns", {"owned_cells", "ghost_cells", "core_cells", "halo_dependent_cells", "face_incidences", "canonical_faces", "canonical_boundary_faces", "canonical_wall_faces", "canonical_face_quadrature_points", "source_quadrature_points"}}, {"rank_work_rows", rankWork}, {"wall_distance_input", levels ? "actual-production-providers" : "frozen-native-mesh-samples"}, {"raw_wall_provider_difference", wallDifference}, {"native_resolved_settings", resolved}, {"euler_resolved_settings", C::Json(oldConfig)}, {"reconstruction_start", "zero each repetition"}, {"linear_corrections", settings.implicit.linear.iterations}, {"pMG_levels", levels}, {"nonlinear_corrections", corrections}, {"nonlinear_stopping_norm_in_scope", nonlinearController}}.dump() << std::endl;
     // Independent untimed spatial check before any state correction. This
     // comparison normalizes through the actual production EvaluateRate block.
     reset();

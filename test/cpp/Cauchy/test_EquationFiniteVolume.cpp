@@ -357,15 +357,19 @@ TEST_CASE("Spatial initial input averages conservative polynomials on distribute
 
 TEST_CASE("Face-centered assembled Jacobians match direct actions in stationary and moving frames")
 {
-    const auto mesh = CauchyTest::PeriodicQuads(mpi, 6);
-    for (bool moving : {false, true})
+    // Cover translated identity frames and a genuinely rotated periodic
+    // frame against the independent directional-action implementation.
+    for (int scenario = 0; scenario < 3; ++scenario)
     {
+        const auto mesh = scenario == 2 ? CFVTest::Sector(mpi) : CauchyTest::PeriodicQuads(mpi, 6);
         auto settings = C::DomainSettings{};
         settings.numerics.reconstruction = "variational";
         settings.numerics.cfv.maxOrder = 3;
         settings.numerics.cfv.intOrder = 5;
-        if (moving)
+        if (scenario)
             settings.motion.angularVelocity = {0, 0, .2};
+        if (scenario == 2)
+            settings.boundaries["12"].kind = settings.boundaries["13"].kind = "extrapolate";
         const auto equation = C::EquationSystem::Resolve(settings.equation);
         C::FiniteVolume fv(mesh, settings, equation);
         auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(5));
