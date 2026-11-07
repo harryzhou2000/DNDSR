@@ -5,9 +5,11 @@
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/State/EquationDofs.hpp"
+#include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include <Eigen/LU>
 #include <optional>
+#include <limits>
 
 namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
@@ -556,6 +558,42 @@ TEST_CASE("Fixed-count stationary corrections preserve iterates without diagnost
                 }
         }
         CHECK(fixture.rhs.Owned().Version() == rhsVersion);
+    }
+}
+TEST_CASE("Fixed-count zero-start ILU overwrites dirty solution and handles zero corrections")
+{
+    Fixture fixture(2);
+    const auto bind = [&](Field &field)
+    { return fixture.Bind(field); };
+    const auto schema = C::EquationSystem::Resolve(C::EquationSettings{}).Schema();
+    auto rhs = C::EquationDofs::Coupled(schema, fixture.rhs);
+    for (int count : {0, 1})
+    {
+        C::LinearSolveSettings settings;
+        settings.method = "ilu";
+        settings.stopping = "fixedCount";
+        settings.maxIterations = count;
+        C::EquationLinearSolver solver(fixture.problem, rhs, bind, settings, {false, false});
+        // Poison all owned output before each call; analytic zero must not
+        // require clearing or reading it on the first triangular solve.
+        for (int repeat = 0; repeat < 2; ++repeat)
+        {
+            auto output = solver.Solution().NumericAlias();
+            C::EquationDofOperations::Fill(output, std::numeric_limits<double>::quiet_NaN());
+            const auto report = solver.Solve(rhs);
+            CHECK(report.usable);
+            CHECK(report.iterations == count);
+            CHECK(report.operatorApplications == 0);
+            const auto read = solver.Solution().ReadOwned();
+            const auto values = read.Block("flow");
+            for (DNDS::index iCell = 0; iCell < 4; ++iCell)
+                for (int j = 0; j < 5; ++j)
+                {
+                    CHECK(std::isfinite(values(iCell, j)));
+                    if (!count)
+                        CHECK(values(iCell, j) == 0);
+                }
+        }
     }
 }
 TEST_CASE("Fixed-count final finite check agrees on a rank-local nonfinite update")

@@ -437,11 +437,12 @@ namespace DNDS::Cauchy
                                                  { data.Precondition(x, y); }, [&](const Field &x, const auto &probes)
                                                  { return data.Products(x, probes); }, {data.settings.maxIterations, data.settings.relativeTolerance, data.settings.absoluteTolerance}, initialGuess);
                     auto &x = *data.solution;
+                    const bool directFirstILU = !initialGuess && data.settings.method == "ilu" && data.settings.stopping == "fixedCount";
                     data.Stage([&]
                                {
                 const LinearProfile::Scope timing(data.profile, LinearProfile::Algebra);
                 if (initialGuess) Ops::CopyGuess(x, *initialGuess);
-                else if (data.settings.method != "sgs") Clear(x); });
+                else if (data.settings.method != "sgs" && !directFirstILU) Clear(x); });
                     Linear::LinearIterationReport report;
                     // Defect formation is independent of stopping/reporting:
                     // fixed-count ILU needs it only before later corrections.
@@ -455,6 +456,18 @@ namespace DNDS::Cauchy
                     };
                     const auto correct = [&]
                     {
+                        if (directFirstILU && report.iterations == 0)
+                        {
+                            // x0 is analytic zero: neither owned nor ghost
+                            // storage is read. Publish M_local^-1*b directly,
+                            // avoiding clear, zero+correction and next->x copy.
+                            data.Stage([&]
+                                       { const LinearProfile::Scope timing(data.profile, LinearProfile::Triangular);
+                                         data.problem->ApplyILU(rhs, data.forward, x); });
+                            ++report.preconditionerApplications;
+                            ++report.iterations;
+                            return;
+                        }
                         if (data.settings.method == "ilu")
                         {
                             // Stationary defect correction, with frozen local
@@ -486,7 +499,7 @@ namespace DNDS::Cauchy
                                 formDefect();
                             correct();
                         }
-                        if (!initialGuess && report.iterations == 0 && data.settings.method == "sgs")
+                        if (!initialGuess && report.iterations == 0)
                             data.Stage([&]
                                        { Ops::Fill(x, 0); }); // Return a real zero answer if no sweep ran.
                         report.usable = data.Finite(x);
