@@ -337,6 +337,28 @@ TEST_CASE("RANS FV integrates quadrature sources and their positive implicit des
                             for (I j = 0; j < width; ++j)
                                 CHECK(product[j] == doctest::Approx(expected[j]).epsilon(3e-12).scale(1));
                         }
+                    if (std::string(name) == "SA" && std::string(reconstruction) == "constant")
+                    {
+                        // A six-component dense specialization must preserve
+                        // principal selection, including flow/SA cross entries.
+                        auto subset = fv.BuildLinearProblem(state, C::DiagonalStorage::Block);
+                        auto selected = controls;
+                        selected.updateComponents = {4, 5};
+                        fv.PrepareJacobian(state, aux, tau, *subset, selected, 0, {}, work.get());
+                        const auto diagonal = matrix->Diagonal().Read(), subDiagonal = subset->Diagonal().Read();
+                        const auto subBlocks = subset->OffDiagonal().Read();
+                        for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                            for (I column = 0; column < width; ++column)
+                                for (I row = 0; row < width; ++row)
+                                {
+                                    const bool active = row >= 4 && column >= 4;
+                                    CHECK(subDiagonal.View()(iCell, row + width * column) ==
+                                          doctest::Approx(active ? diagonal.View()(iCell, row + width * column) : double(row == column)).epsilon(3e-12).scale(1));
+                                    for (I iBlock = 0; iBlock < I(matrix->Columns()[iCell].size()); ++iBlock)
+                                        CHECK(subBlocks.View()(iCell, iBlock)(row, column) ==
+                                              doctest::Approx(active ? stored.View()(iCell, iBlock)(row, column) : 0.).epsilon(3e-12).scale(1));
+                                }
+                    }
                 }
                 const auto rhsRead = result.ReadOwned();
                 const auto diagonalRead = matrix->Diagonal().Read();
