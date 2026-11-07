@@ -4,6 +4,19 @@ CS performance readings are provisional. Canonical comparisons execute matched
 baseline/candidate members serially within one exclusive single-node BSSCA
 allocation, with frozen source, controls and workload; no named-node pinning.
 
+`BROAD_WORKLOAD` includes untimed `rank_work_columns` and flattened
+`rank_work_rows`, one ten-column row per MPI rank: owned/ghost/core/
+halo-dependent cell counts, face incidences, canonical faces, canonical
+boundary/wall faces, canonical face quadrature visits and source quadrature
+samples. These describe the actual finest FV prepared sets, rather than
+assuming equal cell counts imply equal work. The single gather precedes all
+timed calls and resets; no counter or extra collective is inserted into a
+numerical loop. Coarse operators may use different quadrature, so the finest
+source count is a topology/work descriptor, not a coarse visit count.
+Use at least three ranks for correlation analysis; an np2 pilot validates
+metadata shape and unchanged output only. Correlation of cumulative rank
+durations can indicate arrival imbalance but does not identify its cause.
+
 The private pipeline copy also counts correction-only source refreshes after
 the existing stale-publication guards. `source_refresh_rank_rows` reports six
 integers per rank: P3/P1/P0 refresh calls, then P3/P1/P0 source-point visits,
