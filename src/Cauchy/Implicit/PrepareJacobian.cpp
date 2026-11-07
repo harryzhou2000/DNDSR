@@ -63,20 +63,20 @@ namespace DNDS::Cauchy
                     auto &row = prepared->rows[iCell];
                     const auto &columns = output.Columns()[iCell];
                     row.resize(columns.size());
-                    for (index entry = fv._data->offsets[iCell]; entry < fv._data->offsets[iCell + 1]; ++entry)
+                    for (index entry = fv._data->jacobianOffsets[iCell]; entry < fv._data->jacobianOffsets[iCell + 1]; ++entry)
                     {
-                        const auto &sample = fv._data->samples[entry];
+                        const auto &sample = fv._data->jacobianSamples[entry];
                         if (sample.other == UnInitIndex || sample.other == iCell)
                             continue; // These contributions belong to the diagonal.
                         const auto slot = std::find(columns.begin(), columns.end(), sample.other);
                         DNDS_check_throw_info(slot != columns.end(), "evaluated Jacobian stencil is missing an adjacent cell");
-                        row[slot - columns.begin()].push_back({sample.other, sample.auxiliaryFace, entry, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, metric.GetFaceWeight(sample.point)});
+                        row[slot - columns.begin()].push_back({sample.other, sample.auxiliaryFace, entry, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, metric.GetFaceArea(sample.face)});
                     }
                 }
                 geometry = std::move(prepared);
             }
             if (roe)
-                magnitudes.resize(fv._data->samples.size());
+                magnitudes.resize(fv._data->jacobianSamples.size());
         }
         index Components() const override { return 5; }
         std::shared_ptr<const Algebra::DofSpace::Partition> RowSpaceIdentity() const override { return geometry->partition; }
@@ -158,7 +158,7 @@ namespace DNDS::Cauchy
     {
         Metrics().ValidateField(prototype, 5);
         _data->partition.Validate();
-        auto columns = FiniteVolumeDetail::JacobianColumns(_data->offsets, _data->samples);
+        auto columns = FiniteVolumeDetail::JacobianColumns(_data->jacobianOffsets, _data->jacobianSamples);
         return std::make_shared<LinearProblemContext>(prototype.Space(), 5, std::move(columns), _data->partition.Core(), diagonal, offDiagonal);
     }
     void FiniteVolume::PrepareJacobian(const CFV::FVField &state, const AuxiliaryValues &auxiliary,
@@ -193,7 +193,10 @@ namespace DNDS::Cauchy
         checkAlias(faceArray);
         checkAlias(inversePseudoTime);
         if (auxiliary._origin->boundary)
+        {
             checkAlias(auxiliary._origin->boundary->flow);
+            checkAlias(auxiliary._origin->boundary->faceFlow);
+        }
         if (auxiliary.meanThermodynamics)
             checkAlias(*auxiliary.meanThermodynamics);
         for (const auto *derived : {&auxiliary.derivedOwned, &auxiliary.derivedGhost})
@@ -219,7 +222,7 @@ namespace DNDS::Cauchy
         RHSScalarView incoming;
         if (auxiliary._origin->boundary)
         {
-            boundaryRead.emplace(auxiliary._origin->boundary->flow.Read());
+            boundaryRead.emplace(auxiliary._origin->boundary->faceFlow.Read());
             incoming = boundaryRead->View<R::UniformTableRows>();
         }
         if (auxiliary.meanThermodynamics)
@@ -301,15 +304,15 @@ namespace DNDS::Cauchy
                 for (index j = 0; j < blocks->BlockNumber(iCell); ++j)
                     (*blocks)(iCell, j).setZero();
             const auto left = Load(mean, iCell);
-            for (index entry = _data->offsets[iCell]; entry < _data->offsets[iCell + 1]; ++entry)
+            for (index entry = _data->jacobianOffsets[iCell]; entry < _data->jacobianOffsets[iCell + 1]; ++entry)
             {
-                const auto &sample = _data->samples[entry];
+                const auto &sample = _data->jacobianSamples[entry];
                 const auto iAux = sample.auxiliaryFace;
                 const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]}, point{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]};
                 const auto gridVelocity = frame.GridVelocity(point);
                 const real convection = radius(iAux, 0), diffusion = radius(iAux, 1);
                 DNDS_check_throw_info(std::isfinite(convection) && convection >= 0 && std::isfinite(diffusion) && diffusion >= 0, "invalid face spectral radius in Jacobian");
-                const real factor = .5 * controls.residualScale * metric.GetFaceWeight(sample.point);
+                const real factor = .5 * controls.residualScale * metric.GetFaceArea(sample.face);
                 if (!controls.roeDissipation && sample.other == UnInitIndex)
                 {
                     own.diagonal().array() += factor * (convection + diffusion);

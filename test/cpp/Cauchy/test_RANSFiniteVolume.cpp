@@ -381,6 +381,7 @@ TEST_CASE("RANS FV integrates quadrature sources and their positive implicit des
                 for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
                 {
                     std::array<double, 2> expected{}, expectedDiagonal{};
+                    double meanWall = 0;
                     const auto center = fv.Metrics().GetCellCent(iCell);
                     for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
                     {
@@ -392,6 +393,7 @@ TEST_CASE("RANS FV integrates quadrature sources and their positive implicit des
                         DNDS::Physics::RANS::Point value;
                         value.state << 1, 0, 0, 0, 2.5, .02, components == 2 ? omega : 0;
                         value.wallDistance = std::max(settings.numerics.wallDistanceFloor, wall);
+                        meanWall += value.wallDistance / quadrature.GetNumPoints();
                         value.cellLength = 1.5; // Independent maximum edge length, not a unit placeholder.
                         value.molecularViscosity = .001;
                         const double weight = quadrature.GetWeight(iQ) * 6 / 64.;
@@ -403,14 +405,21 @@ TEST_CASE("RANS FV integrates quadrature sources and their positive implicit des
                             const auto oldPlaceholder = equation.RANS().Source(wrong);
                             lengthChangesSource |= std::abs(source[0] - oldPlaceholder[0]) > 1e-10;
                         }
-                        value.state[5] = meanSA;
-                        const auto destruction = equation.RANS().ImplicitSourceDiagonal(value);
                         for (int j = 0; j < components; ++j)
                         {
                             expected[j] += weight * source[j];
-                            expectedDiagonal[j] += weight * destruction[j];
                         }
                     }
+                    // RHS remains quadrature-integrated. Its approximate
+                    // source diagonal uses one mean state and mean wall input.
+                    DNDS::Physics::RANS::Point meanPoint;
+                    meanPoint.state << 1, 0, 0, 0, 2.5, meanSA, components == 2 ? omega : 0;
+                    meanPoint.wallDistance = meanWall;
+                    meanPoint.cellLength = 1.5;
+                    meanPoint.molecularViscosity = .001;
+                    const auto destruction = equation.RANS().ImplicitSourceDiagonal(meanPoint);
+                    for (int j = 0; j < components; ++j)
+                        expectedDiagonal[j] = 6. / 8. * destruction[j];
                     for (int j = 0; j < components; ++j)
                     {
                         CHECK(rhs(iCell, j) == doctest::Approx(expected[j]).epsilon(1e-10).scale(1e-12));

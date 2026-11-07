@@ -83,14 +83,14 @@ namespace DNDS::Cauchy
                 auto &row = prepared->rows[iCell];
                 const auto &columns = output.Columns()[iCell];
                 row.resize(columns.size());
-                for (index entry = fv._data->offsets[iCell]; entry < fv._data->offsets[iCell + 1]; ++entry)
+                for (index entry = fv._data->jacobianOffsets[iCell]; entry < fv._data->jacobianOffsets[iCell + 1]; ++entry)
                 {
-                    const auto &sample = fv._data->samples[entry];
+                    const auto &sample = fv._data->jacobianSamples[entry];
                     if (sample.other == UnInitIndex || sample.other == iCell)
                         continue;
                     const auto found = std::find(columns.begin(), columns.end(), sample.other);
                     DNDS_check_throw_info(found != columns.end(), "equation Jacobian stencil is missing a neighbor");
-                    row[found - columns.begin()].push_back({sample.other, sample.auxiliaryFace, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, metric.GetFaceWeight(sample.point)});
+                    row[found - columns.begin()].push_back({sample.other, sample.auxiliaryFace, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, metric.GetFaceArea(sample.face)});
                 }
             }
             geometry = std::move(prepared);
@@ -381,7 +381,7 @@ namespace DNDS::Cauchy
             if (sourceReconstruction)
                 ValidateEquationSourceJacobian(state, *sourceReconstruction, time);
         }
-        auto evaluator = _data->equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {false, false, true, chemical, chemical});
+        auto evaluator = _data->equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {rans, false, true, chemical, chemical});
         auto snapshot = std::make_shared<EquationJacobian>(*this, state, output, controls, time);
         const auto input = state.ReadWithGhost();
         const auto blocks = EquationFVDetail::BlockViews(state, input);
@@ -416,7 +416,7 @@ namespace DNDS::Cauchy
         if (off)
             b.emplace(off->View());
         EquationFVDetail::PointScratch point(nv);
-        Eigen::MatrixXd own(nv, nv), other(nv, nv), unweighted(nv, nv);
+        Eigen::MatrixXd own(nv, nv), other(nv, nv);
         const auto rotation = snapshot->frame.NegativeSourceJacobian();
         const real rotationBound = Geom::tPoint{snapshot->frame.angularVelocity[0], snapshot->frame.angularVelocity[1], snapshot->frame.angularVelocity[2]}.norm();
         try
@@ -494,63 +494,32 @@ namespace DNDS::Cauchy
                 if (b)
                     for (index j = 0; j < b->BlockNumber(iCell); ++j)
                         (*b)(iCell, j).setZero();
-                for (index first = _data->offsets[iCell]; first < _data->offsets[iCell + 1];)
+                // First-order mean-state linearization: exactly one action
+                // per face incidence, regardless of polynomial degree or
+                // face curvature. Accurate geometry was integrated at setup.
+                for (index entry = _data->jacobianOffsets[iCell]; entry < _data->jacobianOffsets[iCell + 1]; ++entry)
                 {
-                    index end = first + 1;
-                    const auto &reference = _data->samples[first];
-                    while (end < _data->offsets[iCell + 1] && _data->samples[end].face == reference.face)
-                        ++end;
-                    // Frozen cell means/EOS derivatives and one face signal
-                    // make these derivatives identical on a stationary planar
-                    // face. Hoist only the unweighted block, preserving every
-                    // quadrature weight and the original accumulation order.
-                    // Curved normals, moving frames and different periodic
-                    // images retain the full pointwise path. No RHS, metric,
-                    // source or approximate-Jacobian policy is changed.
-                    bool shared = !snapshot->frame.moving && end > first + 1 &&
-                                  reference.other != UnInitIndex && (b || reference.other == iCell);
-                    for (index entry = first + 1; shared && entry < end; ++entry)
+                    const auto &sample = _data->jacobianSamples[entry];
+                    const real weight = metric.GetFaceArea(sample.face), lambda = radius(sample.auxiliaryFace, 0) + radius(sample.auxiliaryFace, 1);
+                    own.diagonal().array() += .5 * controls.residualScale * weight * lambda;
+                    if (sample.other == UnInitIndex)
+                        continue; // Active Euler scalar-BC approximation.
+                    if (!b && sample.other != iCell)
+                        continue;
+                    const EquationJacobian::Point point{sample.other, sample.auxiliaryFace, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, weight};
+                    if (sample.other == iCell)
                     {
-                        const auto &sample = _data->samples[entry];
-                        shared = sample.other == reference.other && sample.auxiliaryFace == reference.auxiliaryFace &&
-                                 (sample.normal.array() == reference.normal.array()).all() &&
-                                 (sample.rotation.array() == reference.rotation.array()).all();
+                        other.setZero();
+                        snapshot->AddFrozenFluxBlock(point, other, inputValues);
+                        own += other;
                     }
-                    if (shared)
+                    else
                     {
-                        unweighted.setZero();
-                        snapshot->AddFrozenFluxBlock({reference.other, reference.auxiliaryFace, {reference.normal[0], reference.normal[1], reference.normal[2]}, {reference.ownPoint[0], reference.ownPoint[1], reference.ownPoint[2]}, reference.rotation, 1}, unweighted, inputValues, false);
+                        const auto &columns = output.Columns()[iCell];
+                        const auto found = std::find(columns.begin(), columns.end(), sample.other);
+                        auto destination = (*b)(iCell, found - columns.begin());
+                        snapshot->AddFrozenFluxBlock(point, destination, inputValues);
                     }
-                    for (index entry = first; entry < end; ++entry)
-                    {
-                        const auto &sample = _data->samples[entry];
-                        const real weight = metric.GetFaceWeight(sample.point), lambda = radius(sample.auxiliaryFace, 0) + radius(sample.auxiliaryFace, 1);
-                        own.diagonal().array() += .5 * controls.residualScale * weight * lambda;
-                        if (sample.other == UnInitIndex)
-                            continue; // Active Euler scalar-BC approximation.
-                        if (!b && sample.other != iCell)
-                            continue;
-                        if (shared)
-                        {
-                            const real factor = .5 * controls.residualScale * weight;
-                            for (index j = 0; j < nv * nv; ++j)
-                                other.data()[j] = factor * unweighted.data()[j];
-                        }
-                        else
-                        {
-                            other.setZero();
-                            snapshot->AddFrozenFluxBlock({sample.other, sample.auxiliaryFace, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, weight}, other, inputValues);
-                        }
-                        if (sample.other == iCell)
-                            own += other;
-                        else
-                        {
-                            const auto &columns = output.Columns()[iCell];
-                            const auto found = std::find(columns.begin(), columns.end(), sample.other);
-                            (*b)(iCell, found - columns.begin()) += other;
-                        }
-                    }
-                    first = end;
                 }
                 for (index j = 0; j < nv; ++j)
                     for (index i = 0; i < nv; ++i)

@@ -404,6 +404,8 @@ namespace DNDS::Cauchy
         const Geom::UnstructuredMesh &Mesh() const;
         const RigidMotion &Motion() const;
         const std::vector<BoundaryPoint> &BoundaryPoints() const;
+        /// Maintained face-center rows, in faceFlow order; quadrature=-1.
+        const std::vector<BoundaryPoint> &BoundaryFaces() const;
         /// Direct owned-boundary selection for a physical coupling adapter.
         /// The result retains the reference mesh without exposing a mutable
         /// owner handle through the solver's read-only mesh facade.

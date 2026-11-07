@@ -12,8 +12,8 @@ namespace DNDS::Cauchy
     {
         struct BoundaryPointLayout;
     }
-    /// Receiver reference-frame quadrature row. This is a snapshot of prepared
-    /// geometry; use the owning FiniteVolume's validity checks before sampling.
+    /// Receiver reference-frame point row; quadrature=-1 denotes the maintained
+    /// face center. This is prepared geometry, validated by its FiniteVolume.
     struct BoundaryPoint
     {
         index cell, face, quadrature;
@@ -22,6 +22,9 @@ namespace DNDS::Cauchy
         bool interface;
     };
     /// Explicit incoming boundary packet, currently flow5 in receiver axes.
+    /// flow holds RHS quadrature rows, faceFlow holds independently sampled
+    /// face-center rows for approximate Jacobians. Neither is an average of
+    /// the other. Both are published together; only interface rows are required.
     /// More equation blocks can accompany flow without entering its allocation.
     /// The coupling controller owns matching, interpolation and transfers.
     ///
@@ -34,6 +37,7 @@ namespace DNDS::Cauchy
     struct BoundaryInputs
     {
         Runtime::Array<real> flow;
+        Runtime::Array<real> faceFlow;
 
     private:
         friend class FiniteVolume;
@@ -42,7 +46,7 @@ namespace DNDS::Cauchy
         {
             real time;
             StateEpoch epoch;
-            uint64_t version, shape;
+            uint64_t version, shape, faceVersion, faceShape;
         };
         std::optional<Publication> _publication;
         bool _updating = false;

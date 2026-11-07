@@ -125,13 +125,31 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
     const auto frame = coupled.Motion().At(time);
     {
         auto write = incoming.flow.Write();
-        const auto values = write.View<R::UniformTableRows>();
-        const auto &points = coupled.BoundaryPoints();
-        for (I iPoint = 0; iPoint < I(points.size()); ++iPoint)
+        const auto fill = [&](const auto &points, const auto &values)
         {
-            const auto state = frame.LocalState(C::ProfileValue(settings.initialProfile, settings.initialPrimitive, equation.Gas(), frame.WorldPoint(points[iPoint].point), time));
+            for (I iPoint = 0; iPoint < I(points.size()); ++iPoint)
+            {
+                const auto state = frame.LocalState(C::ProfileValue(settings.initialProfile, settings.initialPrimitive, equation.Gas(), frame.WorldPoint(points[iPoint].point), time));
+                for (int j = 0; j < 5; ++j)
+                    values(iPoint, j) = state[j];
+            }
+        };
+        fill(coupled.BoundaryPoints(), write.View<R::UniformTableRows>());
+        // Quadrature values alone cannot publish a packet for centered
+        // Jacobians: the donor must explicitly sample the face centers too.
+    }
+    if (!coupled.BoundaryFaces().empty())
+        CHECK_THROWS(coupled.PublishBoundaryInputs(incoming, time));
+    {
+        auto write = incoming.faceFlow.Write();
+        const auto values = write.View<R::UniformTableRows>();
+        const auto &points = coupled.BoundaryFaces();
+        for (I iFace = 0; iFace < I(points.size()); ++iFace)
+        {
+            CHECK(points[iFace].quadrature == -1);
+            const auto state = frame.LocalState(C::ProfileValue(settings.initialProfile, settings.initialPrimitive, equation.Gas(), frame.WorldPoint(points[iFace].point), time));
             for (int j = 0; j < 5; ++j)
-                values(iPoint, j) = state[j];
+                values(iFace, j) = state[j];
         }
     }
     coupled.PublishBoundaryInputs(incoming, time, {0, 1, 2, 0, 0, 0});
@@ -173,10 +191,11 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
     C::FiniteVolume coarse(mesh, settings, equation);
     const auto alias = coarse.AliasBoundaryInputs(incoming);
     CHECK(alias.flow.SharedStorage() == incoming.flow.SharedStorage());
+    CHECK(alias.faceFlow.SharedStorage() == incoming.faceFlow.SharedStorage());
     CHECK_NOTHROW(coarse.ValidateBoundaryInputs(alias, time));
     CHECK(alias.Epoch().stage == 2);
     {
-        auto write = incoming.flow.Write(); // Even a debug write invalidates publication.
+        auto write = incoming.faceFlow.Write(); // Either table's debug write invalidates publication.
     }
     CHECK_THROWS(coupled.ValidateAuxValues(b, auxB, time));
 }

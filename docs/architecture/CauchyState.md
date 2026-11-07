@@ -1043,8 +1043,10 @@ the index locations of mixture thermal references and chemical derivatives.
 The C++ full-state finite-volume operator accepts SA, Wilcox k-omega, SST and
 realizable k-epsilon, with the existing SA/SST DES formulas. It
 requires the mesh's published nodal wall field and samples it with the configured
-positive `numerics.wallDistanceFloor` (default `1e-10`). Sources and the positive
-implicit destruction diagonal are integrated on cell quadrature; viscous face
+positive `numerics.wallDistanceFloor` (default `1e-10`). RHS sources are
+integrated on cell quadrature. The positive approximate implicit destruction
+diagonal instead uses one cell mean, cell volume, mean wall input and current
+polynomial gradients sampled at the cell center; viscous face
 fluxes add turbulent stress/heat/species transport and model scalar diffusion.
 Aux diffusion bounds include turbulent transport. Two-equation viscosity uses
 an explicit conservative mean-gradient input, described below.
@@ -1054,9 +1056,10 @@ SA no-slip quadrature values use zero physical face value and reflected exterior
 value, including Euler's compile-time zero-interior wall convention for the
 flux. Prescribed boundaries require `ransConservative.rhoNuTilde`; inflow/outflow
 uses velocity relative to the moving boundary. Correction preparation refreshes
-RANS destruction together with sampled source state; publication cannot pair a
-new mean with an old destruction diagonal. Chemical rates and the existing RHS
-remain untouched by this refresh.
+sampled source-state provenance. Approximate source derivatives are evaluated
+from current means and center gradients during Jacobian preparation, so a new
+mean cannot consume an old destruction diagonal. Chemical rates and the RHS
+remain untouched by correction-only preparation.
 
 `InitializeConstant` accepts a complete named conservative RANS map as its last
 argument, and initializes flow, RANS and species through their logical blocks.

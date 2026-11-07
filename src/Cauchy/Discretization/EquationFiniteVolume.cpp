@@ -149,7 +149,10 @@ namespace DNDS::Cauchy
         std::vector<R::Array<real>> sourceValues;
         bool sourceValuesAreMeans = false;
         std::vector<std::array<R::Array<real>, 3>> sourceGradients;
-        R::Array<real> ransDestruction;
+        // Approximate source Jacobians use cell means plus gradients sampled
+        // at one cell center. RHS source quadrature remains independent.
+        std::optional<CFV::PolynomialSamplingPlan> sourceJacobianSampling;
+        std::vector<std::array<R::Array<real>, 3>> sourceJacobianGradients;
         R::Array<real> boundaryMomentumFlux;
         /// Integrated residual contribution in the canonical owned-parent
         /// frame, one row per local stencil face. Refilled on every RHS call.
@@ -259,6 +262,30 @@ namespace DNDS::Cauchy
                         sourceGradients.back()[d] = R::Array<real>(sourceValues.back().Layout());
                 }
             }
+            if (owner->equation.HasRANS())
+            {
+                const index owned = owner->metrics.NumCell();
+                R::Array<index> centerCells(R::RowLayout::Dense(owned, 1));
+                R::Array<real> centers(R::RowLayout::Dense(owned, 3));
+                {
+                    auto cellWrite = centerCells.Write();
+                    auto pointWrite = centers.Write();
+                    for (index iCell = 0; iCell < owned; ++iCell)
+                    {
+                        cellWrite.View()(iCell, 0) = iCell;
+                        const auto center = metric.GetCellCent(iCell);
+                        for (int d = 0; d < 3; ++d)
+                            pointWrite.View()(iCell, d) = center[d];
+                    }
+                }
+                sourceJacobianSampling.emplace(owner->reconstruction, centerCells, centers);
+                for (index iField = 0; iField < prototype.PhysicalFieldNumber(); ++iField)
+                {
+                    sourceJacobianGradients.emplace_back();
+                    for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                        sourceJacobianGradients.back()[d] = R::Array<real>(FiniteVolumeDetail::FieldLayout(prototype.PhysicalField(iField).Owned().Layout(), owned, prototype.PhysicalField(iField).Width()));
+                }
+            }
         }
         static EquationDofs BindCoefficients(const EquationDofs &state, const std::vector<Field> &fields, index modes)
         {
@@ -308,8 +335,6 @@ namespace DNDS::Cauchy
             }
             if (!meanOnly && owner->settings.numerics.positivity)
                 positivity = std::make_shared<EquationPositivityWorkspace>(owner, state, fluxCoefficients, workers);
-            if (ransFirst >= 0)
-                ransDestruction = R::Array<real>(R::RowLayout::Dense(owner->metrics.NumCell(), owner->equation.RANS().ComponentNumber()));
             BuildSourceSampling();
         }
         void BindHalos(EquationDofs &state)
@@ -777,15 +802,17 @@ namespace DNDS::Cauchy
             };
             return unchanged(*sourceState, state) && unchanged(*sourceCoefficients, fluxCoefficients);
         }
-        /// Refresh quadrature state and RANS destruction together. A null
-        /// result prepares the correction Jacobian without changing the RHS
-        /// or evaluating chemical rates.
+        /// High-order RHS source sampling is distinct from the mean-state
+        /// approximate source Jacobian. A null result refreshes publication
+        /// provenance only; the Jacobian samples its own center gradients.
         void PrepareVolumeSource(const EquationDofs &state, EquationDofs *result, EquationPointEvaluator &evaluator)
         {
             const PhaseTime timing(*this, SourcePhase);
             if (!sourceSampling)
                 return;
             SampleSourceState(state);
+            if (!result)
+                return;
             std::vector<R::Array<real>::ReadLease> sources;
             for (const auto &field : sourceValues)
                 sources.push_back(field.Read());
@@ -817,14 +844,6 @@ namespace DNDS::Cauchy
                 output.emplace(result->WriteOwned());
             const auto speciesOutput = result && speciesFirst >= 0 ? output->Block("species") : EquationBlockArrayView<real>{};
             const auto ransOutput = result && ransFirst >= 0 ? output->Block("rans") : EquationBlockArrayView<real>{};
-            std::optional<R::Array<real>::WriteLease> destructionWrite;
-            if (ransFirst >= 0)
-                destructionWrite.emplace(ransDestruction.Write());
-            const auto destruction = destructionWrite ? destructionWrite->View<R::TableRows>() : R::ArrayView<real, R::AccessBoundsChecks, R::TableRows>{};
-            if (ransFirst >= 0)
-                for (index iCell = 0; iCell < owner->metrics.NumCell(); ++iCell)
-                    for (int j = 0; j < owner->equation.RANS().ComponentNumber(); ++j)
-                        destruction(iCell, j) = 0;
             const int independent = owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() - 1 : 0;
             PointScratch point(state.ComponentNumber());
             const auto mean = state.ReadOwned();
@@ -860,14 +879,12 @@ namespace DNDS::Cauchy
                     {
                         const auto &model = owner->equation.RANS();
                         const auto input = RANSPoint(point, flowFirst, ransFirst, model, properties, walls.cells(iCell, iPoint - sourceOffsets[iCell]), lengths(iCell, 0));
-                        const auto diagonal = model.ImplicitSourceDiagonal(input);
                         const auto source = result ? model.Source(input) : std::array<real, 2>{};
                         for (int j = 0; j < model.ComponentNumber(); ++j)
                         {
-                            DNDS_check_throw_info(std::isfinite(source[j]) && std::isfinite(diagonal[j]), "nonfinite RANS source or destruction diagonal");
+                            DNDS_check_throw_info(std::isfinite(source[j]), "nonfinite RANS source");
                             if (result)
                                 ransOutput(iCell, j) += weights(iPoint, 0) * source[j];
-                            destruction(iCell, j) += weights(iPoint, 0) * diagonal[j];
                         }
                     }
                 }
@@ -1501,44 +1518,70 @@ namespace DNDS::Cauchy
     {
         if (!work.sourceSampling)
             return;
-        const index components = state.ComponentNumber();
+        // The approximate source matrix is a one-point, mean-state operator.
+        // Never integrate nonlinear source derivatives on RHS quadrature.
+        // RANS still consumes the current polynomial's center gradients.
+        std::vector<std::array<std::optional<R::Array<real>::ReadLease>, 3>> gradientReads;
+        std::vector<std::array<RHSScalarView, 3>> gradients;
         if (work.ransFirst >= 0)
         {
-            const auto read = work.ransDestruction.Read();
-            const auto source = read.View<R::TableRows>();
-            const auto output = diagonal.View<R::TableRows>();
-            for (index iCell = 0; iCell < _data->metrics.NumCell(); ++iCell)
-                for (int j = 0; j < _data->equation.RANS().ComponentNumber(); ++j)
+            gradientReads.resize(size_t(state.PhysicalFieldNumber()));
+            gradients.resize(size_t(state.PhysicalFieldNumber()));
+            for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+                for (int d = 0; d < _data->metrics.Dimension(); ++d)
                 {
-                    const index row = work.ransFirst + j;
-                    output(iCell, storage == DiagonalStorage::Block ? row + components * row : row) += scale * source(iCell, j);
+                    auto scratch = work.sourceJacobianGradients[iField][d];
+                    work.sourceJacobianSampling->Evaluate(state.PhysicalField(iField), work.fluxCoefficients.PhysicalField(iField), scratch, 1 + d);
+                    gradientReads[iField][d].emplace(scratch.Read());
+                    gradients[iField][d] = gradientReads[iField][d]->View<R::UniformTableRows>();
                 }
         }
-        if (!work.chemical)
-            return;
-        std::vector<R::Array<real>::ReadLease> sources;
-        for (const auto &field : work.sourceValues)
-            sources.push_back(field.Read());
-        const auto weightRead = work.sourceWeights.Read();
-        const auto weights = weightRead.View<R::FixedRows<1>>();
+        const auto means = state.ReadOwned();
+        const auto blocks = BlockViews(state, means);
+        const auto geometry = _data->metrics.AcquireRead();
+        const auto metric = geometry.HostView();
+        std::optional<WallDistanceRead> wallRead;
+        std::optional<R::Array<real>::ReadLease> lengthRead;
+        if (work.ransFirst >= 0)
+        {
+            wallRead.emplace(_data->wallDistance->AcquireRead());
+            lengthRead.emplace(_data->ransCellLength.Read());
+        }
+        const auto walls = wallRead ? wallRead->HostView() : WallDistanceView{};
+        const auto lengths = lengthRead ? lengthRead->View<R::FixedRows<1>>() : R::ArrayView<const real, R::AccessBoundsChecks, R::FixedRows<1>>{};
         const auto matrix = diagonal.View<R::TableRows>();
         const index nv = state.ComponentNumber();
-        const int independent = _data->equation.Mixture().SpeciesNumber() - 1;
+        const int independent = _data->equation.HasMixture() ? _data->equation.Mixture().SpeciesNumber() - 1 : 0;
         PointScratch point(nv);
         std::vector<EquationBlockLocation> locations;
         for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
             locations.push_back(state.LocateBlock(iBlock));
         for (index iCell = 0; iCell < _data->metrics.NumCell(); ++iCell)
-            for (index iPoint = work.sourceOffsets[iCell]; iPoint < work.sourceOffsets[iCell + 1]; ++iPoint)
-            {
+        {
+            Gather(blocks, iCell, point, false);
+            if (work.ransFirst >= 0)
                 for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
                 {
                     const auto location = locations[iBlock];
-                    const auto values = sources[location.physicalField].View<R::UniformTableRows>();
                     for (index j = 0; j < location.componentNumber; ++j)
-                        point.values[work.logicalFirst[iBlock] + j] = values(iPoint, location.firstComponent + j);
+                        for (int d = 0; d < _data->metrics.Dimension(); ++d)
+                            point.gradient(work.logicalFirst[iBlock] + j, d) = gradients[location.physicalField][d](iCell, location.firstComponent + j);
                 }
-                const auto properties = evaluator.Evaluate(point.Flow(work.flowFirst), point.Species(work.speciesFirst, independent), 0, {false, false, false, true, true});
+            const auto properties = evaluator.Evaluate(point.Flow(work.flowFirst), point.Species(work.speciesFirst, independent), 0, {work.ransFirst >= 0, false, false, work.chemical, work.chemical});
+            const real volume = metric.GetCellVol(iCell);
+            if (work.ransFirst >= 0)
+            {
+                const auto &model = _data->equation.RANS();
+                const auto input = RANSPoint(point, work.flowFirst, work.ransFirst, model, properties, walls.cellMean(iCell, 0), lengths(iCell, 0));
+                const auto destruction = model.ImplicitSourceDiagonal(input);
+                for (int j = 0; j < model.ComponentNumber(); ++j)
+                {
+                    DNDS_check_throw_info(std::isfinite(destruction[j]), "nonfinite mean-state RANS destruction diagonal");
+                    const index row = work.ransFirst + j;
+                    matrix(iCell, storage == DiagonalStorage::Block ? row + nv * row : row) += scale * volume * destruction[j];
+                }
+            }
+            if (work.chemical)
                 for (int j = 0; j < 5 + independent; ++j)
                 {
                     const index column = j < 5 ? work.flowFirst + j : work.speciesFirst + j - 5;
@@ -1546,11 +1589,11 @@ namespace DNDS::Cauchy
                     {
                         const index row = work.speciesFirst + k;
                         const real derivative = properties.sourceJacobian(k, j);
-                        DNDS_check_throw_info(std::isfinite(derivative), "nonfinite quadrature source derivative");
+                        DNDS_check_throw_info(std::isfinite(derivative), "nonfinite mean-state source derivative");
                         if (storage == DiagonalStorage::Block || row == column)
-                            matrix(iCell, storage == DiagonalStorage::Block ? row + nv * column : row) -= scale * weights(iPoint, 0) * derivative;
+                            matrix(iCell, storage == DiagonalStorage::Block ? row + nv * column : row) -= scale * volume * derivative;
                     }
                 }
-            }
+        }
     }
 }

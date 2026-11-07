@@ -30,6 +30,8 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         index auxiliaryFace = UnInitIndex;
         real viscousDistance = 0;
         index face = UnInitIndex;
+        /// Row in the incoming packet used by this sample: RHS flow for
+        /// quadrature samples, faceFlow for centered Jacobian samples.
         index boundaryPoint = UnInitIndex;
         /// Exact setup-time frame test. Ordinary and translated-periodic faces
         /// keep components unchanged; even a small nonidentity rotation remains
@@ -112,6 +114,7 @@ namespace DNDS::Cauchy
             std::weak_ptr<Geom::UnstructuredMesh> mesh;
             Runtime::VersionStamp stamp;
             std::vector<BoundaryPoint> points;
+            std::vector<BoundaryPoint> faces;
         };
     }
     struct FiniteVolume::Data
@@ -129,6 +132,10 @@ namespace DNDS::Cauchy
         Geom::EntityWorkPartition partition;
         std::vector<index> offsets;
         std::vector<Sample> samples;
+        /// One oriented mean-geometry face per cell incidence. Approximate
+        /// Jacobians never traverse the RHS quadrature samples above.
+        std::vector<index> jacobianOffsets;
+        std::vector<Sample> jacobianSamples;
         std::shared_ptr<const std::vector<std::vector<index>>> jacobianColumns;
         std::vector<index> boundaryEntries;
         std::vector<int> boundaryZones;

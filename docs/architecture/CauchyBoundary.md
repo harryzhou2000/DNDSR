@@ -100,6 +100,29 @@ configurations, not aliases of a loosely similar boundary. Inter-domain traces
 are Cauchy extensions and stay prescribed point values rather than reflected
 ghosts. No BC routine performs MPI or silently refreshes a halo.
 
+## Explicit interface packet
+
+`FiniteVolume::BuildBoundaryInputs()` allocates two small boundary tables in
+receiver mesh axes. `flow` follows `BoundaryPoints()` and contains incoming
+flow5 values at RHS/VR quadrature points. `faceFlow` follows `BoundaryFaces()`
+and contains independently sampled flow5 values at maintained face centers;
+these descriptors have `quadrature=-1`. Approximate Roe/BC Jacobians read
+`faceFlow`, without selecting a quadrature row or averaging quadrature states.
+Physical BCs compute their states directly and need no incoming rows.
+
+The coupling controller owns both sampling and transfer. It batches face-center
+and quadrature queries into the same distributed match/sample operation, then
+routes each result to its explicit packet table and rotates momentum into
+receiver axes. It does not change the mesh reference geometry. A domain does
+not communicate either table independently.
+
+Call `BeginBoundaryUpdate`, fill both interface sets, then publish once with
+their shared physical time and donor epoch. Missing required rows fail at
+publication. Mutating either table invalidates the publication, including its
+aliases on compatible pMG levels. Layout/geometry matching and both allocation
+versions are checked before reuse. The caller must release write views before
+publishing or launching readers; the packet does not perform hidden refreshes.
+
 Focused tests cover prescribed isothermal pressure/temperature/velocity, exact
 physical versus approximate implicit derivatives, sonic farfield branches,
 flow5/logical residual agreement, mixture wall conduction/species isolation,

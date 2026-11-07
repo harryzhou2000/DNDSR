@@ -342,7 +342,7 @@ TEST_CASE("Spatial initial input averages conservative polynomials on distribute
     }
 }
 
-TEST_CASE("High-order assembled face Jacobians match pointwise blocks in stationary and moving frames")
+TEST_CASE("Face-centered assembled Jacobians match direct actions in stationary and moving frames")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 6);
     for (bool moving : {false, true})
@@ -383,6 +383,10 @@ TEST_CASE("High-order assembled face Jacobians match pointwise blocks in station
         if (fv.Metrics().NumFaceProc())
             REQUIRE(metric.FaceQuadratureEnd(0) - metric.FaceQuadratureBegin(0) > 1);
         const auto a = assembled->ReadOffDiagonal(), b = pointwise->ReadOffDiagonal();
+        Eigen::VectorXd directionStorage(10), direct(5);
+        Eigen::Map<Eigen::VectorXd, 0, Eigen::InnerStride<2>> direction(directionStorage.data(), 5);
+        for (int j = 0; j < 5; ++j)
+            direction[j] = -.3 + .17 * j;
         a.WithBlocks([&](const auto &cached)
                      { b.WithBlocks([&](const auto &reference)
                                     {
@@ -394,6 +398,10 @@ TEST_CASE("High-order assembled face Jacobians match pointwise blocks in station
                     for (int j = 0; j < 5; ++j)
                         for (int i = 0; i < 5; ++i)
                             CHECK(observed(i, j) == doctest::Approx(expected(i, j)).epsilon(2e-14).scale(1));
+                    pointwise->PreparedOffDiagonalEvaluator()->ApplyBlock(iCell, iBlock, direction, direct);
+                    const auto product = (observed * direction).eval();
+                    for (int j = 0; j < 5; ++j)
+                        CHECK(direct[j] == doctest::Approx(product[j]).epsilon(3e-13).scale(1));
                 } }); });
     }
 }
@@ -1631,11 +1639,11 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
                 for (int row = 0; row < nv; ++row)
                 {
                     const double observed = db.View()(iCell, row + nv * column) - da.View()(iCell, row + nv * column);
-                    CHECK(observed == doctest::Approx(-expectedJacobian(row, column)).epsilon(1e-6).scale(1e-8));
-                    signal[2] = std::max(signal[2], std::abs(expectedJacobian(row, column)));
+                    const double meanOnly = row >= 5 ? h * h * mixture.prototype.molecularWeights()[row - 5] / mixture.scales.SourceRate() * rawJacobian[row - 5 + mixture.species * column] : 0;
+                    CHECK(observed == doctest::Approx(-meanOnly).epsilon(1e-6).scale(1e-8));
+                    signal[2] = std::max(signal[2], std::abs(meanOnly));
                     if (row >= 5)
                     {
-                        const double meanOnly = h * h * mixture.prototype.molecularWeights()[row - 5] / mixture.scales.SourceRate() * rawJacobian[row - 5 + mixture.species * column];
                         signal[3] = std::max(signal[3], std::abs(expectedJacobian(row, column) - meanOnly));
                     }
                 }
@@ -1652,7 +1660,7 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
     CHECK(signal[0] > 1e-10);
     CHECK(signal[1] > 1e-6 * signal[0]); // A mean/centroid-only source must fail this gate.
     CHECK(signal[2] > 1e-8);
-    CHECK(signal[3] > 1e-6 * signal[2]); // The same guard applies to the source Jacobian.
+    CHECK(signal[3] > 1e-6 * signal[2]); // A quadrature-integrated approximate Jacobian must fail the mean-state oracle above.
     const auto version = matrixB->Diagonal().Version();
     {
         auto changed = withSource.FluxReconstruction(*wb).PhysicalField(0).Owned();

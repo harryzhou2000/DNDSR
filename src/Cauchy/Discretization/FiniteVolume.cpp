@@ -256,8 +256,10 @@ namespace DNDS::Cauchy
         std::sort(data->stencilFaces.begin(), data->stencilFaces.end());
         data->stencilFaces.erase(std::unique(data->stencilFaces.begin(), data->stencilFaces.end()), data->stencilFaces.end());
         data->samples.reserve(size_t(count));
+        data->jacobianOffsets.resize(size_t(data->metrics.NumCell()) + 1);
         for (index iCell = 0; iCell < data->metrics.NumCell(); ++iCell)
         {
+            data->jacobianOffsets[iCell] = index(data->jacobianSamples.size());
             const auto faces = topology.CellFaces(iCell);
             for (rowsize slot = 0; slot < rowsize(faces.size()); ++slot)
             {
@@ -286,6 +288,16 @@ namespace DNDS::Cauchy
                     ? Geom::tPoint(2 * (CFV::Detail::FacePointInCell(topology, iFace, side, faceCenter) - metric.GetCellBary(iCell)))
                     : Geom::tPoint(CFV::Detail::OtherPointInCell(topology, iFace, side, metric.GetCellBary(other)) - metric.GetCellBary(iCell));
                 const real distanceScale = 2 * std::min(metric.GetCellVol(iCell), metric.GetCellVol(other == UnInitIndex ? iCell : other)) / faceArea;
+                Sample jacobian{iCell, other, metric.FaceQuadratureBegin(iFace), side, topology.GetFaceZone(iFace),
+                                metric.GetFaceMeanNorm(iFace), CFV::Detail::FacePointInCell(topology, iFace, side, metric.GetFaceCent(iFace)),
+                                CFV::Detail::OtherPointInCell(topology, iFace, side, metric.GetCellCent(other == UnInitIndex ? iCell : other)),
+                                CFV::Detail::OtherFrameInCell(topology, iFace, side), condition};
+                jacobian.auxiliaryFace = auxiliaryFace;
+                jacobian.face = iFace;
+                jacobian.changesFrame = !(jacobian.rotation.array() == Geom::tGPoint::Identity().array()).all();
+                if (side)
+                    jacobian.normal = -jacobian.rotation * metric.GetFaceMeanNorm(iFace);
+                data->jacobianSamples.push_back(std::move(jacobian));
                 for (index q = metric.FaceQuadratureBegin(iFace); q < metric.FaceQuadratureEnd(iFace); ++q)
                 {
                     Sample sample{iCell, other, q, side, topology.GetFaceZone(iFace), (side ? -1 : 1) * metric.GetFaceNorm(q), CFV::Detail::FacePointInCell(topology, iFace, side, metric.GetFacePoint(q)),
@@ -309,9 +321,10 @@ namespace DNDS::Cauchy
                 }
             }
         } });
+        data->jacobianOffsets.back() = index(data->jacobianSamples.size());
         MPI::LocalStage(data->mesh->getMPI(), [&]
                         {
-        data->jacobianColumns = std::make_shared<const std::vector<std::vector<index>>>(FiniteVolumeDetail::JacobianColumns(data->offsets, data->samples));
+        data->jacobianColumns = std::make_shared<const std::vector<std::vector<index>>>(FiniteVolumeDetail::JacobianColumns(data->jacobianOffsets, data->jacobianSamples));
         data->boundaryZones.assign(localZones.begin(), localZones.end());
         for (auto iFace : data->stencilFaces)
         {
@@ -373,6 +386,14 @@ namespace DNDS::Cauchy
         data->boundaryLayout->points.reserve(data->boundaryEntries.size());
         for(const auto &[zone,boundary]:settings.boundaries)
             data->hasInterfaces=data->hasInterfaces||boundary.kind=="interface";
+        for (auto &sample : data->jacobianSamples)
+            if (sample.other == UnInitIndex)
+            {
+                sample.boundaryPoint = index(data->boundaryLayout->faces.size());
+                data->boundaryLayout->faces.push_back({sample.cell, sample.face, -1, sample.zone,
+                    {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]},
+                    {sample.normal[0], sample.normal[1], sample.normal[2]}, sample.boundary.kind == BoundaryKind::Interface});
+            }
         for (index iPoint = 0; iPoint < data->reconstruction.NumBoundaryQuadrature(); ++iPoint)
         {
             const auto point = data->reconstruction.GetBoundaryQuadrature(iPoint);

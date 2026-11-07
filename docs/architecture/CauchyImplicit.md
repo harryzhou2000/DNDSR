@@ -560,8 +560,15 @@ original input spelling.
 
 The physical evaluator owns mean values, face radii and (for Roe) prepared
 characteristic magnitudes. EquationSystem regenerates physical derivatives and
-characteristic matrices; EOS calculations remain outside Riemann. Quadrature
-geometry is immutable and reused on subsequent preparation. A weak FV-owner
+characteristic matrices; EOS calculations remain outside Riemann. Approximate
+Jacobians use one face-centered incidence, never RHS quadrature, in both
+assembled and direct-evaluated modes and on every polynomial level. CFV always
+maintains reference-center position, scalar area `integral dS`, and mean normal
+`normalize(integral n dS)`; accurate geometric integration happens only at setup.
+Curved faces use the same one-record contract. Scalar area is not the magnitude
+of the integrated normal vector. Periodic images transform the face center and
+normal into the current cell frame; grid velocity is evaluated at that center.
+Geometry is immutable and reused on subsequent preparation. A weak FV-owner
 key identifies that geometry without retaining the mesh or communicator.
 Changing live means/auxiliary after preparation cannot change the frozen
 operator. Reprepare explicitly for a new nonlinear state; stale auxiliary
@@ -1294,7 +1301,7 @@ flowchart TD
     Auxiliary --> Residual[Reconstruction, limiting and integrated FV residual]
     Residual --> Norm[All-component norms; explicit stopping selection]
     Norm --> PseudoTime[Form pseudo-time from prepared spectral sums]
-    PseudoTime --> Jacobian[Physical coupled Jacobian, including source quadrature]
+    PseudoTime --> Jacobian[Mean-state coupled approximate Jacobian]
     Jacobian --> Linear[EquationLinearSolver: SGS or GMRES with SGS/ILU]
     Linear --> Candidate[Separate candidate; actual EOS and species validation]
     Candidate --> Commit[Agree admissibility, then copy owned means]
@@ -1315,8 +1322,12 @@ The equation adapter requires the implemented EquationWorkspace profile and
 rejects unavailable Roe dissipation. Its bounded corrections and equation
 application also serve polynomial FAS. It retains actual mean halos
 and high-order source samples from each residual evaluation. Auxiliary
-preparation is stateless with explicit outputs; the source Jacobian consumes
-the current reconstruction publication rather than evaluating only the mean.
+preparation is stateless with explicit outputs. The approximate source Jacobian
+uses one cell mean and cell volume, separately from high-order RHS source
+integration. RANS consumes current reconstruction gradients sampled at the
+cell center; its gradients are retained even on P0. The reconstruction
+publication must therefore remain current, without integrating its source
+Jacobian over high-order quadrature points.
 The final VR iteration count and already-reduced update norm are observable.
 Strict VR acceptance needs a positive reconstruction tolerance. With fixed
 sweeps and no norm measurement, its update diagnostic is infinity; constant or
@@ -1554,13 +1565,14 @@ ILU records additionally retain each rank's factor block count and cumulative
 guarded-inverse fallback count, rather than inferring all-rank behavior from
 rank0's last factorization alone.
 
-Correction auxiliary preparation retains an already published source sample
-and RANS destruction diagonal when the validated owned means and flux polynomial
+Correction auxiliary preparation retains an already published RHS source sample
+when the validated owned means and flux polynomial
 have the same allocation, shape/binding, value generations and physical time.
 Read leases exclude an active producer whose generation has not advanced yet.
 Geometry/schema validation and auxiliary preparation still run, and no MPI or
 stream command is conditionally omitted. Means/polynomial/time changes require
-fresh local sampling and destruction evaluation. Chemical source rates are not
+fresh local sampling. Approximate source matrices are separately refreshed
+from cell means and current center gradients. Chemical source rates are not
 reevaluated by this correction-only preparation.
 
 Equation auxiliary preparation uses the same setup-time exact frame-identity
