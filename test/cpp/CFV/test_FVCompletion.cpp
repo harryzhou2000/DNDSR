@@ -225,6 +225,68 @@ TEST_CASE("Raw reconstruction operators preserve symmetry and agree with a preco
     }
 }
 
+TEST_CASE("Cached owned AoS polynomial samples match strided output for common equation widths")
+{
+    auto mesh = G::OverlapTest::BuildNativeFixture(mpi, true).mesh;
+    auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh);
+    for (int order : {1, 3})
+    {
+        C::ReconstructionSettings settings;
+        settings.maxOrder = order;
+        settings.cacheDiffBase = true;
+        auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+        R::Array<I> cells(R::RowLayout::Dense(2 * metrics.NumCell(), 1));
+        R::Array<double> points(R::RowLayout::Dense(cells.RowCount(), 3));
+        {
+            auto geometry = metrics.AcquireRead();
+            auto ids = cells.Write();
+            auto coordinates = points.Write();
+            for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+                for (I offset = 0; offset < 2; ++offset)
+                {
+                    const I iPoint = 2 * iCell + offset;
+                    ids.View()(iPoint, 0) = iCell;
+                    const auto center = geometry.HostView().GetCellCent(iCell);
+                    for (I d = 0; d < 3; ++d)
+                        coordinates.View()(iPoint, d) = center[d] + (d < 2 ? .031 * (offset + 1) * (d + 1) : 0);
+                }
+        }
+        C::PolynomialSamplingPlan sampler(plan, cells, points, false);
+        for (I width : {5, 6, 7})
+        {
+            INFO("order=" << order << ", width=" << width);
+            auto mean = metrics.BuildField(width), coefficients = metrics.BuildField(width * plan.NRecDOF());
+            {
+                auto values = mean.Owned().Write(), modes = coefficients.Owned().Write();
+                for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+                    for (I component = 0; component < width; ++component)
+                    {
+                        values.View()(iCell, component) = 1.25 + .17 * component + .03 * iCell;
+                        for (I mode = 0; mode < plan.NRecDOF(); ++mode)
+                            modes.View()(iCell, component * plan.NRecDOF() + mode) = .021 * (mode + 1) - .013 * component;
+                    }
+            }
+            // Output layout alone selects the generic kernel, keeping the same
+            // cached basis, input arithmetic, point order and untouched halos.
+            R::Array<double> aos(R::RowLayout::Dense(cells.RowCount(), width));
+            R::Array<double> soa(R::RowLayout::ColMajor(cells.RowCount(), width));
+            sampler.EvaluateValues(mean, coefficients, aos);
+            sampler.Evaluate(mean, coefficients, soa);
+            auto a = aos.Read(), b = soa.Read();
+            double maximumDifference = 0;
+            bool finite = true;
+            for (I iPoint = 0; iPoint < cells.RowCount(); ++iPoint)
+                for (I component = 0; component < width; ++component)
+                {
+                    finite = finite && std::isfinite(a.View()(iPoint, component)) && std::isfinite(b.View()(iPoint, component));
+                    maximumDifference = std::max(maximumDifference, std::abs(a.View()(iPoint, component) - b.View()(iPoint, component)));
+                }
+            CHECK(finite);
+            CHECK(maximumDifference < 1e-14);
+        }
+    }
+}
+
 TEST_CASE("Shared basis policies snapshot points and sample cubic values and derivatives")
 {
     for (int cacheOrder : {-1, 0, 1, 3})

@@ -115,6 +115,15 @@ energies and `compress=1`, with no independent species/RANS positivity minimum.
 This is a timestep proposal, not a proof that every explicit stage is positive.
 Extended explicit flux blending remains unavailable.
 
+Equation reconstruction PP uses `CFV::PolynomialSamplingPlan::EvaluateValues`
+for its value-only samples. This retains the same geometry/shape validation and
+read/write leases as generic `Evaluate(..., 0)`. Cached owned AoS fields with
+5/6/7 components and 2D P1/P3 mode counts use bounded CPU kernels; every other
+layout, width, ghost or cache configuration retains generic evaluation. Source
+derivative sampling stays in the original evaluator translation unit, avoiding
+changes to its generated loop when value kernels are specialized. This changes
+execution only, not positivity points, policy or reconstruction arithmetic.
+
 ## Explicit stage acceptance and retry
 
 SSPRK3 uses the uncompressed conservative residual for flow5 and species in each

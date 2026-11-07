@@ -27,6 +27,7 @@ Prepare/ReconstructionDevicePlan.cpp
 Prepare/GradientPlan.cpp
 Prepare/LimitedVRPlan.cpp
 Operators/Gradient.cpp
+Operators/PolynomialSampling.cpp
 Operators/LimitedVR.cpp
 Prepare/PolynomialSamplingPlan.cpp
 Operators/Reconstruction.cpp

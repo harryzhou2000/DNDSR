@@ -33,5 +33,10 @@ namespace DNDS::CFV
         /// samples value; higher ordinals sample derivatives without the mean.
         /// Only caches containing ghost cells acquire input ghost leases.
         void Evaluate(const FVField &mean, const FVField &coefficients, Runtime::Array<real> &output, int derivative = 0) const;
+        /// Value-only counterpart with the same shape, placement, geometry and
+        /// lease contract. Common cached owned AoS queries use bounded CPU
+        /// kernels; all other queries call Evaluate(..., 0). Keeping this
+        /// separate leaves derivative evaluation independent of specialization.
+        void EvaluateValues(const FVField &mean, const FVField &coefficients, Runtime::Array<real> &output) const;
     };
 }

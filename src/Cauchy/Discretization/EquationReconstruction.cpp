@@ -80,7 +80,7 @@ namespace DNDS::Cauchy
         void Sample(const EquationDofs &input, const EquationDofs &coefficients, std::vector<R::Array<real>> &values) const
         {
             for (index iField = 0; iField < input.PhysicalFieldNumber(); ++iField)
-                owner->positivitySamples->Evaluate(input.PhysicalField(iField), coefficients.PhysicalField(iField), values[iField]);
+                owner->positivitySamples->EvaluateValues(input.PhysicalField(iField), coefficients.PhysicalField(iField), values[iField]);
         }
         template <class Values>
         bool ReferenceGood(const Values &values, index q, const EquationThermalView &bounds) const
