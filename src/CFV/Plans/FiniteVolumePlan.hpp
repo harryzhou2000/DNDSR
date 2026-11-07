@@ -103,6 +103,7 @@ namespace DNDS::CFV
         Runtime::ArrayView<const index, false, Runtime::FixedRows<1>> faceOffsets;
         Runtime::ArrayView<const real, false, Runtime::FixedRows<7>> quadrature;
         Runtime::ArrayView<const real, false, Runtime::FixedRows<3>> radialMoment;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<7>> faceMean;
         DNDS_DEVICE_CALLABLE real GetCellVol(index iCell) const { return cells(iCell, 0); }
         DNDS_DEVICE_CALLABLE Geom::tPoint GetCellCent(index iCell) const
         {
@@ -123,6 +124,12 @@ namespace DNDS::CFV
             return {quadrature(iPoint, 3), quadrature(iPoint, 4), quadrature(iPoint, 5)};
         }
         DNDS_DEVICE_CALLABLE real GetFaceWeight(index iPoint) const { return quadrature(iPoint, 6); }
+        /// Reference-center position, normalized integral(n dS), scalar area.
+        /// Geometry is integrated at setup; approximate face operators use one
+        /// record regardless of reconstruction/RHS integration degree.
+        DNDS_DEVICE_CALLABLE Geom::tPoint GetFaceCent(index iFace) const { return {faceMean(iFace, 0), faceMean(iFace, 1), faceMean(iFace, 2)}; }
+        DNDS_DEVICE_CALLABLE Geom::tPoint GetFaceMeanNorm(index iFace) const { return {faceMean(iFace, 3), faceMean(iFace, 4), faceMean(iFace, 5)}; }
+        DNDS_DEVICE_CALLABLE real GetFaceArea(index iFace) const { return faceMean(iFace, 6); }
     };
     /// Read scope pins metadata, values and the mesh generation. Construction
     /// validates once; HostView() copies only borrowed pointers/scalars.
@@ -130,7 +137,7 @@ namespace DNDS::CFV
     {
         std::shared_ptr<const Detail::FiniteVolumeData> _data;
         std::shared_ptr<Geom::MeshReadAccess> _meshRead;
-        Runtime::Array<real>::ReadLease _cells, _quadrature, _radialMoment;
+        Runtime::Array<real>::ReadLease _cells, _quadrature, _radialMoment, _faceMean;
         Runtime::Array<index>::ReadLease _offsets;
         explicit FiniteVolumeRead(std::shared_ptr<const Detail::FiniteVolumeData> data);
         friend class FiniteVolumePlan;
@@ -155,8 +162,10 @@ namespace DNDS::CFV
         /// Equation source terms and cylindrical component connections remain
         /// with the equation adapter; this option changes integration only.
         /// faceIntOrder=0 follows intOrder. faceIntOrder=1 publishes one
-        /// reference-center point per face, with the face measure still
-        /// integrated at intOrder. Cell volumes/centers are unaffected.
+        /// reference-center point per face, using its normalized integrated
+        /// mean normal and scalar measure from intOrder geometry integration.
+        /// The same one-record face geometry is always maintained, including
+        /// when RHS quadrature is high-order. Cell volumes are unaffected.
         static FiniteVolumePlan ConstructMetrics(ssp<Geom::UnstructuredMesh> mesh, int intOrder = 5, bool axisymmetric = false, int faceIntOrder = 0);
         void Validate() const;
         FiniteVolumeRead AcquireRead() const;

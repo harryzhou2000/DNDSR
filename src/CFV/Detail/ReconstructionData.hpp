@@ -29,6 +29,9 @@ namespace DNDS::CFV::Detail
         Runtime::Array<real> radialMoment;
         // Face quadrature table: position[3], unit normal[3], weighted measure.
         Runtime::Array<real> faceQuadrature;
+        // One geometric record per face: reference center, normalized area-
+        // integrated normal, and scalar area. Independent of RHS quadrature.
+        Runtime::Array<real> faceMean;
         Runtime::Array<index> faceOffsets;
         FiniteVolumeData(ssp<Geom::UnstructuredMesh> m, int order, bool axis, std::shared_ptr<Runtime::CommunicationContext> communication)
             : mesh(std::move(m)), stamp(mesh->versions.Stamp(Runtime::Change::Topology | Runtime::Change::Geometry |

@@ -39,6 +39,24 @@ access and transfer execution; CFV owns reconstruction mathematics; the solver
 owns field histories, equations, stage scheduling, stopping and domain coupling.
 No solver or CFV dependency is introduced into Geom.
 
+## Maintained face geometry
+
+`FiniteVolumePlan` always stores one face-centered record alongside its RHS
+quadrature records. `AcquireRead().HostView()` exposes `GetFaceCent(iFace)`,
+`GetFaceMeanNorm(iFace)` and `GetFaceArea(iFace)`. The center is the mapped
+reference-element center; the mean normal is the normalized surface integral
+of the normal; area is the scalar surface measure. On curved faces, area is
+not the magnitude of the integrated normal vector. Axisymmetric measures
+include radius; a zero-weight face on the axis retains its geometric normal.
+
+Construction integrates geometry once and publishes both tables. With
+`faceIntOrder=1`, the single RHS point uses this maintained center, mean normal
+and integrated area. Higher-order RHS uses its own point normals and weights;
+it does not change the maintained face record. Approximate FV Jacobians can
+therefore use one face record at every polynomial degree, without traversing
+RHS quadrature. Both tables share the metric publication's mesh version
+validation, read leases, and explicit device residency lifetime.
+
 ## Supported mathematics
 
 * Cell-centered planar 2D and volumetric 3D unstructured cells, scalar or multiple

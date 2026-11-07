@@ -45,21 +45,48 @@ static DNDS::real Polynomial(const tPoint &p, int degree)
 }
 TEST_CASE("Midpoint face publication preserves integrated measures and cell metrics")
 {
-    const auto mesh = Mesh();
-    const auto full = C::FiniteVolumePlan::ConstructMetrics(mesh, 5);
-    const auto midpoint = C::FiniteVolumePlan::ConstructMetrics(mesh, 5, false, 1);
-    const auto aRead = full.AcquireRead(), bRead = midpoint.AcquireRead();
-    const auto a = aRead.HostView(), b = bRead.HostView();
-    for (DNDS::index iCell = 0; iCell < full.NumCellProc(); ++iCell)
-        for (DNDS::index j = 0; j < 8; ++j)
-            CHECK(a.cells(iCell, j) == b.cells(iCell, j));
-    for (DNDS::index iFace = 0; iFace < full.NumFaceProc(); ++iFace)
+    for (const bool curved : {false, true})
     {
-        CHECK(b.FaceQuadratureEnd(iFace) - b.FaceQuadratureBegin(iFace) == 1);
-        DNDS::real area = 0;
-        for (DNDS::index iPoint = a.FaceQuadratureBegin(iFace); iPoint < a.FaceQuadratureEnd(iFace); ++iPoint)
-            area += a.GetFaceWeight(iPoint);
-        CHECK(b.GetFaceWeight(b.FaceQuadratureBegin(iFace)) == doctest::Approx(area).epsilon(1e-14));
+        CAPTURE(curved);
+        auto mesh = Mesh();
+        if (curved)
+        {
+            auto quadratic = std::make_shared<UnstructuredMesh>(mpi, 2);
+            quadratic->BuildO2FromO1Elevation(*mesh);
+            quadratic->PrepareNativeTopology();
+            quadratic->TransformCoords([](tPoint p) -> tPoint
+                                       { p[1] += .05 * p[0] * p[0]; return p; });
+            mesh = std::move(quadratic);
+        }
+        const auto full = C::FiniteVolumePlan::ConstructMetrics(mesh, 5);
+        const auto midpoint = C::FiniteVolumePlan::ConstructMetrics(mesh, 5, false, 1);
+        const auto aRead = full.AcquireRead(), bRead = midpoint.AcquireRead();
+        const auto a = aRead.HostView(), b = bRead.HostView();
+        for (DNDS::index iCell = 0; iCell < full.NumCellProc(); ++iCell)
+            for (DNDS::index j = 0; j < 8; ++j)
+                CHECK(a.cells(iCell, j) == b.cells(iCell, j));
+        int nonplanar = 0;
+        for (DNDS::index iFace = 0; iFace < full.NumFaceProc(); ++iFace)
+        {
+            CHECK(b.FaceQuadratureEnd(iFace) - b.FaceQuadratureBegin(iFace) == 1);
+            DNDS::real area = 0;
+            tPoint normal = tPoint::Zero();
+            for (DNDS::index iPoint = a.FaceQuadratureBegin(iFace); iPoint < a.FaceQuadratureEnd(iFace); ++iPoint)
+            {
+                area += a.GetFaceWeight(iPoint);
+                normal += a.GetFaceWeight(iPoint) * a.GetFaceNorm(iPoint);
+            }
+            CHECK(b.GetFaceWeight(b.FaceQuadratureBegin(iFace)) == doctest::Approx(area).epsilon(1e-14));
+            CHECK(a.GetFaceArea(iFace) == doctest::Approx(area).epsilon(1e-14));
+            CHECK((a.GetFaceMeanNorm(iFace) - normal.normalized()).norm() < 1e-13);
+            CHECK((a.GetFaceCent(iFace) - b.GetFacePoint(b.FaceQuadratureBegin(iFace))).norm() < 1e-13);
+            CHECK((a.GetFaceMeanNorm(iFace) - b.GetFaceNorm(b.FaceQuadratureBegin(iFace))).norm() < 1e-13);
+            // A curved face's scalar measure must not be replaced by the norm
+            // of its integrated normal (the endpoint chord length in 2D).
+            nonplanar += area > normal.norm() * (1 + 1e-8);
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &nonplanar, 1, MPI_INT, MPI_SUM, mpi.comm);
+        CHECK((nonplanar > 0) == curved);
     }
 }
 TEST_CASE("Runtime FV matches legacy VR sweeps and reproduces cell-average polynomials")

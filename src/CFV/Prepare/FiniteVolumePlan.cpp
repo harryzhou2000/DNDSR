@@ -114,13 +114,15 @@ namespace DNDS::CFV
             }
             auto points = data->faceQuadrature.Write();
             const auto point = points.View<R::FixedRows<7>>();
+            data->faceMean = R::Array<real>(R::RowLayout::Dense(view.NumFaceProc(), 7));
+            auto meanWrite = data->faceMean.Write();
+            const auto mean = meanWrite.View<R::FixedRows<7>>();
             for (index iFace = 0; iFace < view.NumFaceProc(); ++iFace)
             {
                 view.GetCoordsOnFace(iFace, coords);
                 const auto element = view.GetFaceElement(iFace);
-                const Quadrature quadrature(element, faceIntOrder);
                 real integratedArea = 0;
-                if (faceIntOrder == 1)
+                tPoint integratedNormal = tPoint::Zero(), geometricNormal = tPoint::Zero();
                 {
                     const Quadrature measure(element, intOrder);
                     for (int iG = 0; iG < measure.GetNumPoints(); ++iG)
@@ -129,24 +131,43 @@ namespace DNDS::CFV
                         const auto jacobian = ShapeJacobianCoordD01Nj(coords, shape);
                         const tPoint normal = view.Dimension() == 2 ? FacialJacobianToNormVec<2>(jacobian) : FacialJacobianToNormVec<3>(jacobian);
                         const auto position = PPhysicsCoordD01Nj(coords, shape);
+                        const real det = normal.norm();
+                        DNDS_check_throw_info(std::isfinite(det) && det > 0, "FV face has zero measure");
                         DNDS_check_throw_info(!axisymmetric || position[1] >= 0, "negative axisymmetric face radius");
-                        integratedArea += normal.norm() * measure.GetWeight(iG) * (axisymmetric ? position[1] : 1.);
+                        const real weight = measure.GetWeight(iG) * (axisymmetric ? position[1] : 1.);
+                        integratedArea += det * weight;
+                        integratedNormal += normal * weight;
+                        geometricNormal += normal * measure.GetWeight(iG);
+                        // Reuse this geometry pass for high-order RHS records.
+                        // The midpoint record is filled after integrating the
+                        // scalar area and mean normal; it needs no second pass.
+                        if (faceIntOrder != 1)
+                        {
+                            const index iPoint = offset(iFace, 0) + iG;
+                            for (int d = 0; d < 3; ++d)
+                                point(iPoint, d) = position[d], point(iPoint, d + 3) = normal[d] / det;
+                            point(iPoint, 6) = det * weight;
+                        }
                     }
-                    DNDS_check_throw_info(std::isfinite(integratedArea) && integratedArea >= 0, "invalid integrated midpoint face measure");
+                    DNDS_check_throw_info(std::isfinite(integratedArea) && integratedArea >= 0, "invalid integrated face measure");
                 }
-                for (int iG = 0; iG < quadrature.GetNumPoints(); ++iG)
+                const tPoint center = PPhysicsCoordD01Nj(coords, Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(1).at(0));
+                // A face on the symmetry axis has zero weighted area but still
+                // needs a valid geometric direction for boundary evaluation.
+                if (axisymmetric && integratedArea == 0)
+                    integratedNormal = geometricNormal;
+                const real normalLength = integratedNormal.norm();
+                DNDS_check_throw_info(std::isfinite(normalLength) && normalLength > 0, "degenerate FV mean face normal");
+                integratedNormal /= normalLength;
+                for (int d = 0; d < 3; ++d)
+                    mean(iFace, d) = center[d], mean(iFace, 3 + d) = integratedNormal[d];
+                mean(iFace, 6) = integratedArea;
+                if (faceIntOrder == 1)
                 {
-                    const auto &shape = Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(faceIntOrder).at(iG);
-                    const tPoint position = PPhysicsCoordD01Nj(coords, shape);
-                    const auto jacobian = ShapeJacobianCoordD01Nj(coords, shape);
-                    tPoint normal = view.Dimension() == 2 ? FacialJacobianToNormVec<2>(jacobian) : FacialJacobianToNormVec<3>(jacobian);
-                    const real det = normal.norm();
-                    DNDS_check_throw_info(std::isfinite(det) && det > 0, "FV face has zero measure");
-                    normal /= det;
-                    const index iPoint = offset(iFace, 0) + iG;
-                    for (int d = 0; d < 3; ++d) point(iPoint, d) = position[d], point(iPoint, d + 3) = normal[d];
-                    DNDS_check_throw_info(!axisymmetric || position[1] >= 0, "negative axisymmetric face radius");
-                    point(iPoint, 6) = faceIntOrder == 1 ? integratedArea : det * quadrature.GetWeight(iG) * (axisymmetric ? position[1] : 1.);
+                    const index iPoint = offset(iFace, 0);
+                    for (int d = 0; d < 3; ++d)
+                        point(iPoint, d) = center[d], point(iPoint, d + 3) = integratedNormal[d];
+                    point(iPoint, 6) = integratedArea;
                 }
             } });
         data->halo.emplace(data->cells.BuildRowTransferPlan());
@@ -160,13 +181,13 @@ namespace DNDS::CFV
     FiniteVolumeRead::FiniteVolumeRead(std::shared_ptr<const Detail::FiniteVolumeData> data)
         : _data(std::move(data)),
           _meshRead(std::make_shared<MeshReadAccess>(_data->mesh->AcquireRead(MeshReadRequirements::CellFlux()))),
-          _cells(_data->cell.Read()), _quadrature(_data->faceQuadrature.Read()), _radialMoment(_data->radialMoment.Read()), _offsets(_data->faceOffsets.Read())
+          _cells(_data->cell.Read()), _quadrature(_data->faceQuadrature.Read()), _radialMoment(_data->radialMoment.Read()), _faceMean(_data->faceMean.Read()), _offsets(_data->faceOffsets.Read())
     {
         DNDS_check_throw_info(_data->stamp.Valid(), "finite-volume metrics changed before acquisition");
     }
     FiniteVolumeHostView FiniteVolumeRead::HostView() const
     {
-        return {_cells.View<R::FixedRows<8>>(), _offsets.View<R::FixedRows<1>>(), _quadrature.View<R::FixedRows<7>>(), _radialMoment.View<R::FixedRows<3>>()};
+        return {_cells.View<R::FixedRows<8>>(), _offsets.View<R::FixedRows<1>>(), _quadrature.View<R::FixedRows<7>>(), _radialMoment.View<R::FixedRows<3>>(), _faceMean.View<R::FixedRows<7>>()};
     }
     FiniteVolumeRead FiniteVolumePlan::AcquireRead() const
     {
