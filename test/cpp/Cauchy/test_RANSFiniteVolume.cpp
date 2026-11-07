@@ -77,6 +77,61 @@ namespace
     }
 }
 
+TEST_CASE("Ordered six-component assembled faces match permuted storage and direct actions")
+{
+    auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    mesh->BuildNodeWallDist([](auto)
+                            { return false; });
+    auto settings = Settings();
+    settings.boundaries.clear();
+    settings.motion.translationVelocity = {.03, -.02, 0};
+    settings.motion.angularVelocity = {0, 0, .2};
+    const auto equation = Equation(settings);
+    C::FiniteVolume fv(mesh, settings, equation);
+    A::DofBundle fields(fv.Metrics().Space());
+    fields.Add("coupled", fv.Metrics().BuildField(6));
+    C::EquationDofs ordered(equation.Schema(), std::move(fields), {{"flow", "coupled", 0}, {"rans", "coupled", 5}});
+    auto permuted = State(fv, false);
+    Fill(ordered, fv, true);
+    Fill(permuted, fv, true);
+    auto work = fv.BuildEquationWorkspace(ordered), referenceWork = fv.BuildEquationWorkspace(permuted);
+    auto residual = C::EquationDofOperations::NewVector(ordered), referenceResidual = C::EquationDofOperations::NewVector(permuted);
+    auto auxiliary = fv.BuildAuxiliaryValues({true, true}), referenceAuxiliary = fv.BuildAuxiliaryValues({true, true});
+    R::EagerEngine engine;
+    const auto stream = engine.CreateCPUStream();
+    constexpr double time = .3;
+    fv.Evaluate(ordered, residual, *work, auxiliary, engine, stream, time);
+    fv.Evaluate(permuted, referenceResidual, *referenceWork, referenceAuxiliary, engine, stream, time);
+    R::Array<double> tau(R::RowLayout::Dense(fv.Metrics().NumCell(), 1));
+    {
+        auto write = tau.Write();
+        for (I iCell = 0; iCell < tau.RowCount(); ++iCell)
+            write.View()(iCell, 0) = 2;
+    }
+    auto matrix = fv.BuildLinearProblem(ordered, C::DiagonalStorage::Block);
+    auto reference = fv.BuildLinearProblem(permuted, C::DiagonalStorage::Block);
+    auto action = fv.BuildLinearProblem(ordered, C::DiagonalStorage::Block, C::OffDiagonalStorage::DirectEvaluated);
+    fv.PrepareJacobian(ordered, auxiliary, tau, *matrix, {3, .7, false}, time, {}, work.get());
+    fv.PrepareJacobian(permuted, referenceAuxiliary, tau, *reference, {3, .7, false}, time, {}, referenceWork.get());
+    fv.PrepareJacobian(ordered, auxiliary, tau, *action, {3, .7, false}, time, {}, work.get());
+    const auto blocks = matrix->OffDiagonal().Read(), other = reference->OffDiagonal().Read();
+    const auto diagonal = matrix->Diagonal().Read(), otherDiagonal = reference->Diagonal().Read();
+    Eigen::VectorXd direction(6), result(6);
+    direction << .11, -.07, .03, .05, -.09, .13;
+    for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+    {
+        for (int j = 0; j < 36; ++j)
+            CHECK(diagonal.View()(iCell, j) == doctest::Approx(otherDiagonal.View()(iCell, j)).epsilon(3e-12).scale(1));
+        for (I iBlock = 0; iBlock < I(matrix->Columns()[iCell].size()); ++iBlock)
+        {
+            CHECK((blocks.View()(iCell, iBlock) - other.View()(iCell, iBlock)).cwiseAbs().maxCoeff() < 3e-12);
+            action->PreparedOffDiagonalEvaluator()->ApplyBlock(iCell, iBlock, direction, result);
+            const auto expected = (blocks.View()(iCell, iBlock) * direction).eval();
+            CHECK((result - expected).cwiseAbs().maxCoeff() < 3e-12);
+        }
+    }
+}
+
 TEST_CASE("Explicit RANS repairs scalars separately from the uncompressed flow5 update")
 {
     auto mesh = CauchyTest::PeriodicQuads(mpi, 4);

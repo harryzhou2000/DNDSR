@@ -1,6 +1,7 @@
 #include "Cauchy/Discretization/EquationFiniteVolumeInternal.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/Physics/EquationFlux.hpp"
+#include "Cauchy/Implicit/EquationJacobianKernels.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -397,6 +398,14 @@ namespace DNDS::Cauchy
         const auto blocks = EquationFVDetail::BlockViews(state, input);
         const auto inputLayout = input.ComponentLayout();
         const auto inputValues = inputLayout.View();
+        // Only this assembled operator opts into the six-component AoS leaf.
+        // Keep physical parent pitch when borrowing each row; every other
+        // layout/grouping retains the original logical component accessor.
+        const bool sixComponentShape = output.HasAssembledOffDiagonal() && nv == 6 && snapshot->flowFirst == 0 &&
+                                       snapshot->allComponents && snapshot->kineticFirst < 0;
+        const auto ownedTable = sixComponentShape ? Algebra::TryOwnedTable(inputValues.OwnedPart()) : std::nullopt;
+        const auto ghostTable = sixComponentShape ? Algebra::TryGhostTable(inputValues.GhostPart()) : std::nullopt;
+        const bool useSixComponentKernel = ownedTable && ghostTable;
         auto geometry = Metrics().AcquireRead();
         const auto metric = geometry.HostView();
         const auto faceRead = auxiliary.faceSpectralRadius->Read(), pseudo = inversePseudoTime.Read();
@@ -493,6 +502,19 @@ namespace DNDS::Cauchy
             // A block-shaped output is already the row's dense workspace.
             // Keep its write lease and use the centralized borrowed adapter;
             // diagonal-line storage retains the existing projection scratch.
+            const auto addFaceBlock = [&](const EquationJacobian::Point &point, auto &block)
+            {
+                if (useSixComponentKernel && (point.rotation.array() == Eigen::Matrix3d::Identity().array()).all())
+                {
+                    const auto row = point.other < owned ? (*ownedTable)[point.other] : (*ghostTable)[point.other - owned];
+                    Detail::AddFrozenFluxBlock6({row.data(), 6}, {snapshot->pressureDerivative.col(point.other).data(), 6},
+                                                snapshot->pressure[point.other], point.normal, snapshot->frame.GridVelocity(point.location),
+                                                .5 * snapshot->scale * point.weight, snapshot->radius[point.auxiliary][0] + snapshot->radius[point.auxiliary][1],
+                                                {block.data(), 36});
+                    return;
+                }
+                snapshot->AddFrozenFluxBlock(point, block, inputValues);
+            };
             const auto assembleFaceRow = [&](index iCell, auto &own)
             {
                 if (b)
@@ -514,7 +536,7 @@ namespace DNDS::Cauchy
                     if (sample.other == iCell)
                     {
                         other.setZero();
-                        snapshot->AddFrozenFluxBlock(point, other, inputValues);
+                        addFaceBlock(point, other);
                         own += other;
                     }
                     else
@@ -522,7 +544,7 @@ namespace DNDS::Cauchy
                         const auto &columns = output.Columns()[iCell];
                         const auto found = std::find(columns.begin(), columns.end(), sample.other);
                         auto destination = (*b)(iCell, found - columns.begin());
-                        snapshot->AddFrozenFluxBlock(point, destination, inputValues);
+                        addFaceBlock(point, destination);
                     }
                 }
                 for (index j = 0; j < nv; ++j)

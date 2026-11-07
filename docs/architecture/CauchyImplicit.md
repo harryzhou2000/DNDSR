@@ -574,6 +574,18 @@ Changing live means/auxiliary after preparation cannot change the frozen
 operator. Reprepare explicitly for a new nonlinear state; stale auxiliary
 provenance rejects before matrix writes.
 
+The assembled equation operator has a bounded CPU leaf for a complete ordered
+six-component AoS state (flow5 plus one scalar). Its prologue recognizes owned
+and ghost tables under the original leases, retaining physical parent pitch.
+An identity component frame and full component selection permit direct fixed
+row spans into the existing column-major block. The separate numerical leaf
+receives actual EOS pressure and every conservative pressure derivative,
+including scalar coupling, plus frozen dissipation and grid velocity. It does
+not compute thermodynamics, allocate, pack, communicate or inspect geometry.
+Split/permuted/column-major states, other widths, selected components,
+nonidentity transforms and two-equation turbulent stress retain the generic
+writer. Direct-evaluated actions remain independent mathematical oracles.
+
 `ReadOffDiagonal().WithBlocks(callback)` selects a block accessor once outside
 the numerical loop. Stored blocks retain their ordinary stable Eigen maps;
 evaluated blocks return owning matrices, with flow5 on the stack. Holding the

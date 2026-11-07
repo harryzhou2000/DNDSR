@@ -1,6 +1,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "Cauchy/Implicit/EquationJacobianKernels.hpp"
+#include "Cauchy/Physics/EquationFlux.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "../CFV/ReconstructionFixture.hpp"
 #include "../CFV/RotatedSectorFixture.hpp"
@@ -9,6 +11,39 @@
 namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
 static DNDS::MPIInfo mpi;
+
+TEST_CASE("Six-component frozen face leaf retains EOS scalar coupling and additive matrix semantics")
+{
+    std::array<DNDS::real, 6> mean{1.2, .31, -.18, .07, 3.1, .13};
+    // A nonzero composition column rules out a perfect-gas/passive shortcut.
+    std::array<DNDS::real, 6> dp{.08, -.09, .04, -.02, .37, .17};
+    std::array<DNDS::real, 36> matrix{};
+    for (int j = 0; j < 36; ++j)
+        matrix[j] = .001 * (j + 1);
+    const auto initial = matrix;
+    const C::Vector3 normal{.6, .8, 0}, grid{.03, -.07, .02};
+    constexpr DNDS::real pressure = 1.1, factor = .27, lambda = 1.8;
+    C::Detail::AddFrozenFluxBlock6({mean.data(), 6}, {dp.data(), 6}, pressure, normal, grid, factor, lambda, {matrix.data(), 36});
+    const C::FlowState flow{mean[0], mean[1], mean[2], mean[3], mean[4]};
+    for (int column = 0; column < 6; ++column)
+    {
+        C::FlowState direction{};
+        if (column < 5)
+            direction[column] = 1;
+        const auto derivative = C::PrepareCompressibleFluxDerivative(flow, direction, pressure, dp[column], normal, grid);
+        DNDS::real speed = 0, deltaSpeed = 0;
+        for (int d = 0; d < 3; ++d)
+        {
+            speed += (flow[1 + d] / flow[0] - grid[d]) * normal[d];
+            deltaSpeed += (direction[1 + d] - flow[1 + d] / flow[0] * direction[0]) / flow[0] * normal[d];
+        }
+        for (int row = 0; row < 6; ++row)
+        {
+            const auto value = row < 5 ? derivative[row] : C::PrepareAdvectedScalarFluxDerivative(mean[5], DNDS::real(column == 5), speed, deltaSpeed);
+            CHECK(matrix[6 * column + row] == doctest::Approx(initial[6 * column + row] + factor * (value - lambda * DNDS::real(row == column))).epsilon(3e-12).scale(1));
+        }
+    }
+}
 
 TEST_CASE("Integrated approximate Jacobian matches frozen-spectral flux differences on periodic and physical boundaries")
 {
