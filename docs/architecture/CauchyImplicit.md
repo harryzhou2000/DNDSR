@@ -1603,6 +1603,14 @@ indexes `component * dimension + direction`; it does not allocate or copy one
 sample array per direction. Polynomial and multipoint sources keep sampled
 storage. The explicit gradient refresh and P0 source derivatives remain.
 
+The volume-source gather resolves borrowed value rows and each directional
+gradient row before traversing components. Row spans retain their physical
+element stride, including separate, permuted, SoA and tiled fields. Values
+still enter the existing explicit point scratch; no implicit payload packing
+or new cache is introduced. The enclosing read leases retain the sampled
+buffers through point evaluation. Source quadrature, scalar repair and
+thermodynamic/RANS evaluation are unchanged.
+
 Assembled frozen flux blocks resolve the existing exact-identity/full-selection
 predicate before momentum and normal-frame products. Only that proven path
 uses the original values directly. Every genuine periodic rotation, partial

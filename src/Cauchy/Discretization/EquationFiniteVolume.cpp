@@ -986,14 +986,20 @@ namespace DNDS::Cauchy
                     for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
                     {
                         const auto location = locations[iBlock];
-                        const auto values = samples[location.physicalField];
+                        // Resolve each borrowed row before traversing its
+                        // components. The span retains physical element stride;
+                        // no packing or AoS storage assumption is introduced.
+                        const auto values = samples[location.physicalField][iPoint];
                         for (index j = 0; j < location.componentNumber; ++j)
-                        {
-                            point.values[logicalFirst[iBlock] + j] = values(iPoint, location.firstComponent + j);
-                            if (ransFirst >= 0)
-                                for (int d = 0; d < owner->metrics.Dimension(); ++d)
-                                    point.gradient(logicalFirst[iBlock] + j, d) = gradients[location.physicalField][d](iPoint, location.firstComponent + j);
-                        }
+                            point.values[logicalFirst[iBlock] + j] = values[location.firstComponent + j];
+                        if (ransFirst >= 0)
+                            for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                            {
+                                const auto &gradient = gradients[location.physicalField][d];
+                                const auto values = gradient.values[iPoint];
+                                for (index j = 0; j < location.componentNumber; ++j)
+                                    point.gradient(logicalFirst[iBlock] + j, d) = values[(location.firstComponent + j) * gradient.componentStride + gradient.direction];
+                            }
                     }
                     if (ransFirst >= 0)
                     {
