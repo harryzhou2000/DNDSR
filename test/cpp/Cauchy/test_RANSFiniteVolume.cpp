@@ -850,7 +850,7 @@ TEST_CASE("High-order SST auxiliary faces retain quadrature-dependent wall trans
         const I right = parents[0] == left ? parents[1] : parents[0];
         double area = 0, speed = 0, bound = std::max(diffusion(wallValues.cellMean(left, 0)), diffusion(wallValues.cellMean(right == DNDS::UnInitIndex ? left : right, 0)));
         const I first = metric.FaceQuadratureBegin(iFace), last = metric.FaceQuadratureEnd(iFace);
-        REQUIRE(last - first > 1);
+        CHECK(last - first > 1);
         for (I q = first; q < last; ++q)
         {
             area += metric.GetFaceWeight(q);
