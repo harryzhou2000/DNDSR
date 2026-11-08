@@ -323,6 +323,7 @@ int main(int argc, char **argv)
             evaluator.Apply(phase, oldResult, source, oldMean, oldRec, oldRec, beta, alpha, flags);
         };
         double lastMagnitude = 0, lastDiagonalError = 0, lastDiagonalMagnitude = 0;
+        const bool centerSourceJacobian = settings.implicit.sourceJacobianMode == "center";
         const auto compare = [&]
         {
             double error = 0, magnitude = 0, diagonalError = 0, diagonalMagnitude = 0;
@@ -378,7 +379,23 @@ int main(int argc, char **argv)
                         error = std::max(error, std::abs(actual - expected));
                         magnitude = std::max(magnitude, std::abs(expected));
                     }
-                if (operation != "faces")
+                if (operation != "faces" && operation != "halo" && !centerSourceJacobian)
+                {
+                    // rhsQuadrature intentionally has no one-point legacy
+                    // oracle. Its independent numerical oracle is the focused
+                    // chemical source-Jacobian UT; this probe still requires a
+                    // finite, nonzero published destruction diagonal.
+                    const auto destructionRead = meanSourceDiagonal.Read();
+                    const auto destruction = destructionRead.View<R::FixedRows<6>>();
+                    for (I iCell = 0; iCell < values.RowCount(); ++iCell)
+                        for (int j = 0; j < 6; ++j)
+                        {
+                            const double actual = destruction(iCell, j);
+                            DNDS_check_throw_info(std::isfinite(actual), "nonfinite quadrature source destruction diagonal");
+                            diagonalMagnitude = std::max(diagonalMagnitude, std::abs(actual));
+                        }
+                }
+                else if (operation != "faces" && operation != "halo")
                 {
                     const auto destructionRead = meanSourceDiagonal.Read();
                     const auto destruction = destructionRead.View<R::FixedRows<6>>();
@@ -427,7 +444,8 @@ int main(int argc, char **argv)
                                   "source diagnostic must exercise nonzero SA production/destruction");
             DNDS_check_throw_info(operation == "faces" || operation == "halo" || global[3] > 1e-8,
                                   "source Jacobian diagnostic must exercise a nonzero destruction diagonal");
-            DNDS_check_throw_info(global[2] <= 1e-10 * std::max(1., global[3]), "mean-state source Jacobian differs from the legacy point-source oracle");
+            if (centerSourceJacobian)
+                DNDS_check_throw_info(global[2] <= 1e-10 * std::max(1., global[3]), "mean-state source Jacobian differs from the legacy point-source oracle");
             return global[0];
         };
         native();
@@ -493,7 +511,25 @@ int main(int argc, char **argv)
             error = compare();
             DNDS_check_throw_info(state.PhysicalField(0).Owned().Version() == ownedVersion, "phase changed frozen means");
             if (!mpi.rank)
-                std::cout << "EXTRACTED_OPERATOR " << C::Json{{"phase", operation}, {"degree", degree}, {"np", mpi.size}, {"trial", trial}, {"repetitions", repetitions}, {"native_seconds", nativeSeconds}, {"euler_seconds", legacySeconds}, {"max_error", error}, {"output_magnitude", lastMagnitude}, {"fixture", "maintained-SA-mesh-initial-state"}, {"wall_distance_input", "frozen-native-mesh-samples"}, {"raw_wall_provider_difference", distanceDifference}, {"owned_cells", counts[0]}, {"ghost_rows", counts[1]}, {"native_face_point_visits", counts[2]}, {"euler_face_point_visits", counts[3]}, {"native_source_point_visits", counts[4]}, {"euler_source_point_visits", counts[5]}, {"native_mean_source_jacobian_visits", operation == "faces" || operation == "halo" ? 0 : counts[0]}, {"mean_source_diagonal_error", lastDiagonalError}, {"mean_source_diagonal_magnitude", lastDiagonalMagnitude}, {"source_diagonal_policy", "Cauchy mean-state; Euler RHS quadrature"}, {"mean_width", 6}, {"coefficients", "zero-frozen"}, {"gradients", "zero-frozen"}, {"includes_halo", operation == "halo"}, {"includes_vr", false}, {"includes_pp", false}, {"residual_units", "per-volume"}, {"native_volume_normalization_timed", operation != "halo"}, {"timing", "external-whole-call-max-rank"}, {"viscosity_law", law}, {"euler_extracted_source_sha256", Eval::SourceSHA256}}.dump() << std::endl;
+                std::cout << "EXTRACTED_OPERATOR " << C::Json{{"phase", operation}, {"degree", degree}, {"np", mpi.size}, {"trial", trial}, {"repetitions", repetitions}, {"native_seconds", nativeSeconds}, {"euler_seconds", legacySeconds}, {"max_error", error}, {"output_magnitude", lastMagnitude}, {"fixture", "maintained-SA-mesh-initial-state"}, {"wall_distance_input", "frozen-native-mesh-samples"}, {"raw_wall_provider_difference", distanceDifference}, {"owned_cells", counts[0]}, {"ghost_rows", counts[1]}, {"native_face_point_visits", counts[2]}, {"euler_face_point_visits", counts[3]}, {"native_source_point_visits", counts[4]}, {"euler_source_point_visits", counts[5]}, {"source_diagonal_mode", settings.implicit.sourceJacobianMode}, {"native_source_jacobian_point_visits", operation == "faces" || operation == "halo" ? 0 : centerSourceJacobian ? counts[0]
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    : counts[4]},
+                                                              {"native_mean_eos_visits", operation == "faces" || operation == "halo" ? 0 : counts[0]},
+                                                              {"mean_source_diagonal_error", centerSourceJacobian ? C::Json(lastDiagonalError) : C::Json(nullptr)},
+                                                              {"mean_source_diagonal_magnitude", lastDiagonalMagnitude},
+                                                              {"source_diagonal_policy", centerSourceJacobian ? "Cauchy mean-state; Euler RHS quadrature" : "Cauchy rhsQuadrature; no legacy one-point oracle"},
+                                                              {"mean_width", 6},
+                                                              {"coefficients", "zero-frozen"},
+                                                              {"gradients", "zero-frozen"},
+                                                              {"includes_halo", operation == "halo"},
+                                                              {"includes_vr", false},
+                                                              {"includes_pp", false},
+                                                              {"residual_units", "per-volume"},
+                                                              {"native_volume_normalization_timed", operation != "halo"},
+                                                              {"timing", "external-whole-call-max-rank"},
+                                                              {"viscosity_law", law},
+                                                              {"euler_extracted_source_sha256", Eval::SourceSHA256}}
+                                                          .dump()
+                          << std::endl;
         }
     }
     catch (const std::exception &error)
