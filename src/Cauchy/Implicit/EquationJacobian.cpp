@@ -515,17 +515,23 @@ namespace DNDS::Cauchy
             // A block-shaped output is already the row's dense workspace.
             // Keep its write lease and use the centralized borrowed adapter;
             // diagonal-line storage retains the existing projection scratch.
-            const auto addFaceBlock = [&](const EquationJacobian::Point &point, auto &block)
+            const auto addFaceBlock = [&](const Data::Sample &sample, real weight, auto &block)
             {
-                if (useSixComponentKernel && (point.rotation.array() == Eigen::Matrix3d::Identity().array()).all())
+                // The immutable incidence already records an exact frame test.
+                // Its common six-component path needs no copied Point/rotation;
+                // retain the full point representation for the general kernel.
+                if (useSixComponentKernel && !sample.changesFrame)
                 {
-                    const auto row = point.other < owned ? (*ownedTable)[point.other] : (*ghostTable)[point.other - owned];
-                    Detail::AddFrozenFluxBlock6({row.data(), 6}, {snapshot->pressureDerivative.col(point.other).data(), 6},
-                                                snapshot->pressure[point.other], point.normal, snapshot->frame.GridVelocity(point.location),
-                                                .5 * snapshot->scale * point.weight, snapshot->radius[point.auxiliary][0] + snapshot->radius[point.auxiliary][1],
+                    const auto row = sample.other < owned ? (*ownedTable)[sample.other] : (*ghostTable)[sample.other - owned];
+                    const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
+                    const Vector3 location{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]};
+                    Detail::AddFrozenFluxBlock6({row.data(), 6}, {snapshot->pressureDerivative.col(sample.other).data(), 6},
+                                                snapshot->pressure[sample.other], normal, snapshot->frame.GridVelocity(location),
+                                                .5 * snapshot->scale * weight, snapshot->radius[sample.auxiliaryFace][0] + snapshot->radius[sample.auxiliaryFace][1],
                                                 {block.data(), 36});
                     return;
                 }
+                const EquationJacobian::Point point{sample.other, sample.auxiliaryFace, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, weight};
                 snapshot->AddFrozenFluxBlock(point, block, inputValues);
             };
             const auto assembleFaceRow = [&](index iCell, auto &own)
@@ -545,11 +551,10 @@ namespace DNDS::Cauchy
                         continue; // Active Euler scalar-BC approximation.
                     if (!b && sample.other != iCell)
                         continue;
-                    const EquationJacobian::Point point{sample.other, sample.auxiliaryFace, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, weight};
                     if (sample.other == iCell)
                     {
                         other.setZero();
-                        addFaceBlock(point, other);
+                        addFaceBlock(sample, weight, other);
                         own += other;
                     }
                     else
@@ -557,7 +562,7 @@ namespace DNDS::Cauchy
                         const auto &columns = output.Columns()[iCell];
                         const auto found = std::find(columns.begin(), columns.end(), sample.other);
                         auto destination = (*b)(iCell, found - columns.begin());
-                        addFaceBlock(point, destination);
+                        addFaceBlock(sample, weight, destination);
                     }
                 }
                 for (index j = 0; j < nv; ++j)
