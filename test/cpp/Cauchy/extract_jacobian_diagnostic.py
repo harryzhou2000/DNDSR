@@ -29,7 +29,7 @@ def extract(source):
 
     before("        ValidateAuxValues(state, auxiliary, time);",
            "        ::DiagnosticTiming::Scope assemblySetup(::DiagnosticTiming::Block::JacobianSetup);\n")
-    before("            // Only O(N) scalar thermodynamic linearization data are frozen per\n",
+    before("            // Initialize before the additive source entrance.",
            "            assemblySetup.Finish();\n"
            "            ::DiagnosticTiming::Scope assemblyFreeze(::DiagnosticTiming::Block::JacobianFreeze);\n")
     before("            if ((chemical || rans) && sourceReconstruction)\n",

@@ -34,6 +34,43 @@ namespace DNDS::Cauchy::EquationFVDetail
             return {count ? values.data() + first : nullptr, count};
         }
     };
+    /// Borrowed outputs of one mean-state preparation, consumed while the
+    /// evaluator's point properties are valid. No chemistry views escape this
+    /// call. The optional mean snapshot is needed only by evaluated matrices.
+    /// Caller sizes the buffers and retains exclusive matrix preparation access.
+    struct MeanLinearizationOutput
+    {
+        index flowFirst, speciesFirst;
+        Eigen::MatrixXd &pressureDerivative;
+        std::vector<real> &pressure;
+        Eigen::MatrixXd *means;
+
+        void Publish(index iCell, const PointScratch &point, const EquationPointProperties &properties) const
+        {
+            const index nv = index(point.values.size());
+            for (index j = 0; j < nv; ++j)
+            {
+                DNDS_check_throw_info(std::isfinite(point.values[j]), "nonfinite equation Jacobian mean");
+                if (means)
+                    (*means)(j, iCell) = point.values[j];
+            }
+            const auto flow = point.Flow(flowFirst);
+            pressure[iCell] = properties.thermo.pressure;
+            for (index column = 0; column < nv; ++column)
+            {
+                FlowState direction{};
+                if (column >= flowFirst && column < flowFirst + 5)
+                    direction[column - flowFirst] = 1;
+                struct SpeciesDirection
+                {
+                    index first, column;
+                    real operator[](int k) const { return real(column == first + k); }
+                } species{speciesFirst, column};
+                pressureDerivative(column, iCell) = PreparePrimitiveDerivative(flow, direction, properties, species).pressure;
+                DNDS_check_throw_info(std::isfinite(pressureDerivative(column, iCell)), "nonfinite conservative EOS derivative");
+            }
+        }
+    };
     inline void Gather(const std::vector<EquationBlockReadView> &blocks, index iCell, PointScratch &point, bool clearGradient = true)
     {
         index first = 0;

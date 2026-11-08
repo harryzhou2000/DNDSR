@@ -461,36 +461,11 @@ namespace DNDS::Cauchy
         const real rotationBound = Geom::tPoint{snapshot->frame.angularVelocity[0], snapshot->frame.angularVelocity[1], snapshot->frame.angularVelocity[2]}.norm();
         try
         {
-            // Only O(N) scalar thermodynamic linearization data are frozen per
-            // cell. Never cache a complete N*N flux matrix per cell/face.
-            for (index iCell = 0; iCell < all; ++iCell)
+            // Initialize before the additive source entrance. Mean EOS work
+            // can then be shared with source linearization, without retaining
+            // borrowed mixture properties or adding a persistent field cache.
+            for (index iCell = 0; iCell < owned; ++iCell)
             {
-                EquationFVDetail::Gather(blocks, iCell, point, false);
-                for (index j = 0; j < nv; ++j)
-                {
-                    DNDS_check_throw_info(std::isfinite(point.values[j]), "nonfinite equation Jacobian mean");
-                    if (!output.HasAssembledOffDiagonal())
-                        snapshot->means(j, iCell) = point.values[j];
-                }
-                const auto flow = point.Flow(snapshot->flowFirst);
-                const bool source = chemical && !sourceReconstruction && iCell < owned && snapshot->independent > 0;
-                const auto properties = evaluator.Evaluate(flow, point.Species(snapshot->speciesFirst, snapshot->independent), 0, {false, false, true, source, source});
-                snapshot->pressure[iCell] = properties.thermo.pressure;
-                for (index column = 0; column < nv; ++column)
-                {
-                    FlowState direction{};
-                    if (column >= snapshot->flowFirst && column < snapshot->flowFirst + 5)
-                        direction[column - snapshot->flowFirst] = 1;
-                    struct SpeciesDirection
-                    {
-                        index first, column;
-                        real operator[](int k) const { return real(column == first + k); }
-                    } species{snapshot->speciesFirst, column};
-                    snapshot->pressureDerivative(column, iCell) = PreparePrimitiveDerivative(flow, direction, properties, species).pressure;
-                    DNDS_check_throw_info(std::isfinite(snapshot->pressureDerivative(column, iCell)), "nonfinite conservative EOS derivative");
-                }
-                if (iCell >= owned)
-                    continue;
                 own.setIdentity();
                 own *= metric.GetCellVol(iCell) * (tau(iCell, 0) + controls.physicalMass);
                 if (snapshot->frame.moving)
@@ -505,6 +480,24 @@ namespace DNDS::Cauchy
                         for (int i = 0; i < 5; ++i)
                             own(snapshot->flowFirst + i, snapshot->flowFirst + i) += controls.residualScale * metric.GetCellVol(iCell) * rotationBound;
                 }
+                for (index j = 0; j < (output.DiagonalMode() == DiagonalStorage::Block ? nv * nv : nv); ++j)
+                    d(iCell, j) = output.DiagonalMode() == DiagonalStorage::Block ? own.data()[j] : own(j, j);
+            }
+            const EquationFVDetail::MeanLinearizationOutput linearization{snapshot->flowFirst, snapshot->speciesFirst,
+                                                                          snapshot->pressureDerivative, snapshot->pressure, output.HasAssembledOffDiagonal() ? nullptr : &snapshot->means};
+            bool ownedPropertiesPrepared = false;
+            if ((chemical || rans) && sourceReconstruction)
+                ownedPropertiesPrepared = AddEquationSourceJacobian(state, *sourceReconstruction, *diagonal, output.DiagonalMode(), controls.residualScale, evaluator, &linearization);
+            // Only O(N) scalar thermodynamic linearization data are frozen per
+            // cell. Never cache a complete N*N flux matrix per cell/face.
+            // A source-free/no-sampling workspace returns false: its owned EOS
+            // outputs must still be initialized. Ghost means always need EOS.
+            for (index iCell = ownedPropertiesPrepared ? owned : 0; iCell < all; ++iCell)
+            {
+                EquationFVDetail::Gather(blocks, iCell, point, false);
+                const bool source = chemical && !sourceReconstruction && iCell < owned && snapshot->independent > 0;
+                const auto properties = evaluator.Evaluate(point.Flow(snapshot->flowFirst), point.Species(snapshot->speciesFirst, snapshot->independent), 0, {false, false, true, source, source});
+                linearization.Publish(iCell, point, properties);
                 if (source)
                     for (int j = 0; j < 5 + snapshot->independent; ++j)
                     {
@@ -512,14 +505,13 @@ namespace DNDS::Cauchy
                         for (int k = 0; k < snapshot->independent; ++k)
                         {
                             DNDS_check_throw_info(std::isfinite(properties.sourceJacobian(k, j)), "nonfinite chemical source derivative");
-                            own(snapshot->speciesFirst + k, column) -= controls.residualScale * metric.GetCellVol(iCell) * properties.sourceJacobian(k, j);
+                            const index row = snapshot->speciesFirst + k;
+                            if (output.DiagonalMode() == DiagonalStorage::Block || row == column)
+                                d(iCell, output.DiagonalMode() == DiagonalStorage::Block ? row + nv * column : row) -=
+                                    controls.residualScale * metric.GetCellVol(iCell) * properties.sourceJacobian(k, j);
                         }
                     }
-                for (index j = 0; j < (output.DiagonalMode() == DiagonalStorage::Block ? nv * nv : nv); ++j)
-                    d(iCell, j) = output.DiagonalMode() == DiagonalStorage::Block ? own.data()[j] : own(j, j);
             }
-            if ((chemical || rans) && sourceReconstruction)
-                AddEquationSourceJacobian(state, *sourceReconstruction, *diagonal, output.DiagonalMode(), controls.residualScale, evaluator);
             // A block-shaped output is already the row's dense workspace.
             // Keep its write lease and use the centralized borrowed adapter;
             // diagonal-line storage retains the existing projection scratch.

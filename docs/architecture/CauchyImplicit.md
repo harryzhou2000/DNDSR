@@ -29,6 +29,16 @@ rejected. P0 sources retain physical gradients; P1 uses the final limiter/PP
 coefficients. This is local workspace reuse, without a new MPI agreement or
 inherited coarse auxiliary signals. Callers still serialize workspace use.
 
+Mean-state approximate Jacobian preparation can combine EOS linearization and
+source derivatives in the same owned-cell point evaluation. The internal
+borrowed output descriptor publishes pressure, its conservative derivatives
+and the evaluated operator's optional mean snapshot before chemistry views
+expire. No persistent point-property cache is introduced. Mass/frame diagonal
+initialization precedes additive source terms; ghost means and source-free or
+no-sampling cases retain their own property preparation. The independent source
+entry calls the same loop without these optional outputs. P0 source gradients,
+one-point approximation and chemical fallback without a workspace are retained.
+
 Equation implicit evaluation prepares mean thermodynamics, face signals and
 cell spectral sums during the mean halo exchange, before reconstruction and
 RHS. The explicit `Evaluate(..., AuxiliaryValues &, ...)` overload publishes

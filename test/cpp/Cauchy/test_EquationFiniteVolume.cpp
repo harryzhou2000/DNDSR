@@ -1585,6 +1585,16 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
     CHECK(matrixB->Diagonal().Version() == unpreparedVersion);
     withSource.PrepareJacobian(b, auxiliaryB, inverseTau, *matrixB, controls, 0, mixture.workers, wb.get());
 
+    // The fused mean-source producer also freezes the mean snapshot required
+    // by evaluated off-diagonal actions. Exercise a nonzero physical vector,
+    // while the independent chemical mean-source oracle below checks values.
+    auto evaluated = withSource.BuildLinearProblem(b, C::DiagonalStorage::Block, C::OffDiagonalStorage::SemiMatrixFree);
+    withSource.PrepareJacobian(b, auxiliaryB, inverseTau, *evaluated, controls, 0, mixture.workers, wb.get());
+    auto assembledAction = C::EquationDofOperations::NewVector(b), evaluatedAction = C::EquationDofOperations::NewVector(b);
+    matrixB->Apply(b, assembledAction);
+    evaluated->Apply(b, evaluatedAction);
+    Compare(assembledAction, evaluatedAction, 2e-11);
+
     R::Array<I> cells(R::RowLayout::Dense(count, 1));
     R::Array<double> points(R::RowLayout::Dense(count, 3));
     const double location[3]{-std::sqrt(3. / 5), 0, std::sqrt(3. / 5)}, weights[3]{5. / 9, 8. / 9, 5. / 9};

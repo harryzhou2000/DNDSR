@@ -4,6 +4,13 @@ CS performance readings are provisional. Canonical comparisons execute matched
 baseline/candidate members serially within one exclusive single-node BSSCA
 allocation, with frozen source, controls and workload; no named-node pinning.
 
+The fused mean-property trial retains four assembly batches, but changes their
+meaning: `jacobian-freeze` covers mass/frame initialization; `jacobian-source`
+includes mean source derivatives, owned EOS publication and remaining ghost or
+source-free EOS preparation. `jacobian_source_scope` explicitly identifies this
+combined scope. It cannot be subtracted as a source-only accounting correction.
+Compare the complete matrix/linear/update parents for fusion acceptance.
+
 Direct-FV component probes perform untimed gradient-publication checks before
 their numerical oracles: ready repeated refresh does not rewrite the target,
 a nonzero coefficient change refreshes the analytic physical gradient, and an

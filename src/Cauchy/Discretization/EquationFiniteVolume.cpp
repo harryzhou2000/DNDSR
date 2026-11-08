@@ -925,13 +925,16 @@ namespace DNDS::Cauchy
         }
         /// Add the one-point mean-state source matrix to caller-owned output.
         /// The controller retains current means/coefficients and ready source
-        /// gradients. This entry neither samples RHS quadrature nor publishes
+        /// gradients. Optional linearization outputs consume this same mean
+        /// property evaluation; false means no samples existed and no outputs
+        /// were filled. This entry neither samples RHS quadrature nor publishes
         /// source freshness; the production wrapper validates its provenance.
-        void AddMeanSourceJacobian(const EquationDofs &state, const R::Array<real>::WriteLease &diagonal,
-                                   DiagonalStorage storage, real scale, EquationPointEvaluator &evaluator) const
+        bool AddMeanSourceJacobian(const EquationDofs &state, const R::Array<real>::WriteLease &diagonal,
+                                   DiagonalStorage storage, real scale, EquationPointEvaluator &evaluator,
+                                   const MeanLinearizationOutput *linearization = nullptr) const
         {
             if (!sourceSampling)
-                return;
+                return false;
             // The approximate source matrix is a one-point, mean-state operator.
             // Never integrate nonlinear source derivatives on RHS quadrature.
             // RANS still consumes the current polynomial's center gradients.
@@ -1004,7 +1007,10 @@ namespace DNDS::Cauchy
                             for (int d = 0; d < owner->metrics.Dimension(); ++d)
                                 point.gradient(logicalFirst[iBlock] + j, d) = gradients[location.physicalField][d](iCell, location.firstComponent + j);
                     }
-                const auto properties = evaluator.Evaluate(point.Flow(flowFirst), point.Species(speciesFirst, independent), 0, {ransFirst >= 0, false, false, chemical, chemical});
+                const auto properties = evaluator.Evaluate(point.Flow(flowFirst), point.Species(speciesFirst, independent), 0,
+                                                           {ransFirst >= 0, false, bool(linearization), chemical, chemical});
+                if (linearization)
+                    linearization->Publish(iCell, point, properties);
                 const real volume = metric.GetCellVol(iCell);
                 if (ransFirst >= 0)
                 {
@@ -1032,6 +1038,7 @@ namespace DNDS::Cauchy
                         }
                     }
             }
+            return true;
         }
 
         void PublishSourceState(const EquationDofs &state, real time)
@@ -1905,9 +1912,10 @@ namespace DNDS::Cauchy
         work.sourceState->Check(state, true);
         work.sourceCoefficients->Check(work.fluxCoefficients, true);
     }
-    void FiniteVolume::AddEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &work,
-                                                 const R::Array<real>::WriteLease &diagonal, DiagonalStorage storage, real scale, EquationPointEvaluator &evaluator) const
+    bool FiniteVolume::AddEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &work,
+                                                 const R::Array<real>::WriteLease &diagonal, DiagonalStorage storage, real scale, EquationPointEvaluator &evaluator,
+                                                 const EquationFVDetail::MeanLinearizationOutput *linearization) const
     {
-        work.AddMeanSourceJacobian(state, diagonal, storage, scale, evaluator);
+        return work.AddMeanSourceJacobian(state, diagonal, storage, scale, evaluator, linearization);
     }
 }

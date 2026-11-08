@@ -22,6 +22,10 @@ namespace DNDS::Geom
 
 namespace DNDS::Cauchy
 {
+    namespace EquationFVDetail
+    {
+        struct MeanLinearizationOutput;
+    }
     struct EquationThermalView;
     /// Persistent buffers/plans for explicit mean-gradient preparation. One
     /// field per physical equation allocation, columns component*dim+direction.
@@ -690,9 +694,10 @@ namespace DNDS::Cauchy
                                   Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time,
                                   AuxiliaryValues *auxiliary = nullptr) const;
         void ValidateEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &workspace, real time) const;
-        void AddEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &workspace,
+        bool AddEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &workspace,
                                        const Runtime::Array<real>::WriteLease &diagonal, DiagonalStorage storage,
-                                       real scale, EquationPointEvaluator &evaluator) const;
+                                       real scale, EquationPointEvaluator &evaluator,
+                                       const EquationFVDetail::MeanLinearizationOutput *linearization = nullptr) const;
         CFV::FVField &RequireState(EquationDofs &state) const;
         index PrepareFaceCharacteristics(const CFV::FVField &state, CFV::FaceCharacteristicTransform &transform) const;
         std::shared_ptr<Workspace> BuildWorkspaceImpl(CFV::FVField &state, AuxiliaryRequest request, bool meanOnly) const;
