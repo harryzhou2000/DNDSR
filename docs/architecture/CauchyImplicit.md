@@ -19,6 +19,15 @@ buffer directly, including fill zeros, and retains the original operator for
 matrix actions. It uses the existing symbolic ordering and decomposition.
 Direct-FV midpoint source values share the owned mean allocation; source
 derivatives continue to use the limited polynomial sampling facility.
+Direct physical gradients for repeated RANS source preparation carry separate
+owned/ghost ready publications per physical field. Reuse occurs only when the input
+and destination storage, shape and value versions still match. The input read
+lease spans the check and any refresh; an unfinished writer cannot be mistaken
+for current data. Weak storage identities do not retain old mesh-sized arrays.
+A miss performs the original copy/extraction, and changed geometry is still
+rejected. P0 sources retain physical gradients; P1 uses the final limiter/PP
+coefficients. This is local workspace reuse, without a new MPI agreement or
+inherited coarse auxiliary signals. Callers still serialize workspace use.
 
 Equation implicit evaluation prepares mean thermodynamics, face signals and
 cell spectral sums during the mean halo exchange, before reconstruction and

@@ -4,6 +4,14 @@ CS performance readings are provisional. Canonical comparisons execute matched
 baseline/candidate members serially within one exclusive single-node BSSCA
 allocation, with frozen source, controls and workload; no named-node pinning.
 
+Direct-FV component probes perform untimed gradient-publication checks before
+their numerical oracles: ready repeated refresh does not rewrite the target,
+a nonzero coefficient change refreshes the analytic physical gradient, and an
+active input writer is rejected. The original coefficient and gradient values
+are restored exactly before timing. `EXTRACTED_GRADIENT_REFRESH_AUDIT` records
+these checks; no new hot-loop counter, MPI agreement or altered source-gradient
+policy is introduced. Halo-only and variational probes keep their usual inputs.
+
 `BROAD_WORKLOAD` includes untimed `rank_work_columns` and flattened
 `rank_work_rows`, one ten-column row per MPI rank: owned/ghost/core/
 halo-dependent cell counts, face incidences, canonical faces, canonical

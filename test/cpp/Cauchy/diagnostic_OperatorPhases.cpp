@@ -214,6 +214,55 @@ int main(int argc, char **argv)
         };
         haloNative();
         haloLegacy();
+        if (degree != 3 && operation != "halo")
+        {
+            // Untimed positive/invalidation checks on actual nonempty fields.
+            // Restore the original coefficient exactly before numeric oracles.
+            workspace->RefreshDirectGradients(false);
+            auto &gradient = workspace->directGradients[0].Owned();
+            const auto readyVersion = gradient.Version();
+            workspace->RefreshDirectGradients(false);
+            DNDS_check_throw_info(gradient.Version() == readyVersion, "ready direct gradient was rewritten");
+            auto &input = workspace->fluxCoefficients.PhysicalField(0).Owned();
+            const DNDS::real coefficient = input.Read().View()(0, 0);
+            const DNDS::real previous = gradient.Read().View()(0, 0);
+            DNDS::real scale;
+            {
+                const auto geometry = fv.Metrics().AcquireRead();
+                scale = geometry.HostView().cells(0, 7);
+            }
+            constexpr DNDS::real delta = .001;
+            {
+                auto write = input.Write();
+                write.View()(0, 0) = coefficient + delta;
+            }
+            workspace->RefreshDirectGradients(false);
+            const DNDS::real expected = previous + delta / scale, actual = gradient.Read().View()(0, 0);
+            DNDS_check_throw_info(gradient.Version() > readyVersion && std::abs(actual - expected) <= 1e-12 * (1 + std::abs(expected)),
+                                  "changed coefficient did not refresh a nonzero physical gradient");
+            bool writerRejected = false;
+            {
+                auto write = input.Write();
+                try
+                {
+                    workspace->RefreshDirectGradients(false);
+                }
+                catch (const std::exception &)
+                {
+                    writerRejected = true; // Local-only operation; no collective is caught.
+                }
+                write.CancelUnmodified();
+            }
+            DNDS_check_throw_info(writerRejected, "active coefficient writer passed the gradient cache check");
+            {
+                auto write = input.Write();
+                write.View()(0, 0) = coefficient;
+            }
+            workspace->RefreshDirectGradients(false);
+            DNDS_check_throw_info(gradient.Read().View()(0, 0) == previous, "gradient audit did not restore its frozen input");
+            if (!mpi.rank)
+                std::cout << "EXTRACTED_GRADIENT_REFRESH_AUDIT " << C::Json{{"degree", degree}, {"ready_reuse", true}, {"nonzero_input_invalidation", true}, {"active_writer_rejected", true}, {"frozen_input_restored", true}}.dump() << std::endl;
+        }
         auto evaluatorNative = equation.MakePointEvaluator({}, {true, true, true, false, false});
         const uint64_t flags = Eval::RHS_Dont_Update_Integration | Eval::RHS_Dont_Record_Bud_Flux |
                                (degree == 3 ? 0 : Eval::RHS_Direct_2nd_Rec | Eval::RHS_Direct_2nd_Rec_already_have_uGradBufNoLim) |

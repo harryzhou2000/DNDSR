@@ -143,6 +143,12 @@ namespace DNDS::Cauchy
         // WBAP/PP may still use an explicit coefficient compatibility bridge;
         // the direct RHS never reads that bridge or evaluates a Taylor basis.
         std::vector<CFV::FVField> directGradients;
+        struct DirectGradientPublication
+        {
+            // Weak identities reject rebinding/ABA without retaining old fields.
+            std::weak_ptr<const R::ArrayStorage> input, output;
+            uint64_t inputShape = 0, inputVersion = 0, outputShape = 0, outputVersion = 0;
+        };
         std::shared_ptr<EquationPositivityWorkspace> positivity;
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
         std::vector<index> logicalFirst, vectorStarts;
@@ -170,6 +176,8 @@ namespace DNDS::Cauchy
         real sourceTime = 0;
         std::optional<EquationDofOperations::Binding> rhsState, rhsCoefficients;
         real rhsTime = 0;
+        // Keep auxiliary cache metadata after the existing numerical fields.
+        std::vector<std::array<DirectGradientPublication, 2>> directGradientPublications;
 
         static std::vector<Field> BuildFields(const Data &data, const EquationDofs &state, bool meanOnly)
         {
@@ -351,6 +359,8 @@ namespace DNDS::Cauchy
                         FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owner->metrics.NumCell(),
                                                         state.PhysicalField(iField).Width() * owner->metrics.Dimension())));
             BuildSourceSampling();
+            if (ransFirst >= 0)
+                directGradientPublications.resize(directGradients.size());
         }
         void BindHalos(EquationDofs &state)
         {
@@ -364,20 +374,64 @@ namespace DNDS::Cauchy
         }
         void RefreshDirectGradients(bool ghost)
         {
-            if (owner->settings.numerics.reconstruction != "variational")
-                for (index iField = 0; iField < prototype.PhysicalFieldNumber(); ++iField)
+            if (owner->settings.numerics.reconstruction == "variational")
+                return;
+            for (index iField = 0; iField < prototype.PhysicalFieldNumber(); ++iField)
+            {
+                const bool fromGradientField = owner->settings.numerics.reconstruction == "constant" && fields[iField].gradient;
+                // Constant face fluxes never read remote source gradients.
+                if (fromGradientField && ghost)
+                    continue;
+                const auto refresh = [&]
                 {
-                    // Constant face reconstruction still needs physical mean
-                    // gradients for RANS sources. They have no face-halo use.
-                    if (owner->settings.numerics.reconstruction == "constant" && fields[iField].gradient)
+                    if (fromGradientField)
                     {
-                        if (!ghost)
-                            Algebra::Copy(directGradients[iField], *fields[iField].gradient);
+                        // The cache check may retain a compatible input read.
+                        // Use the explicit engine entry: the immediate algebra
+                        // wrapper deliberately requires completely idle fields.
+                        R::EagerEngine engine;
+                        const auto stream = engine.CreateCPUStream();
+                        Algebra::Copy(engine, stream, directGradients[iField], *fields[iField].gradient);
+                        engine.Synchronize();
+                    }
+                    else
+                        owner->gradient.ExtractLinearGradients(fluxCoefficients.PhysicalField(iField), owner->reconstruction,
+                                                               directGradients[iField], ghost);
+                };
+                // Only RANS source sampling repeats this pass. Flow-only and
+                // chemical-only paths retain their original preparation path.
+                if (ransFirst < 0)
+                {
+                    refresh();
+                    continue;
+                }
+                const auto &source = fromGradientField ? fields[iField].gradient->Owned()
+                                     : ghost           ? fluxCoefficients.PhysicalField(iField).Ghost()
+                                                       : fluxCoefficients.PhysicalField(iField).Owned();
+                const auto &destination = ghost ? directGradients[iField].Ghost() : directGradients[iField].Owned();
+                // Pin the input through both the check and a possible refresh:
+                // an unfinished writer has not published its next generation.
+                const auto inputRead = source.Read();
+                const auto inputStorage = source.SharedStorage();
+                auto &published = directGradientPublications[iField][ghost ? 1 : 0];
+                if (published.input.lock() == inputStorage && published.output.lock() == destination.SharedStorage() &&
+                    published.inputShape == source.ShapeVersion() && published.inputVersion == source.Version())
+                {
+                    const auto outputRead = destination.Read();
+                    if (published.outputShape == destination.ShapeVersion() && published.outputVersion == destination.Version())
+                    {
+                        owner->metrics.Validate();
                         continue;
                     }
-                    owner->gradient.ExtractLinearGradients(fluxCoefficients.PhysicalField(iField), owner->reconstruction,
-                                                           directGradients[iField], ghost);
                 }
+                // The independently callable source path still executes this
+                // on a miss. P0 sources keep their physical gradients, and P1
+                // extracts the final limiter/PP coefficients, never raw slopes.
+                refresh();
+                const auto outputRead = destination.Read();
+                published = {inputStorage, destination.SharedStorage(), source.ShapeVersion(), source.Version(),
+                             destination.ShapeVersion(), destination.Version()};
+            }
         }
 
         void FillBoundary(const EquationDofs &state, bool polynomial, real time, EquationPointEvaluator &evaluator)
