@@ -248,8 +248,8 @@ bindings, physical ownership, layout-aware block views and explicit kernel
 dispatch. `Domain` now holds accepted/trial bindings while preserving the
 physical `State()` and flow5 `Flow()` accessors. The latter requires a dedicated
 flow5 allocation; coupled extended states use `Dofs()` block access instead.
-`execution.fieldGrouping` chooses `equationBlocks` (the existing default) or
-`coupled`, independently of the AoS/SoA/AoSoA `execution.layout`. The full logical
+`execution.fieldGrouping` defaults to `coupled`; it may instead select
+`equationBlocks`, independently of the AoS/SoA/AoSoA `execution.layout`. The full logical
 `ResidualState()` remains available with either grouping; `Residual()` is the
 dedicated-flow5 convenience.
 

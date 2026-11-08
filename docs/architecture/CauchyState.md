@@ -381,9 +381,9 @@ and physical RANS/flame acceptance remain separate work.
 
 ### Bounded CPU view specialization
 
-`EquationDofs` remains a dynamic owner. `execution.fieldGrouping` selects
-`equationBlocks` (separate flow/RANS/species allocations) or `coupled` (one
-allocation), independently of `execution.layout`. Storage grouping never changes
+`EquationDofs` remains a dynamic owner. `execution.fieldGrouping` defaults to
+`coupled` (one allocation); it may instead select `equationBlocks` (separate
+flow/RANS/species allocations), independently of `execution.layout`. Storage grouping never changes
 which equations the linear system couples. The same blocked access works for
 either grouping:
 

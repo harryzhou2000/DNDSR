@@ -1367,12 +1367,15 @@ The equation adapter requires the implemented EquationWorkspace profile and
 rejects unavailable Roe dissipation. Its bounded corrections and equation
 application also serve polynomial FAS. It retains actual mean halos
 and high-order source samples from each residual evaluation. Auxiliary
-preparation is stateless with explicit outputs. The approximate source Jacobian
-uses one cell mean and cell volume, separately from high-order RHS source
-integration. RANS consumes current reconstruction gradients sampled at the
-cell center; its gradients are retained even on P0. The reconstruction
-publication must therefore remain current, without integrating its source
-Jacobian over high-order quadrature points.
+preparation is stateless with explicit outputs. The default approximate source
+Jacobian uses one cell mean and cell volume, separately from high-order RHS
+source integration. The explicit opt-in
+`implicit.sourceJacobianMode=rhsQuadrature` instead consumes the current
+limited/PP VR values and gradients at the same source quadrature points and
+weights as RHS. It remains a comparison mode; the center mode is the production
+default. RANS consumes current reconstruction gradients sampled at the cell
+center in the default mode; its gradients are retained even on P0. The
+reconstruction publication must remain current in either mode.
 The implementation's internal workspace entry is `AddMeanSourceJacobian`;
 the FV wrapper retains the production provenance checks and delegates to it.
 It adds integrated coefficients to an explicitly leased diagonal-line or block
@@ -1642,12 +1645,14 @@ and diffusion bound once per call, then faces consume those rows. This explicit
 a separately exchanged payload. Face-average turbulent transport remains a
 distinct point evaluation. General callers can still omit the buffer.
 
-The approximate RANS source Jacobian consumes physical center gradients.
+The default approximate RANS source Jacobian consumes physical center gradients.
 For direct FV levels these already live in the gradient field: retain its
 read lease and index direction `component * dimension + direction` directly.
 Do not copy the whole field into one scratch array per direction. Variational
-levels still sample their polynomial at cell centers. This view substitution
-changes neither source gradients nor quadrature and preserves strided layouts.
+levels still sample their polynomial at cell centers in the default mode; the
+opt-in rhsQuadrature mode consumes the already published source quadrature
+samples. This view substitution changes neither source gradients nor the
+selected quadrature and preserves strided layouts.
 
 The same direct-gradient borrowing applies to midpoint RHS volume sources
 when setup proves exactly one source point per owned cell in matching order.

@@ -462,8 +462,21 @@ TEST_CASE("Bundled polynomial values and gradients preserve the independent samp
         overlapping = outputs;
         overlapping.values = &mean.Owned();
         CHECK_THROWS(sampler.EvaluateValueGradient(mean, coefficients, overlapping));
-        // Partial requests remain supported through the reference path.
+        // Source-center matrix preparation requests both derivatives without
+        // a value buffer. Compare exactly with each independent derivative;
+        // include the generic column-major/cache fallback above as well.
         outputs.values = nullptr;
+        sampler.EvaluateValueGradient(mean, coefficients, outputs);
+        for (int derivative = 1; derivative < 3; ++derivative)
+        {
+            sampler.Evaluate(mean, coefficients, reference, derivative);
+            const auto expected = reference.Read(), actual = results[derivative].Read();
+            for (I iPoint = 0; iPoint < metrics.NumCell(); ++iPoint)
+                for (I component = 0; component < 6; ++component)
+                    CHECK(actual.View()(iPoint, component) == expected.View()(iPoint, component));
+        }
+        CHECK(results[0].Version() == version);
+        // Partial requests remain supported through the reference path.
         outputs.gradients[1] = nullptr;
         sampler.EvaluateValueGradient(mean, coefficients, outputs);
     }

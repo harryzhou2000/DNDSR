@@ -159,8 +159,9 @@ namespace DNDS::Cauchy
         std::vector<R::Array<real>> sourceValues;
         bool sourceValuesAreMeans = false;
         std::vector<std::array<R::Array<real>, 3>> sourceGradients;
-        // Approximate source Jacobians use cell means plus gradients sampled
-        // at one cell center. RHS source quadrature remains independent.
+        // The default approximate source Jacobian uses cell means plus
+        // gradients at one cell center. The opt-in rhsQuadrature mode reuses
+        // the separately published RHS source samples.
         std::optional<CFV::PolynomialSamplingPlan> sourceJacobianSampling;
         std::vector<std::array<R::Array<real>, 3>> sourceJacobianGradients;
         R::Array<real> boundaryMomentumFlux;
@@ -923,7 +924,147 @@ namespace DNDS::Cauchy
                 }
             }
         }
-        /// Add the one-point mean-state source matrix to caller-owned output.
+        /// Opt-in source linearization at the already sampled RHS source
+        /// quadrature. This is deliberately separate from the retained
+        /// one-point approximate Jacobian and uses only the current published
+        /// limited/PP polynomial values/gradients.
+        bool AddRHSQuadratureSourceJacobian(const EquationDofs &state,
+                                            const R::Array<real>::WriteLease &diagonal,
+                                            DiagonalStorage storage, real scale,
+                                            EquationPointEvaluator &evaluator,
+                                            const MeanLinearizationOutput *linearization) const
+        {
+            if (!sourceSampling)
+                return false;
+            if (owner->settings.numerics.reconstruction != "variational")
+                return false;
+            const auto means = state.ReadOwned();
+            const auto blocks = BlockViews(state, means);
+            const auto geometry = owner->metrics.AcquireRead();
+            const auto metric = geometry.HostView();
+            std::optional<WallDistanceRead> wallRead;
+            std::optional<R::Array<real>::ReadLease> lengthRead;
+            if (ransFirst >= 0)
+            {
+                wallRead.emplace(owner->wallDistance->AcquireRead());
+                lengthRead.emplace(owner->ransCellLength.Read());
+            }
+            const auto walls = wallRead ? wallRead->HostView() : WallDistanceView{};
+            const auto lengths = lengthRead ? lengthRead->View<R::FixedRows<1>>()
+                                            : R::ArrayView<const real, R::AccessBoundsChecks, R::FixedRows<1>>{};
+            const auto matrix = diagonal.View<R::TableRows>();
+            const index nv = state.ComponentNumber();
+            const int independent = owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() - 1 : 0;
+            std::vector<EquationBlockLocation> locations;
+            for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+                locations.push_back(state.LocateBlock(iBlock));
+            PointScratch point(nv);
+            // The linearization consumer still needs mean pressure and its
+            // conservative derivative. Fill it separately from quadrature
+            // source points so the high-order source path does not silently
+            // replace the mean-state EOS contract.
+            if (linearization)
+            {
+                for (index iCell = 0; iCell < owner->metrics.NumCell(); ++iCell)
+                {
+                    Gather(blocks, iCell, point, false);
+                    const auto properties = evaluator.Evaluate(
+                        point.Flow(flowFirst), point.Species(speciesFirst, independent), 0,
+                        {ransFirst >= 0, false, true, false, false});
+                    linearization->Publish(iCell, point, properties);
+                }
+            }
+            std::vector<R::Array<real>::ReadLease> sourceReads;
+            sourceReads.reserve(sourceValues.size());
+            for (const auto &field : sourceValues)
+                sourceReads.push_back(field.Read());
+            std::vector<std::array<std::optional<R::Array<real>::ReadLease>, 3>> gradientReads(sourceGradients.size());
+            for (index iField = 0; iField < index(sourceGradients.size()); ++iField)
+                for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                    gradientReads[iField][d].emplace(sourceGradients[iField][d].Read());
+            const auto weightRead = sourceWeights.Read();
+            const auto weights = weightRead.View<R::FixedRows<1>>();
+            std::vector<RHSScalarView> samples;
+            samples.reserve(sourceReads.size());
+            for (const auto &read : sourceReads)
+                samples.push_back(read.View<R::UniformTableRows>());
+            std::vector<std::array<RHSScalarView, 3>> gradients(sourceGradients.size());
+            for (index iField = 0; iField < index(sourceGradients.size()); ++iField)
+                for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                    gradients[iField][d] = gradientReads[iField][d]->View<R::UniformTableRows>();
+            const auto ransMean = ransFirst >= 0 ? means.Block("rans") : EquationBlockReadView{};
+            const auto addTerms = [&](index iCell, const PointScratch &at,
+                                      const EquationPointProperties &properties, real weight,
+                                      real wallDistance)
+            {
+                if (ransFirst >= 0)
+                {
+                    const auto &model = owner->equation.RANS();
+                    const auto input = RANSPoint(at, flowFirst, ransFirst, model, properties, wallDistance, lengths(iCell, 0));
+                    const auto destruction = model.ImplicitSourceDiagonal(input);
+                    for (int j = 0; j < model.ComponentNumber(); ++j)
+                    {
+                        DNDS_check_throw_info(std::isfinite(destruction[j]), "nonfinite quadrature RANS source derivative");
+                        const index row = ransFirst + j;
+                        matrix(iCell, storage == DiagonalStorage::Block ? row + nv * row : row) +=
+                            scale * weight * destruction[j];
+                    }
+                }
+                if (chemical)
+                    for (int j = 0; j < 5 + independent; ++j)
+                    {
+                        const index column = j < 5 ? flowFirst + j : speciesFirst + j - 5;
+                        for (int k = 0; k < independent; ++k)
+                        {
+                            const index row = speciesFirst + k;
+                            const real derivative = properties.sourceJacobian(k, j);
+                            DNDS_check_throw_info(std::isfinite(derivative), "nonfinite quadrature source derivative");
+                            if (storage == DiagonalStorage::Block || row == column)
+                                matrix(iCell, storage == DiagonalStorage::Block ? row + nv * column : row) -=
+                                    scale * weight * derivative;
+                        }
+                    }
+            };
+            for (index iCell = 0; iCell < owner->metrics.NumCell(); ++iCell)
+            {
+                for (index iPoint = sourceOffsets[iCell]; iPoint < sourceOffsets[iCell + 1]; ++iPoint)
+                {
+                    for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+                    {
+                        const auto location = locations[iBlock];
+                        const auto values = samples[location.physicalField][iPoint];
+                        for (index j = 0; j < location.componentNumber; ++j)
+                            point.values[logicalFirst[iBlock] + j] = values[location.firstComponent + j];
+                        if (ransFirst >= 0)
+                            for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                            {
+                                const auto values = gradients[location.physicalField][d][iPoint];
+                                for (index j = 0; j < location.componentNumber; ++j)
+                                    point.gradient(logicalFirst[iBlock] + j, d) =
+                                        values[location.firstComponent + j];
+                            }
+                    }
+                    if (ransFirst >= 0)
+                    {
+                        const auto &model = owner->equation.RANS();
+                        RANSStateView{model.Kind(), model.ComponentNumber()}.RepairReconstruction(
+                            ransMean[iCell], point.values.data() + ransFirst);
+                    }
+                    const auto properties = evaluator.Evaluate(
+                        point.Flow(flowFirst), point.Species(speciesFirst, independent), 0,
+                        {ransFirst >= 0, false, false, chemical, chemical});
+                    const real wallDistance = ransFirst >= 0
+                                                  ? walls.cells(iCell, iPoint - sourceOffsets[iCell])
+                                                  : real(1);
+                    addTerms(iCell, point, properties, weights(iPoint, 0), wallDistance);
+                }
+            }
+            return true;
+        }
+
+        /// Add the approximate source matrix to caller-owned output.
+        /// The default is one mean point per cell; rhsQuadrature selects the
+        /// explicit same-quadrature source linearization.
         /// The controller retains current means/coefficients and ready source
         /// gradients. Optional linearization outputs consume this same mean
         /// property evaluation; false means no samples existed and no outputs
@@ -935,8 +1076,11 @@ namespace DNDS::Cauchy
         {
             if (!sourceSampling)
                 return false;
-            // The approximate source matrix is a one-point, mean-state operator.
-            // Never integrate nonlinear source derivatives on RHS quadrature.
+            if (owner->settings.implicit.sourceJacobianMode == "rhsQuadrature")
+                return AddRHSQuadratureSourceJacobian(state, diagonal, storage, scale, evaluator, linearization);
+            // The default approximate source matrix is a one-point,
+            // mean-state operator. The opt-in quadrature path is a separate
+            // branch selected by the explicit implicit source mode.
             // RANS still consumes the current polynomial's center gradients.
             std::vector<std::array<std::optional<R::Array<real>::ReadLease>, 3>> gradientReads;
             // Direct gradients already contain every direction in one physical
@@ -967,11 +1111,19 @@ namespace DNDS::Cauchy
                             gradients[iField][d] = {view, owner->metrics.Dimension(), d};
                         continue;
                     }
+                    CFV::PolynomialSampleOutputs outputs;
+                    // Workspace identity is const; shallow mutable handles
+                    // retain its existing scratch allocations for the write.
+                    auto scratch = sourceJacobianGradients[iField];
+                    for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                        outputs.gradients[d] = &scratch[d];
+                    // One center, gradients only. The sampling facility owns
+                    // bounded layout specialization and generic fallback; no
+                    // unused sampled-value field is allocated for the matrix.
+                    sourceJacobianSampling->EvaluateValueGradient(state.PhysicalField(iField), fluxCoefficients.PhysicalField(iField), outputs);
                     for (int d = 0; d < owner->metrics.Dimension(); ++d)
                     {
-                        auto scratch = sourceJacobianGradients[iField][d];
-                        sourceJacobianSampling->Evaluate(state.PhysicalField(iField), fluxCoefficients.PhysicalField(iField), scratch, 1 + d);
-                        gradientReads[iField][d].emplace(scratch.Read());
+                        gradientReads[iField][d].emplace(sourceJacobianGradients[iField][d].Read());
                         gradients[iField][d] = {gradientReads[iField][d]->View<R::UniformTableRows>(), 1, 0};
                     }
                 }
@@ -1077,9 +1229,9 @@ namespace DNDS::Cauchy
             };
             return unchanged(*sourceState, state) && unchanged(*sourceCoefficients, fluxCoefficients);
         }
-        /// High-order RHS source sampling is distinct from the mean-state
-        /// approximate source Jacobian. A null result refreshes publication
-        /// provenance only; the Jacobian samples its own center gradients.
+        /// High-order RHS source sampling supplies the opt-in quadrature
+        /// source Jacobian or refreshes publication provenance only. The
+        /// default Jacobian continues to sample its own center gradients.
         void PrepareVolumeSource(const EquationDofs &state, EquationDofs *result, EquationPointEvaluator &evaluator, real time = 0)
         {
             const PhaseTime timing(*this, SourcePhase);

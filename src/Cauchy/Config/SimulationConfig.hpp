@@ -69,7 +69,7 @@ namespace DNDS::Cauchy
     struct ExecutionSettings
     {
         std::string device = "cpu", layout = "aos", communication = "mpi-direct";
-        std::string fieldGrouping = "equationBlocks";
+        std::string fieldGrouping = "coupled";
         std::string transferPreflight = "collective";
         int hostThreads = 0;
         bool checkAccess = true;
@@ -339,6 +339,7 @@ namespace DNDS::Cauchy
     struct ImplicitSettings
     {
         std::string diagonal = "entries", jacobianAction = "assembled";
+        std::string sourceJacobianMode = "center";
         index iterations = 100, minIterations = 1;
         index consoleInterval = 0;
         real relativeTolerance = 1e-8, absoluteTolerance = 1e-11;
@@ -367,6 +368,7 @@ namespace DNDS::Cauchy
         {
             DNDS_FIELD(diagonal, "entries or full block diagonal storage");
             DNDS_FIELD(jacobianAction, "assembled (canonical) or directEvaluated off-diagonal Ax; semiMatrixFree is a compatibility spelling. Diagonal blocks and ILU factors remain explicit");
+            DNDS_FIELD(sourceJacobianMode, "center: retained one-point mean source linearization; rhsQuadrature: opt-in variational source derivatives at the RHS source quadrature");
             DNDS_FIELD(iterations, "Maximum nonlinear corrections per physical stage");
             DNDS_FIELD(minIterations, "Minimum corrections before accepting a stage");
             DNDS_FIELD(consoleInterval, "Rank-zero nonlinear residual/VR progress interval; zero disables it");

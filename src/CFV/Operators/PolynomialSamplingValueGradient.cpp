@@ -1,4 +1,5 @@
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
+#include <type_traits>
 
 namespace DNDS::CFV
 {
@@ -48,7 +49,7 @@ namespace DNDS::CFV
         for (const auto *output : arrays)
             table &= !output || output->Layout().Kind() == R::RowLayoutKind::Table;
         if (_needsGhost || dimension != 2 || components != 6 || modes != 9 || _cachedDerivatives != 3 ||
-            !arrays[0] || !arrays[1] || !arrays[2] || !table)
+            !arrays[1] || !arrays[2] || !table)
         {
             for (int iOutput = 0; iOutput < 4; ++iOutput)
                 if (arrays[iOutput])
@@ -63,7 +64,8 @@ namespace DNDS::CFV
         try
         {
             for (int iOutput = 0; iOutput < 3; ++iOutput)
-                writes[iOutput].emplace(arrays[iOutput]->Write());
+                if (arrays[iOutput])
+                    writes[iOutput].emplace(arrays[iOutput]->Write());
         }
         catch (...)
         {
@@ -74,42 +76,63 @@ namespace DNDS::CFV
         }
         try
         {
-            const auto means = meanRead.View<R::FixedRows<6>>();
             const auto coefficientsView = coefficientRead.View<R::FixedRows<54>>();
             const auto cells = cellRead.View<R::FixedRows<1>>();
             const auto basis = basisRead.View<R::FixedRows<27>>();
-            const auto values = writes[0]->View<R::FixedRows<6>>();
             const auto dx = writes[1]->View<R::FixedRows<6>>();
             const auto dy = writes[2]->View<R::FixedRows<6>>();
-            for (index iPoint = 0; iPoint < cells.RowCount(); ++iPoint)
+            // Source-center Jacobians request gradients only. Compile the
+            // value arithmetic/store out, without inventing a temporary value
+            // output or changing either derivative's accumulation order.
+            const auto sample = [&](auto includeValues)
             {
-                const index iCell = cells(iPoint, 0);
-                const auto meanRow = means[iCell];
-                const auto coefficientRow = coefficientsView[iCell];
-                const auto basisRow = basis[iPoint];
-                const auto valueRow = values[iPoint], dxRow = dx[iPoint], dyRow = dy[iPoint];
-                for (index component = 0; component < 6; ++component)
+                constexpr bool valueRequested = decltype(includeValues)::value;
+                const auto means = meanRead.View<R::FixedRows<6>>();
+                const auto values = [&]
                 {
-                    real value = meanRow[component], gradientX = 0, gradientY = 0;
-                    for (index mode = 0; mode < 9; ++mode)
+                    if constexpr (valueRequested)
+                        return writes[0]->View<R::FixedRows<6>>();
+                    else
+                        return R::ArrayView<real, R::AccessBoundsChecks, R::FixedRows<6>>{};
+                }();
+                for (index iPoint = 0; iPoint < cells.RowCount(); ++iPoint)
+                {
+                    const index iCell = cells(iPoint, 0);
+                    const auto coefficientRow = coefficientsView[iCell];
+                    const auto basisRow = basis[iPoint];
+                    const auto dxRow = dx[iPoint], dyRow = dy[iPoint];
+                    for (index component = 0; component < 6; ++component)
                     {
-                        const real coefficient = coefficientRow[component * 9 + mode];
-                        // Cached basis is derivative-major within each mode.
-                        // Each sum retains the reference evaluator's order.
-                        value += basisRow[mode * 3] * coefficient;
-                        gradientX += basisRow[mode * 3 + 1] * coefficient;
-                        gradientY += basisRow[mode * 3 + 2] * coefficient;
+                        real value = 0, gradientX = 0, gradientY = 0;
+                        if constexpr (valueRequested)
+                            value = means(iCell, component);
+                        for (index mode = 0; mode < 9; ++mode)
+                        {
+                            const real coefficient = coefficientRow[component * 9 + mode];
+                            // Cached basis is derivative-major within each mode.
+                            // Each sum retains the reference evaluator's order.
+                            if constexpr (valueRequested)
+                                value += basisRow[mode * 3] * coefficient;
+                            gradientX += basisRow[mode * 3 + 1] * coefficient;
+                            gradientY += basisRow[mode * 3 + 2] * coefficient;
+                        }
+                        if constexpr (valueRequested)
+                            values(iPoint, component) = value;
+                        dxRow[component] = gradientX;
+                        dyRow[component] = gradientY;
                     }
-                    valueRow[component] = value;
-                    dxRow[component] = gradientX;
-                    dyRow[component] = gradientY;
                 }
-            }
+            };
+            if (arrays[0])
+                sample(std::true_type{});
+            else
+                sample(std::false_type{});
         }
         catch (...)
         {
             for (auto &write : writes)
-                write->Fail();
+                if (write)
+                    write->Fail();
             throw;
         }
     }

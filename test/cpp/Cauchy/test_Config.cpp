@@ -6,6 +6,10 @@ namespace C = DNDS::Cauchy;
 TEST_CASE("MPI fail-fast launch validation is an explicit execution choice")
 {
     CHECK(C::ExecutionSettings{}.transferPreflight == "collective");
+    CHECK(C::ExecutionSettings{}.layout == "aos");
+    CHECK(C::ExecutionSettings{}.fieldGrouping == "coupled");
+    CHECK(C::ImplicitSettings{}.sourceJacobianMode == "center");
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"numerics", {{"reconstruction", "variational"}}}, {"implicit", {{"sourceJacobianMode", "rhsQuadrature"}}}}}}, 1));
     const auto config = C::SimulationConfig::Resolve({{"defaults", {{"execution", {{"transferPreflight", "abortOnFailure"}}}}}}, 2);
     CHECK(config.Domains()[0].settings.execution.transferPreflight == "abortOnFailure");
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"execution", {{"transferPreflight", "unchecked"}}}}}}, 2));

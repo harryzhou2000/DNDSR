@@ -966,7 +966,7 @@ TEST_CASE("Configured mixture Domains advance every block through production tim
     C::Json composition = C::Json::object();
     for (int k = 0; k < mixture.species; ++k)
         composition[mixture.material.SpeciesNames()[k]] = fractions[k];
-    C::Json input{{"defaults", {{"equation", {{"eos", "idealGasMixture"}, {"source", "chemical"}, {"mixture", {{"mechanismFile", mixture.prototype.mechanismFile()}, {"rho0", mixture.scales.rho0}, {"U0", mixture.scales.U0}, {"L0", mixture.scales.L0}, {"T0", mixture.scales.T0}}}}}, {"initialPrimitive", {.8, .2, -.04, .03, 1}}, {"initialTemperature", 1400 / mixture.scales.T0}, {"initialMassFractions", composition}, {"execution", {{"layout", "soa"}, {"hostThreads", 2}}}, {"numerics", {{"reconstruction", "constant"}, {"faceFallback", false}}}, {"implicit", {{"diagonal", "block"}, {"pseudoCFL", 1e4}, {"maxPseudoCFL", 1e8}, {"relativeTolerance", 1e-10}, {"absoluteTolerance", 1e-8}, {"residualComponents", C::Json::array()}, {"linear", {{"method", "gmres"}, {"preconditioner", "ilu"}, {"relativeTolerance", 1e-10}, {"absoluteTolerance", 1e-13}}}}}}}, {"time", {{"method", "bdf1"}}}};
+    C::Json input{{"defaults", {{"equation", {{"eos", "idealGasMixture"}, {"source", "chemical"}, {"mixture", {{"mechanismFile", mixture.prototype.mechanismFile()}, {"rho0", mixture.scales.rho0}, {"U0", mixture.scales.U0}, {"L0", mixture.scales.L0}, {"T0", mixture.scales.T0}}}}}, {"initialPrimitive", {.8, .2, -.04, .03, 1}}, {"initialTemperature", 1400 / mixture.scales.T0}, {"initialMassFractions", composition}, {"execution", {{"layout", "soa"}, {"fieldGrouping", "equationBlocks"}, {"hostThreads", 2}}}, {"numerics", {{"reconstruction", "constant"}, {"faceFallback", false}}}, {"implicit", {{"diagonal", "block"}, {"pseudoCFL", 1e4}, {"maxPseudoCFL", 1e8}, {"relativeTolerance", 1e-10}, {"absoluteTolerance", 1e-8}, {"residualComponents", C::Json::array()}, {"linear", {{"method", "gmres"}, {"preconditioner", "ilu"}, {"relativeTolerance", 1e-10}, {"absoluteTolerance", 1e-13}}}}}}}, {"time", {{"method", "bdf1"}}}};
     const auto startFractions = fractions;
     constexpr double totalTime = 1e-5;
     double temperature = 1400;
@@ -1546,13 +1546,20 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
     settings.numerics.faceFallback = false;
     C::FiniteVolume withoutSource(mesh, settings, equation);
     settings.equation.source = "chemical";
+    auto quadratureSettings = settings;
+    quadratureSettings.implicit.sourceJacobianMode = "rhsQuadrature";
     C::FiniteVolume withSource(mesh, settings, equation);
+    C::FiniteVolume withSourceQuadrature(mesh, quadratureSettings, equation);
     auto a = C::EquationDofs::Coupled(equation.Schema(), withoutSource.Metrics().BuildField(mixture.species + 4));
     auto b = C::EquationDofs::Coupled(equation.Schema(), withSource.Metrics().BuildField(mixture.species + 4));
+    auto bq = C::EquationDofs::Coupled(equation.Schema(), withSourceQuadrature.Metrics().BuildField(mixture.species + 4));
     mixture.Fill(a, withoutSource.Metrics(), true);
     mixture.Fill(b, withSource.Metrics(), true);
-    auto wa = withoutSource.BuildEquationWorkspace(a, mixture.workers), wb = withSource.BuildEquationWorkspace(b, mixture.workers);
-    for (const auto &[fv, work] : std::vector<std::pair<const C::FiniteVolume *, std::shared_ptr<C::FiniteVolume::EquationWorkspace>>>{{&withoutSource, wa}, {&withSource, wb}})
+    mixture.Fill(bq, withSourceQuadrature.Metrics(), true);
+    auto wa = withoutSource.BuildEquationWorkspace(a, mixture.workers), wb = withSource.BuildEquationWorkspace(b, mixture.workers),
+         wbq = withSourceQuadrature.BuildEquationWorkspace(bq, mixture.workers);
+    for (const auto &[fv, work] : std::vector<std::pair<const C::FiniteVolume *, std::shared_ptr<C::FiniteVolume::EquationWorkspace>>>{
+             {&withoutSource, wa}, {&withSource, wb}, {&withSourceQuadrature, wbq}})
     {
         auto coefficients = fv->ReconstructionGuess(*work);
         C::EquationDofOperations::Fill(coefficients, 0);
@@ -1568,22 +1575,26 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
     withoutSource.Evaluate(a, ra, *wa, engine, stream);
     withSource.Evaluate(b, rb, *wb, engine, stream);
     const I rows = withSource.Metrics().NumCell(), count = rows * 9;
-    auto auxiliaryA = withoutSource.BuildAuxiliaryValues({false, true}), auxiliaryB = withSource.BuildAuxiliaryValues({false, true});
+    auto auxiliaryA = withoutSource.BuildAuxiliaryValues({false, true}), auxiliaryB = withSource.BuildAuxiliaryValues({false, true}),
+         auxiliaryBq = withSourceQuadrature.BuildAuxiliaryValues({false, true});
     withoutSource.PrepareAuxValues(a, auxiliaryA, 0, mixture.workers);
     withSource.PrepareAuxValues(b, auxiliaryB, 0, mixture.workers);
+    withSourceQuadrature.PrepareCorrectionAux(bq, *wbq, auxiliaryBq, engine, stream, 0);
     R::Array<double> inverseTau(R::RowLayout::Dense(rows, 1));
     {
         auto write = inverseTau.Write();
         for (I iCell = 0; iCell < rows; ++iCell)
             write.View()(iCell, 0) = 0;
     }
-    auto matrixA = withoutSource.BuildLinearProblem(a, C::DiagonalStorage::Block), matrixB = withSource.BuildLinearProblem(b, C::DiagonalStorage::Block);
+    auto matrixA = withoutSource.BuildLinearProblem(a, C::DiagonalStorage::Block), matrixB = withSource.BuildLinearProblem(b, C::DiagonalStorage::Block),
+         matrixBq = withSourceQuadrature.BuildLinearProblem(bq, C::DiagonalStorage::Block);
     C::JacobianPreparation controls;
     withoutSource.PrepareJacobian(a, auxiliaryA, inverseTau, *matrixA, controls, 0, mixture.workers);
     const auto unpreparedVersion = matrixB->Diagonal().Version();
     CHECK_THROWS(withSource.PrepareJacobian(b, auxiliaryB, inverseTau, *matrixB, controls, 0, mixture.workers));
     CHECK(matrixB->Diagonal().Version() == unpreparedVersion);
     withSource.PrepareJacobian(b, auxiliaryB, inverseTau, *matrixB, controls, 0, mixture.workers, wb.get());
+    withSourceQuadrature.PrepareJacobian(bq, auxiliaryBq, inverseTau, *matrixBq, controls, 0, mixture.workers, wbq.get());
 
     // The fused mean-source producer also freezes the mean snapshot required
     // by evaluated off-diagonal actions. Exercise a nonzero physical vector,
@@ -1643,9 +1654,9 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
         for (int k = 0; k < mixture.species - 1; ++k)
             rates[k] *= mixture.prototype.molecularWeights()[k] / mixture.scales.SourceRate();
     };
-    double signal[4]{};
+    double signal[4]{}, quadratureError = 0, quadratureMagnitude = 0;
     {
-        const auto da = matrixA->Diagonal().Read(), db = matrixB->Diagonal().Read();
+        const auto da = matrixA->Diagonal().Read(), db = matrixB->Diagonal().Read(), dq = matrixBq->Diagonal().Read();
         for (I iCell = 0; iCell < rows; ++iCell)
         {
             std::fill(expected.begin(), expected.end(), 0);
@@ -1672,6 +1683,11 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
                     if (row >= 5)
                     {
                         signal[3] = std::max(signal[3], std::abs(expectedJacobian(row, column) - meanOnly));
+                        const double observedQuadrature =
+                            dq.View()(iCell, row + nv * column) - db.View()(iCell, row + nv * column);
+                        const double expectedQuadrature = -(expectedJacobian(row, column) - meanOnly);
+                        quadratureError = std::max(quadratureError, std::abs(observedQuadrature - expectedQuadrature));
+                        quadratureMagnitude = std::max(quadratureMagnitude, std::abs(expectedQuadrature));
                     }
                 }
             for (int k = 0; k < mixture.species - 1; ++k)
@@ -1684,10 +1700,14 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
         }
     }
     MPI_Allreduce(MPI_IN_PLACE, signal, 4, MPI_DOUBLE, MPI_MAX, mpi.comm);
+    MPI_Allreduce(MPI_IN_PLACE, &quadratureError, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+    MPI_Allreduce(MPI_IN_PLACE, &quadratureMagnitude, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
     CHECK(signal[0] > 1e-10);
     CHECK(signal[1] > 1e-6 * signal[0]); // A mean/centroid-only source must fail this gate.
     CHECK(signal[2] > 1e-8);
     CHECK(signal[3] > 1e-6 * signal[2]); // A quadrature-integrated approximate Jacobian must fail the mean-state oracle above.
+    CHECK(quadratureMagnitude > 1e-8);
+    CHECK(quadratureError <= 2e-7 * quadratureMagnitude + 1e-10);
     const auto version = matrixB->Diagonal().Version();
     {
         auto changed = withSource.FluxReconstruction(*wb).PhysicalField(0).Owned();
