@@ -142,8 +142,14 @@ are zero; reconstruction/gradient cost is a different phase. The production wall
 distance providers remain unchanged. The diagnostic reports their raw difference,
 then freezes the native mesh-derived cell/face samples into its Euler evaluator
 so source and transport consume identical distance inputs. This explicit input
-alignment does not establish equivalence of the providers. Physics/scaling and BC inputs are resolved
-from the case files, including the production generated-default/Euler-case merge.
+alignment does not establish equivalence of the providers.
+At P3, corresponding quadrature wall samples are copied. At P1/P0, Cauchy's
+single midpoint wall sample is replicated through Euler's retained high-order
+diagnostic wall row, because its direct source reads that row's mean (`ig=-1`).
+The raw wall-input discrepancy therefore also reflects different sampling
+positions at low order; it is not an isolated provider-accuracy measurement.
+Physics/scaling and BC inputs are resolved from the case files, including the
+production generated-default/Euler-case merge.
 Put inputs in a fresh run directory: Euler generates an adjacent default file
 and uses a diagnostic output prefix beside the Cauchy input. Generated defaults
 are not maintained or tracked source. All arrays/plans are constructed before
@@ -162,7 +168,16 @@ the static archive must not supply a second definition of that TU.
 
 Face phase excludes volume sources, exchange, gradient construction, VR/PP and
 output integrations. Source phase includes sampling and destruction-diagonal
-preparation. Halo phase exchanges both means and nonzero sentinel coefficients.
+preparation. Cauchy calls the production workspace's `AddMeanSourceJacobian`
+operation after its quadrature RHS source. Its diagonal is one-point and
+mean-state, while Euler's RHS prepares its diagonal on source quadrature.
+Both visit counts are reported; this is not identical Jacobian work at P3.
+An independent untimed call to Euler's point-source entry (`ig=-1`, mode1)
+checks the Cauchy mean-state diagonal with the same mean wall input and zero
+gradients. RHS and diagonal have separate error/magnitude bounds, preventing
+a large wall-source diagonal from masking an RHS mismatch. The removed
+`ransDestruction` RHS cache is neither recreated nor treated as the oracle.
+Halo phase exchanges both means and nonzero sentinel coefficients.
 The native residual's volume normalization is inside the timed call, so both
 implementations return per-volume residuals. Native unique-face flux evaluation
 is followed by signed cell gathering; Euler also traverses faces. Both visit

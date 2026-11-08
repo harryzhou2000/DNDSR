@@ -646,9 +646,10 @@ namespace DNDS::Cauchy
         /// Input halo may be stale. Retain this bound workspace through return.
         void PrepareCorrectionAux(CFV::FVField &state, Workspace &workspace, Runtime::EagerEngine &engine,
                                   const Runtime::ExecutionStream &stream, real time) const;
-        /// Full-state variant also refreshes sampled source state and RANS
-        /// destruction from the retained polynomial, before publishing its
-        /// Jacobian provenance. No chemical rates or physical RHS are evaluated.
+        /// Full-state variant also refreshes sampled source inputs from the
+        /// retained polynomial before publishing their Jacobian provenance.
+        /// PrepareJacobian separately evaluates the mean-state source matrix;
+        /// this call evaluates neither chemical rates nor the physical RHS.
         void PrepareCorrectionAux(EquationDofs &state, EquationWorkspace &workspace, AuxiliaryValues &auxiliary,
                                   Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time) const;
         const ThermalBounds &ThermalConstraints() const;

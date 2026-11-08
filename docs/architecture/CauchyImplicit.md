@@ -1354,6 +1354,14 @@ integration. RANS consumes current reconstruction gradients sampled at the
 cell center; its gradients are retained even on P0. The reconstruction
 publication must therefore remain current, without integrating its source
 Jacobian over high-order quadrature points.
+The implementation's internal workspace entry is `AddMeanSourceJacobian`;
+the FV wrapper retains the production provenance checks and delegates to it.
+It adds integrated coefficients to an explicitly leased diagonal-line or block
+output, without publishing freshness or evaluating RHS quadrature. The standalone
+source diagnostic calls this same entry and independently checks its mean-state
+diagonal through Euler's point-source API. That check is separate from the
+quadrature RHS comparison; a large source-diagonal magnitude cannot relax the
+RHS error bound. This internal entry does not expose another public solver API.
 The final VR iteration count and already-reduced update norm are observable.
 Strict VR acceptance needs a positive reconstruction tolerance. With fixed
 sweeps and no norm measurement, its update diagnostic is infinity; constant or

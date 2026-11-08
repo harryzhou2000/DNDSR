@@ -869,6 +869,117 @@ namespace DNDS::Cauchy
                 }
             }
         }
+        /// Add the one-point mean-state source matrix to caller-owned output.
+        /// The controller retains current means/coefficients and ready source
+        /// gradients. This entry neither samples RHS quadrature nor publishes
+        /// source freshness; the production wrapper validates its provenance.
+        void AddMeanSourceJacobian(const EquationDofs &state, const R::Array<real>::WriteLease &diagonal,
+                                   DiagonalStorage storage, real scale, EquationPointEvaluator &evaluator) const
+        {
+            if (!sourceSampling)
+                return;
+            // The approximate source matrix is a one-point, mean-state operator.
+            // Never integrate nonlinear source derivatives on RHS quadrature.
+            // RANS still consumes the current polynomial's center gradients.
+            std::vector<std::array<std::optional<R::Array<real>::ReadLease>, 3>> gradientReads;
+            // Direct gradients already contain every direction in one physical
+            // field. Retain that allocation's read lease and select the direction
+            // through indexing, rather than copying whole fields into scratch.
+            // Polynomial center sampling keeps its separate per-direction arrays.
+            struct SourceGradientView
+            {
+                RHSScalarView values;
+                int componentStride = 1, direction = 0;
+                real operator()(index iCell, index component) const
+                {
+                    return values(iCell, component * componentStride + direction);
+                }
+            };
+            std::vector<std::array<SourceGradientView, 3>> gradients;
+            if (ransFirst >= 0)
+            {
+                gradientReads.resize(size_t(state.PhysicalFieldNumber()));
+                gradients.resize(size_t(state.PhysicalFieldNumber()));
+                for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+                {
+                    if (owner->settings.numerics.reconstruction != "variational")
+                    {
+                        gradientReads[iField][0].emplace(directGradients[iField].Owned().Read());
+                        const auto view = gradientReads[iField][0]->View<R::UniformTableRows>();
+                        for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                            gradients[iField][d] = {view, owner->metrics.Dimension(), d};
+                        continue;
+                    }
+                    for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                    {
+                        auto scratch = sourceJacobianGradients[iField][d];
+                        sourceJacobianSampling->Evaluate(state.PhysicalField(iField), fluxCoefficients.PhysicalField(iField), scratch, 1 + d);
+                        gradientReads[iField][d].emplace(scratch.Read());
+                        gradients[iField][d] = {gradientReads[iField][d]->View<R::UniformTableRows>(), 1, 0};
+                    }
+                }
+            }
+            const auto means = state.ReadOwned();
+            const auto blocks = BlockViews(state, means);
+            const auto geometry = owner->metrics.AcquireRead();
+            const auto metric = geometry.HostView();
+            std::optional<WallDistanceRead> wallRead;
+            std::optional<R::Array<real>::ReadLease> lengthRead;
+            if (ransFirst >= 0)
+            {
+                wallRead.emplace(owner->wallDistance->AcquireRead());
+                lengthRead.emplace(owner->ransCellLength.Read());
+            }
+            const auto walls = wallRead ? wallRead->HostView() : WallDistanceView{};
+            const auto lengths = lengthRead ? lengthRead->View<R::FixedRows<1>>() : R::ArrayView<const real, R::AccessBoundsChecks, R::FixedRows<1>>{};
+            const auto matrix = diagonal.View<R::TableRows>();
+            const index nv = state.ComponentNumber();
+            const int independent = owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() - 1 : 0;
+            PointScratch point(nv);
+            std::vector<EquationBlockLocation> locations;
+            for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+                locations.push_back(state.LocateBlock(iBlock));
+            for (index iCell = 0; iCell < owner->metrics.NumCell(); ++iCell)
+            {
+                Gather(blocks, iCell, point, false);
+                if (ransFirst >= 0)
+                    for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+                    {
+                        const auto location = locations[iBlock];
+                        for (index j = 0; j < location.componentNumber; ++j)
+                            for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                                point.gradient(logicalFirst[iBlock] + j, d) = gradients[location.physicalField][d](iCell, location.firstComponent + j);
+                    }
+                const auto properties = evaluator.Evaluate(point.Flow(flowFirst), point.Species(speciesFirst, independent), 0, {ransFirst >= 0, false, false, chemical, chemical});
+                const real volume = metric.GetCellVol(iCell);
+                if (ransFirst >= 0)
+                {
+                    const auto &model = owner->equation.RANS();
+                    const auto input = RANSPoint(point, flowFirst, ransFirst, model, properties, walls.cellMean(iCell, 0), lengths(iCell, 0));
+                    const auto destruction = model.ImplicitSourceDiagonal(input);
+                    for (int j = 0; j < model.ComponentNumber(); ++j)
+                    {
+                        DNDS_check_throw_info(std::isfinite(destruction[j]), "nonfinite mean-state RANS destruction diagonal");
+                        const index row = ransFirst + j;
+                        matrix(iCell, storage == DiagonalStorage::Block ? row + nv * row : row) += scale * volume * destruction[j];
+                    }
+                }
+                if (chemical)
+                    for (int j = 0; j < 5 + independent; ++j)
+                    {
+                        const index column = j < 5 ? flowFirst + j : speciesFirst + j - 5;
+                        for (int k = 0; k < independent; ++k)
+                        {
+                            const index row = speciesFirst + k;
+                            const real derivative = properties.sourceJacobian(k, j);
+                            DNDS_check_throw_info(std::isfinite(derivative), "nonfinite mean-state source derivative");
+                            if (storage == DiagonalStorage::Block || row == column)
+                                matrix(iCell, storage == DiagonalStorage::Block ? row + nv * column : row) -= scale * volume * derivative;
+                        }
+                    }
+            }
+        }
+
         void PublishSourceState(const EquationDofs &state, real time)
         {
             if (!sourceSampling)
@@ -1091,7 +1202,7 @@ namespace DNDS::Cauchy
                 preparation->Apply(_data->settings.execution.overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
                 preparation->Finish(auxiliary);
                 // Source Jacobians use the retained current polynomial. RANS
-                // destruction must be current before publishing these samples.
+                // inputs must be current before publishing these samples.
                 // No VR sweep or chemical-rate evaluation is hidden here.
                 if (work.SourceSamplesCurrent(state, time)) return;
                 if (_data->equation.HasRANS())
@@ -1743,107 +1854,6 @@ namespace DNDS::Cauchy
     void FiniteVolume::AddEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &work,
                                                  const R::Array<real>::WriteLease &diagonal, DiagonalStorage storage, real scale, EquationPointEvaluator &evaluator) const
     {
-        if (!work.sourceSampling)
-            return;
-        // The approximate source matrix is a one-point, mean-state operator.
-        // Never integrate nonlinear source derivatives on RHS quadrature.
-        // RANS still consumes the current polynomial's center gradients.
-        std::vector<std::array<std::optional<R::Array<real>::ReadLease>, 3>> gradientReads;
-        // Direct gradients already contain every direction in one physical
-        // field. Retain that allocation's read lease and select the direction
-        // through indexing, rather than copying whole fields into scratch.
-        // Polynomial center sampling keeps its separate per-direction arrays.
-        struct SourceGradientView
-        {
-            RHSScalarView values;
-            int componentStride = 1, direction = 0;
-            real operator()(index iCell, index component) const
-            {
-                return values(iCell, component * componentStride + direction);
-            }
-        };
-        std::vector<std::array<SourceGradientView, 3>> gradients;
-        if (work.ransFirst >= 0)
-        {
-            gradientReads.resize(size_t(state.PhysicalFieldNumber()));
-            gradients.resize(size_t(state.PhysicalFieldNumber()));
-            for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
-            {
-                if (_data->settings.numerics.reconstruction != "variational")
-                {
-                    gradientReads[iField][0].emplace(work.directGradients[iField].Owned().Read());
-                    const auto view = gradientReads[iField][0]->View<R::UniformTableRows>();
-                    for (int d = 0; d < _data->metrics.Dimension(); ++d)
-                        gradients[iField][d] = {view, _data->metrics.Dimension(), d};
-                    continue;
-                }
-                for (int d = 0; d < _data->metrics.Dimension(); ++d)
-                {
-                    auto scratch = work.sourceJacobianGradients[iField][d];
-                    work.sourceJacobianSampling->Evaluate(state.PhysicalField(iField), work.fluxCoefficients.PhysicalField(iField), scratch, 1 + d);
-                    gradientReads[iField][d].emplace(scratch.Read());
-                    gradients[iField][d] = {gradientReads[iField][d]->View<R::UniformTableRows>(), 1, 0};
-                }
-            }
-        }
-        const auto means = state.ReadOwned();
-        const auto blocks = BlockViews(state, means);
-        const auto geometry = _data->metrics.AcquireRead();
-        const auto metric = geometry.HostView();
-        std::optional<WallDistanceRead> wallRead;
-        std::optional<R::Array<real>::ReadLease> lengthRead;
-        if (work.ransFirst >= 0)
-        {
-            wallRead.emplace(_data->wallDistance->AcquireRead());
-            lengthRead.emplace(_data->ransCellLength.Read());
-        }
-        const auto walls = wallRead ? wallRead->HostView() : WallDistanceView{};
-        const auto lengths = lengthRead ? lengthRead->View<R::FixedRows<1>>() : R::ArrayView<const real, R::AccessBoundsChecks, R::FixedRows<1>>{};
-        const auto matrix = diagonal.View<R::TableRows>();
-        const index nv = state.ComponentNumber();
-        const int independent = _data->equation.HasMixture() ? _data->equation.Mixture().SpeciesNumber() - 1 : 0;
-        PointScratch point(nv);
-        std::vector<EquationBlockLocation> locations;
-        for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
-            locations.push_back(state.LocateBlock(iBlock));
-        for (index iCell = 0; iCell < _data->metrics.NumCell(); ++iCell)
-        {
-            Gather(blocks, iCell, point, false);
-            if (work.ransFirst >= 0)
-                for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
-                {
-                    const auto location = locations[iBlock];
-                    for (index j = 0; j < location.componentNumber; ++j)
-                        for (int d = 0; d < _data->metrics.Dimension(); ++d)
-                            point.gradient(work.logicalFirst[iBlock] + j, d) = gradients[location.physicalField][d](iCell, location.firstComponent + j);
-                }
-            const auto properties = evaluator.Evaluate(point.Flow(work.flowFirst), point.Species(work.speciesFirst, independent), 0, {work.ransFirst >= 0, false, false, work.chemical, work.chemical});
-            const real volume = metric.GetCellVol(iCell);
-            if (work.ransFirst >= 0)
-            {
-                const auto &model = _data->equation.RANS();
-                const auto input = RANSPoint(point, work.flowFirst, work.ransFirst, model, properties, walls.cellMean(iCell, 0), lengths(iCell, 0));
-                const auto destruction = model.ImplicitSourceDiagonal(input);
-                for (int j = 0; j < model.ComponentNumber(); ++j)
-                {
-                    DNDS_check_throw_info(std::isfinite(destruction[j]), "nonfinite mean-state RANS destruction diagonal");
-                    const index row = work.ransFirst + j;
-                    matrix(iCell, storage == DiagonalStorage::Block ? row + nv * row : row) += scale * volume * destruction[j];
-                }
-            }
-            if (work.chemical)
-                for (int j = 0; j < 5 + independent; ++j)
-                {
-                    const index column = j < 5 ? work.flowFirst + j : work.speciesFirst + j - 5;
-                    for (int k = 0; k < independent; ++k)
-                    {
-                        const index row = work.speciesFirst + k;
-                        const real derivative = properties.sourceJacobian(k, j);
-                        DNDS_check_throw_info(std::isfinite(derivative), "nonfinite mean-state source derivative");
-                        if (storage == DiagonalStorage::Block || row == column)
-                            matrix(iCell, storage == DiagonalStorage::Block ? row + nv * column : row) -= scale * volume * derivative;
-                    }
-                }
-        }
+        work.AddMeanSourceJacobian(state, diagonal, storage, scale, evaluator);
     }
 }

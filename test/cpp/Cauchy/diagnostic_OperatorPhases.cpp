@@ -101,6 +101,7 @@ int main(int argc, char **argv)
         auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(6));
         auto result = C::EquationDofOperations::NewVector(state);
         auto workspace = fv.BuildEquationWorkspace(state);
+        R::Array<DNDS::real> meanSourceDiagonal(R::RowLayout::Dense(fv.Metrics().NumCell(), 6));
 
         using Eval = E::DiagnosticEulerSA;
         auto old = std::make_shared<DNDS::CFV::VariationalReconstruction<2>>(mpi, mesh);
@@ -129,11 +130,18 @@ int main(int argc, char **argv)
             for (I iCell = 0; iCell < fv.Metrics().NumCellProc(); ++iCell)
             {
                 const auto samples = distances.cells[iCell];
-                DNDS_check_throw_info(I(samples.size()) == evaluator.dWall[iCell].size(), "wall source quadrature shape differs");
-                for (I iPoint = 0; iPoint < I(samples.size()); ++iPoint)
+                DNDS_check_throw_info(degree == 3 ? I(samples.size()) == evaluator.dWall[iCell].size()
+                                                  : samples.size() == 1 && evaluator.dWall[iCell].size() > 0,
+                                      "wall source quadrature shape differs");
+                for (I iPoint = 0; iPoint < evaluator.dWall[iCell].size(); ++iPoint)
                 {
-                    distanceDifference = std::max(distanceDifference, std::abs(samples[iPoint] - evaluator.dWall[iCell][iPoint]));
-                    evaluator.dWall[iCell][iPoint] = samples[iPoint];
+                    // Euler retains its high-order wall buffer even for a
+                    // direct-FV source, then reads its mean (ig=-1). Freeze
+                    // the Cauchy midpoint into that whole diagnostic row so
+                    // both direct calls receive the same one-point input.
+                    const auto distance = samples[degree == 3 ? iPoint : 0];
+                    distanceDifference = std::max(distanceDifference, std::abs(distance - evaluator.dWall[iCell][iPoint]));
+                    evaluator.dWall[iCell][iPoint] = distance;
                 }
             }
             for (I iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
@@ -215,7 +223,15 @@ int main(int argc, char **argv)
         const auto nativeFaces = [&]
         { workspace->ApplyRHS(state, result, DNDS::CFV::ReconstructionRegion::All, evaluatorNative, 0); };
         const auto nativeSource = [&]
-        { workspace->PrepareVolumeSource(state, &result, evaluatorNative); };
+        {
+            workspace->PrepareVolumeSource(state, &result, evaluatorNative);
+            auto write = meanSourceDiagonal.Write();
+            const auto diagonal = write.View<R::FixedRows<6>>();
+            for (I iCell = 0; iCell < diagonal.RowCount(); ++iCell)
+                for (int j = 0; j < 6; ++j)
+                    diagonal(iCell, j) = 0;
+            workspace->AddMeanSourceJacobian(state, write, C::DiagonalStorage::Entries, 1, evaluatorNative);
+        };
         const auto native = [&]
         {
             if (operation == "halo")
@@ -236,9 +252,17 @@ int main(int argc, char **argv)
             auto write = result.WriteOwned();
             const auto layout = write.ComponentLayout();
             const auto values = layout.View();
+            std::optional<R::Array<DNDS::real>::WriteLease> diagonalWrite;
+            if (operation != "faces")
+                diagonalWrite.emplace(meanSourceDiagonal.Write());
+            const auto diagonal = diagonalWrite ? diagonalWrite->View<R::FixedRows<6>>() : R::ArrayView<DNDS::real, R::AccessBoundsChecks, R::FixedRows<6>>{};
             for (I iCell = 0; iCell < values.RowCount(); ++iCell)
                 for (int j = 0; j < 6; ++j)
+                {
                     values(iCell, j) /= metric.GetCellVol(iCell);
+                    if (diagonalWrite)
+                        diagonal(iCell, j) /= metric.GetCellVol(iCell);
+                }
         };
         const auto legacy = [&]
         {
@@ -249,10 +273,10 @@ int main(int argc, char **argv)
             }
             evaluator.Apply(phase, oldResult, source, oldMean, oldRec, oldRec, beta, alpha, flags);
         };
-        double lastMagnitude = 0;
+        double lastMagnitude = 0, lastDiagonalError = 0, lastDiagonalMagnitude = 0;
         const auto compare = [&]
         {
-            double error = 0, magnitude = 0;
+            double error = 0, magnitude = 0, diagonalError = 0, diagonalMagnitude = 0;
             I worstCell = -1;
             int worstComponent = -1;
             double worstActual = 0, worstExpected = 0;
@@ -307,29 +331,33 @@ int main(int argc, char **argv)
                     }
                 if (operation != "faces")
                 {
-                    const auto destructionRead = workspace->ransDestruction.Read();
-                    const auto destruction = destructionRead.View<R::FixedRows<1>>();
+                    const auto destructionRead = meanSourceDiagonal.Read();
+                    const auto destruction = destructionRead.View<R::FixedRows<6>>();
+                    Eval::TDiffU gradient(Eval::dim, 6);
+                    gradient.setZero();
+                    Eval::TJacobianU sourceMatrix(6, 6);
                     for (I iCell = 0; iCell < values.RowCount(); ++iCell)
+                    {
+                        // Independent legacy point-source entry: ig=-1 uses
+                        // its mean wall input. The RHS's quadrature-averaged
+                        // destruction is a different approximate Jacobian.
+                        const auto expectedDiagonal = evaluator.source(oldMean[iCell], gradient, metric.GetCellCent(iCell), sourceMatrix, iCell, -1, 1);
                         for (int j = 0; j < 6; ++j)
                         {
-                            const double actual = j == 5 ? destruction(iCell, 0) / metric.GetCellVol(iCell) : 0;
-                            const double expected = source.getDiag(iCell)[j];
+                            const double actual = destruction(iCell, j);
+                            const double expected = expectedDiagonal[j];
                             DNDS_check_throw_info(std::isfinite(actual) && std::isfinite(expected), "nonfinite source destruction diagonal");
-                            if (std::abs(actual - expected) > error)
-                            {
-                                worstCell = iCell;
-                                worstComponent = 6 + j;
-                                worstActual = actual;
-                                worstExpected = expected;
-                            }
-                            error = std::max(error, std::abs(actual - expected));
-                            magnitude = std::max(magnitude, std::abs(expected));
+                            diagonalError = std::max(diagonalError, std::abs(actual - expected));
+                            diagonalMagnitude = std::max(diagonalMagnitude, std::abs(expected));
                         }
+                    }
                 }
             }
-            double global[]{error, magnitude};
-            MPI_Allreduce(MPI_IN_PLACE, global, 2, MPI_DOUBLE, MPI_MAX, mpi.comm);
+            double global[]{error, magnitude, diagonalError, diagonalMagnitude};
+            MPI_Allreduce(MPI_IN_PLACE, global, 4, MPI_DOUBLE, MPI_MAX, mpi.comm);
             lastMagnitude = global[1];
+            lastDiagonalError = global[2];
+            lastDiagonalMagnitude = global[3];
             if (error == global[0] && error > 1e-10 * std::max(1., global[1]) && worstCell >= 0)
             {
                 const auto wallRead = workspace->owner->wallDistance->AcquireRead();
@@ -348,6 +376,9 @@ int main(int argc, char **argv)
                                       " magnitude=" + std::to_string(global[1]));
             DNDS_check_throw_info(operation != "source" || global[1] > 1e-8,
                                   "source diagnostic must exercise nonzero SA production/destruction");
+            DNDS_check_throw_info(operation == "faces" || operation == "halo" || global[3] > 1e-8,
+                                  "source Jacobian diagnostic must exercise a nonzero destruction diagonal");
+            DNDS_check_throw_info(global[2] <= 1e-10 * std::max(1., global[3]), "mean-state source Jacobian differs from the legacy point-source oracle");
             return global[0];
         };
         native();
@@ -413,7 +444,7 @@ int main(int argc, char **argv)
             error = compare();
             DNDS_check_throw_info(state.PhysicalField(0).Owned().Version() == ownedVersion, "phase changed frozen means");
             if (!mpi.rank)
-                std::cout << "EXTRACTED_OPERATOR " << C::Json{{"phase", operation}, {"degree", degree}, {"np", mpi.size}, {"trial", trial}, {"repetitions", repetitions}, {"native_seconds", nativeSeconds}, {"euler_seconds", legacySeconds}, {"max_error", error}, {"output_magnitude", lastMagnitude}, {"fixture", "maintained-SA-mesh-initial-state"}, {"wall_distance_input", "frozen-native-mesh-samples"}, {"raw_wall_provider_difference", distanceDifference}, {"owned_cells", counts[0]}, {"ghost_rows", counts[1]}, {"native_face_point_visits", counts[2]}, {"euler_face_point_visits", counts[3]}, {"native_source_point_visits", counts[4]}, {"euler_source_point_visits", counts[5]}, {"mean_width", 6}, {"coefficients", "zero-frozen"}, {"gradients", "zero-frozen"}, {"includes_halo", operation == "halo"}, {"includes_vr", false}, {"includes_pp", false}, {"residual_units", "per-volume"}, {"native_volume_normalization_timed", operation != "halo"}, {"timing", "external-whole-call-max-rank"}, {"viscosity_law", law}, {"euler_extracted_source_sha256", Eval::SourceSHA256}}.dump() << std::endl;
+                std::cout << "EXTRACTED_OPERATOR " << C::Json{{"phase", operation}, {"degree", degree}, {"np", mpi.size}, {"trial", trial}, {"repetitions", repetitions}, {"native_seconds", nativeSeconds}, {"euler_seconds", legacySeconds}, {"max_error", error}, {"output_magnitude", lastMagnitude}, {"fixture", "maintained-SA-mesh-initial-state"}, {"wall_distance_input", "frozen-native-mesh-samples"}, {"raw_wall_provider_difference", distanceDifference}, {"owned_cells", counts[0]}, {"ghost_rows", counts[1]}, {"native_face_point_visits", counts[2]}, {"euler_face_point_visits", counts[3]}, {"native_source_point_visits", counts[4]}, {"euler_source_point_visits", counts[5]}, {"native_mean_source_jacobian_visits", operation == "faces" || operation == "halo" ? 0 : counts[0]}, {"mean_source_diagonal_error", lastDiagonalError}, {"mean_source_diagonal_magnitude", lastDiagonalMagnitude}, {"source_diagonal_policy", "Cauchy mean-state; Euler RHS quadrature"}, {"mean_width", 6}, {"coefficients", "zero-frozen"}, {"gradients", "zero-frozen"}, {"includes_halo", operation == "halo"}, {"includes_vr", false}, {"includes_pp", false}, {"residual_units", "per-volume"}, {"native_volume_normalization_timed", operation != "halo"}, {"timing", "external-whole-call-max-rank"}, {"viscosity_law", law}, {"euler_extracted_source_sha256", Eval::SourceSHA256}}.dump() << std::endl;
         }
     }
     catch (const std::exception &error)
