@@ -11,6 +11,19 @@ source-free EOS preparation. `jacobian_source_scope` explicitly identifies this
 combined scope. It cannot be subtracted as a source-only accounting correction.
 Compare the complete matrix/linear/update parents for fusion acceptance.
 
+Optional `DNDS_CAUCHY_DIAGNOSTIC_AUX_TRACE=1` records mean-transfer launch,
+owned boundary completion, wait and dependent auxiliary chronology in the
+private extracted pipeline. It is CPU-inline, unsplit and single-node only.
+Events use the OS steady clock in nanoseconds, never an assumption that MPI
+clocks agree. Capacity is reserved before timing; event capture does not
+allocate or communicate. Overflow fails explicitly after timing. Trace gather
+and output also happen afterward. Every entry has a per-level ordinal and a
+full-evaluation/correction-only path. `compute_end` marks completion of Apply,
+before publication. Missing auxiliary inputs and the two-equation gradient
+path produce no entry; this trace initially targets the maintained SA case.
+`BROAD_AUXILIARY_TRACE` is causal evidence, not an accepted throughput result;
+compare traced/untraced parent costs to assess perturbation.
+
 Direct-FV component probes perform untimed gradient-publication checks before
 their numerical oracles: ready repeated refresh does not rewrite the target,
 a nonzero coefficient change refreshes the analytic physical gradient, and an
@@ -88,9 +101,9 @@ as a pMG smoother. The harness must not replace a real convergence-loop timing
 with this number. Hierarchy transfer, FAS arithmetic, norm reductions and
 convergence-control overhead belong in the maintained end-to-end comparison.
 
-The diagnostic resets means and reconstruction outside every timed call.
-This is a repeatable
-first-update workload, not an evolved convergence run. Output comparisons
+The diagnostic resets means and reconstruction outside every timed repetition.
+Each broad timed repetition advances the requested nonlinear updates from that
+same initial state; it is not a converged maintained-case run. Output comparisons
 report all six component norms/differences and check finite, deterministic
 repeats; they do not assert bit parity across different reconstruction bases
 or incomplete factors. The standalone face/source oracle below remains a

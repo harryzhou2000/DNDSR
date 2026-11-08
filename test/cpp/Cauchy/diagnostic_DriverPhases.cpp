@@ -8,6 +8,8 @@
 #include <functional>
 #include <iostream>
 #include <numeric>
+#include <cstdlib>
+#include <climits>
 #include "DiagnosticTiming.hpp"
 
 namespace DNDS::Euler::DriverDiagnostic
@@ -279,6 +281,8 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
     const auto baseline = compare(false);
     const auto measure = [&](bool native)
     {
+        const auto *traceSetting = std::getenv("DNDS_CAUCHY_DIAGNOSTIC_AUX_TRACE");
+        const bool traceAuxiliary = native && traceSetting && std::string(traceSetting) == "1";
         std::array<double, 8> total{};
         std::array<double, 33> perLevel{};
         std::array<DNDS::index, 6> sourceRefreshes{};
@@ -297,6 +301,14 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
                 legacy.reset();
             MPI_Barrier(mpi.comm);
             DiagnosticTiming::Sample observation;
+            if (traceAuxiliary)
+            {
+                observation.traceAuxiliary = true;
+                // At most sixteen auxiliary entries per requested finest
+                // update across this bounded hierarchy; fail on overflow.
+                DNDS_check_throw_info(corrections <= (INT_MAX / 16 - 32), "auxiliary trace capacity overflow");
+                observation.auxiliaryEvents.reserve(size_t(16 * (corrections + 32)));
+            }
             DiagnosticTiming::active = &observation;
             const double start = MPI_Wtime();
             if (native)
@@ -305,6 +317,37 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
                 legacy.composed();
             const double elapsed = MPI_Wtime() - start;
             DiagnosticTiming::active = nullptr;
+            if (traceAuxiliary)
+            {
+                // Collection occurs after elapsed is frozen. No trace-related
+                // collective is placed in the measured production sequence.
+                const int width = int(DiagnosticTiming::Sample::AuxiliaryEvent{}.size());
+                const int count = int(observation.auxiliaryEvents.size()) * width;
+                std::vector<int> counts(!mpi.rank ? mpi.size : 0), offsets(!mpi.rank ? mpi.size : 0);
+                MPI_Gather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, 0, mpi.comm);
+                int overflow = observation.traceOverflow;
+                MPI_Allreduce(MPI_IN_PLACE, &overflow, 1, MPI_INT, MPI_MAX, mpi.comm);
+                DNDS_check_throw_info(!overflow, "auxiliary trace exceeded preallocated diagnostic capacity");
+                std::vector<int64_t> local;
+                local.reserve(size_t(count));
+                for (const auto &event : observation.auxiliaryEvents)
+                    local.insert(local.end(), event.begin(), event.end());
+                std::vector<int64_t> records;
+                if (!mpi.rank)
+                {
+                    I total = 0;
+                    for (int rank = 0; rank < mpi.size; ++rank)
+                    {
+                        DNDS_check_throw_info(total <= INT_MAX - counts[rank], "auxiliary trace gather exceeds MPI range");
+                        offsets[rank] = int(total);
+                        total += counts[rank];
+                    }
+                    records.resize(size_t(total));
+                }
+                MPI_Gatherv(local.data(), count, MPI_INT64_T, records.data(), counts.data(), offsets.data(), MPI_INT64_T, 0, mpi.comm);
+                if (!mpi.rank)
+                    std::cout << "BROAD_AUXILIARY_TRACE " << C::Json{{"solver", "Cauchy"}, {"repeat", repeat}, {"np", mpi.size}, {"clock", "OS-steady-nanoseconds-single-node-only"}, {"row_width", width}, {"rank_value_counts", counts}, {"columns", {"level", "ordinal", "path", "entered", "launch_begin", "launch_end", "boundary_end", "wait_begin", "wait_end", "compute_begin", "compute_end"}}, {"paths", {"full-evaluation", "correction-only"}}, {"rank_rows", records}}.dump() << std::endl;
+            }
             DNDS_check_throw_info(observation.spatialCalls >= 1 && observation.auxiliaryCalls > 0,
                                   "broad production scopes did not observe one complete pipeline");
             const double spatial = observation.spatialInclusive - (native ? observation.auxiliary : 0.);
@@ -406,6 +449,16 @@ int main(int argc, char **argv)
         const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
         DNDS_check_throw_info(config.Domains().size() == 1, "broad diagnosis requires one domain");
         auto settings = config.Domains().front().settings;
+        {
+            const auto *trace = std::getenv("DNDS_CAUCHY_DIAGNOSTIC_AUX_TRACE");
+            const std::string mode = trace ? trace : "0";
+            int enabled = mode == "1", bounds[2]{enabled, enabled};
+            // Agree diagnostic policy before entering solver work; no trace
+            // agreement is introduced inside the nonlinear update sequence.
+            MPI_Allreduce(MPI_IN_PLACE, bounds, 1, MPI_INT, MPI_MIN, mpi.comm);
+            MPI_Allreduce(MPI_IN_PLACE, bounds + 1, 1, MPI_INT, MPI_MAX, mpi.comm);
+            DNDS_check_throw_info((mode == "0" || mode == "1") && bounds[0] == bounds[1], "auxiliary trace mode differs across ranks");
+        }
         const auto equation = C::EquationSystem::Resolve(settings.equation);
         settings = C::ResolvePhysicalStateInputs(settings, equation, std::nullopt).settings;
         DNDS_check_throw_info(equation.HasRANS() && !equation.HasMixture(), "broad diagnosis requires perfect-gas SA");

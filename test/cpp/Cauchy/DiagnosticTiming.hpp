@@ -2,6 +2,8 @@
 
 #include "DNDS/MPI/MPI.hpp"
 #include <array>
+#include <chrono>
+#include <vector>
 
 // External diagnostic clocks shared by separately compiled private production
 // copies. No solver timer counter or production instrumentation dependency.
@@ -50,9 +52,61 @@ namespace DiagnosticTiming
         std::array<DNDS::index, 3> correctionSourceCalls{}, correctionSourcePoints{};
         static constexpr int detailNumber = int(Block::JacobianFaces) - int(Block::MeanValidation) + 1;
         std::array<std::array<double, 3>, detailNumber> details{};
+        // Optional single-node causal tracing. Capacity is reserved before
+        // timing; emitting an event neither allocates nor communicates.
+        bool traceAuxiliary = false, traceOverflow = false;
+        std::array<DNDS::index, 3> auxiliaryOrdinals{};
+        using AuxiliaryEvent = std::array<int64_t, 11>;
+        std::vector<AuxiliaryEvent> auxiliaryEvents;
     };
     inline thread_local Sample *active = nullptr;
     inline thread_local int currentLevel = 0;
+    /// Diagnostic-only CPU-inline chronology, using a shared OS monotonic
+    /// clock on one node. This does not assume MPI_Wtime clocks are global.
+    /// Full evaluations and correction-only entries share per-level ordinals.
+    struct AuxiliaryTrace
+    {
+        enum Event
+        {
+            Entered,
+            LaunchBegin,
+            LaunchEnd,
+            BoundaryEnd,
+            WaitBegin,
+            WaitEnd,
+            ComputeBegin,
+            ComputeEnd
+        };
+        Sample *sample = nullptr;
+        Sample::AuxiliaryEvent row{};
+        explicit AuxiliaryTrace(bool enabled, int path, int level)
+        {
+            if (enabled && active && active->traceAuxiliary)
+            {
+                sample = active;
+                row[0] = level;
+                row[1] = sample->auxiliaryOrdinals[level]++;
+                row[2] = path;
+                Mark(Entered);
+            }
+        }
+        void Mark(Event event)
+        {
+            if (sample)
+                row[3 + int(event)] = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count();
+        }
+        ~AuxiliaryTrace()
+        {
+            if (!sample)
+                return;
+            if (sample->auxiliaryEvents.size() == sample->auxiliaryEvents.capacity())
+                sample->traceOverflow = true;
+            else
+                sample->auxiliaryEvents.push_back(row);
+        }
+    };
     inline void ObserveCorrectionSource(DNDS::index points)
     {
         if (active)
