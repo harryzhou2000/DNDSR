@@ -12,7 +12,7 @@ namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
 static DNDS::MPIInfo mpi;
 
-TEST_CASE("Six-component frozen face leaf retains EOS scalar coupling and additive matrix semantics")
+TEST_CASE("Six-component frozen face leaves retain EOS coupling and additive matrix and strided product semantics")
 {
     std::array<DNDS::real, 6> mean{1.2, .31, -.18, .07, 3.1, .13};
     // A nonzero composition column rules out a perfect-gas/passive shortcut.
@@ -41,6 +41,26 @@ TEST_CASE("Six-component frozen face leaf retains EOS scalar coupling and additi
         {
             const auto value = row < 5 ? derivative[row] : C::PrepareAdvectedScalarFluxDerivative(mean[5], DNDS::real(column == 5), speed, deltaSpeed);
             CHECK(matrix[6 * column + row] == doctest::Approx(initial[6 * column + row] + factor * (value - lambda * DNDS::real(row == column))).epsilon(3e-12).scale(1));
+        }
+    }
+    for (DNDS::index stride : {1, 3})
+    {
+        std::array<DNDS::real, 18> direction{};
+        std::array<DNDS::real, 6> product{};
+        for (DNDS::index j = 0; j < 6; ++j)
+        {
+            direction[j * stride] = .03 * (j + 1) - .11;
+            product[j] = -.02 * (j + 1);
+        }
+        const auto original = product;
+        C::Detail::AddFrozenFluxProduct6({mean.data(), 6}, {dp.data(), 6}, pressure, normal, grid,
+                                         factor, lambda, {direction.data(), 6, stride}, {product.data(), 6});
+        for (DNDS::index row = 0; row < 6; ++row)
+        {
+            DNDS::real expected = original[row];
+            for (DNDS::index column = 0; column < 6; ++column)
+                expected += (matrix[row + 6 * column] - initial[row + 6 * column]) * direction[column * stride];
+            CHECK(product[row] == doctest::Approx(expected).epsilon(3e-12).scale(1));
         }
     }
 }

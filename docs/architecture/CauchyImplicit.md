@@ -613,6 +613,20 @@ for assembly, factorization or matrix inspection. Both action and block adapters
 borrow the enclosing read scope; neither acquires leases or communicates in a
 neighbor loop.
 
+The equation producer has a bounded CPU path for a complete ordered flow5 plus
+one scalar, with no two-equation kinetic-stress coupling and no component-frame
+rotation in the prepared off-diagonal geometry. Selection and exact frame
+classification are frozen during preparation; the geometry flag is reused with
+the existing immutable geometry. Moving-grid velocity remains explicit. The
+six-component directional leaf retains the full EOS pressure row, including
+the scalar column, and the actual direction stride. It creates no dense matrix
+and performs no hidden packing. Input and output are distinct borrowed vectors;
+the caller retains their enclosing scopes and supplies contiguous output scratch.
+Other shapes, selected subsets and rotated component frames use the original
+generic producer. The leaf is inline at this private operator boundary so fixed
+row-view metadata need not cross an out-of-line ABI for each neighbor product.
+This does not change assembled storage, defaults, source terms or quadrature.
+
 ### TODO: large-species structured Jacobian storage and factors
 
 Future optimization, **not implemented or enabled by current controls**. For

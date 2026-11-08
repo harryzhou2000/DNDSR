@@ -31,6 +31,7 @@ namespace DNDS::Cauchy
             std::shared_ptr<const Algebra::DofSpace::Partition> partition;
             std::vector<std::vector<index>> columns;
             std::vector<std::vector<std::vector<Point>>> rows;
+            bool sameComponentFrames = true;
         };
         std::shared_ptr<const Geometry> geometry;
         index components, flowFirst = -1, speciesFirst = -1, kineticFirst = -1;
@@ -42,6 +43,7 @@ namespace DNDS::Cauchy
         real scale;
         std::vector<bool> active;
         bool allComponents = true;
+        bool sixComponentProduct = false;
         EquationJacobian(const FiniteVolume &fv, const EquationDofs &state, LinearProblemContext &output, JacobianPreparation controls, real time)
             : components(state.ComponentNumber()), independent(fv._data->equation.HasMixture() ? fv._data->equation.Mixture().SpeciesNumber() - 1 : 0),
               means(output.HasAssembledOffDiagonal() ? 0 : components, output.HasAssembledOffDiagonal() ? 0 : fv.Metrics().NumCellProc()), pressureDerivative(components, fv.Metrics().NumCellProc()),
@@ -64,6 +66,7 @@ namespace DNDS::Cauchy
                     kineticFirst = first;
                 first += index(block.components.size());
             }
+            sixComponentProduct = components == 6 && flowFirst == 0 && kineticFirst < 0 && allComponents;
             if (output.HasAssembledOffDiagonal())
                 return;
             const auto old = std::dynamic_pointer_cast<const EquationJacobian>(output.PreparedOffDiagonalEvaluator());
@@ -92,6 +95,7 @@ namespace DNDS::Cauchy
                     const auto found = std::find(columns.begin(), columns.end(), sample.other);
                     DNDS_check_throw_info(found != columns.end(), "equation Jacobian stencil is missing a neighbor");
                     row[found - columns.begin()].push_back({sample.other, sample.auxiliaryFace, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, metric.GetFaceArea(sample.face)});
+                    prepared->sameComponentFrames = prepared->sameComponentFrames && !sample.changesFrame;
                 }
             }
             geometry = std::move(prepared);
@@ -179,6 +183,23 @@ namespace DNDS::Cauchy
         void ApplyBlock(index iRow, index iBlock, InputVector input,
                         Eigen::Ref<Eigen::VectorXd> output) const override
         {
+            // Geometry classification and component selection are frozen at
+            // preparation, not rediscovered inside each component product.
+            // Input retains SoA/AoSoA stride; only the immutable snapshot's
+            // mean/pressure columns and caller scratch are contiguous.
+            if (sixComponentProduct && geometry->sameComponentFrames)
+            {
+                const Detail::FrozenFluxDirection6 direction{input.data(), 6, input.innerStride()};
+                const Detail::FrozenFluxProduct6 product{output.data(), 6};
+                for (index j = 0; j < 6; ++j)
+                    product[j] = 0;
+                for (const auto &point : geometry->rows[iRow][iBlock])
+                    Detail::AddFrozenFluxProduct6({means.col(point.other).data(), 6},
+                                                  {pressureDerivative.col(point.other).data(), 6}, pressure[point.other],
+                                                  point.normal, frame.GridVelocity(point.location), .5 * scale * point.weight,
+                                                  radius[point.auxiliary][0] + radius[point.auxiliary][1], direction, product);
+                return;
+            }
             output.setZero();
             for (const auto &point : geometry->rows[iRow][iBlock])
             {
