@@ -130,6 +130,17 @@ Every layout supports `view[iRow]`, returning a device-callable `RowSpan`, and
 the development-checked `view(iRow, iCol)`. `RowCount()` is the canonical row
 count method; `Rows()` remains temporarily as a compatibility spelling.
 
+`RowSpan` with fully static width and component stride contains only the
+borrowed pointer. Other rows retain their general pointer/size/stride descriptor:
+shrinking a partial-static descriptor also changes its calling convention and
+can hurt generic kernels. Capacity remains a compile-time trait. This does not
+change payload layout, ownership or leases.
+The descriptors remain standard-layout, trivially copyable and device-callable.
+Their internal C++ ABI changes when this representation changes: rebuild all
+dependent objects together rather than mixing old and new libraries. Default
+null rows still report their static width/stride, as before; null does not
+provide a valid payload to dereference.
+
 ## Ownership, access and failure
 
 Array copy/alias shares allocation and access state. `Clone()` makes independent

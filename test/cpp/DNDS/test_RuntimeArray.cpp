@@ -532,6 +532,51 @@ TEST_CASE("native ArrayPair core only needs owned access")
     CHECK_THROWS(fixed.Read().template View<R::FixedRows<5>>());
 }
 
+TEST_CASE("Fully fixed row spans use one pointer and general rows preserve borrowed access")
+{
+    constexpr auto dynamic = R::DynamicExtent;
+    using Fixed = R::RowSpan<int, true, 3, 3, 3>;
+    using DynamicSize = R::RowSpan<int, true, dynamic, dynamic, 3>;
+    using DynamicStride = R::RowSpan<int, true, 3>;
+    using Dynamic = R::RowSpan<int, true>;
+    static_assert(sizeof(Fixed) == sizeof(int *));
+    static_assert(sizeof(DynamicSize) == sizeof(int *) + 2 * sizeof(DNDS::index));
+    static_assert(sizeof(DynamicStride) == sizeof(int *) + 2 * sizeof(DNDS::index));
+    static_assert(sizeof(Dynamic) == sizeof(int *) + 2 * sizeof(DNDS::index));
+    static_assert(std::is_standard_layout_v<Fixed> && std::is_trivially_copyable_v<Fixed>);
+    static_assert(std::is_standard_layout_v<DynamicSize> && std::is_trivially_copyable_v<DynamicSize>);
+    static_assert(std::is_standard_layout_v<DynamicStride> && std::is_trivially_copyable_v<DynamicStride>);
+    static_assert(std::is_standard_layout_v<Dynamic> && std::is_trivially_copyable_v<Dynamic>);
+    int data[9] = {};
+    auto check = [&](auto row)
+    {
+        CHECK(row.data() == data);
+        CHECK(row.size() == 3);
+        CHECK(row.ElementStride() == 3);
+        for (DNDS::index j = 0; j < row.size(); ++j)
+            row[j] = int(10 + j);
+        R::RowSpan<const int> generic = row;
+        CHECK(generic.ElementStride() == 3);
+        CHECK(generic.size() == 3);
+        CHECK(generic.end() - generic.begin() == 3);
+        CHECK(generic[2] == 12);
+        CHECK(*(row.cbegin() + 1) == 11);
+    };
+    check(Fixed{data, 3, 3});
+    check(DynamicSize{data, 3, 3});
+    check(DynamicStride{data, 3, 3});
+    check(Dynamic{data, 3, 3});
+    CHECK(data[1] == 0);
+    CHECK(data[4] == 0);
+    Fixed fixedDefault;
+    CHECK(fixedDefault.data() == nullptr);
+    CHECK(fixedDefault.size() == 3); // Static shape is part of the type, even without a payload.
+    CHECK(fixedDefault.ElementStride() == 3);
+    CHECK(DynamicSize{}.empty());
+    CHECK(DynamicStride{}.ElementStride() == 1);
+    CHECK(Dynamic{}.empty());
+}
+
 TEST_CASE("Native sized row views preserve logical extents and retained metadata")
 {
     static_assert(std::is_trivially_copyable_v<R::RowSpan<int>>);

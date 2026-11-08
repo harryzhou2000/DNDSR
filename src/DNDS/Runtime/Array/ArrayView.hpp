@@ -71,6 +71,30 @@ namespace DNDS::Runtime
         friend DNDS_DEVICE_CALLABLE StridedRowIterator operator+(index n, StridedRowIterator value) { return value + n; }
     };
 
+    namespace Detail
+    {
+        // A fully fixed row crosses kernel boundaries as one pointer. General
+        // rows retain their original three-word descriptor: shrinking those
+        // cases also changes their calling convention, which can hurt generic
+        // kernels. Both cases stay plain, trivially copied host/device views.
+        template <class T, bool DynamicWidth, bool DynamicStride>
+        struct RowSpanStorage
+        {
+            T *data = nullptr;
+            index size = 0, stride = 1;
+            DNDS_DEVICE_CALLABLE RowSpanStorage() = default;
+            DNDS_DEVICE_CALLABLE RowSpanStorage(T *dataIn, index sizeIn, index strideIn)
+                : data(dataIn), size(sizeIn), stride(strideIn) {}
+        };
+        template <class T>
+        struct RowSpanStorage<T, false, false>
+        {
+            T *data = nullptr;
+            DNDS_DEVICE_CALLABLE RowSpanStorage() = default;
+            DNDS_DEVICE_CALLABLE RowSpanStorage(T *dataIn, index, index) : data(dataIn) {}
+        };
+    }
+
     /// Borrowed logical row. General element access preserves component stride;
     /// raw data() is reserved for dense/interop/low-level adapters. The outer
     /// scope, not this trivially copied row, retains values and shape metadata.
@@ -78,59 +102,58 @@ namespace DNDS::Runtime
               size_t Capacity = DynamicExtent, size_t ComponentStride = DynamicExtent>
     class RowSpan
     {
-        T *_data = nullptr;
-        index _size = 0, _stride = 1;
+        Detail::RowSpanStorage<T, Width == DynamicExtent, ComponentStride == DynamicExtent> _storage;
 
     public:
         using value_type = T;
         static constexpr size_t row_width = Width, row_capacity = Capacity, component_stride = ComponentStride;
         DNDS_DEVICE_CALLABLE RowSpan() = default;
-        DNDS_DEVICE_CALLABLE RowSpan(T *data, index size, index stride = 1) : _data(data), _size(size), _stride(stride) {}
+        DNDS_DEVICE_CALLABLE RowSpan(T *data, index size, index stride = 1) : _storage(data, size, stride) {}
         template <class U, bool OtherChecked, size_t W, size_t C, size_t S,
                   std::enable_if_t<std::is_convertible_v<U *, T *> && (Width == DynamicExtent || Width == W) &&
                                        (Capacity == DynamicExtent || Capacity == C) &&
                                        (ComponentStride == DynamicExtent || ComponentStride == S),
                                    int> = 0>
         DNDS_DEVICE_CALLABLE RowSpan(const RowSpan<U, OtherChecked, W, C, S> &other)
-            : _data(other.data()), _size(other.size()), _stride(other.ElementStride()) {}
+            : _storage(other.data(), other.size(), other.ElementStride()) {}
         DNDS_DEVICE_CALLABLE index ElementStride() const
         {
             if constexpr (ComponentStride != DynamicExtent)
                 return index(ComponentStride);
             else
-                return _stride;
+                return _storage.stride;
         }
         DNDS_DEVICE_CALLABLE T &operator[](index column) const
         {
             if constexpr (Checked)
                 DNDS_HD_assert(column >= 0 && column < this->size());
-            return _data[column * ElementStride()];
+            return _storage.data[column * ElementStride()];
         }
-        DNDS_DEVICE_CALLABLE T *data() const { return _data; }
+        DNDS_DEVICE_CALLABLE T *data() const { return _storage.data; }
         DNDS_DEVICE_CALLABLE index size() const
         {
             if constexpr (Width != DynamicExtent)
                 return Width;
             else
-                return _size;
+                return _storage.size;
         }
         DNDS_DEVICE_CALLABLE bool empty() const { return size() == 0; }
         DNDS_DEVICE_CALLABLE auto begin() const
         {
             if constexpr (ComponentStride == 1)
-                return _data;
+                return _storage.data;
             else
-                return StridedRowIterator<T>{_data, ElementStride(), 0};
+                return StridedRowIterator<T>{_storage.data, ElementStride(), 0};
         }
         DNDS_DEVICE_CALLABLE auto end() const
         {
             if constexpr (ComponentStride == 1)
-                return size() ? _data + size() : _data;
+                return size() ? _storage.data + size() : _storage.data;
             else
-                return StridedRowIterator<T>{_data, ElementStride(), size()};
+                return StridedRowIterator<T>{_storage.data, ElementStride(), size()};
         }
-        DNDS_DEVICE_CALLABLE auto cbegin() const { return StridedRowIterator<const std::remove_const_t<T>>{_data, ElementStride(), 0}; }
-        DNDS_DEVICE_CALLABLE auto cend() const { return StridedRowIterator<const std::remove_const_t<T>>{_data, ElementStride(), size()}; }
+        DNDS_DEVICE_CALLABLE auto cbegin() const { return StridedRowIterator<const std::remove_const_t<T>>{_storage.data, ElementStride(), 0}; }
+        DNDS_DEVICE_CALLABLE auto cend() const { return StridedRowIterator<const std::remove_const_t<T>>{_storage.data, ElementStride(), size()}; }
     };
 
     /// Plain kernel view: no ownership, placement dispatch or tracking per element.
