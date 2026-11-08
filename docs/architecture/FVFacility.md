@@ -182,6 +182,30 @@ the metric stamp. `Evaluate(...,derivative)` samples the central derivative-mode
 ordinal (0=value, 1..dimension=gradient, higher modes include Hessians). Its
 input ghost reads are omitted when all selected cells are owned.
 
+`EvaluateValueGradient(mean,coefficients,outputs)` accepts a
+`PolynomialSampleOutputs` bundle with an optional `values` array and three
+optional Cartesian `gradients` arrays. Allocate each requested output with
+`sampler.Size()` rows and the field's component count. All outputs are in the
+donor reference frame. No halo exchange, output allocation or implicit layout
+conversion occurs. At least one output is required; gradient slots outside
+the mesh dimension and derivatives of a value-only plan are rejected.
+Input/output aliases and duplicate/overlapping outputs are rejected before
+writes, including shared empty arrays on ranks with no owned query points.
+Outputs must have independent payload access identities, even when separate
+metadata handles describe the same buffer.
+If evaluation fails, discard the bundle rather than publishing partial data.
+
+The CPU implementation combines values, dx and dy for cached owned 2D P3
+six-component AoS queries. Fixed row access retains each parent's physical
+row pitch, including padding; each coefficient feeds the three sums in the
+reference evaluator's mode order. Other layouts, widths, ghost queries,
+cache policies and partial requests retain independent `Evaluate` calls.
+The public checks and leases stay in the prologue, outside the point loop.
+Cauchy uses the bundle for variational RANS source sampling; source physics,
+communication, version publication and source Jacobian preparation remain
+Cauchy responsibilities. This is a CPU facility; device-resident fields fail
+explicitly instead of staging implicitly.
+
 Rigid periodicity transforms both sample locations and derivative tensors during
 setup. `BuildWorkspace(components,periodicVectorStarts)` declares sorted disjoint
 three-component polar-vector blocks, e.g. `{1}` for `[rho,rhou,rhov,rhow,E]`.

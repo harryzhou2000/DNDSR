@@ -823,6 +823,15 @@ namespace DNDS::Cauchy
                 RefreshDirectGradients(false);
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             {
+                if (ransFirst >= 0 && owner->settings.numerics.reconstruction == "variational")
+                {
+                    CFV::PolynomialSampleOutputs outputs;
+                    outputs.values = &sourceValues[iField];
+                    for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                        outputs.gradients[d] = &sourceGradients[iField][d];
+                    sourceSampling->EvaluateValueGradient(state.PhysicalField(iField), fluxCoefficients.PhysicalField(iField), outputs);
+                    continue;
+                }
                 if (owner->settings.numerics.reconstruction == "variational")
                     sourceSampling->Evaluate(state.PhysicalField(iField), fluxCoefficients.PhysicalField(iField), sourceValues[iField]);
                 else if (!sourceValuesAreMeans)

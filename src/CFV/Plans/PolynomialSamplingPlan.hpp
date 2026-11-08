@@ -1,9 +1,18 @@
 #pragma once
 
 #include "CFV/Plans/FiniteVolumePlan.hpp"
+#include <array>
 
 namespace DNDS::CFV
 {
+    /// Caller-owned point values and physical gradients. Null entries omit an
+    /// output; gradient slots refer to mesh-reference Cartesian directions.
+    struct PolynomialSampleOutputs
+    {
+        Runtime::Array<real> *values = nullptr;
+        std::array<Runtime::Array<real> *, 3> gradients{};
+    };
+
     /// Immutable point-sampling cache: copies local cell IDs and computes all
     /// Taylor basis values/derivatives under the reconstruction cache policy. Points are
     /// snapshotted, not borrowed.
@@ -38,5 +47,12 @@ namespace DNDS::CFV
         /// kernels; all other queries call Evaluate(..., 0). Keeping this
         /// separate leaves derivative evaluation independent of specialization.
         void EvaluateValues(const FVField &mean, const FVField &coefficients, Runtime::Array<real> &output) const;
+        /// Synchronous CPU sampling of values and/or first derivatives. All
+        /// supplied outputs must have Size() rows and mean.Width() components,
+        /// with no input/output or output/output overlap. At least one output
+        /// is required. No output allocation, halo exchange or hidden layout conversion
+        /// occurs. Only ghost queries acquire input ghost leases. On failure,
+        /// discard the output bundle; publication belongs to the caller.
+        void EvaluateValueGradient(const FVField &mean, const FVField &coefficients, const PolynomialSampleOutputs &outputs) const;
     };
 }

@@ -386,6 +386,89 @@ TEST_CASE("Shared basis policies snapshot points and sample cubic values and der
     }
 }
 
+TEST_CASE("Bundled polynomial values and gradients preserve the independent sampler")
+{
+    auto mesh = G::OverlapTest::BuildNativeFixture(mpi, true).mesh;
+    auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh);
+    for (bool commonTable : {true, false})
+    {
+        INFO("common AoS specialization=" << commonTable);
+        C::ReconstructionSettings settings;
+        settings.maxOrder = 3;
+        settings.cacheDiffBaseOrder = commonTable ? 1 : 0;
+        auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+        const auto layout = [&](I rows, I width)
+        { return commonTable ? R::RowLayout::Dense(rows, width, width + 3) : R::RowLayout::ColMajor(rows, width); };
+        auto mean = metrics.BuildField(layout(0, 6));
+        auto coefficients = metrics.BuildField(layout(0, 6 * plan.NRecDOF()));
+        R::Array<I> cells(R::RowLayout::Dense(metrics.NumCell(), 1));
+        R::Array<double> points(R::RowLayout::Dense(metrics.NumCell(), 3));
+        {
+            auto geometry = metrics.AcquireRead();
+            auto u = mean.Owned().Write(), r = coefficients.Owned().Write(), p = points.Write();
+            auto c = cells.Write();
+            for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+            {
+                const auto center = geometry.HostView().GetCellCent(iCell);
+                const double scale = geometry.HostView().cells(iCell, 7);
+                c.View()(iCell, 0) = iCell;
+                for (int d = 0; d < 3; ++d)
+                    p.View()(iCell, d) = center[d] + (d == 0 ? .013 : d == 1 ? -.007
+                                                                             : 0);
+                for (I component = 0; component < 6; ++component)
+                {
+                    const double factor = component + 1;
+                    u.View()(iCell, component) = factor * (center[0] * center[0] * center[0] + center[0] * .01 / 4 + 2 * center[1]) + component;
+                    for (I mode = 0; mode < plan.NRecDOF(); ++mode)
+                        r.View()(iCell, component * plan.NRecDOF() + mode) = 0;
+                    r.View()(iCell, component * plan.NRecDOF()) = factor * 3 * center[0] * center[0] * scale;
+                    r.View()(iCell, component * plan.NRecDOF() + 1) = factor * 2 * scale;
+                    r.View()(iCell, component * plan.NRecDOF() + 2) = factor * 3 * center[0] * scale * scale;
+                    r.View()(iCell, component * plan.NRecDOF() + 5) = factor * scale * scale * scale;
+                }
+            }
+        }
+        C::PolynomialSamplingPlan sampler(plan, cells, points);
+        std::array<R::Array<double>, 3> results{
+            R::Array<double>(layout(metrics.NumCell(), 6)), R::Array<double>(layout(metrics.NumCell(), 6)), R::Array<double>(layout(metrics.NumCell(), 6))};
+        C::PolynomialSampleOutputs outputs;
+        outputs.values = &results[0];
+        outputs.gradients[0] = &results[1];
+        outputs.gradients[1] = &results[2];
+        sampler.EvaluateValueGradient(mean, coefficients, outputs);
+        R::Array<double> reference(R::RowLayout::Dense(metrics.NumCell(), 6));
+        for (int derivative = 0; derivative < 3; ++derivative)
+        {
+            sampler.Evaluate(mean, coefficients, reference, derivative);
+            const auto expected = reference.Read(), actual = results[derivative].Read(), p = points.Read();
+            for (I iPoint = 0; iPoint < metrics.NumCell(); ++iPoint)
+                for (I component = 0; component < 6; ++component)
+                {
+                    const double x = p.View()(iPoint, 0), y = p.View()(iPoint, 1), factor = component + 1;
+                    const double analytic = derivative == 0 ? factor * (x * x * x + 2 * y) + component : derivative == 1 ? factor * 3 * x * x
+                                                                                                                         : factor * 2;
+                    CHECK(actual.View()(iPoint, component) == doctest::Approx(expected.View()(iPoint, component)).epsilon(1e-13).scale(1));
+                    CHECK(actual.View()(iPoint, component) == doctest::Approx(analytic).epsilon(1e-11).scale(1));
+                }
+        }
+        const auto version = results[0].Version();
+        // A separate metadata handle may share the same payload/access state,
+        // including the zero-byte array on an empty-owner rank.
+        auto alias = R::Array<double>::FromStorage(results[0].Layout(), results[0].Storage());
+        auto overlapping = outputs;
+        overlapping.gradients[0] = &alias;
+        CHECK_THROWS(sampler.EvaluateValueGradient(mean, coefficients, overlapping));
+        CHECK(results[0].Version() == version);
+        overlapping = outputs;
+        overlapping.values = &mean.Owned();
+        CHECK_THROWS(sampler.EvaluateValueGradient(mean, coefficients, overlapping));
+        // Partial requests remain supported through the reference path.
+        outputs.values = nullptr;
+        outputs.gradients[1] = nullptr;
+        sampler.EvaluateValueGradient(mean, coefficients, outputs);
+    }
+}
+
 // Test-only adapter for the historical Krylov vector concept. Runtime handles
 // are shallow owners; numerical assignment must explicitly copy values.
 struct KrylovField
