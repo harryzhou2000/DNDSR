@@ -322,6 +322,8 @@ namespace DNDS::Runtime
 
     class TransferOperation
     {
+        struct WorkerState;
+        std::unique_ptr<WorkerState> _worker;
         struct State;
         std::unique_ptr<State> _state;
         std::unique_ptr<Detail::TransferProviderOperation> _provider;

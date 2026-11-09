@@ -71,6 +71,7 @@ namespace DNDS::Cauchy
         std::string device = "cpu", layout = "aos", communication = "mpi-direct";
         std::string fieldGrouping = "coupled";
         std::string transferPreflight = "collective";
+        std::string communicationExecution = "caller";
         int hostThreads = 0;
         bool checkAccess = true;
         bool overlap = true;
@@ -87,6 +88,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(communication, "Payload transport");
             DNDS_FIELD(transferPreflight, "MPI launch validation: collective (default) or abortOnFailure (local checks, fatal MPI abort, no per-launch global agreement); setup remains collective");
             DNDS_FIELD(hostThreads, "CPU worker count; zero means inline execution");
+            DNDS_FIELD(communicationExecution, "MPI payload execution: caller (default) or worker (CPU Direct/HostPacked, requires MPI_THREAD_MULTIPLE)");
             DNDS_FIELD(checkAccess, "Validate declared scheduled accesses at submission");
             DNDS_FIELD(overlap, "Overlap input halo exchanges with owned-only core work; false waits then runs unsplit kernels");
             DNDS_FIELD(haloFreshnessChecks, "Extra collective halo-publication audits; default off, also disabled by implicit.collectiveChecks=false");

@@ -351,6 +351,13 @@ namespace DNDS::Cauchy
         require(s.execution.device == "cpu", "residual/BC/reconstruction backend " + s.execution.device);
         require(s.execution.layout == "aos" || s.execution.layout == "soa" || s.execution.layout == "aosoa32", "flow layout " + s.execution.layout);
         require(s.execution.communication == "mpi-direct", "transport " + s.execution.communication);
+        require(s.execution.communicationExecution == "caller" || s.execution.communicationExecution == "worker", "communication execution " + s.execution.communicationExecution);
+        if (s.execution.communicationExecution == "worker")
+        {
+            int provided = MPI_THREAD_SINGLE;
+            MPI_Query_thread(&provided);
+            require(provided == MPI_THREAD_MULTIPLE, "communication worker requires MPI_THREAD_MULTIPLE");
+        }
         require(s.execution.transferPreflight == "collective" || s.execution.transferPreflight == "abortOnFailure", "transfer preflight " + s.execution.transferPreflight);
         require(s.execution.fieldGrouping == "equationBlocks" || s.execution.fieldGrouping == "coupled", "field grouping " + s.execution.fieldGrouping);
         require(s.equation.system == "compressible", "equation " + s.equation.system);

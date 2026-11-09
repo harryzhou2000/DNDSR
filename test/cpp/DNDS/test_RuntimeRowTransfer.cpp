@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
+#include "DNDS/Runtime/Communication/CommunicationWorker.hpp"
 #include "DNDS/Runtime/Communication/NCCLTransfer.hpp"
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
 #include "DNDS/Runtime/Array/RowBuilder.hpp"
@@ -1367,6 +1368,79 @@ TEST_CASE("Strided receive collisions use scalar contribution groups for builtin
             CHECK(pod.View()(0, iComp).value == 2 * size * iComp + size * (size - 1));
         }
     }
+}
+
+TEST_CASE("Communication worker preserves repeated packed and direct sparse transfers")
+{
+    int rank = 0, size = 0, provided = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    MPI_Query_thread(&provided);
+    if (provided != MPI_THREAD_MULTIPLE)
+    {
+        CHECK_THROWS(CommunicationWorker{});
+        return;
+    }
+    auto worker = std::make_shared<CommunicationWorker>();
+    const int active = size > 2 ? size - 1 : size;
+    const DNDS::index rows = rank < active ? 8 : 0, ghosts = rank < active ? 2 : 0;
+    const int previous = (rank + active - 1) % active;
+    for (auto transport : {TransferTransport::Direct, TransferTransport::HostPacked})
+        for (auto mode : {TransferMode::Persistent, TransferMode::Transient})
+        {
+            Array<double> input(RowLayout::ColMajor(rows, 5)), output(RowLayout::ColMajor(ghosts, 5));
+            std::vector<RowRequest> requests;
+            if (ghosts)
+                requests = {{previous, 7, 0}, {previous, 1, 1}};
+            PayloadPlan payload(RowTransferPlan(MPI_COMM_WORLD, rows, ghosts, requests), input.Layout(), output.Layout(), ElementSchema::For<double>());
+            TransferOptions options;
+            options.mode = mode;
+            options.communicationWorker = worker;
+            auto binding = payload.Bind(input, output, transport, options);
+            for (int epoch = 0; epoch < 3; ++epoch)
+            {
+                {
+                    auto write = input.Write();
+                    auto values = write.View<UniformTableRows>();
+                    for (DNDS::index iRow = 0; iRow < rows; ++iRow)
+                        for (DNDS::index j = 0; j < 5; ++j)
+                            values(iRow, j) = 1000 * epoch + 100 * rank + 10 * iRow + j;
+                }
+                // Gate worker execution explicitly: the main-thread core read
+                // must finish while the transfer's write reservation is live.
+                std::mutex mutex;
+                std::condition_variable condition;
+                bool release = false;
+                worker->Submit([&]
+                               {
+                    std::unique_lock<std::mutex> lock(mutex);
+                    condition.wait(lock, [&] { return release; }); });
+                auto operation = binding.Begin();
+                CHECK_FALSE(operation.Test());
+                CHECK_THROWS(output.Read());
+                {
+                    auto read = input.Read();
+                    const auto values = read.View<UniformTableRows>();
+                    for (DNDS::index iRow = 0; iRow < rows; ++iRow)
+                        CHECK(values(iRow, 0) == 1000 * epoch + 100 * rank + 10 * iRow);
+                }
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    release = true;
+                    condition.notify_one();
+                }
+                operation.WaitDestinationReady();
+                {
+                    auto read = output.Read();
+                    auto values = read.View<UniformTableRows>();
+                    for (DNDS::index iRow = 0; iRow < ghosts; ++iRow)
+                        for (DNDS::index j = 0; j < 5; ++j)
+                            CHECK(values(iRow, j) == 1000 * epoch + 100 * previous + 10 * (iRow == 0 ? 7 : 1) + j);
+                }
+                operation.Wait();
+                CHECK(operation.Test());
+            }
+        }
 }
 
 TEST_CASE("DevicePacked is explicit and rejects host endpoints collectively")

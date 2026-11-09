@@ -7,6 +7,7 @@
 #include "Cauchy/Discretization/WallDistanceSamples.hpp"
 #include "Cauchy/Physics/EquationRANS.hpp"
 #include "DNDS/Algebra/DofHalo.hpp"
+#include "DNDS/Runtime/Communication/CommunicationWorker.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 
 namespace DNDS::Cauchy::FiniteVolumeDetail
@@ -146,6 +147,7 @@ namespace DNDS::Cauchy
         using Sample = FiniteVolumeDetail::Sample;
         ssp<Geom::UnstructuredMesh> mesh;
         DomainSettings settings;
+        std::shared_ptr<Runtime::CommunicationWorker> communicationWorker;
         EquationSystem equation;
         RigidMotion motion;
         Riemann::RiemannFlux flux;
@@ -196,6 +198,7 @@ namespace DNDS::Cauchy
         Runtime::TransferOptions HaloTransferOptions() const
         {
             Runtime::TransferOptions options;
+            options.communicationWorker = communicationWorker;
             DNDS_check_throw_info(settings.execution.transferPreflight == "collective" || settings.execution.transferPreflight == "abortOnFailure", "invalid Cauchy transfer preflight policy");
             if (!settings.implicit.collectiveChecks || settings.execution.transferPreflight == "abortOnFailure")
                 options.preflight = Runtime::TransferPreflight::AbortOnFailure;
@@ -222,6 +225,8 @@ namespace DNDS::Cauchy
                                                                                                                                                                                       : CFV::GradientMethod::LeastSquares)),
               partition(metrics.CellWorkPartition())
         {
+            if (settings.execution.communicationExecution == "worker")
+                communicationWorker = std::make_shared<Runtime::CommunicationWorker>();
             if (!equation.HasMixture())
                 thermalBounds = equation.PrepareThermalBounds(settings.numerics.densityFloor, settings.numerics.temperatureFloor, settings.numerics.pressureFloor);
         }

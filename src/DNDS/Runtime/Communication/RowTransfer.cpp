@@ -1,6 +1,7 @@
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include "DNDS/Runtime/Communication/DevicePacking.hpp"
 #include "DNDS/Runtime/Communication/TransferAccess.hpp"
+#include "DNDS/Runtime/Communication/CommunicationWorker.hpp"
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include <algorithm>
@@ -626,7 +627,7 @@ namespace DNDS::Runtime
         const int64_t controls[]{int(state->options.mode), bool(state->options.context), state->options.tag,
                                  bool(state->reducer), int(transport),
                                  state->reducer ? int(state->reducer->initialization) : 0, bool(state->options.provider), state->options.allowStreamOrderedDeviceMemory,
-                                 state->collectivePreflight, int(state->options.preflight)};
+                                 state->collectivePreflight, int(state->options.preflight), bool(state->options.communicationWorker)};
         constexpr index controlNumber = sizeof(controls) / sizeof(controls[0]);
         int64_t agreed[2 * controlNumber + 1];
         for (index i = 0; i < controlNumber; ++i)
@@ -641,6 +642,11 @@ namespace DNDS::Runtime
             controlsAgree = controlsAgree && agreed[2 * i] == -agreed[2 * i + 1];
         MPI::CheckPreflight(controlsAgree, "transfer binding policy differs between ranks");
         MPI::CheckPreflight(agreed[2 * controlNumber], "Array layout differs from compiled payload");
+        if (state->options.communicationWorker)
+            CommunicationDetail::Preflight(!state->options.provider && state->source.GetDevice() == Device::Host() &&
+                                               state->destination.GetDevice() == Device::Host() &&
+                                               (transport == TransferTransport::Direct || transport == TransferTransport::HostPacked),
+                                           routeComm, true, "communication worker supports CPU MPI Direct/HostPacked only");
         DNDS_check_throw_info(state->options.preflight == TransferPreflight::Inherit ||
                                   state->options.preflight == TransferPreflight::Collective ||
                                   state->options.preflight == TransferPreflight::AbortOnFailure,
@@ -860,7 +866,29 @@ namespace DNDS::Runtime
         bool Prepare(bool scheduled, bool checkedAccess, bool callerValid);
         void CancelPrepared();
         void Post();
+        void PackHost();
         ~State() { checked.Complete(); }
+    };
+    struct TransferOperation::WorkerState
+    {
+        // Controller retains the operation (including MPI resources). The task
+        // only borrows it, and publishes completion under this mutex before its
+        // final access. Wait/destruction never free MPI owners on the worker.
+        std::unique_ptr<TransferOperation> operation;
+        mutable std::mutex mutex;
+        std::condition_variable ready;
+        bool destinationReady = false, done = false;
+        void Wait(bool destinationOnly)
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            ready.wait(lock, [&]
+                       { return destinationOnly ? destinationReady : done; });
+        }
+        bool Test() const
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            return done;
+        }
     };
     bool TransferOperation::State::Prepare(bool scheduled, bool checkedAccess, bool callerValid)
     {
@@ -893,22 +921,8 @@ namespace DNDS::Runtime
             }
             else
                 Completion::Record(context).Wait();
-            if (_state->transport == TransferTransport::HostPacked)
-            {
-                auto stage = [context](const void *src, Device sd, void *dst, size_t bytes)
-                { Detail::CopyBytes(src, sd, dst, Device::Host(), bytes, sd == Device::Host() ? ExecutionContext::Host() : context).Wait(); };
-                stage(op->source.View<uint8_t>().data, _state->source.GetDevice(), _state->hostSource.LegacyPointer(), _state->source.Bytes());
-                stage(op->destination.View<uint8_t>().data, _state->destination.GetDevice(), _state->hostDestination.LegacyPointer(), _state->destination.Bytes());
-                for (size_t peer = 0; peer < _state->packedSend.size(); ++peer)
-                {
-                    if (!_state->packedSendSizes[peer])
-                        continue;
-                    int position = 0;
-                    MPI_Pack(_state->hostSource.LegacyPointer(), 1, _state->plan->sendTypes[peer]->value,
-                             _state->packedSend[peer].data(), int(_state->packedSend[peer].size()), &position, _state->comm);
-                    DNDS_check_throw_info(position == _state->packedSendSizes[peer], "MPI packed payload size changed");
-                }
-            }
+            if (!_state->options.communicationWorker)
+                PackHost();
         }
         catch (...)
         {
@@ -929,10 +943,34 @@ namespace DNDS::Runtime
         op->destination.CancelUnmodified();
         op->workspace.CancelUnmodified();
     }
+    void TransferOperation::State::PackHost()
+    {
+        auto &_state = binding;
+        auto *op = this;
+        const auto context = this->context;
+        if (_state->transport == TransferTransport::HostPacked)
+        {
+            auto stage = [context](const void *src, Device sd, void *dst, size_t bytes)
+            { Detail::CopyBytes(src, sd, dst, Device::Host(), bytes, sd == Device::Host() ? ExecutionContext::Host() : context).Wait(); };
+            stage(op->source.View<uint8_t>().data, _state->source.GetDevice(), _state->hostSource.LegacyPointer(), _state->source.Bytes());
+            stage(op->destination.View<uint8_t>().data, _state->destination.GetDevice(), _state->hostDestination.LegacyPointer(), _state->destination.Bytes());
+            for (size_t peer = 0; peer < _state->packedSend.size(); ++peer)
+            {
+                if (!_state->packedSendSizes[peer])
+                    continue;
+                int position = 0;
+                MPI_Pack(_state->hostSource.LegacyPointer(), 1, _state->plan->sendTypes[peer]->value,
+                         _state->packedSend[peer].data(), int(_state->packedSend[peer].size()), &position, _state->comm);
+                DNDS_check_throw_info(position == _state->packedSendSizes[peer], "MPI packed payload size changed");
+            }
+        }
+    }
     void TransferOperation::State::Post()
     {
         auto &_state = binding;
         auto *op = this;
+        if (_state->options.communicationWorker)
+            PackHost();
         if (_state->transport == TransferTransport::DevicePacked)
             op->source.Complete(op->packedReady);
         {
@@ -1052,7 +1090,13 @@ namespace DNDS::Runtime
                 op->CancelPrepared();
                 throw;
             }
-            op->Post();
+            if (_state->options.communicationWorker)
+            {
+                std::lock_guard<std::mutex> lock(_state->mutex);
+                _state->active = true; // Reserve before a worker can observe it.
+            }
+            else
+                op->Post();
         };
         if (tracking)
         {
@@ -1071,6 +1115,37 @@ namespace DNDS::Runtime
         TransferOperation result(std::move(op));
         if (tracking)
             result._state->order = tracking->Record(lane, [] {});
+        if (_state->options.communicationWorker)
+        {
+            TransferOperation queued;
+            queued._worker = std::make_unique<TransferOperation::WorkerState>();
+            queued._worker->operation = std::make_unique<TransferOperation>(std::move(result));
+            auto *pending = queued._worker.get();
+            try
+            {
+                _state->options.communicationWorker->Submit([pending]
+                                                            {
+                    auto &operation = *pending->operation;
+                    operation._state->Post();
+                    operation.WaitDestinationReady();
+                    {
+                        std::lock_guard<std::mutex> lock(pending->mutex);
+                        pending->destinationReady = true;
+                        pending->ready.notify_all();
+                    }
+                    operation.Wait();
+                    {
+                        std::lock_guard<std::mutex> lock(pending->mutex);
+                        pending->done = true;
+                        pending->ready.notify_all();
+                    } });
+            }
+            catch (...)
+            {
+                MPI::Abort(_state->comm, "communication worker submission failed");
+            }
+            return queued;
+        }
         return result;
     }
     TransferGroup::TransferGroup(std::shared_ptr<CommunicationContext> context, std::vector<TransferBinding> bindings)
@@ -1088,7 +1163,7 @@ namespace DNDS::Runtime
                 valid = false;
                 continue;
             }
-            valid = valid && state->options.context == _context &&
+            valid = valid && !state->options.communicationWorker && state->options.context == _context &&
                     bool(_bindings.front()._state) &&
                     state->collectivePreflight == _bindings.front()._state->collectivePreflight &&
                     state->options.mode == TransferMode::Persistent &&
@@ -1147,7 +1222,12 @@ namespace DNDS::Runtime
         return operations;
     }
     TransferOperation::TransferOperation() = default;
-    std::shared_ptr<const AccessOrder> TransferOperation::CheckedOrder() const { return _state ? _state->order : nullptr; }
+    std::shared_ptr<const AccessOrder> TransferOperation::CheckedOrder() const
+    {
+        if (_worker)
+            return _worker->operation->CheckedOrder();
+        return _state ? _state->order : nullptr;
+    }
     TransferOperation::TransferOperation(std::unique_ptr<State> state) : _state(std::move(state)) {}
     TransferOperation::TransferOperation(std::unique_ptr<Detail::TransferProviderOperation> provider) : _provider(std::move(provider)) {}
     TransferOperation::TransferOperation(TransferOperation &&) noexcept = default;
@@ -1165,6 +1245,7 @@ namespace DNDS::Runtime
             }
             _state = std::move(other._state);
             _provider = std::move(other._provider);
+            _worker = std::move(other._worker);
         }
         return *this;
     }
@@ -1174,7 +1255,7 @@ namespace DNDS::Runtime
         // before the application reaches its fatal handler: a peer may never
         // post the matching operation. Normal RAII retirement still drains;
         // exceptional retirement of active MPI work is unconditionally fatal.
-        if (_state && _state->started && std::uncaught_exceptions())
+        if (((_state && _state->started) || (_worker && !_worker->Test())) && std::uncaught_exceptions())
             DNDS::assert_false_info("no exception while an MPI transfer is active", __FILE__, __LINE__,
                                     "cannot drain an active MPI transfer during exception unwinding; aborting instead of risking unmatched MPI waits");
         try
@@ -1229,6 +1310,11 @@ namespace DNDS::Runtime
     }
     void TransferOperation::WaitDestinationReady()
     {
+        if (_worker)
+        {
+            _worker->Wait(true);
+            return;
+        }
         if (_provider)
             _provider->WaitDestinationReady();
         else
@@ -1334,6 +1420,11 @@ namespace DNDS::Runtime
     }
     void TransferOperation::Wait()
     {
+        if (_worker)
+        {
+            _worker->Wait(false);
+            return;
+        }
         if (_provider)
         {
             _provider->Wait();
@@ -1366,6 +1457,8 @@ namespace DNDS::Runtime
     }
     bool TransferOperation::Test()
     {
+        if (_worker)
+            return _worker->Test();
         if (_provider)
             return _provider->Test();
         if (_state && _state->error)

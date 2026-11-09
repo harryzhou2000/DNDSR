@@ -107,6 +107,7 @@ namespace DNDS::Runtime
         AbortOnFailure
     };
 
+    class CommunicationWorker;
     struct TransferOptions
     {
         TransferMode mode = TransferMode::Persistent;
@@ -123,5 +124,8 @@ namespace DNDS::Runtime
         bool allowStreamOrderedDeviceMemory = false;
         /// Resolve once at binding from the selected context when Inherit.
         TransferPreflight preflight = TransferPreflight::Inherit;
+        /// Optional CPU Direct/HostPacked execution owner. Null keeps caller
+        /// execution. Worker requires MPI_THREAD_MULTIPLE; not stream-native.
+        std::shared_ptr<CommunicationWorker> communicationWorker;
     };
 }

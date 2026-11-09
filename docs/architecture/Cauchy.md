@@ -775,3 +775,12 @@ The [implicit operator contracts](CauchyImplicit.md) describe native sparse
 storage, the integrated approximate Jacobian, staged two-buffer SGS, ownership
 and publication. Physical assembly and numerical linear operators are separate
 from domain communication, nonlinear iteration and physical time/history policy.
+
+CPU halo payload execution can opt into
+`execution.communicationExecution = "worker"`; the default is `"caller"`.
+This uses the Runtime [communication worker](ArrayTransientMPI.md), requires
+MPI_THREAD_MULTIPLE and leaves numerical kernels, overlap selection and the
+`implicit.collectiveChecks` master switch unchanged. Producer access reservation
+and optional preflight remain on the controller. Each prepared FV owner retains
+one worker shared by its explicitly prepared halo bindings. No worker is
+constructed in the default mode.

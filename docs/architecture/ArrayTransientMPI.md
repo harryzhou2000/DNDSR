@@ -198,3 +198,28 @@ tracebacks are not retained, avoiding cycles through transfer objects in frame
 locals. C++ diagnostics retain the original formatted traceback. Custom error
 constructors must accept their saved `args`; extra instance attributes are not
 replayed.
+
+## Optional communication worker
+
+Native callers may share a `CommunicationWorker` through
+`TransferOptions::communicationWorker`. Null preserves caller execution with
+no worker or queue. The first implementation supports CPU Direct and HostPacked
+payloads, persistent or transient requests; GPU, native providers and grouped
+starts are rejected. It requires actual `MPI_THREAD_MULTIPLE`. SERIALIZED is
+not sufficient because unrelated controller MPI calls have no process-wide
+serialization guard. DNDS's initializer requests MULTIPLE by default.
+
+Begin reserves source/destination accesses and performs the configured preflight
+on the controller. The worker packs, posts, waits and unpacks; no payload work is
+hidden in compute kernels. Destination readiness and full send completion remain
+separate observations. The operation retains requests, buffers and the worker;
+its normal destruction waits. MPI resources are released by the controller-side
+operation owner, not the task. Destroy operations and bindings on the controller
+before finalization. Exceptions during active worker MPI execution abort.
+
+The queue executes transfers in submission order. All participating ranks must
+submit matching work in compatible order, including when sharing one worker
+across communication contexts. Do not queue a task that waits for a later task
+on the same worker. This is optional background MPI execution, not stream-native
+MPI, GPU graph capture or a promise of a speedup. Native custom reducers run on
+the worker and must be thread-safe; Python callback dispatch is not exposed here.
