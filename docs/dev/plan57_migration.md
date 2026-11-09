@@ -77,20 +77,22 @@ against the optimized parent and the prior audit plans.
   fixed it. The gate tests descriptors, not NCCL or distributed GPU execution.
 - Maintained MG factor matrices: all 70 cylinder and 126 NACA applicable
   32-correction members passed the receipt audit; these are capped trials.
-  All 21 full cylinder runs converged. Refactor and integrated Cauchy
-  have exact logged histories, linear counts, and stored cylinder fields
-  and wall pressures for all seven policies. The first full NACA policy
-  has the same bitwise field and surface result. The remaining NACA
-  convergence policies still gate release.
+  All 42 full convergence runs passed on cylinder and NACA0012. For all
+  14 refactor/integrated Cauchy pairs, logged component histories and linear
+  work match exactly; persistent-ID fields and aligned wall pressures are
+  bit-identical. Shared Euler terminal observables pass the historical
+  envelope, and cell areas agree to Euler's printed precision. Euler
+  fields were not compared bitwise. The final release gate is
+  `build/plan57-cluster/final-audit/verified.json`. Median nonlinear time
+  fell 4.0% on cylinder and 11.0% on NACA versus pre-merge Cauchy.
 - BSSCA auxiliary, reconstruction/RHS, matrix, linear and whole-window
   clocks passed the stock numerical gate for 21 cylinder and 21 NACA
   instrumented members. The 256-correction NACA LU-SGS repeat retained
   exact work and traces and took 10–12% less nonlinear time than the
   refactor. The instrumented builds were kept separate from the production
   timings and from the application and library sources in this branch.
-- Source `7493806b` is the production benchmark pin. The diff from that
-  pin through the checkpoint-test follow-up `80720f7b` does not change
-  application or library sources. The
+- Source `7493806b` is the production benchmark pin. Subsequent changes
+  are limited to tests and audit records. The
   [plan 57 experiment index](https://github.com/harryzhou2000/dndsr-next-plan/tree/main/experiments/cauchy-cpu-next/plan57-migration)
   records the new BSSCA runs. Historical measurements keep their own pins.
 
