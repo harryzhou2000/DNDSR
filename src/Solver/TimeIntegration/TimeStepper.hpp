@@ -33,19 +33,27 @@ namespace DNDS::ODE
         using Evaluate = std::function<void(Field &, Field &, real, int)>;
         using SolveStage = std::function<bool(Field &, const Field &, real, real, real, int)>;
         using LocalStage = std::function<void(const std::function<void()> &)>;
-        /// Borrowed equation for one prepared stage. Source is null for an
-        /// explicit stage; otherwise it remains valid until completion/discard.
-        /// A controller may exchange boundary
-        /// inputs between PrepareStage and solving this equation on each domain.
-        struct StageEquation
+        /// Immutable stage ticket, not a reference to reusable method scratch.
+        /// Resolve it through SolvePreparedStage on the same live stepper.
+        class StageEquation
         {
-            const Field *source;
-            real mass, rhsScale, time;
-            int stage;
-            bool implicit;
+            friend class StateTimeStepper;
+            std::shared_ptr<const uint8_t> _session;
+            uint64_t _generation;
+            StageEquation(std::shared_ptr<const uint8_t> session, uint64_t generation,
+                          real m, real scale, real t, int s, bool i)
+                : _session(std::move(session)), _generation(generation),
+                  mass(m), rhsScale(scale), time(t), stage(s), implicit(i) {}
+
+        public:
+            const real mass, rhsScale, time;
+            const int stage;
+            const bool implicit;
         };
 
     private:
+        std::shared_ptr<const uint8_t> _session = std::make_shared<const uint8_t>(0);
+        uint64_t _stageGeneration = 0;
         std::string _method;
         std::unique_ptr<BDFMethod<State, Operations>> _bdf;
         std::unique_ptr<DIRKMethod<State, Operations>> _dirk;
@@ -164,6 +172,7 @@ namespace DNDS::ODE
         StageEquation PrepareStage(Field &trial)
         {
             DNDS_check_throw_info(_stagesActive && !_stagePrepared && _nextStage < StageNumber(), "no next time stage, or previous stage is unfinished");
+            DNDS_check_throw_info(_stageGeneration != std::numeric_limits<uint64_t>::max(), "time stage generation exhausted");
             const int stage = _nextStage;
             const bool implicit = !_dirk || _dirk->Implicit(stage);
             TimeEquationCoefficients coefficients;
@@ -175,7 +184,22 @@ namespace DNDS::ODE
                 _preparedState.emplace(trial);
                 if (implicit) _preparedSource.emplace(Source()); else _preparedSource.reset(); });
             _stagePrepared = true;
-            return {implicit ? &Source() : nullptr, coefficients.inverseDt, coefficients.rhsScale, coefficients.time, stage, implicit};
+            return StageEquation(_session, ++_stageGeneration, coefficients.inverseDt, coefficients.rhsScale, coefficients.time, stage, implicit);
+        }
+        /// Synchronous source borrow, validated before and after the solver.
+        /// The callback may update trial values, but must not retain references,
+        /// replace bindings, or re-enter this stepper. Method scratch never
+        /// escapes through a ticket, and no source payload is copied.
+        bool SolvePreparedStage(const StageEquation &equation, Field &trial, const SolveStage &solve)
+        {
+            RunLocal([&]
+                     { DNDS_check_throw_info(_stagesActive && _stagePrepared && equation.implicit && solve &&
+                                                 equation._session == _session && equation._generation == _stageGeneration && equation.stage == _nextStage,
+                                             "expired or foreign time stage ticket"); });
+            CheckPrepared(trial);
+            const bool accepted = solve(trial, Source(), equation.mass, equation.rhsScale, equation.time, equation.stage);
+            CheckPrepared(trial);
+            return accepted;
         }
         /// Record the solved/current stage rate before the next stage can use
         /// it. BDF/steady need no rate callback. This posts no hidden solve or
@@ -225,7 +249,7 @@ namespace DNDS::ODE
             for (int stage = 0; stage < StageNumber(); ++stage)
             {
                 const auto equation = PrepareStage(trial);
-                if (equation.implicit && !solve(trial, *equation.source, equation.mass, equation.rhsScale, equation.time, equation.stage))
+                if (equation.implicit && !SolvePreparedStage(equation, trial, solve))
                 {
                     CheckPrepared(trial);
                     Discard();
@@ -244,7 +268,7 @@ namespace DNDS::ODE
             DNDS_check_throw_info(solve, "steady stage needs its solver");
             BeginStages(initial, trial, time, 0, true);
             const auto equation = PrepareStage(trial);
-            if (!solve(trial, *equation.source, equation.mass, equation.rhsScale, equation.time, equation.stage))
+            if (!SolvePreparedStage(equation, trial, solve))
             {
                 CheckPrepared(trial);
                 Discard();
@@ -288,8 +312,8 @@ namespace DNDS::ODE
         {
             Check(previous);
             DNDS_check_throw_info(_bdf, "this time method cannot restore BDF history");
-            _bdf->RestoreHistory(previous, dt);
             Discard();
+            _bdf->RestoreHistory(previous, dt);
         }
     };
 }

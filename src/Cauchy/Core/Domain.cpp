@@ -503,7 +503,7 @@ namespace DNDS::Cauchy
         _coordinatedPrepared = true;
         if (_timeStepper)
         {
-            _stageEquation = _timeStepper->PrepareStage(_trial);
+            _stageEquation.emplace(_timeStepper->PrepareStage(_trial));
             return _stageEquation->time;
         }
         static constexpr real c[]{0, 1, .5};
@@ -517,10 +517,14 @@ namespace DNDS::Cauchy
             const auto &equation = *_stageEquation;
             if (equation.implicit)
             {
-                const bool accepted = _equationImplicit ? RecordImplicitStage(_multigrid ? _multigrid->Solve(*equation.source, equation.mass, equation.rhsScale, equation.time, equation.stage)
-                                                                                         : _equationImplicit->Solve(_trial, *equation.source, equation.mass, equation.rhsScale, equation.time, equation.stage))
-                                                        : RecordImplicitStage(_multigrid ? _multigrid->Solve(equation.source->CoupledField(), equation.mass, equation.rhsScale, equation.time, equation.stage)
-                                                                                         : _implicit->Solve(_trial.CoupledField(), equation.source->CoupledField(), equation.mass, equation.rhsScale, equation.time, equation.stage));
+                const bool accepted = _timeStepper->SolvePreparedStage(equation, _trial,
+                                                                       [&](EquationDofs &trial, const EquationDofs &source, real mass, real rhsScale, real time, int stage)
+                                                                       {
+                                                                           return _equationImplicit ? RecordImplicitStage(_multigrid ? _multigrid->Solve(source, mass, rhsScale, time, stage)
+                                                                                                                                     : _equationImplicit->Solve(trial, source, mass, rhsScale, time, stage))
+                                                                                                    : RecordImplicitStage(_multigrid ? _multigrid->Solve(source.CoupledField(), mass, rhsScale, time, stage)
+                                                                                                                                     : _implicit->Solve(trial.CoupledField(), source.CoupledField(), mass, rhsScale, time, stage));
+                                                                       });
                 if (!accepted)
                     return StepResult::Rejected("coordinated implicit stage reached its correction cap");
             }

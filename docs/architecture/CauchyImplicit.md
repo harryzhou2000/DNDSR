@@ -1181,8 +1181,15 @@ BDF2 uses the last accepted timestep, with BDF1 startup or an explicit reset.
 Independent nonautonomous exact-stage tests verify orders and retry semantics.
 Domain now connects these time equations to the nonlinear stage solver below.
 The same BDF/Trapz/ESDIRK implementation also exposes `BeginStages`,
-`PrepareStage` and `CompleteStage`. A prepared `StageEquation` borrows its source
-until completion/discard and describes mass, RHS scale, time and stage index.
+`PrepareStage` and `CompleteStage`. A prepared `StageEquation` is an immutable
+ticket describing mass, RHS scale, time and stage index, with no source pointer.
+`SolvePreparedStage(ticket, trial, callback)` validates its stepper identity,
+stage generation and reserved source/trial bindings, then supplies the source
+only during the synchronous callback. Do not retain callback references or
+re-enter the stepper from that callback. Completion, discard, another prepared
+stage and history replacement invalidate old tickets; the method scratch stays
+internal and no source payload is copied. Binding validation also runs after
+the callback, including a normal numerical-rejection return.
 An external controller prepares all domains before exchanging their traces,
 then solves/evaluates each domain and completes the stage. No time coefficient
 or BDF history formula is duplicated in that controller. A trial becomes

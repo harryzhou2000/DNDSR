@@ -210,6 +210,27 @@ TEST_CASE("Native implicit time methods converge with independent nonautonomous 
         CHECK(std::log2(coarse / fine) >= minimumOrder);
     }
 }
+TEST_CASE("Time stage tickets reject foreign sessions and reused scratch generations")
+{
+    const A::DofSpace space(1);
+    Field state(space, 1), trial(space, 1), otherTrial(space, 1);
+    A::Fill(state, 1.);
+    O::FieldTimeStepper stepper(state, "bdf1"), other(state, "bdf1");
+    stepper.BeginStages(state, trial, 0, .1);
+    const auto stale = stepper.PrepareStage(trial);
+    other.BeginStages(state, otherTrial, 0, .1);
+    const auto foreign = other.PrepareStage(otherTrial);
+    CHECK_THROWS(stepper.SolvePreparedStage(foreign, trial, Solve()));
+    stepper.Discard();
+    CHECK_THROWS(stepper.SolvePreparedStage(stale, trial, Solve()));
+    stepper.BeginStages(state, trial, 0, .2);
+    const auto current = stepper.PrepareStage(trial);
+    CHECK_THROWS(stepper.SolvePreparedStage(stale, trial, Solve()));
+    REQUIRE(stepper.SolvePreparedStage(current, trial, Solve()));
+    stepper.CompleteStage(trial);
+    CHECK_THROWS(stepper.SolvePreparedStage(current, trial, Solve()));
+}
+
 TEST_CASE("External controller interleaves coherent stages without changing native time equations")
 {
     const A::DofSpace space(1);
@@ -238,8 +259,10 @@ TEST_CASE("External controller interleaves coherent stages without changing nati
                 // A real controller prepares other domains and exchanges their
                 // traces here, before any local stage solver changes its input.
                 if (equation.implicit)
-                    REQUIRE(Solve()(trial, *equation.source, equation.mass, equation.rhsScale, equation.time, stage));
+                    REQUIRE(external.SolvePreparedStage(equation, trial, Solve()));
                 external.CompleteStage(trial, Evaluate());
+                if (equation.implicit)
+                    CHECK_THROWS(external.SolvePreparedStage(equation, trial, Solve()));
             }
             CHECK(external.HasPendingTrial());
             CHECK(state.Owned().Version() == generation);
