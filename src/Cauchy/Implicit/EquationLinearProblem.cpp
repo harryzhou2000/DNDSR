@@ -1,10 +1,52 @@
 #include "Cauchy/Implicit/LinearProblem.hpp"
 #include "Cauchy/Implicit/LinearBlockKernels.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
+#include "DNDS/MPI/Failure.hpp"
 
 namespace DNDS::Cauchy
 {
     namespace R = Runtime;
+    void LinearProblemContext::JacobiImpl(const EquationDofs &rhs, const EquationDofs *input, EquationDofs &output, LinearRegion region) const
+    {
+        ValidateMatrix();
+        ValidateOutputs(rhs, output);
+        if (input)
+            ValidateOutputs(*input, output);
+        DNDS_check_throw_info(region == LinearRegion::All || region == LinearRegion::Core || region == LinearRegion::HaloDependent, "invalid Jacobi region");
+        const auto diagonal = _diagonal.Read();
+        const auto inverse = _inverse.Read();
+        DNDS_check_throw_info(_inverseCurrent && _diagonal.Version() == _diagonalVersion && _inverse.Version() == _inverseVersion,
+                              "Jacobi diagonal inverse is missing or stale");
+        const auto right = rhs.ReadOwned();
+        std::optional<EquationDofs::ReadScope> read;
+        if (input)
+            read.emplace(region != LinearRegion::Core && _pattern->hasGhostColumns ? input->ReadWithGhost() : input->ReadOwned());
+        const auto b = right.ComponentLayout();
+        const auto x = read ? read->ComponentLayout() : right.ComponentLayout();
+        auto write = output.WriteOwned();
+        const auto y = write.ComponentLayout();
+        const auto inv = Algebra::MakeEigenRowMatrices(inverse.View<R::TableRows>(), _components, _diagonalStorage == DiagonalStorage::Block ? _components : 1);
+        const auto blocks = ReadOffDiagonal();
+        const auto &rows = region == LinearRegion::All ? _pattern->order : region == LinearRegion::Core ? _pattern->core
+                                                                                                        : _pattern->dependent;
+        try
+        {
+            blocks.WithActions([&](const auto &action)
+                               {
+            if (input)
+                Detail::JacobiRows<false>(b.View().OwnedPart(), x.View().OwnedPart(), x.View().GhostPart(), y.View(), inv, action, *_pattern, rows, _components, _diagonalStorage == DiagonalStorage::Block);
+            else
+                Detail::JacobiRows<true>(b.View().OwnedPart(), x.View().OwnedPart(), x.View().GhostPart(), y.View(), inv, action, *_pattern, rows, _components, _diagonalStorage == DiagonalStorage::Block); });
+        }
+        catch (...)
+        {
+            write.Fail();
+            MPI::AbortIfSolverFailure("Cauchy Jacobi kernel failed");
+            throw;
+        }
+    }
+    void LinearProblemContext::Jacobi(const EquationDofs &rhs, const EquationDofs &input, EquationDofs &output, LinearRegion region) const { JacobiImpl(rhs, &input, output, region); }
+    void LinearProblemContext::JacobiZero(const EquationDofs &rhs, EquationDofs &output, LinearRegion region) const { JacobiImpl(rhs, nullptr, output, region); }
     void LinearProblemContext::ValidateField(const EquationDofs &field) const
     {
         Layout();

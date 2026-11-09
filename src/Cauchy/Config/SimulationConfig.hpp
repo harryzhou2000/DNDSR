@@ -246,10 +246,12 @@ namespace DNDS::Cauchy
         std::string componentScaling = "none";
         index iterations = 20;
         int subspace = 10;
+        int jacobiLocalSweeps = 1;
         real relativeTolerance = .1, absoluteTolerance = 1e-12;
         DNDS_DECLARE_CONFIG(ImplicitLinearSettings)
         {
-            DNDS_FIELD(method, "sgs stationary sweeps, ilu stationary defect correction, or restarted left-gmres");
+            DNDS_FIELD(method, "sgs or jacobi stationary sweeps, ilu stationary defect correction, or restarted left-gmres");
+            DNDS_FIELD(jacobiLocalSweeps, "One or two local Jacobi sweeps per iteration; two freezes remote iterate values between sweeps, with one input exchange");
             DNDS_FIELD(preconditioner, "Fixed sgs or rank-local ilu for GMRES; unused by stationary methods");
             DNDS_FIELD(stopping, "residual uses tolerance checks; fixedCount executes exactly iterations for SGS/ILU, omits true-residual reporting and checks the final update is finite; tolerances are ignored");
             DNDS_FIELD(componentScaling, "GMRES metric: none or meanState (Euler volume-averaged absolute conservative magnitudes with a common momentum scale and kinetic energy scale; requires a compressible flow5 block)");

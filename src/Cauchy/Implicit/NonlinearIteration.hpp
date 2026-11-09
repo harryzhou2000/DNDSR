@@ -37,6 +37,7 @@ namespace DNDS::Cauchy::NonlinearDetail
         result.relativeTolerance = settings.linear.relativeTolerance;
         result.absoluteTolerance = settings.linear.absoluteTolerance;
         result.sgsSweeps = settings.sgs.sweeps;
+        result.jacobiLocalSweeps = settings.linear.jacobiLocalSweeps;
         result.exchangeBetweenSweeps = settings.sgs.exchangeBetweenSweeps;
         result.iluFill = settings.ilu.fill;
         result.iluPreconditionerCorrections = settings.ilu.preconditionerCorrections;

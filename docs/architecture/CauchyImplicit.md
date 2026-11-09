@@ -1783,3 +1783,24 @@ preflight: collective rejection in the default mode, immediate MPI abort in
 other eager operations, callers remain responsible for common scheduling and
 producer readiness. The companion rejects CUDA until a stream-ready
 publication protocol is implemented. It introduces no output-halo refresh.
+
+## Stationary Jacobi alternative
+
+`implicit.linear.method = "jacobi"` selects a separate two-buffer block-Jacobi
+kernel: `xNext = inverse(D) * (b - offDiagonal(A) * xOld)`. It supports assembled
+and directly evaluated off-diagonal blocks, scalar or full block diagonals,
+and coupled or separate physical fields with uniform strided layouts. Core
+work reads only owned input; dependent work waits for the normal input halo.
+The zero-start entry has no input array or off-diagonal products. Existing
+zero-start SGS and all SGS scan semantics remain unchanged.
+
+`implicit.linear.jacobiLocalSweeps` is 1 by default and can be 2. Two means two
+local iterations with the remote iterate frozen across both, not two globally
+synchronized Jacobi iterations. The first sweep fully joins before the second;
+the persistent forward scratch stores the intermediate owned solution and a
+copy of the frozen ghost input (explicit zero ghosts for the analytic zero
+start). No DoF payload scratch is allocated per nonlinear iteration, and no two-hop overlap
+is inferred from a one-hop core partition. The result has no fresh halo promise.
+Linear reports count `jacobiSweeps` and `jacobiInputExchanges` separately;
+diagnostic residual evaluations/exchanges are represented by operator application
+counts. GMRES retains its existing SGS/ILU preconditioner selections.

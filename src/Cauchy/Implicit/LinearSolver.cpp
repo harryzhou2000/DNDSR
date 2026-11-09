@@ -292,6 +292,47 @@ namespace DNDS::Cauchy
                 Stage([&]
                       { iteration->Upper(); iteration->Finish(); });
             }
+            void JacobiSweep(const Field &rhs, Field &input, Field &output, bool knownZero)
+            {
+                auto &first = settings.jacobiLocalSweeps == 2 ? forward : output;
+                if (knownZero)
+                    Stage([&]
+                          { problem->JacobiZero(rhs, first); });
+                else
+                {
+                    auto exchange = Exchange(Halo(input));
+                    if (execution.overlap)
+                        Stage([&]
+                              { problem->Jacobi(rhs, input, first, LinearRegion::Core); });
+                    exchange.Wait();
+                    Stage([&]
+                          { problem->Jacobi(rhs, input, first, execution.overlap ? LinearRegion::HaloDependent : LinearRegion::All); });
+                }
+                if (settings.jacobiLocalSweeps == 2)
+                    Stage([&]
+                          {
+                        // The first sweep is fully joined. The second reads
+                        // its owned result but the same frozen remote values;
+                        // a one-hop core is not proof for a two-hop overlap.
+                        std::vector<const R::Array<real> *> ghosts;
+                        Ops::VisitFields(input, [&](const auto &part) { ghosts.push_back(&part.Ghost()); });
+                        index iField = 0;
+                        Ops::VisitFields(forward, [&](auto &part)
+                        {
+                            if (knownZero)
+                            {
+                                auto write = part.Ghost().Write();
+                                const auto values = write.template View<R::UniformTableRows>();
+                                for (index iRow = 0; iRow < values.RowCount(); ++iRow)
+                                    for (index j = 0; j < values.RowSize(iRow); ++j)
+                                        values(iRow, j) = 0;
+                            }
+                            else
+                                part.Ghost().CopyFrom(*ghosts[iField]).Wait();
+                            ++iField;
+                        });
+                        problem->Jacobi(rhs, forward, output); });
+            }
             void Precondition(const Field &rhs, Field &output)
             {
                 if (settings.preconditioner == "ilu")
@@ -445,7 +486,7 @@ namespace DNDS::Cauchy
                                {
                 const LinearProfile::Scope timing(data.profile, LinearProfile::Algebra);
                 if (initialGuess) Ops::CopyGuess(x, *initialGuess);
-                else if (data.settings.method != "sgs" && !directFirstILU) Clear(x); });
+                else if (data.settings.method != "sgs" && data.settings.method != "jacobi" && !directFirstILU) Clear(x); });
                     Linear::LinearIterationReport report;
                     // Defect formation is independent of stopping/reporting:
                     // fixed-count ILU needs it only before later corrections.
@@ -488,6 +529,12 @@ namespace DNDS::Cauchy
                                 Ops::LinearCombination(data.next, real(1), x, real(1), data.action); });
                             ++report.preconditionerApplications;
                         }
+                        else if (data.settings.method == "jacobi")
+                        {
+                            data.JacobiSweep(rhs, x, data.next, !initialGuess && report.iterations == 0);
+                            report.jacobiSweeps += data.settings.jacobiLocalSweeps;
+                            report.jacobiInputExchanges += bool(initialGuess) || report.iterations != 0;
+                        }
                         else
                             data.Sweep(rhs, x, data.next, !initialGuess && report.iterations == 0);
                         data.Stage([&]
@@ -521,7 +568,7 @@ namespace DNDS::Cauchy
                         report.trueResidual = residual();
                     }
                     report.converged = std::isfinite(report.trueResidual) && report.trueResidual <= target;
-                    if (!initialGuess && report.iterations == 0 && data.settings.method == "sgs")
+                    if (!initialGuess && report.iterations == 0 && (data.settings.method == "sgs" || data.settings.method == "jacobi"))
                         data.Stage([&]
                                    { Ops::Fill(x, 0); });
                     report.stop = !std::isfinite(report.trueResidual) ? Linear::LinearStop::NonFinite : report.converged ? Linear::LinearStop::Converged
@@ -555,22 +602,24 @@ namespace DNDS::Cauchy
             problem->Validate(); prototype.Validate();
             DNDS_check_throw_info(prototype.Space().Same(problem->Space()) && Ops::Width(prototype) == problem->Components() && prototype.Device() == R::Device::Host(),
                                   "linear solver prototype differs from its CPU problem");
-            DNDS_check_throw_info(bindHalo && (settings.method == "sgs" || settings.method == "ilu" || settings.method == "gmres") &&
+            DNDS_check_throw_info(bindHalo && (settings.method == "sgs" || settings.method == "jacobi" || settings.method == "ilu" || settings.method == "gmres") &&
                                       (settings.stopping == "residual" || (settings.stopping == "fixedCount" && settings.method != "gmres")) &&
                                       (settings.preconditioner == "sgs" || settings.preconditioner == "ilu") && settings.maxIterations >= 0 &&
                                       settings.subspace > 0 && settings.subspace < INT_MAX && settings.sgsSweeps > 0 && settings.iluFill >= -1 && settings.iluFill <= 5 &&
                                       settings.iluPreconditionerCorrections > 0 &&
+                                      settings.jacobiLocalSweeps >= 1 && settings.jacobiLocalSweeps <= 2 &&
                                       (settings.iluOrdering == "natural" || settings.iluOrdering == "rcm") &&
                                       std::isfinite(settings.relativeTolerance) && settings.relativeTolerance >= 0 &&
                                       std::isfinite(settings.absoluteTolerance) && settings.absoluteTolerance >= 0,
                                   "invalid linear solver controls");
-            DNDS_check_throw_info(!(UsesILU(settings) && settings.exchangeBetweenSweeps),
-                                  "local ILU has no inter-scan exchange"); });
-            const std::array<int64_t, 15> integers{settings.method == "gmres" ? 1 : settings.method == "ilu" ? 2
-                                                                                                             : 0,
+            DNDS_check_throw_info(!((UsesILU(settings) || settings.method == "jacobi") && settings.exchangeBetweenSweeps),
+                                  "local ILU/Jacobi has no inter-scan exchange"); });
+            const std::array<int64_t, 16> integers{settings.method == "gmres" ? 1 : settings.method == "ilu"  ? 2
+                                                                                : settings.method == "jacobi" ? 3
+                                                                                                              : 0,
                                                    settings.preconditioner == "ilu", settings.maxIterations, settings.subspace,
                                                    settings.sgsSweeps, settings.iluFill, settings.iluCoreFirst, settings.exchangeBetweenSweeps,
-                                                   execution.overlap, execution.collectiveChecks, problem->Components(), int(problem->OffDiagonalMode()), settings.stopping == "fixedCount", settings.iluOrdering == "rcm", settings.iluPreconditionerCorrections};
+                                                   execution.overlap, execution.collectiveChecks, problem->Components(), int(problem->OffDiagonalMode()), settings.stopping == "fixedCount", settings.iluOrdering == "rcm", settings.iluPreconditionerCorrections, settings.jacobiLocalSweeps};
             auto lowest = integers, highest = integers;
             const std::array<real, 2> tolerances{settings.relativeTolerance, settings.absoluteTolerance};
             auto lowTolerance = tolerances, highTolerance = tolerances;

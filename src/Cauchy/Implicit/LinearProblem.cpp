@@ -1,6 +1,7 @@
 #include "Cauchy/Implicit/LinearProblem.hpp"
 #include "Cauchy/Implicit/LinearBlockKernels.hpp"
 #include "Solver/BlockInverse.hpp"
+#include "DNDS/MPI/Failure.hpp"
 #include <limits>
 #include <optional>
 
@@ -216,6 +217,54 @@ namespace DNDS::Cauchy
             else
                 Detail::ApplyBlockRows(x, xGhost, y, matrix, blocks, *_pattern, rows, _components, _diagonalStorage == DiagonalStorage::Block); });
     }
+    void LinearProblemContext::JacobiImpl(const Field &rhs, const Field *input, Field &output, LinearRegion region) const
+    {
+        ValidateMatrix();
+        ValidateOutputs(rhs, output);
+        if (input)
+            ValidateOutputs(*input, output);
+        DNDS_check_throw_info(region == LinearRegion::All || region == LinearRegion::Core || region == LinearRegion::HaloDependent, "invalid Jacobi region");
+        const auto diagonal = _diagonal.Read();
+        const auto inverse = _inverse.Read();
+        DNDS_check_throw_info(_inverseCurrent && _diagonal.Version() == _diagonalVersion && _inverse.Version() == _inverseVersion,
+                              "Jacobi diagonal inverse is missing or stale");
+        const auto right = rhs.Owned().Read();
+        std::optional<R::Array<real>::ReadLease> owned, ghost;
+        if (input)
+        {
+            owned.emplace(input->Owned().Read());
+            if (region != LinearRegion::Core && _pattern->hasGhostColumns)
+                ghost.emplace(input->Ghost().Read());
+        }
+        const auto blocks = ReadOffDiagonal();
+        auto destination = output.Owned().Write();
+        const auto b = Algebra::MakeEigenRowMatrices(right.View<R::UniformTableRows>(), _components, 1);
+        const auto x = owned ? Algebra::MakeEigenRowMatrices(owned->View<R::UniformTableRows>(), _components, 1) : b;
+        const auto remote = ghost ? ghost->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{};
+        const auto g = Algebra::MakeEigenRowMatrices(remote, _components, 1);
+        const auto y = Algebra::MakeEigenRowMatrices(destination.View<R::UniformTableRows>(), _components, 1);
+        const auto inv = Algebra::MakeEigenRowMatrices(inverse.View<R::TableRows>(), _components, _diagonalStorage == DiagonalStorage::Block ? _components : 1);
+        const auto &rows = region == LinearRegion::All ? _pattern->order : region == LinearRegion::Core ? _pattern->core
+                                                                                                        : _pattern->dependent;
+        try
+        {
+            blocks.WithActions([&](const auto &action)
+                               {
+                if (input)
+                    Detail::JacobiRows<false>(b, x, g, y, inv, action, *_pattern, rows, _components, _diagonalStorage == DiagonalStorage::Block);
+                else
+                    Detail::JacobiRows<true>(b, x, g, y, inv, action, *_pattern, rows, _components, _diagonalStorage == DiagonalStorage::Block); });
+        }
+        catch (...)
+        {
+            destination.Fail();
+            MPI::AbortIfSolverFailure("Cauchy Jacobi kernel failed");
+            throw;
+        }
+    }
+    void LinearProblemContext::Jacobi(const Field &rhs, const Field &input, Field &output, LinearRegion region) const { JacobiImpl(rhs, &input, output, region); }
+    void LinearProblemContext::JacobiZero(const Field &rhs, Field &output, LinearRegion region) const { JacobiImpl(rhs, nullptr, output, region); }
+
     void LinearProblemContext::ApplySGS(const Field &rhs, const Field &input, Field &forward, Field &output) const
     {
         auto iteration = BeginSGS(rhs, input, forward, output);

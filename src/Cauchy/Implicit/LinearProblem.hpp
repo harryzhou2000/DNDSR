@@ -78,6 +78,8 @@ namespace DNDS::Cauchy
     class LinearProblemContext
     {
         using Field = Algebra::DofField<real>;
+        void JacobiImpl(const Field &, const Field *, Field &, LinearRegion) const;
+        void JacobiImpl(const EquationDofs &, const EquationDofs *, EquationDofs &, LinearRegion) const;
         struct Pattern
         {
             std::shared_ptr<const Algebra::DofSpace::Partition> partition;
@@ -281,6 +283,14 @@ namespace DNDS::Cauchy
         /// and device must agree. Core reads no ghost part. Caller retains the
         /// matrix and serializes preparation; return is synchronous on CPU.
         void Apply(const EquationDofs &input, EquationDofs &output, LinearRegion region = LinearRegion::All) const;
+        /// Two-buffer block Jacobi: output=D^-1(rhs-offDiagonal*input).
+        /// No ordered new-value reads or communication. Core consumes owned
+        /// input only; caller refreshes ghosts before dependent/All work.
+        /// Zero-start omits the input entirely, including its halo and reads.
+        void Jacobi(const Field &rhs, const Field &input, Field &output, LinearRegion region = LinearRegion::All) const;
+        void JacobiZero(const Field &rhs, Field &output, LinearRegion region = LinearRegion::All) const;
+        void Jacobi(const EquationDofs &rhs, const EquationDofs &input, EquationDofs &output, LinearRegion region = LinearRegion::All) const;
+        void JacobiZero(const EquationDofs &rhs, EquationDofs &output, LinearRegion region = LinearRegion::All) const;
         /// Move-only access scope for one staged symmetric-GS application.
         /// Lower runs Core then HaloDependent; Upper runs HaloDependent then
         /// Core. All is available for either complete scan. Finish publishes

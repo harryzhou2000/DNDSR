@@ -28,6 +28,9 @@ namespace DNDS::Linear
         LinearStop stop = LinearStop::IterationLimit;
         bool converged = false, usable = false;
         index iterations = 0, restarts = 0, operatorApplications = 0, preconditionerApplications = 0, innerProductBatches = 0;
+        /// Stationary Jacobi work only; diagnostic residual exchanges are
+        /// accounted by operatorApplications, not by jacobiInputExchanges.
+        index jacobiSweeps = 0, jacobiInputExchanges = 0;
         /// NaN means that diagnostic was not evaluated before the stop.
         real initialTrueResidual = std::numeric_limits<real>::quiet_NaN();
         real trueResidual = std::numeric_limits<real>::quiet_NaN(), preconditionedResidual = std::numeric_limits<real>::quiet_NaN();

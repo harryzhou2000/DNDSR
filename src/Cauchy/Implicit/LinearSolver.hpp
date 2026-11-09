@@ -7,7 +7,7 @@
 namespace DNDS::Cauchy
 {
     /// Resolved numerical choices, independent of frontend configuration layout.
-    /// sgs and ilu are stationary iterations; only gmres constructs Krylov
+    /// sgs, jacobi and ilu are stationary iterations; only gmres constructs Krylov
     /// history and uses preconditioner. ILU uses frozen rank-local factors and
     /// x_next=x+M^-1(b-A*x), with a normal halo before evaluating A*x.
     /// Norms use the integrated RHS, without volume normalization. The default
@@ -21,6 +21,9 @@ namespace DNDS::Cauchy
         std::string stopping = "residual";
         index maxIterations = 10;
         int subspace = 20, sgsSweeps = 1, iluFill = 0;
+        /// One or two local Jacobi sweeps per exchange. Two freezes remote
+        /// input values between sweeps; it is not two synchronized steps.
+        int jacobiLocalSweeps = 1;
         /// Fixed zero-started ILU defect corrections per GMRES application.
         /// More than one uses the full operator/halo between local solves.
         /// The count is frozen for Solve; stationary ILU uses maxIterations.

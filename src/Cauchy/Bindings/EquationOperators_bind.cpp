@@ -272,6 +272,7 @@ namespace DNDS::Cauchy::Bindings
             .def_readwrite("max_iterations", &LinearSolveSettings::maxIterations)
             .def_readwrite("subspace", &LinearSolveSettings::subspace)
             .def_readwrite("sgs_sweeps", &LinearSolveSettings::sgsSweeps)
+            .def_readwrite("jacobi_local_sweeps", &LinearSolveSettings::jacobiLocalSweeps)
             .def_readwrite("ilu_fill", &LinearSolveSettings::iluFill)
             .def_readwrite("ilu_preconditioner_corrections", &LinearSolveSettings::iluPreconditionerCorrections)
             .def_readwrite("ilu_core_first", &LinearSolveSettings::iluCoreFirst)
@@ -299,6 +300,8 @@ namespace DNDS::Cauchy::Bindings
             .def_readonly("true_residual", &Linear::LinearIterationReport::trueResidual)
             .def_readonly("operator_applications", &Linear::LinearIterationReport::operatorApplications)
             .def_readonly("inner_product_batches", &Linear::LinearIterationReport::innerProductBatches)
+            .def_readonly("jacobi_sweeps", &Linear::LinearIterationReport::jacobiSweeps)
+            .def_readonly("jacobi_input_exchanges", &Linear::LinearIterationReport::jacobiInputExchanges)
             .def_readonly("preconditioner_applications", &Linear::LinearIterationReport::preconditionerApplications);
         py::class_<EquationLinearSolver>(
             m, "EquationLinearSolver",

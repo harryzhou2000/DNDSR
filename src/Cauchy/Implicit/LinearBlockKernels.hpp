@@ -4,6 +4,45 @@
 
 namespace DNDS::Cauchy::Detail
 {
+    /// Stateless Jacobi row update. Scratch is allocated once per call, never
+    /// per row. Static zero-start removes all off-diagonal/input accesses.
+    template <bool Zero, class RHS, class Owned, class Ghost, class Output, class Inverse, class Blocks, class Pattern>
+    void JacobiRows(RHS rhs, Owned owned, Ghost ghost, Output output, Inverse inverse,
+                    const Blocks &blocks, const Pattern &pattern, const std::vector<index> &rows,
+                    index components, bool fullDiagonal)
+    {
+        constexpr bool segmented = std::is_same_v<Output, Algebra::DofComponentView<real>>;
+        Eigen::VectorXd value(components), result(components), neighbor(components), product(components);
+        const auto copyRow = [&](auto view, index iRow, Eigen::VectorXd &target)
+        {
+            if constexpr (segmented)
+                Algebra::PackEigenRow(view, iRow, target);
+            else
+                target = view[iRow];
+        };
+        for (const auto iCell : rows)
+        {
+            copyRow(rhs, iCell, value);
+            if constexpr (!Zero)
+                for (index j = 0; j < index(pattern.columns[iCell].size()); ++j)
+                {
+                    const index column = pattern.columns[iCell][j];
+                    if (column < index(pattern.partition->owned))
+                        copyRow(owned, column, neighbor);
+                    else
+                        copyRow(ghost, column - index(pattern.partition->owned), neighbor);
+                    blocks.template Accumulate<Eigen::Dynamic, true>(iCell, j, neighbor, value, product);
+                }
+            if (fullDiagonal)
+                result.noalias() = inverse[iCell] * value;
+            else
+                result.array() = inverse[iCell].col(0).array() * value.array();
+            if constexpr (segmented)
+                Algebra::UnpackEigenRow(output, iCell, result);
+            else
+                output[iCell] = result;
+        }
+    }
     /// One ordered SGS scan. Input remote values are frozen by the enclosing
     /// phase scope. Lower local predecessors read forward; upper successors
     /// read output. No ownership/communication or per-row allocation here.
