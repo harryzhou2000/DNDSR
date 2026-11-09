@@ -196,6 +196,11 @@ namespace DNDS::CFV::Detail
             __syncthreads();
         }
     }
+    // Publication copies logical owned entries, retaining allocation identity and
+    // halo bindings. Future layout-specific coalescing/memcpyAsync comparisons
+    // must preserve this device-status guard without a host status observation.
+    // Physical memcpy is only equivalent for matching complete layouts/bytes;
+    // it cannot blindly replace this conditional copy (plan 56, E3).
     __global__ void Commit(R::ArrayView<const real> input, R::ArrayView<real> output, R::ArrayView<const int> status)
     {
         if (status(0, 0))
@@ -226,6 +231,8 @@ namespace DNDS::CFV::Detail
     }
     void LaunchCommit(R::ExecutionContext context, R::ArrayView<const real> input, R::ArrayView<real> output, R::ArrayView<const int> status)
     {
+        // Investigate mapping and launch overhead by shape before selecting a
+        // copy backend. No universal kernel-versus-memcpy speedup is assumed.
         if (!output.rows || !output.width)
             return;
         Commit<<<unsigned(std::min<index>(256, (output.rows * output.width + 255) / 256)), 256, 0, static_cast<cudaStream_t>(context.stream)>>>(input, output, status);

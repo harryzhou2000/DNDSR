@@ -317,6 +317,9 @@ namespace DNDS::CFV
     }
     void ReconstructionDevicePlan::CommitReconstruction(R::EagerEngine &engine, const R::ExecutionStream &stream, ReconstructionDeviceWorkspace &work) const
     {
+        // Stable owned-only publication: coefficient ghosts remain stale until
+        // exchange. Keep leases and the device-status guard in any future copy
+        // optimization; Runtime::Array::CopyFrom alone does not provide the guard.
         ValidateStream(*this, stream);
         ValidateWorkspace(_data, work);
         auto pin = std::make_shared<ReconstructionDeviceRead>(AcquireRead());
