@@ -32,6 +32,9 @@ namespace DNDS::Cauchy
         using FiniteVolumeDetail::Sample;
         // Diagnostic-only synchronous local phase timings. The environment
         // switch is read once; ordinary operators make no clock queries.
+        // DNDS_CAUCHY_PROFILE_FV enables reporting (the historical PMG switch
+        // remains accepted); DNDS_CAUCHY_PROFILE_FV_INTERVAL overrides the
+        // cumulative-call report interval, whose default is 1000.
         class FVProfileScope
         {
             using Clock = std::chrono::steady_clock;
@@ -43,6 +46,15 @@ namespace DNDS::Cauchy
             int _level, _rank = -1;
             bool _enabled;
             Clock::time_point _last{};
+            static index ReportInterval()
+            {
+                const char *value = std::getenv("DNDS_CAUCHY_PROFILE_FV_INTERVAL");
+                if (!value || !*value)
+                    return 1000;
+                char *end = nullptr;
+                const long parsed = std::strtol(value, &end, 10);
+                return parsed > 0 && end && !*end ? index(parsed) : index(1000);
+            }
             static auto &Counters()
             {
                 static thread_local std::array<Totals, 3> totals;
@@ -52,7 +64,8 @@ namespace DNDS::Cauchy
         public:
             FVProfileScope(int level, MPI_Comm communicator) : _level(level)
             {
-                static const bool enabled = std::getenv("DNDS_CAUCHY_PROFILE_PMG") != nullptr;
+                static const bool enabled = std::getenv("DNDS_CAUCHY_PROFILE_FV") != nullptr ||
+                                            std::getenv("DNDS_CAUCHY_PROFILE_PMG") != nullptr;
                 _enabled = enabled;
                 if (_enabled)
                 {
@@ -74,8 +87,17 @@ namespace DNDS::Cauchy
                     return;
                 Mark(4);
                 auto &total = Counters()[_level];
-                if (++total.calls % 1000 == 0 && _rank == 0)
-                    std::cout << "CAUCHY_FV_PROFILE " << Json{{"level", _level}, {"calls", total.calls}, {"seconds", total.seconds}}.dump() << std::endl;
+                static const index interval = ReportInterval();
+                if (++total.calls % interval == 0 && _rank == 0)
+                    std::cout << "CAUCHY_FV_PROFILE "
+                              << Json{{"level", _level},
+                                      {"path", _level == 0 ? "variational" : _level == 1 ? "gradient"
+                                                                                         : "firstOrder"},
+                                      {"calls", total.calls},
+                                      {"phases", {"validationAux", "prepareGradient", "reconstruction", "limiting", "rhs"}},
+                                      {"seconds", total.seconds}}
+                                     .dump()
+                              << std::endl;
             }
         };
         /// These CPU convenience wrappers return with their submitted work
@@ -1131,6 +1153,7 @@ namespace DNDS::Cauchy
                                 { work.characteristicFallbacks += PrepareFaceCharacteristics(state, work.characteristic); });
             work.limitedVR->Build(*_data, state, _data->settings.numerics.characteristicLimiter ? &work.characteristic : nullptr, engine, stream);
         }
+        profile.Mark(1); // Mean halo, gradients, boundary values and face preparation.
         // Keep the previous unlimited polynomial as the initial guess.
         // Resetting it every stage turns a fixed sweep cap into a spatial error.
         if (work.meanOnly || _data->settings.numerics.reconstruction != "variational")
