@@ -26,6 +26,7 @@ namespace DNDS::Cauchy
             Vector3 normal, location;
             Eigen::Matrix3d rotation;
             real weight;
+            bool changesFrame; // Exact periodic incidence flag; pose is separate.
         };
         struct Geometry
         {
@@ -87,7 +88,7 @@ namespace DNDS::Cauchy
                                              [&](const auto &sample, index)
                                              {
                                                  prepared->sameComponentFrames = prepared->sameComponentFrames && !sample.changesFrame;
-                                                 return Point{sample.other, sample.auxiliaryFace, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, metric.GetFaceArea(sample.face)};
+                                                 return Point{sample.other, sample.auxiliaryFace, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, metric.GetFaceArea(sample.face), sample.changesFrame};
                                              });
             geometry = std::move(prepared);
         }
@@ -105,10 +106,8 @@ namespace DNDS::Cauchy
             FlowState flow{};
             for (int j = 0; j < 5; ++j)
                 flow[j] = values(point.other, flowFirst + j);
-            const Geom::tPoint momentum{flow[1], flow[2], flow[3]};
-            const auto rotated = (point.rotation * momentum).eval();
-            for (int d = 0; d < 3; ++d)
-                flow[1 + d] = rotated[d];
+            if (point.changesFrame)
+                flow = FiniteVolumeDetail::RotateState(flow, point.rotation);
             const auto grid = frame.GridVelocity(point.location);
             real speed = 0;
             for (int d = 0; d < 3; ++d)
@@ -123,7 +122,7 @@ namespace DNDS::Cauchy
                 if (column >= flowFirst && column < flowFirst + 5)
                 {
                     const auto j = column - flowFirst;
-                    if (j >= 1 && j <= 3)
+                    if (point.changesFrame && j >= 1 && j <= 3)
                         for (int d = 0; d < 3; ++d)
                             direction[1 + d] = point.rotation(d, j - 1);
                     else
@@ -204,8 +203,11 @@ namespace DNDS::Cauchy
                     flow[j] = means(flowFirst + j, point.other);
                     direction[j] = active[flowFirst + j] ? input[flowFirst + j] : 0;
                 }
-                flow = FiniteVolumeDetail::RotateState(flow, point.rotation);
-                direction = FiniteVolumeDetail::RotateState(direction, point.rotation);
+                if (point.changesFrame)
+                {
+                    flow = FiniteVolumeDetail::RotateState(flow, point.rotation);
+                    direction = FiniteVolumeDetail::RotateState(direction, point.rotation);
+                }
                 const auto grid = frame.GridVelocity(point.location);
                 auto derivative = PrepareCompressibleFluxDerivative(flow, direction, pressure[point.other], dp, point.normal, grid);
                 if (kineticFirst >= 0)
@@ -252,10 +254,9 @@ namespace DNDS::Cauchy
             FlowState flow{};
             for (int j = 0; j < 5; ++j)
                 flow[j] = values(point.other, flowFirst + j);
-            // Resolve the existing rank-two identity predicate before frame
-            // products. Partial selections and every real rotation retain
-            // the transformed path, including arbitrarily small rotations.
-            const bool sameFrame = allComponents && (point.rotation.array() == Eigen::Matrix3d::Identity().array()).all();
+            // Component selection does not rotate a frame. Keep projection
+            // in the generic block path, but skip exact identity transforms.
+            const bool sameFrame = !point.changesFrame;
             if (!sameFrame)
             {
                 const Geom::tPoint momentum{flow[1], flow[2], flow[3]};
@@ -293,7 +294,7 @@ namespace DNDS::Cauchy
             // arbitrary logical block offsets. No gamma-equivalent closure.
             // Exact identity is intentional: a small physical rotation must
             // still take the fully transformed path below.
-            if (sameFrame)
+            if (sameFrame && allComponents)
             {
                 for (index column = 0; column < components; ++column)
                 {
@@ -328,7 +329,7 @@ namespace DNDS::Cauchy
                 {
                     const index j = column - flowFirst;
                     deltaSpeed = speedDerivative[j];
-                    if (j >= 1 && j <= 3)
+                    if (point.changesFrame && j >= 1 && j <= 3)
                         for (int d = 0; d < 3; ++d)
                             direction[1 + d] = point.rotation(d, j - 1);
                     else
@@ -523,7 +524,7 @@ namespace DNDS::Cauchy
                                                 {block.data(), 36});
                     return;
                 }
-                const EquationJacobian::Point point{sample.other, sample.auxiliaryFace, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, weight};
+                const EquationJacobian::Point point{sample.other, sample.auxiliaryFace, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, weight, sample.changesFrame};
                 snapshot->AddFrozenFluxBlock(point, block, inputValues);
             };
             const auto assembleFaceRow = [&](index iCell, auto &own)

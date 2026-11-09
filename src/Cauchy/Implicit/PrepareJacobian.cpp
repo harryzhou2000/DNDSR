@@ -23,6 +23,7 @@ namespace DNDS::Cauchy
             Vector3 normal, location;
             Eigen::Matrix3d rotation;
             real weight;
+            bool changesFrame; // Exact setup predicate, never a tolerance test.
         };
         struct Geometry
         {
@@ -30,7 +31,6 @@ namespace DNDS::Cauchy
             std::shared_ptr<const Algebra::DofSpace::Partition> partition;
             std::vector<std::vector<index>> columns;
             std::vector<std::vector<std::vector<Point>>> rows;
-            bool hasRotatedFrames = false;
         };
         std::shared_ptr<const Geometry> geometry;
         EquationSystem equation;
@@ -58,13 +58,12 @@ namespace DNDS::Cauchy
                 prepared->owner = fv._data;
                 prepared->partition = output.Space().Pin();
                 prepared->columns = output.Columns();
-                prepared->hasRotatedFrames = fv._data->hasRotatedFrames;
                 auto read = fv.Metrics().AcquireRead();
                 const auto metric = read.HostView();
                 JacobianDetail::BuildStencilRows(fv._data->jacobianOffsets, fv._data->jacobianSamples, prepared->columns, prepared->rows,
                                                  [&](const auto &sample, index entry)
                                                  {
-                                                     return Point{sample.other, sample.auxiliaryFace, entry, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, metric.GetFaceArea(sample.face)};
+                                                     return Point{sample.other, sample.auxiliaryFace, entry, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, metric.GetFaceArea(sample.face), sample.changesFrame};
                                                  });
                 geometry = std::move(prepared);
             }
@@ -79,7 +78,7 @@ namespace DNDS::Cauchy
             output.setZero();
             for (const auto &point : geometry->rows[iRow][iBlock])
             {
-                const auto right = geometry->hasRotatedFrames ? RotateState(means[point.other], point.rotation) : means[point.other];
+                const auto right = point.changesFrame ? RotateState(means[point.other], point.rotation) : means[point.other];
                 Matrix dissipation = Matrix::Identity() * (radius[point.auxiliary][0] + radius[point.auxiliary][1]);
                 if (roe)
                 {
@@ -92,7 +91,7 @@ namespace DNDS::Cauchy
                 }
                 const auto derivative = equation.PrepareFluxJacobian(right, point.normal, frame.GridVelocity(point.location));
                 const Matrix other = (.5 * scale * point.weight) * (Eigen::Map<const Matrix>(derivative.data()) - dissipation);
-                if (!geometry->hasRotatedFrames)
+                if (!point.changesFrame)
                     output += other;
                 else
                 {
@@ -115,11 +114,12 @@ namespace DNDS::Cauchy
             output.setZero();
             for (const auto &point : geometry->rows[iRow][iBlock])
             {
-                const auto right = RotateState(means[point.other], point.rotation);
+                const auto right = point.changesFrame ? RotateState(means[point.other], point.rotation) : means[point.other];
                 FlowState direction{};
                 for (int j = 0; j < 5; ++j)
                     direction[j] = active[j] ? input[j] : 0;
-                direction = RotateState(direction, point.rotation);
+                if (point.changesFrame)
+                    direction = RotateState(direction, point.rotation);
                 const auto &gas = equation.Gas();
                 real dp = direction[4];
                 real speedSquared = 0;
@@ -318,7 +318,7 @@ namespace DNDS::Cauchy
                     continue; // Euler's scalar diagonal does not linearize BCs.
                 }
                 const auto right = sample.other == UnInitIndex ? FiniteVolumeDetail::BoundaryExterior(sample, _data->equation.Gas(), left, time, frame, incoming)
-                                   : !_data->hasRotatedFrames  ? Load(mean, sample.other)
+                                   : !sample.changesFrame      ? Load(mean, sample.other)
                                                                : RotateState(Load(mean, sample.other), sample.rotation);
                 Matrix dissipation = Matrix::Identity() * (convection + diffusion);
                 if (controls.roeDissipation)
@@ -374,7 +374,7 @@ namespace DNDS::Cauchy
                 }
                 else
                 {
-                    if (_data->hasRotatedFrames)
+                    if (sample.changesFrame)
                     {
                         Matrix rotation = Matrix::Identity();
                         rotation.block<3, 3>(1, 1) = sample.rotation;
