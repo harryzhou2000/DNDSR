@@ -17,6 +17,10 @@ retained identity. The existing mesh/metric stamps still reject changed
 geometry or numbering. Numeric ILU preparation fills the private factor
 buffer directly, including fill zeros, and retains the original operator for
 matrix actions. It uses the existing symbolic ordering and decomposition.
+Each non-diagonal Jacobian incidence also owns the dense column slot resolved
+when that immutable topology is built; assembled writers index the sparse block
+row directly instead of searching canonical columns on every preparation. The
+generic sparse column table remains authoritative for matrix consumers.
 Direct-FV midpoint source values share the owned mean allocation; source
 derivatives continue to use the limited polynomial sampling facility.
 Direct physical gradients for repeated RANS source preparation carry separate
@@ -58,6 +62,18 @@ order across ranks, as the existing eager contract requires. No new Allreduce
 is introduced for this cache choice. `PreparedAuxValues()` is a read-only
 diagnostic view of the last linearization; after an update it describes the
 pre-update state. It does not silently refresh.
+
+The polynomial FAS operator evaluates and publishes auxiliary values for the
+coarse state it has just assembled. The immediately following cached-rate
+correction reuses that publication only while the state/time and both owned and
+ghost versions still match. A correction, restriction or next sweep changes
+those versions, so the next pseudo-time and matrix preparation must refresh
+current-state spectra. Those refreshes are necessary rather than duplicated
+work. Coarse auxiliary work must not be fused by retaining a prior state's
+spectra, and an RHS pass must not overwrite the pre-RHS publication that the
+subsequent Jacobian consumes. A combined coarse auxiliary/RHS kernel would need
+its own explicit publication boundary and fresh-state proof before it could
+replace these calls.
 
 RHS can consume prepared mean pressure/sound speed for the Riemann mean-state
 inputs; reconstructed face thermodynamics are still evaluated at the face.
