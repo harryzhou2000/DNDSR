@@ -559,9 +559,9 @@ namespace DNDS::Cauchy
                     }
                     else
                     {
-                        const auto &columns = output.Columns()[iCell];
-                        const auto found = std::find(columns.begin(), columns.end(), sample.other);
-                        auto destination = (*b)(iCell, found - columns.begin());
+                        DNDS_check_throw_info(sample.jacobianColumn != UnInitIndex,
+                                              "assembled Jacobian sample lacks a dense column slot");
+                        auto destination = (*b)(iCell, sample.jacobianColumn);
                         addFaceBlock(sample, weight, destination);
                     }
                 }

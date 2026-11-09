@@ -30,6 +30,10 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         index auxiliaryFace = UnInitIndex;
         real viscousDistance = 0;
         index face = UnInitIndex;
+        /// Dense column slot in this cell's canonical Jacobian row. Filled
+        /// once after JacobianColumns() is constructed; UnInitIndex for
+        /// diagonal/boundary samples and non-Jacobian quadrature samples.
+        index jacobianColumn = UnInitIndex;
         /// Row in the incoming packet used by this sample: RHS flow for
         /// quadrature samples, faceFlow for centered Jacobian samples.
         index boundaryPoint = UnInitIndex;

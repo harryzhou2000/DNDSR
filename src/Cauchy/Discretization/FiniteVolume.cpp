@@ -330,6 +330,22 @@ namespace DNDS::Cauchy
         MPI::LocalStage(data->mesh->getMPI(), [&]
                         {
         data->jacobianColumns = std::make_shared<const std::vector<std::vector<index>>>(FiniteVolumeDetail::JacobianColumns(data->jacobianOffsets, data->jacobianSamples));
+        // The assembled SGS/Jacobian writer visits each face incidence many
+        // times for a frozen state. Resolve its dense column slot once at
+        // setup instead of repeating a linear search in every matrix fill.
+        for (index iCell = 0; iCell < data->metrics.NumCell(); ++iCell)
+        {
+            const auto &columns = (*data->jacobianColumns)[size_t(iCell)];
+            for (index entry = data->jacobianOffsets[iCell]; entry < data->jacobianOffsets[iCell + 1]; ++entry)
+            {
+                auto &sample = data->jacobianSamples[size_t(entry)];
+                if (sample.other == UnInitIndex || sample.other == iCell)
+                    continue;
+                const auto found = std::find(columns.begin(), columns.end(), sample.other);
+                DNDS_check_throw_info(found != columns.end(), "Jacobian stencil has no canonical column slot");
+                sample.jacobianColumn = index(found - columns.begin());
+            }
+        }
         data->boundaryZones.assign(localZones.begin(), localZones.end());
         for (auto iFace : data->stencilFaces)
         {
