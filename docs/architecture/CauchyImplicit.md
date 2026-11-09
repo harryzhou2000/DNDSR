@@ -1804,3 +1804,23 @@ is inferred from a one-hop core partition. The result has no fresh halo promise.
 Linear reports count `jacobiSweeps` and `jacobiInputExchanges` separately;
 diagnostic residual evaluations/exchanges are represented by operator application
 counts. GMRES retains its existing SGS/ILU preconditioner selections.
+
+## Reserved pMG scratch
+
+`implicit.multigrid.scratchPool=true` enables the native reserved DoF pool;
+the default retains explicit per-level scratch. Four full owned/ghost candidates
+serve current/child operator values and residuals. Their borrows end before
+recursive descent; correction borrows reuse those candidates on ascent and
+remain live through PP/update. Parent sources, entrance references, selected
+component snapshots, spatial-rate caches and physical states remain distinct.
+Each level has its own prepared space adapter and saved halo bindings over the
+shared allocations, even though these FAS scratch uses are owned-only today.
+
+`StateFASCycle` accepts an optional scratch-acquisition adapter; it does not
+depend on DNDS array storage or on Cauchy. Cauchy proves matching cell order
+and reserves/prepares the adapters during hierarchy construction. Reusable
+nonlinear/linear and RHS/reconstruction modules retain their existing explicit
+scratch and exchange bindings. No reconstruction coefficients are pooled here.
+`ScratchPoolStatistics()` returns reserved payload bytes and peak live slots;
+it excludes the persistent values listed above. This is synchronous CPU pooling,
+not a CUDA allocation/capture or asynchronous scratch-retirement facility.

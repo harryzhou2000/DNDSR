@@ -57,5 +57,8 @@ namespace DNDS::Cauchy
         /// Frozen stage trace shared with coarse levels after checking their
         /// canonical boundary quadrature order. Local alias binding only; no MPI.
         void SetBoundaryInputs(const BoundaryInputs &input);
+        /// Reserved DoF payload bytes and peak simultaneous borrowed slots.
+        /// Excludes persistent state/source/reference and reconstruction storage.
+        std::pair<size_t, index> ScratchPoolStatistics() const;
     };
 }

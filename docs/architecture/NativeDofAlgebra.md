@@ -3,6 +3,32 @@
 `DNDS::Algebra` provides numerical operators over composed Runtime Arrays. It
 does not depend on Geom or a fluid solver. Legacy Array/DOF APIs remain separate.
 
+## Reserved scratch
+
+`DofScratchPool` reserves CPU `DofBundle` payloads, preserving every physical
+field's owned and ghost layout. Each candidate is ghost-capable. `Reserve`
+allocates; `Prepare` binds an explicit level/row-space alias and its actual halo
+mapping once; `Acquire` chooses a deterministic prepared descriptor with no
+allocation of payloads, datatype compilation, MPI or rank-local free-list choice.
+Equal shape is not evidence of equal row order: the caller proves the semantic
+association and supplies the correct mapping for each prepared level.
+
+Owned-only and communicating are borrow requirements, not separate allocation
+classes. An owned-only borrow cannot start an exchange through the pool API.
+A communicating borrow exposes its saved per-field transfers; those still need
+matching calls on all ranks. Dirty acquisition leaves values unspecified and
+advances owned generations; zero acquisition explicitly fills owned values.
+Neither mode promises fresh ghosts. Bindings and allocation identities remain
+stable, and storage generations are never reset.
+
+The controller serializes setup, borrowing and return. Sharing field aliases is
+allowed only during their borrow; do not rebind them or retain them for later
+use. CPU kernels and exchanges must complete before return. Explicit `Release`
+rejects active views/transfers while retaining the borrow; an invalid RAII return
+is fatal. The initial facility does not implement deferred asynchronous returns.
+`RetainedBytes` and `PeakBorrows` report payload bytes and simultaneous slots,
+excluding metadata. Reconstruction scratch belongs to a separate pool family.
+
 `DofSpace` is an immutable description of one prepared owned/ghost row ordering.
 Fields share the same space handle to assert that corresponding rows mean the
 same thing. Equal local counts or communicator membership are insufficient.

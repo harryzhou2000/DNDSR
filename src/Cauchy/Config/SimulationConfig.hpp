@@ -321,6 +321,7 @@ namespace DNDS::Cauchy
     };
     struct PolynomialMultigridSettings
     {
+        bool scratchPool = false;
         int levels = 0;
         index cycles = 50, preSmooth = 1, postSmooth = 1, coarseSmooth = 4;
         real damping = 1;
@@ -337,6 +338,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(preSmooth, "Bounded nonlinear corrections before restriction");
             DNDS_FIELD(postSmooth, "Bounded nonlinear corrections after prolongation");
             DNDS_FIELD(coarseSmooth, "Bounded nonlinear corrections at the coarsest level");
+            DNDS_FIELD(scratchPool, "Reserve four ghost-capable DoF scratch slots for synchronous pMG values/residuals/corrections; keep parent sources/references and solver/reconstruction workspaces independent");
             DNDS_FIELD(reuseCoarseRate, "Reuse a version-validated direct-gradient coarse tau rate for its first correction; independent of finest measured-rate reuse");
             DNDS_FIELD(coarseRHSFPP, "Opt in to RHS/dTau positivity limiting on coarse levels; default false forces coarse rhsFPPMode=none after level overrides, matching Euler. Reconstruction and increment PP remain unchanged");
             config.field_map_of<MultigridLevelSettings>(&T::coarseLevelSettings, "coarseLevelSettings", "Independent coarse-level controls keyed by 1 or 2; finest uses domain implicit and the common pre/post counts");

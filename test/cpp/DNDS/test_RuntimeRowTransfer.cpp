@@ -8,6 +8,7 @@
 #include <optional>
 #include <atomic>
 #include <string>
+#include <chrono>
 
 using namespace DNDS::Runtime;
 
@@ -1441,6 +1442,57 @@ TEST_CASE("Communication worker preserves repeated packed and direct sparse tran
                 CHECK(operation.Test());
             }
         }
+}
+
+TEST_CASE("Communication worker overlaps core reads with active receiver completion")
+{
+    int rank = 0, size = 0, provided = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    MPI_Query_thread(&provided);
+    if (provided != MPI_THREAD_MULTIPLE)
+        return;
+    auto worker = std::make_shared<CommunicationWorker>();
+    Array<double> input(RowLayout::Dense(1, 1)), output(RowLayout::Dense(1, 1));
+    {
+        auto write = input.Write();
+        write.View()(0, 0) = rank + .5;
+    }
+    std::mutex mutex;
+    std::condition_variable ready;
+    bool entered = false, release = false;
+    const auto schema = ElementSchema::For<double>();
+    auto reducer = Reducer::Custom<double>(schema, "gated-sum", [&](double &destination, const double &source)
+                                           {
+        std::unique_lock<std::mutex> lock(mutex);
+        entered = true;
+        ready.notify_one();
+        ready.wait(lock, [&] { return release; });
+        destination += source; }, 0., DestinationInit::Identity);
+    TransferOptions options;
+    options.communicationWorker = worker;
+    auto binding = PayloadPlan(RowTransferPlan(MPI_COMM_WORLD, 1, 1, {{(rank + 1) % size, 0, 0}}), input.Layout(), output.Layout(), schema)
+                       .Bind(input, output, reducer, TransferTransport::Direct, options);
+    auto operation = binding.Begin();
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        const bool active = ready.wait_for(lock, std::chrono::seconds(5), [&]
+                                           { return entered; });
+        CHECK(active);
+        // This is inside a real transfer's receiver completion, not simply a
+        // pending queue entry. Computation can read owned data concurrently.
+        if (active)
+        {
+            const auto read = input.Read();
+            CHECK(read.View()(0, 0) * 2 == 2 * rank + 1);
+            CHECK_FALSE(operation.Test());
+        }
+        release = true;
+        ready.notify_one();
+    }
+    operation.Wait();
+    const auto read = output.Read();
+    CHECK(read.View()(0, 0) == (rank + 1) % size + .5);
 }
 
 TEST_CASE("DevicePacked is explicit and rejects host endpoints collectively")

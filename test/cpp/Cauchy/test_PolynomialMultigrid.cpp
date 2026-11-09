@@ -212,13 +212,14 @@ TEST_CASE("Coarse FAS rate reuse and fail-fast halos preserve distributed viscou
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 5);
     std::vector<double> reference;
-    for (int variant = 0; variant < 3; ++variant)
+    for (int variant = 0; variant < 4; ++variant)
     {
         const bool reuse = variant != 0;
         auto settings = Controls();
         if (variant == 2)
             settings.execution.transferPreflight = "abortOnFailure";
         settings.implicit.multigrid.reuseCoarseRate = reuse;
+        settings.implicit.multigrid.scratchPool = variant == 3;
         settings.numerics.reconstructionIterations = 2;
         settings.numerics.reconstructionTolerance = 0;
         settings.equation.transport = "NewtonianFourier";
@@ -251,6 +252,14 @@ TEST_CASE("Coarse FAS rate reuse and fail-fast halos preserve distributed viscou
         }(); // Both caller facades expire before cached-rate cycle execution.
         for (int cycle = 0; cycle < 2; ++cycle)
             solver.ApplyCycle(source, 20, .5, .1);
+        const auto [scratchBytes, peakBorrows] = solver.ScratchPoolStatistics();
+        if (variant == 3)
+        {
+            CHECK(scratchBytes == 4 * (state.Owned().Storage().Bytes() + state.Ghost().Storage().Bytes()));
+            CHECK(peakBorrows == 4);
+        }
+        else
+            CHECK(scratchBytes == 0);
         const auto read = state.Owned().Read();
         const auto values = read.View<R::UniformTableRows>();
         DNDS::index entry = 0;
@@ -269,9 +278,11 @@ TEST_CASE("FAS consumes the measured finest VR rate once for field and logical e
     for (bool logical : {false, true})
     {
         std::vector<double> reference;
-        for (bool manual : {false, true})
+        for (int mode : {0, 1, 2})
         {
+            const bool manual = mode == 1;
             auto settings = Controls();
+            settings.implicit.multigrid.scratchPool = mode == 2;
             settings.numerics.faceFallback = false;
             settings.numerics.characteristicLimiter = false;
             settings.numerics.reconstructionIterations = 1;
@@ -324,7 +335,7 @@ TEST_CASE("FAS consumes the measured finest VR rate once for field and logical e
             DNDS::index entry = 0;
             for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
                 for (int j = 0; j < 5; ++j, ++entry)
-                    if (manual)
+                    if (mode != 0)
                         CHECK(values(iCell, j) == doctest::Approx(reference[entry]).epsilon(2e-13));
                     else
                         reference.push_back(values(iCell, j));

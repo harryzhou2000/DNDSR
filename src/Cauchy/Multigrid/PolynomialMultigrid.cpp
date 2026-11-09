@@ -4,6 +4,7 @@
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Solver/FAS.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include "DNDS/Algebra/DofScratchPool.hpp"
 #include "Cauchy/Core/LocalStage.hpp"
 #include <tuple>
 #include <cstdlib>
@@ -68,6 +69,13 @@ namespace DNDS::Cauchy
             using Solver = NonlinearSolver;
             using Workspace = FiniteVolume::Workspace;
             using Report = NonlinearIterationReport;
+            static Algebra::DofBundle Bundle(const State &state)
+            {
+                Algebra::DofBundle fields(state.Space());
+                fields.Add("state", state);
+                return fields;
+            }
+            static State BindScratch(const State &, const Algebra::DofBundle &fields) { return fields.Block("state"); }
             static FlowState Norms(const State &) { return {}; }
             static State NewState(const FiniteVolume &fv, const State &prototype)
             {
@@ -118,6 +126,8 @@ namespace DNDS::Cauchy
             using Solver = EquationNonlinearSolver;
             using Workspace = FiniteVolume::EquationWorkspace;
             using Report = EquationNonlinearIterationReport;
+            static Algebra::DofBundle Bundle(const State &state) { return state.Fields(); }
+            static State BindScratch(const State &prototype, const Algebra::DofBundle &fields) { return prototype.RebindFields(fields); }
             static std::vector<real> Norms(const State &state) { return std::vector<real>(size_t(state.ComponentNumber())); }
             static State NewState(const FiniteVolume &fv, const State &prototype)
             {
@@ -242,6 +252,8 @@ namespace DNDS::Cauchy
             MPIInfo mpi;
             std::vector<std::unique_ptr<Coarse>> coarse;
             std::unique_ptr<Cycle> cycle;
+            std::unique_ptr<Algebra::DofScratchPool> scratchPool;
+            std::vector<std::array<index, 4>> scratchDescriptors;
             std::vector<Level> levelDefinitions;
             std::vector<Transfer> transferDefinitions;
             std::vector<real> smootherCFL, smootherBaseCFL, smootherMaxCFL;
@@ -345,6 +357,29 @@ namespace DNDS::Cauchy
             void BuildCycle()
             {
                 const auto &control = settings.multigrid;
+                typename Cycle::AcquireScratch acquireScratch;
+                if (control.scratchPool)
+                {
+                    scratchPool = std::make_unique<Algebra::DofScratchPool>();
+                    const auto prototype = Profile::Bundle(levelDefinitions.front().state);
+                    for (index slot = 0; slot < 4; ++slot)
+                        scratchPool->Reserve(prototype);
+                    scratchDescriptors.resize(levelDefinitions.size());
+                    for (index level = 0; level < index(levelDefinitions.size()); ++level)
+                    {
+                        const auto &fv = level == 0 ? fine : coarse[level - 1]->discrete;
+                        for (index slot = 0; slot < 4; ++slot)
+                            scratchDescriptors[level][slot] = scratchPool->Prepare(slot, levelDefinitions[level].state.Space(),
+                                                                                   [&](auto &field)
+                                                                                   { return fv.BindHalo(field); });
+                    }
+                    acquireScratch = [this](index level, typename Cycle::ScratchKind kind, index lane)
+                    {
+                        const index slot = 2 * lane + (kind == Cycle::ScratchKind::Residual ? 1 : 0);
+                        auto borrow = std::make_shared<Algebra::DofScratchPool::Borrow>(scratchPool->Acquire(scratchDescriptors[level][slot]));
+                        return typename Cycle::Scratch{Profile::BindScratch(levelDefinitions[level].state, borrow->Fields()), borrow};
+                    };
+                }
                 Multigrid::FASCycleSettings sweeps{control.preSmooth, control.postSmooth, control.coarseSmooth, control.updateComponents};
                 sweeps.preSmoothByLevel.assign(size_t(control.levels), control.preSmooth);
                 sweeps.postSmoothByLevel.assign(size_t(control.levels), control.postSmooth);
@@ -362,13 +397,9 @@ namespace DNDS::Cauchy
                         sweeps.coarseSmooth = (level.preSmooth < 0 ? control.coarseSmooth : level.preSmooth) +
                                               (level.postSmooth < 0 ? 0 : level.postSmooth);
                 }
-                cycle = std::make_unique<Cycle>(levelDefinitions, transferDefinitions,
-                                                std::move(sweeps),
-                                                [this](const auto &run)
-                                                {
-                                                    RunLocalStage(mpi, settings.collectiveChecks, run,
-                                                                  "polynomial multigrid local phase failed");
-                                                });
+                cycle = std::make_unique<Cycle>(levelDefinitions, transferDefinitions, std::move(sweeps), [this](const auto &run)
+                                                { RunLocalStage(mpi, settings.collectiveChecks, run,
+                                                                "polynomial multigrid local phase failed"); }, std::move(acquireScratch));
             }
             void Build(const ssp<Geom::UnstructuredMesh> &mesh, R::EagerEngine &engine, const R::ExecutionStream &stream,
                        const DomainSettings &controls, const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers = std::nullopt)
@@ -604,5 +635,10 @@ namespace DNDS::Cauchy
             _data->SetBoundaryInputs(input);
         else
             _equationData->SetBoundaryInputs(input);
+    }
+    std::pair<size_t, index> PolynomialMultigrid::ScratchPoolStatistics() const
+    {
+        const auto *pool = _data ? _data->scratchPool.get() : _equationData->scratchPool.get();
+        return pool ? std::pair<size_t, index>{pool->RetainedBytes(), pool->PeakBorrows()} : std::pair<size_t, index>{0, 0};
     }
 }

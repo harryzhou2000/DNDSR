@@ -1,5 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
+#include <cstdlib>
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/Simulation.hpp"
@@ -436,6 +437,53 @@ TEST_CASE("Auxiliary provenance and persistent workspaces reject a different row
     values.meanThermodynamics = R::Array<double>::FromStorage(auxLayout, auxBacking.Subspan(auxBytes, auxBytes));
     CHECK_THROWS(fv.ValidateAuxValues(state, values));
 }
+TEST_CASE("Cauchy communication worker preserves nonconstant P3 RHS")
+{
+    int provided = 0;
+    MPI_Query_thread(&provided);
+    if (provided != MPI_THREAD_MULTIPLE)
+    {
+        MESSAGE("communication worker coverage requires DNDS_TEST_COMMUNICATION_WORKER=1 and MPI_THREAD_MULTIPLE");
+        return; // Runtime capability rejection is tested in the transfer suite.
+    }
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 3);
+    std::vector<double> reference;
+    for (bool worker : {false, true})
+    {
+        C::DomainSettings settings;
+        settings.execution.communicationExecution = worker ? "worker" : "caller";
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.reconstructionIterations = 3;
+        settings.numerics.limiter = "WBAP";
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto state = fv.Metrics().BuildField(5), result = fv.Metrics().BuildField(5);
+        {
+            auto write = state.Owned().Write();
+            for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            {
+                const auto center = fv.Metrics().GetCellCent(iCell);
+                const auto value = equation.Gas().Conservative({1 + .05 * std::sin(6.283185307179586 * center[0]), .3, -.1, .2, 1});
+                for (int j = 0; j < 5; ++j)
+                    write.View()(iCell, j) = value[j];
+            }
+        }
+        auto workspace = fv.BuildWorkspace(state);
+        R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateCPUStream();
+        fv.Evaluate(state, result, *workspace, engine, stream);
+        engine.Synchronize();
+        const auto read = result.Owned().Read();
+        for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+                if (worker)
+                    CHECK(read.View()(iCell, j) == reference[size_t(iCell * 5 + j)]);
+                else
+                    reference.push_back(read.View()(iCell, j));
+    }
+}
+
 TEST_CASE("Native Cauchy flow5 residual preserves constant state across layouts reconstruction and workers")
 {
     const auto mesh = CFVTest::CartesianHexes(mpi, 3);
@@ -2154,7 +2202,8 @@ TEST_CASE("Direct FV consumes physical gradients without coefficients and splits
 int main(int argc, char **argv)
 {
     int provided = 0;
-    MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &provided);
+    const int required = std::getenv("DNDS_TEST_COMMUNICATION_WORKER") ? MPI_THREAD_MULTIPLE : MPI_THREAD_FUNNELED;
+    MPI_Init_thread(&argc, &argv, required, &provided);
     mpi.setWorld();
     doctest::Context context;
     context.applyCommandLine(argc, argv);

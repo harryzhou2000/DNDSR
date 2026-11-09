@@ -2,11 +2,65 @@
 #include "doctest.h"
 #include "DNDS/Algebra/DofAlgebra.hpp"
 #include "DNDS/Algebra/DofHalo.hpp"
+#include "DNDS/Algebra/DofScratchPool.hpp"
 #include <atomic>
 #include <thread>
 
 namespace A = DNDS::Algebra;
 namespace R = DNDS::Runtime;
+
+TEST_CASE("Reserved DoF scratch reuses prepared level aliases and communicating slots")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    auto context = std::make_shared<R::CommunicationContext>(MPI_COMM_WORLD);
+    A::DofSpace fine(context, 3, 1, "fine"), coarse(context, 3, 1, "coarse");
+    R::RowTransferPlan route(context, 3, 1, {{(rank + 1) % size, 2, 0}});
+    A::DofBundle prototype(fine);
+    prototype.Add("flow", A::DofField<>(fine, R::RowLayout::Dense(0, 5, 8)));
+    prototype.Add("scalars", A::DofField<>(fine, R::RowLayout::ColMajor(0, 2)));
+    A::DofScratchPool pool;
+    const auto first = pool.Reserve(prototype), second = pool.Reserve(prototype);
+    const auto bind = [&](auto &field)
+    {
+        return R::PayloadPlan(route, field.Owned().Layout(), field.Ghost().Layout(), R::ElementSchema::For<double>()).Bind(field.Owned(), field.Ghost());
+    };
+    const auto fineSlot = pool.Prepare(first, fine, bind), coarseSlot = pool.Prepare(first, coarse, bind), nestedSlot = pool.Prepare(second, coarse, bind);
+    const void *identity = nullptr;
+    for (int epoch = 0; epoch < 2; ++epoch)
+    {
+        auto borrow = pool.Acquire(epoch ? coarseSlot : fineSlot, A::DofScratchPool::Use::Communicating);
+        auto fields = borrow.Fields();
+        CHECK(fields.Space().Same(epoch ? coarse : fine));
+        const auto current = fields.Block("flow").Owned().SharedStorage().get();
+        if (identity)
+            CHECK(current == identity);
+        identity = current;
+        fields.Fill(100 * epoch + rank);
+        {
+            auto nested = pool.Acquire(nestedSlot, A::DofScratchPool::Use::OwnedOnly, A::DofScratchPool::Initialize::ZeroOwned);
+            CHECK_THROWS(pool.Acquire(fineSlot));
+            const auto read = nested.Fields().Block("flow").Owned().Read();
+            CHECK(read.View()(0, 0) == 0);
+        }
+        for (DNDS::index iField = 0; iField < fields.BlockNumber(); ++iField)
+        {
+            auto transfer = borrow.BeginExchange(iField);
+            transfer.Wait();
+            const auto ghost = fields.Block(fields.Name(iField)).Ghost().Read();
+            CHECK(ghost.View<R::UniformTableRows>()(0, 0) == 100 * epoch + (rank + 1) % size);
+        }
+        {
+            const auto read = fields.Block("flow").Owned().Read();
+            CHECK_THROWS(borrow.Release());
+        }
+        borrow.Release();
+    }
+    CHECK(pool.SlotNumber() == 2);
+    CHECK(pool.PeakBorrows() == 2);
+    CHECK(pool.RetainedBytes() > 0);
+}
 
 template <class Field>
 static void Sentinels(Field &field)

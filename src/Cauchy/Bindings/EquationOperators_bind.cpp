@@ -371,6 +371,9 @@ namespace DNDS::Cauchy::Bindings
         },
                  py::arg("source"), py::arg("inverse_dt"), py::arg("rhs_scale"), py::arg("time") = 0,
                  py::arg("stage") = 0, py::arg("pseudo_cfl") = 0, py::call_guard<py::gil_scoped_release>(), Collective)
+            .def(
+                "scratch_pool_statistics", &PolynomialMultigrid::ScratchPoolStatistics,
+                "Reserved DoF payload bytes and peak simultaneous borrowed slots; excludes persistent/reconstruction workspaces.")
             .def("solve", py::overload_cast<const EquationDofs &, real, real, real, int>(&PolynomialMultigrid::Solve),
                  py::arg("source"), py::arg("inverse_dt"), py::arg("rhs_scale"), py::arg("time") = 0,
                  py::arg("stage") = 0, py::call_guard<py::gil_scoped_release>(), Collective);

@@ -86,23 +86,69 @@ namespace DNDS::Multigrid
         using LevelDefinition = StateFASLevel<Field>;
         using TransferDefinition = StateFASTransfer<Field>;
         using LocalStage = std::function<void(const std::function<void()> &)>;
+        enum class ScratchKind
+        {
+            Value,
+            Residual,
+            Correction
+        };
+        struct Scratch
+        {
+            Field field;
+            /// Keeps a reserved borrow alive through all consumers. Synchronous
+            /// callbacks must release numerical views before this scope ends.
+            std::shared_ptr<void> retention;
+        };
+        /// Optional prepared workspace adapter. Lane 0 is the current level,
+        /// lane 1 its child. Acquisitions never span recursive descent.
+        using AcquireScratch = std::function<Scratch(index, ScratchKind, index)>;
 
     private:
         struct Level
         {
             LevelDefinition operation;
-            Field source, value, residual, reference, correction;
+            Field source, reference;
+            std::optional<Field> value, residual, correction;
             std::optional<Field> frozen;
             typename Operations::Binding binding;
-            explicit Level(LevelDefinition input)
-                : operation(std::move(input)), source(Operations::NewVector(operation.state)), value(Operations::NewVector(operation.state)),
-                  residual(Operations::NewVector(operation.state)), reference(Operations::NewVector(operation.state)), correction(Operations::NewVector(operation.state)),
-                  binding(operation.state) {}
+            explicit Level(LevelDefinition input, bool pooled)
+                : operation(std::move(input)), source(Operations::NewVector(operation.state)), reference(Operations::NewVector(operation.state)),
+                  binding(operation.state)
+            {
+                if (!pooled)
+                {
+                    value.emplace(Operations::NewVector(operation.state));
+                    residual.emplace(Operations::NewVector(operation.state));
+                    correction.emplace(Operations::NewVector(operation.state));
+                }
+            }
         };
         std::vector<std::unique_ptr<Level>> _levels;
         std::vector<TransferDefinition> _transfers;
         FASCycleSettings _settings;
         LocalStage _local;
+        AcquireScratch _acquireScratch;
+        Scratch Acquire(index level, ScratchKind kind, index lane)
+        {
+            if (_acquireScratch)
+            {
+                auto result = _acquireScratch(level, kind, lane);
+                Operations::CheckCompatible(result.field, _levels[level]->operation.state);
+                for (const auto &other : _levels)
+                {
+                    Operations::RequireDistinct(result.field, other->operation.state);
+                    Operations::RequireDistinct(result.field, other->source);
+                    Operations::RequireDistinct(result.field, other->reference);
+                    if (other->frozen)
+                        Operations::RequireDistinct(result.field, *other->frozen);
+                }
+                return result;
+            }
+            auto &data = *_levels[level];
+            return {*(kind == ScratchKind::Value ? data.value : kind == ScratchKind::Residual ? data.residual
+                                                                                              : data.correction),
+                    {}};
+        }
         bool _failed = false;
         bool Selected() const { return !_settings.updateComponents.empty(); }
         void SaveFrozen(Level &level)
@@ -149,18 +195,18 @@ namespace DNDS::Multigrid
         {
             level.binding.Check(level.operation.state);
         }
-        void ApplyOperator(Level &level, FASCycleReport &report, bool identityTau = false)
+        void ApplyOperator(Level &level, Field &value, FASCycleReport &report, bool identityTau = false)
         {
             std::optional<typename Operations::Binding> input, output;
             RunLocal([&]
                      {
                 CheckBinding(level);
-                input.emplace(level.operation.state); output.emplace(level.value); });
+                input.emplace(level.operation.state); output.emplace(value); });
             const auto &apply = identityTau ? level.operation.applyForIdentityTau : level.operation.apply;
-            apply(level.operation.state, level.value);
+            apply(level.operation.state, value);
             RunLocal([&]
                      {
-                input->Check(level.operation.state, true); output->Check(level.value); });
+                input->Check(level.operation.state, true); output->Check(value); });
             ++report.operatorEvaluations;
         }
         void Cycle(index level, FASCycleReport &report)
@@ -173,73 +219,83 @@ namespace DNDS::Multigrid
             }
             Relax(level, _settings.preSmoothByLevel.empty() ? _settings.preSmooth : _settings.preSmoothByLevel[level], report);
             auto &transfer = _transfers[level];
-            ApplyOperator(fine, report, transfer.cancelIdentityLinearTerm);
-            if (!transfer.cancelIdentityLinearTerm)
-                RunLocal([&]
-                         { Operations::LinearCombination(fine.residual, real(1), fine.source, real(-1), fine.value); });
             auto &coarse = *_levels[level + 1];
-            transfer.restrictState(fine.operation.state, coarse.operation.state);
-            std::optional<typename Operations::Binding> sourceBinding, differenceBinding;
-            RunLocal([&]
-                     { CheckBinding(coarse); });
-            RunLocal([&]
-                     {
+            {
+                auto fineValue = Acquire(level, ScratchKind::Value, 0);
+                auto fineResidual = Acquire(level, ScratchKind::Residual, 0);
+                auto coarseValue = Acquire(level + 1, ScratchKind::Value, 1);
+                auto coarseResidual = Acquire(level + 1, ScratchKind::Residual, 1);
+                ApplyOperator(fine, fineValue.field, report, transfer.cancelIdentityLinearTerm);
+                if (!transfer.cancelIdentityLinearTerm)
+                    RunLocal([&]
+                             { Operations::LinearCombination(fineResidual.field, real(1), fine.source, real(-1), fineValue.field); });
+                transfer.restrictState(fine.operation.state, coarse.operation.state);
+                std::optional<typename Operations::Binding> sourceBinding, differenceBinding;
+                RunLocal([&]
+                         { CheckBinding(coarse); });
+                RunLocal([&]
+                         {
                 Operations::Copy(coarse.reference, coarse.operation.state);
                 sourceBinding.emplace(coarse.source);
-                if (transfer.cancelIdentityLinearTerm) differenceBinding.emplace(coarse.residual); });
-            ApplyOperator(coarse, report, transfer.cancelIdentityLinearTerm);
-            if (transfer.cancelIdentityLinearTerm)
-            {
-                transfer.restrictResidual(fine.value, coarse.residual);
-                RunLocal([&]
-                         {
-                    differenceBinding->Check(coarse.residual);
-                    Operations::Axpy(coarse.residual, real(-1), coarse.value); });
-                transfer.restrictResidual(fine.source, coarse.source);
-                RunLocal([&]
-                         {
+                if (transfer.cancelIdentityLinearTerm) differenceBinding.emplace(coarseResidual.field); });
+                ApplyOperator(coarse, coarseValue.field, report, transfer.cancelIdentityLinearTerm);
+                if (transfer.cancelIdentityLinearTerm)
+                {
+                    transfer.restrictResidual(fineValue.field, coarseResidual.field);
+                    RunLocal([&]
+                             {
+                    differenceBinding->Check(coarseResidual.field);
+                    Operations::Axpy(coarseResidual.field, real(-1), coarseValue.field); });
+                    transfer.restrictResidual(fine.source, coarse.source);
+                    RunLocal([&]
+                             {
                     sourceBinding->Check(coarse.source);
                     // Form the small spatial difference first, then add the
                     // history source once. Two separate additions to a large
                     // resOther can lose a representable net tau correction.
-                    Operations::Axpy(coarse.source, real(-1), coarse.residual); });
-            }
-            else
-            {
-                transfer.restrictResidual(fine.residual, coarse.source);
-                RunLocal([&]
-                         {
+                    Operations::Axpy(coarse.source, real(-1), coarseResidual.field); });
+                }
+                else
+                {
+                    transfer.restrictResidual(fineResidual.field, coarse.source);
+                    RunLocal([&]
+                             {
                     sourceBinding->Check(coarse.source);
-                    Operations::Axpy(coarse.source, real(1), coarse.value); });
-            }
+                    Operations::Axpy(coarse.source, real(1), coarseValue.field); });
+                }
+            } // Release temporary values before recursive child work.
             // F_c(U_c)=F_c(R U_f)+R(b_f-F_f(U_f)). The entrance reference
             // belongs to the incoming edge and is never overwritten by a
             // recursive child cycle, including in a hierarchy of 3+ levels.
             Cycle(level + 1, report);
-            std::optional<typename Operations::Binding> correctionBinding;
-            RunLocal([&]
-                     {
-                Operations::LinearCombination(coarse.correction, real(1), coarse.operation.state, real(-1), coarse.reference);
-                correctionBinding.emplace(fine.correction); });
-            transfer.prolongCorrection(coarse.correction, fine.correction);
-            RunLocal([&]
-                     {
-                correctionBinding->Check(fine.correction);
-                ProjectCorrection(fine.correction); SaveFrozen(fine); });
-            if (fine.operation.update)
-                fine.operation.update(fine.operation.state, fine.correction);
-            else
+            {
+                auto coarseCorrection = Acquire(level + 1, ScratchKind::Correction, 1);
+                auto fineCorrection = Acquire(level, ScratchKind::Correction, 0);
+                std::optional<typename Operations::Binding> correctionBinding;
                 RunLocal([&]
-                         { Operations::AddSelected(fine.operation.state, fine.correction, _settings.updateComponents); });
+                         {
+                Operations::LinearCombination(coarseCorrection.field, real(1), coarse.operation.state, real(-1), coarse.reference);
+                correctionBinding.emplace(fineCorrection.field); });
+                transfer.prolongCorrection(coarseCorrection.field, fineCorrection.field);
+                RunLocal([&]
+                         {
+                correctionBinding->Check(fineCorrection.field);
+                ProjectCorrection(fineCorrection.field); SaveFrozen(fine); });
+                if (fine.operation.update)
+                    fine.operation.update(fine.operation.state, fineCorrection.field);
+                else
+                    RunLocal([&]
+                             { Operations::AddSelected(fine.operation.state, fineCorrection.field, _settings.updateComponents); });
 
-            RunLocal([&]
-                     { CheckBinding(fine); CheckFrozen(fine); });
+                RunLocal([&]
+                         { CheckBinding(fine); CheckFrozen(fine); });
+            } // Correction remains borrowed through physical PP/update.
             Relax(level, _settings.postSmoothByLevel.empty() ? _settings.postSmooth : _settings.postSmoothByLevel[level], report);
         }
 
     public:
-        StateFASCycle(std::vector<LevelDefinition> levels, std::vector<TransferDefinition> transfers, FASCycleSettings settings = {}, LocalStage local = {})
-            : _transfers(std::move(transfers)), _settings(settings), _local(std::move(local))
+        StateFASCycle(std::vector<LevelDefinition> levels, std::vector<TransferDefinition> transfers, FASCycleSettings settings = {}, LocalStage local = {}, AcquireScratch acquireScratch = {})
+            : _transfers(std::move(transfers)), _settings(settings), _local(std::move(local)), _acquireScratch(std::move(acquireScratch))
         {
             RunLocal([&]
                      {
@@ -261,7 +317,7 @@ namespace DNDS::Multigrid
                     Operations::CheckCompatible(level.state, level.state);
                     for (const auto &existing : _levels)
                         Operations::RequireDistinct(level.state, existing->operation.state);
-                    _levels.push_back(std::make_unique<Level>(std::move(level)));
+                    _levels.push_back(std::make_unique<Level>(std::move(level), bool(_acquireScratch)));
                     if (Selected())
                         _levels.back()->frozen.emplace(Operations::NewVector(_levels.back()->operation.state));
                 }

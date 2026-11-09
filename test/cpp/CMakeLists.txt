@@ -240,6 +240,11 @@ dnds_add_mpi_test(cauchy_equation_dofs "Cauchy/test_EquationDofs.cpp" "cauchy;cf
 dnds_add_unit_test(cauchy_riemann "Cauchy/test_Riemann.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_unit_test(cauchy_riemann_legacy "Cauchy/test_RiemannLegacy.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_finite_volume "Cauchy/test_FiniteVolume.cpp" "cauchy;cfv;geom;dnds")
+if(TEST dnds_cauchy_finite_volume_np2)
+    # Exercise opt-in communication execution without weakening the remaining
+    # FUNNELED test placements or relying on an MPI-vendor environment override.
+    set_property(TEST dnds_cauchy_finite_volume_np2 APPEND PROPERTY ENVIRONMENT "DNDS_TEST_COMMUNICATION_WORKER=1")
+endif()
 dnds_add_mpi_test(cauchy_equation_finite_volume "Cauchy/test_EquationFiniteVolume.cpp" "cauchy;cfv;geom;dnds")
 target_compile_definitions(dnds_test_cauchy_equation_finite_volume PRIVATE DNDS_TEST_SOURCE_ROOT="${PROJECT_SOURCE_DIR}")
 if(DNDS_USE_CANTERA)
