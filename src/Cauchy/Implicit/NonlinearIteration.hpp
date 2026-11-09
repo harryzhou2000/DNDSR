@@ -123,9 +123,16 @@ namespace DNDS::Cauchy::NonlinearDetail
                 report.iterations = iteration;
                 const bool converged = iteration >= std::min(settings.minIterations, limit) &&
                                        (reconstructionTolerance <= 0 || report.reconstructionRelativeUpdate <= reconstructionTolerance) && convergence.Accepted();
+                // Console iteration numbers are one-based. Before-update mode
+                // observes the initial residual at internal index zero; omit
+                // that pre-iteration line so the first reported nonlinear
+                // iteration is the first completed correction.
+                const index reportedIteration = std::max(iteration, index(1));
+                const bool initialBeforeUpdate = !afterUpdate && iteration == 0;
                 if (control.correctionLimit < 0 && settings.consoleInterval > 0 && rank == 0 &&
-                    (iteration % settings.consoleInterval == 0 || converged || iteration == limit))
-                    std::cout << "Cauchy nonlinear stage " << stage << " iteration " << iteration << " residual " << Json(report.residual).dump()
+                    (!initialBeforeUpdate || iteration == limit) &&
+                    (reportedIteration % settings.consoleInterval == 0 || converged || iteration == limit))
+                    std::cout << "Cauchy nonlinear stage " << stage + 1 << " iteration " << reportedIteration << " residual " << Json(report.residual).dump()
                               << " CFL " << report.pseudoCFL << " VR " << report.reconstructionIterations << ':' << report.reconstructionRelativeUpdate << std::endl;
                 if (converged || iteration == limit)
                 {

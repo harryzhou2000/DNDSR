@@ -454,7 +454,7 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(sum.back() > 0 && std::isfinite(sum.back()), "invalid FAS global volume");
                 for (index j = 0; j < index(norms.size()); ++j)
                 {
-                    norms[j] = settings.normOrder == 1 ? sum[j] / sum.back() : std::sqrt(sum[j] / sum.back());
+                    norms[j] = settings.normOrder == 1 ? sum[j] : std::sqrt(sum[j]);
                     DNDS_check_throw_info(std::isfinite(norms[j]), "nonfinite FAS finest residual");
                 }
                 return norms;

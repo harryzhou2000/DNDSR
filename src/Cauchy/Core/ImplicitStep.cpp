@@ -292,7 +292,7 @@ namespace DNDS::Cauchy
                     MPI_Allreduce(MPI_IN_PLACE, sum.data(), int(sum.size()), MPI_DOUBLE, MPI_SUM, mpi.comm);
                     DNDS_check_throw_info(std::isfinite(sum.back()) && sum.back() > 0, "invalid DITR global volume");
                     for (index j = 0; j < index(norms.size()); ++j)
-                        norms[j] = settings.normOrder == 1 ? sum[j] / sum.back() : std::sqrt(sum[j] / sum.back()); }, [&]
+                        norms[j] = settings.normOrder == 1 ? sum[j] : std::sqrt(sum[j]); }, [&]
                                                          {
                     const auto a = _coupledMiddle->reconstruction();
                     const auto b = _equationImplicit ? _equationImplicit->ReconstructionStats() : _implicit->ReconstructionStats();

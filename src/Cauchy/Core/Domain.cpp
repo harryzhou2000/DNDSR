@@ -680,6 +680,8 @@ namespace DNDS::Cauchy
             MPI_Allreduce(MPI_IN_PLACE, result.data() + 2, 2, MPI_DOUBLE, MPI_MIN, comm);
             MPI_Allreduce(MPI_IN_PLACE, result.data() + 4, 1, MPI_DOUBLE, MPI_SUM, comm);
             MPI_Allreduce(MPI_IN_PLACE, result.data() + 13, 1, MPI_DOUBLE, MPI_MIN, comm);
+            // Report the volume-integrated L2 defect. The per-cell division
+            // above forms V_c*r^2, but no global-volume normalization follows.
             result[4] = std::sqrt(result[4]);
             const auto force = _fv.LastBoundaryForce(*_equationObservationWorkspace, forceZones);
             for (int d = 0; d < 3; ++d)
@@ -713,6 +715,8 @@ namespace DNDS::Cauchy
         MPI_Allreduce(MPI_IN_PLACE, result.data() + 2, 2, MPI_DOUBLE, MPI_MIN, comm);
         MPI_Allreduce(MPI_IN_PLACE, result.data() + 4, 1, MPI_DOUBLE, MPI_SUM, comm);
         MPI_Allreduce(MPI_IN_PLACE, result.data() + 13, 1, MPI_DOUBLE, MPI_MIN, comm);
+        // Report the volume-integrated L2 defect, matching Euler's res0
+        // convention rather than a volume-averaged residual.
         result[4] = std::sqrt(result[4]);
         const auto force = _fv.LastBoundaryForce(*_observationWorkspace, forceZones);
         for (int d = 0; d < 3; ++d)

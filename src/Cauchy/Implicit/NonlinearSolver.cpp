@@ -174,7 +174,7 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(std::isfinite(norm[5]) && norm[5] > 0, "invalid global stage volume");
                 for (int j = 0; j < 5; ++j)
                 {
-                    norms[j] = data.settings.normOrder == 1 ? norm[j] / norm[5] : std::sqrt(norm[j] / norm[5]);
+                    norms[j] = data.settings.normOrder == 1 ? norm[j] : std::sqrt(norm[j]);
                     DNDS_check_throw_info(std::isfinite(norms[j]), "nonfinite global stage norm");
                 } };
         const auto reconstruction = [&]

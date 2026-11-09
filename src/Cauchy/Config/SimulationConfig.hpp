@@ -373,8 +373,8 @@ namespace DNDS::Cauchy
             DNDS_FIELD(minIterations, "Minimum corrections before accepting a stage");
             DNDS_FIELD(consoleInterval, "Rank-zero nonlinear residual/VR progress interval; zero disables it");
             DNDS_FIELD(relativeTolerance, "Selected-component stage residual tolerance relative to its configured reference");
-            DNDS_FIELD(absoluteTolerance, "Per-component absolute volume-weighted stage residual tolerance");
-            DNDS_FIELD(normOrder, "Volume-weighted residual norm: 1 or 2");
+            DNDS_FIELD(absoluteTolerance, "Per-component absolute volume-integrated stage residual tolerance");
+            DNDS_FIELD(normOrder, "Volume-integrated residual norm order: 1 or 2");
             DNDS_FIELD(residualReference, "runningMaximum (Euler default) or initial per-component reference within one solve; reset at solve entry");
             DNDS_FIELD(residualComponents, "Named nonlinear and DITR convergence components, e.g. rho, flow.rhou or rhoY:H2. Default [rho]; empty selects all. Names resolve against the equation schema");
             DNDS_FIELD(pseudoCFL, "Initial local pseudo-time CFL for each stage");

@@ -8,6 +8,7 @@
 #include "CartesianFixture.hpp"
 #include <limits>
 #include <cstring>
+#include <sstream>
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
 
 namespace C = DNDS::Cauchy;
@@ -65,6 +66,29 @@ TEST_CASE("Shared nonlinear controller observes coupled updates once and advance
     CHECK(visits == std::vector<int>{0, 1, 2, 3, 0, 1, 2, 3});
     CHECK(cfl == std::vector<double>{1, 2});
     CHECK(report.pseudoCFL == 2);
+}
+TEST_CASE("Cauchy nonlinear progress labels iterations and stage one-based")
+{
+    C::ImplicitSettings settings;
+    settings.iterations = 2;
+    settings.minIterations = 2;
+    settings.consoleInterval = 1;
+    settings.relativeTolerance = 1;
+    settings.absoluteTolerance = 0;
+    const auto schema = C::EquationSystem::Resolve(C::EquationSettings{}).Schema();
+    std::ostringstream captured;
+    auto *const previous = std::cout.rdbuf(captured.rdbuf());
+    const auto report = C::NonlinearDetail::Iterate(settings, schema, mpi.rank, 0, {}, C::NonlinearIterationReport{}, 0, [] {}, [](auto &norms)
+                                                    { norms[0] = 1; }, []
+                                                    { return std::make_pair(0, 0.); }, [](auto &) {});
+    std::cout.rdbuf(previous);
+    CHECK(report.converged);
+    if (mpi.rank == 0)
+    {
+        CHECK(captured.str().find("Cauchy nonlinear stage 1 iteration 1") != std::string::npos);
+        CHECK(captured.str().find("Cauchy nonlinear stage 1 iteration 2") != std::string::npos);
+        CHECK(captured.str().find("iteration 0") == std::string::npos);
+    }
 }
 TEST_CASE("Implicit convergence retains initial and running references without hiding unselected components")
 {
@@ -135,7 +159,15 @@ TEST_CASE("Implicit convergence retains initial and running references without h
 }
 TEST_CASE("Distributed implicit L1 L2 norms and selected-component stops use the actual manufactured defect")
 {
-    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4, 2);
+    constexpr DNDS::real cellVolume = 4. / 16;
+    DNDS::real expectedL1 = 0, expectedL2Squared = 0;
+    for (DNDS::index iCell = 0; iCell < 16; ++iCell)
+    {
+        const DNDS::real defect = cellVolume * .1 * (iCell + 1);
+        expectedL1 += defect;
+        expectedL2Squared += defect * defect / cellVolume;
+    }
     for (int order : {1, 2})
         for (bool densityOnly : {false, true})
         {
@@ -173,7 +205,7 @@ TEST_CASE("Distributed implicit L1 L2 norms and selected-component stops use the
             CHECK(report.iterations == 0);
             CHECK(report.converged == densityOnly);
             CHECK(report.residual[0] == 0);
-            CHECK(report.residual[4] == doctest::Approx(order == 1 ? .85 : std::sqrt(.935)).epsilon(1e-12));
+            CHECK(report.residual[4] == doctest::Approx(order == 1 ? expectedL1 : std::sqrt(expectedL2Squared)).epsilon(1e-12));
             CHECK(report.initialResidual == report.referenceResidual);
             CHECK(report.residualTargetRatio == doctest::Approx(densityOnly ? 0 : 10));
             CHECK(state.Owned().Version() == version);

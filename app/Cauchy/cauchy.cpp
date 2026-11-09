@@ -102,7 +102,7 @@ static int Run(int argc, char **argv, double started)
             std::vector<double> baselines(size_t(domainCount), 0);
             bool reached = false, wallStop = false;
             std::vector<DNDS::Cauchy::PhysicalStepLimit> limits(static_cast<size_t>(domainCount));
-            const auto record = [&](DNDS::real dt, int retries, bool useLimits = false)
+            const auto record = [&](DNDS::real dt, int retries, bool useLimits = false, bool printConsole = true)
             {
                 int allReached = 1;
                 visitDomains([&](DNDS::index iDomain, auto &domain)
@@ -143,7 +143,8 @@ static int Run(int argc, char **argv, double started)
                     append(limit.limitedCells); append(limit.minimumAlpha); append(limit.growthLimited);
                     DNDS_check_throw_info(column == DNDS::index(columns.size()), "Cauchy history field count differs from its header");
                     histories[iDomain]->WriteLine(row, 17);
-                    std::cout << std::setprecision(12) << "Cauchy " << (domainCount == 1 ? "" : domain.Name() + " ") << "step " << domain.Epoch().acceptedStep << " time " << domain.Time() << " dt " << dt
+                    if (printConsole)
+                        std::cout << std::setprecision(12) << "Cauchy " << (domainCount == 1 ? "" : domain.Name() + " ") << "step " << domain.Epoch().acceptedStep << " time " << domain.Time() << " dt " << dt
                               << " residual " << values[4] << " rho_min " << values[2] << " p_min " << values[3] << " VR " << values[8] << ':' << values[9]
                               << " rho L1 " << values[10] << " face fallbacks " << fallbacks << " implicit " << nonlinearIterations << '/' << linearIterations
                               << " target ratio " << implicitRatio << " stage VR " << implicitFinalVRSweeps << ':' << implicitFinalVRUpdate << " wall " << MPI_Wtime() - started << std::endl;
@@ -158,7 +159,9 @@ static int Run(int argc, char **argv, double started)
                 MPI_Allreduce(MPI_IN_PLACE, &allReached, 1, MPI_INT, MPI_MIN, mpi.comm);
                 return bool(allReached);
             };
-            record(0, 0);
+            // The initial state remains in the CSV history, but console
+            // iteration labels begin with the first completed physical step.
+            record(0, 0, false, false);
             for (DNDS::index step = 0; time.finalTime > 0 ? !DNDS::Cauchy::EquationTimeStepper::ReachedTimeTarget(simulation.Time(), time.finalTime) : step < time.steps; ++step)
             {
                 int stop = time.wallSeconds > 0 && MPI_Wtime() - started >= time.wallSeconds;

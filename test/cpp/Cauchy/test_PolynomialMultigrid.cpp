@@ -506,7 +506,7 @@ TEST_CASE("Selected pMG recovers nonconstant principal equations while preservin
             MPI_Allreduce(MPI_IN_PLACE, norms.data(), 6, MPI_DOUBLE, MPI_SUM, mpi.comm);
             C::FlowState result{};
             for (int j = 0; j < 5; ++j)
-                result[j] = std::sqrt(norms[j] / norms[5]);
+                result[j] = std::sqrt(norms[j]);
             return result;
         };
         // Compare the initial equation with the same cold VR guess on both
@@ -751,7 +751,7 @@ TEST_CASE("Logical polynomial FAS recovers nonconstant RANS and reacting mixture
         }
         MPI_Allreduce(MPI_IN_PLACE, norm.data(), int(norm.size()), MPI_DOUBLE, MPI_SUM, mpi.comm);
         for (DNDS::index j = 0; j < state.ComponentNumber(); ++j)
-            CHECK(std::abs(report.residual[j] - std::sqrt(norm[j] / norm.back())) < 1e-7);
+            CHECK(std::abs(report.residual[j] - std::sqrt(norm[j])) < 1e-7);
     }
 }
 TEST_CASE("Equation Domain performs one spatial FAS update per DITR coupled stage and retries exactly")
@@ -773,6 +773,7 @@ TEST_CASE("Equation Domain performs one spatial FAS update per DITR coupled stag
     settings.numerics.positivity = true;
     settings.numerics.reconstructionIterations = 4;
     settings.numerics.reconstructionTolerance = 0;
+    settings.execution.fieldGrouping = "equationBlocks";
     settings.execution.layout = "aosoa32";
     settings.execution.hostThreads = 2;
     settings.implicit.linear.method = "sgs";
