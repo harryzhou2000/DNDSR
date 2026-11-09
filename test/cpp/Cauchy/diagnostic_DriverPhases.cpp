@@ -240,6 +240,31 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
     C::Json resolved = settings;
     if (!mpi.rank)
         std::cout << "BROAD_WORKLOAD " << C::Json{{"cells", counts[0]}, {"np", mpi.size}, {"minimum_owned_cells", counts[1]}, {"maximum_owned_cells", counts[2]}, {"rank_work_columns", {"owned_cells", "ghost_cells", "core_cells", "halo_dependent_cells", "face_incidences", "canonical_faces", "canonical_boundary_faces", "canonical_wall_faces", "canonical_face_quadrature_points", "source_quadrature_points"}}, {"rank_work_rows", rankWork}, {"wall_distance_input", levels ? "actual-production-providers" : "frozen-native-mesh-samples"}, {"raw_wall_provider_difference", wallDifference}, {"native_resolved_settings", resolved}, {"euler_resolved_settings", C::Json(oldConfig)}, {"reconstruction_start", "zero each repetition"}, {"linear_corrections", settings.implicit.linear.iterations}, {"pMG_levels", levels}, {"nonlinear_corrections", corrections}, {"nonlinear_stopping_norm_in_scope", nonlinearController}}.dump() << std::endl;
+    // Record the actual owning rank of each local cell ghost. The trace
+    // below reports single-node chronology; matching these owner counts
+    // to a receiver's wait interval attributes delay to donor ranks
+    // without treating the global arrival extremum as a peer identity.
+    {
+        const auto cells = mesh->Entities(DNDS::Geom::EntityKind::Cell);
+        std::vector<int> localOwners(mpi.size, 0), allOwners(mpi.size * mpi.size, 0);
+        for (I iGhost = 0; iGhost < cells.NumGhost(); ++iGhost)
+        {
+            const auto global = cells.LocalToGlobal(cells.NumOwned() + iGhost);
+            const auto owner = cells.Owner(global);
+            DNDS_check_throw_info(owner >= 0 && owner < mpi.size, "cell ghost owner is outside communicator");
+            ++localOwners[size_t(owner)];
+        }
+        MPI_Allgather(localOwners.data(), mpi.size, MPI_INT, allOwners.data(), mpi.size, MPI_INT, mpi.comm);
+        if (!mpi.rank)
+        {
+            std::vector<C::Json> rows;
+            for (int receiver = 0; receiver < mpi.size; ++receiver)
+                for (int owner = 0; owner < mpi.size; ++owner)
+                    if (allOwners[size_t(receiver * mpi.size + owner)])
+                        rows.push_back(C::Json{receiver, owner, allOwners[size_t(receiver * mpi.size + owner)]});
+            std::cout << "BROAD_GHOST_OWNERS " << C::Json{{"np", mpi.size}, {"columns", {"receiver", "owner", "ghost_rows"}}, {"rows", rows}}.dump() << std::endl;
+        }
+    }
     // Independent untimed spatial check before any state correction. This
     // comparison normalizes through the actual production EvaluateRate block.
     reset();
