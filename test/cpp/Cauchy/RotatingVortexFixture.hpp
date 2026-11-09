@@ -6,15 +6,93 @@
 #include <CGAL/Constrained_Delaunay_triangulation_2.h>
 #include <CGAL/Triangulation_vertex_base_with_info_2.h>
 #include <CGAL/Polygon_2.h>
+#include <random>
 
 namespace CauchyTest
 {
+    enum class VortexPointDistribution
+    {
+        JitteredGrid,
+        PoissonDisk
+    };
+
+    /// Deterministic Bridson sampling at approximately the requested uniform
+    /// spacing. This is serial mesh-generation scratch on the reader only;
+    /// it is not used by distributed closure or ghost building. The bin grid
+    /// makes separation queries local instead of comparing every point pair.
+    inline std::vector<std::array<double, 2>> VortexPoissonPoints(int subdivisions, bool disk)
+    {
+        using I = DNDS::index;
+        constexpr double length = 10, center = 5, radius = 1.5;
+        const double spacing = length / subdivisions, separation = .8 * spacing;
+        const double binWidth = separation / std::sqrt(2.);
+        const int binsPerAxis = int(std::ceil(length / binWidth));
+        std::vector<I> bins(size_t(binsPerAxis) * binsPerAxis, -1), active;
+        std::vector<std::array<double, 2>> points;
+        std::mt19937_64 random(disk ? 202611052 : 202611051);
+        const auto uniform = [&]
+        { return double(random() >> 11) * 0x1.0p-53; };
+        const auto legal = [&](double x, double y)
+        {
+            if (x <= .35 * spacing || x >= length - .35 * spacing || y <= .35 * spacing || y >= length - .35 * spacing)
+                return false;
+            const double distance = std::hypot(x - center, y - center) - radius;
+            return disk ? distance < -.35 * spacing : distance > .35 * spacing;
+        };
+        const auto append = [&](double x, double y)
+        {
+            const I iPoint = I(points.size());
+            points.push_back({x, y});
+            active.push_back(iPoint);
+            bins[I(y / binWidth) * binsPerAxis + I(x / binWidth)] = iPoint;
+        };
+        append(disk ? center : .5 * spacing, disk ? center : .5 * spacing);
+        while (!active.empty())
+        {
+            const I slot = I(random() % uint64_t(active.size()));
+            const auto origin = points[active[slot]];
+            bool inserted = false;
+            for (int attempt = 0; attempt < 30 && !inserted; ++attempt)
+            {
+                const double angle = 2 * std::acos(-1.) * uniform();
+                const double distance = separation * std::sqrt(1 + 3 * uniform());
+                const double x = origin[0] + distance * std::cos(angle), y = origin[1] + distance * std::sin(angle);
+                if (!legal(x, y))
+                    continue;
+                const int bx = int(x / binWidth), by = int(y / binWidth);
+                bool separated = true;
+                for (int iy = std::max(0, by - 2); iy <= std::min(binsPerAxis - 1, by + 2) && separated; ++iy)
+                    for (int ix = std::max(0, bx - 2); ix <= std::min(binsPerAxis - 1, bx + 2); ++ix)
+                    {
+                        const I neighbor = bins[I(iy) * binsPerAxis + ix];
+                        if (neighbor >= 0 && std::hypot(points[neighbor][0] - x, points[neighbor][1] - y) < separation)
+                        {
+                            separated = false;
+                            break;
+                        }
+                    }
+                if (separated)
+                {
+                    append(x, y);
+                    inserted = true;
+                }
+            }
+            if (!inserted)
+            {
+                active[slot] = active.back();
+                active.pop_back();
+            }
+        }
+        return points;
+    }
+
     /// Reproducible P1 constrained-Delaunay disk/outer periodic box. Global
     /// construction scratch exists only on the reader, before native sparse
     /// distribution/partition and final topology assembly. No replicated mesh
     /// is used by ghost building or interface matching.
     inline std::shared_ptr<DNDS::Geom::UnstructuredMesh> VortexPatch(
-        const DNDS::MPIInfo &mpi, bool disk, int subdivisions = 16, int circleSegments = 48)
+        const DNDS::MPIInfo &mpi, bool disk, int subdivisions = 16, int circleSegments = 48,
+        VortexPointDistribution distribution = VortexPointDistribution::JitteredGrid)
     {
         namespace G = DNDS::Geom;
         namespace R = DNDS::Runtime;
@@ -69,7 +147,11 @@ namespace CauchyTest
                         boundary.push_back({edge[i],edge[i+1],zone});
                     }
                 }
-            for(int y=1;y<subdivisions;++y)
+            if (distribution == VortexPointDistribution::PoissonDisk)
+            {
+                for (const auto &point : VortexPoissonPoints(subdivisions, disk)) mesh.insert(K::Point_2(point[0], point[1]));
+            }
+            else for(int y=1;y<subdivisions;++y)
                 for(int x=1;x<subdivisions;++x)
                 {
                     // Fixed analytic jitter avoids a grid-aligned triangulation

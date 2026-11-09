@@ -223,10 +223,11 @@ dnds_add_mpi_test(cauchy_wall_distance "Cauchy/test_WallDistanceSamples.cpp" "ca
 dnds_add_mpi_test(cauchy_rans_fv "Cauchy/test_RANSFiniteVolume.cpp" "cauchy;physics;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_multidomain_mesh "Cauchy/test_MultidomainMesh.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_mpi_test(cauchy_multidomain "Cauchy/test_Multidomain.cpp" "cauchy;cfv;geom;dnds")
-# Fixture-only exact predicates use CGAL's header-only Boost backend, keeping
-# generation independent of optional GMP/MPFR installations.
-target_compile_definitions(dnds_test_cauchy_multidomain_mesh PRIVATE CGAL_CORE_USE_BOOST_BACKEND=1)
-target_compile_definitions(dnds_test_cauchy_multidomain PRIVATE CGAL_CORE_USE_BOOST_BACKEND=1)
+# Fixture-only exact predicates use CGAL's header-only Boost backend. Disable
+# automatic GMP selection too: the CORE setting alone leaves that enabled when
+# GMP/MPFR headers happen to exist, introducing an undeclared link dependency.
+target_compile_definitions(dnds_test_cauchy_multidomain_mesh PRIVATE CGAL_CORE_USE_BOOST_BACKEND=1 CGAL_DISABLE_GMP=1)
+target_compile_definitions(dnds_test_cauchy_multidomain PRIVATE CGAL_CORE_USE_BOOST_BACKEND=1 CGAL_DISABLE_GMP=1)
 dnds_add_mpi_test(cauchy_equation_dofs "Cauchy/test_EquationDofs.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_unit_test(cauchy_riemann "Cauchy/test_Riemann.cpp" "cauchy;cfv;geom;dnds")
 dnds_add_unit_test(cauchy_riemann_legacy "Cauchy/test_RiemannLegacy.cpp" "cauchy;cfv;geom;dnds")
@@ -293,7 +294,7 @@ target_link_libraries(cauchy_benchmark_implicit PRIVATE cauchy cfv geom dnds ${D
 add_executable(cauchy_experiment_multidomain_iv EXCLUDE_FROM_ALL Cauchy/experiment_MultidomainIV.cpp)
 target_include_directories(cauchy_experiment_multidomain_iv PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
 target_link_libraries(cauchy_experiment_multidomain_iv PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-target_compile_definitions(cauchy_experiment_multidomain_iv PRIVATE CGAL_CORE_USE_BOOST_BACKEND=1)
+target_compile_definitions(cauchy_experiment_multidomain_iv PRIVATE CGAL_CORE_USE_BOOST_BACKEND=1 CGAL_DISABLE_GMP=1)
 target_compile_definitions(dnds_test_cauchy_checkpoint PRIVATE DNDS_TEST_SOURCE_ROOT="${PROJECT_SOURCE_DIR}")
 dnds_add_mpi_test(cauchy_jacobian "Cauchy/test_Jacobian.cpp" "cauchy;cfv;geom;dnds")
 add_custom_target(cauchy_unit_tests)
