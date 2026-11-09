@@ -35,7 +35,8 @@ against the optimized parent and the prior audit plans.
 ## Verification ledger
 
 - Fresh CPU configuration: completed; paired build uses canonical externals.
-- First compilation: solver and 17 focused binaries compiled; incremental builds continue.
+- Fresh solver and focused test binaries compiled; affected targets were
+  rebuilt after the production and test follow-ups.
 - Focused np2 CPU gate and affected reruns passed the equation FV (23 cases),
   linear (11), nonlinear (13), CFV facility (9) and reduced SA (1) suites.
   The C++ frontend and unchecked solver-local abort CTests passed at np2.
@@ -78,8 +79,15 @@ against the optimized parent and the prior audit plans.
   32-correction members passed the receipt audit; these are capped trials.
   All 21 full cylinder runs converged. Refactor and integrated Cauchy
   have exact logged histories, linear counts, and stored cylinder fields
-  and wall pressures for all seven policies. The full NACA convergence
-  and the sustained timing check remain separate gates.
+  and wall pressures for all seven policies. The first full NACA policy
+  has the same bitwise field and surface result. The remaining NACA
+  convergence policies still gate release.
+- BSSCA auxiliary, reconstruction/RHS, matrix, linear and whole-window
+  clocks passed the stock numerical gate for 21 cylinder and 21 NACA
+  instrumented members. The 256-correction NACA LU-SGS repeat retained
+  exact work and traces and took 10–12% less nonlinear time than the
+  refactor. The instrumented builds were kept separate from the production
+  timings and from the application and library sources in this branch.
 - Source `7493806b` is the production benchmark pin. The diff from that
   pin through the checkpoint-test follow-up `80720f7b` does not change
   application or library sources. The
@@ -95,8 +103,8 @@ against the optimized parent and the prior audit plans.
 | `de8d66e5` | refactor(audit): share private reductions and encapsulate buffer address queries | Retained AuxiliaryReduction, MeshAdjacencyBindings and Buffer metadata helpers; edits to callers preserve row order and borrow lifetimes. |
 | `88f21255` | test(audit): restore aggregate coverage and separate routine integration costs | Retained CMake aggregate dependency checker, committed split-SOR test, 3D routine/golden split and lazy Geom fixtures; paired configure passed. |
 | `16b9a447` | feat(runtime): make prepared MPI safety agreement an explicit context policy | Adapted setup context to binding Inherit/override; checked and unchecked starts and Cauchy no-extra-Allreduce gate passed. |
-| `b673177c` | feat(cfv): select prepared VR storage by supported operations | Retained ReconstructionCapabilities allocation/entry checks; named metric API independent. Python capability oracle passed; focused C++ complement queued. |
-| `602ac520` | feat(geom): inherit preflight policy through owned mesh preparation | Retained NativeOwnedMeshData context through topology, registry and assembler; paired ghost/payload source reviewed, Geom policy gate queued. |
+| `b673177c` | feat(cfv): select prepared VR storage by supported operations | Retained ReconstructionCapabilities allocation/entry checks; named metric API independent. Python and four focused C++ capability cases passed. |
+| `602ac520` | feat(geom): inherit preflight policy through owned mesh preparation | Retained NativeOwnedMeshData context through topology, registry and assembler; paired ghost/payload source reviewed, Geom policy cases passed at np2 and np4. |
 | `4197fee8` | feat(geom): carry preflight policy through import and mesh transitions | Retained context injection in Cauchy Simulation and native CGNS/OpenFOAM owned preparation/transition; Cauchy frontend np2 passed. |
 | `246c169a` | perf(cfv): qualify capability-selected storage with isolated RSS probes | Retained opt-in CFV storage probe and original isolated RSS receipts; no new RSS timing inferred. |
 | `66994afd` | docs(audit): retain compressed E2 evidence and measured source snapshots | Historical evidence retained; not relabeled as integration validation |
@@ -179,7 +187,7 @@ against the optimized parent and the prior audit plans.
 | `7337156e` | perf(cfv): sample source values and gradients in one pass | Retained bundled value/gradient kernel and fallback; only terminal catch calls added to sampling source. |
 | `11df9b7f` | perf(cauchy): inline bounded six-component evaluated products | Retained six-component evaluated product and selected direct fallback; Jacobian and linear np2 passed. |
 | `314a50e8` | fix(cauchy): restore independent source Jacobian diagnostic | Retained standalone source-Jacobian diagnostic independent of cached RHS gradient; production reuse unchanged. |
-| `f1d6f7ee` | perf(runtime): compact fully static row descriptors | ArrayView header identical to refactor parent. CUDA device 0 and runtime transfer descriptor gates passed; focused CPU descriptor complement queued. |
+| `f1d6f7ee` | perf(runtime): compact fully static row descriptors | ArrayView header identical to refactor parent. CUDA device 0, CPU Runtime Array and distributed row-transfer gates passed. |
 | `e6776121` | perf(cauchy): reuse current direct source gradients | Retained direct-gradient readiness/publication check and source use; no source resampling on current gradients. |
 | `ed3c9fca` | perf(cauchy): share mean thermodynamics in source linearization | Retained mean EOS/source preparation and published ownership, with stale state guards; equation FV np2 passed. |
 | `fffcfbe1` | test(cauchy): trace auxiliary readiness and rank arrival chronology | 4 code/test paths match refactor tip; retained source, no new experiment inferred |
@@ -189,7 +197,7 @@ against the optimized parent and the prior audit plans.
 | `4b693ab2` | perf(cauchy): cache Jacobian column slots | Retained cached column slots in common assembly, now also used by shared evaluated geometry helper; repeated faces remain ordered. |
 | `ebf3d60e` | test(cauchy): record auxiliary ghost donors | 1 code/test paths match refactor tip; retained source, no new experiment inferred |
 | `bdb532be` | docs(cauchy): record auxiliary refresh and Jacobian slot contracts | Retained auxiliary freshness and cached incidence documentation and implementation. |
-| `f6ab39f7` | feat(cauchy): expose flow5 finite-volume profile sampling | Retained flow5 profile hook and distinct gradient scope; standalone profile evidence remains pending. |
+| `f6ab39f7` | feat(cauchy): expose flow5 finite-volume profile sampling | Retained flow5 profile hook and distinct gradient scope. All seven policies passed cylinder stock and supplemental clock checks. |
 | `2d5a0dcd` | fix(cauchy): align residual logging and iteration labels | Retained integrated L1/L2 residuals and one-based labels; plan runner uses new convention and counts the Euler cap sentinel separately. |
 | `b22e69e4` | test(cauchy): retain split-domain IV experiment controls | Retained IV experiment registration/controls; caller adapted to StepResult. No IV work or outputs modified. |
 
@@ -205,11 +213,12 @@ throwing reducer after MPI posting, and unchecked launch rejection. The local
 negative cases removed from the abort fixture have returned to routine tests.
 Normal numerical rejection still uses the explicit `StepResult`.
 
-Earlier focused runs and gate logs are historical; the clarified policy needs
-fresh verification. The CGNS policy case passed after an ignored symlink to
-canonical IV10_2.cgns was supplied. Python bindings built before this correction
-but were not installed or exercised. The plan-repo matrix wrapper was pushed
-at `ef6021f`; matched cluster runs remain unrun.
+Earlier focused runs and gate logs remain historical. The clarified policy
+was verified again as listed above. The CGNS policy case passed after an
+ignored symlink to canonical IV10_2.cgns was supplied. The final Python
+gate includes a rebuild and installation after the production correction.
+The original plan-repo matrix wrapper at `ef6021f` predates the completed
+matched runs and their updated reducers.
 
 
 ## Production solver boundary
@@ -231,5 +240,5 @@ preflight modes and the worker termination. Both standalone np2 unchecked
 launch fixtures also passed. The first legacy Python harness run expected an
 obsolete diagnostic; it passed after requiring the explicit DNDS fatal
 handler and rank-local reason. Evidence: paired build
-`plan57-tests/resumed2/` and `plan57-tests/resumed3/`. Broader Cauchy/CFV,
-Python bindings, and the cluster MG matrices remain separate pending gates.
+`plan57-tests/resumed2/` and `plan57-tests/resumed3/`. The broader Cauchy/CFV
+and Python follow-ups are listed above, separately from the cluster gates.
