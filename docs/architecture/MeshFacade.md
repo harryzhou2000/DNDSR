@@ -149,6 +149,13 @@ access, placement and completion obligations.
 
 ## Mutation, setup and fields
 
+`MeshMutationToken::Run(owner, changes, callback)` executes nested implementation
+work synchronously under its parent mutation. The internal step guard cannot be
+returned or moved into asynchronous work. Exceptions make the parent mutation
+permanently failed even if an intermediate callback catches them. Commit requires
+all nested calls to have returned; destroying a token from inside its callback
+is a fatal lifetime-contract violation.
+
 Tracked facade mutations reject active readers collectively. `MeshEdit` stages
 supported owned coordinate, cell-metadata and neighbor-order edits over native
 buffers. Geometry transforms prepare replacement coordinates. Proper rotation/positive

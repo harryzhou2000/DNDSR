@@ -4,6 +4,7 @@
 #include <exception>
 #include <functional>
 #include <thread>
+#include <utility>
 
 namespace DNDS::Geom
 {
@@ -18,7 +19,8 @@ namespace DNDS::Geom
         size_t _depth = 0;
         bool _failed = false, _closed = false;
 
-    public:
+        // Never expose a movable parent borrow. Only Run constructs this guard,
+        // and its destruction is part of that synchronous call.
         class Step
         {
             MeshMutationToken *_token;
@@ -29,7 +31,7 @@ namespace DNDS::Geom
         public:
             Step(const Step &) = delete;
             Step &operator=(const Step &) = delete;
-            Step(Step &&other) noexcept : _token(other._token), _uncaught(other._uncaught) { other._token = nullptr; }
+            Step(Step &&) = delete;
             ~Step()
             {
                 if (_token)
@@ -39,6 +41,8 @@ namespace DNDS::Geom
                 }
             }
         };
+
+    public:
         MeshMutationToken(const void *owner, Runtime::VersionTracker &versions, Runtime::Change changes,
                           const std::function<void()> &onBegin = {})
             : _owner(owner), _mutation(versions.BeginMutation(changes))
@@ -50,12 +54,24 @@ namespace DNDS::Geom
         }
         MeshMutationToken(const MeshMutationToken &) = delete;
         MeshMutationToken &operator=(const MeshMutationToken &) = delete;
-        Step Enter(const void *owner, Runtime::Change changes)
+        ~MeshMutationToken()
+        {
+            // Destroying the token from inside its own callback is a contract
+            // violation; fail before a guard can dereference a dead parent.
+            if (_depth || std::this_thread::get_id() != _thread)
+                std::terminate();
+        }
+        /// Execute a nested implementation synchronously. The callback must not
+        /// destroy this token or schedule work that borrows it. Nested failure
+        /// is sticky even when an outer callback catches the exception.
+        template <class F>
+        void Run(const void *owner, Runtime::Change changes, F &&implementation)
         {
             DNDS_check_throw_info(!_closed && !_failed && owner == _owner && std::this_thread::get_id() == _thread,
                                   "invalid, failed or foreign mesh mutation capability");
             _mutation.IncludeChanges(changes);
-            return Step(*this);
+            Step step(*this);
+            std::forward<F>(implementation)();
         }
         void Commit()
         {

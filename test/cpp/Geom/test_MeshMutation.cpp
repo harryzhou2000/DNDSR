@@ -73,17 +73,17 @@ TEST_CASE("Failed nested mutation stays failed even when an intermediate caller 
     auto before = versions.Stamp();
     {
         MeshMutationToken token(&owner, versions, R::Change::Geometry);
-        {
-            auto outer = token.Enter(&owner, R::Change::Geometry);
+        token.Run(&owner, R::Change::Geometry, [&]
+                  {
+            CHECK_THROWS(token.Commit()); // The synchronous nested scope is active.
             try
             {
-                auto inner = token.Enter(&owner, R::Change::Layout);
-                throw std::runtime_error("nested write failed");
+                token.Run(&owner, R::Change::Layout, []
+                { throw std::runtime_error("nested write failed"); });
             }
             catch (const std::runtime_error &)
             {
-            }
-        }
+            } });
         CHECK_THROWS(token.Commit());
     }
     CHECK_FALSE(before.Valid());
