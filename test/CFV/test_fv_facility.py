@@ -115,7 +115,7 @@ def test_reconstruction_shared_buffers_explicit_halo_and_point_sampling(cache_en
     assert CFV.FVField is R.Algebra.DoubleDofField
     assert shared_mean.identity == mean.owned.identity
     options = R.TransferOptions()
-    assert options.preflight == R.TransferPreflight.Collective
+    assert options.preflight == R.TransferPreflight.Inherit
     options.preflight = R.TransferPreflight.AbortOnFailure
     metrics.BindHalo(mean, options).begin().wait()
     halo = metrics.BindHalo(work.coefficients)

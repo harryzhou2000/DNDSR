@@ -29,7 +29,7 @@ def test_configured_rans_fields_wall_setup_implicit_restart_and_output(tmp_path,
                      "rans": {"model": "SA", "viscosityReference": .01}},
         "initialPrimitive": [1, 0, 0, 0, 1],
         "initialRANS": {"rhoNuTilde": .02},
-        "execution": {"layout": "soa", "hostThreads": 2, "overlap": True},
+        "execution": {"layout": "soa", "fieldGrouping": "equationBlocks", "hostThreads": 2, "overlap": True},
         "numerics": {"reconstruction": "constant", "limiter": "none", "faceFallback": False,
                      "viscousGradient": "polynomial", "positivity": True},
         # Unit-density BDF residual subtracts O(1/dt)=1e6 terms: allow a
@@ -110,7 +110,7 @@ def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_p
             "mechanismFile": str(mechanism), "rho0": 1.225, "U0": 340, "L0": 2, "T0": 288.15}},
         "initialPrimitive": [.8, 0, 0, 0, 1], "initialTemperature": 1400 / 288.15,
         "initialMassFractions": {"H2": .027, "O2": .22, "H2O": .02},
-        "execution": {"layout": "soa", "hostThreads": 2, "overlap": True},
+        "execution": {"layout": "soa", "fieldGrouping": "equationBlocks", "hostThreads": 2, "overlap": True},
         "numerics": {"reconstruction": "constant", "faceFallback": False, "positivity": True},
         # RHS PP tests residual*dTau, as in Euler. A huge pseudo-CFL makes
         # that hypothetical explicit chemistry update inadmissible even when

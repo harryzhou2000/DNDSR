@@ -18,12 +18,13 @@ from DNDSR.DNDS import Runtime as R
 from DNDSR import Cauchy as C
 
 
-def block_values(state):
-    fields = state.fields
+def block_values(state, physical_values=None):
+    if physical_values is None:
+        physical_values = {name: field.owned.numpy() for name, field in state.fields.items()}
     values = {}
     for block in state.blocks:
         name, first, width = state.locate_block(block)
-        values[block] = fields[name].owned.numpy()[:, first:first + width]
+        values[block] = physical_values[name][:, first:first + width]
     return values
 
 
@@ -95,7 +96,9 @@ def test_equation_operator_frontend_composes_native_residual_and_linear_solve(mi
                 for j in range(field.components):
                     field.owned[i_cell, j] *= scale
         prototype.copy_from(state)
-        reference = {name: array.numpy() for name, array in domain.residual_fields().items()}
+        # The default Domain uses one physical table for the mixture. Compare
+        # logical blocks against the explicitly split/permuted operator state.
+        reference = block_values(prototype, {name: array.numpy() for name, array in domain.residual_fields().items()})
         owner = weakref.ref(domain)
         del domain
         gc.collect()
