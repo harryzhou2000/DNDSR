@@ -41,6 +41,14 @@ compare equal. Existing step, restart, pMG, PP and multidomain tests now
 require an accepted result before checking or committing the state. Their
 numerical-rejection and exceptional-validation tests are separate and
 unchanged. This is a test-only correction to the frozen production source.
+The checkpoint rerun exposed another old layout assumption: the test used
+physical field 1 to block a rank-local species write. The default coupled
+layout has one field, so rank 0 threw before peers reached the same checkpoint
+call. The test now resolves the logical species block on every rank, then holds
+the matching allocation on rank 0 to preserve the intended rejection oracle.
+The RANS restart fixture now selects split SoA on the writer and coupled
+AoSoA on the reader explicitly. This exercises both a physical grouping
+conversion and a layout conversion without treating either layout as default.
 
 The audit also found an extra safety reduction in tracked halo construction.
 `DofHalo` now uses the route's setup policy for the local compatibility

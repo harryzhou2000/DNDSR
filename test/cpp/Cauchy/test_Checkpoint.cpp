@@ -201,9 +201,10 @@ TEST_CASE("Mixture BDF2 restart restores species history and warm reconstruction
     settings.execution.layout = "aosoa32";
     C::Domain restored("mixture", mesh, settings, time);
     const auto before = restored.Dofs().Clone();
+    const auto speciesField = restored.Dofs().LocateBlock("species").physicalField;
     std::optional<R::Array<double>::ReadLease> held;
     if (mpi.rank == 0)
-        held.emplace(restored.Dofs().PhysicalField(1).Owned().Read());
+        held.emplace(restored.Dofs().PhysicalField(speciesField).Owned().Read());
     CHECK_THROWS(restored.ReadCheckpoint(path, metadata));
     CompareEquation(restored.Dofs(), before);
     CHECK(restored.Time() == 0);
@@ -391,6 +392,7 @@ TEST_CASE("Configured RANS BDF2 restores all fields across layouts and rejects c
             settings.numerics.ransState.referenceConservative = settings.initialRANS;
         }
         settings.execution.layout = "soa";
+        settings.execution.fieldGrouping = "equationBlocks";
         settings.execution.hostThreads = 2;
         settings.numerics.reconstruction = "variational";
         settings.numerics.cfv.maxOrder = 2;
@@ -452,7 +454,9 @@ TEST_CASE("Configured RANS BDF2 restores all fields across layouts and rejects c
             CHECK(H5Awrite(attribute, type, olderModel.data()) >= 0);
             H5Tclose(type); H5Aclose(attribute); H5Fclose(file); });
         settings.execution.layout = "aosoa32";
+        settings.execution.fieldGrouping = "coupled";
         C::Domain restored("sa", mesh, settings, time);
+        CHECK(restored.Dofs().PhysicalFieldNumber() == 1);
         restored.ReadCheckpoint(path, metadata);
         const auto compare = [&](double tolerance)
         {

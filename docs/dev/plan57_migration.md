@@ -1,7 +1,9 @@
 # Plan 57 integration ledger
 
-Status: **source integrated; acceptance in progress**. Source candidate
-`0e1111747f7d51c3e767816d5b2786bc57bdb475`. Source parents: audit
+Status: **source integrated; acceptance in progress**. Merge
+`0e1111747f7d51c3e767816d5b2786bc57bdb475`; BSSCA source candidate
+`7493806bb90f436316e9cc17855abd59497cef90` includes the tracked halo audit
+follow-up. Source parents: audit
 `c036961f1977a11880975f5c19212a3b777db5ef`, refactor
 `b22e69e43657f2fe7d1e4f1aa054782d2c8f7cc7`; common base `aec8d0e4`.
 Implementation lives in the isolated `codex/cauchy-audit-integration` worktree.
@@ -43,6 +45,20 @@ against the optimized parent and the prior audit plans.
 - Numerical rejection returns `StepResult { accepted, reason }` through
   Domain/Simulation/C++ frontend/Python. Actual failures never drive dt retry.
   Runtime and production fatal subprocess results are recorded below.
+- The compact CPU complement passed Runtime Array (31 cases), Cauchy
+  boundary inputs (two per rank), CFV capabilities (four per rank), Euler SST
+  and RANS (four), and Geom policy np2/4 (four per rank). The first Geom
+  invocation lacked the canonical UniformSquare fixture; the unchanged binary
+  passed after it was linked into the isolated tree. Receipts:
+  `plan57-tests/acceptance-compact/`.
+- The tracked-halo change passes the full finite-volume np2 suite (39 cases
+  per rank) at source `7493806b`; the PMPI case confirms equal ordinary and
+  tracked setup counts with checks off and two numerical reductions during
+  P3 RHS evaluation at np2 and np4. The StepResult gate passed eight
+  distributed suites on its first run; checkpoint passed all 13 cases at
+  np2 after correcting its stale field assumptions. The tooling tests pass
+  22/22. Receipts: `plan57-tests/{step-result-gate,dofhalo-gate,final-audit}/`
+  and `plan57-tests/source-audit-tooling.log`.
 - Python modules rebuilt and installed. The focused np2 rerun passed per rank:
   CFV 13 (four NCCL skips), Cauchy Domain 23, Cauchy operators two.
   `plan57-tests/python-callers-fixed/` retains the logs. The old default-policy
