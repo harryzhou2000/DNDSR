@@ -187,6 +187,18 @@ publish incomplete state. Do not catch-and-continue such a distributed failure.
 Required routing/count/schema/binding-control and numerical collectives remain.
 Policy replacement requires a coordinated, drained preparation boundary.
 
+Communicator lifetime is independent of that policy. `Adopt(comm)` consumes a
+new split/duplicated communicator and clears the input handle; it rejects
+predefined WORLD/SELF. `Duplicate(comm)` explicitly creates an isolated MPI
+namespace (the raw constructor retains this compatibility behavior).
+`WithPreflight(enabled)` is a collective setup operation which shares the
+existing communicator **and tag reservations**, with a separately immutable
+policy. It does not create an independent message namespace. Retained contexts
+must be released on an MPI-permitted thread after requests drain and before
+MPI finalization. Entity descriptors attached with `WithCommunication` use
+that retained communicator for later collectives; raw descriptors still require
+the caller to keep their communicator alive.
+
 `TransferGroup(context, bindings)` is an opt-in CPU persistent-MPI assessment
 path. It retains the exact member bindings and separate messages/tags; it does
 not coalesce physical fields. All ranks pass the same ordered member tags at

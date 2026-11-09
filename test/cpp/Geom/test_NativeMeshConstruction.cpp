@@ -493,6 +493,42 @@ TEST_CASE("Requested native wall distance is validated exposed and protected")
     CHECK_THROWS(values.Write());
 }
 
+TEST_CASE("Native mesh and entity descriptors retain their managed communicator")
+{
+    MPI_Comm raw = MPI_COMM_NULL;
+    MPI_Comm_dup(MPI_COMM_WORLD, &raw);
+    const MPIInfo mpi(raw);
+    auto communication = R::CommunicationContext::Duplicate(raw);
+    NativeTriangle input(mpi);
+    for (auto &[kind, space] : input.spaces)
+        space = space.WithCommunication(communication);
+    auto state = NativeMeshState::FromNative(mpi, std::move(input.data), input.spaces, input.ids, MeshReadRequirements::Primary());
+    auto mesh = UnstructuredMesh::FromNative(mpi, state);
+    int relation = MPI_UNEQUAL;
+    MPI_Comm_compare(mesh->getMPI().comm, communication->Communicator(), &relation);
+    CHECK(relation == MPI_IDENT);
+    communication.reset();
+    state.reset();
+    input.spaces.clear();
+    MPI_Comm_free(&raw);
+    // Both operations communicate after the original external handle is gone.
+    {
+        const auto nodes = mesh->Entities(EntityKind::Node);
+        const auto cells = nodes.CreateSibling(EntityKind::Cell, 2);
+        CHECK(cells.NumOwned() == 2);
+        CHECK(nodes.WithGhosts({}).NumGhost() == 0);
+    }
+    // Replacing managed state with a raw/caller-managed publication must not
+    // drop the last owner of the facade's already selected MPIInfo handle.
+    const auto world = NativeMPI();
+    NativeTriangle replacement(world);
+    mesh->ReplaceNativeForSetup(NativeMeshState::FromNative(world, std::move(replacement.data), replacement.spaces,
+                                                            replacement.ids, MeshReadRequirements::Primary()));
+    int rankSum = 0;
+    MPI_Allreduce(&mesh->getMPI().rank, &rankSum, 1, MPI_INT, MPI_SUM, mesh->getMPI().comm);
+    CHECK(rankSum == mpi.size * (mpi.size - 1) / 2);
+}
+
 TEST_CASE("Native entity spaces support remote node-star discovery without a legacy mesh")
 {
     const auto mpi = NativeMPI();

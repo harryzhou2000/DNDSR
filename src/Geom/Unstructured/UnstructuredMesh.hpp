@@ -42,6 +42,9 @@ namespace DNDS::Geom
     private:
         std::shared_ptr<const uint8_t> _entityIdentity = std::make_shared<const uint8_t>(0);
         std::shared_ptr<const UnstructuredMeshState> _nativeState;
+        // Keep the facade's raw MPIInfo handle alive independently of state
+        // replacement, including replacement by a caller-managed publication.
+        std::shared_ptr<Runtime::CommunicationContext> _mpiOwner;
         std::shared_ptr<const NativeSmoothingWorkspace> _nativeSmoothing;
         friend class UnstructuredMeshState;
         friend class MeshEdit;

@@ -83,6 +83,9 @@ namespace DNDS::Geom
         DNDS_check_throw_info(context, "mesh preparation needs an explicit communication context");
         CheckCommunicator(context->Communicator(), _mpi.comm);
         auto result = *this;
+        // Numbering maps contain rank indices, not MPI handles. Congruence
+        // preserves them; future collectives must use the retained resource.
+        result._mpi = MPIInfo(context->Communicator());
         result._communication = std::move(context);
         return result;
     }

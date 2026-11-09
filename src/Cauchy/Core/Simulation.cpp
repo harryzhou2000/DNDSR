@@ -9,7 +9,8 @@ namespace DNDS::Cauchy
 {
     namespace
     {
-        ssp<Geom::UnstructuredMesh> ReadMesh(const DomainConfig &domain, const MPIInfo &mpi)
+        ssp<Geom::UnstructuredMesh> ReadMesh(const DomainConfig &domain, const MPIInfo &mpi,
+                                             const std::shared_ptr<Runtime::CommunicationContext> &domainCommunication)
         {
             DNDS_check_throw_info(!domain.settings.mesh.file.empty(), "Cauchy mesh path is empty");
             Geom::PartitionOptions partition;
@@ -29,7 +30,7 @@ namespace DNDS::Cauchy
                     periodic->frames.translation[d + 1].map()[d] = domain.settings.mesh.periodicLengths[d];
                 }
             }
-            auto communication = std::make_shared<Runtime::CommunicationContext>(mpi.comm, domain.settings.implicit.collectiveChecks);
+            auto communication = domainCommunication->WithPreflight(domain.settings.implicit.collectiveChecks);
             auto owned = Geom::ReadAndDeriveNativeMeshFromCGNSOwned(mpi, domain.settings.mesh.dimension, domain.settings.mesh.file,
                                                                     partition, mapper, periodic, domain.settings.mesh.elevation, domain.settings.mesh.bisect, 0, Geom::MeshAuditOptions{}, communication);
             Geom::PrepareMeshOptions prepare;
@@ -45,7 +46,7 @@ namespace DNDS::Cauchy
         {
             const auto &domain = _config.Domains()[iDomain];
             const MPIInfo mpi(_placement.Context(iDomain)->Communicator());
-            auto mesh = factory ? factory(iDomain, domain, mpi) : ReadMesh(domain, mpi);
+            auto mesh = factory ? factory(iDomain, domain, mpi) : ReadMesh(domain, mpi, _placement.Context(iDomain));
             _domains[iDomain] = std::make_unique<Domain>(domain.placement.name, std::move(mesh), domain.settings, _config.Time());
         }
         if (!_config.Interfaces().empty())

@@ -18,7 +18,7 @@ namespace DNDS::Cauchy
     {
         DNDS_check_throw_info(simulation != MPI_COMM_NULL, "Cauchy needs a simulation communicator");
         auto state = std::make_shared<State>();
-        state->control = std::make_shared<Runtime::CommunicationContext>(simulation);
+        state->control = Runtime::CommunicationContext::Duplicate(simulation);
         MPI_Comm_rank(simulation, &state->rank);
         MPI_Comm_size(simulation, &state->size);
         int valid = !groups.empty();
@@ -48,9 +48,7 @@ namespace DNDS::Cauchy
             const auto member = found != group.ranks.end();
             MPI_Comm domain = MPI_COMM_NULL;
             MPI_Comm_split(simulation, member ? 0 : MPI_UNDEFINED, member ? int(found - group.ranks.begin()) : 0, &domain);
-            state->contexts.push_back(member ? std::make_shared<Runtime::CommunicationContext>(domain) : nullptr);
-            if (member)
-                MPI_Comm_free(&domain);
+            state->contexts.push_back(member ? Runtime::CommunicationContext::Adopt(domain) : nullptr);
         }
         state->groups = std::move(groups);
         _state = std::move(state);

@@ -256,6 +256,31 @@ TEST_CASE("Optional collective preflight removes only successful launch reductio
     MPI_Comm_free(&comm);
 }
 
+TEST_CASE("Communication context adoption and policy aliases retain one resource and tag namespace")
+{
+    MPI_Comm raw = MPI_COMM_NULL;
+    MPI_Comm_dup(MPI_COMM_WORLD, &raw);
+    const MPI_Comm adopted = raw;
+    auto owner = CommunicationContext::Adopt(raw);
+    CHECK(raw == MPI_COMM_NULL);
+    auto alias = owner->WithPreflight(false);
+    CHECK(owner->SharesResource(*alias));
+    CHECK(owner->ChecksCollectivePreflight());
+    CHECK_FALSE(alias->ChecksCollectivePreflight());
+    int comparison = MPI_UNEQUAL;
+    MPI_Comm_compare(adopted, alias->Communicator(), &comparison);
+    CHECK(comparison == MPI_IDENT);
+    auto reservation = owner->Reserve(71);
+    CHECK_THROWS(alias->Reserve(71));
+    owner.reset();
+    int size = 0, sum = 0, one = 1;
+    MPI_Comm_size(alias->Communicator(), &size);
+    MPI_Allreduce(&one, &sum, 1, MPI_INT, MPI_SUM, alias->Communicator());
+    CHECK(sum == size);
+    reservation.reset();
+    CHECK_NOTHROW(alias->Reserve(71));
+}
+
 TEST_CASE("Communication context agrees its immutable safety policy before preparing routes")
 {
     int rank = 0, size = 0;

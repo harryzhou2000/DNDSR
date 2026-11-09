@@ -36,7 +36,10 @@ namespace DNDS::CFV
         const int intOrder = options.integrationOrder;
         const int faceIntOrder = options.faceIntegrationOrder ? options.faceIntegrationOrder : intOrder;
         const bool axisymmetric = options.axisymmetric;
-        auto communication = std::make_shared<R::CommunicationContext>(mpi.comm, options.collectivePreflight);
+        const auto meshCommunication = mesh->PreparationCommunication();
+        auto communication = meshCommunication
+                                 ? meshCommunication->WithPreflight(options.collectivePreflight)
+                                 : R::CommunicationContext::Duplicate(mpi.comm, options.collectivePreflight);
         std::shared_ptr<Detail::FiniteVolumeData> data;
         // All local allocation/geometry failures agree before the halo collective.
         communication->LocalStage([&]
@@ -197,7 +200,7 @@ namespace DNDS::CFV
         return FiniteVolumeRead(_data);
     }
     index FiniteVolumePlan::NumCell() const { return _data->cells.NumOwned(); }
-    MPI_Comm FiniteVolumePlan::Communicator() const { return _data->mesh->getMPI().comm; }
+    MPI_Comm FiniteVolumePlan::Communicator() const { return _data->communication->Communicator(); }
     index FiniteVolumePlan::NumCellProc() const { return _data->cells.NumLocal(); }
     index FiniteVolumePlan::NumFaceProc() const { return _data->faceOffsets.RowCount() - 1; }
     int FiniteVolumePlan::Dimension() const { return _data->dim; }

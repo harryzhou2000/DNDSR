@@ -20,7 +20,6 @@ namespace DNDS::Runtime
         {
             MPI_Comm comm = MPI_COMM_NULL;
             int tagLimit = 0;
-            bool collectivePreflight = true;
             std::mutex mutex;
             std::map<int, std::weak_ptr<const int>> tags;
             ~State()
@@ -34,34 +33,67 @@ namespace DNDS::Runtime
             }
         };
         std::shared_ptr<State> _state;
+        bool _collectivePreflight = true;
+        static void ReadTagLimit(State &state)
+        {
+            int flag = 0;
+            int *limit = nullptr;
+            DNDS_check_throw_info(MPI_Comm_get_attr(state.comm, MPI_TAG_UB, &limit, &flag) == MPI_SUCCESS,
+                                  "cannot query communication tag limit");
+            // Split/SELF communicators need not carry predefined attributes.
+            state.tagLimit = flag && limit ? *limit : 32767;
+        }
+        CommunicationContext(std::shared_ptr<State> state, bool collectivePreflight)
+            : _state(std::move(state)), _collectivePreflight(collectivePreflight)
+        {
+            CommunicationDetail::AgreePolicy(_state->comm, collectivePreflight);
+        }
 
     public:
-        /// Immutable safety policy, agreed once at collective construction.
+        /// Explicitly duplicate a raw communicator into an isolated namespace.
+        /// Retained for source compatibility; managed consumers should share
+        /// the existing context instead. Immutable safety policy is agreed once.
         /// Replacing it requires a coordinated, drained preparation boundary.
         /// Disabled mode retains local checks but aborts on local rejection;
         /// rank-asymmetric exceptions are recoverable only in enabled mode.
         explicit CommunicationContext(MPI_Comm comm, bool collectivePreflight = true)
-            : _state(std::make_shared<State>())
+            : _state(std::make_shared<State>()), _collectivePreflight(collectivePreflight)
         {
             DNDS_check_throw_info(comm != MPI_COMM_NULL, "communication context needs a communicator");
             DNDS_check_throw_info(MPI_Comm_dup(comm, &_state->comm) == MPI_SUCCESS,
                                   "cannot duplicate communication context");
             CommunicationDetail::AgreePolicy(_state->comm, collectivePreflight);
-            _state->collectivePreflight = collectivePreflight;
-            int flag = 0;
-            int *limit = nullptr;
-            DNDS_check_throw_info(MPI_Comm_get_attr(_state->comm, MPI_TAG_UB, &limit, &flag) == MPI_SUCCESS,
-                                  "cannot query communication tag limit");
-            // World-model predefined attributes need not be present on SELF
-            // or split communicators. MPI guarantees tags through 32767 even
-            // when the communicator does not carry this environment attribute.
-            _state->tagLimit = flag && limit ? *limit : 32767;
+            ReadTagLimit(*_state);
         }
+        /// Consume a newly created communicator exactly once, without dup/free.
+        /// The input becomes MPI_COMM_NULL. Never adopt WORLD/SELF. All members
+        /// call together; downstream copies retain the actual resource owner.
+        static std::shared_ptr<CommunicationContext> Adopt(MPI_Comm &comm, bool collectivePreflight = true)
+        {
+            DNDS_check_throw_info(comm != MPI_COMM_NULL && comm != MPI_COMM_WORLD && comm != MPI_COMM_SELF,
+                                  "adoption requires a new, non-predefined communicator");
+            auto state = std::make_shared<State>();
+            state->comm = std::exchange(comm, MPI_COMM_NULL);
+            ReadTagLimit(*state);
+            return std::shared_ptr<CommunicationContext>(new CommunicationContext(std::move(state), collectivePreflight));
+        }
+        static std::shared_ptr<CommunicationContext> Duplicate(MPI_Comm comm, bool collectivePreflight = true)
+        {
+            return std::make_shared<CommunicationContext>(comm, collectivePreflight);
+        }
+        /// Collective setup boundary: change policy while sharing communicator
+        /// lifetime AND tag reservations. Drain earlier work before changing the
+        /// execution policy. This is not an independent message namespace.
+        std::shared_ptr<CommunicationContext> WithPreflight(bool collectivePreflight) const
+        {
+            return std::shared_ptr<CommunicationContext>(new CommunicationContext(_state, collectivePreflight));
+        }
+        bool SharesResource(const CommunicationContext &other) const { return _state == other._state; }
         MPI_Comm Communicator() const { return _state->comm; }
-        bool ChecksCollectivePreflight() const { return _state->collectivePreflight; }
+        bool ChecksCollectivePreflight() const { return _collectivePreflight; }
         void Preflight(bool valid, const char *message) const
         {
-            CommunicationDetail::Preflight(valid, _state->comm, _state->collectivePreflight, message);
+            CommunicationDetail::Preflight(valid, _state->comm, _collectivePreflight, message);
         }
         /// Local-only preparation followed by optional agreement. Do not put
         /// collectives inside run; each rank must enter this phase in order.
@@ -69,7 +101,7 @@ namespace DNDS::Runtime
         template <class F>
         void LocalStage(F &&run, const char *message = "communication preparation failed on a rank") const
         {
-            CommunicationDetail::LocalStage(_state->comm, _state->collectivePreflight,
+            CommunicationDetail::LocalStage(_state->comm, _collectivePreflight,
                                             std::forward<F>(run), message);
         }
         /// Local reservation. The binding collectively checks success before it

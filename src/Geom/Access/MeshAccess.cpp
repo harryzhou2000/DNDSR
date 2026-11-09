@@ -320,7 +320,10 @@ namespace DNDS::Geom
         state->Validate();
         const auto nodes = state->Entities(EntityKind::Node);
         EntitySpace::CheckCommunicator(nodes._mpi.comm, mpi.comm);
-        auto result = std::make_shared<UnstructuredMesh>(mpi, state->BorrowHostView().Dimension());
+        const auto communication = state->PreparationCommunication();
+        const auto retainedMPI = communication ? MPIInfo(communication->Communicator()) : mpi;
+        auto result = std::make_shared<UnstructuredMesh>(retainedMPI, state->BorrowHostView().Dimension());
+        result->_mpiOwner = communication;
         result->_entityIdentity = nodes._identity;
         result->isPeriodic = state->BorrowHostView().IsPeriodic();
         result->periodicInfo = state->BorrowHostView().Periodic();
@@ -339,6 +342,7 @@ namespace DNDS::Geom
         std::shared_ptr<const uint8_t> identity;
         Periodicity periodic;
         bool nextPeriodic = false;
+        MPIInfo nextMPI = mpi;
         std::string signature;
         FieldTransferDetail::LocalStage(mpi, communication, [&]
                                         {
@@ -348,6 +352,8 @@ namespace DNDS::Geom
             DNDS_check_throw_info(actualRank == mpi.rank && actualSize == mpi.size && source,
                                   "native setup replacement requires valid MPIInfo and source");
             source->Validate();
+            if (communication)
+                nextMPI = MPIInfo(communication->Communicator());
             const auto nodes = source->Entities(EntityKind::Node);
             EntitySpace::CheckCommunicator(nodes._mpi.comm, mpi.comm);
             const auto &view = source->BorrowHostView();
@@ -399,6 +405,9 @@ namespace DNDS::Geom
         _entityIdentity = std::move(identity);
         isPeriodic = nextPeriodic;
         periodicInfo = periodic;
+        mpi = nextMPI;
+        if (communication)
+            _mpiOwner = communication;
         _nativeState = std::move(prepared);
         _nativeSmoothing.reset();
         node2bndNode.clear();

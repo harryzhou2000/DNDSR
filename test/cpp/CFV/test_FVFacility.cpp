@@ -43,6 +43,27 @@ static DNDS::real Polynomial(const tPoint &p, int degree)
         v += .02 * p[0] * p[0] * p[1] - .03 * p[1] * p[1] * p[1];
     return v;
 }
+TEST_CASE("FV metrics share managed mesh communication with independent preflight policy")
+{
+    auto communication = R::CommunicationContext::Duplicate(mpi.comm);
+    AutoAppendName2ID names;
+    auto owned = ReadAndDeriveNativeMeshFromCGNSOwned(mpi, 2, MeshPath("Uniform_3x3_wall.cgns"), {}, [&](const std::string &name)
+                                                      { return names(name); }, {}, 0, 0, 0, {}, communication);
+    PrepareMeshOptions prepare;
+    prepare.buildSerialOut = false;
+    auto mesh = UnstructuredMesh::FromNative(mpi, PrepareNativeMeshForSolverOwned(std::move(owned), mpi, prepare));
+    REQUIRE(mesh->PreparationCommunication());
+    C::FiniteVolumeMetricOptions options;
+    options.collectivePreflight = false;
+    const auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh, options);
+    CHECK(metrics.Communication()->SharesResource(*communication));
+    CHECK_FALSE(metrics.Communication()->ChecksCollectivePreflight());
+    CHECK(communication->ChecksCollectivePreflight());
+    int comparison = MPI_UNEQUAL;
+    MPI_Comm_compare(metrics.Communicator(), communication->Communicator(), &comparison);
+    CHECK(comparison == MPI_IDENT);
+}
+
 TEST_CASE("Midpoint face publication preserves integrated measures and cell metrics")
 {
     for (const bool curved : {false, true})

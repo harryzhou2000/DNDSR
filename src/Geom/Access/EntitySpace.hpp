@@ -19,7 +19,8 @@ namespace DNDS::Geom
     /// The identity token is process-local. Native sibling families share the
     /// logical mesh domain; numbering changes publish new descriptors and epochs.
     /// Exported field maps cannot mutate the retained canonical numbering.
-    /// The caller retains the MPI communicator through descriptor/plan use.
+    /// WithCommunication retains the communicator and directs subsequent
+    /// collectives to it. Raw descriptors require caller-managed MPI lifetime.
     class EntitySpace
     {
         friend struct UnstructuredMesh;
