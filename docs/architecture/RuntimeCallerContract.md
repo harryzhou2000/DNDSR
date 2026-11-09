@@ -130,8 +130,9 @@ Only typed access leases may authorize reading or writing the values.
    access boundary, not inside borrowed CPU/GPU kernel views.
 6. Observe errors with `WaitHost`, operation `Wait`/`Test`, or engine `Synchronize`.
    Destructor cleanup is a safety fallback and cannot reliably report errors.
-   Check failure before publishing results; coordinate rank-local recovery before
-   subsequent MPI collectives. Do not concurrently mutate the same C++/Python
+   Check failure before publishing results. Exception recovery is only for
+   coordinated tests; collective solver paths abort as described above.
+   Do not concurrently mutate the same C++/Python
    Array handle; independently owned aliases do not make value races safe.
 
 ```cpp
@@ -144,10 +145,48 @@ engine.Synchronize();
 ```
 
 CPU workers obey the same rule: callbacks retain submitted owners through actual
-execution; CUDA launchers hand off native allocation release with stream ordering.
+execution; explicit CUDA ordered release submits deallocation in stream order.
 A CPU lane is not a dedicated thread. Do not block a bounded worker pool waiting
 for callbacks that need its occupied workers. Use stream waits for dependencies.
 With zero workers, ready CPU work executes inline without changing the contract.
+
+Normal `SubmitArrays` retains allocation and metadata owners through actual
+completion, so dropping a temporary input handle cannot enter a synchronous
+CUDA free before the controller has progressed its dependent communication.
+Retirement uses the known device stream for an ordered final decrement when
+supported. The advanced `WithOrderedHandoff(Read/Write/ReadWrite(array))` operand
+opts into dropping those owners at launch instead. Use it only when all remaining
+aliases have explicit, correctly joined `ReleaseOn` calls. It preserves early
+device free submission without a host completion wait; ordinary RAII of the
+last remaining alias is not that protocol. CPU operands keep their normal
+execution lifetime in both modes.
+`CopyAsyncOptions` offers the same explicit source/destination opt-in for byte
+copies; default DMA operands stay retained. Async allocation initialization also
+owns its buffer until completion, even when the caller drops an unused buffer.
+
+The engine owns its stream launchers. `ExecutionStream` weakly references that
+runtime and cannot keep a closed context usable. `Close()` runs on the creating
+controller, stops submissions, polls registered progress and stream prefixes
+together, drains final tails, and joins workers. It is idempotent; normal engine
+destruction invokes it. Existing completion events remain observable after
+close, but recording events, allocating or submitting through its streams fails.
+`Synchronize()` uses the same progress loop and leaves the context open. Serialize
+both operations with submission; neither invents missing cross-stream edges.
+
+Backend adapters register `ExecutionProgress` before initiating external work.
+The registry retains actual resource owners through nonblocking `Poll()` and
+releases its reference on the controller. A callback returns true only after
+retirement, or throws only for an already-retired failure; outstanding MPI work
+must not be hidden by throwing. Callbacks must not retain the runtime or re-enter
+synchronization. `BeginChecked(stream)` and `BeginScheduled(stream)` register
+MPI work before preparing/posting, in checked and unchecked execution alike.
+Their operation handles share the registered state; dropping one does not wait
+or lose the requests. `MPIProgress.Import` exposes that state's completion event
+directly, so worker consumers can observe engine-driven completion; its explicit
+`Poll`/`Drain` calls still work. The raw `ExecutionContext` overload and raw
+requests/streams remain caller-managed interop and must finish before their
+borrowed stream/context is destroyed.
+Registration itself does not permit buffer access or supply dependency ordering.
 
 ## Halo overlap and MPI
 
@@ -176,6 +215,14 @@ operation completion retires the conservative checked footprint. Do not mix a
 pending conflicting checked reservation with an unchecked `BeginScheduled`.
 Use distinct matched tags for concurrently active bindings in a shared
 `CommunicationContext`. Transient requests change setup cost, not these rules.
+
+MPI completion polling keeps device unpack/copy as a separate phase and observes
+its exact event. It does not fence later work on the stream. Direct CUDA-aware
+MPI uses `Completion::FromExternalCompletion(context)` after the corresponding
+MPI request completes. This low-level backend proof is not a way for callers to
+bypass producer synchronization: the foreign backend must actually establish
+completion and memory visibility. Source-send retirement and destination-ready
+publication remain distinct.
 
 `CommunicationContext(comm, collectivePreflight=true)` agrees an immutable
 safety policy once at construction. Existing callers retain enabled behavior.

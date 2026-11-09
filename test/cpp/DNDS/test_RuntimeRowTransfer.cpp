@@ -4,6 +4,8 @@
 #include "DNDS/Runtime/Communication/CommunicationWorker.hpp"
 #include "DNDS/Runtime/Communication/NCCLTransfer.hpp"
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
+#include "DNDS/Runtime/Execution/EagerArray.hpp"
+#include "DNDS/Runtime/Communication/MPIProgress.hpp"
 #include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include <optional>
 #include <atomic>
@@ -254,6 +256,53 @@ TEST_CASE("Optional collective preflight removes only successful launch reductio
         }
     }
     MPI_Comm_free(&comm);
+}
+
+TEST_CASE("Managed MPI requests survive dropped handles and progress worker consumers during close")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    for (const bool checked : {false, true})
+    {
+        EagerEngine engine(2, checked ? std::make_shared<AccessTrackingContext>() : nullptr);
+        auto stream = engine.CreateCPUStream();
+        Array<double> source(RowLayout::Dense(17, 5)), destination(source.Layout()), output(source.Layout());
+        {
+            auto write = source.Write();
+            for (DNDS::index iRow = 0; iRow < 17; ++iRow)
+                for (DNDS::index j = 0; j < 5; ++j)
+                    write.View()(iRow, j) = 1000 * rank + 10 * iRow + j;
+        }
+        std::vector<RowRequest> requests;
+        for (DNDS::index iRow = 0; iRow < 17; ++iRow)
+            requests.push_back({(rank + 1) % size, 16 - iRow, iRow});
+        auto binding = std::make_unique<TransferBinding>(PayloadPlan(RowTransferPlan(MPI_COMM_WORLD, 17, 17, requests), source.Layout(), destination.Layout(),
+                                                                     ElementSchema::For<double>())
+                                                             .Bind(source, destination));
+        // No operation handle/event remains; Close must still inventory it.
+        {
+            auto operation = checked ? binding->BeginChecked(stream) : binding->BeginScheduled(stream);
+        }
+        engine.Synchronize();
+        CHECK(destination.Read().At(0, 0) == 1000 * ((rank + 1) % size) + 160);
+        MPIProgress bridge;
+        auto event = bridge.Import(checked ? binding->BeginChecked(stream) : binding->BeginScheduled(stream));
+        stream.WaitFor(event);
+        SubmitArrays(engine, stream, [](ExecutionContext, auto input, auto result)
+                     {
+            for (DNDS::index iRow = 0; iRow < 17; ++iRow)
+                for (DNDS::index j = 0; j < 5; ++j) result(iRow, j) = 2 * input(iRow, j); }, Read(destination), Write(output));
+        source = {};
+        destination = {};
+        binding.reset(); // Only runtime/operation scopes retain the payload owners.
+        engine.Close();  // No bridge.Poll/Drain; registered operation drives the event.
+        CHECK(event.Ready());
+        const auto read = output.Read();
+        for (DNDS::index iRow = 0; iRow < 17; ++iRow)
+            for (DNDS::index j = 0; j < 5; ++j)
+                CHECK(read.View()(iRow, j) == 2 * (1000 * ((rank + 1) % size) + 10 * (16 - iRow) + j));
+    }
 }
 
 TEST_CASE("Communication context adoption and policy aliases retain one resource and tag namespace")
@@ -1276,7 +1325,9 @@ TEST_CASE("Native CUDA direct MPI and device fan-in reduction")
     RowTransferPlan route(MPI_COMM_WORLD, 2, 2, {{(rank + 1) % size, 0, 0}, {(rank + 1) % size, 1, 1}, {rank, 1, 1}});
     PayloadPlan payload(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<double>());
     auto reducer = Reducer::Builtin<double>(Reduction::Sum, DestinationInit::Identity);
-    payload.Bind(source, destination, reducer, TransferTransport::HostPacked).Begin(ctx).Wait();
+    auto packed = payload.Bind(source, destination, reducer, TransferTransport::HostPacked).Begin(ctx);
+    while (!packed.Test())
+        std::this_thread::yield();
     CHECK(destination.To(Device::Host(), ctx).Read().At(1, 2) == rank + (rank + 1) % size + 4);
     if (!DNDS::MPI::isCudaAware())
     {

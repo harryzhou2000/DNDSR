@@ -59,6 +59,10 @@ namespace DNDS::Runtime
     public:
         Completion() = default;
         static Completion Record(ExecutionContext context);
+        /// Backend completion proof (e.g. successful CUDA-aware MPI request).
+        /// No event is recorded and no stream is fenced. Caller guarantees all
+        /// work covered by this access has completed on the declared context.
+        static Completion FromExternalCompletion(ExecutionContext context);
         void Wait() const;
         bool Ready() const;
         Device GetDevice() const;

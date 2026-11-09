@@ -33,6 +33,80 @@ static void Await(const std::atomic<bool> &flag)
     }
 }
 
+TEST_CASE("Context shutdown progresses controller transport and CPU lanes before releasing owners")
+{
+    for (const size_t workers : {size_t(0), size_t(2)})
+        for (const int finish : {0, 1, 2}) // synchronize, close, destructor
+        {
+            const bool close = finish == 1;
+            struct Signals
+            {
+                std::shared_ptr<Gate> sendReady = std::make_shared<Gate>();
+                std::shared_ptr<Gate> received = std::make_shared<Gate>();
+                std::atomic<bool> coreDone{false}, ringDone{false};
+                std::thread::id disposed;
+                int payload = 0;
+            };
+            struct Transport final : R::ExecutionProgress
+            {
+                std::shared_ptr<Signals> signals;
+                explicit Transport(std::shared_ptr<Signals> s) : signals(std::move(s)) {}
+                ~Transport() override { signals->disposed = std::this_thread::get_id(); }
+                bool Poll() override
+                {
+                    signals->sendReady->open = true;
+                    if (!signals->coreDone.load())
+                        return false;
+                    signals->payload = 37;
+                    signals->received->open = true;
+                    return true;
+                }
+            };
+            auto signals = std::make_shared<Signals>();
+            R::ExecutionStream surviving;
+            R::StreamEvent completed;
+            {
+                R::EagerEngine engine(workers);
+                // Consumer first: sequential stream draining would block it
+                // before the controller can progress transport or the producer.
+                auto ring = engine.CreateCPUStream(), core = engine.CreateCPUStream();
+                surviving = ring;
+                auto operation = std::make_shared<Transport>(signals);
+                ring.RegisterProgress(operation);
+                operation.reset(); // Runtime is the only transport owner.
+                ring.WaitFor(R::StreamEvent(signals->received));
+                engine.Submit(ring, [signals](R::ExecutionContext)
+                              { signals->ringDone = signals->payload == 37; });
+                core.WaitFor(R::StreamEvent(signals->sendReady));
+                engine.Submit(core, [signals](R::ExecutionContext)
+                              { signals->coreDone = true; });
+                completed = ring.Record();
+                if (finish != 2)
+                {
+                    if (close)
+                        engine.Close();
+                    else
+                        engine.Synchronize();
+                    CHECK(signals->coreDone.load());
+                    CHECK(signals->ringDone.load());
+                    CHECK(signals->disposed == std::this_thread::get_id());
+                    CHECK(completed.Ready());
+                    CHECK(engine.IsClosed() == close);
+                    if (!close)
+                        CHECK_NOTHROW(engine.Submit(core, [](R::ExecutionContext) {}));
+                    engine.Close();
+                    CHECK_NOTHROW(engine.Close());
+                    CHECK_THROWS(surviving.Record());
+                    CHECK_THROWS(engine.Submit(surviving, [](R::ExecutionContext) {}));
+                }
+            }
+            CHECK(completed.Ready());
+            CHECK(signals->ringDone.load());
+            CHECK(signals->disposed == std::this_thread::get_id());
+            CHECK_THROWS(surviving.Context());
+        }
+}
+
 TEST_CASE("Active mock communication overlaps inline and worker core kernels")
 {
     // A separate executor models transport for inline/one-worker compute;

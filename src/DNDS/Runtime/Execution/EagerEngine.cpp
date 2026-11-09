@@ -5,6 +5,8 @@
 #include <mutex>
 #include <thread>
 #include <chrono>
+#include <atomic>
+#include <algorithm>
 
 namespace DNDS::Runtime
 {
@@ -141,7 +143,8 @@ namespace DNDS::Runtime
                     throw;
                 }
             }
-            ~CPUExecutor()
+            ~CPUExecutor() { Shutdown(); }
+            void Shutdown()
             {
                 if (std::uncaught_exceptions())
                     MPI::AbortIfSolverFailure("solver unwinding before CPU worker join");
@@ -151,7 +154,8 @@ namespace DNDS::Runtime
                 }
                 _changed.notify_all();
                 for (auto &worker : _workers)
-                    worker.join();
+                    if (worker.joinable())
+                        worker.join();
             }
             std::shared_ptr<CPULane> NewLane()
             {
@@ -203,6 +207,11 @@ namespace DNDS::Runtime
                     Step(); // Allows an imported inline-executor dependency to progress.
                 return Ready(lane, prefix);
             }
+            void ProgressInline()
+            {
+                if (_workers.empty())
+                    Step();
+            }
             void Wait(const std::shared_ptr<CPULane> &lane, uint64_t prefix)
             {
                 while (!Ready(lane, prefix))
@@ -253,26 +262,79 @@ namespace DNDS::Runtime
         };
     }
 
-    struct EagerEngine::State
+    struct ExecutionRuntime
     {
+        enum class Phase
+        {
+            Open,
+            Closing,
+            Closed
+        };
+        std::atomic<Phase> phase{Phase::Open};
+        const std::thread::id controller = std::this_thread::get_id();
         std::shared_ptr<CPUExecutor> host;
-        std::shared_ptr<const int> identity = std::make_shared<const int>(0);
         std::vector<std::shared_ptr<StreamLauncher>> streams;
+        std::vector<std::shared_ptr<ExecutionProgress>> pending;
         std::shared_ptr<AccessTrackingContext> tracking;
         std::mutex mutex;
-        explicit State(size_t threads) : host(std::make_shared<CPUExecutor>(threads)) {}
+        bool draining = false;
+        explicit ExecutionRuntime(size_t threads) : host(std::make_shared<CPUExecutor>(threads)) {}
+        void CheckOpen() const
+        {
+            DNDS_check_throw_info(phase.load() == Phase::Open, "execution context is closing or closed");
+        }
+        void CheckController() const
+        {
+            DNDS_check_throw_info(std::this_thread::get_id() == controller, "execution progress requires the creating controller thread");
+        }
+        void Register(std::shared_ptr<ExecutionProgress> operation)
+        {
+            CheckController();
+            DNDS_check_throw_info(operation, "cannot register empty execution progress");
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                CheckOpen();
+                DNDS_check_throw_info(!draining, "cannot register external work during synchronization");
+                DNDS_check_throw_info(std::find(pending.begin(), pending.end(), operation) == pending.end(), "operation already registered");
+                draining = true;
+            }
+            try
+            {
+                // Explicit Wait may have completed earlier operations without
+                // a whole-engine Synchronize. Retire their registry entries,
+                // rather than accumulating one owner per solver iteration.
+                // Poll is nonblocking and no registry lock spans backend code.
+                for (auto it = pending.begin(); it != pending.end();)
+                    if ((*it)->Poll())
+                        it = pending.erase(it);
+                    else
+                        ++it;
+                pending.push_back(std::move(operation));
+            }
+            catch (...)
+            {
+                MPI::AbortIfSolverFailure("solver operation registration/progress failed");
+                std::lock_guard<std::mutex> lock(mutex);
+                draining = false;
+                throw;
+            }
+            std::lock_guard<std::mutex> lock(mutex);
+            draining = false;
+        }
     };
-    EagerEngine::EagerEngine(size_t threads, std::shared_ptr<AccessTrackingContext> tracking) : _state(std::make_unique<State>(threads))
+    EagerEngine::EagerEngine(size_t threads, std::shared_ptr<AccessTrackingContext> tracking) : _state(std::make_shared<ExecutionRuntime>(threads))
     {
         _state->tracking = std::move(tracking);
     }
     EagerEngine::~EagerEngine()
     {
+        if (std::this_thread::get_id() != _state->controller)
+            std::terminate();
         if (std::uncaught_exceptions())
             MPI::AbortIfSolverFailure("solver unwinding before stream shutdown");
         try
         {
-            Synchronize();
+            Close();
         }
         catch (...)
         {
@@ -285,21 +347,23 @@ namespace DNDS::Runtime
     {
         DNDS_check_throw_info(launcher, "stream needs a launcher");
         std::lock_guard<std::mutex> lock(_state->mutex);
+        _state->CheckOpen();
         _state->streams.push_back(launcher);
-        return ExecutionStream(std::move(launcher), _state->identity, _state->tracking,
+        return ExecutionStream(std::move(launcher), _state, _state->tracking,
                                _state->tracking ? _state->tracking->NewLane() : 0);
     }
     void EagerEngine::Submit(const ExecutionStream &stream, StreamLauncher::Work work)
     {
-        DNDS_check_throw_info(stream._launcher && stream._owner == _state->identity && work, "invalid eager submission or foreign stream");
+        DNDS_check_throw_info(stream._runtime.lock() == _state && work, "invalid eager submission or foreign stream");
         SubmitOperation(stream, std::move(work), [](std::exception_ptr) {});
     }
     Buffer EagerEngine::AllocateBuffer(const ExecutionStream &stream, size_t bytes, AllocationOptions options)
     {
-        DNDS_check_throw_info(stream._launcher && stream._owner == _state->identity, "invalid allocation stream");
+        DNDS_check_throw_info(stream._runtime.lock() == _state, "invalid allocation stream");
+        const auto launcher = stream.LockLauncher();
         if (!_state->tracking)
-            return stream._launcher->Allocate(bytes, options);
-        auto buffer = stream._launcher->AllocateChecked(bytes, options);
+            return launcher->Allocate(bytes, options);
+        auto buffer = launcher->AllocateChecked(bytes, options);
         // Allocation/zero initialization is itself a producer, even when native
         // allocation returned a host handle before its device work completed.
         SubmitOperation(stream, [](ExecutionContext) {}, [](std::exception_ptr) {}, {{buffer, AccessMode::Write}});
@@ -308,51 +372,150 @@ namespace DNDS::Runtime
     void EagerEngine::SubmitOperation(const ExecutionStream &stream, StreamLauncher::Work work, StreamLauncher::Retirement retire,
                                       std::vector<ScheduledBufferAccess> accesses)
     {
-        DNDS_check_throw_info(stream._launcher && stream._owner == _state->identity && work && retire,
+        DNDS_check_throw_info(stream._runtime.lock() == _state && work && retire,
                               "invalid eager operation or foreign stream");
+        const auto launcher = stream.LockLauncher();
         if (!_state->tracking)
-            stream._launcher->Submit(std::move(work), CommandKind::Compute, std::move(retire));
+            launcher->Submit(std::move(work), CommandKind::Compute, std::move(retire));
         else
             _state->tracking->Submit(stream._lane, accesses, [&](AccessTrackingContext::Submission submission)
-                                     { stream._launcher->Submit(std::move(work), CommandKind::Compute,
-                                                                [submission, retire = std::move(retire)](std::exception_ptr error) noexcept
-                                                                {
-                                                                    retire(error);
-                                                                    submission.Complete();
-                                                                }); });
+                                     { launcher->Submit(std::move(work), CommandKind::Compute,
+                                                        [submission, retire = std::move(retire)](std::exception_ptr error) noexcept
+                                                        {
+                                                            retire(error);
+                                                            submission.Complete();
+                                                        }); });
     }
     void EagerEngine::SubmitCleanup(const ExecutionStream &stream, StreamLauncher::Work work, std::vector<ScheduledBufferAccess> accesses)
     {
-        DNDS_check_throw_info(stream._launcher && stream._owner == _state->identity && work, "invalid eager cleanup or foreign stream");
+        DNDS_check_throw_info(stream._runtime.lock() == _state && work, "invalid eager cleanup or foreign stream");
+        const auto launcher = stream.LockLauncher();
         if (!_state->tracking)
-            stream._launcher->Submit(std::move(work), CommandKind::Cleanup);
+            launcher->Submit(std::move(work), CommandKind::Cleanup);
         else
             _state->tracking->Submit(stream._lane, accesses, [&](AccessTrackingContext::Submission submission)
-                                     { stream._launcher->Submit(std::move(work), CommandKind::Cleanup,
-                                                                [submission](std::exception_ptr) noexcept
-                                                                { submission.Complete(); }); });
+                                     { launcher->Submit(std::move(work), CommandKind::Cleanup,
+                                                        [submission](std::exception_ptr) noexcept
+                                                        { submission.Complete(); }); });
     }
     void EagerEngine::SubmitOrderedRelease(const ExecutionStream &stream, StreamLauncher::Work work, StreamLauncher::Retirement retire,
                                            std::vector<ScheduledBufferAccess> accesses)
     {
-        DNDS_check_throw_info(stream._launcher && stream._owner == _state->identity && work && retire,
+        DNDS_check_throw_info(stream._runtime.lock() == _state && work && retire,
                               "invalid eager release or foreign stream");
+        const auto launcher = stream.LockLauncher();
         if (!_state->tracking)
-            stream._launcher->Submit(std::move(work), CommandKind::OrderedRelease, std::move(retire));
+            launcher->Submit(std::move(work), CommandKind::OrderedRelease, std::move(retire));
         else
             _state->tracking->Submit(stream._lane, accesses, [&](AccessTrackingContext::Submission submission)
-                                     { stream._launcher->Submit(std::move(work), CommandKind::OrderedRelease,
-                                                                [submission, retire = std::move(retire)](std::exception_ptr error) noexcept
-                                                                { retire(error); submission.Complete(); }); });
+                                     { launcher->Submit(std::move(work), CommandKind::OrderedRelease,
+                                                        [submission, retire = std::move(retire)](std::exception_ptr error) noexcept
+                                                        { retire(error); submission.Complete(); }); });
     }
-    void EagerEngine::Synchronize()
+    void EagerEngine::RegisterProgress(std::shared_ptr<ExecutionProgress> operation) { _state->Register(std::move(operation)); }
+    bool EagerEngine::IsClosed() const { return _state->phase.load() == ExecutionRuntime::Phase::Closed; }
+    void EagerEngine::Synchronize() { Drain(false); }
+    void EagerEngine::Close() { Drain(true); }
+    void EagerEngine::Drain(bool closing)
     {
+        _state->CheckController();
         std::vector<std::shared_ptr<StreamLauncher>> streams;
         {
             std::lock_guard<std::mutex> lock(_state->mutex);
-            streams = _state->streams;
+            if (IsClosed())
+                return;
+            DNDS_check_throw_info(!_state->draining, "recursive execution synchronization");
+            streams = _state->streams; // Allocate before changing lifecycle state.
+            if (closing)
+                _state->phase = ExecutionRuntime::Phase::Closing;
+            _state->draining = true;
         }
         std::exception_ptr first;
+        auto failure = [&]
+        {
+            MPI::AbortIfSolverFailure("solver execution progress failed");
+            if (!first)
+                first = std::current_exception();
+        };
+        try
+        {
+            // A prefix is one boundary per stream, not an event per kernel.
+            std::vector<StreamEvent> prefixes;
+            prefixes.reserve(streams.size());
+            for (const auto &stream : streams)
+                prefixes.push_back(stream->Record());
+            std::vector<bool> complete(prefixes.size(), false);
+            for (;;)
+            {
+                // Submission is serialized with this loop. Each callback runs
+                // without the registry lock; completion drops owners here on
+                // the controller, never on a CPU event-observer thread.
+                for (auto it = _state->pending.begin(); it != _state->pending.end();)
+                {
+                    bool done = false;
+                    try
+                    {
+                        done = (*it)->Poll();
+                    }
+                    catch (...)
+                    {
+                        failure();
+                        done = true;
+                    }
+                    if (done)
+                        it = _state->pending.erase(it);
+                    else
+                        ++it;
+                }
+                bool all = _state->pending.empty();
+                for (size_t i = 0; i < prefixes.size(); ++i)
+                {
+                    if (!complete[i])
+                        try
+                        {
+                            complete[i] = prefixes[i].Ready();
+                        }
+                        catch (...)
+                        {
+                            failure();
+                            complete[i] = true;
+                        }
+                    all = all && complete[i];
+                }
+                if (all)
+                    break;
+                std::this_thread::yield();
+            }
+        }
+        catch (...)
+        {
+            // Failure to record a prefix cannot justify blocking on a stream
+            // while registered external work still needs controller progress.
+            failure();
+            while (!_state->pending.empty())
+            {
+                _state->host->ProgressInline();
+                for (auto it = _state->pending.begin(); it != _state->pending.end();)
+                {
+                    bool done = false;
+                    try
+                    {
+                        done = (*it)->Poll();
+                    }
+                    catch (...)
+                    {
+                        failure();
+                        done = true;
+                    }
+                    if (done)
+                        it = _state->pending.erase(it);
+                    else
+                        ++it;
+                }
+            }
+        }
+        // Registered work is retired, including any late device unpack. Drain
+        // the final native tails before resource release, even after an error.
         for (const auto &stream : streams)
             try
             {
@@ -360,38 +523,61 @@ namespace DNDS::Runtime
             }
             catch (...)
             {
-                MPI::AbortIfSolverFailure("solver stream synchronization failed");
-                if (!first)
-                    first = std::current_exception();
+                failure();
             }
+        if (closing)
+            _state->host->Shutdown();
+        {
+            std::lock_guard<std::mutex> lock(_state->mutex);
+            if (closing)
+            {
+                _state->streams.clear();
+                _state->phase = ExecutionRuntime::Phase::Closed;
+            }
+            _state->draining = false;
+        }
         if (first)
             std::rethrow_exception(first);
     }
+    std::shared_ptr<StreamLauncher> ExecutionStream::LockLauncher() const
+    {
+        const auto runtime = _runtime.lock();
+        DNDS_check_throw_info(runtime, "execution context no longer exists");
+        runtime->CheckOpen();
+        auto launcher = _launcher.lock();
+        DNDS_check_throw_info(launcher, "empty execution stream");
+        return launcher;
+    }
+    void ExecutionStream::RegisterProgress(std::shared_ptr<ExecutionProgress> operation) const
+    {
+        const auto runtime = _runtime.lock();
+        DNDS_check_throw_info(runtime, "execution context no longer exists");
+        runtime->Register(std::move(operation));
+    }
     ExecutionContext ExecutionStream::Context() const
     {
-        DNDS_check_throw_info(_launcher, "empty execution stream");
-        return _launcher->Context();
+        return LockLauncher()->Context();
     }
     void ExecutionStream::WaitFor(StreamEvent event) const
     {
-        DNDS_check_throw_info(_launcher, "empty execution stream");
+        const auto launcher = LockLauncher();
         if (_tracking)
         {
             const auto order = event._order;
             _tracking->WaitFor(_lane, order, [&]
-                               { _launcher->WaitFor(std::move(event)); });
+                               { launcher->WaitFor(std::move(event)); });
         }
         else
-            _launcher->WaitFor(std::move(event));
+            launcher->WaitFor(std::move(event));
     }
     StreamEvent ExecutionStream::Record() const
     {
-        DNDS_check_throw_info(_launcher, "empty execution stream");
+        const auto launcher = LockLauncher();
         if (!_tracking)
-            return _launcher->Record();
+            return launcher->Record();
         StreamEvent event;
         const auto order = _tracking->Record(_lane, [&]
-                                             { event = _launcher->Record(); });
+                                             { event = launcher->Record(); });
         event._order = order;
         return event;
     }

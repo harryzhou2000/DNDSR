@@ -95,8 +95,16 @@ join independent users before a potentially final release; unchecked eager
 mode supplies no missing dependency proof or automatic join. A future final
 Synchronize cannot repair an incorrectly placed free.
 
-Successful native operator submission hands off eligible CUDA operand owners
-to this ordered release mechanism. Its scheduled access keeps a weak
+Native operator submission retains CUDA operand owners through observed
+completion by default, then releases eligible owners on the known stream.
+This also protects temporary arrays whose caller handles disappear immediately
+after submission: ordinary last-owner RAII must not enter synchronous CUDA free
+while controller-driven MPI or another host dependency still needs progress.
+
+Explicit `WithOrderedHandoff` operands (or selected `CopyAsyncOptions` endpoints)
+instead hand off eligible owners after native issue. Remaining caller aliases
+must also use correctly joined `ReleaseOn`, rather than ordinary destruction.
+The handed-off scheduled access keeps a weak
 publication reference until actual completion. If an Array/Buffer alias still
 exists, completion updates that controller and rejects stale immediate access
 while writes are pending. If no owner survives, the controller can disappear;

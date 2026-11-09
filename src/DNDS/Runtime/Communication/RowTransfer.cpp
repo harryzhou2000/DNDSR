@@ -9,6 +9,8 @@
 #include <numeric>
 #include <optional>
 #include <mutex>
+#include <atomic>
+#include <thread>
 
 namespace DNDS::Runtime
 {
@@ -890,6 +892,52 @@ namespace DNDS::Runtime
             return done;
         }
     };
+    struct TransferOperation::ManagedState final : ExecutionProgress, StreamEvent::State
+    {
+        TransferOperation operation;
+        std::shared_ptr<const AccessOrder> order;
+        const std::thread::id controller = std::this_thread::get_id();
+        std::atomic<bool> done{false};
+        bool armed = false;
+        void CheckController() const
+        {
+            DNDS_check_throw_info(std::this_thread::get_id() == controller, "managed MPI transfer needs its controller thread");
+        }
+        void Retire()
+        {
+            operation = {}; // MPI/provider owners are dropped only here.
+            done.store(true, std::memory_order_release);
+        }
+        bool Poll() override
+        {
+            CheckController();
+            if (done.load(std::memory_order_acquire))
+                return true;
+            if (!armed)
+                return false;
+            if (!operation.Test())
+                return false;
+            Retire();
+            return true;
+        }
+        bool Ready() const override
+        {
+            if (std::this_thread::get_id() == controller)
+                return const_cast<ManagedState *>(this)->Poll();
+            return done.load(std::memory_order_acquire);
+        }
+        void Wait() const override
+        {
+            if (done.load(std::memory_order_acquire))
+                return;
+            CheckController();
+            auto &self = *const_cast<ManagedState *>(this);
+            DNDS_check_throw_info(armed, "managed MPI operation was not submitted");
+            self.operation.Wait();
+            self.Retire();
+        }
+    };
+
     bool TransferOperation::State::Prepare(bool scheduled, bool checkedAccess, bool callerValid)
     {
         auto &_state = binding;
@@ -1028,7 +1076,49 @@ namespace DNDS::Runtime
     {
         return Start(context, true, {}, 0, callerValid);
     }
+    TransferOperation TransferBinding::BeginScheduled(const ExecutionStream &stream, bool callerValid) const
+    {
+        return StartManaged(stream, false, callerValid);
+    }
     TransferOperation TransferBinding::BeginChecked(const ExecutionStream &stream, bool callerValid) const
+    {
+        return StartManaged(stream, true, callerValid);
+    }
+    TransferOperation TransferBinding::StartManaged(const ExecutionStream &stream, bool checked, bool callerValid) const
+    {
+        DNDS_check_throw_info(_state, "managed MPI begin requires an MPI binding; native providers use Enqueue");
+        auto managed = std::make_shared<TransferOperation::ManagedState>();
+        bool valid = callerValid;
+        ExecutionContext context;
+        try
+        {
+            stream.RegisterProgress(managed); // Before preparing/packing/posting.
+            context = stream.Context();
+            if (!checked && context.device == Device::Host())
+                stream.Record().WaitHost();
+        }
+        catch (...)
+        {
+            MPI::AbortIfSolverFailure("managed MPI registration failed");
+            valid = false; // Fold into the existing launch preflight, no new allreduce.
+        }
+        try
+        {
+            managed->operation = checked ? StartChecked(stream, valid) : Start(context, true, {}, 0, valid);
+            managed->order = managed->operation.CheckedOrder();
+            managed->armed = true;
+        }
+        catch (...)
+        {
+            MPI::AbortIfSolverFailure("managed MPI submission failed");
+            managed->done = true; // Rejected before posting; registry can retire it.
+            throw;
+        }
+        TransferOperation result;
+        result._managed = std::move(managed);
+        return result;
+    }
+    TransferOperation TransferBinding::StartChecked(const ExecutionStream &stream, bool callerValid) const
     {
         DNDS_check_throw_info(_state, "BeginChecked is an MPI bridge; native providers use Enqueue");
         auto tracking = stream._tracking;
@@ -1222,8 +1312,18 @@ namespace DNDS::Runtime
         return operations;
     }
     TransferOperation::TransferOperation() = default;
+    StreamEvent TransferOperation::ManagedCompletion() const
+    {
+        if (!_managed)
+            return {};
+        StreamEvent result(_managed);
+        result._order = _managed->order;
+        return result;
+    }
     std::shared_ptr<const AccessOrder> TransferOperation::CheckedOrder() const
     {
+        if (_managed)
+            return _managed->order;
         if (_worker)
             return _worker->operation->CheckedOrder();
         return _state ? _state->order : nullptr;
@@ -1237,12 +1337,14 @@ namespace DNDS::Runtime
         {
             try
             {
-                Wait();
+                if (!_managed)
+                    Wait();
             }
             catch (...)
             {
                 MPI::Abort(_state ? _state->binding->comm : MPI_COMM_WORLD, "transfer replacement completion failed");
             }
+            _managed = std::move(other._managed);
             _state = std::move(other._state);
             _provider = std::move(other._provider);
             _worker = std::move(other._worker);
@@ -1251,6 +1353,8 @@ namespace DNDS::Runtime
     }
     TransferOperation::~TransferOperation()
     {
+        if (_managed)
+            return; // Runtime inventory, not handle scope, owns retirement.
         // Waiting while unwinding a rank-local exception can strand this rank
         // before the application reaches its fatal handler: a peer may never
         // post the matching operation. Normal RAII retirement still drains;
@@ -1310,6 +1414,14 @@ namespace DNDS::Runtime
     }
     void TransferOperation::WaitDestinationReady()
     {
+        if (_managed)
+        {
+            if (_managed->done.load(std::memory_order_acquire))
+                return;
+            _managed->CheckController();
+            _managed->operation.WaitDestinationReady();
+            return;
+        }
         if (_worker)
         {
             _worker->Wait(true);
@@ -1330,96 +1442,94 @@ namespace DNDS::Runtime
             return false;
         auto &s = *_state;
         auto &b = *s.binding;
-        if (wait)
-            MPI_Waitall(int(b.receives.size()), b.receives.data(), MPI_STATUSES_IGNORE);
-        else
+        const auto finish = [&]
         {
-            int received = 0;
-            MPI_Testall(int(b.receives.size()), b.receives.data(), &received, MPI_STATUSES_IGNORE);
-            if (!received)
+            if (!wait && !s.unpackReady.Ready())
                 return false;
-        }
-        try
-        {
-            if (b.transport == TransferTransport::DevicePacked)
-            {
-                if (!s.unpackStarted)
-                {
-                    if (b.reducer)
-                    {
-                        // The receive wire buffer is exactly the contiguous
-                        // contribution layout; no scatter precedes reduction.
-                        b.reducer->device(b.deviceReceive.LegacyPointer(), s.destination.View<std::byte>().data,
-                                          static_cast<const Contribution *>(b.deviceGroups.LegacyPointer()), b.reductionLayout->groups.size(), s.context);
-                    }
-                    else
-                        Detail::LaunchDevicePacking(s.context, b.deviceReceive.LegacyPointer(), s.destination.View<uint8_t>().data,
-                                                    static_cast<const Detail::DevicePackRow *>(b.unpackRows.LegacyPointer()), b.unpackRowCount,
-                                                    static_cast<const Detail::DevicePackField *>(b.packFields.LegacyPointer()), b.fieldCount, index(b.plan->schema.Extent()), true);
-                    s.unpackReady = Completion::Record(s.context);
-                    s.unpackStarted = true;
-                    s.destination.Complete(s.unpackReady);
-                    if (b.reducer)
-                        s.workspace.Complete(s.unpackReady);
-                }
-                if (!wait && !s.unpackReady.Ready())
-                    return false;
-                s.unpackReady.Wait();
-                s.workspace.Wait();
-                s.destination.Wait();
-                s.destinationReady = true;
-                return true;
-            }
-            const bool packed = b.transport == TransferTransport::HostPacked;
-            if (packed)
-            {
-                for (size_t peer = 0; peer < b.packedReceive.size(); ++peer)
-                {
-                    if (b.plan->route.ReceiveRows()[peer].empty())
-                        continue;
-                    int position = 0;
-                    auto type = b.reducer ? b.reductionLayout->receiveTypes[peer] : b.plan->receiveTypes[peer];
-                    MPI_Count bytes = 0;
-                    MPI_Type_size_x(type->value, &bytes);
-                    if (!bytes)
-                        continue;
-                    MPI_Unpack(b.packedReceive[peer].data(), int(b.packedReceive[peer].size()), &position,
-                               b.reducer ? s.workspace.View<uint8_t>().data : b.hostDestination.LegacyPointer(), 1, type->value, b.comm);
-                }
-            }
-            if (b.reducer)
-            {
-                if (packed || b.destination.GetDevice() == Device::Host())
-                    b.reducer->host(s.workspace.View<std::byte>().data, packed ? b.hostDestination.LegacyPointer() : s.destination.View<std::byte>().data,
-                                    b.reductionLayout->groups, ExecutionContext::Host());
-                else
-                    b.reducer->device(s.workspace.View<std::byte>().data, s.destination.View<std::byte>().data,
-                                      static_cast<const Contribution *>(b.deviceGroups.LegacyPointer()), b.reductionLayout->groups.size(), s.context);
-                if (!packed && b.destination.GetDevice().space == MemorySpace::CUDA)
-                {
-                    auto done = Completion::Record(s.context);
-                    s.destination.Complete(done);
-                    s.workspace.Complete(done);
-                }
-            }
-            if (packed)
-                Detail::CopyBytes(b.hostDestination.LegacyPointer(), Device::Host(), s.destination.View<uint8_t>().data,
-                                  b.destination.GetDevice(), b.destination.Bytes(), b.destination.GetDevice() == Device::Host() ? ExecutionContext::Host() : s.context)
-                    .Wait();
+            s.unpackReady.Wait();
             s.workspace.Wait();
             s.destination.Wait();
             s.destinationReady = true;
             return true;
+        };
+        try
+        {
+            if (s.unpackStarted)
+                return finish();
+            if (wait)
+                MPI_Waitall(int(b.receives.size()), b.receives.data(), MPI_STATUSES_IGNORE);
+            else
+            {
+                int received = 0;
+                MPI_Testall(int(b.receives.size()), b.receives.data(), &received, MPI_STATUSES_IGNORE);
+                if (!received)
+                    return false;
+            }
+            s.unpackReady = Completion::FromExternalCompletion(s.destination.context);
+            if (b.transport == TransferTransport::DevicePacked)
+            {
+                if (b.reducer)
+                    b.reducer->device(b.deviceReceive.LegacyPointer(), s.destination.View<std::byte>().data,
+                                      static_cast<const Contribution *>(b.deviceGroups.LegacyPointer()), b.reductionLayout->groups.size(), s.context);
+                else
+                    Detail::LaunchDevicePacking(s.context, b.deviceReceive.LegacyPointer(), s.destination.View<uint8_t>().data,
+                                                static_cast<const Detail::DevicePackRow *>(b.unpackRows.LegacyPointer()), b.unpackRowCount,
+                                                static_cast<const Detail::DevicePackField *>(b.packFields.LegacyPointer()), b.fieldCount, index(b.plan->schema.Extent()), true);
+                s.unpackReady = Completion::Record(s.context);
+            }
+            else
+            {
+                const bool packed = b.transport == TransferTransport::HostPacked;
+                if (packed)
+                    for (size_t peer = 0; peer < b.packedReceive.size(); ++peer)
+                    {
+                        if (b.plan->route.ReceiveRows()[peer].empty())
+                            continue;
+                        int position = 0;
+                        auto type = b.reducer ? b.reductionLayout->receiveTypes[peer] : b.plan->receiveTypes[peer];
+                        MPI_Count bytes = 0;
+                        MPI_Type_size_x(type->value, &bytes);
+                        if (!bytes)
+                            continue;
+                        MPI_Unpack(b.packedReceive[peer].data(), int(b.packedReceive[peer].size()), &position,
+                                   b.reducer ? s.workspace.View<uint8_t>().data : b.hostDestination.LegacyPointer(), 1, type->value, b.comm);
+                    }
+                if (b.reducer)
+                {
+                    if (packed || b.destination.GetDevice() == Device::Host())
+                        b.reducer->host(s.workspace.View<std::byte>().data, packed ? b.hostDestination.LegacyPointer() : s.destination.View<std::byte>().data,
+                                        b.reductionLayout->groups, ExecutionContext::Host());
+                    else
+                        b.reducer->device(s.workspace.View<std::byte>().data, s.destination.View<std::byte>().data,
+                                          static_cast<const Contribution *>(b.deviceGroups.LegacyPointer()), b.reductionLayout->groups.size(), s.context);
+                    if (!packed && b.destination.GetDevice().space == MemorySpace::CUDA)
+                        s.unpackReady = Completion::Record(s.context);
+                }
+                if (packed)
+                    s.unpackReady = Detail::CopyBytes(b.hostDestination.LegacyPointer(), Device::Host(), s.destination.View<uint8_t>().data,
+                                                      b.destination.GetDevice(), b.destination.Bytes(), b.destination.GetDevice() == Device::Host() ? ExecutionContext::Host() : s.context);
+            }
+            // MPI completion itself makes direct destinations ready. For device
+            // unpack/copy, retain its exact event instead of fencing the later
+            // stream tail. Test must leave unrelated controller work runnable.
+            s.destination.Complete(s.unpackReady);
+            if (b.reducer)
+                s.workspace.Complete(s.unpackReady);
+            s.unpackStarted = true;
+            return finish();
         }
         catch (...)
         {
-            // Do not drain sends or synchronize devices after a local failure:
-            // peers may never post matching work. Owners survive until abort.
             MPI::Abort(b.comm, "MPI destination completion/reduction failed");
         }
     }
     void TransferOperation::Wait()
     {
+        if (_managed)
+        {
+            _managed->Wait();
+            return;
+        }
         if (_worker)
         {
             _worker->Wait(false);
@@ -1440,6 +1550,10 @@ namespace DNDS::Runtime
         MPI_Waitall(int(b.sends.size()), b.sends.data(), MPI_STATUSES_IGNORE);
         try
         {
+            if (b.transport != TransferTransport::DevicePacked)
+                s.source.Complete(Completion::FromExternalCompletion(s.source.context));
+            // DevicePacked already attached packedReady when posting; sends
+            // cannot complete before that producer. Do not submit it twice.
             s.source.Wait();
         }
         catch (...)
@@ -1457,6 +1571,8 @@ namespace DNDS::Runtime
     }
     bool TransferOperation::Test()
     {
+        if (_managed)
+            return _managed->Ready();
         if (_worker)
             return _worker->Test();
         if (_provider)
@@ -1466,18 +1582,6 @@ namespace DNDS::Runtime
         if (!_state || !_state->started)
             return true;
         auto &b = *_state->binding;
-        if (b.transport != TransferTransport::DevicePacked)
-        {
-            int send = 0, receive = 0;
-            MPI_Testall(int(b.sends.size()), b.sends.data(), &send, MPI_STATUSES_IGNORE);
-            MPI_Testall(int(b.receives.size()), b.receives.data(), &receive, MPI_STATUSES_IGNORE);
-            if (send && receive)
-            {
-                Wait();
-                return true;
-            }
-            return false;
-        }
         if (!CompleteDestination(false))
             return false;
         int send = 0;

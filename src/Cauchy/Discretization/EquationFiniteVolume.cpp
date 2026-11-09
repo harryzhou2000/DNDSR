@@ -1766,7 +1766,7 @@ namespace DNDS::Cauchy
             std::vector<R::TransferOperation> operations;
             operations.reserve(bindings.size());
             for (auto &binding : bindings)
-                operations.push_back(engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream.Context()));
+                operations.push_back(engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream));
             return operations;
         };
         const auto wait = [](auto &operations)

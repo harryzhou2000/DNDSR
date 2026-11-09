@@ -73,6 +73,7 @@ namespace DNDS::Runtime
         };
         std::thread::id _owner = std::this_thread::get_id();
         std::vector<std::shared_ptr<Pending>> _pending;
+        std::vector<StreamEvent> _managed;
         void CheckThread() const
         {
             DNDS_check_throw_info(std::this_thread::get_id() == _owner, "MPI progress requires its creating thread");
@@ -93,6 +94,8 @@ namespace DNDS::Runtime
             if (std::this_thread::get_id() != _owner)
                 std::terminate();
             if (std::uncaught_exceptions())
+                MPI::AbortIfSolverFailure("solver unwinding before MPI progress shutdown");
+            if (std::uncaught_exceptions())
                 for (const auto &pending : _pending)
                     if (!pending->done.load(std::memory_order_acquire))
                         DNDS::assert_false_info("no exception with pending MPI progress", __FILE__, __LINE__,
@@ -109,7 +112,16 @@ namespace DNDS::Runtime
         StreamEvent Import(TransferOperation operation)
         {
             CheckThread();
-            Poll();
+            Poll(); // Bound retained completion records in repeated import/wait loops.
+            // Managed begins already live in the engine inventory. Export its
+            // event directly: a worker observes publication without another
+            // standalone progress object needing to be polled first.
+            auto managed = operation.ManagedCompletion();
+            if (managed.Provider())
+            {
+                _managed.push_back(managed);
+                return managed;
+            }
             auto order = operation.CheckedOrder();
             auto pending = std::make_shared<Pending>(std::move(operation));
             _pending.push_back(pending);
@@ -121,6 +133,11 @@ namespace DNDS::Runtime
         {
             CheckThread();
             std::exception_ptr error;
+            for (auto it = _managed.begin(); it != _managed.end();)
+                if (it->Ready())
+                    it = _managed.erase(it);
+                else
+                    ++it;
             for (auto it = _pending.begin(); it != _pending.end();)
             {
                 (*it)->Finish(false);
@@ -140,6 +157,9 @@ namespace DNDS::Runtime
         {
             CheckThread();
             std::exception_ptr error;
+            for (const auto &event : _managed)
+                event.WaitHost();
+            _managed.clear();
             for (const auto &pending : _pending)
             {
                 pending->Finish(true);

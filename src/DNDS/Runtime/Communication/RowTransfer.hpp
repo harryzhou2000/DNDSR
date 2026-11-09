@@ -19,6 +19,7 @@
 namespace DNDS::Runtime
 {
     class AccessTrackingContext;
+    class StreamEvent;
     struct AccessOrder;
     /// One incoming relation edge. Destination rows need not be consecutive.
     struct RowRequest
@@ -276,6 +277,8 @@ namespace DNDS::Runtime
         TransferBinding(std::shared_ptr<const PayloadPlan::State> plan, Buffer source, Buffer destination,
                         std::shared_ptr<const Reducer> reducer, TransferTransport transport, TransferOptions options,
                         bool layoutsValid = true);
+        TransferOperation StartChecked(const ExecutionStream &stream, bool callerValid) const;
+        TransferOperation StartManaged(const ExecutionStream &stream, bool checked, bool callerValid) const;
         TransferOperation Start(ExecutionContext context, bool scheduled, std::shared_ptr<AccessTrackingContext> tracking = {}, uint64_t lane = 0, bool callerValid = true) const;
 
     public:
@@ -302,12 +305,18 @@ namespace DNDS::Runtime
         /// aborts with preflight disabled. Native providers require
         /// caller-coordinated validation.
         TransferOperation BeginScheduled(ExecutionContext context = ExecutionContext::Host(), bool callerValid = true) const;
+        /// Managed counterpart: register requests with the stream's runtime
+        /// before posting. Dropping the returned handle does not lose progress;
+        /// engine Synchronize/Close retires it on the controller. The raw-context
+        /// overload above remains explicitly caller-managed interop.
+        TransferOperation BeginScheduled(const ExecutionStream &stream, bool callerValid = true) const;
         /// MPI bridge for a checked stream. Captures its producer frontier but
         /// gives MPI a distinct lane: later stream commands do not implicitly
         /// follow outstanding requests. CPU producers are observed on the host;
         /// CUDA Direct observes this prefix, DevicePacked queues packing on it.
         /// Full Wait/Test completion makes checked consumers/reuse eligible.
         /// All ranks call this collectively, including rank-local check errors.
+        /// Registered with the runtime before posting; Close owns retirement.
         /// Stream-native providers use Enqueue instead.
         /// callerValid joins the checked-stream preflight when enabled; false
         /// aborts with preflight disabled. Scheduled access checking is separate.
@@ -322,6 +331,9 @@ namespace DNDS::Runtime
 
     class TransferOperation
     {
+        struct ManagedState;
+        std::shared_ptr<ManagedState> _managed;
+        StreamEvent ManagedCompletion() const;
         struct WorkerState;
         std::unique_ptr<WorkerState> _worker;
         struct State;

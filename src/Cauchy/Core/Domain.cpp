@@ -249,7 +249,7 @@ namespace DNDS::Cauchy
         }
         std::vector<R::TransferOperation> transfers;
         for (const auto &halo : _timeMeanHalo)
-            transfers.push_back(_engine.ChecksAccess() ? halo.BeginChecked(_stream) : halo.BeginScheduled(_stream.Context()));
+            transfers.push_back(_engine.ChecksAccess() ? halo.BeginChecked(_stream) : halo.BeginScheduled(_stream));
         for (auto &transfer : transfers)
             transfer.Wait();
         MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]

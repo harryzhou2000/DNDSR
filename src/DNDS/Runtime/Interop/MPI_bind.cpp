@@ -69,7 +69,7 @@ namespace DNDS::Runtime
         py::class_<MPIProgress>(m, "MPIProgress", "Explicit MPI progress on its creating thread, permitted by the MPI thread level. Drain before dependent CUDA work and MPI_Finalize; do not withhold progress while waiting for dependent CPU workers.")
             .def(py::init<>())
             .def("import_operation", [](MPIProgress &progress, TransferOperation &operation)
-                 { return progress.Import(std::move(operation)); }, "Consume the operation and return a portable event. Caller must poll/drain on the creating thread; no background progress is promised.")
+                 { return progress.Import(std::move(operation)); }, "Consume the operation and return a portable event. Managed begins also progress during engine synchronize/close; raw begins require poll/drain on the creating thread. No background MPI progress is promised.")
             .def("poll", &MPIProgress::Poll, py::call_guard<py::gil_scoped_release>())
             .def("drain", &MPIProgress::Drain, py::call_guard<py::gil_scoped_release>());
         py::class_<PythonDynamicTransfer>(m, "DynamicRowTransfer", "Collectively pin source and build a private destination preserving storage by default. Caller declares the width/capacity even on empty ranks, completes producers, matches construction/commit order, drains before mesh mutation, and rebuilds layout-dependent bindings. Field bundles are not atomic transactions.")

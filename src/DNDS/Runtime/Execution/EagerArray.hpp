@@ -15,6 +15,7 @@ namespace DNDS::Runtime
         using Policy = LayoutPolicy;
         ArrayStorage::Shared storage;
         AccessMode mode;
+        bool orderedHandoff = false;
     };
 
     template <class T>
@@ -29,6 +30,18 @@ namespace DNDS::Runtime
     ArrayOperand<T, true, Policy> WriteAs(Array<T> &array) { return {array.SharedStorage(), AccessMode::Write}; }
     template <class Policy, class T>
     ArrayOperand<T, true, Policy> ReadWriteAs(Array<T> &array) { return {array.SharedStorage(), AccessMode::ReadWrite}; }
+
+    /// Advanced opt-in: after GPU launch, release operand ownership on that
+    /// stream instead of retaining it to observed completion. Every remaining
+    /// caller alias must use an explicit, correctly joined ReleaseOn; ordinary
+    /// RAII of the last alias may otherwise synchronize before host progress.
+    /// CPU execution retains the normal execution-lifetime behavior.
+    template <class Operand>
+    Operand WithOrderedHandoff(Operand operand)
+    {
+        operand.orderedHandoff = true;
+        return operand;
+    }
 
     /// Values are initialized in stream order. New GPU tables need no metadata
     /// upload. For variable GPU shapes, prepare/upload metadata during setup and
@@ -88,26 +101,50 @@ namespace DNDS::Runtime
             ArrayStorage::Shared storage;
             std::shared_ptr<const ArrayLayout> layout;
             ScheduledAccess access;
+            ExecutionContext releaseContext;
+            bool orderedHandoff;
             ArrayView<Value, AccessBoundsChecks, Policy> view;
 
-            PreparedOperand(Operand operand, Device device, bool checked)
+            PreparedOperand(Operand operand, ExecutionContext context, bool checked)
                 : storage(std::move(operand.storage)), layout(storage->SharedLayout()),
-                  access(storage->Values().Reserve(operand.mode, device, checked))
+                  access(storage->Values().Reserve(operand.mode, context.device, checked)),
+                  releaseContext(context), orderedHandoff(operand.orderedHandoff)
             {
                 DNDS_check_throw_info(storage->ElementBytes() == sizeof(Value), "eager operand element size mismatch");
                 auto *pointer = static_cast<Value *>(access.Pointer(alignof(Value), sizeof(Value)));
+                const auto device = context.device;
                 const auto &rows = layout->rows;
                 ArrayView<Value, AccessBoundsChecks> dynamic{pointer, layout->Offsets(device), rows.RowCount(), rows.Width(), rows.Stride(), layout->Sizes(device), rows.Kind()};
                 view = ProjectView<Value, AccessBoundsChecks, Policy>(dynamic, rows);
             }
             void Handoff(ExecutionContext context)
             {
-                if (storage && context.device.space == MemorySpace::CUDA && storage->CanReleaseOrdered(context) && layout->CanReleaseOrdered(context))
+                if (orderedHandoff && storage && context.device.space == MemorySpace::CUDA && storage->CanReleaseOrdered(context) && layout->CanReleaseOrdered(context))
                 {
                     ArrayStorage::ReleaseHandle(storage, context);
                     ArrayLayout::ReleaseHandle(layout, context);
                     access.Handoff(context);
                 }
+            }
+            void Complete(bool success) noexcept
+            {
+                access.Complete(success);
+                // Ordinary submission owns its operands through completion.
+                // Use the known device stream for the final decrement rather
+                // than a potentially global-synchronizing cudaFree fallback.
+                try
+                {
+                    if (storage && releaseContext.device.space == MemorySpace::CUDA &&
+                        storage->CanReleaseOrdered(releaseContext) && layout->CanReleaseOrdered(releaseContext))
+                    {
+                        ArrayStorage::ReleaseHandle(storage, releaseContext);
+                        ArrayLayout::ReleaseHandle(layout, releaseContext);
+                    }
+                }
+                catch (...)
+                {
+                    std::terminate();
+                } // Retirement cannot recover.
             }
         };
     }
@@ -126,8 +163,8 @@ namespace DNDS::Runtime
     {
         using Prepared = std::tuple<Detail::PreparedOperand<Operands>...>;
         const std::vector<ScheduledBufferAccess> accesses{{operands.storage->Values(), operands.mode}...};
-        const auto device = stream.Context().device;
-        auto retained = std::make_shared<Prepared>(Detail::PreparedOperand<Operands>(std::move(operands), device, engine.ChecksAccess())...);
+        const auto context = stream.Context();
+        auto retained = std::make_shared<Prepared>(Detail::PreparedOperand<Operands>(std::move(operands), context, engine.ChecksAccess())...);
         engine.SubmitOperation(stream, [retained, kernel = std::move(kernel)](ExecutionContext context) mutable
                                { std::apply([&](auto &...operand)
                                             {
@@ -148,6 +185,6 @@ namespace DNDS::Runtime
                     }
                     (operand.Handoff(context), ...); }, *retained); }, [retained](std::exception_ptr error) noexcept
                                { std::apply([&](auto &...operand)
-                                            { (operand.access.Complete(!error), ...); }, *retained); }, accesses);
+                                            { (operand.Complete(!error), ...); }, *retained); }, accesses);
     }
 }

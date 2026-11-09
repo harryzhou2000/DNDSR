@@ -157,7 +157,7 @@ namespace DNDS::Algebra
             if (checks)
                 MPI::LocalStage(MPIInfo(_data->route.Communicator()), validate);
             _data->publication.reset();
-            auto operation = engine.ChecksAccess() ? _data->binding.BeginChecked(stream, valid) : _data->binding.BeginScheduled(stream.Context(), valid);
+            auto operation = engine.ChecksAccess() ? _data->binding.BeginChecked(stream, valid) : _data->binding.BeginScheduled(stream, valid);
             _data->active = true;
             return Operation(_data, std::move(operation), std::move(epoch));
         }

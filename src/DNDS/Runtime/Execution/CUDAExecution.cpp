@@ -59,7 +59,8 @@ namespace DNDS::Runtime
         /// recorded prefixes, never unrecorded events or future promises.
         class CUDAPrefix final : public StreamEvent::State
         {
-            std::shared_ptr<NativeStream> _stream;
+            mutable std::shared_ptr<NativeStream> _stream;
+            const int _ordinal;
             cudaEvent_t _event = nullptr;
             mutable std::vector<RetainedCommand> _commands;
             mutable std::vector<StreamEvent> _dependencies;
@@ -71,43 +72,62 @@ namespace DNDS::Runtime
             {
                 std::call_once(_retired, [&]
                                {
-                    if (!_error) _error = nativeError;
-                    for (const auto &dependency : _dependencies)
-                        try { dependency.WaitHost(); }
-                        catch (...) { if (!_error) _error = std::current_exception(); }
-                    _dependencies.clear();
-                    for (auto &command : _commands)
-                    {
-                        if (!_error) _error = command.error;
-                        if (command.cleanup)
-                            try { command.work(_stream->Context()); }
-                            catch (...) { if (!_error) _error = std::current_exception(); }
-                        if (command.retire) command.retire(_error);
-                        command = {}; // Drop captured owners before completion is visible.
-                    }
-                    _commands.clear(); });
+                                   if (!_error)
+                                       _error = nativeError;
+                                   for (const auto &dependency : _dependencies)
+                                       try
+                                       {
+                                           dependency.WaitHost();
+                                       }
+                                       catch (...)
+                                       {
+                                           if (!_error)
+                                               _error = std::current_exception();
+                                       }
+                                   _dependencies.clear();
+                                   for (auto &command : _commands)
+                                   {
+                                       if (!_error)
+                                           _error = command.error;
+                                       if (command.cleanup)
+                                           try
+                                           {
+                                               command.work(_stream->Context());
+                                           }
+                                           catch (...)
+                                           {
+                                               if (!_error)
+                                                   _error = std::current_exception();
+                                           }
+                                       if (command.retire)
+                                           command.retire(_error);
+                                       command = {}; // Drop captured owners before completion is visible.
+                                   }
+                                   _commands.clear();
+                                   _stream.reset(); // A completed event does not own a live stream.
+                               });
                 if (_error)
                     std::rethrow_exception(_error);
             }
 
         public:
-            explicit CUDAPrefix(std::shared_ptr<NativeStream> stream) : _stream(std::move(stream))
+            explicit CUDAPrefix(std::shared_ptr<NativeStream> stream) : _stream(std::move(stream)), _ordinal(_stream->ordinal)
             {
-                DeviceScope scope(_stream->ordinal);
+                DeviceScope scope(_ordinal);
                 Check(cudaEventCreateWithFlags(&_event, cudaEventDisableTiming));
             }
             ~CUDAPrefix()
             {
                 // The launcher retains every prefix until observation/drain;
                 // events may outlive it, but their work has already been retired.
-                DeviceScope scope(_stream->ordinal);
+                DeviceScope scope(_ordinal);
                 if (cudaEventDestroy(_event) != cudaSuccess)
                     std::terminate();
             }
             void Record(std::vector<RetainedCommand> &commands, std::vector<StreamEvent> &dependencies,
                         std::exception_ptr error)
             {
-                DeviceScope scope(_stream->ordinal);
+                DeviceScope scope(_ordinal);
                 Check(cudaEventRecord(_event, _stream->stream));
                 _commands.swap(commands);
                 _dependencies.swap(dependencies);
@@ -117,7 +137,7 @@ namespace DNDS::Runtime
             bool Ready() const override
             {
                 DNDS_check_throw_info(_recorded, "unrecorded CUDA prefix");
-                DeviceScope scope(_stream->ordinal);
+                DeviceScope scope(_ordinal);
                 auto status = cudaEventQuery(_event);
                 if (status == cudaErrorNotReady)
                     return false;
@@ -136,7 +156,7 @@ namespace DNDS::Runtime
             void Wait() const override
             {
                 DNDS_check_throw_info(_recorded, "unrecorded CUDA prefix");
-                DeviceScope scope(_stream->ordinal);
+                DeviceScope scope(_ordinal);
                 std::exception_ptr error;
                 try
                 {
@@ -150,7 +170,7 @@ namespace DNDS::Runtime
             }
             void WaitOn(const NativeStream &consumer) const
             {
-                DNDS_check_throw_info(_recorded && consumer.ordinal == _stream->ordinal,
+                DNDS_check_throw_info(_recorded && consumer.ordinal == _ordinal,
                                       "CUDA wait requires a recorded prefix on the same device");
                 Check(cudaStreamWaitEvent(consumer.stream, _event, 0));
             }
@@ -270,11 +290,20 @@ namespace DNDS::Runtime
         try
         {
             initialization = std::make_shared<ScheduledAccess>(result.Reserve(AccessMode::Write, context.device, checked));
-            _state->pending.push_back({{}, [initialization](std::exception_ptr error) noexcept
-                                       { initialization->Complete(!error); },
+            _state->pending.push_back({{}, [initialization, owner = result, context](std::exception_ptr error) mutable noexcept
+                                       {
+                                           initialization->Complete(!error);
+                                           try
+                                           {
+                                               owner.ReleaseOn(context);
+                                           }
+                                           catch (...)
+                                           {
+                                               std::terminate();
+                                           }
+                                       },
                                        false,
                                        {}});
-            initialization->Handoff(context);
         }
         catch (...)
         {

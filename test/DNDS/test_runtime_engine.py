@@ -28,6 +28,43 @@ def execution(request):
     return engine, create(), create(), device
 
 
+def test_close_drains_work_and_rejects_old_streams(execution):
+    engine, stream, _, device = execution
+    values = engine.allocate(stream, R.RowLayout.dense(17, 5))
+    bridge.scale_async(engine, stream, values, 2)
+    event = stream.record()
+    assert not engine.is_closed
+    engine.close()
+    assert engine.is_closed
+    assert event.ready()
+    assert values[16, 4] == 0
+    engine.close()
+    with pytest.raises(RuntimeError, match="closing or closed"):
+        stream.record()
+
+
+@pytest.mark.parametrize("checking", [False, True])
+def test_managed_mpi_handle_can_be_dropped_before_engine_close(checking):
+    mpi = DNDS.MPIInfo()
+    mpi.setWorld()
+    rank, size = MPI.COMM_WORLD.rank, MPI.COMM_WORLD.size
+    peer = (rank + 1) % size
+    engine = R.EagerEngine(2, R.AccessTrackingContext() if checking else None)
+    stream = engine.cpu_stream()
+    source = R.Array(R.RowLayout.dense(3, 2))
+    destination = R.Array(source.layout)
+    values = np.arange(6).reshape(3, 2)
+    source[:] = values + 100 * rank
+    route = R.RowTransferPlan(R.CommunicationContext(mpi), 3, 3,
+                             [R.RowRequest(peer, 2 - i, i) for i in range(3)])
+    plan = R.PayloadPlan(route, source.layout, destination.layout, source.element_schema())
+    binding = plan.bind(source, destination)
+    operation = binding.begin_checked(stream) if checking else binding.begin_scheduled(stream)
+    del operation, binding, source
+    engine.close()
+    np.testing.assert_array_equal(destination.numpy(), values[::-1] + 100 * peer)
+
+
 def test_shared_checker_rejects_unordered_alias_access_and_accepts_an_explicit_join():
     tracking = R.AccessTrackingContext()
     producer = R.EagerEngine(2, tracking)

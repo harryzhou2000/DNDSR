@@ -133,6 +133,73 @@ static void PreloadKernels()
     DNDS_check_throw_info(cudaFuncGetAttributes(&attributes, ProlongLevel) == cudaSuccess, "test prolongation preload failed");
 }
 
+TEST_CASE("Closing mixed CPU CUDA execution retains temporary operands and observes completed events")
+{
+    PreloadKernels();
+    struct OpenGate final : R::ExecutionProgress
+    {
+        std::shared_ptr<std::atomic<bool>> open;
+        explicit OpenGate(std::shared_ptr<std::atomic<bool>> value) : open(std::move(value)) {}
+        bool Poll() override
+        {
+            *open = true;
+            return true;
+        }
+    };
+    Gate gate;
+    R::EagerEngine engine(1);
+    auto cpu = engine.CreateCPUStream(); // Drain order must not block this waiter.
+    auto launcher = std::make_shared<R::CUDALauncher>(0);
+    auto gpu = engine.CreateStream(launcher);
+    R::Array<double> host(R::RowLayout::Dense(17, 5));
+    {
+        auto write = host.Write();
+        for (DNDS::index iRow = 0; iRow < 17; ++iRow)
+            for (DNDS::index j = 0; j < 5; ++j)
+                write.View()(iRow, j) = 1;
+    }
+    auto temporary = host.To(R::Device::CUDA(0));
+    R::Array<double> output(host.Layout(), R::Device::CUDA(0));
+    auto copyInput = host.To(R::Device::CUDA(0));
+    R::Array<double> copyOutput(host.Layout(), R::Device::CUDA(0));
+    std::weak_ptr<const R::ArrayStorage> retained = temporary.SharedStorage();
+    engine.RegisterProgress(std::make_shared<OpenGate>(gate.open));
+    gate.Enqueue(engine, gpu);
+    auto unusedInitialization = engine.AllocateBuffer(gpu, 128);
+    unusedInitialization = {}; // Initialization itself must retain its allocation.
+    {
+        auto source = copyInput.Storage(), destination = copyOutput.Storage();
+        R::CopyAsync(engine, gpu, source, destination);
+    }
+    copyInput = {}; // The DMA operation owns its source until completion.
+    R::SubmitArrays(engine, gpu, LaunchAdd, R::ReadWrite(temporary));
+    R::SubmitArrays(engine, gpu, [](R::ExecutionContext context, auto input, auto out)
+                    { Scale<<<7, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(input, out, 2); }, R::Read(temporary), R::Write(output));
+    const auto event = gpu.Record();
+    temporary = {};
+    CHECK_FALSE(retained.expired());
+    cpu.WaitFor(event);
+    std::atomic<bool> observed{false};
+    engine.Submit(cpu, [&](R::ExecutionContext)
+                  { observed = true; });
+    engine.Close();
+    launcher.reset(); // Completed prefix is still observable without its stream.
+    CHECK(observed.load());
+    CHECK(retained.expired());
+    CHECK(event.Ready());
+    CHECK_THROWS(gpu.Record());
+    const auto result = output.To(R::Device::Host());
+    const auto read = result.Read();
+    for (DNDS::index iRow = 0; iRow < 17; ++iRow)
+        for (DNDS::index j = 0; j < 5; ++j)
+            CHECK(read.View()(iRow, j) == 4);
+    const auto copied = copyOutput.To(R::Device::Host());
+    const auto copyRead = copied.Read();
+    for (DNDS::index iRow = 0; iRow < 17; ++iRow)
+        for (DNDS::index j = 0; j < 5; ++j)
+            CHECK(copyRead.View()(iRow, j) == 1);
+}
+
 TEST_CASE("CUDA dynamic multilevel temporaries join independent readers before final stream release")
 {
     PreloadKernels();
@@ -395,13 +462,15 @@ TEST_CASE("Eager CUDA uses explicit prefix events with retained DMA owners and a
     Gate gate;
     gate.Enqueue(engine, compute);
     auto stateBytes = state.Storage();
-    R::CopyAsync(engine, compute, upload, stateBytes);
+    R::CopyAsyncOptions copyLifetime;
+    copyLifetime.orderedDestination = true;
+    R::CopyAsync(engine, compute, upload, stateBytes, copyLifetime);
     stateBytes = {};
     CHECK_THROWS(upload.Write());
     upload = {};
     CHECK(uploadedReleased == 0);
     for (int i = 0; i < 17; ++i)
-        R::SubmitArrays(engine, compute, LaunchAdd, R::ReadWrite(state));
+        R::SubmitArrays(engine, compute, LaunchAdd, R::WithOrderedHandoff(R::ReadWrite(state)));
     CHECK(producer->NativeEventsRecorded() == 0);
     auto ready = compute.Record();
     CHECK(producer->NativeEventsRecorded() == 1);
@@ -412,11 +481,11 @@ TEST_CASE("Eager CUDA uses explicit prefix events with retained DMA owners and a
     R::SubmitArrays(engine, left, [](R::ExecutionContext context, R::ArrayView<const double> in, R::ArrayView<double> out)
                     {
         Scale<<<9, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(in, out, 2);
-        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "test Scale launch failed"); }, R::Read(state), R::Write(first));
+        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "test Scale launch failed"); }, R::WithOrderedHandoff(R::Read(state)), R::Write(first));
     R::SubmitArrays(engine, right, [](R::ExecutionContext context, R::ArrayView<const double> in, R::ArrayView<double> out)
                     {
         Scale<<<9, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(in, out, 3);
-        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "test Scale launch failed"); }, R::Read(state), R::Write(second));
+        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "test Scale launch failed"); }, R::WithOrderedHandoff(R::Read(state)), R::Write(second));
     left.WaitFor(right.Record()); // All independent readers precede release here.
     std::weak_ptr<const R::ArrayStorage> original = state.SharedStorage();
     engine.ReleaseOn(std::move(state), left);
@@ -678,7 +747,7 @@ TEST_CASE("CUDA async allocation supports dynamic tables and prepared padded CSR
     auto alias = table;
     for (int i = 0; i < 7; ++i)
     {
-        R::SubmitArrays(engine, first, LaunchAdd, R::ReadWrite(table));
+        R::SubmitArrays(engine, first, LaunchAdd, R::WithOrderedHandoff(R::ReadWrite(table)));
         R::SubmitArrays(engine, first, LaunchAdd, R::ReadWrite(padded));
         R::SubmitArrays(engine, first, LaunchAdd, R::ReadWrite(csr));
     }
@@ -687,9 +756,9 @@ TEST_CASE("CUDA async allocation supports dynamic tables and prepared padded CSR
     R::SubmitArrays(engine, last, [](R::ExecutionContext context, R::ArrayView<const double> in, R::ArrayView<double> out)
                     {
         Scale<<<9, 32, 0, static_cast<cudaStream_t>(context.stream)>>>(in, out, 3);
-        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "test scale failed"); }, R::Read(alias), R::Write(result));
+        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "test scale failed"); }, R::WithOrderedHandoff(R::Read(alias)), R::Write(result));
     auto values = std::weak_ptr<const R::ArrayStorage>(alias.SharedStorage());
-    engine.ReleaseOn(std::move(alias), last); // Final free queued on the consumer stream.
+    engine.ReleaseOn(std::move(alias), last); // Caller alias released; initialization may still retain the allocation.
     CHECK(values.expired());
     auto empty = engine.AllocateBuffer(first, 0);
     engine.ReleaseOn(std::move(empty), first);
@@ -758,11 +827,11 @@ TEST_CASE("Backend allocation resources receive the final selected free stream a
                     {
         DNDS_check_throw_info(cudaMemsetAsync(u.data, 0, u.RowCount() * u.stride * sizeof(double), static_cast<cudaStream_t>(c.stream)) == cudaSuccess,
                               "test initialization failed");
-        LaunchAdd(c, u); }, R::Write(array));
+        LaunchAdd(c, u); }, R::WithOrderedHandoff(R::Write(array)));
     engine.ReleaseOn(std::move(array), a);
     CHECK(observed.releases == 0);
     b.WaitFor(a.Record());
-    R::SubmitArrays(engine, b, LaunchAdd, R::ReadWrite(alias));
+    R::SubmitArrays(engine, b, LaunchAdd, R::WithOrderedHandoff(R::ReadWrite(alias)));
     engine.ReleaseOn(std::move(alias), b);
     CHECK(observed.releases == 1);
     CHECK(observed.stream == b.Context().stream);

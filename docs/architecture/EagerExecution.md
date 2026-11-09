@@ -30,7 +30,7 @@ engine.Synchronize();
 `Record` captures a fixed submitted prefix; later submissions cannot change
 what an existing event means. `WaitFor` enqueues an explicit dependency.
 `WaitHost` on an event observes that prefix; `Synchronize` drains every
-registered stream and then reports the first error. Dynamic loops and early
+registered stream and managed external operation together, then reports the first error. Dynamic loops and early
 exit use ordinary C++; they do not require a prepared schedule.
 
 The backend boundary is `StreamLauncher`, with `Context`, `Submit`, `WaitFor`,
@@ -67,8 +67,11 @@ classDiagram
     class CPUExecutor
     class CPULane
     class StreamEvent
-    EagerEngine --> StreamLauncher : shared registered ownership
-    ExecutionStream --> StreamLauncher : shared ownership
+    EagerEngine --> ExecutionRuntime : shared ownership
+    ExecutionRuntime --> StreamLauncher : shared registered ownership
+    ExecutionRuntime --> ExecutionProgress : pending external work
+    ExecutionStream --> ExecutionRuntime : weak association
+    ExecutionStream --> StreamLauncher : weak association
     CPULauncher --|> StreamLauncher
     CPULauncher --> CPUExecutor : shared bounded pool
     CPULauncher --> CPULane : shared ordered lane
@@ -99,6 +102,15 @@ still apply, even after failure, so cleanup cannot bypass a join with work
 on another stream. Cleanup commands execute and all registered streams drain.
 An event preceding the failure remains successful. Destruction drains and
 does not throw; call Synchronize explicitly to observe errors.
+
+`Close()` stops admission, progresses registered MPI and stream prefixes together,
+drains late unpack work, joins CPU workers, and releases the runtime's launchers.
+It is idempotent; saved streams reject further submission or recording after
+closure. Completed events remain observable. Registration, synchronization,
+closure and engine destruction belong to the creating controller thread.
+`Synchronize()` uses the same progress loop but leaves admission open.
+Managed external work must register before posting and must not strongly own
+the engine/runtime. Raw external requests and streams are still caller-managed.
 
 ## Array operators and explicit copies
 
@@ -181,6 +193,14 @@ There is no native event or stream synchronization per ordinary kernel or
 copy. NativeEventsRecorded provides a diagnostic counter for this invariant.
 Long straight-line sequences retain their pending descriptors until an
 explicit observation boundary; iteration-level Record/Drain bounds retention.
+
+Array operands and byte-copy buffers are retained through observed completion
+by default, including when the caller drops every handle after submission.
+Eligible device owners are then released with the known stream context.
+`WithOrderedHandoff` and `CopyAsyncOptions` provide explicit early handoff for
+callers that also release all remaining aliases through correctly joined
+`ReleaseOn` calls. Ordinary destruction of a last alias after early handoff can
+otherwise enter synchronous CUDA free before required host progress.
 
 CUDA-to-CUDA waits use cudaStreamWaitEvent for a recorded same-device prefix.
 CPU launchers can wait on CUDA prefixes through the common event interface.

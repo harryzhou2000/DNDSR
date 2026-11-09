@@ -880,7 +880,7 @@ namespace DNDS::Cauchy
         if (_data->settings.CheckHaloFreshness())
             Metrics().Communication()->LocalStage([&]
                                                   { work.meanHalo.RequireCurrent(state, work.meanEpoch); });
-        auto operation = engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream.Context());
+        auto operation = engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream);
         operation.Wait();
     }
     void FiniteVolume::EvaluateImpl(CFV::FVField &state, CFV::FVField *residual, Workspace &work,
@@ -955,7 +955,7 @@ namespace DNDS::Cauchy
         const auto incoming = incomingView.value_or(RHSScalarView{});
         auto exchange = [&](R::TransferBinding &binding)
         {
-            auto operation = engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream.Context());
+            auto operation = engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream);
             operation.Wait();
         };
         profile.Mark(0); // Validation/access acquisition/auxiliary core.
@@ -1091,7 +1091,7 @@ namespace DNDS::Cauchy
         {
             if (_data->settings.numerics.reconstructionBoundaryFromPolynomial)
                 updateReconstructionBoundary();
-            firstCoefficientOperation.emplace(engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream.Context()));
+            firstCoefficientOperation.emplace(engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream));
         }
         // Worker callbacks borrow the helpers and mesh scopes above. On every
         // exceptional controller exit, join before any of those resources die.
@@ -1141,7 +1141,7 @@ namespace DNDS::Cauchy
         if (primitiveViscosity)
         {
             if (overlap)
-                gradientOperation.emplace(engine.ChecksAccess() ? work.gradientHalo.BeginChecked(stream) : work.gradientHalo.BeginScheduled(stream.Context()));
+                gradientOperation.emplace(engine.ChecksAccess() ? work.gradientHalo.BeginChecked(stream) : work.gradientHalo.BeginScheduled(stream));
             else
                 exchange(work.gradientHalo);
         }
@@ -1184,7 +1184,7 @@ namespace DNDS::Cauchy
                     firstCoefficientOperation.reset();
                 }
                 else
-                    operation = engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream.Context());
+                    operation = engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream);
                 if (overlap && !corePrepared)
                     reconstructionSweep(CFV::ReconstructionRegion::Core);
                 operation.Wait();
@@ -1222,7 +1222,7 @@ namespace DNDS::Cauchy
                 work.characteristicFallbacks += PrepareFaceCharacteristics(state, work.characteristic); });
             for (int order = _data->settings.numerics.cfv.maxOrder; order >= 1; --order)
             {
-                auto operation = engine.ChecksAccess() ? work.FluxHalo().BeginChecked(stream) : work.FluxHalo().BeginScheduled(stream.Context());
+                auto operation = engine.ChecksAccess() ? work.FluxHalo().BeginChecked(stream) : work.FluxHalo().BeginScheduled(stream);
                 if (overlap)
                     _data->reconstruction.DoLimiterWBAP_3OrderTo(work.Flux(), order, _data->settings.numerics.characteristicLimiter ? &work.characteristic : nullptr,
                                                                  CFV::ReconstructionRegion::Core);
@@ -1300,7 +1300,7 @@ namespace DNDS::Cauchy
             // The final VR commit changes owned coefficients after its last
             // incoming exchange. Refresh that distinct unlimited polynomial;
             // the flux-polynomial exchange below cannot refresh these ghosts.
-            viscousOperation.emplace(engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream.Context()));
+            viscousOperation.emplace(engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream));
             viscousOwned.emplace(work.reconstruction.coefficients.Owned().Read());
             viscousCoefficients = FieldView{viscousOwned->View<R::UniformTableRows>(), {}};
         }
@@ -1337,7 +1337,7 @@ namespace DNDS::Cauchy
             rhs.Apply({mean, coefficient, gradientInput, auxiliaryInput, includeViscosity, viscousInput, incomingView, directInput, directViscousInput, meanOnly}, outputs, region, time);
         };
         const auto &fluxCoefficients = FluxReconstruction(work);
-        auto operation = engine.ChecksAccess() ? work.FluxHalo().BeginChecked(stream) : work.FluxHalo().BeginScheduled(stream.Context());
+        auto operation = engine.ChecksAccess() ? work.FluxHalo().BeginChecked(stream) : work.FluxHalo().BeginScheduled(stream);
         auto coreAuxiliary = auxiliary;
         if (coreAuxiliary.cellWaveJump)
             coreAuxiliary.cellWaveJump->ghost = {};

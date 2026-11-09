@@ -204,7 +204,7 @@ TEST_CASE("Device packing begins eagerly and overlaps owned compute with a gated
     std::atomic<bool> returned{false}, timedOut{false};
     std::thread watchdog([&]
                          {const auto limit=std::chrono::steady_clock::now()+std::chrono::seconds(5);while(!returned&&std::chrono::steady_clock::now()<limit)std::this_thread::sleep_for(std::chrono::milliseconds(1));if(!returned){timedOut=true;*open=true;} });
-    auto operation = binding->BeginScheduled(comm.Context());
+    auto operation = binding->BeginScheduled(comm);
     CHECK_FALSE(timedOut.load());
     CHECK_FALSE(operation.Test());
     R::SubmitArrays(engine, compute, [](R::ExecutionContext c, auto input, auto result)
@@ -223,9 +223,8 @@ TEST_CASE("Device packing begins eagerly and overlaps owned compute with a gated
     *open = true;
     R::MPIProgress progress;
     auto arrived = progress.Import(std::move(operation));
-    progress.Drain();
+    engine.Close(); // Runtime progresses posted MPI and late unpack before closing streams.
     CHECK(arrived.Ready());
-    engine.Synchronize();
     const auto result = retained.To(R::Device::Host()), core = output.To(R::Device::Host());
     const auto a = result.Read(), b = core.Read();
     for (I row = 0; row < 17; ++row)

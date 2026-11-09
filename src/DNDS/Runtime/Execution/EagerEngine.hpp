@@ -8,6 +8,19 @@
 
 namespace DNDS::Runtime
 {
+    struct ExecutionRuntime;
+    /// Controller-progressed accepted work. Register before initiating external
+    /// activity. Poll must not block: other streams/operations may enable it.
+    /// Return true only after access publication and request retirement. A
+    /// throw denotes a fully retired failure, never an outstanding request.
+    /// Retain actual backend/operand owners here, but never the owning engine.
+    class ExecutionProgress
+    {
+    public:
+        virtual ~ExecutionProgress() = default;
+        virtual bool Poll() = 0;
+    };
+
     enum class CommandKind
     {
         Compute,
@@ -52,6 +65,7 @@ namespace DNDS::Runtime
         std::shared_ptr<const AccessOrder> _order;
         friend class ExecutionStream;
         friend class TransferBinding;
+        friend class TransferOperation;
         friend class MPIProgress;
 
     public:
@@ -111,14 +125,15 @@ namespace DNDS::Runtime
     {
         friend class EagerEngine;
         friend class TransferBinding;
-        std::shared_ptr<StreamLauncher> _launcher;
-        std::shared_ptr<const int> _owner;
+        std::weak_ptr<StreamLauncher> _launcher;
+        std::weak_ptr<ExecutionRuntime> _runtime;
+        std::shared_ptr<StreamLauncher> LockLauncher() const;
         std::shared_ptr<AccessTrackingContext> _tracking;
         uint64_t _lane = 0;
         std::shared_ptr<void> _laneLifetime;
-        ExecutionStream(std::shared_ptr<StreamLauncher> launcher, std::shared_ptr<const int> owner,
+        ExecutionStream(std::shared_ptr<StreamLauncher> launcher, const std::shared_ptr<ExecutionRuntime> &runtime,
                         std::shared_ptr<AccessTrackingContext> tracking = {}, uint64_t lane = 0)
-            : _launcher(std::move(launcher)), _owner(std::move(owner)), _tracking(std::move(tracking)), _lane(lane)
+            : _launcher(std::move(launcher)), _runtime(runtime), _tracking(std::move(tracking)), _lane(lane)
         {
             if (_tracking)
                 _laneLifetime = std::shared_ptr<void>(_tracking.get(), [tracking = _tracking, lane](void *)
@@ -134,6 +149,9 @@ namespace DNDS::Runtime
         /// Capture only the already-submitted prefix. Later work is not covered;
         /// caller must record again before exporting that work's readiness.
         StreamEvent Record() const;
+        /// Backend integration: register controller work before posting/packing.
+        /// The runtime retains it even if all public operation handles vanish.
+        void RegisterProgress(std::shared_ptr<ExecutionProgress> operation) const;
     };
 
     /// Fully eager execution. The caller supplies dependency/release ordering.
@@ -149,8 +167,8 @@ namespace DNDS::Runtime
     /// See docs/architecture/RuntimeCallerContract.md for the complete contract.
     class EagerEngine
     {
-        struct State;
-        std::unique_ptr<State> _state;
+        std::shared_ptr<ExecutionRuntime> _state;
+        void Drain(bool closing);
 
     public:
         explicit EagerEngine(size_t hostThreads = 0, std::shared_ptr<AccessTrackingContext> tracking = {});
@@ -180,7 +198,7 @@ namespace DNDS::Runtime
         {
             static_assert(!std::is_lvalue_reference_v<T>, "ReleaseOn consumes a moved handle");
             static_assert(std::is_nothrow_move_assignable_v<std::decay_t<T>>, "release handles need noexcept move assignment");
-            DNDS_check_throw_info(stream._launcher, "invalid release stream");
+            stream.LockLauncher(); // Reject a dead/closed context before consuming the handle.
             std::vector<ScheduledBufferAccess> accesses;
             if (ChecksAccess())
             {
@@ -218,5 +236,14 @@ namespace DNDS::Runtime
         }
         /// Drain all streams even if one fails, then rethrow the first failure.
         void Synchronize();
+        /// Idempotent controller-only shutdown. Reject further submissions,
+        /// progress all registered work and streams together, then join workers.
+        /// Serialize submission with Close/Synchronize; no peer work is invented.
+        void Close();
+        bool IsClosed() const;
+        /// Register before initiating external work. No backend callbacks run
+        /// under the runtime registry lock. Only the creating thread progresses
+        /// and retires these owners. Completion is not a dependency edge.
+        void RegisterProgress(std::shared_ptr<ExecutionProgress> operation);
     };
 }

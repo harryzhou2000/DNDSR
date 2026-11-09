@@ -104,7 +104,7 @@ namespace DNDS::Cauchy
         const auto &gas = data.equation.Gas();
         const bool overlap = data.settings.execution.overlap;
         const auto begin = [&](R::TransferBinding &binding)
-        { return engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream.Context()); };
+        { return engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream); };
         MPI::LocalStage(mpi, [&]
                         { geometry.gradient.ConvertToCoefficients(gradients, data.reconstruction, target.coefficients); });
         {

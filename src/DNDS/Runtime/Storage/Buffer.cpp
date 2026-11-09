@@ -260,10 +260,24 @@ namespace DNDS::Runtime
         return Completion(std::move(state));
     }
 
+    Completion Completion::FromExternalCompletion(ExecutionContext context)
+    {
+        ValidateDevice(context.device);
+        if (context.device == Device::Host())
+        {
+            DNDS_check_throw_info(!context.stream, "host completion cannot contain a native stream");
+            return {};
+        }
+        auto state = std::make_shared<State>();
+        state->device = context.device;
+        state->stream = context.stream;
+        return Completion(std::move(state));
+    }
+
     void Completion::Wait() const
     {
 #ifdef DNDS_USE_CUDA
-        if (_state)
+        if (_state && _state->event)
         {
             DeviceScope device(_state->device.ordinal);
             CheckCUDA(cudaEventSynchronize(_state->event));
@@ -274,7 +288,7 @@ namespace DNDS::Runtime
     bool Completion::Ready() const
     {
 #ifdef DNDS_USE_CUDA
-        if (_state)
+        if (_state && _state->event)
         {
             DeviceScope device(_state->device.ordinal);
             auto status = cudaEventQuery(_state->event);
