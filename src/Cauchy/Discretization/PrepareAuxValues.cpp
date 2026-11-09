@@ -1,3 +1,4 @@
+#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
 #include "Cauchy/Discretization/AuxiliaryReduction.hpp"
 #include "DNDS/Algebra/DofAlgebra.hpp"
@@ -124,6 +125,7 @@ namespace DNDS::Cauchy
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("Cauchy auxiliary output acquisition failed");
                 for (auto &write : writes)
                     if (write)
                         write->CancelUnmodified();
@@ -192,10 +194,16 @@ namespace DNDS::Cauchy
                     const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
                     const Vector3 point{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]};
                     const auto gridVelocity = frame.GridVelocity(point);
-                    const auto right = sample.other == UnInitIndex ? FiniteVolumeDetail::BoundaryExterior(sample, gas, left, time, frame, incoming)
+                    // Physical boundaries duplicate the owner mean, matching
+                    // Euler EvaluateDt. Interfaces supply a remote point state.
+                    const auto right = sample.other == UnInitIndex ? (sample.boundary.kind == BoundaryKind::Interface ? FiniteVolumeDetail::BoundaryExterior(sample, gas, left, time, frame, incoming) : left)
                                                                    : RotateState(Load(mean, sample.other), sample.rotation);
                     const auto rightData = sample.other == UnInitIndex ? equation.PrepareFluxState(right) : prepared(sample.other, right);
-                    DNDS_check_throw_info(rightData.flow.pressure > 0 && std::isfinite(rightData.soundSpeed), "invalid boundary mean in auxiliary preparation");
+                    DNDS_check_throw_info(rightData.flow.pressure > 0 && std::isfinite(rightData.soundSpeed),
+                                          "invalid right mean in auxiliary preparation: face=" + std::to_string(iFace) +
+                                              " cell=" + std::to_string(sample.cell) + " neighbor=" + std::to_string(sample.other) +
+                                              " zone=" + std::to_string(sample.zone) + " pressure=" + std::to_string(rightData.flow.pressure) +
+                                              " soundSpeed=" + std::to_string(rightData.soundSpeed) + " time=" + std::to_string(time));
                     if (spectral)
                     {
                         convection = std::max({convection, Riemann::SignalSpeed(leftData, normal, gridVelocity), Riemann::SignalSpeed(rightData, normal, gridVelocity)});
@@ -445,7 +453,7 @@ namespace DNDS::Cauchy
         // Convenience synchronous wrapper. Production Domain owns persistent
         // output buffers and its mean binding; the numerical operator is local.
         auto input = state;
-        auto halo = Metrics().BindHalo(input);
+        auto halo = BindHalo(input);
         halo.Begin().Wait();
         AuxiliaryRequest request;
         request.meanThermodynamics = request.cellSpectralSum = true;

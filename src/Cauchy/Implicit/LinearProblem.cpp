@@ -69,7 +69,7 @@ namespace DNDS::Cauchy
           _diagonal(R::RowLayout::Dense(_pattern->partition->owned, DiagonalWidth(components, diagonal))),
           _inverse(_diagonal.Layout()), _offDiagonalStorage(offDiagonal)
     {
-        DNDS_check_throw_info(offDiagonal == OffDiagonalStorage::Assembled || offDiagonal == OffDiagonalStorage::SemiMatrixFree,
+        DNDS_check_throw_info(offDiagonal == OffDiagonalStorage::Assembled || offDiagonal == OffDiagonalStorage::DirectEvaluated,
                               "invalid off-diagonal storage mode");
         if (offDiagonal == OffDiagonalStorage::Assembled)
             _offDiagonal.emplace(Counts(_pattern->columns), components);
@@ -157,14 +157,29 @@ namespace DNDS::Cauchy
                 }
         else
         {
-            const auto matrices = Algebra::MakeEigenRowMatrices(input, _components, _components);
-            const auto inverses = Algebra::MakeEigenRowMatrices(output, _components, _components);
-            for (index iCell = 0; iCell < input.RowCount(); ++iCell)
+            const auto invert = [&](auto width)
             {
-                auto result = Direct::InvertDiagonalBlock(matrices[iCell]);
-                inverses[iCell] = result.value;
-                _inverseFallbacks += result.usedSVD;
-            }
+                constexpr int Size = decltype(width)::value;
+                const auto matrices = Algebra::MakeEigenRowMatrices<Size, Size>(input, _components, _components);
+                const auto inverses = Algebra::MakeEigenRowMatrices<Size, Size>(output, _components, _components);
+                for (index iCell = 0; iCell < input.RowCount(); ++iCell)
+                {
+                    auto result = Direct::InvertDiagonalBlock(matrices[iCell]);
+                    inverses[iCell] = result.value;
+                    _inverseFallbacks += result.usedSVD;
+                }
+            };
+            // Match the common small-block ILU kernels without per-cell
+            // dynamic Eigen temporaries. Uncommon widths keep the same policy
+            // and generic path; no equation or layout choice is inferred here.
+            if (_components == 5)
+                invert(std::integral_constant<int, 5>{});
+            else if (_components == 6)
+                invert(std::integral_constant<int, 6>{});
+            else if (_components == 7)
+                invert(std::integral_constant<int, 7>{});
+            else
+                invert(std::integral_constant<int, Eigen::Dynamic>{});
         }
         _diagonalVersion = _diagonal.Version();
         // Publish before recording the inverse generation.
@@ -190,11 +205,16 @@ namespace DNDS::Cauchy
         const auto matrix = Algebra::MakeEigenRowMatrices(d, _components, _diagonalStorage == DiagonalStorage::Block ? _components : 1);
         const auto remote = ghost ? ghost->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{};
         const auto xGhost = Algebra::MakeEigenRowMatrices(remote, _components, 1);
-        offDiagonal.WithBlocks([&](const auto &blocks)
-                               { Detail::ApplyBlockRows(x, xGhost, y, matrix, blocks, *_pattern,
-                                                        region == LinearRegion::All ? _pattern->order : region == LinearRegion::Core ? _pattern->core
-                                                                                                                                     : _pattern->dependent,
-                                                        _components, _diagonalStorage == DiagonalStorage::Block); });
+        offDiagonal.WithActions([&](const auto &blocks)
+                                {
+            const auto &rows = region == LinearRegion::All ? _pattern->order : region == LinearRegion::Core ? _pattern->core : _pattern->dependent;
+            if (_components == 5 && _diagonalStorage == DiagonalStorage::Block)
+                Detail::ApplyBlockRows<5>(Algebra::MakeEigenRowMatrices<5, 1>(owned.View<R::UniformTableRows>(), 5, 1),
+                                          Algebra::MakeEigenRowMatrices<5, 1>(remote, 5, 1),
+                                          Algebra::MakeEigenRowMatrices<5, 1>(destination.View<R::UniformTableRows>(), 5, 1),
+                                          Algebra::MakeEigenRowMatrices<5, 5>(d, 5, 5), blocks, *_pattern, rows, 5, true);
+            else
+                Detail::ApplyBlockRows(x, xGhost, y, matrix, blocks, *_pattern, rows, _components, _diagonalStorage == DiagonalStorage::Block); });
     }
     void LinearProblemContext::ApplySGS(const Field &rhs, const Field &input, Field &forward, Field &output) const
     {

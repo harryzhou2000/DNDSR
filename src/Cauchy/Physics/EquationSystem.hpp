@@ -162,6 +162,19 @@ namespace DNDS::Cauchy
                                            const Riemann::AcousticState &left, const Riemann::AcousticState &right,
                                            const Riemann::AcousticState &leftMean, const Riemann::AcousticState &rightMean,
                                            const Vector3 &normal, const Vector3 &gridVelocity = {}) const;
+        /// Common CPU flow5 dispatch for physical-field and logical-DOF RHS
+        /// adapters. EOS/energy preparation stays in the equation provider.
+        /// Extended scalar convection is a separate operation with its own
+        /// supplied dissipation speed, never an acoustic-flux fallback.
+        Riemann::FluxResult EvaluateFlowFlux(const Riemann::RiemannFlux &flux,
+                                             const Riemann::AcousticState &left, const Riemann::AcousticState &right,
+                                             const Riemann::AcousticState &leftMean, const Riemann::AcousticState &rightMean,
+                                             const Vector3 &normal, const Vector3 &gridVelocity,
+                                             const Riemann::FluxSettings &settings) const
+        {
+            const auto prepared = PrepareRiemann(flux, left, right, leftMean, rightMean, normal, gridVelocity);
+            return flux.Evaluate(prepared.Input(left, right, normal, gridVelocity), settings);
+        }
         /// Cell-mean characteristic basis for reconstruction limiting; EOS
         /// eigenstructure belongs to the equation provider, never CFV policy.
         FlowCharacteristics PrepareCharacteristics(const FlowState &left, const FlowState &right, const Vector3 &normal) const;

@@ -13,6 +13,18 @@ TEST_CASE("CPU workers require an MPI capability that permits multithreaded exec
     CHECK_NOTHROW(execution.ValidateMPIThreadSupport(MPI_THREAD_FUNNELED));
     CHECK_NOTHROW(execution.ValidateMPIThreadSupport(MPI_THREAD_MULTIPLE));
 }
+
+TEST_CASE("MPI fail-fast launch validation is an explicit execution choice")
+{
+    CHECK(C::ExecutionSettings{}.transferPreflight == "collective");
+    CHECK(C::ExecutionSettings{}.layout == "aos");
+    CHECK(C::ExecutionSettings{}.fieldGrouping == "coupled");
+    CHECK(C::ImplicitSettings{}.sourceJacobianMode == "center");
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"numerics", {{"reconstruction", "variational"}}}, {"implicit", {{"sourceJacobianMode", "rhsQuadrature"}}}}}}, 1));
+    const auto config = C::SimulationConfig::Resolve({{"defaults", {{"execution", {{"transferPreflight", "abortOnFailure"}}}}}}, 2);
+    CHECK(config.Domains()[0].settings.execution.transferPreflight == "abortOnFailure");
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"execution", {{"transferPreflight", "unchecked"}}}}}}, 2));
+}
 TEST_CASE("DITR inherits common controls and only supplied compatibility fields override them")
 {
     C::Json input{{"time", {{"method", "ditr"}}},
@@ -171,6 +183,11 @@ TEST_CASE("Cauchy implicit controls resolve through the root and reject contradi
 {
     const auto defaults = C::SimulationConfig::Resolve(C::Json::object(), 2);
     CHECK(defaults.Domains()[0].settings.implicit.residualComponents == std::vector<std::string>{"rho"});
+    CHECK(defaults.Domains()[0].settings.implicit.linear.stopping == "residual");
+    const auto fixed = C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"linear", {{"method", "ilu"}, {"stopping", "fixedCount"}}}}}}}}, 2);
+    CHECK(fixed.Domains()[0].settings.implicit.linear.stopping == "fixedCount");
+    CHECK(fixed.Root()["domains"][0]["settings"]["implicit"]["linear"]["stopping"] == "fixedCount");
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"linear", {{"method", "gmres"}, {"stopping", "fixedCount"}}}}}}}}, 2));
     const auto named = C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"residualComponents", {"rho", "flow.rhou"}}}}}}}, 2);
     CHECK(named.Domains()[0].settings.implicit.residualComponents == std::vector<std::string>{"rho", "flow.rhou"});
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"residualComponents", {0}}}}}}}, 2));
@@ -189,12 +206,23 @@ TEST_CASE("Cauchy implicit controls resolve through the root and reject contradi
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"roeDissipation", true}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"iterations", 0}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"jacobianAction", "unknown"}}}}}}, 2));
-    CHECK(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"jacobianAction", "semiMatrixFree"}}}}}}, 2)
-              .Domains()[0]
-              .settings.implicit.jacobianAction == "semiMatrixFree");
+    for (const std::string name : {"directEvaluated", "semiMatrixFree"})
+        CHECK(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"jacobianAction", name}}}}}}, 2)
+                  .Domains()[0]
+                  .settings.implicit.jacobianAction == name);
+    CHECK(C::ImplicitSettings{}.jacobianAction == "assembled");
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"linear", {{"preconditioner", "ilu"}}}, {"sgs", {{"exchangeBetweenSweeps", true}}}}}}}}, 2));
-    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"positivity", {{"rhsRelax", 0}}}}}}}}, 2));
-    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"positivity", {{"rhsReduction", "unknown"}}}}}}}}, 2));
+    CHECK(C::ImplicitILUSettings{}.ordering == "natural");
+    CHECK(C::ImplicitILUSettings{}.preconditionerCorrections == 1);
+    CHECK(C::ImplicitLinearSettings{}.componentScaling == "none");
+    const auto metric = C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"linear", {{"componentScaling", "meanState"}}}, {"ilu", {{"preconditionerCorrections", 2}}}}}}}}, 2);
+    CHECK(metric.Domains().front().settings.implicit.linear.componentScaling == "meanState");
+    CHECK(metric.Domains().front().settings.implicit.ilu.preconditionerCorrections == 2);
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"linear", {{"componentScaling", "unknown"}}}}}}}}, 2));
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"ilu", {{"ordering", "unknown"}}}}}}}}, 2));
+    CHECK(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"ilu", {{"ordering", "rcm"}}}}}}}}, 2).Domains().front().settings.implicit.ilu.ordering == "rcm");
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"positivity", {{"rhsFPPRelax", 0}}}}}}}}, 2));
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"positivity", {{"rhsFPPReduction", "unknown"}}}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"multigrid", {{"levels", 3}}}}}}}}, 2));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"multigrid", {{"levels", 1}}}}}}}}, 2));
     CHECK_NOTHROW(C::SimulationConfig::Resolve({{"time", {{"method", "bdf1"}}}, {"defaults", {{"numerics", {{"reconstruction", "variational"}, {"cfv", {{"maxOrder", 3}}}}}, {"implicit", {{"multigrid", {{"levels", 2}}}}}}}}, 2));

@@ -47,7 +47,8 @@ def test_equation_operator_frontend_composes_native_residual_and_linear_solve(mi
     zones = set().union(*MPI.COMM_WORLD.allgather(local_zones))
     for threads, overlap in [(0, False), (2, True)]:
         config = {"defaults": {
-            "execution": {"layout": "soa", "hostThreads": threads, "overlap": overlap},
+            "execution": {"layout": "soa", "hostThreads": threads, "overlap": overlap,
+                          "transferPreflight": "abortOnFailure" if overlap else "collective"},
             "initialPrimitive": [.8, .1, -.02, .03, 1],
             "numerics": {"flux": "rusanov", "faceFallback": False,
                          "reconstruction": "variational", "cfv": {"maxOrder": 3, "intOrder": 6},
@@ -110,6 +111,12 @@ def test_equation_operator_frontend_composes_native_residual_and_linear_solve(mi
         assert_state_equal(state, before, rtol=0, atol=0)
         operators.evaluate(state, residual, work, engine, stream)
         assert_state_equal(residual, reference, rtol=3e-10, atol=2e-11)
+        flux = state.zeros_like()
+        faces = operators.build_face_flux_buffer(state)
+        operators.evaluate_flux(state, flux, work, face_flux=faces)
+        operators.add_source(state, flux, work)
+        assert_state_equal(flux, block_values(residual), rtol=3e-10, atol=2e-11)
+        assert np.all(np.isfinite(faces.numpy()))
         assert_state_equal(state, before, rtol=0, atol=0)
         signal = sum(np.sum(np.abs(v)) for v in block_values(residual).values())
         assert MPI.COMM_WORLD.allreduce(signal, op=MPI.SUM) > 1e-6
@@ -154,10 +161,12 @@ def test_equation_operator_frontend_composes_native_residual_and_linear_solve(mi
         rhs = exact.zeros_like()
         problem.apply(exact, rhs)
         expected = block_values(exact)
+        problem.prepare_ilu(ordering="rcm")
         for method in ["sgs", "gmres", "ilu"]:
             settings = C.LinearSolveSettings()
             settings.method = method
             settings.preconditioner = "sgs"
+            settings.ilu_ordering = "rcm" if method == "ilu" else "natural"
             settings.max_iterations = 40
             settings.relative_tolerance = 1e-11
             settings.absolute_tolerance = 0.
@@ -167,13 +176,24 @@ def test_equation_operator_frontend_composes_native_residual_and_linear_solve(mi
             report = solver.solve(rhs)
             assert report.converged and report.usable, (method, report.iterations, report.true_residual)
             assert_state_equal(solver.solution, expected, rtol=2e-9, atol=1e-11)
+            if method == "ilu" and not mixture:
+                settings.stopping = "fixedCount"
+                fixed_solver = operators.build_linear_solver(problem, state, settings, execution)
+                fixed = fixed_solver.solve(rhs)
+                assert fixed.stop == C.LinearStop.FixedCount and fixed.usable and not fixed.converged
+                assert fixed.iterations == settings.max_iterations and fixed.inner_product_batches == 0
+                assert np.isnan(fixed.initial_true_residual) and np.isnan(fixed.true_residual)
+                assert_state_equal(fixed_solver.solution, expected, rtol=2e-9, atol=1e-11)
+                del fixed_solver
         # Compare unsplit SGS with its public staged scan, while actual MPI
         # requests own the separate input ghosts during core work.
         old, forward, unsplit, staged = [state.zeros_like() for _ in range(4)]
         problem.apply_sgs(rhs, old, forward, unsplit)
         old_halo = [operators.metrics.BindHalo(old.fields[name]) for name in old.field_names]
         active = [binding.begin() for binding in old_halo]
-        iteration = problem.begin_sgs(rhs, old, forward, staged)
+        # A zero-start scan has no old input at all. It can run while an
+        # unrelated old buffer's ghosts are written; no access lease is taken.
+        iteration = problem.begin_sgs_zero(rhs, forward, staged)
         iteration.lower(C.LinearRegion.Core)
         for transfer in active:
             transfer.wait()

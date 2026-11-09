@@ -58,6 +58,9 @@ TEST_CASE("Perfect gas molecular laws preserve Euler scaling and all property co
                 CHECK(legacy.mixtureViscosity(codeT, primitive[4], old) / expected == doctest::Approx(1).epsilon(3e-14));
                 CHECK(point.transport.conductivity / (expected * point.thermo.cp / settings.prandtl) == doctest::Approx(1).epsilon(3e-14));
                 CHECK(equation.DiffusionScale(state) / point.diffusionBound == doctest::Approx(1).epsilon(3e-14));
+                const auto thermalOnly = evaluator.Evaluate(state, {}, 0, {});
+                CHECK(thermalOnly.thermo.pressure == point.thermo.pressure);
+                CHECK(thermalOnly.transport.viscosity == 0);
                 C::FlowGradient gradient{};
                 gradient[1][1] = 2;
                 gradient[4][1] = 3;

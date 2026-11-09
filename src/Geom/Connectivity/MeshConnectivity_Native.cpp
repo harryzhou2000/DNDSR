@@ -1,3 +1,4 @@
+#include "DNDS/MPI/Failure.hpp"
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Connectivity/ConnectivityComposeRows.hpp"
 #include <algorithm>
@@ -390,6 +391,7 @@ namespace DNDS::Geom
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("native connectivity preparation failed");
                 validLocal = 0;
             }
             cone.Source().Preflight(validLocal, "local inverse relation validation failed on a rank");
@@ -428,6 +430,7 @@ namespace DNDS::Geom
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("native connectivity preparation failed");
             valid = 0;
         }
         cone.Source().Preflight(valid, "inverse relation/communicator validation failed on a rank");
@@ -508,6 +511,7 @@ namespace DNDS::Geom
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("native connectivity preparation failed");
             valid = 0;
         }
         _source.Preflight(valid, "native halo route has stale/wrong source order or nonglobal relation payload");

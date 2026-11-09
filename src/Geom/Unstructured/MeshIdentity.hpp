@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DNDS/MPI/Failure.hpp"
 #include "Geom/Connectivity/MeshRelationTypes.hpp"
 #include "DNDS/MPI/MPI.hpp"
 #include <limits>
@@ -95,6 +96,7 @@ namespace DNDS::Geom
                 }
                 catch (...)
                 {
+                    MPI::AbortIfSolverFailure("mesh identity validation failed");
                     generated = 0;
                 }
             agree(generated, "mesh namespace random generation failed");

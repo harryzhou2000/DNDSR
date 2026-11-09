@@ -25,6 +25,26 @@ def function(point):
 
 
 @pytest.mark.mpi
+def test_metric_options_match_keyword_adapter():
+    grid = mesh()
+    options = CFV.FiniteVolumeMetricOptions()
+    options.integrationOrder = 5
+    options.faceIntegrationOrder = 1
+    options.collectivePreflight = False
+    typed = CFV.FiniteVolumePlan.ConstructMetrics(grid, options)
+    adapted = CFV.FiniteVolumePlan.ConstructMetrics(
+        grid, 5, False, collective_preflight=False, faceIntOrder=1
+    )
+    assert typed.NumCellProc() == adapted.NumCellProc()
+    assert typed.NumFaceProc() == adapted.NumFaceProc()
+    for cell in range(typed.NumCell()):
+        assert typed.GetCellVol(cell) == adapted.GetCellVol(cell)
+        np.testing.assert_array_equal(typed.GetCellCent(cell), adapted.GetCellCent(cell))
+    with pytest.raises(TypeError):
+        CFV.FiniteVolumePlan.ConstructMetrics(grid, 5, False, False)
+
+
+@pytest.mark.mpi
 def test_prepared_capabilities_preserve_sweep_and_freeze_operation_contract():
     grid = mesh()
     metrics = CFV.FiniteVolumePlan.ConstructMetrics(grid)
@@ -94,7 +114,10 @@ def test_reconstruction_shared_buffers_explicit_halo_and_point_sampling(cache_en
     # second copy behind a numerical wrapper.
     assert CFV.FVField is R.Algebra.DoubleDofField
     assert shared_mean.identity == mean.owned.identity
-    metrics.BindHalo(mean).begin().wait()
+    options = R.TransferOptions()
+    assert options.preflight == R.TransferPreflight.Collective
+    options.preflight = R.TransferPreflight.AbortOnFailure
+    metrics.BindHalo(mean, options).begin().wait()
     halo = metrics.BindHalo(work.coefficients)
     for _ in range(180):
         halo.begin().wait()

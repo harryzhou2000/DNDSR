@@ -7,6 +7,12 @@ This extends RowTransferPlan / PayloadPlan / TransferBinding / TransferOperation
 Request lifetime is independent of the transport. Persistent bindings reuse
 Send_init/Recv_init requests. Transient bindings post Isend/Irecv at each Begin.
 Both default to direct MPI datatypes; HostPacked remains an explicit option.
+Completion exceptions propagate locally to the fail-fast boundary specified in
+the caller contract. `DynamicRowTransfer::Commit` waits and publishes locally;
+it does not attempt an error Allreduce after transport progression. Success on
+one rank is not evidence of distributed success. Active transfer destruction
+during exception unwinding aborts, avoiding unmatched waits before the fatal
+handler. Ordinary explicit/RAII completion still drains its requests.
 Neither mode physically permutes the source. Sender reordering is an upstream
 mesh/data operation, after which adjacent typemap sections coalesce as before.
 
@@ -37,6 +43,14 @@ live bindings cannot reserve the same tag in one context. There is no automatic
 rank-local tag sequence. All collective preparation and Begin preflights must
 occur in matching participant order, including for independent fields.
 Default options preserve an isolated communicator and persistent requests.
+
+Launch validation is independent of persistent/transient request lifetime.
+`TransferOptions::preflight` defaults to `TransferPreflight::Inherit`, which
+uses the immutable binding or route context policy. `Collective` adds an
+agreed launch rejection before posting; `AbortOnFailure` omits the agreement
+and aborts on a local launch failure. Both validate access, routing and stream
+ordering. Binding setup still agrees the effective policy across ranks. Both
+modes require the same participant order and producer/consumer discipline. See [the exception contract](RuntimeCallerContract.md#distributed-exceptions).
 
 For an unknown receive shape, compile and infer once:
 
@@ -112,12 +126,12 @@ compatibility. Custom reducer factories check the same constraint. Explicit
 MPI/POD schemas without a type tag and raw Buffer bindings remain application
 contracts: callers supply the correct typemap, field meaning and ordering.
 
-An operation retains its first completion error after draining requests.
-WaitDestinationReady, Wait and Test keep reporting it, including after a move
-or MPIProgress import. Destruction and replacement do not rerun the reducer.
-This prevents a caught transfer failure from becoming a successful dependency
-for later computation. Raw operation failure is local to the failing rank;
-DynamicRowTransfer adds collective success checking at Commit.
+A failure while completing the MPI payload or applying its reducer is terminal:
+peers may still be in transport or may already be entering their next phase.
+Abort without another agreement or a request drain. Normal completion publishes
+the output and retires its leases. Generic local execution errors can still be
+reported by an event; the production controller must not continue into MPI
+after a distributed failure.
 
 ## Dynamic receive shapes
 
@@ -125,11 +139,12 @@ DynamicRowTransfer pins a source storage/shape/value snapshot, discovers row
 lengths, allocates a private destination preserving table stride, padded capacity
 or CSR storage by default, then begins the payload. `TransferLayout::Compact()`
 explicitly requests CSR (`TransferLayout.compact()` in Python). Test/Wait
-advance payload completion. Commit collectively verifies success and returns
+advance payload completion. Commit waits successfully and returns
 the completed storage exactly once. Until then no destination handle escapes.
 Zero-length rows remain valid. Unrequested padded/CSR rows are empty; unrequested
-table rows retain their declared width with untouched values. A
-reduction failure on any rank prevents publication on all ranks at Commit.
+table rows retain their declared width with untouched values. A local reduction
+failure prevents that destination's publication; the distributed run must abort.
+There is no cross-rank rollback after arbitrary transport/completion errors.
 
 Preparation is currently synchronous and collective. Payload progression is
 nonblocking; the class does not promise asynchronous control-plane discovery

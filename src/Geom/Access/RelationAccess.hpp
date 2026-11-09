@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DNDS/MPI/Failure.hpp"
 #include "Geom/Access/EntitySpace.hpp"
 #include "Geom/Access/MeshAccess.hpp"
 #include "DNDS/Runtime/Array/RowBuilder.hpp"
@@ -251,6 +252,7 @@ namespace DNDS::Geom
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("mesh relation access failed");
             }
             _route.Context()->Preflight(valid, "companion halo route has stale/wrong source order, row extent or unpublished Array shape");
             return storage;

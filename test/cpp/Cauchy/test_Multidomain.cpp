@@ -266,6 +266,16 @@ TEST_CASE("P3 flow5 crosses a posed disk interface with dense and sparse distrib
                 CHECK_NOTHROW(sparse.GetDomain(0).Diagnostics(sparseConfig.Domains()[0].settings, {}));
                 const auto path = CheckpointPath("rotating-");
                 sparse.WriteCheckpoint(path, true);
+                {
+                    std::optional<R::Array<double>::ReadLease> heldRestart;
+                    if (mpi.rank == 0)
+                        heldRestart.emplace(sparse.GetDomain(1).Flow().Owned().Read());
+                    CHECK_THROWS(sparse.ReadCheckpoint(path));
+                }
+                // Failed publication must also restore accepted interface
+                // packets; diagnostics/CFL must not consume trial-time traces.
+                CHECK(sparse.Step() == 3);
+                CHECK(sparse.GetDomain(0).StableStep(.2) > 0);
                 sparse.Advance(.001);
                 const std::array<std::vector<double>, 2> continuation{Values(sparse.GetDomain(0)), Values(sparse.GetDomain(1))};
                 sparse.ReadCheckpoint(path);

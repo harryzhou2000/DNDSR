@@ -200,7 +200,8 @@ namespace DNDS::Cauchy::Bindings
             .value("Block", DiagonalStorage::Block);
         py::enum_<OffDiagonalStorage>(m, "OffDiagonalStorage")
             .value("Assembled", OffDiagonalStorage::Assembled)
-            .value("SemiMatrixFree", OffDiagonalStorage::SemiMatrixFree);
+            .value("DirectEvaluated", OffDiagonalStorage::DirectEvaluated)
+            .value("SemiMatrixFree", OffDiagonalStorage::DirectEvaluated);
         py::enum_<LinearRegion>(m, "LinearRegion")
             .value("All", LinearRegion::All)
             .value("Core", LinearRegion::Core)
@@ -242,6 +243,13 @@ namespace DNDS::Cauchy::Bindings
                      &LinearProblemContext::BeginSGS, py::const_),
                  py::arg("rhs"), py::arg("input"), py::arg("forward"), py::arg("output"),
                  py::arg("middle_exchange") = false, py::call_guard<py::gil_scoped_release>(), Local)
+            .def(
+                "begin_sgs_zero",
+                py::overload_cast<const EquationDofs &, EquationDofs &, EquationDofs &, bool>(
+                    &LinearProblemContext::BeginSGSZero, py::const_),
+                py::arg("rhs"), py::arg("forward"), py::arg("output"), py::arg("middle_exchange") = false,
+                "Dedicated statically selected zero-start SGS. No old input allocation or read; exchange forward before Upper only if middle_exchange is enabled.",
+                py::call_guard<py::gil_scoped_release>(), Local)
             .def("apply_sgs",
                  py::overload_cast<const EquationDofs &, const EquationDofs &, EquationDofs &, EquationDofs &>(
                      &LinearProblemContext::ApplySGS, py::const_),
@@ -249,7 +257,7 @@ namespace DNDS::Cauchy::Bindings
                  py::call_guard<py::gil_scoped_release>(), Local)
             .def("prepare_ilu", &LinearProblemContext::PrepareILUStructure, py::arg("fill") = 0,
                  py::arg("core_first") = true, py::arg("local_parts") = std::vector<index>{},
-                 py::call_guard<py::gil_scoped_release>(), Local)
+                 py::arg("ordering") = "natural", py::call_guard<py::gil_scoped_release>(), Local)
             .def("factorize_ilu", &LinearProblemContext::FactorizeILU, py::call_guard<py::gil_scoped_release>(), Local)
             .def("apply_ilu",
                  py::overload_cast<const EquationDofs &, EquationDofs &, EquationDofs &>(
@@ -260,11 +268,14 @@ namespace DNDS::Cauchy::Bindings
             .def(py::init<>())
             .def_readwrite("method", &LinearSolveSettings::method)
             .def_readwrite("preconditioner", &LinearSolveSettings::preconditioner)
+            .def_readwrite("stopping", &LinearSolveSettings::stopping)
             .def_readwrite("max_iterations", &LinearSolveSettings::maxIterations)
             .def_readwrite("subspace", &LinearSolveSettings::subspace)
             .def_readwrite("sgs_sweeps", &LinearSolveSettings::sgsSweeps)
             .def_readwrite("ilu_fill", &LinearSolveSettings::iluFill)
+            .def_readwrite("ilu_preconditioner_corrections", &LinearSolveSettings::iluPreconditionerCorrections)
             .def_readwrite("ilu_core_first", &LinearSolveSettings::iluCoreFirst)
+            .def_readwrite("ilu_ordering", &LinearSolveSettings::iluOrdering)
             .def_readwrite("exchange_between_sweeps", &LinearSolveSettings::exchangeBetweenSweeps)
             .def_readwrite("relative_tolerance", &LinearSolveSettings::relativeTolerance)
             .def_readwrite("absolute_tolerance", &LinearSolveSettings::absoluteTolerance);
@@ -277,7 +288,8 @@ namespace DNDS::Cauchy::Bindings
             .value("IterationLimit", Linear::LinearStop::IterationLimit)
             .value("ArnoldiBreakdown", Linear::LinearStop::ArnoldiBreakdown)
             .value("PreconditionerBreakdown", Linear::LinearStop::PreconditionerBreakdown)
-            .value("NonFinite", Linear::LinearStop::NonFinite);
+            .value("NonFinite", Linear::LinearStop::NonFinite)
+            .value("FixedCount", Linear::LinearStop::FixedCount);
         py::class_<Linear::LinearIterationReport>(m, "LinearIterationReport")
             .def_readonly("stop", &Linear::LinearIterationReport::stop)
             .def_readonly("converged", &Linear::LinearIterationReport::converged)
@@ -286,12 +298,14 @@ namespace DNDS::Cauchy::Bindings
             .def_readonly("initial_true_residual", &Linear::LinearIterationReport::initialTrueResidual)
             .def_readonly("true_residual", &Linear::LinearIterationReport::trueResidual)
             .def_readonly("operator_applications", &Linear::LinearIterationReport::operatorApplications)
+            .def_readonly("inner_product_batches", &Linear::LinearIterationReport::innerProductBatches)
             .def_readonly("preconditioner_applications", &Linear::LinearIterationReport::preconditionerApplications);
         py::class_<EquationLinearSolver>(
             m, "EquationLinearSolver",
             "Native SGS/left-GMRES/ILU orchestration. Matching collective calls and producer completion are required. Solution aliases reusable scratch; clone before another solve.")
             .def("solve", &EquationLinearSolver::Solve, py::arg("rhs"), py::arg("initial_guess") = nullptr,
-                 py::call_guard<py::gil_scoped_release>(), Collective)
+                 py::arg("component_scales") = std::vector<real>{}, py::call_guard<py::gil_scoped_release>(),
+                 Collective)
             .def_property_readonly("solution", [](const EquationLinearSolver &solver)
         {
             return solver.Solution();
@@ -347,7 +361,11 @@ namespace DNDS::Cauchy::Bindings
             m, "PolynomialMultigrid",
             "Native same-cell spatial p-FAS. Retains its finest stage solver and mesh. Apply one cycle inside a caller's nonlinear loop, with other-stage source terms frozen; no temporal-pMG.")
             .def("apply_cycle",
-                 py::overload_cast<const EquationDofs &, real, real, real, int, real>(&PolynomialMultigrid::ApplyCycle),
+                 [](PolynomialMultigrid &multigrid, const EquationDofs &source, real mass, real rhsScale, real time,
+                    int stage, real pseudoCFL)
+        {
+            return multigrid.ApplyCycle(source, mass, rhsScale, time, stage, pseudoCFL);
+        },
                  py::arg("source"), py::arg("inverse_dt"), py::arg("rhs_scale"), py::arg("time") = 0,
                  py::arg("stage") = 0, py::arg("pseudo_cfl") = 0, py::call_guard<py::gil_scoped_release>(), Collective)
             .def("solve", py::overload_cast<const EquationDofs &, real, real, real, int>(&PolynomialMultigrid::Solve),
@@ -387,6 +405,43 @@ namespace DNDS::Cauchy::Bindings
         },
                  py::arg("state"), py::arg("residual"), py::arg("workspace"), py::arg("engine"), py::arg("stream"),
                  py::arg("time") = 0, py::call_guard<py::gil_scoped_release>(), Collective)
+            .def(
+                "build_face_flux_buffer",
+                [](const EquationOperators &op, const EquationDofs &u)
+        {
+            return R::PythonArray::Share(op.fv.BuildFaceFluxBuffer(u.ComponentNumber()));
+        }, py::arg("state"),
+                "Allocate caller-owned integrated negative outward face flux, in AuxiliaryFaces order and the local anchor cell frame. No source or halo.")
+            .def("prepare_reconstruction",
+                 [](const EquationOperators &op, EquationDofs &u, EquationWorkspace &w, R::EagerEngine &e,
+                    const R::ExecutionStream &s, real t)
+        {
+            op.fv.PrepareReconstruction(u, *w.value, e, s, t);
+        },
+                 py::arg("state"), py::arg("workspace"), py::arg("engine"), py::arg("stream"), py::arg("time") = 0,
+                 py::call_guard<py::gil_scoped_release>(), Collective)
+            .def(
+                "evaluate_flux",
+                [](const EquationOperators &op, const EquationDofs &u, EquationDofs &r, EquationWorkspace &w,
+                   R::PythonArray *faces, real t)
+        {
+            std::optional<R::Array<real>> buffer;
+            if (faces)
+                buffer.emplace(faces->AsArray<real>());
+            py::gil_scoped_release release;
+            op.fv.EvaluateFlux(u, r, *w.value, CFV::ReconstructionRegion::All, t, buffer ? &*buffer : nullptr);
+        },
+                py::arg("state"), py::arg("residual"), py::arg("workspace"), py::arg("face_flux") = nullptr,
+                py::arg("time") = 0,
+                "Local flux-only overwrite using a completed evaluate publication at the same state/time. Input halos must be ready. Optional face array is shared and overwritten; release views first. No reconstruction or transfer. Caller coordinates failures.")
+            .def(
+                "add_source",
+                [](const EquationOperators &op, const EquationDofs &u, EquationDofs &r, EquationWorkspace &w, real t)
+        {
+            op.fv.AddSource(u, r, *w.value, t);
+        }, py::arg("state"), py::arg("residual"), py::arg("workspace"), py::arg("time") = 0,
+                py::call_guard<py::gil_scoped_release>(),
+                "Local additive volume source using completed evaluate preparation at the same state/time. Includes rotation, RANS and chemistry. P0 retains physical source gradients. Output must be initialized and distinct; no halo exchange or reconstruction. Release views and coordinate failures.")
             .def("evaluate_mean",
                  [](const EquationOperators &op, EquationDofs &u, EquationDofs &r, MeanWorkspace &w, R::EagerEngine &e,
                     const R::ExecutionStream &s, real t)
@@ -471,9 +526,9 @@ namespace DNDS::Cauchy::Bindings
                  [](const EquationOperators &op, std::shared_ptr<LinearProblemContext> p, const EquationDofs &u,
                     LinearSolveSettings settings, LinearExecution execution)
         {
-            return std::make_unique<EquationLinearSolver>(std::move(p), u, [metrics = op.fv.Metrics()](Field &field)
+            return std::make_unique<EquationLinearSolver>(std::move(p), u, [fv = op.fv](Field &field)
             {
-                return metrics.BindHalo(field);
+                return fv.BindHalo(field);
             }, settings, execution);
         },
                  py::arg("problem"), py::arg("prototype"), py::arg("settings") = LinearSolveSettings{},

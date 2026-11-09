@@ -13,9 +13,63 @@ The [Python operator guide](../guides/python_cauchy_operators.md) describes shar
 logical handles, configured native FV/linear composition, communicator lifetime,
 GIL boundaries and caller-owned halo/collective ordering.
 
-Current CPU scope (November 5): configured flow5, SA/Wilcox/SST/realizable-k-epsilon
+## Direct FV and explicit residual phases
+
+Direct FV `gradient` reconstructs from physical conservative gradients with
+columns `component*dimension+direction`, using displacement from the volume
+barycenter in the parent cell's axes. Its point loop does not query a P1 basis
+or consume Taylor coefficients. P0 (`firstOrderConvection`) reads cell means
+and uses only the normal jump for face viscosity. **Volume sources still need
+and receive physical gradients on P0**; this includes RANS production and its
+approximate implicit source derivative. P1 VR continues to use the VR path.
+Constant face reconstruction with RANS independently prepares the configured
+mean gradients for its volume sources; it does not reconstruct face values or
+add those gradients to P0 face viscosity. Thus selecting constant convection
+does not silently turn off gradient-dependent production or destruction.
+
+The current limiter/PP and warm-guess compatibility boundary remains explicit:
+direct gradients are converted to linear coefficients for those facilities,
+then the accepted linear modes are projected once into physical gradients.
+`GradientPlan::ExtractLinearGradients` performs that projection without basis
+evaluation and supports owned or already exchanged ghost rows. This bridge is
+outside the direct RHS loop; it is not a new interpretation of coefficient units.
+
+For flow5, `RHSOperator::ApplyFlux` overwrites integrated flux residuals and
+`AddSource` adds owned-cell frame sources. `Apply` invokes the same two blocks.
+Raw calls require caller-retained array leases, ready halos, disjoint output,
+and initialization before source-add. `RHSReadViews::conservativeGradient`
+supplies direct P1 gradients; `viscousConservativeGradient` optionally supplies
+distinct unlimited viscous gradients. P0 does not read either face input.
+
+For logical equations, `PrepareReconstruction` prepares means/gradients,
+reconstruction/limiting and halos without allocating a dummy residual or doing
+flux/source work. `EvaluateFlux` and `AddSource` consume that publication (or a
+completed `Evaluate` publication) at the same state, polynomial and time.
+They perform no MPI or reconstruction. Sources share the composed RHS's RANS,
+chemical and rigid-frame functions. Source-add requires initialized output;
+the caller serializes workspace use and coordinates rank-local failures.
+Generation checks reject stale preparations. Full `Evaluate` uses the same
+numerical blocks and the existing coordinated eager/overlap pipeline.
+
+`BuildFaceFluxBuffer(components)` allocates caller-owned local face output.
+Flow5 uses `RHSWriteViews::faceFlux`; logical `EvaluateFlux` accepts its array.
+Rows follow `AuxiliaryFaces()`, storing **integrated negative outward flux**
+in the local anchor cell's axes, not flux density or per-quadrature values.
+Periodic cell accumulation rotates vector components and changes side sign.
+Core/dependent calls overwrite selected faces; their face sets can overlap.
+There is no implicit inter-rank flux transfer or freshness promise for untouched
+rows. Hold output leases through execution and release views before reuse.
+The whole-equation kernel can use this output as its accumulation scratch;
+the flow5 cell-incidence kernel exports values when requested. Without the
+optional output, existing kernel-specific scratch/accumulation remains valid.
+
+Current CPU scope (November 6): configured flow5, SA/Wilcox/SST/realizable-k-epsilon
 and optional ideal-mixture chemistry share logical DOF bindings, implicit time
-equations, native archives and observation. Extended profiles use Rusanov,
+equations, native archives and observation. Perfect-gas extended profiles use the
+same flow5 Riemann dispatcher, including Roe_M1; general-mixture preparation
+currently supports Rusanov. Extended wave/pressure-stencil producers remain
+unavailable, so such flux selections need their explicit supplied scalar inputs
+(`riemann.useStencil=false`) or fail at setup. Extended profiles use
 polynomial viscosity, component WBAP and Euler-compatible implicit/rec PP;
 missing characteristic/LVR/interface adapters
 fail explicitly. QCR and the existing SA/SST DES formulas are connected below.
@@ -25,6 +79,14 @@ Both coupled chemistry and Euler's physical Strang/CVODE composition have
 focused distributed gates and short matched spatial flame checks.
 Earlier implementation checkpoints in this document describe their then-current
 limits; they do not override the current profile summary or runtime guards.
+
+Extended convection is separate from flow5: `AdvectedScalarFlux` consumes
+conservative scalar values, ALE-relative normal velocities and one supplied
+nonnegative dissipation speed. Its formula is
+`0.5*(vnL*qL + vnR*qR - lambdaScalar*(qR-qL))`. The current preparation uses
+Euler's contact-wave magnitude; for Rusanov it explicitly selects the average
+absolute normal velocity rather than its acoustic diagnostic magnitude. Pressure,
+acoustics and EOS recovery remain outside the scalar and Riemann kernels.
 
 ```mermaid
 flowchart TD
@@ -324,6 +386,130 @@ and physical RANS/flame acceptance remain separate work.
 
 ## Logical rows in coupled linear algebra
 
+### Bounded CPU view specialization
+
+`EquationDofs` remains a dynamic owner. `execution.fieldGrouping` defaults to
+`coupled` (one allocation); it may instead select `equationBlocks` (separate
+flow/RANS/species allocations), independently of `execution.layout`. Storage grouping never changes
+which equations the linear system couples. The same blocked access works for
+either grouping:
+
+```cpp
+auto read = state.ReadOwned();
+auto flow = read.Block<5>("flow").owned; // one width check; static flow5
+auto rans = read.Block("rans").owned;   // dynamic extension width
+auto species = read.Block("species").owned;
+auto tableFlow = flow.AsTable();        // optional: checked AoS projection
+for (DNDS::index iCell = 0; iCell < tableFlow.RowCount(); ++iCell)
+    ConsumeFlow(tableFlow[iCell]);      // static size 5, component stride 1
+```
+
+`AsTable()` rejects SoA/AoSoA; generic code uses the original strided block view.
+Its parent retains the **complete** physical width and pitch. A flow5 subrange
+inside a six-equation row still advances by the six-equation parent's pitch,
+including any padding. Neither projection allocates, copies payloads, changes
+metadata, or acquires another lease. Read blocks provide the same static shape
+for their separate owned/ghost views. An owned-only scope exposes zero ghost
+rows. Retain the originating scope through all actual uses of borrowed views.
+
+Whole-equation kernels use `EquationViewLayout` and
+`DispatchCPUEquationViews<Kind,Width>(kernel, layouts...)` from
+`State/EquationViews.hpp`. The operator hand-builds its preparation branches;
+the helper constructs only the explicitly requested family/width. The default
+is generic. Families and widths 5/6/7 are optional independently per operator,
+and are enabled gradually with correctness/performance evidence. Named row
+blocks resolve in preparation. RHS starts with the generic view. Pointwise
+algebra and products opt into only dynamic-width combined AoS when all operands
+qualify; they retain the generic fallback and the same loop template. Existing
+SGS/action specializations remain local. Matched timing gates each optimization.
+
+The numerical loop is a shared template. Its operator chooses whether to use
+static width, known AoS indexing, or generic strided access. Explicit view
+projections allocate no payloads and preserve physical parent pitch.
+
+```text
+EquationDofs (dynamic physical handles + immutable logical bindings)
+  Read/WriteScope (allocation/shape owners + leases)
+    Block<5>(flow) / Block(rans) / Block(species) (borrowed views)
+      CPU prologue: operator-owned layout/width branches
+        AoS 5/6/7       -> fixed-width row views
+        other AoS       -> dynamic-width table views
+        mixed/SoA/AoSoA -> generic strided block views
+          one templated numerical kernel
+```
+
+The Runtime Array layer also allows explicitly requested
+`FixedRows<N>`/`FixedRows<N,Pitch>`, `ColMajorTable`,
+`FixedWidthRows<ColMajorTable,N>` and `TiledColMajorTable<W>` access policies.
+These policies specialize access, not ownership. They remain available for
+backend-specific kernels. CPU operators choose their own subset of suggested
+specializations; shared construction does not instantiate a mandatory matrix.
+Checks run at projection/dispatch time. Scalar
+bounds assertions follow the ordinary `AccessBoundsChecks` build policy.
+
+Ordinary `view(iCell,j)` and `view[iCell][j]` return references to the original
+allocation, including split and strided storage. Row construction/indexing never
+packs, synchronizes or produces an Eigen map. Dense numerical algorithms may
+explicitly call `Algebra::PackEigenRow`/`UnpackEigenRow` with scratch owned and
+sized by that operator before its loops. The packing reference is overwritten
+by the next pack into the same scratch. Specialized dense/AoS paths may explicitly
+construct `MakeEigenRowMatrices`; this is not an implicit row-view conversion.
+User code can likewise request a checked dense adapter or assemble a compatible
+Eigen map manually, retaining the original leases and full stride information.
+
+Compile-time inspection is available without constructing a row. Runtime
+`ArrayView` exposes `layout_kind`, `is_dynamic`, `row_width`, `row_capacity`,
+`row_stride` and `component_stride`; its `RowSpan` exposes width/capacity and
+component stride. Only use `layout_kind` as a compile-time guarantee when
+`!is_dynamic`. A row span's physical parent layout is intentionally not inferred
+from its element stride: SoA and tiled parents can produce equivalent strided
+rows. Equation block views forward parent layout/stride traits and retain their
+own logical width. Whole-equation views/rows expose `kind`, `row_width`,
+`has_single_parent`, `has_static_layout` and `component_stride`. A generic view
+keeps unknown traits dynamic even when its runtime binding happens to be AoS.
+
+```cpp
+auto row = u[iCell]; // Borrowed, no copy of numerical values.
+using Row = decltype(row);
+if constexpr (Row::has_single_parent)
+{
+    auto *p = row.data();
+    if constexpr (Row::component_stride == 1)
+        value = p[j];
+    else
+        value = p[j * row.ElementStride()];
+}
+// For a split view use row.Flow()/RANS()/Species()/Block(iBlock):
+// each segment supplies data(), ElementStride(), size() and row-width traits.
+```
+
+No single `data()` is supplied for a generic/split whole-equation row: its
+components may belong to unrelated allocations. The explicitly combined row
+families supply this accessor without inventing a packed representation.
+These plain views/rows are trivially copyable and standard-layout, with
+device-callable indexing and no owning handles. This is the useful kernel-ABI
+contract; default member initializers need not satisfy the stricter historical
+C++ POD definition. Their host metadata owners (`EquationViewLayout` and access
+scopes) are not kernel arguments. Runtime Array device access still requires
+device-accessible payload/shape buffers and retained owners/leases through
+execution. Copying a trivially copyable view never uploads its pointed-to data.
+
+For Cauchy CUDA, the chosen direction is dedicated kernels for expected layouts
+and physical profiles, not interpretation of a dynamically registered DOF
+bundle on device. Host dispatch resolves the CPU registry and passes component
+views directly, or a statically composed POD holding inline flow/RANS/species
+views with absent segments represented by a type. Kernels may have different
+loop mappings/staging for AoS, SoA, tiled or split storage; sharing the CPU
+generic blocked-view loop is optional. Keep supported choices bounded and reject
+missing kernels explicitly. Flow5 is initial; flow4 is a later incompressible
+profile. RANS/species presence, widths and layout choices are explicit dispatch
+inputs, not inferred physics from total width. A CUDA compile-only probe of
+generic descriptor-based views proves technical device-callability, not adoption
+of that interface or automatic GPU registry upload. Solver CUDA implementation
+is deferred while the current goal concerns CPU correctness/performance.
+
+### Prepared auxiliary values and logical dense rows
+
 `BeginAuxValues(EquationDofs, outputs, time, workers)` prepares the same optional
 `AuxiliaryValues` packet for separate or coupled equation fields. The CPU scope
 reserves requested outputs before writing, retains owned input through Core,
@@ -452,11 +638,9 @@ may differ. FV workspace setup uses this same check. The binder receives each
 native physical field in order, reuses the domain's row mapping, and coordinates
 its own failures. Callers keep field handles/layouts and the matrix stable,
 release debug views, and retain MPI owners on the controller. Per-kernel
-`collectiveChecks=false` is caller-ordered eager execution; setup and solve-entry
-checks remain collective. Optional local linear/nonlinear/multigrid phases
-omit successful safety agreement but abort on local failure before more MPI.
-Candidate acceptance and numerical norms remain collective. Off mode does not
-offer a recoverable rank-local retry. This is synchronous CPU orchestration, not a queued
+`collectiveChecks=false` is caller-ordered eager execution; setup agreement
+remains collective, but repeated solve-entry agreement is the caller's duty.
+This is synchronous CPU orchestration, not a queued
 CUDA implementation.
 
 ```text
@@ -497,18 +681,23 @@ negative rotation-source derivative; scalar entries use the existing flow5
 angular-speed bound. No equivalent gamma is substituted. Roe characteristics
 are explicitly unavailable in this whole-equation producer.
 
-Chemical Jacobians preserve Euler's volume integration of derivatives at the
-reconstructed source quadrature values. For nonconstant chemistry, pass the
-`sourceReconstruction` workspace from a successful current `Evaluate`. Its
-mean/coefficient binding, generations and time must match; missing/stale input
-fails before matrix writes. The producer reads the RHS's already sampled source
-values and weights, uses the explicit chemistry worker and adds the negative
-integrated derivative in logical order. Coefficients are frozen for this
-approximation; it does not differentiate the reconstruction solve. Constant
+Approximate source Jacobians use one cell-mean state per owned cell and multiply
+the derivative by its cell volume. They do not traverse RHS source quadrature,
+even at high reconstruction degree. RANS additionally consumes center physical
+gradients from the retained reconstruction; P0 face viscosity does not remove
+those source gradients. Chemical derivatives use the explicit chemistry worker
+and are inserted with the negative residual-derivative sign in logical order.
+The empty independent-species case has no chemical derivative.
+
+For RANS or nonconstant chemistry, pass the `sourceReconstruction` workspace
+from current spatial/correction preparation. Its mean/coefficient binding,
+generations and time must match; missing or stale input fails before matrix
+writes. This provenance validates the frozen reconstruction inputs, not a
+high-order integration policy for the approximate matrix. Constant chemical
 reconstruction may omit the workspace and use the equivalent mean/volume term.
-The empty independent-species case has no chemical derivative. Changes confined
-to coefficients invalidate source sampling even if the mean auxiliaries remain
-current. A new RHS attempt invalidates the previous source publication.
+A new RHS attempt invalidates the previous source publication. The true RHS
+source evaluation keeps its configured quadrature independently; this matrix
+does not differentiate the reconstruction solve.
 
 ```text
 PrepareJacobian
@@ -916,8 +1105,10 @@ the index locations of mixture thermal references and chemical derivatives.
 The C++ full-state finite-volume operator accepts SA, Wilcox k-omega, SST and
 realizable k-epsilon, with the existing SA/SST DES formulas. It
 requires the mesh's published nodal wall field and samples it with the configured
-positive `numerics.wallDistanceFloor` (default `1e-10`). Sources and the positive
-implicit destruction diagonal are integrated on cell quadrature; viscous face
+positive `numerics.wallDistanceFloor` (default `1e-10`). RHS sources are
+integrated on cell quadrature. The positive approximate implicit destruction
+diagonal instead uses one cell mean, cell volume, mean wall input and current
+polynomial gradients sampled at the cell center; viscous face
 fluxes add turbulent stress/heat/species transport and model scalar diffusion.
 Aux diffusion bounds include turbulent transport. Two-equation viscosity uses
 an explicit conservative mean-gradient input, described below.
@@ -927,9 +1118,10 @@ SA no-slip quadrature values use zero physical face value and reflected exterior
 value, including Euler's compile-time zero-interior wall convention for the
 flux. Prescribed boundaries require `ransConservative.rhoNuTilde`; inflow/outflow
 uses velocity relative to the moving boundary. Correction preparation refreshes
-RANS destruction together with sampled source state; publication cannot pair a
-new mean with an old destruction diagonal. Chemical rates and the existing RHS
-remain untouched by this refresh.
+sampled source-state provenance. Approximate source derivatives are evaluated
+from current means and center gradients during Jacobian preparation, so a new
+mean cannot consume an old destruction diagonal. Chemical rates and the RHS
+remain untouched by correction-only preparation.
 
 `InitializeConstant` accepts a complete named conservative RANS map as its last
 argument, and initializes flow, RANS and species through their logical blocks.
@@ -1010,6 +1202,15 @@ cannot supply the isothermal viscosity. Epsilon retains interior reconstructed
 density in its target. These point protocols are tested for both perfect gas
 and temperature-dependent mixture viscosity, independently of spatial model
 activation. The SA zero-interior compile-time wall fix applies only to SA.
+
+With `USE_FIX_ZERO_SA_NUT_AT_WALL`, the face convection pair uses zero SA on
+both sides of a no-slip wall. Viscosity has a distinct input contract inherited
+from Euler: retain the original interior conservative SA value for the normal
+jump against zero exterior SA. The property/transport face mean stays zero SA.
+The retained scalar is point-local scratch; neither the cell mean nor a later
+face sees a mutation. Dropping this original interior value removes the wall SA
+diffusive flux. A focused cube test checks its magnitude independently of the
+volume source and verifies that owned means stay unchanged.
 
 `TurbulentNormalFlux` provides Euler's two-equation `2*rhoK/3` isotropic stress
 and pressure work at the arithmetic conservative face state. Energy work uses

@@ -13,7 +13,10 @@ def main():
         [args.mpi, "-np", "2", args.exe, "--preflight-off-failure"],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=15,
     )
-    if result.returncode == 0 or "collective preflight disabled; aborting" not in result.stdout:
+    # The fatal handler's prefix distinguishes an explicit abort from an
+    # uncaught exception with the same validation message.
+    diagnostic = "DNDS fatal MPI error on rank 0: transfer access/stream preflight failed on a rank"
+    if result.returncode == 0 or diagnostic not in result.stdout:
         raise RuntimeError(f"Expected explicit preflight-off MPI abort, got {result.returncode}:\n{result.stdout}")
 
 

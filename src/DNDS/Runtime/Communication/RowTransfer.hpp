@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DNDS/MPI/Failure.hpp"
 #include "DNDS/Runtime/Array/Array.hpp"
 #include "DNDS/Runtime/Communication/TransferLayout.hpp"
 #include "DNDS/Runtime/Storage/ElementSchema.hpp"
@@ -240,6 +241,7 @@ namespace DNDS::Runtime
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("MPI payload buffer validation failed");
                 return false;
             }
         }

@@ -84,12 +84,15 @@ namespace DNDS::Algebra
                 {
                     // Drain for lifetime safety, but unobserved/failed work must
                     // not silently certify freshness. Explicit Wait/Test reports errors.
-                    try
+                    if (!std::uncaught_exceptions())
                     {
-                        _operation.Wait();
-                    }
-                    catch (...)
-                    {
+                        try
+                        {
+                            _operation.Wait();
+                        }
+                        catch (...)
+                        {
+                        }
                     }
                     _data->publication.reset();
                     _data->active = false;

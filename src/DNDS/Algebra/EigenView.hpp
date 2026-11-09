@@ -6,26 +6,21 @@
 
 namespace DNDS::Algebra
 {
-    /// Dense block kernels keep their ordinary Eigen maps for one physical
-    /// field. A logical component view gathers into caller-owned row scratch.
-    /// Scratch is allocated once per operator, never once per row/neighbor.
-    template <class Rows, class Vector>
-    auto ReadEigenRow(Rows rows, index iRow, Vector &) { return rows[iRow]; }
+    /// Explicit CPU packing for a dense numerical kernel. Logical row/scalar
+    /// indexing itself never packs or creates an Eigen map. The caller owns
+    /// and sizes scratch before its loops; the returned reference borrows it
+    /// until the next packing operation into the same scratch.
     template <class T, class Vector>
-    auto ReadEigenRow(DofComponentView<T> rows, index iRow, Vector &scratch)
+    auto PackEigenRow(DofComponentView<T> rows, index iRow, Vector &scratch)
     {
         for (index j = 0; j < rows.ComponentNumber(); ++j)
             scratch[j] = rows(iRow, j);
         return Eigen::Ref<const Vector>(scratch);
     }
-    template <class Rows, class Vector>
-    auto WriteEigenRow(Rows rows, index iRow, Vector &) { return rows[iRow]; }
+    /// Explicit inverse of PackEigenRow. No allocation or synchronization;
+    /// the caller retains the logical output's write lease through this copy.
     template <class Vector>
-    auto WriteEigenRow(DofComponentView<real>, index, Vector &scratch) { return Eigen::Ref<Vector>(scratch); }
-    template <class Rows, class Vector>
-    void PublishEigenRow(Rows, index, const Vector &) {}
-    template <class Vector>
-    void PublishEigenRow(DofComponentView<real> rows, index iRow, const Vector &value)
+    void UnpackEigenRow(DofComponentView<real> rows, index iRow, const Vector &value)
     {
         for (index j = 0; j < rows.ComponentNumber(); ++j)
             rows(iRow, j) = value[j];
@@ -34,13 +29,13 @@ namespace DNDS::Algebra
     /// Borrowed per-row column-major dense matrices. Construct once in the
     /// operator prologue while retaining the Array access lease. Scalar rows may
     /// be strided (SoA/AoSoA); no packing or allocation occurs. CPU only.
-    template <class ArrayView>
+    template <class ArrayView, int MatrixRows = Eigen::Dynamic, int MatrixColumns = Eigen::Dynamic>
     class EigenRowMatrices
     {
         ArrayView _view;
         index _matrixRows, _matrixColumns;
         using Scalar = std::remove_const_t<typename ArrayView::value_type>;
-        using Matrix = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>;
+        using Matrix = Eigen::Matrix<Scalar, MatrixRows, MatrixColumns>;
         using QualifiedMatrix = std::conditional_t<std::is_const_v<typename ArrayView::value_type>, const Matrix, Matrix>;
         static constexpr int Inner = ArrayView::component_stride == Runtime::DynamicExtent || ArrayView::component_stride > INT_MAX ? Eigen::Dynamic : int(ArrayView::component_stride);
         using Stride = Eigen::Stride<Eigen::Dynamic, Inner>;
@@ -51,6 +46,9 @@ namespace DNDS::Algebra
         {
             DNDS_check_throw_info(device == Runtime::Device::Host() && rows >= 0 && columns >= 0,
                                   "Eigen row matrices require host placement and nonnegative dimensions");
+            DNDS_check_throw_info((MatrixRows == Eigen::Dynamic || rows == MatrixRows) &&
+                                      (MatrixColumns == Eigen::Dynamic || columns == MatrixColumns),
+                                  "Eigen row matrix static dimensions differ from the requested shape");
             const auto extent = CheckedSize::Multiply(size_t(rows), size_t(columns));
             DNDS_check_throw_info(extent <= size_t(INT64_MAX), "local matrix extent exceeds signed index range");
             const auto componentStride = view.ElementStride();
@@ -73,10 +71,12 @@ namespace DNDS::Algebra
         index RowNumber() const { return _view.RowCount(); }
     };
 
-    template <class View>
+    /// Optional static matrix dimensions specialize arithmetic, never Array
+    /// ownership/layout. Construction checks them once; row strides stay intact.
+    template <int Rows = Eigen::Dynamic, int Columns = Eigen::Dynamic, class View>
     auto MakeEigenRowMatrices(View view, index rows, index columns, Runtime::Device device = Runtime::Device::Host())
     {
-        return EigenRowMatrices<View>(view, rows, columns, device);
+        return EigenRowMatrices<View, Rows, Columns>(view, rows, columns, device);
     }
 }
 

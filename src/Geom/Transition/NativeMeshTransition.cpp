@@ -1,3 +1,4 @@
+#include "DNDS/MPI/Failure.hpp"
 #include "Geom/Transition/NativeMeshTransition.hpp"
 #include "Geom/Transition/NativeMeshAssembler.hpp"
 #include "Geom/Connectivity/NativeMeshTopology.hpp"
@@ -107,6 +108,7 @@ namespace DNDS::Geom
                 }
                 catch (...)
                 {
+                    MPI::AbortIfSolverFailure("native mesh transition preparation failed");
                     invalid = 1;
                 }
             }

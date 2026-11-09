@@ -1,3 +1,4 @@
+#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/Physics/StateInput.hpp"
 #include <set>
@@ -273,20 +274,23 @@ namespace DNDS::Cauchy
             updated.push_back(component);
         }
         DNDS_check_throw_info((diagonal == "entries" || diagonal == "block") && (!roeDissipation || diagonal == "block") &&
-                                  (jacobianAction == "assembled" || jacobianAction == "semiMatrixFree") &&
+                                  (jacobianAction == "assembled" || jacobianAction == "directEvaluated" || jacobianAction == "semiMatrixFree") &&
                                   iterations > 0 && minIterations >= 0 && minIterations <= iterations && consoleInterval >= 0 &&
                                   nonnegative(relativeTolerance) && nonnegative(absoluteTolerance) &&
                                   std::isfinite(pseudoCFL) && pseudoCFL > 0 && std::isfinite(maxPseudoCFL) && maxPseudoCFL >= pseudoCFL &&
                                   std::isfinite(pseudoGrowth) && pseudoGrowth >= 1 && std::isfinite(relaxation) && relaxation > 0 && relaxation <= 1,
                               "invalid implicit nonlinear/diagonal/pseudo-time controls");
         DNDS_check_throw_info((linear.method == "sgs" || linear.method == "ilu" || linear.method == "gmres") && (linear.preconditioner == "sgs" || linear.preconditioner == "ilu") &&
+                                  (linear.componentScaling == "none" || linear.componentScaling == "meanState") &&
+                                  (linear.stopping == "residual" || (linear.stopping == "fixedCount" && linear.method != "gmres")) &&
                                   linear.iterations > 0 && linear.subspace > 0 && linear.subspace < INT_MAX &&
-                                  nonnegative(linear.relativeTolerance) && nonnegative(linear.absoluteTolerance) && sgs.sweeps > 0 && ilu.fill >= -1 && ilu.fill <= 5 &&
+                                  nonnegative(linear.relativeTolerance) && nonnegative(linear.absoluteTolerance) && sgs.sweeps > 0 && ilu.fill >= -1 && ilu.fill <= 5 && ilu.preconditionerCorrections > 0 &&
+                                  (ilu.ordering == "natural" || ilu.ordering == "rcm") &&
                                   !((linear.method == "ilu" || (linear.method == "gmres" && linear.preconditioner == "ilu")) && sgs.exchangeBetweenSweeps),
                               "invalid implicit linear/SGS/ILU controls");
-        DNDS_check_throw_info((positivity.rhsMode == "none" || positivity.rhsMode == "rhs" || positivity.rhsMode == "dTau") &&
-                                  (positivity.rhsReduction == "cell" || positivity.rhsReduction == "minimumLimited" || positivity.rhsReduction == "minimumAll") &&
-                                  nonnegative(positivity.rhsScale) && std::isfinite(positivity.rhsRelax) && positivity.rhsRelax > 0 && positivity.rhsRelax <= 1 &&
+        DNDS_check_throw_info((positivity.rhsFPPMode == "none" || positivity.rhsFPPMode == "rhs" || positivity.rhsFPPMode == "dTau") &&
+                                  (positivity.rhsFPPReduction == "cell" || positivity.rhsFPPReduction == "minimumLimited" || positivity.rhsFPPReduction == "minimumAll") &&
+                                  nonnegative(positivity.rhsFPPScale) && std::isfinite(positivity.rhsFPPRelax) && positivity.rhsFPPRelax > 0 && positivity.rhsFPPRelax <= 1 &&
                                   std::isfinite(positivity.incrementRelax) && positivity.incrementRelax > 0 && positivity.incrementRelax <= 1 &&
                                   positivity.compressionPower > 0 && positivity.compressionPower <= INT_MAX / 2,
                               "invalid implicit Euler-PP controls");
@@ -295,6 +299,37 @@ namespace DNDS::Cauchy
                                   (!multigrid.levels || (multigrid.preSmooth <= iterations && multigrid.postSmooth <= iterations && multigrid.coarseSmooth <= iterations)) &&
                                   std::isfinite(multigrid.damping) && multigrid.damping > 0 && multigrid.damping <= 1,
                               "invalid polynomial FAS controls");
+        for (const auto &[name, level] : multigrid.coarseLevelSettings)
+        {
+            DNDS_check_throw_info((name == "1" || name == "2") && level.preSmooth >= -1 && level.postSmooth >= -1 &&
+                                      level.preSmooth <= iterations && level.postSmooth <= iterations,
+                                  "invalid coarse level key or smoothing count");
+            const index number = name == "1" ? 1 : 2;
+            if (number == multigrid.levels)
+            {
+                const index pre = level.preSmooth < 0 ? multigrid.coarseSmooth : level.preSmooth;
+                const index post = level.postSmooth < 0 ? 0 : level.postSmooth;
+                DNDS_check_throw_info(pre <= iterations - post && pre + post > 0, "invalid bottom-level correction count");
+            }
+            ResolveCoarseLevel(number);
+        }
+    }
+    ImplicitSettings ImplicitSettings::ResolveCoarseLevel(index level) const
+    {
+        DNDS_check_throw_info(level == 1 || level == 2, "coarse smoother level must be 1 or 2");
+        auto result = *this;
+        result.multigrid.levels = 0;
+        result.multigrid.coarseLevelSettings.clear();
+        const auto found = multigrid.coarseLevelSettings.find(std::to_string(level));
+        if (found != multigrid.coarseLevelSettings.end())
+        {
+            Keys(found->second.solver, MultigridSmootherSchema(), "/implicit/multigrid/coarseLevelSettings/" + std::to_string(level) + "/solver");
+            Json merged = result;
+            merged.merge_patch(found->second.solver);
+            result = merged.get<ImplicitSettings>();
+        }
+        result.Validate();
+        return result;
     }
     DomainSettings ResolveSweepOrdering(DomainSettings settings)
     {
@@ -316,6 +351,8 @@ namespace DNDS::Cauchy
         require(s.execution.device == "cpu", "residual/BC/reconstruction backend " + s.execution.device);
         require(s.execution.layout == "aos" || s.execution.layout == "soa" || s.execution.layout == "aosoa32", "flow layout " + s.execution.layout);
         require(s.execution.communication == "mpi-direct", "transport " + s.execution.communication);
+        require(s.execution.transferPreflight == "collective" || s.execution.transferPreflight == "abortOnFailure", "transfer preflight " + s.execution.transferPreflight);
+        require(s.execution.fieldGrouping == "equationBlocks" || s.execution.fieldGrouping == "coupled", "field grouping " + s.execution.fieldGrouping);
         require(s.equation.system == "compressible", "equation " + s.equation.system);
         const bool mixture = s.equation.eos == "idealGasMixture";
         const bool rans = s.equation.rans.model != "none", extended = mixture || rans;
@@ -347,8 +384,11 @@ namespace DNDS::Cauchy
         if (extended)
         {
             require(s.initialProfile.kind == "constant", "nonconstant extended equation initialization");
-            require(Riemann::RiemannFlux::Resolve(s.numerics.flux).Kind() == Riemann::Solver::Rusanov && !s.numerics.faceFallback,
-                    "extended equation flux preparation/face fallback");
+            const auto flux = Riemann::RiemannFlux::Resolve(s.numerics.flux);
+            require((!mixture || flux.Kind() == Riemann::Solver::Rusanov) && !s.numerics.faceFallback,
+                    "extended equation thermodynamic flux preparation/face fallback");
+            require(!s.numerics.riemann.useStencil || (!flux.UsesTransverseSignal() && !flux.UsesPressureStencil()),
+                    "extended equation wave/pressure stencil auxiliary inputs");
             require(s.numerics.limiter == "none" || (s.numerics.limiter == "WBAP" && !s.numerics.characteristicLimiter), "extended equation limiter");
             require(s.equation.transport != "NewtonianFourier" || s.numerics.viscousGradient == "polynomial", "extended equation viscous gradient");
             require(!s.implicit.roeDissipation, "extended equation Roe Jacobian");
@@ -356,6 +396,9 @@ namespace DNDS::Cauchy
         require(s.initialField.Empty() || s.initialProfile.kind == "constant", "spatial overrides require a constant background profile");
         require(Riemann::RiemannFlux::Available(s.numerics.flux), "numerical flux " + s.numerics.flux);
         require(s.numerics.reconstruction == "constant" || s.numerics.reconstruction == "gradient" || s.numerics.reconstruction == "variational", "reconstruction " + s.numerics.reconstruction);
+        require(s.implicit.sourceJacobianMode == "center" || s.implicit.sourceJacobianMode == "rhsQuadrature", "source Jacobian mode " + s.implicit.sourceJacobianMode);
+        require(s.implicit.sourceJacobianMode != "rhsQuadrature" || s.numerics.reconstruction == "variational", "rhsQuadrature source Jacobian requires variational reconstruction");
+        require(s.implicit.sourceJacobianMode != "rhsQuadrature" || s.equation.source != "none" || rans, "rhsQuadrature source Jacobian requires an active volume source");
         require(s.numerics.gradient == "leastSquares" || s.numerics.gradient == "greenGauss" || s.numerics.gradient == "ggmp", "gradient " + s.numerics.gradient);
         require(s.numerics.viscousGradient == "primitive" || s.numerics.viscousGradient == "polynomial", "viscous gradient " + s.numerics.viscousGradient);
         require(s.numerics.limiter == "none" || s.numerics.limiter == "WBAP" || s.numerics.limiter == "LVR", "limiter " + s.numerics.limiter);
@@ -477,6 +520,19 @@ namespace DNDS::Cauchy
             auto &resolved = data->root["domains"][iDomain];
             Allowed(resolved, {"name", "ranks", "settings"}, "/domains");
             Keys(resolved.at("settings"), schema, "/domains/settings");
+            // Coarse levels are dynamic map entries, so root defaults cannot
+            // supply their omitted count/solver fields. Expand after CLI patches
+            // as well; the solver patch itself stays partial for inheritance.
+            for (auto &[name, level] : resolved["settings"]["implicit"]["multigrid"]["coarseLevelSettings"].items())
+            {
+                const Json original = level;
+                level = MultigridLevelSettings{};
+                for (const auto &[key, value] : level.items())
+                    if (!original.contains(key))
+                        Origin(value, "/domains/" + std::to_string(iDomain) + "/settings/implicit/multigrid/coarseLevelSettings/" + Escape(name) + "/" + key,
+                               "schema default", data->provenance);
+                level.update(original);
+            }
             DomainConfig domain{{resolved.at("name").get<std::string>(), resolved.at("ranks").get<std::vector<int>>()}, resolved.at("settings").get<DomainSettings>()};
             const bool requestedCoreFirst = domain.settings.numerics.cfv.coreFirst;
             domain.settings = ResolveSweepOrdering(std::move(domain.settings));
@@ -586,6 +642,7 @@ namespace DNDS::Cauchy
         }
         catch (const std::exception &exception)
         {
+            MPI::AbortIfSolverFailure("Cauchy configuration rejected");
             error = exception.what();
             valid = 0;
         }
@@ -597,7 +654,7 @@ namespace DNDS::Cauchy
         MPI_Bcast(reference.data(), length, MPI_CHAR, 0, comm);
         valid = reference == serialized;
         MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, comm);
-        DNDS_check_throw_info(valid, "Cauchy resolved configuration differs between simulation ranks");
+        MPI::CheckPreflight(valid, "Cauchy resolved configuration differs between simulation ranks");
         return std::move(*result);
     }
 }

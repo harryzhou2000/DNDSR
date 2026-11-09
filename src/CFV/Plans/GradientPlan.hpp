@@ -41,6 +41,13 @@ namespace DNDS::CFV
         /// is an explicit overwrite, not a limiter or second reconstruction.
         void ConvertToCoefficients(const FVField &gradient, const VariationalReconstructionPlan &reconstruction,
                                    FVField &coefficients) const;
+        /// Explicit compatibility projection of linear modes into physical
+        /// gradients, without basis evaluation. Higher modes are ignored: the
+        /// caller must supply a linear polynomial, e.g. the accepted direct-FV
+        /// limiter result. ghost=false overwrites owned rows; ghost=true only
+        /// ghost rows, after the coefficient exchange has completed. No MPI.
+        void ExtractLinearGradients(const FVField &coefficients, const VariationalReconstructionPlan &reconstruction,
+                                    FVField &gradient, bool ghost = false) const;
         /// Owned output rows hold [component*dimension+direction]. Core reads
         /// owned means only, so an input ghost write may be active. Complete
         /// the input halo before HaloDependent/All. BC values must be ready.

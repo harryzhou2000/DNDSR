@@ -15,6 +15,7 @@
 #include "../CFV/ReconstructionFixture.hpp"
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
+#include "../CFV/RotatedSectorFixture.hpp"
 #include <cstdlib>
 #include <numeric>
 #include <limits>
@@ -109,6 +110,7 @@ TEST_CASE("Equation FV uses the established P3/gradient/WBAP flow5 kernels acros
         settings.numerics.viscousGradient = "polynomial";
         if (variant == 1)
         {
+            settings.numerics.flux = "Roe_M1";
             settings.equation.transport = "NewtonianFourier";
             settings.equation.viscosity = .002;
             settings.equation.viscosityModel = "sutherland";
@@ -143,6 +145,19 @@ TEST_CASE("Equation FV uses the established P3/gradient/WBAP flow5 kernels acros
         fv.Evaluate(raw, expected, *rawWork, engine, stream);
         fv.Evaluate(state, result, *work, engine, stream);
         Compare(result, C::EquationDofs::Coupled(equation.Schema(), expected), 2e-12);
+        auto separate = C::EquationDofOperations::NewVector(state);
+        auto faceFlux = fv.BuildFaceFluxBuffer(state.ComponentNumber());
+        fv.EvaluateFlux(state, separate, *work, DNDS::CFV::ReconstructionRegion::All, 0, &faceFlux);
+        fv.AddSource(state, separate, *work);
+        Compare(result, separate, 2e-12);
+        if (variant == 0)
+        {
+            auto prepared = fv.BuildEquationWorkspace(state);
+            fv.PrepareReconstruction(state, *prepared, engine, stream);
+            fv.EvaluateFlux(state, separate, *prepared);
+            fv.AddSource(state, separate, *prepared);
+            Compare(result, separate, 2e-12);
+        }
         ConservativeIntegral(result);
         if (variant == 1)
         {
@@ -232,6 +247,47 @@ TEST_CASE("Equation FV local stages and physical-field halos inherit the agreed 
     }
 }
 
+TEST_CASE("Canonical equation face flux agrees with cell incidence on rotated and self-periodic faces")
+{
+    for (bool rotated : {false, true})
+    {
+        auto mesh = rotated ? CFVTest::Sector(mpi) : CauchyTest::PeriodicQuads(mpi, 1);
+        C::DomainSettings settings;
+        settings.numerics.reconstruction = "constant";
+        settings.numerics.limiter = "none";
+        settings.numerics.faceFallback = false;
+        settings.numerics.characteristicLimiter = false;
+        settings.numerics.viscousGradient = "polynomial";
+        settings.numerics.flux = "Roe_M1";
+        if (rotated)
+            settings.boundaries["12"].kind = settings.boundaries["13"].kind = "extrapolate";
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto raw = fv.Metrics().BuildField(5), expected = fv.Metrics().BuildField(5);
+        {
+            auto write = raw.Owned().Write();
+            const auto values = write.View<R::UniformTableRows>();
+            for (I iCell = 0; iCell < values.RowCount(); ++iCell)
+            {
+                const auto center = fv.Metrics().GetCellCent(iCell);
+                const auto value = equation.Gas().Conservative({1 + .1 * center[0], .2 + .03 * center[1], -.15, .07, 1});
+                for (int j = 0; j < 5; ++j)
+                    values(iCell, j) = value[j];
+            }
+        }
+        auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(5));
+        A::Copy(state.CoupledField(), raw);
+        auto result = C::EquationDofOperations::NewVector(state);
+        auto oldWork = fv.BuildWorkspace(raw);
+        auto work = fv.BuildEquationWorkspace(state);
+        R::EagerEngine engine;
+        const auto stream = engine.CreateCPUStream();
+        fv.Evaluate(raw, expected, *oldWork, engine, stream);
+        fv.Evaluate(state, result, *work, engine, stream);
+        Compare(result, C::EquationDofs::Coupled(equation.Schema(), expected), 2e-12);
+    }
+}
+
 TEST_CASE("Logical nonlinear flow5 retains native finite-sweep stage mathematics")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
@@ -286,7 +342,7 @@ TEST_CASE("Logical nonlinear flow5 retains native finite-sweep stage mathematics
 TEST_CASE("Equation wall values preserve internal energy and support empty owners on a physical 3D mesh")
 {
     const auto mesh = CFVTest::CartesianHexes(mpi, 1);
-    for (int scenario = 0; scenario < 4; ++scenario)
+    for (int scenario = 0; scenario < 5; ++scenario)
     {
         C::DomainSettings settings;
         settings.mesh.dimension = 3;
@@ -294,19 +350,20 @@ TEST_CASE("Equation wall values preserve internal energy and support empty owner
         settings.equation.viscosity = .002;
         settings.numerics.viscousGradient = "polynomial";
         settings.numerics.faceFallback = false;
-        settings.boundaries["7"].kind = scenario < 2 ? "noSlipWall" : scenario == 2 ? "farfield"
-                                                                                    : "analytic";
+        settings.boundaries["7"].kind = scenario < 2 || scenario == 4 ? "noSlipWall" : scenario == 2 ? "farfield"
+                                                                                                     : "analytic";
         settings.boundaries["7"].primitive = {.9, -.3, .1, .2, 1.2};
-        if (scenario >= 2)
+        if (scenario == 2 || scenario == 3)
         {
             settings.numerics.reconstruction = "variational";
             settings.numerics.cfv.maxOrder = 3;
         }
-        if (scenario == 1)
+        if (scenario == 1 || scenario == 4)
         {
             settings.boundaries["7"].thermal = "isothermal";
             settings.boundaries["7"].temperature = .7;
         }
+        settings.numerics.noRsOnWall = scenario == 4;
         const auto equation = C::EquationSystem::Resolve(settings.equation);
         C::FiniteVolume fv(mesh, settings, equation);
         auto raw = fv.Metrics().BuildField(5);
@@ -365,6 +422,74 @@ TEST_CASE("Spatial initial input averages conservative polynomials on distribute
         CHECK(integral[2] == doctest::Approx(0).epsilon(2e-13));
         CHECK(integral[3] == doctest::Approx(0).epsilon(2e-13));
         CHECK(integral[4] == doctest::Approx(199. / 24).epsilon(2e-13));
+    }
+}
+
+TEST_CASE("Face-centered assembled Jacobians match direct actions in stationary and moving frames")
+{
+    // Cover translated identity frames and a genuinely rotated periodic
+    // frame against the independent directional-action implementation.
+    for (int scenario = 0; scenario < 3; ++scenario)
+    {
+        const auto mesh = scenario == 2 ? CFVTest::Sector(mpi) : CauchyTest::PeriodicQuads(mpi, 6);
+        auto settings = C::DomainSettings{};
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.cfv.intOrder = 5;
+        if (scenario)
+            settings.motion.angularVelocity = {0, 0, .2};
+        if (scenario == 2)
+            settings.boundaries["12"].kind = settings.boundaries["13"].kind = "extrapolate";
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(5));
+        R::Array<double> tau(R::RowLayout::Dense(fv.Metrics().NumCell(), 1));
+        {
+            auto write = state.WriteOwned();
+            const auto flow = write.Block("flow");
+            auto pseudo = tau.Write();
+            for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            {
+                const auto center = fv.Metrics().GetCellCent(iCell);
+                const auto values = equation.Gas().Conservative({1 + .1 * center[0], .3, -.2 + .05 * center[1], .1, 1 + .1 * center[1]});
+                for (int j = 0; j < 5; ++j)
+                    flow(iCell, j) = values[j];
+                pseudo.View()(iCell, 0) = 2 + center[0];
+            }
+        }
+        fv.BindHalo(state.PhysicalField(0)).Begin().Wait();
+        auto auxiliary = fv.BuildAuxiliaryValues({true, true});
+        fv.PrepareAuxValues(state, auxiliary, .3);
+        auto assembled = fv.BuildLinearProblem(state, C::DiagonalStorage::Block);
+        auto pointwise = fv.BuildLinearProblem(state, C::DiagonalStorage::Block, C::OffDiagonalStorage::SemiMatrixFree);
+        const C::JacobianPreparation controls{3, .7, false};
+        fv.PrepareJacobian(state, auxiliary, tau, *assembled, controls, .3);
+        fv.PrepareJacobian(state, auxiliary, tau, *pointwise, controls, .3);
+        const auto geometry = fv.Metrics().AcquireRead();
+        const auto metric = geometry.HostView();
+        if (fv.Metrics().NumFaceProc())
+            REQUIRE(metric.FaceQuadratureEnd(0) - metric.FaceQuadratureBegin(0) > 1);
+        const auto a = assembled->ReadOffDiagonal(), b = pointwise->ReadOffDiagonal();
+        Eigen::VectorXd directionStorage(10), direct(5);
+        Eigen::Map<Eigen::VectorXd, 0, Eigen::InnerStride<2>> direction(directionStorage.data(), 5);
+        for (int j = 0; j < 5; ++j)
+            direction[j] = -.3 + .17 * j;
+        a.WithBlocks([&](const auto &cached)
+                     { b.WithBlocks([&](const auto &reference)
+                                    {
+            for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+                for (I iBlock = 0; iBlock < I(assembled->Columns()[iCell].size()); ++iBlock)
+                {
+                    const auto observed = cached(iCell, iBlock);
+                    const auto expected = reference(iCell, iBlock);
+                    for (int j = 0; j < 5; ++j)
+                        for (int i = 0; i < 5; ++i)
+                            CHECK(observed(i, j) == doctest::Approx(expected(i, j)).epsilon(2e-14).scale(1));
+                    pointwise->PreparedOffDiagonalEvaluator()->ApplyBlock(iCell, iBlock, direction, direct);
+                    const auto product = (observed * direction).eval();
+                    for (int j = 0; j < 5; ++j)
+                        CHECK(direct[j] == doctest::Approx(product[j]).epsilon(3e-13).scale(1));
+                } }); });
     }
 }
 
@@ -543,6 +668,16 @@ TEST_CASE("Distributed prescribed mixture boundaries match independent nonconsta
         request.faceSpectralRadius = request.cellSpectralSum = true;
         auto auxiliary = fv.BuildAuxiliaryValues(request);
         fv.PrepareAuxValues(state, auxiliary, 0, mixture.workers);
+        request.meanThermodynamics = true;
+        auto cachedAuxiliary = fv.BuildAuxiliaryValues(request);
+        fv.PrepareAuxValues(state, cachedAuxiliary, 0, mixture.workers);
+        {
+            const auto a = auxiliary.faceSpectralRadius->Read(), b = cachedAuxiliary.faceSpectralRadius->Read();
+            const auto direct = a.View<R::UniformTableRows>(), cached = b.View<R::UniformTableRows>();
+            for (I iFace = 0; iFace < direct.RowCount(); ++iFace)
+                for (I j = 0; j < direct.Width(); ++j)
+                    CHECK(cached(iFace, j) == direct(iFace, j));
+        }
         // Independent EOS backend and explicit face integration: no Cauchy
         // boundary, point producer or Riemann flux is used by this oracle.
         auto topologyRead = mesh->AcquireRead(DNDS::Geom::MeshReadRequirements::CellFlux());
@@ -603,6 +738,9 @@ TEST_CASE("Distributed prescribed mixture boundaries match independent nonconsta
                         ur += right[1 + d] / right[0] * normal[d];
                     }
                     const double alpha = std::max(std::abs(ul) + lp[1], std::abs(ur) + rp[1]);
+                    // Flow uses acoustic Rusanov; conservative species use
+                    // the independently specified velocity dissipation.
+                    const double scalarAlpha = .5 * (std::abs(ul) + std::abs(ur));
                     for (I j = 0; j < I(expected.size()); ++j)
                     {
                         double fl = left[j] * ul, fr = right[j] * ur;
@@ -616,7 +754,7 @@ TEST_CASE("Distributed prescribed mixture boundaries match independent nonconsta
                             fl += lp[0] * ul;
                             fr += rp[0] * ur;
                         }
-                        expected[j] -= metric.GetFaceWeight(q) * .5 * (fl + fr - alpha * (right[j] - left[j]));
+                        expected[j] -= metric.GetFaceWeight(q) * .5 * (fl + fr - (j < 5 ? alpha : scalarAlpha) * (right[j] - left[j]));
                     }
                 }
             }
@@ -641,6 +779,7 @@ TEST_CASE("Mixture isothermal wall conducts the independent Fourier flux without
     settings.numerics.reconstruction = "constant";
     settings.numerics.faceFallback = false;
     settings.numerics.viscousGradient = "polynomial";
+    settings.numerics.noRsOnWall = true;
     auto &wall = settings.boundaries["7"];
     wall.kind = "noSlipWall";
     wall.thermal = "isothermal";
@@ -665,8 +804,9 @@ TEST_CASE("Mixture isothermal wall conducts the independent Fourier flux without
     const double p = r1 * mixture.scales.rho0 * mixture.prototype.mixtureR(fractions) * 1400;
     const double e1 = mixture.prototype.mixtureIntEnergy(1400, fractions, p) / mixture.scales.SpecificEnergy();
     const double e2 = mixture.prototype.mixtureIntEnergy(600, fractions, p) / mixture.scales.SpecificEnergy();
-    const double rho = .5 * (r1 + r2), energy = .5 * (r1 * e1 + r2 * e2) / rho;
-    const double temperature = mixture.prototype.temperatureFromUV(energy * mixture.scales.SpecificEnergy(), 1 / (rho * mixture.scales.rho0), fractions, 1000, 1e-12);
+    // Euler noRsOnWall uses the wall state for the flux's thermodynamics,
+    // retaining the previously formed conservative exterior jump gradient.
+    const double rho = r2, energy = e2, temperature = 600;
     P::Thermodynamics::Properties thermo;
     P::Transport::Properties transport;
     mixture.prototype.EvaluateProperties(temperature, rho * mixture.scales.rho0 * mixture.prototype.mixtureR(fractions) * temperature, fractions, thermo, &transport);
@@ -817,7 +957,7 @@ TEST_CASE("Explicit mixture rejects inadmissible raw flow or species and retries
     MPI_Allreduce(MPI_IN_PLACE, &criticalDt, 1, MPI_DOUBLE, MPI_MIN, mpi.comm);
     REQUIRE(std::isfinite(criticalDt));
     REQUIRE(criticalDt > 0);
-    CHECK_THROWS(simulation.Advance(2 * criticalDt));
+    CHECK_FALSE(simulation.Advance(2 * criticalDt).accepted);
     CHECK_NOTHROW(accepted.Check(domain.Dofs(), true));
     CHECK(simulation.Time() == 0);
     CHECK(simulation.Step() == 0);
@@ -826,18 +966,15 @@ TEST_CASE("Explicit mixture rejects inadmissible raw flow or species and retries
     std::string lastRejection;
     for (int retry = 0; retry < 16; ++retry, dt *= .5)
     {
-        try
+        const auto result = simulation.Advance(dt);
+        if (result)
         {
-            simulation.Advance(dt);
             completed = true;
             break;
         }
-        catch (const std::exception &failure)
-        {
-            lastRejection = failure.what();
-            CHECK_NOTHROW(accepted.Check(domain.Dofs(), true));
-            CHECK(simulation.Time() == 0);
-        }
+        lastRejection = result.reason;
+        CHECK_NOTHROW(accepted.Check(domain.Dofs(), true));
+        CHECK(simulation.Time() == 0);
     }
     INFO("criticalDt=" << criticalDt << ", nextDt=" << dt << ", lastRejection=" << lastRejection);
     REQUIRE(completed);
@@ -897,7 +1034,7 @@ TEST_CASE("Configured mixture Domains advance every block through production tim
     C::Json composition = C::Json::object();
     for (int k = 0; k < mixture.species; ++k)
         composition[mixture.material.SpeciesNames()[k]] = fractions[k];
-    C::Json input{{"defaults", {{"equation", {{"eos", "idealGasMixture"}, {"source", "chemical"}, {"mixture", {{"mechanismFile", mixture.prototype.mechanismFile()}, {"rho0", mixture.scales.rho0}, {"U0", mixture.scales.U0}, {"L0", mixture.scales.L0}, {"T0", mixture.scales.T0}}}}}, {"initialPrimitive", {.8, .2, -.04, .03, 1}}, {"initialTemperature", 1400 / mixture.scales.T0}, {"initialMassFractions", composition}, {"execution", {{"layout", "soa"}, {"hostThreads", 2}}}, {"numerics", {{"reconstruction", "constant"}, {"faceFallback", false}}}, {"implicit", {{"diagonal", "block"}, {"pseudoCFL", 1e4}, {"maxPseudoCFL", 1e8}, {"relativeTolerance", 1e-10}, {"absoluteTolerance", 1e-8}, {"residualComponents", C::Json::array()}, {"linear", {{"method", "gmres"}, {"preconditioner", "ilu"}, {"relativeTolerance", 1e-10}, {"absoluteTolerance", 1e-13}}}}}}}, {"time", {{"method", "bdf1"}}}};
+    C::Json input{{"defaults", {{"equation", {{"eos", "idealGasMixture"}, {"source", "chemical"}, {"mixture", {{"mechanismFile", mixture.prototype.mechanismFile()}, {"rho0", mixture.scales.rho0}, {"U0", mixture.scales.U0}, {"L0", mixture.scales.L0}, {"T0", mixture.scales.T0}}}}}, {"initialPrimitive", {.8, .2, -.04, .03, 1}}, {"initialTemperature", 1400 / mixture.scales.T0}, {"initialMassFractions", composition}, {"execution", {{"layout", "soa"}, {"fieldGrouping", "equationBlocks"}, {"hostThreads", 2}}}, {"numerics", {{"reconstruction", "constant"}, {"faceFallback", false}}}, {"implicit", {{"diagonal", "block"}, {"pseudoCFL", 1e4}, {"maxPseudoCFL", 1e8}, {"relativeTolerance", 1e-10}, {"absoluteTolerance", 1e-8}, {"residualComponents", C::Json::array()}, {"linear", {{"method", "gmres"}, {"preconditioner", "ilu"}, {"relativeTolerance", 1e-10}, {"absoluteTolerance", 1e-13}}}}}}}, {"time", {{"method", "bdf1"}}}};
     const auto startFractions = fractions;
     constexpr double totalTime = 1e-5;
     double temperature = 1400;
@@ -1477,13 +1614,20 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
     settings.numerics.faceFallback = false;
     C::FiniteVolume withoutSource(mesh, settings, equation);
     settings.equation.source = "chemical";
+    auto quadratureSettings = settings;
+    quadratureSettings.implicit.sourceJacobianMode = "rhsQuadrature";
     C::FiniteVolume withSource(mesh, settings, equation);
+    C::FiniteVolume withSourceQuadrature(mesh, quadratureSettings, equation);
     auto a = C::EquationDofs::Coupled(equation.Schema(), withoutSource.Metrics().BuildField(mixture.species + 4));
     auto b = C::EquationDofs::Coupled(equation.Schema(), withSource.Metrics().BuildField(mixture.species + 4));
+    auto bq = C::EquationDofs::Coupled(equation.Schema(), withSourceQuadrature.Metrics().BuildField(mixture.species + 4));
     mixture.Fill(a, withoutSource.Metrics(), true);
     mixture.Fill(b, withSource.Metrics(), true);
-    auto wa = withoutSource.BuildEquationWorkspace(a, mixture.workers), wb = withSource.BuildEquationWorkspace(b, mixture.workers);
-    for (const auto &[fv, work] : std::vector<std::pair<const C::FiniteVolume *, std::shared_ptr<C::FiniteVolume::EquationWorkspace>>>{{&withoutSource, wa}, {&withSource, wb}})
+    mixture.Fill(bq, withSourceQuadrature.Metrics(), true);
+    auto wa = withoutSource.BuildEquationWorkspace(a, mixture.workers), wb = withSource.BuildEquationWorkspace(b, mixture.workers),
+         wbq = withSourceQuadrature.BuildEquationWorkspace(bq, mixture.workers);
+    for (const auto &[fv, work] : std::vector<std::pair<const C::FiniteVolume *, std::shared_ptr<C::FiniteVolume::EquationWorkspace>>>{
+             {&withoutSource, wa}, {&withSource, wb}, {&withSourceQuadrature, wbq}})
     {
         auto coefficients = fv->ReconstructionGuess(*work);
         C::EquationDofOperations::Fill(coefficients, 0);
@@ -1499,22 +1643,36 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
     withoutSource.Evaluate(a, ra, *wa, engine, stream);
     withSource.Evaluate(b, rb, *wb, engine, stream);
     const I rows = withSource.Metrics().NumCell(), count = rows * 9;
-    auto auxiliaryA = withoutSource.BuildAuxiliaryValues({false, true}), auxiliaryB = withSource.BuildAuxiliaryValues({false, true});
+    auto auxiliaryA = withoutSource.BuildAuxiliaryValues({false, true}), auxiliaryB = withSource.BuildAuxiliaryValues({false, true}),
+         auxiliaryBq = withSourceQuadrature.BuildAuxiliaryValues({false, true});
     withoutSource.PrepareAuxValues(a, auxiliaryA, 0, mixture.workers);
     withSource.PrepareAuxValues(b, auxiliaryB, 0, mixture.workers);
+    withSourceQuadrature.PrepareCorrectionAux(bq, *wbq, auxiliaryBq, engine, stream, 0);
     R::Array<double> inverseTau(R::RowLayout::Dense(rows, 1));
     {
         auto write = inverseTau.Write();
         for (I iCell = 0; iCell < rows; ++iCell)
             write.View()(iCell, 0) = 0;
     }
-    auto matrixA = withoutSource.BuildLinearProblem(a, C::DiagonalStorage::Block), matrixB = withSource.BuildLinearProblem(b, C::DiagonalStorage::Block);
+    auto matrixA = withoutSource.BuildLinearProblem(a, C::DiagonalStorage::Block), matrixB = withSource.BuildLinearProblem(b, C::DiagonalStorage::Block),
+         matrixBq = withSourceQuadrature.BuildLinearProblem(bq, C::DiagonalStorage::Block);
     C::JacobianPreparation controls;
     withoutSource.PrepareJacobian(a, auxiliaryA, inverseTau, *matrixA, controls, 0, mixture.workers);
     const auto unpreparedVersion = matrixB->Diagonal().Version();
     CHECK_THROWS(withSource.PrepareJacobian(b, auxiliaryB, inverseTau, *matrixB, controls, 0, mixture.workers));
     CHECK(matrixB->Diagonal().Version() == unpreparedVersion);
     withSource.PrepareJacobian(b, auxiliaryB, inverseTau, *matrixB, controls, 0, mixture.workers, wb.get());
+    withSourceQuadrature.PrepareJacobian(bq, auxiliaryBq, inverseTau, *matrixBq, controls, 0, mixture.workers, wbq.get());
+
+    // The fused mean-source producer also freezes the mean snapshot required
+    // by evaluated off-diagonal actions. Exercise a nonzero physical vector,
+    // while the independent chemical mean-source oracle below checks values.
+    auto evaluated = withSource.BuildLinearProblem(b, C::DiagonalStorage::Block, C::OffDiagonalStorage::SemiMatrixFree);
+    withSource.PrepareJacobian(b, auxiliaryB, inverseTau, *evaluated, controls, 0, mixture.workers, wb.get());
+    auto assembledAction = C::EquationDofOperations::NewVector(b), evaluatedAction = C::EquationDofOperations::NewVector(b);
+    matrixB->Apply(b, assembledAction);
+    evaluated->Apply(b, evaluatedAction);
+    Compare(assembledAction, evaluatedAction, 2e-11);
 
     R::Array<I> cells(R::RowLayout::Dense(count, 1));
     R::Array<double> points(R::RowLayout::Dense(count, 3));
@@ -1564,9 +1722,9 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
         for (int k = 0; k < mixture.species - 1; ++k)
             rates[k] *= mixture.prototype.molecularWeights()[k] / mixture.scales.SourceRate();
     };
-    double signal[4]{};
+    double signal[4]{}, quadratureError = 0, quadratureMagnitude = 0;
     {
-        const auto da = matrixA->Diagonal().Read(), db = matrixB->Diagonal().Read();
+        const auto da = matrixA->Diagonal().Read(), db = matrixB->Diagonal().Read(), dq = matrixBq->Diagonal().Read();
         for (I iCell = 0; iCell < rows; ++iCell)
         {
             std::fill(expected.begin(), expected.end(), 0);
@@ -1587,12 +1745,17 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
                 for (int row = 0; row < nv; ++row)
                 {
                     const double observed = db.View()(iCell, row + nv * column) - da.View()(iCell, row + nv * column);
-                    CHECK(observed == doctest::Approx(-expectedJacobian(row, column)).epsilon(1e-6).scale(1e-8));
-                    signal[2] = std::max(signal[2], std::abs(expectedJacobian(row, column)));
+                    const double meanOnly = row >= 5 ? h * h * mixture.prototype.molecularWeights()[row - 5] / mixture.scales.SourceRate() * rawJacobian[row - 5 + mixture.species * column] : 0;
+                    CHECK(observed == doctest::Approx(-meanOnly).epsilon(1e-6).scale(1e-8));
+                    signal[2] = std::max(signal[2], std::abs(meanOnly));
                     if (row >= 5)
                     {
-                        const double meanOnly = h * h * mixture.prototype.molecularWeights()[row - 5] / mixture.scales.SourceRate() * rawJacobian[row - 5 + mixture.species * column];
                         signal[3] = std::max(signal[3], std::abs(expectedJacobian(row, column) - meanOnly));
+                        const double observedQuadrature =
+                            dq.View()(iCell, row + nv * column) - db.View()(iCell, row + nv * column);
+                        const double expectedQuadrature = -(expectedJacobian(row, column) - meanOnly);
+                        quadratureError = std::max(quadratureError, std::abs(observedQuadrature - expectedQuadrature));
+                        quadratureMagnitude = std::max(quadratureMagnitude, std::abs(expectedQuadrature));
                     }
                 }
             for (int k = 0; k < mixture.species - 1; ++k)
@@ -1605,10 +1768,14 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
         }
     }
     MPI_Allreduce(MPI_IN_PLACE, signal, 4, MPI_DOUBLE, MPI_MAX, mpi.comm);
+    MPI_Allreduce(MPI_IN_PLACE, &quadratureError, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+    MPI_Allreduce(MPI_IN_PLACE, &quadratureMagnitude, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
     CHECK(signal[0] > 1e-10);
     CHECK(signal[1] > 1e-6 * signal[0]); // A mean/centroid-only source must fail this gate.
     CHECK(signal[2] > 1e-8);
-    CHECK(signal[3] > 1e-6 * signal[2]); // The same guard applies to the source Jacobian.
+    CHECK(signal[3] > 1e-6 * signal[2]); // A quadrature-integrated approximate Jacobian must fail the mean-state oracle above.
+    CHECK(quadratureMagnitude > 1e-8);
+    CHECK(quadratureError <= 2e-7 * quadratureMagnitude + 1e-10);
     const auto version = matrixB->Diagonal().Version();
     {
         auto changed = withSource.FluxReconstruction(*wb).PhysicalField(0).Owned();
@@ -1768,8 +1935,8 @@ TEST_CASE("Equation implicit PP compresses RHS or pseudo-time and repairs specie
         settings.numerics.temperatureFloor = 300 / mixture.scales.T0;
         settings.implicit.iterations = 1;
         settings.implicit.relativeTolerance = settings.implicit.absoluteTolerance = 0;
-        settings.implicit.positivity.rhsMode = scenario ? "dTau" : "rhs";
-        settings.implicit.positivity.rhsReduction = scenario ? "minimumAll" : "cell";
+        settings.implicit.positivity.rhsFPPMode = scenario ? "dTau" : "rhs";
+        settings.implicit.positivity.rhsFPPReduction = scenario ? "minimumAll" : "cell";
         C::FiniteVolume fv(mesh, settings, mixture.equation);
         auto state = mixture.State(fv.Metrics().Space(), scenario + 1);
         mixture.Fill(state, fv.Metrics(), true);

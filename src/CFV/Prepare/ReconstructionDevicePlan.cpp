@@ -155,10 +155,12 @@ namespace DNDS::CFV
             const auto offsets = result->Add("faceOffsets", metric.faceOffsets, context);
             const auto quadrature = result->Add("faceQuadrature", metric.faceQuadrature, context);
             const auto radial = result->Add("radialMoment", metric.radialMoment, context);
+            const auto faceMean = result->Add("faceMean", metric.faceMean, context);
             result->metricView = {R::Detail::ProjectView<const real, false, R::FixedRows<8>>(cell, metric.cell.Layout()),
                                   R::Detail::ProjectView<const index, false, R::FixedRows<1>>(offsets, metric.faceOffsets.Layout()),
                                   R::Detail::ProjectView<const real, false, R::FixedRows<7>>(quadrature, metric.faceQuadrature.Layout()),
-                                  R::Detail::ProjectView<const real, false, R::FixedRows<3>>(radial, metric.radialMoment.Layout())};
+                                  R::Detail::ProjectView<const real, false, R::FixedRows<3>>(radial, metric.radialMoment.Layout()),
+                                  R::Detail::ProjectView<const real, false, R::FixedRows<7>>(faceMean, metric.faceMean.Layout())};
         }
         if (options.basis)
         {

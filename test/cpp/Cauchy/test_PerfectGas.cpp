@@ -348,6 +348,11 @@ TEST_CASE("Physical boundary Jacobians match conservative exterior-state derivat
             const C::PerfectGas gas{gamma, 1, .02, .72};
             C::BoundarySettings settings;
             settings.kind = kind;
+            if (kind == "noSlipWall")
+            {
+                settings.thermal = "isothermal";
+                settings.temperature = .8;
+            }
             settings.primitive = {2, -.3, .2, .1, 1.4};
             settings.velocity = {.04, -.02, .03};
             C::BoundarySystem boundaries({{"7", settings}}, gas);
@@ -622,10 +627,55 @@ TEST_CASE("Boundary values and exterior states implement slip no-slip and therma
     CHECK(face.density == doctest::Approx(7 / (2 * .8)));
     const auto outside = gas.Primitive(wall.Exterior(gas, state, normal));
     CHECK(outside.velocity == C::Vector3{-2, 4, -5.4});
-    CHECK(outside.density == 2);
+    CHECK(outside.density == doctest::Approx(7 / (2 * .8)));
+    CHECK(outside.temperature == doctest::Approx(.8));
     C::BoundarySettings config;
     C::BoundarySystem system({{"7", config}}, gas);
     CHECK_NOTHROW(system.ValidateUsed({7}));
     CHECK_THROWS(system.ValidateUsed({}));
     CHECK_THROWS(system.At(8));
+}
+
+TEST_CASE("Farfield sonic branches and approximate wall Jacobians follow Euler conventions")
+{
+    C::EquationSettings settings;
+    settings.gamma = 2;
+    settings.gasConstant = 1;
+    const auto equation = C::EquationSystem::Resolve(settings);
+    const auto &gas = equation.Gas();
+    auto evaluator = equation.MakePointEvaluator();
+    C::BoundarySettings far;
+    far.kind = "farfield";
+    far.primitive = {2, -.3, .1, .2, 3};
+    const auto boundary = C::BoundarySystem({{"7", far}}, equation).At(7);
+    for (double speed : {-3., -2., 0., 2., 3.})
+    {
+        // rho=1,p=2,gamma=2 gives exactly sound speed two.
+        const auto inside = gas.Conservative({1, speed, 0, 0, 2});
+        const auto expected = speed > 2 ? inside : speed > 0 ? gas.Conservative({1, speed, 0, 0, 3})
+                                               : speed > -2  ? gas.Conservative({2, -.3, .1, .2, 2})
+                                                             : gas.Conservative(far.primitive);
+        const auto actual = boundary.Exterior(gas, inside, {1, 0, 0});
+        const auto generic = boundary.Exterior(evaluator, inside, {}, {1, 0, 0});
+        for (int j = 0; j < 5; ++j)
+        {
+            CHECK(actual[j] == doctest::Approx(expected[j]).epsilon(1e-13));
+            CHECK(generic[j] == doctest::Approx(expected[j]).epsilon(1e-13));
+        }
+        CHECK(boundary.ApproximateExteriorJacobian(gas, inside, {1, 0, 0}) == std::array<double, 25>{});
+    }
+    C::BoundarySettings wall;
+    wall.kind = "noSlipWall";
+    wall.thermal = "isothermal";
+    wall.temperature = .8;
+    const auto condition = C::BoundarySystem({{"7", wall}}, equation).At(7);
+    const auto inside = gas.Conservative({1, .3, -.2, .1, 2});
+    const auto outside = condition.Exterior(evaluator, inside, {}, {1, 0, 0});
+    const auto expected = gas.Conservative({2 / .8, -.3, .2, -.1, 2});
+    for (int j = 0; j < 5; ++j)
+        CHECK(outside[j] == doctest::Approx(expected[j]).epsilon(1e-13));
+    const auto approximate = condition.ApproximateExteriorJacobian(gas, inside, {1, 0, 0});
+    for (int j = 0; j < 5; ++j)
+        for (int k = 0; k < 5; ++k)
+            CHECK(approximate[j * 5 + k] == (j == k ? (j >= 1 && j <= 3 ? -1 : 1) : 0));
 }

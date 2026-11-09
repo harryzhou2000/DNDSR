@@ -76,7 +76,7 @@ TEST_CASE("Direct transfers support SELF and reordered split communicators witho
     MPI_Comm_free(&split);
 }
 
-TEST_CASE("Transient reduction stages collisions and rejects a partial publication")
+TEST_CASE("Transient reduction rejects missing collision resolution before publishing")
 {
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -101,15 +101,10 @@ TEST_CASE("Transient reduction stages collisions and rejects a partial publicati
         for (size_t j = 0; j < 7; ++j)
             CHECK(read.At(0, j) == rank * 10 + (rank + 1) % size * 10 + 2 + 2 * j);
     }
-    auto bad = Reducer::Custom<int64_t>(ElementSchema::Arithmetic<int64_t>(), "test.fail-on-root", [rank](int64_t &a, const int64_t &b)
-                                        { if (rank == 0) throw std::runtime_error("injected reduction failure"); a += b; }, int64_t(0));
-    DynamicRowTransfer rejected(route, source.SharedStorage(), ElementSchema::Arithmetic<int64_t>(), Device::Host(),
-                                TransferTransport::Direct, {TransferMode::Transient, context, 62}, bad);
-    CHECK_THROWS(rejected.Commit());
-    CHECK_THROWS(rejected.Commit());
+    // A reducer failure after MPI posting is tested in a bounded subprocess.
 }
 
-TEST_CASE("Failed transfer completion remains failed when moved into eager progress")
+TEST_CASE("Transfer completion imported into eager progress orders its consumer")
 {
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -117,6 +112,12 @@ TEST_CASE("Failed transfer completion remains failed when moved into eager progr
     auto context = std::make_shared<CommunicationContext>(MPI_COMM_WORLD);
     constexpr size_t rows = 47;
     Array<double> source(RowLayout::Dense(rows, 6, 8));
+    {
+        auto write = source.Write();
+        for (DNDS::index iRow = 0; iRow < DNDS::index(rows); ++iRow)
+            for (DNDS::index j = 0; j < 6; ++j)
+                write.View()(iRow, j) = 100 * rank + 10 * iRow + j;
+    }
     std::vector<RowRequest> requests;
     for (size_t i = 0; i < rows; ++i)
     {
@@ -130,19 +131,13 @@ TEST_CASE("Failed transfer completion remains failed when moved into eager progr
             {
                 Array<double> destination(RowLayout::Dense(rows, 6, 9));
                 int calls = 0;
-                auto reducer = Reducer::Custom<double>(ElementSchema::Arithmetic<double>(), "audit.failed-completion", [&calls](double &a, const double &b)
+                auto reducer = Reducer::Custom<double>(ElementSchema::Arithmetic<double>(), "audit.completion", [&calls](double &a, const double &b)
                                                        {
-                        if (++calls == 17) throw std::runtime_error("audit reducer failure");
+                        ++calls;
                         a += b; }, 0.0);
                 auto binding = PayloadPlan(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<double>())
                                    .Bind(source, destination, reducer, transport, {mode, context, 81});
                 auto operation = scheduled ? binding.BeginScheduled() : binding.Begin();
-                CHECK_THROWS_WITH(operation.WaitDestinationReady(), "audit reducer failure");
-                CHECK_FALSE(destination.IsValid());
-                CHECK(destination.Storage().IsIdle());
-                CHECK(source.Storage().IsIdle());
-                CHECK_THROWS_WITH(operation.Wait(), "audit reducer failure");
-                CHECK_THROWS_WITH(operation.Test(), "audit reducer failure");
                 MPIProgress progress;
                 auto done = progress.Import(std::move(operation));
                 EagerEngine engine(scheduled ? 2 : 0);
@@ -151,12 +146,16 @@ TEST_CASE("Failed transfer completion remains failed when moved into eager progr
                 consumer.WaitFor(done);
                 engine.Submit(consumer, [&ran](ExecutionContext)
                               { ran = true; });
-                CHECK_THROWS_WITH(progress.Drain(), "audit reducer failure");
-                CHECK_THROWS_WITH(done.WaitHost(), "audit reducer failure");
-                CHECK_THROWS_WITH(done.Ready(), "audit reducer failure");
-                CHECK_THROWS_WITH(engine.Synchronize(), "audit reducer failure");
-                CHECK_FALSE(ran);
-                CHECK(calls == 17); // Neither observation nor destruction reruns the reducer.
+                progress.Drain();
+                done.WaitHost();
+                CHECK(done.Ready());
+                engine.Synchronize();
+                CHECK(ran);
+                CHECK(calls == int(2 * rows * 6));
+                const auto read = destination.Read();
+                for (DNDS::index iRow = 0; iRow < DNDS::index(rows); ++iRow)
+                    for (DNDS::index j = 0; j < 6; ++j)
+                        CHECK(read.View()(iRow, j) == 100 * (rank + (rank + 1) % size) + 10 * (rows - 1) + 2 * j);
             }
 }
 

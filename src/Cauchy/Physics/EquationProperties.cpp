@@ -75,7 +75,10 @@ namespace DNDS::Cauchy
             const real energy = primitive.pressure / (flow[0] * (_gas.gamma - 1));
             result.thermo = {flow[0], primitive.temperature, primitive.pressure, primitive.soundSpeed,
                              energy, energy + primitive.pressure / flow[0], cp, cv, _gas.gasConstant};
-            const real mu = _viscous ? _gas.MolecularViscosity(flow[0], primitive.temperature) : 0;
+            // Convective face properties and thermal admissibility need no
+            // transport. Honor the explicit output request just like the
+            // mixture backend; Sutherland evaluation is not free.
+            const real mu = request.transport ? _gas.MolecularViscosity(flow[0], primitive.temperature) : 0;
             result.transport = {mu, mu * cp / _gas.prandtl};
             result.diffusionBound = mu / flow[0] * std::max(real(4. / 3), _gas.gamma / _gas.prandtl);
             return result;

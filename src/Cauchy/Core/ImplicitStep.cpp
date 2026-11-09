@@ -1,4 +1,6 @@
+#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Core/Domain.hpp"
+#include "Cauchy/Core/StepResult.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 
@@ -40,13 +42,13 @@ namespace DNDS::Cauchy
                 if (settings.implicit.multigrid.levels)
                     multigrid = std::make_shared<PolynomialMultigrid>(mesh, _fv, middle, *solver, _engine, _stream, settings, _workers);
                 return CoupledStageOperator{
-                    [this, workspace](auto &state, auto &rate, real time, int stage)
-                    { EvaluateImplicitRate(state, rate, *workspace, time, stage); },
+                    [this, solver](auto &state, auto &rate, real time, int stage)
+                    { SetTimeStage(stage); solver->EvaluateRate(state, rate, time); },
                     [this, solver, multigrid](const auto &equation, const auto &rate, real cfl)
                     {
                         const auto &c = equation.coefficients;
                         SetTimeStage(equation.coupledStage);
-                        return multigrid ? multigrid->ApplyCycle(equation.resOther, c.inverseDt, c.rhsScale, c.time, equation.coupledStage, cfl)
+                        return multigrid ? multigrid->ApplyCycle(equation.resOther, c.inverseDt, c.rhsScale, c.time, equation.coupledStage, cfl, &rate)
                                          : solver->CorrectOnce(equation.state, equation.resOther, c.inverseDt, c.rhsScale, c.time,
                                                                equation.coupledStage, {1, cfl}, &rate);
                     },
@@ -71,7 +73,7 @@ namespace DNDS::Cauchy
                     const auto &c = equation.coefficients;
                     SetTimeStage(equation.coupledStage);
                     return AsEquationReport(multigrid
-                                                ? multigrid->ApplyCycle(equation.resOther.CoupledField(), c.inverseDt, c.rhsScale, c.time, equation.coupledStage, cfl)
+                                                ? multigrid->ApplyCycle(equation.resOther.CoupledField(), c.inverseDt, c.rhsScale, c.time, equation.coupledStage, cfl, &rate.CoupledField())
                                                 : solver->CorrectOnce(equation.state.CoupledField(), equation.resOther.CoupledField(), c.inverseDt, c.rhsScale, c.time,
                                                                       equation.coupledStage, {1, cfl}, &rate.CoupledField()));
                 },
@@ -104,7 +106,7 @@ namespace DNDS::Cauchy
     void Domain::EvaluateImplicitRate(EquationDofs &state, EquationDofs &rate, FiniteVolume::Workspace &workspace, real time, int stage)
     {
         SetTimeStage(stage);
-        _fv.Evaluate(state, _residual, workspace, _engine, _stream, time);
+        _fv.Evaluate(state, _residualState.CoupledField(), workspace, _engine, _stream, time);
         _lastFallbacks += _fv.LastFaceFallbacks(workspace);
         _lastCharacteristicFallbacks += _fv.LastCharacteristicFallbacks(workspace);
         NormalizeRate(rate);
@@ -112,8 +114,9 @@ namespace DNDS::Cauchy
     void Domain::EvaluateImplicitRate(EquationDofs &state, EquationDofs &rate, FiniteVolume::EquationWorkspace &workspace, real time, int stage)
     {
         SetTimeStage(stage);
-        _fv.Evaluate(state, _residualState, workspace, _engine, _stream, time);
-        NormalizeRate(rate);
+        DNDS_check_throw_info(_equationImplicit && _equationWorkspace.get() == &workspace,
+                              "implicit equation rate belongs to another workspace");
+        _equationImplicit->EvaluateRate(state, rate, time);
     }
     void Domain::NormalizeRate(EquationDofs &rate)
     {
@@ -205,6 +208,7 @@ namespace DNDS::Cauchy
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("Cauchy reconstruction backup failed");
             if (guessWrite)
                 guessWrite->CancelUnmodified();
             if (historyWrite)
@@ -226,7 +230,7 @@ namespace DNDS::Cauchy
         }
         _restoreReconstruction = true;
     }
-    void Domain::PrepareImplicitStep(real dt)
+    StepResult Domain::PrepareImplicitStep(real dt)
     {
         _lastImplicit.clear();
         _lastCoupledIterations = 0;
@@ -290,7 +294,7 @@ namespace DNDS::Cauchy
                     MPI_Allreduce(MPI_IN_PLACE, sum.data(), int(sum.size()), MPI_DOUBLE, MPI_SUM, mpi.comm);
                     DNDS_check_throw_info(std::isfinite(sum.back()) && sum.back() > 0, "invalid DITR global volume");
                     for (index j = 0; j < index(norms.size()); ++j)
-                        norms[j] = settings.normOrder == 1 ? sum[j] / sum.back() : std::sqrt(sum[j] / sum.back()); }, [&]
+                        norms[j] = settings.normOrder == 1 ? sum[j] : std::sqrt(sum[j]); }, [&]
                                                          {
                     const auto a = _coupledMiddle->reconstruction();
                     const auto b = _equationImplicit ? _equationImplicit->ReconstructionStats() : _implicit->ReconstructionStats();
@@ -306,12 +310,12 @@ namespace DNDS::Cauchy
                         if (coupledStage == 0)
                             work = _coupledMiddle->correct(equation, rate, iteration.pseudoCFL);
                         else if (_equationImplicit)
-                            work = _multigrid ? _multigrid->ApplyCycle(equation.resOther, c.inverseDt, c.rhsScale, c.time, coupledStage, iteration.pseudoCFL)
+                            work = _multigrid ? _multigrid->ApplyCycle(equation.resOther, c.inverseDt, c.rhsScale, c.time, coupledStage, iteration.pseudoCFL, &rate)
                                              : _equationImplicit->CorrectOnce(endpoint, equation.resOther, c.inverseDt, c.rhsScale, c.time,
                                                                                coupledStage, {1, iteration.pseudoCFL}, &rate);
                         else
                             work = AsEquationReport(_multigrid
-                                ? _multigrid->ApplyCycle(equation.resOther.CoupledField(), c.inverseDt, c.rhsScale, c.time, coupledStage, iteration.pseudoCFL)
+                                ? _multigrid->ApplyCycle(equation.resOther.CoupledField(), c.inverseDt, c.rhsScale, c.time, coupledStage, iteration.pseudoCFL, &rate.CoupledField())
                                 : _implicit->CorrectOnce(endpoint.CoupledField(), equation.resOther.CoupledField(), c.inverseDt, c.rhsScale, c.time,
                                                          coupledStage, {1, iteration.pseudoCFL}, &rate.CoupledField()));
                         NonlinearDetail::AccumulateWork(iteration, work);
@@ -343,8 +347,10 @@ namespace DNDS::Cauchy
                 details["vr_sweeps"] = last.reconstructionIterations;
                 details["vr_relative_update"] = last.reconstructionRelativeUpdate;
             }
-            DNDS_check_throw_info(false, "Cauchy implicit stage reached its correction cap; accepted state/history unchanged; " + details.dump());
+            return StepResult::Rejected("Cauchy implicit stage reached its correction cap; accepted state/history unchanged; " + details.dump());
         }
-        DNDS_check_throw_info(Admissible(_trial), "Cauchy implicit candidate is inadmissible");
+        if (!Admissible(_trial))
+            return StepResult::Rejected("Cauchy implicit candidate is inadmissible");
+        return {};
     }
 }

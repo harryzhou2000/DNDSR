@@ -41,30 +41,201 @@ namespace
         }
     }
 }
+TEST_CASE("Bottom pMG uses mean convection and jump-only face viscosity in both RHS profiles")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 6);
+    auto fine = Controls();
+    fine.numerics.viscousGradient = "polynomial";
+    fine.numerics.faceFallback = false;
+    fine.numerics.characteristicLimiter = false;
+    const auto bottom = C::PolynomialMultigrid::CoarseSettings(fine, 1);
+    CHECK(bottom.numerics.reconstruction == "gradient");
+    CHECK(bottom.numerics.firstOrderConvection);
+    CHECK(bottom.numerics.RHSIntegrationOrder() == 1);
+    CHECK_FALSE(C::PolynomialMultigrid::CoarseSettings(fine, 0).numerics.firstOrderConvection);
+    for (bool logical : {false, true})
+    {
+        std::vector<double> inviscid;
+        for (bool viscous : {false, true})
+        {
+            std::vector<double> results[2];
+            for (int variant = 0; variant < 2; ++variant)
+            {
+                auto settings = bottom;
+                settings.numerics.positivity = false;
+                settings.equation.transport = viscous ? "NewtonianFourier" : "inviscid";
+                settings.equation.viscosity = viscous ? .01 : 0;
+                if (variant)
+                    settings.numerics.reconstruction = "constant";
+                const auto equation = C::EquationSystem::Resolve(settings.equation);
+                C::FiniteVolume fv(mesh, settings, equation);
+                {
+                    const auto read = fv.Metrics().AcquireRead();
+                    const auto metric = read.HostView();
+                    for (DNDS::index iFace = 0; iFace < fv.Metrics().NumFaceProc(); ++iFace)
+                        CHECK(metric.FaceQuadratureEnd(iFace) - metric.FaceQuadratureBegin(iFace) == 1);
+                }
+                auto state = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
+                Fill(fv, equation, state, 0);
+                R::EagerEngine engine;
+                const auto stream = engine.CreateCPUStream();
+                if (logical)
+                {
+                    auto input = C::EquationDofs::Coupled(equation.Schema(), state);
+                    auto output = C::EquationDofs::Coupled(equation.Schema(), residual);
+                    auto workspace = fv.BuildEquationWorkspace(input);
+                    fv.Evaluate(input, output, *workspace, engine, stream);
+                }
+                else
+                {
+                    auto workspace = fv.BuildWorkspace(state);
+                    fv.Evaluate(state, residual, *workspace, engine, stream);
+                }
+                const auto read = residual.Owned().Read();
+                const auto values = read.View<R::UniformTableRows>();
+                for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+                    for (int j = 0; j < 5; ++j)
+                        results[variant].push_back(values(iCell, j));
+            }
+            double difference = 0;
+            for (DNDS::index i = 0; i < DNDS::index(results[0].size()); ++i)
+                difference = std::max(difference, std::abs(results[0][i] - results[1][i]));
+            MPI_Allreduce(MPI_IN_PLACE, &difference, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
+            CAPTURE(logical);
+            CAPTURE(viscous);
+            CAPTURE(difference);
+            CHECK(difference < 1e-14); // Face result cannot depend on the reconstructed polynomial.
+            if (!viscous)
+                inviscid = results[0];
+            else
+            {
+                double jumpEffect = 0;
+                for (DNDS::index i = 0; i < DNDS::index(results[0].size()); ++i)
+                    jumpEffect = std::max(jumpEffect, std::abs(results[0][i] - inviscid[i]));
+                CHECK(jumpEffect > 1e-6); // Equal paths must not silently omit viscosity.
+            }
+        }
+    }
+}
+TEST_CASE("Each coarse smoother inherits defaults and resolves independent partial controls")
+{
+    auto settings = Controls();
+    settings.implicit.linear.method = "ilu";
+    settings.implicit.linear.iterations = 2;
+    settings.implicit.ilu.fill = 2;
+    settings.implicit.multigrid.coarseLevelSettings["1"].solver = {
+        {"linear", {{"method", "sgs"}, {"iterations", 3}}},
+        {"sgs", {{"exchangeBetweenSweeps", true}}},
+        {"pseudoCFL", 5},
+        {"maxPseudoCFL", 5}};
+    settings.implicit.multigrid.coarseLevelSettings["2"].solver = {{"ilu", {{"fill", 1}}}};
+    const auto intermediate = C::PolynomialMultigrid::CoarseSettings(settings, 0);
+    const auto bottom = C::PolynomialMultigrid::CoarseSettings(settings, 1);
+    CHECK(intermediate.implicit.linear.method == "sgs");
+    CHECK(intermediate.implicit.linear.iterations == 3);
+    CHECK(intermediate.implicit.sgs.exchangeBetweenSweeps);
+    CHECK(intermediate.implicit.pseudoCFL == 5);
+    CHECK(intermediate.implicit.linear.relativeTolerance == settings.implicit.linear.relativeTolerance);
+    CHECK(bottom.implicit.linear.method == "ilu");
+    CHECK(bottom.implicit.linear.iterations == 2);
+    CHECK(bottom.implicit.ilu.fill == 1);
+    CHECK(settings.implicit.ilu.fill == 2);
+    CHECK(bottom.implicit.multigrid.levels == 0);
+    CHECK_FALSE(settings.implicit.multigrid.coarseRHSFPP);
+    CHECK(intermediate.implicit.positivity.rhsFPPMode == "none");
+    CHECK(bottom.implicit.positivity.rhsFPPMode == "none");
+    CHECK(settings.implicit.positivity.rhsFPPMode == "rhs");
+    CHECK(bottom.numerics.positivity == settings.numerics.positivity);
+    CHECK(bottom.implicit.positivity.incrementRelax == settings.implicit.positivity.incrementRelax);
+    settings.implicit.multigrid.coarseRHSFPP = true;
+    CHECK(C::PolynomialMultigrid::CoarseSettings(settings, 0).implicit.positivity.rhsFPPMode == "rhs");
+    settings.implicit.multigrid.coarseLevelSettings["2"].solver["positivity"] = {{"rhsFPPMode", "dTau"}};
+    CHECK(C::PolynomialMultigrid::CoarseSettings(settings, 1).implicit.positivity.rhsFPPMode == "dTau");
+    settings.implicit.multigrid.coarseRHSFPP = false;
+    CHECK(C::PolynomialMultigrid::CoarseSettings(settings, 1).implicit.positivity.rhsFPPMode == "none");
+    C::Json input;
+    input["defaults"]["implicit"]["multigrid"]["coarseLevelSettings"]["1"] = {{"solver", {{"linear", {{"method", "sgs"}}}}}};
+    const auto config = C::SimulationConfig::Resolve(input, mpi.size);
+    CHECK_FALSE(config.Domains().front().settings.implicit.multigrid.coarseRHSFPP);
+    input["defaults"]["implicit"]["multigrid"]["coarseRHSFPP"] = true;
+    CHECK(C::SimulationConfig::Resolve(input, mpi.size).Domains().front().settings.implicit.multigrid.coarseRHSFPP);
+    const auto resolved = config.Domains().front().settings.implicit.ResolveCoarseLevel(1);
+    CHECK(resolved.linear.method == "sgs");
+    CHECK(resolved.linear.iterations == C::ImplicitSettings{}.linear.iterations);
+    settings.implicit.multigrid.coarseLevelSettings["2"].solver["linear"]["iterations"] = 0;
+    CHECK_THROWS(settings.implicit.Validate());
+}
 TEST_CASE("Finest FAS acceptance shares selected-component L1 L2 convergence with the stage solver")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
     for (int order : {1, 2})
+        for (bool checked : {false, true})
+        {
+            auto settings = Controls();
+            settings.implicit.collectiveChecks = checked;
+            settings.implicit.normOrder = order;
+            settings.implicit.residualComponents = {"rho"};
+            settings.implicit.residualReference = "runningMaximum";
+            const auto equation = C::EquationSystem::Resolve(settings.equation);
+            C::FiniteVolume fine(mesh, settings, equation);
+            auto state = fine.Metrics().BuildField(5), source = fine.Metrics().BuildField(5);
+            fine.Initialize(state, {}, {1, 0, 0, 0, 1});
+            const auto mean = equation.Gas().Conservative({1, 0, 0, 0, 1});
+            {
+                auto write = source.Owned().Write();
+                const auto values = write.View<R::UniformTableRows>();
+                for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+                {
+                    for (int j = 0; j < 5; ++j)
+                        values(iCell, j) = 20 * mean[j];
+                    values(iCell, 4) += .1 * (fine.Metrics().Cells().LocalToGlobal(iCell) + 1);
+                }
+            }
+            C::AuxiliaryRequest channels;
+            channels.faceSpectralRadius = channels.cellSpectralSum = true;
+            auto work = fine.BuildWorkspace(state, channels);
+            R::EagerEngine engine;
+            const auto stream = engine.CreateCPUStream();
+            C::NonlinearSolver smoother(fine, state, work, engine, stream, settings);
+            C::PolynomialMultigrid solver(mesh, fine, state, smoother, engine, stream, settings);
+            const auto version = state.Owned().Version();
+            const auto report = solver.Solve(source, 20, 1, 0);
+            CHECK(report.converged);
+            CHECK(report.multigridCycles == 0);
+            CHECK(report.initialResidual == report.referenceResidual);
+            CHECK(report.residual[4] == doctest::Approx(order == 1 ? .85 : std::sqrt(.935)).epsilon(1e-12));
+            CHECK(report.residualTargetRatio < 1);
+            CHECK(state.Owned().Version() == version);
+        }
+}
+TEST_CASE("Coarse FAS rate reuse and fail-fast halos preserve distributed viscous cycle results")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 5);
+    std::vector<double> reference;
+    for (int variant = 0; variant < 3; ++variant)
     {
+        const bool reuse = variant != 0;
         auto settings = Controls();
-        settings.implicit.normOrder = order;
-        settings.implicit.residualComponents = {"rho"};
-        settings.implicit.residualReference = "runningMaximum";
+        if (variant == 2)
+            settings.execution.transferPreflight = "abortOnFailure";
+        settings.implicit.multigrid.reuseCoarseRate = reuse;
+        settings.numerics.reconstructionIterations = 2;
+        settings.numerics.reconstructionTolerance = 0;
+        settings.equation.transport = "NewtonianFourier";
+        settings.equation.viscosity = .01;
+        settings.numerics.viscousGradient = "polynomial";
+        settings.implicit.linear.method = "ilu";
+        settings.implicit.linear.iterations = 2;
+        settings.implicit.ilu.fill = 1;
         const auto equation = C::EquationSystem::Resolve(settings.equation);
         C::FiniteVolume fine(mesh, settings, equation);
         auto state = fine.Metrics().BuildField(5), source = fine.Metrics().BuildField(5);
-        fine.Initialize(state, {}, {1, 0, 0, 0, 1});
-        const auto mean = equation.Gas().Conservative({1, 0, 0, 0, 1});
-        {
-            auto write = source.Owned().Write();
-            const auto values = write.View<R::UniformTableRows>();
-            for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
-            {
-                for (int j = 0; j < 5; ++j)
-                    values(iCell, j) = 20 * mean[j];
-                values(iCell, 4) += .1 * (fine.Metrics().Cells().LocalToGlobal(iCell) + 1);
-            }
-        }
+        Fill(fine, equation, state, .01);
+        // A finite time-equation source retains the positive background. Zero
+        // source would instead drive this mass-dominated equation toward vacuum
+        // and can fail admissibility independently of the reuse being tested.
+        A::Copy(source, state);
+        A::Scale(source, 20.);
         C::AuxiliaryRequest channels;
         channels.faceSpectralRadius = channels.cellSpectralSum = true;
         auto work = fine.BuildWorkspace(state, channels);
@@ -77,17 +248,90 @@ TEST_CASE("Finest FAS acceptance shares selected-component L1 L2 convergence wit
             C::PolynomialMultigrid hierarchy(mesh, fine, state, original, engine, stream, settings);
             auto moved = std::move(original);
             return hierarchy;
-        }(); // Both original facades expired; callbacks retain shared state.
-        const auto version = state.Owned().Version();
-        const auto report = solver.Solve(source, 20, 1, 0);
-        CHECK(report.converged);
-        CHECK(report.multigridCycles == 0);
-        CHECK(report.initialResidual == report.referenceResidual);
-        CHECK(report.residual[4] == doctest::Approx(order == 1 ? .85 : std::sqrt(.935)).epsilon(1e-12));
-        CHECK(report.residualTargetRatio < 1);
-        CHECK(state.Owned().Version() == version);
+        }(); // Both caller facades expire before cached-rate cycle execution.
+        for (int cycle = 0; cycle < 2; ++cycle)
+            solver.ApplyCycle(source, 20, .5, .1);
+        const auto read = state.Owned().Read();
+        const auto values = read.View<R::UniformTableRows>();
+        DNDS::index entry = 0;
+        for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+            for (DNDS::index j = 0; j < 5; ++j, ++entry)
+                if (reuse)
+                    CHECK(values(iCell, j) == doctest::Approx(reference[entry]).epsilon(2e-12));
+                else
+                    reference.push_back(values(iCell, j));
     }
 }
+
+TEST_CASE("FAS consumes the measured finest VR rate once for field and logical equations")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 5);
+    for (bool logical : {false, true})
+    {
+        std::vector<double> reference;
+        for (bool manual : {false, true})
+        {
+            auto settings = Controls();
+            settings.numerics.faceFallback = false;
+            settings.numerics.characteristicLimiter = false;
+            settings.numerics.reconstructionIterations = 1;
+            settings.numerics.reconstructionTolerance = 0;
+            settings.implicit.minIterations = 1;
+            settings.implicit.absoluteTolerance = settings.implicit.relativeTolerance = 0;
+            settings.implicit.multigrid.cycles = 1;
+            const auto equation = C::EquationSystem::Resolve(settings.equation);
+            C::FiniteVolume fine(mesh, settings, equation);
+            auto state = fine.Metrics().BuildField(5), source = fine.Metrics().BuildField(5);
+            Fill(fine, equation, state, .01);
+            A::Copy(source, state);
+            A::Scale(source, 20.);
+            R::EagerEngine engine;
+            const auto stream = engine.CreateCPUStream();
+            if (logical)
+            {
+                auto input = C::EquationDofs::Coupled(equation.Schema(), state);
+                auto forcing = C::EquationDofs::Coupled(equation.Schema(), source);
+                const auto workspace = fine.BuildEquationWorkspace(input);
+                C::EquationNonlinearSolver smoother(fine, input, workspace, engine, stream, settings, A::ComponentSelection(5));
+                C::PolynomialMultigrid solver(mesh, fine, input, smoother, engine, stream, settings);
+                if (manual)
+                {
+                    auto value = C::EquationDofOperations::NewVector(input), rate = C::EquationDofOperations::NewVector(input);
+                    smoother.EvaluateEquation(input, value, 20, .5, .1, &rate);
+                    solver.ApplyCycle(forcing, 20, .5, .1, 0, 0, &rate);
+                }
+                else
+                    CHECK(solver.Solve(forcing, 20, .5, .1).multigridCycles == 1);
+            }
+            else
+            {
+                C::AuxiliaryRequest channels;
+                channels.faceSpectralRadius = channels.cellSpectralSum = true;
+                const auto workspace = fine.BuildWorkspace(state, channels);
+                C::NonlinearSolver smoother(fine, state, workspace, engine, stream, settings);
+                C::PolynomialMultigrid solver(mesh, fine, state, smoother, engine, stream, settings);
+                if (manual)
+                {
+                    auto value = fine.Metrics().BuildField(5), rate = fine.Metrics().BuildField(5);
+                    smoother.EvaluateEquation(state, value, 20, .5, .1, &rate);
+                    solver.ApplyCycle(source, 20, .5, .1, 0, 0, &rate);
+                }
+                else
+                    CHECK(solver.Solve(source, 20, .5, .1).multigridCycles == 1);
+            }
+            const auto read = state.Owned().Read();
+            const auto values = read.View<R::UniformTableRows>();
+            DNDS::index entry = 0;
+            for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+                for (int j = 0; j < 5; ++j, ++entry)
+                    if (manual)
+                        CHECK(values(iCell, j) == doctest::Approx(reference[entry]).epsilon(2e-13));
+                    else
+                        reference.push_back(values(iCell, j));
+        }
+    }
+}
+
 TEST_CASE("Polynomial FAS recovers the original P3 manufactured equation across layouts and distributed halos")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
@@ -95,7 +339,25 @@ TEST_CASE("Polynomial FAS recovers the original P3 manufactured equation across 
     {
         auto settings = Controls();
         settings.implicit.multigrid.levels = scenario == 0 ? 1 : 2;
+        if (scenario == 2)
+        {
+            // Maintained Euler ILU/4ILU/4ILU schedule: one finest
+            // correction, four intermediate and four bottom corrections.
+            settings.implicit.multigrid.coarseLevelSettings["1"].preSmooth = 4;
+            settings.implicit.multigrid.coarseLevelSettings["2"].preSmooth = 4;
+            settings.implicit.multigrid.postSmooth = 0;
+            settings.implicit.multigrid.coarseSmooth = 4;
+            settings.implicit.multigrid.coarseLevelSettings["1"].solver = {
+                {"linear", {{"method", "ilu"}, {"iterations", 2}, {"relativeTolerance", 0}, {"absoluteTolerance", 0}}},
+                {"ilu", {{"fill", 1}}},
+                {"diagonal", "block"}};
+            settings.implicit.multigrid.coarseLevelSettings["2"].solver = {
+                {"linear", {{"method", "sgs"}, {"iterations", 3}}}, {"pseudoCFL", 5}, {"maxPseudoCFL", 5}};
+        }
         settings.numerics.positivity = scenario == 2;
+        // Retain one explicit opt-in coarse-PP execution alongside the new
+        // Euler-default coarse policy exercised by the other FAS fixtures.
+        settings.implicit.multigrid.coarseRHSFPP = scenario == 2;
         settings.execution.overlap = scenario != 1;
         settings.implicit.collectiveChecks = scenario != 1;
         const auto equation = C::EquationSystem::Resolve(settings.equation);
@@ -126,6 +388,11 @@ TEST_CASE("Polynomial FAS recovers the original P3 manufactured equation across 
                                                      (settings.implicit.multigrid.preSmooth + settings.implicit.multigrid.postSmooth));
         REQUIRE(report.levelCorrections.size() == size_t(settings.implicit.multigrid.levels + 1));
         CHECK(report.levelCorrections.back() > 0);
+        if (scenario == 2)
+        {
+            CHECK(report.levelCorrections[1] == 4 * report.multigridCycles);
+            CHECK(report.levelCorrections[2] == 4 * report.multigridCycles);
+        }
         CHECK(report.linearIterations > 0);
         CHECK(source.Owned().Version() == generation);
         const auto solutionRead = state.Owned().Read(), exactRead = exact.Owned().Read();
@@ -245,7 +512,7 @@ TEST_CASE("Selected pMG recovers nonconstant principal equations while preservin
             MPI_Allreduce(MPI_IN_PLACE, norms.data(), 6, MPI_DOUBLE, MPI_SUM, mpi.comm);
             C::FlowState result{};
             for (int j = 0; j < 5; ++j)
-                result[j] = std::sqrt(norms[j] / norms[5]);
+                result[j] = std::sqrt(norms[j]);
             return result;
         };
         // Compare the initial equation with the same cold VR guess on both
@@ -296,7 +563,7 @@ TEST_CASE("Selected pMG recovers nonconstant principal equations while preservin
             CHECK(std::abs(report.residual[j] - finalNorm[j]) < 1e-12);
     }
 }
-TEST_CASE("Cauchy pMG physical discard and commit retry retain the fine reconstruction transaction")
+TEST_CASE("Cauchy pMG physical discard and reprepare retain the fine reconstruction transaction")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
     for (const std::string method : {"esdirk2", "ditr"})
@@ -496,7 +763,7 @@ TEST_CASE("Logical polynomial FAS recovers nonconstant RANS and reacting mixture
         }
         MPI_Allreduce(MPI_IN_PLACE, norm.data(), int(norm.size()), MPI_DOUBLE, MPI_SUM, mpi.comm);
         for (DNDS::index j = 0; j < state.ComponentNumber(); ++j)
-            CHECK(std::abs(report.residual[j] - std::sqrt(norm[j] / norm.back())) < 1e-7);
+            CHECK(std::abs(report.residual[j] - std::sqrt(norm[j])) < 1e-7);
     }
 }
 TEST_CASE("Equation Domain performs one spatial FAS update per DITR coupled stage and retries exactly")
@@ -518,6 +785,7 @@ TEST_CASE("Equation Domain performs one spatial FAS update per DITR coupled stag
     settings.numerics.positivity = true;
     settings.numerics.reconstructionIterations = 4;
     settings.numerics.reconstructionTolerance = 0;
+    settings.execution.fieldGrouping = "equationBlocks";
     settings.execution.layout = "aosoa32";
     settings.execution.hostThreads = 2;
     settings.implicit.linear.method = "sgs";

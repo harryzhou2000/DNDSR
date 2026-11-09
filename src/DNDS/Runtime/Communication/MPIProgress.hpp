@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DNDS/MPI/Failure.hpp"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
 #include <atomic>
@@ -42,6 +43,7 @@ namespace DNDS::Runtime
                 }
                 catch (...)
                 {
+                    MPI::AbortIfSolverFailure("MPI progress failed");
                     error = std::current_exception();
                     complete = true;
                 }
@@ -90,12 +92,18 @@ namespace DNDS::Runtime
         {
             if (std::this_thread::get_id() != _owner)
                 std::terminate();
+            if (std::uncaught_exceptions())
+                for (const auto &pending : _pending)
+                    if (!pending->done.load(std::memory_order_acquire))
+                        DNDS::assert_false_info("no exception with pending MPI progress", __FILE__, __LINE__,
+                                                "cannot drain MPI progress during exception unwinding");
             try
             {
                 Drain();
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("MPI progress failed");
             } // Explicit Drain/Record observation reports errors.
         }
         StreamEvent Import(TransferOperation operation)

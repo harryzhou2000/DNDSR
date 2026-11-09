@@ -2,6 +2,7 @@
 
 #include "DNDS/Runtime/Array/ArrayView.hpp"
 #include <vector>
+#include <optional>
 
 namespace DNDS::Algebra
 {
@@ -34,6 +35,40 @@ namespace DNDS::Algebra
             return iRow < ownedRows ? column.owned(iRow, column.component) : column.ghost(iRow - ownedRows, column.component);
         }
     };
+    /// Recognize a complete ordered AoS parent through logical columns once,
+    /// outside numeric loops. No packing or ownership change: the caller must
+    /// retain the original column table and payload leases. Split, permuted,
+    /// subset and column-major layouts keep the generic component-view path.
+    /// Select exactly one entity part; mixed owned/ghost extents are refused.
+    template <class T>
+    std::optional<Runtime::ArrayView<T, Runtime::AccessBoundsChecks, Runtime::TableRows>>
+    TryTablePart(DofComponentView<T> view, bool ghost)
+    {
+        if (!view.columns || view.components <= 0 || (ghost ? view.ownedRows : view.ghostRows))
+            return std::nullopt;
+        const auto first = ghost ? view.columns[0].ghost : view.columns[0].owned;
+        if (first.kind != Runtime::RowLayoutKind::Table || first.width != view.components ||
+            first.rows != (ghost ? view.ghostRows : view.ownedRows) || first.offsets || first.sizes)
+            return std::nullopt;
+        for (index j = 0; j < view.components; ++j)
+        {
+            const auto &column = view.columns[j];
+            const auto parent = ghost ? column.ghost : column.owned;
+            if (column.component != j || parent.data != first.data || parent.rows != first.rows ||
+                parent.width != first.width || parent.stride != first.stride || parent.kind != first.kind ||
+                parent.offsets || parent.sizes)
+                return std::nullopt;
+        }
+        return Runtime::ArrayView<T, Runtime::AccessBoundsChecks, Runtime::TableRows>{first.data, nullptr, first.rows,
+                                                                                      first.width, first.stride, nullptr, first.kind};
+    }
+    /// Recognize only owned rows; pass OwnedPart() for paired descriptors.
+    template <class T>
+    auto TryOwnedTable(DofComponentView<T> view) { return TryTablePart(view, false); }
+    /// Ghost-only counterpart; pass GhostPart(), retaining the enclosing
+    /// read scope and its descriptor table through every stencil operation.
+    template <class T>
+    auto TryGhostTable(DofComponentView<T> view) { return TryTablePart(view, true); }
     /// Owns host descriptor metadata only. Payloads are borrowed from enclosing
     /// access scopes. Build once outside numerical loops, then freeze View().
     /// Moving/destroying this owner invalidates borrowed views; obtain a new

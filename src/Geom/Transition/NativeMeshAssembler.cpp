@@ -1,3 +1,4 @@
+#include "DNDS/MPI/Failure.hpp"
 #include "Geom/Transition/NativeMeshAssembler.hpp"
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
@@ -352,6 +353,7 @@ namespace DNDS::Geom
                 }
                 catch (const std::exception &error)
                 {
+                    MPI::AbortIfSolverFailure("native mesh assembly failed");
                     throw std::runtime_error("native assembly registration [" + key.Signature() + "]: " + error.what());
                 } });
         std::optional<CompiledGhostTree> tree;

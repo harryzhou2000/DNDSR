@@ -490,6 +490,7 @@ TEST_CASE("Older viscous archives retain primitive gradients and reject a silent
     auto &numerics = old["domains"][0]["settings"]["numerics"];
     for (const auto *name : {"viscousGradient", "viscousLimited", "noGRPOnWall"})
         numerics.erase(name);
+    numerics.erase("firstOrderConvection");
     source.WriteCheckpoint(path, old);
     C::Domain restored("flow", mesh, config.Domains()[0].settings);
     CHECK_NOTHROW(restored.ReadCheckpoint(path, config.Root()));
@@ -506,6 +507,9 @@ TEST_CASE("Older viscous archives retain primitive gradients and reject a silent
     const auto version = changed.Flow().Owned().Version();
     CHECK_THROWS(changed.ReadCheckpoint(path, polynomial.Root()));
     CHECK(changed.Flow().Owned().Version() == version);
+    auto meanConvection = config.Root();
+    meanConvection["domains"][0]["settings"]["numerics"]["firstOrderConvection"] = true;
+    CHECK_THROWS(restored.ReadCheckpoint(path, meanConvection));
     Remove({path});
 }
 TEST_CASE("Older physical-boundary archives omit inactive composition without invalidating restart")

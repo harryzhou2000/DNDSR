@@ -12,6 +12,72 @@ execution leaves ordering proof with the caller. A successful submission or `IsV
 that an operator read the intended time level. These obligations apply equally
 to inline CPU, worker CPU and CUDA execution.
 
+## Distributed exceptions
+
+MPI `TransferOptions::preflight` defaults to `Inherit`, which takes the policy
+from its communication context. A default context uses `Collective`: each
+launch agrees local access/route/stream validity before posting requests. The explicit
+`AbortOnFailure` option retains these local checks but removes their global
+agreement; any local rejection calls `MPI::Abort` immediately. It cannot be
+caught for recovery or retried. Binding construction still collectively agrees
+this policy, layouts and routing. All ranks must follow the same transfer order,
+complete producers and join consumers, including ranks with empty payloads.
+Checked streams retain dependency validation; portable MPI still observes the
+appropriate device producer stream. Stream-native providers keep their own
+protocol. This option neither suppresses numerical reductions nor makes MPI
+stream-ordered or graph-capturable.
+
+```cpp
+Runtime::TransferOptions options;
+options.preflight = Runtime::TransferPreflight::AbortOnFailure;
+auto binding = payload.Bind(source, destination,
+                            Runtime::TransferTransport::Direct, options);
+// All participating ranks build the binding and launch in matching order.
+auto operation = binding.Begin();
+// Independent owned-only work may execute before Wait().
+operation.Wait();
+```
+
+Python exposes the same choice with `options = TransferOptions()` followed by
+`options.preflight = TransferPreflight.AbortOnFailure`. Neither API
+relaxes producer readiness or lease conflicts. A conflicting lease in this
+mode terminates MPI rather than returning an exception to the caller.
+
+`MPI::LocalStage` is a preflight around **local work only**. Every rank reaches
+its single agreement after that work returns or throws. Its action must not
+contain communication, collective I/O, a domain solve or an MPI-containing
+callback. Local communicator queries and datatype construction are safe.
+Wrapping a complete solver/transfer in a catch followed by `Allreduce` cannot
+recover it: a peer may still be in an earlier collective on another communicator.
+
+Local APIs may reject invalid input and release local resources. The buffer
+lease check itself throws even when called by a solver. A coordinated UT may
+catch an agreed preflight rejection before posting and verify that unused
+reservations were canceled.
+
+The Cauchy executable opts its controller into `MPI::SolverFailureScope`.
+Preflight and collective operator catches then abort at the failure boundary,
+with a local diagnostic, in either agreement mode. The optional checks switch
+still controls agreements on success. **In a production solver path, never
+catch and recover from an exception if the try contains any collectively
+ordered work.** This includes point-to-point MPI exchanges whose calls must
+match across ranks, as well as MPI collectives, collective I/O and callbacks
+that can enter them. Coordinated UTs may catch and recover when no peer can be
+stranded. A production failure must not trigger another error
+agreement, MPI request drain, communicator release, worker join or
+`MPI_Finalize`. Active transfers also fail fast on unwinding without a solver
+scope when a peer could still be waiting. Normal retirement still waits.
+The CPU executor captures the solver policy when created. A compute worker
+failure terminates the process without calling MPI from the worker.
+
+Outside production solver scope, worker execution retains exceptions until its event/synchronization is observed.
+That is a transport of the error to the controller, not numerical recovery.
+Observe worker completion before entering dependent MPI. For recoverable numerical
+outcomes, agree an explicit status after the local calculation and before the next
+communication phase. Cauchy's rejected `StepResult` is such a domain-wide status; arbitrary
+`std::exception` is not. Python controllers have the same duty and must abort the
+MPI run on unexpected exceptions rather than locally catching and continuing.
+
 ## Execution, access and final release
 
 `Buffer::Overlaps`, `SameAddress`, `SameRange` and `IsAligned` inspect address,
@@ -198,7 +264,7 @@ a lock. Drain old operations before mutating their dependencies.
 
 `DynamicRowTransfer` pins its source and privately builds a destination preserving
 the local table width/stride, padded capacity or CSR family by default;
-construction and `Commit()` must follow matched collective order. It publishes
+construction and transport calls must follow matched participant order. Commit publishes
 only after successful payload completion. Multiple fields are separate operations:
 the application must commit and validate the complete field bundle before
 publishing a new mesh epoch. There is no atomic multi-field transaction.

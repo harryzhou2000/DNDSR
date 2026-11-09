@@ -104,6 +104,7 @@ namespace DNDS::CFV
         Runtime::ArrayView<const index, false, Runtime::FixedRows<1>> faceOffsets;
         Runtime::ArrayView<const real, false, Runtime::FixedRows<7>> quadrature;
         Runtime::ArrayView<const real, false, Runtime::FixedRows<3>> radialMoment;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<7>> faceMean;
         DNDS_DEVICE_CALLABLE real GetCellVol(index iCell) const { return cells(iCell, 0); }
         DNDS_DEVICE_CALLABLE Geom::tPoint GetCellCent(index iCell) const
         {
@@ -124,6 +125,12 @@ namespace DNDS::CFV
             return {quadrature(iPoint, 3), quadrature(iPoint, 4), quadrature(iPoint, 5)};
         }
         DNDS_DEVICE_CALLABLE real GetFaceWeight(index iPoint) const { return quadrature(iPoint, 6); }
+        /// Reference-center position, normalized integral(n dS), scalar area.
+        /// Geometry is integrated at setup; approximate face operators use one
+        /// record regardless of reconstruction/RHS integration degree.
+        DNDS_DEVICE_CALLABLE Geom::tPoint GetFaceCent(index iFace) const { return {faceMean(iFace, 0), faceMean(iFace, 1), faceMean(iFace, 2)}; }
+        DNDS_DEVICE_CALLABLE Geom::tPoint GetFaceMeanNorm(index iFace) const { return {faceMean(iFace, 3), faceMean(iFace, 4), faceMean(iFace, 5)}; }
+        DNDS_DEVICE_CALLABLE real GetFaceArea(index iFace) const { return faceMean(iFace, 6); }
     };
     /// Read scope pins metadata, values and the mesh generation. Construction
     /// validates once; HostView() copies only borrowed pointers/scalars.
@@ -131,13 +138,26 @@ namespace DNDS::CFV
     {
         std::shared_ptr<const Detail::FiniteVolumeData> _data;
         std::shared_ptr<Geom::MeshReadAccess> _meshRead;
-        Runtime::Array<real>::ReadLease _cells, _quadrature, _radialMoment;
+        Runtime::Array<real>::ReadLease _cells, _quadrature, _radialMoment, _faceMean;
         Runtime::Array<index>::ReadLease _offsets;
         explicit FiniteVolumeRead(std::shared_ptr<const Detail::FiniteVolumeData> data);
         friend class FiniteVolumePlan;
 
     public:
         FiniteVolumeHostView HostView() const;
+    };
+
+    /// Setup-only metric options; frozen into the resulting publication.
+    /// Face order zero follows integrationOrder, one uses reference centers and
+    /// integrated mean normals/areas. Axisymmetry weights by radius=y (no 2*pi).
+    /// collectivePreflight is the caller-resolved optional validation policy;
+    /// it never removes routing/numerical protocols or local access checks.
+    struct FiniteVolumeMetricOptions
+    {
+        int integrationOrder = 5;
+        int faceIntegrationOrder = 0;
+        bool axisymmetric = false;
+        bool collectivePreflight = true;
     };
 
     /// Immutable metric publication; copies share Runtime buffers and mesh/order
@@ -155,8 +175,16 @@ namespace DNDS::CFV
         /// axisymmetric uses radius=y>=0 and measures r*dA/r*ds, without 2*pi.
         /// Equation source terms and cylindrical component connections remain
         /// with the equation adapter; this option changes integration only.
-        static FiniteVolumePlan ConstructMetrics(ssp<Geom::UnstructuredMesh> mesh, int intOrder = 5, bool axisymmetric = false,
-                                                 bool collectivePreflight = true);
+        /// Named options avoid confusing face quadrature with validation policy.
+        static FiniteVolumePlan ConstructMetrics(ssp<Geom::UnstructuredMesh> mesh, FiniteVolumeMetricOptions options);
+        /// Compatibility for the unambiguous historical three-argument API.
+        static FiniteVolumePlan ConstructMetrics(ssp<Geom::UnstructuredMesh> mesh, int intOrder = 5, bool axisymmetric = false)
+        {
+            FiniteVolumeMetricOptions options;
+            options.integrationOrder = intOrder;
+            options.axisymmetric = axisymmetric;
+            return ConstructMetrics(std::move(mesh), options);
+        }
         void Validate() const;
         FiniteVolumeRead AcquireRead() const;
         index NumCell() const;
@@ -178,10 +206,10 @@ namespace DNDS::CFV
         /// Uniform physical prototype; derive owned/ghost pitches independently.
         FVField BuildField(Runtime::RowLayout prototype, Runtime::Device device = Runtime::Device::Host()) const;
         /// Collective binding, retained by caller for persistent repeated pulls.
-        Runtime::TransferBinding BindHalo(FVField &field) const;
+        Runtime::TransferBinding BindHalo(FVField &field, Runtime::TransferOptions options = {}) const;
         /// CPU direct transfer with completed-publication provenance. Callers
         /// provide coherent exchange epochs; no remote freshness is inferred.
-        Algebra::DofHalo<real, uint64_t> BindTrackedHalo(FVField &field) const;
+        Algebra::DofHalo<real, uint64_t> BindTrackedHalo(FVField &field, Runtime::TransferOptions options = {}) const;
         void ValidateField(const FVField &field, index width) const;
         MPI_Comm Communicator() const;
         real GetCellVol(index iCell) const;
@@ -194,7 +222,9 @@ namespace DNDS::CFV
         Runtime::Array<real> BuildCellMaxLenScale() const;
     };
 
-    /// Explicit Dirichlet values at the prepared boundary quadrature points.
+    /// Explicit targets for boundary reconstruction equations at prepared
+    /// quadrature points. The caller selects their physical convention (e.g.
+    /// Euler's reflected exterior target at a wall, or a prescribed trace).
     /// Refresh after changing a state-dependent BC. No callback is invoked by
     /// reconstruction. Each object belongs to exactly one reconstruction plan.
     struct ReconstructionBoundaryValues
@@ -260,6 +290,7 @@ namespace DNDS::CFV
         FiniteVolumeRead _geometry;
         std::optional<Runtime::Array<real>::ReadLease> _basis;
         Runtime::Array<real>::ReadLease _moments;
+        Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::TableRows> _basisView, _momentView;
         std::shared_ptr<Geom::MeshReadAccess> _meshRead;
         explicit ReconstructionBasisRead(std::shared_ptr<const Detail::ReconstructionData> data);
         friend class VariationalReconstructionPlan;

@@ -1,5 +1,7 @@
 #include "Cauchy/Core/Simulation.hpp"
+#include "Cauchy/Core/StepResult.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include "DNDS/MPI/Failure.hpp"
 #include "DNDS/IO/CsvLog.hpp"
 #include "argparse.hpp"
 #include <fstream>
@@ -13,6 +15,7 @@ static int Run(int argc, char **argv, double started)
     int status = 0;
     {
         const DNDS::MPIInfo mpi(MPI_COMM_WORLD);
+        const DNDS::MPI::SolverFailureScope solverFailures(mpi.comm);
         try
         {
             // Own help handling so argparse never exits before MPI finalization.
@@ -64,24 +67,14 @@ static int Run(int argc, char **argv, double started)
             const auto &output = config.Output();
             const auto &time = config.Time();
             const auto domainCount = DNDS::index(config.Domains().size());
-            // Finish the global domain order even after one local failure:
-            // later domains may share ranks with a successful communicator.
+            // Actions may enter domain collectives. Propagate unexpected errors
+            // to the fatal boundary; never try a control reduction after a
+            // rank-local failure while its peers may still be in that action.
             const auto visitDomains = [&](const auto &action)
             {
-                std::exception_ptr failure;
                 for (DNDS::index iDomain = 0; iDomain < domainCount; ++iDomain)
                     if (simulation.Local(iDomain))
-                        try
-                        {
-                            action(iDomain, simulation.GetDomain(iDomain));
-                        }
-                        catch (...)
-                        {
-                            if (!failure)
-                                failure = std::current_exception();
-                        }
-                DNDS::MPI::LocalStage(mpi, [&]
-                                      { if (failure) std::rethrow_exception(failure); }, "Cauchy frontend failed in another domain");
+                        action(iDomain, simulation.GetDomain(iDomain));
             };
             const auto domainPrefix = [&](DNDS::index iDomain)
             { return output.prefix + (domainCount == 1 ? "" : "_domain" + std::to_string(iDomain)); };
@@ -110,7 +103,7 @@ static int Run(int argc, char **argv, double started)
             std::vector<double> baselines(size_t(domainCount), 0);
             bool reached = false, wallStop = false;
             std::vector<DNDS::Cauchy::PhysicalStepLimit> limits(static_cast<size_t>(domainCount));
-            const auto record = [&](DNDS::real dt, int retries, bool useLimits = false)
+            const auto record = [&](DNDS::real dt, int retries, bool useLimits = false, bool printConsole = true)
             {
                 int allReached = 1;
                 visitDomains([&](DNDS::index iDomain, auto &domain)
@@ -151,7 +144,8 @@ static int Run(int argc, char **argv, double started)
                     append(limit.limitedCells); append(limit.minimumAlpha); append(limit.growthLimited);
                     DNDS_check_throw_info(column == DNDS::index(columns.size()), "Cauchy history field count differs from its header");
                     histories[iDomain]->WriteLine(row, 17);
-                    std::cout << std::setprecision(12) << "Cauchy " << (domainCount == 1 ? "" : domain.Name() + " ") << "step " << domain.Epoch().acceptedStep << " time " << domain.Time() << " dt " << dt
+                    if (printConsole)
+                        std::cout << std::setprecision(12) << "Cauchy " << (domainCount == 1 ? "" : domain.Name() + " ") << "step " << domain.Epoch().acceptedStep << " time " << domain.Time() << " dt " << dt
                               << " residual " << values[4] << " rho_min " << values[2] << " p_min " << values[3] << " VR " << values[8] << ':' << values[9]
                               << " rho L1 " << values[10] << " face fallbacks " << fallbacks << " implicit " << nonlinearIterations << '/' << linearIterations
                               << " target ratio " << implicitRatio << " stage VR " << implicitFinalVRSweeps << ':' << implicitFinalVRUpdate << " wall " << MPI_Wtime() - started << std::endl;
@@ -166,7 +160,9 @@ static int Run(int argc, char **argv, double started)
                 MPI_Allreduce(MPI_IN_PLACE, &allReached, 1, MPI_INT, MPI_MIN, mpi.comm);
                 return bool(allReached);
             };
-            record(0, 0);
+            // The initial state remains in the CSV history, but console
+            // iteration labels begin with the first completed physical step.
+            record(0, 0, false, false);
             for (DNDS::index step = 0; time.finalTime > 0 ? !DNDS::Cauchy::EquationTimeStepper::ReachedTimeTarget(simulation.Time(), time.finalTime) : step < time.steps; ++step)
             {
                 int stop = time.wallSeconds > 0 && MPI_Wtime() - started >= time.wallSeconds;
@@ -195,19 +191,14 @@ static int Run(int argc, char **argv, double started)
                 int retries = 0;
                 for (;;)
                 {
-                    try
-                    {
-                        simulation.Advance(dt);
+                    const auto result = simulation.Advance(dt);
+                    if (result)
                         break;
-                    }
-                    catch (const std::exception &failure)
-                    {
-                        if (retries++ >= time.maxRetries)
-                            throw;
-                        if (mpi.rank == 0)
-                            std::cout << "Retry candidate with half dt: " << failure.what() << std::endl;
-                        dt *= .5;
-                    }
+                    if (retries++ >= time.maxRetries)
+                        DNDS::MPI::Abort(mpi.comm, "Cauchy timestep retries exhausted: " + result.reason);
+                    if (mpi.rank == 0)
+                        std::cout << "Retry candidate with half dt: " << result.reason << std::endl;
+                    dt *= .5;
                 }
                 if (time.steady || simulation.Step() % uint64_t(output.historyInterval) == 0)
                     reached = record(time.steady ? 0 : dt, retries, time.positivity.enabled);
@@ -243,8 +234,15 @@ static int Run(int argc, char **argv, double started)
         }
         catch (const std::exception &exception)
         {
-            std::cerr << "Cauchy rank " << mpi.rank << ": " << exception.what() << '\n';
-            status = 1;
+            // Throws are allowed; coordinated tests may catch and recover.
+            // This production try includes collectively ordered MPI work,
+            // including point-to-point exchanges. A catch can report locally
+            // and abort only: no retry, drain, error agreement or finalization.
+            DNDS::MPI::Abort(mpi.comm, "Cauchy solver failed", exception.what());
+        }
+        catch (...)
+        {
+            DNDS::MPI::Abort(mpi.comm, "Cauchy: unknown fatal exception");
         }
         MPI_Allreduce(MPI_IN_PLACE, &status, 1, MPI_INT, MPI_MAX, mpi.comm);
     }

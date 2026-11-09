@@ -1,3 +1,4 @@
+#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/IO/EquationArchive.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 
@@ -83,6 +84,7 @@ namespace DNDS::Cauchy
         }
         catch (const Json::exception &)
         {
+            MPI::AbortIfSolverFailure("Cauchy equation archive validation failed");
             return false;
         }
     }

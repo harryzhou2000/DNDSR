@@ -69,39 +69,72 @@ int main(int argc, char **argv)
     {
         I steps = 0;
         double dt = 0, omega = 0;
-        int split = 0, subdivisions = 0, segments = 0;
+        int split = 0, subdivisions = 0, segments = 0, outerRanks = 0;
+        std::string pointDistribution = "grid";
+        std::string caseFile;
         I outputEvery = 0;
         DNDS::MPI::LocalStage(mpi, [&]
                               {
-            DNDS_check_throw_info(argc==7||argc==8,"usage: steps dt omega split(0/1) subdivisions circleSegments [visualizationEvery]");
+            DNDS_check_throw_info(argc>=7&&argc<=11,"usage: steps dt omega split(0/1) subdivisions circleSegments [visualizationEvery] [outerRanks] [grid|poisson|gmsh] [case.json]");
             steps=std::stoll(argv[1]); dt=std::stod(argv[2]); omega=std::stod(argv[3]);
             split=std::stoi(argv[4]); subdivisions=std::stoi(argv[5]); segments=std::stoi(argv[6]);
-            if(argc==8) outputEvery=std::stoll(argv[7]);
-            DNDS_check_throw_info(steps>=1&&steps<=5000&&std::isfinite(dt)&&dt>0&&dt<=.01&&std::isfinite(omega)&&std::abs(omega)<=.1,
+            if(argc>=8) outputEvery=std::stoll(argv[7]);
+            if(argc>=9) outerRanks=std::stoi(argv[8]);
+            if(argc>=10) pointDistribution=argv[9];
+            if(argc>=11) caseFile=argv[10];
+            DNDS_check_throw_info(steps>=1&&steps<=100000&&std::isfinite(dt)&&dt>0&&dt<=.01&&std::isfinite(omega)&&std::abs(omega)<=4,
                                   "experiment exceeds bounded time controls");
-            DNDS_check_throw_info((split==0||split==1)&&(!split||mpi.size>=2)&&subdivisions>=8&&subdivisions<=64&&segments>=16&&segments<=256,
+            DNDS_check_throw_info((split==0||split==1)&&(!split||mpi.size>=2)&&subdivisions>=8&&subdivisions<=256&&segments>=16&&segments<=512,
                                   "invalid experiment placement or mesh resolution");
+            DNDS_check_throw_info((outerRanks==0||(split&&outerRanks>0&&outerRanks<mpi.size))&&
+                                  (pointDistribution=="grid"||pointDistribution=="poisson"||pointDistribution=="gmsh")&&
+                                  (pointDistribution!="gmsh"||!caseFile.empty()),"invalid domain split or point distribution");
             DNDS_check_throw_info(outputEvery>=0&&(!outputEvery||(outputEvery<=steps&&steps/outputEvery<=500)),
                                   "invalid/beyond-bound visualization cadence"); });
         std::vector<int> a, b;
         for (int rank = mpi.size - 1; rank >= 0; --rank)
         {
-            if (!split || rank % 2 == 0)
+            if (!split || (outerRanks ? rank < outerRanks : rank % 2 == 0))
                 a.push_back(rank);
-            if (!split || rank % 2 == 1)
+            if (!split || (outerRanks ? rank >= outerRanks : rank % 2 == 1))
                 b.push_back(rank);
         }
         C::Json input{{"domains", C::Json::array({{{"name", "outer"}, {"ranks", a}}, {{"name", "disk"}, {"ranks", b}}})},
-                      {"time", {{"method", "ssprk3"}}},
+                      {"time", {{"method", "ssprk3"}, {"dt", dt}, {"steps", steps}}},
                       {"defaults", {{"initialPrimitive", {1, .1, .2, .03, 1}}, {"initialProfile", {{"kind", "isentropicVortex"}, {"strength", .5}, {"period", 10}}}, {"boundaries", {{"101", {{"kind", "interface"}}}}}, {"numerics", {{"reconstruction", "variational"}, {"flux", "rusanov"}, {"limiter", "none"}, {"positivity", false}, {"faceFallback", false}, {"reconstructionIterations", 12}, {"cfv", {{"maxOrder", 3}, {"intOrder", 5}, {"jacobiRelax", .8}, {"boundaryDerivativeWeights", {1, 0, 0, 0}}}}}}}},
                       {"interfaces", C::Json::array({{{"donor", "outer"}, {"receiver", "disk"}, {"donorZone", 101}, {"receiverZone", 101}, {"maxGap", .02}},
                                                      {{"donor", "disk"}, {"receiver", "outer"}, {"donorZone", 101}, {"receiverZone", 101}, {"maxGap", .02}}})}};
         input["domains"][1]["overrides"] = {{"motion", {{"angularVelocity", {0, 0, omega}}, {"center", {5, 5, 0}}}}};
+        // Optional experiment input keeps the original fixture reproducible.
+        // Gmsh cases use the ordinary per-domain CGNS reader/mesh pipeline.
+        if (!caseFile.empty())
+            DNDS::MPI::LocalStage(mpi, [&]
+                                  {
+                std::ifstream file(caseFile);
+                DNDS_check_throw_info(bool(file), "cannot read vortex experiment input");
+                C::Json settings; file >> settings;
+                input["defaults"]["initialPrimitive"] = settings.at("initialPrimitive");
+                input["defaults"]["initialProfile"]["strength"] = settings.at("strength");
+                if (pointDistribution == "gmsh")
+                    for (I iDomain = 0; iDomain < 2; ++iDomain)
+                    {
+                        auto &mesh = input["domains"][iDomain]["overrides"]["mesh"];
+                        mesh["file"] = settings.at("meshFiles").at(iDomain);
+                        mesh["dimension"] = 2;
+                        mesh["boundaryIds"] = {{"INTERFACE",101},
+                            {"PERIODIC_1",DNDS::Geom::BC_ID_PERIODIC_1}, {"PERIODIC_1_DONOR",DNDS::Geom::BC_ID_PERIODIC_1_DONOR},
+                            {"PERIODIC_2",DNDS::Geom::BC_ID_PERIODIC_2}, {"PERIODIC_2_DONOR",DNDS::Geom::BC_ID_PERIODIC_2_DONOR}};
+                        if (iDomain == 0) mesh["periodicLengths"] = {10,10,0};
+                    } });
         const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
         const auto start = MPI_Wtime();
         {
-            C::Simulation simulation(config, mpi.comm, [&](I iDomain, const auto &, const auto &domainMPI)
-                                     { return CauchyTest::VortexPatch(domainMPI, iDomain == 1, subdivisions, segments); });
+            C::Simulation::MeshFactory factory;
+            if (pointDistribution != "gmsh")
+                factory = [&](I iDomain, const auto &, const auto &domainMPI)
+                { return CauchyTest::VortexPatch(domainMPI, iDomain == 1, subdivisions, segments,
+                                                 pointDistribution == "poisson" ? CauchyTest::VortexPointDistribution::PoissonDisk : CauchyTest::VortexPointDistribution::JitteredGrid); };
+            C::Simulation simulation(config, mpi.comm, factory);
             double setup = MPI_Wtime() - start, advance = 0, diagnostics = 0, output = 0;
             C::Json frames = C::Json::array();
             const auto snapshot = [&]
@@ -116,7 +149,7 @@ int main(int argc, char **argv)
             };
             MPI_Allreduce(MPI_IN_PLACE, &setup, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
             if (mpi.rank == 0)
-                std::cout << C::Json{{"controls", {{"np", mpi.size}, {"steps", steps}, {"dt", dt}, {"omega", omega}, {"split", split}, {"subdivisions", subdivisions}, {"segments", segments}, {"visualizationEvery", outputEvery}, {"setupSeconds", setup}, {"resolved", config.Root()}}}}.dump() << '\n';
+                std::cout << C::Json{{"controls", {{"np", mpi.size}, {"steps", steps}, {"dt", dt}, {"omega", omega}, {"split", split}, {"outerRanks", outerRanks}, {"pointDistribution", pointDistribution}, {"caseFile", caseFile}, {"subdivisions", subdivisions}, {"segments", segments}, {"visualizationEvery", outputEvery}, {"setupSeconds", setup}, {"resolved", config.Root()}}}}.dump() << '\n';
             auto report = [&]
             {
                 const auto begin = MPI_Wtime();
@@ -131,7 +164,8 @@ int main(int argc, char **argv)
             for (I iStep = 0; iStep < steps; ++iStep)
             {
                 const auto begin = MPI_Wtime();
-                simulation.Advance(dt);
+                const auto result = simulation.Advance(dt);
+                DNDS_check_throw_info(result.accepted, "multidomain IV candidate rejected: " + result.reason);
                 advance += MPI_Wtime() - begin;
                 if (outputEvery && ((iStep + 1) % outputEvery == 0 || iStep + 1 == steps))
                     snapshot();

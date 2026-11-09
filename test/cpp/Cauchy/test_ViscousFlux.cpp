@@ -321,6 +321,7 @@ TEST_CASE("Nonzero quadratic temperature does not introduce viscosity at Euler o
         settings.equation.viscosity = .03;
         settings.boundaries["7"].kind = kind;
         settings.boundaries["7"].primitive = {1, 0, 0, 0, 2};
+        settings.numerics.reconstruction = "variational"; // This oracle injects a quadratic polynomial, not a direct-FV gradient.
         settings.numerics.viscousGradient = "polynomial";
         settings.numerics.cfv.maxOrder = 2;
         const auto equation = C::EquationSystem::Resolve(settings.equation);

@@ -82,16 +82,20 @@ namespace
                     events.push_back("begin" + std::to_string(context.epoch.couplingIteration));
                     sourceVersion = source.Version();
                     operation.emplace(binding.Begin());
-                    if (failBegin && mpi.rank == 0)
-                        throw std::runtime_error("mock begin failure after posting");
+                    DNDS::MPI::LocalStage(mpi, [&]
+                                          {
+                        if (failBegin && mpi.rank == 0)
+                            throw std::runtime_error("mock begin failure after posting"); });
                 },
                 [this](const auto &context)
                 {
                     operation->Wait();
                     operation.reset();
                     DNDS_check_throw_info(source.Version() == sourceVersion, "interface source changed during send");
-                    if (failComplete && mpi.rank == 0)
-                        throw std::runtime_error("mock complete failure before publication");
+                    DNDS::MPI::LocalStage(mpi, [&]
+                                          {
+                        if (failComplete && mpi.rank == 0)
+                            throw std::runtime_error("mock complete failure before publication"); });
                     ++completes;
                     events.push_back("complete" + std::to_string(context.epoch.couplingIteration));
                 },
@@ -320,8 +324,10 @@ TEST_CASE("A failed discard stays retryable until every pending transfer is drai
     bool fail = true;
     hooks.discard = [&](const auto &context)
     {
-        if (fail && mpi.rank == 0)
-            throw std::runtime_error("mock cleanup failure before draining");
+        DNDS::MPI::LocalStage(mpi, [&]
+                              {
+            if (fail && mpi.rank == 0)
+                throw std::runtime_error("mock cleanup failure before draining"); });
         drain(context);
     };
     C::InterfaceIterationSchedule schedule(exchange.context, {{0, 1, 0, 0, 0, 0}, 0}, C::InterfaceRefreshPolicy::PerIteration, std::move(hooks));

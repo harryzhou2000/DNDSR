@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Cauchy/Core/StepResult.hpp"
+
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Core/CoordinatedSchedule.hpp"
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
@@ -28,7 +30,6 @@ namespace DNDS::Cauchy
         FiniteVolume _fv;
         EquationDofs _accepted, _trial;
         EquationDofs _residualState;
-        CFV::FVField _residual;
         EquationDofs _initial;
         std::shared_ptr<FiniteVolume::Workspace> _workspace;
         std::shared_ptr<FiniteVolume::EquationWorkspace> _equationWorkspace, _equationObservationWorkspace;
@@ -85,14 +86,14 @@ namespace DNDS::Cauchy
         real _lastAlpha = 1, _lastBeta = 1;
         index _lastAlphaCells = 0, _lastBetaCells = 0;
         index _lastCharacteristicFallbacks = 0;
-        void UpdateStage(real dt, real historyWeight, real stageWeight, real stageTime);
+        StepResult UpdateStage(real dt, real historyWeight, real stageWeight, real stageTime);
         void ChemicalHalfStep(const EquationDofs &input, EquationDofs &output, real dt);
         void FinishChemicalStep();
         void PublishTrial(real time, StateEpoch epoch);
         void EvaluateObservation();
         void InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh);
         void ConfigureTimeStep(const TimeSettings &time, int compressionPower);
-        void PrepareImplicitStep(real dt);
+        StepResult PrepareImplicitStep(real dt);
         void SetTimeStage(int stage);
         void PreserveReconstructionGuess();
         void EvaluateImplicitRate(EquationDofs &state, EquationDofs &rate, FiniteVolume::Workspace &workspace, real time, int stage);
@@ -112,8 +113,8 @@ namespace DNDS::Cauchy
         /// every domain's inner nonlinear loop and MPI communicator.
         void BeginCoordinatedStep(real dt);
         real PrepareCoordinatedStage(int stage);
-        void SolveCoordinatedStage();
-        void CompleteCoordinatedStage();
+        StepResult SolveCoordinatedStage();
+        StepResult CompleteCoordinatedStage();
         int CoordinatedStageNumber() const;
         std::optional<EquationTimeStepper::StageEquation> _stageEquation;
         int _coordinatedStage = 0;
@@ -143,7 +144,7 @@ namespace DNDS::Cauchy
             }
         };
         std::unique_ptr<CheckpointRead> PrepareCheckpointRead(const std::string &path, const Json &resolved);
-        void ReserveCheckpointRead(CheckpointRead &checkpoint);
+        void ReserveCheckpointRead(CheckpointRead &checkpoint, bool collectiveChecks = true);
         void CommitCheckpointRead(CheckpointRead &checkpoint);
 
     public:
@@ -162,6 +163,8 @@ namespace DNDS::Cauchy
         bool RefreshDerived(DerivedFields &fields, bool onlyIfStale = false) const;
         /// Coarse debugging/input boundary. Release writers before a trial and
         /// all views before commit; aliases intentionally block conflicting writes.
+        /// Legacy/debug convenience for a dedicated physical flow5 field.
+        /// Coupled extended tables use Dofs().ReadOwned().Block("flow") instead.
         CFV::FVField &Flow() { return FlowField(_accepted); }
         const CFV::FVField &Flow() const { return FlowField(_accepted); }
         real Time() const { return _time; }
@@ -205,9 +208,10 @@ namespace DNDS::Cauchy
         /// Physical Strang applies constant-volume species half-steps around
         /// the same transport driver, retaining VR and resetting method history
         /// across source jumps. LastImplicitStages reports transport solves.
-        /// Backend/allocation failure may poison private scratch; reconstruct
-        /// the Domain before retrying such failures. Accepted state is retained.
-        void PrepareStep(real dt);
+        /// A rejected StepResult certifies an agreed numerical retry. Unexpected
+        /// backend/access/allocation exceptions must reach a fail-fast MPI
+        /// boundary; catching and continuing to MPI/finalization is unsafe.
+        [[nodiscard]] StepResult PrepareStep(real dt);
         void CommitStep();
         void DiscardStep() noexcept
         {
@@ -217,15 +221,21 @@ namespace DNDS::Cauchy
             if (_timeStepper)
                 _timeStepper->Discard();
         }
-        void Advance(real dt)
+        [[nodiscard]] StepResult Advance(real dt)
         {
-            PrepareStep(dt);
-            CommitStep();
+            auto result = PrepareStep(dt);
+            if (result)
+                CommitStep();
+            else
+                DiscardStep();
+            return result;
         }
         /// Recompute an owned integrated residual for inspection. The returned
         /// workspace is overwritten at the next residual/stage; share/copy
         /// explicitly if it must outlive that operation. Invalidates any
         /// prepared trial because the reconstruction/trial workspace is reused.
+        /// Requires a dedicated physical flow5 field, like Flow(). Use
+        /// ResidualState() for coupled extended-equation allocations.
         const CFV::FVField &Residual();
         /// Full logical integrated residual; shares the same overwriteable
         /// workspace and candidate-invalidating semantics as Residual().

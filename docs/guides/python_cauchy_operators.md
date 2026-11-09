@@ -6,6 +6,30 @@ provides the existing lower-level FV and linear entrypoints for testing,
 tuning and custom orchestration; it does not implement another numerical loop.
 CUDA Cauchy kernels remain unavailable.
 
+## Step acceptance and failures
+
+`Domain.advance(dt)` and `Simulation.advance(dt)` return a `StepResult` with
+`accepted` and `reason`. Always inspect it. A rejected numerical candidate leaves
+accepted state, time and method history unchanged; the controller may retry the
+whole physical step at a smaller dt. The C++ frontend applies its configured retry
+limit; the Python API does not retry automatically.
+
+```python
+result = simulation.advance(dt)
+if not result.accepted:
+    print(result.reason)
+    result = simulation.advance(dt * 0.5)
+    if not result.accepted:
+        raise RuntimeError("Numerical candidate still rejected: " + result.reason)
+```
+
+This result represents only a collectively agreed numerical decision. Backend,
+lease, MPI, allocation and invalid-input failures are not timestep rejection.
+Production error handlers terminate the run independently, without a later
+barrier/error reduction or exception-based recovery. An application-level Python
+exception also needs a fatal MPI boundary when peers could still be communicating.
+The C++ `PrepareStep` result must similarly be checked before `CommitStep`.
+
 ## Ownership and access
 
 ```text
@@ -82,6 +106,25 @@ same order from an MPI-authorized controller thread. Python releases the GIL
 during native work; inline and worker execution share the same C++ sequence.
 Return joins the relevant stream. An external pending producer must already
 be joined; the wrapper does not infer arbitrary cross-stream dependencies.
+
+For independent flux/source work, prepare without a dummy residual:
+
+```python
+operators.prepare_reconstruction(state, workspace, engine, stream, time=domain.time)
+face_flux = operators.build_face_flux_buffer(state)
+operators.evaluate_flux(state, residual, workspace, face_flux=face_flux, time=domain.time)
+operators.add_source(state, residual, workspace, time=domain.time)
+```
+
+`evaluate_flux` overwrites owned residual rows; `add_source` adds to initialized
+rows. Both are local, synchronous calls on the prepared state/time and perform
+no reconstruction or communication. Serialize their workspace use and coordinate
+rank-local failures. Changing a prepared mean or coefficient invalidates the
+publication. The optional caller-owned face array holds integrated negative
+outward flux in the local anchor cell's axes, in the C++ `AuxiliaryFaces()` order;
+it contains no source contribution or implicit halo. Release debug views before
+the write. Direct P1 consumes physical gradients; constant/P0 face reconstruction
+keeps gradient-dependent RANS sources independently active.
 
 The equation workspace supports the native equation-state profile, including
 P3 VR, component WBAP, Euler reconstruction PP and supported RANS/mixture

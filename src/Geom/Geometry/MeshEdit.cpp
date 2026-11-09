@@ -1,3 +1,4 @@
+#include "DNDS/MPI/Failure.hpp"
 #include "Geom/Geometry/MeshEdit.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
@@ -279,6 +280,7 @@ namespace DNDS::Geom
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("mesh edit failed");
             mesh._nativeState.reset();
             mesh._nativeSmoothing.reset();
             auto failed = mesh.versions.BeginMutation(Runtime::Change::All);

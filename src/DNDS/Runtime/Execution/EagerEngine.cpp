@@ -1,4 +1,5 @@
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
+#include "DNDS/MPI/Failure.hpp"
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -32,6 +33,7 @@ namespace DNDS::Runtime
             std::vector<std::thread> _workers;
             size_t _next = 0;
             bool _stopping = false;
+            const bool _solverFailures = MPI::SolverFailureScopeActive();
 
             bool Step()
             {
@@ -72,6 +74,11 @@ namespace DNDS::Runtime
                 }
                 catch (...)
                 {
+                    if (_solverFailures)
+                    {
+                        MPI::AbortIfSolverFailure("solver CPU command failed");
+                        MPI::AbortCaught(MPI_COMM_NULL, "solver CPU worker failed");
+                    }
                     error = std::current_exception();
                 }
                 if (ready && command.retire)
@@ -123,6 +130,7 @@ namespace DNDS::Runtime
                 }
                 catch (...)
                 {
+                    MPI::AbortIfSolverFailure("solver CPU worker creation failed");
                     {
                         std::lock_guard<std::mutex> lock(_mutex);
                         _stopping = true;
@@ -135,6 +143,8 @@ namespace DNDS::Runtime
             }
             ~CPUExecutor()
             {
+                if (std::uncaught_exceptions())
+                    MPI::AbortIfSolverFailure("solver unwinding before CPU worker join");
                 {
                     std::lock_guard<std::mutex> lock(_mutex);
                     _stopping = true;
@@ -258,12 +268,15 @@ namespace DNDS::Runtime
     }
     EagerEngine::~EagerEngine()
     {
+        if (std::uncaught_exceptions())
+            MPI::AbortIfSolverFailure("solver unwinding before stream shutdown");
         try
         {
             Synchronize();
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("solver stream shutdown failed");
         } // Explicit Synchronize reports errors; shutdown still drains.
     }
     ExecutionStream EagerEngine::CreateCPUStream() { return CreateStream(std::make_shared<CPULauncher>(_state->host)); }
@@ -347,6 +360,7 @@ namespace DNDS::Runtime
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("solver stream synchronization failed");
                 if (!first)
                     first = std::current_exception();
             }

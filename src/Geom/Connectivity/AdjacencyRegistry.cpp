@@ -1,3 +1,4 @@
+#include "DNDS/MPI/Failure.hpp"
 #include "Geom/Connectivity/AdjacencyRegistry.hpp"
 #include "Geom/Connectivity/NativePeriodicMatch.hpp"
 #include "Geom/Connectivity/ConnectivityInterpolateRows.hpp"
@@ -324,6 +325,7 @@ namespace DNDS::Geom
                     }
                     catch (...)
                     {
+                        MPI::AbortIfSolverFailure("mesh adjacency preparation failed");
                         invalid = 1;
                     }
                 }
@@ -331,6 +333,7 @@ namespace DNDS::Geom
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("mesh adjacency preparation failed");
                 valid = 0;
             }
             Runtime::CommunicationDetail::Preflight(valid, _mpi.comm, !_communication || _communication->ChecksCollectivePreflight(), "native ghost traversal local expansion failed on a rank");
@@ -1007,6 +1010,7 @@ namespace DNDS::Geom
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("mesh adjacency preparation failed");
             } // Active writers or invalid scratch take the normal route.
             MPI_Allreduce(MPI_IN_PLACE, &reuse, 1, MPI_INT, MPI_MIN, _mpi.comm);
             auto completed = reuse

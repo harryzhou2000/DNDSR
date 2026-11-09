@@ -108,7 +108,10 @@ namespace
         settings.intOrder = degree + 2;
         settings.cacheDiffBase = true;
         settings.cacheDiffBaseOrder = 1;
-        auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh, settings.intOrder, false, false);
+        C::FiniteVolumeMetricOptions metricOptions;
+        metricOptions.integrationOrder = settings.intOrder;
+        metricOptions.collectivePreflight = false;
+        auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh, metricOptions);
         const auto capabilities = profile == "full" ? C::ReconstructionCapabilities{} : C::ReconstructionCapabilities::ForSweeps(profile == "wbap");
         const auto before = ResidentBytes(), peakBefore = PeakResidentBytes();
         MPI_Barrier(mpi.comm);

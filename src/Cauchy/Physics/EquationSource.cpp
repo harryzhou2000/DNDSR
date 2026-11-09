@@ -1,3 +1,4 @@
+#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Physics/EquationSource.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
@@ -31,6 +32,7 @@ namespace DNDS::Cauchy
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("Cauchy chemical source operation failed");
             if (output)
                 output->CancelUnmodified();
             throw;
@@ -116,6 +118,7 @@ namespace DNDS::Cauchy
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("Cauchy chemical source operation failed");
             if (jacobianWrite)
                 jacobianWrite->CancelUnmodified();
             throw;

@@ -38,7 +38,7 @@ namespace DNDS::CFV
         const auto moment = momentRead.View<R::TableRows>();
         const auto geom = geometry.HostView();
         Math::SmallMatrix full;
-        for (index iPoint = 0; iPoint < cells.RowCount(); ++iPoint)
+        for (index iPoint = 0; iPoint < ids.RowCount(); ++iPoint)
         {
             const index iCell = ids(iPoint, 0);
             const Geom::tPoint p{point(iPoint, 0), point(iPoint, 1), point(iPoint, 2)};
@@ -76,6 +76,7 @@ namespace DNDS::CFV
         std::optional<R::Array<real>::ReadLease> basisRead;
         if (_cachedDerivatives)
             basisRead.emplace(_basis.Read());
+        const auto cachedBasis = basisRead ? basisRead->View<R::TableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::TableRows>{};
         auto pointRead = _points.Read(), momentRead = _reconstruction._data->moments.Read();
         const auto points = pointRead.View<R::FixedRows<3>>();
         const auto moments = momentRead.View<R::TableRows>();
@@ -85,12 +86,14 @@ namespace DNDS::CFV
         const auto ids = idsRead.View<R::FixedRows<1>>();
         auto write = output.Write();
         const auto result = write.View<R::UniformTableRows>();
-        for (index iPoint = 0; iPoint < Size(); ++iPoint)
+        for (index iPoint = 0; iPoint < ids.RowCount(); ++iPoint)
         {
             const index iCell = ids(iPoint, 0);
+            const auto meanRow = u[iCell], coefficientRow = rec[iCell];
+            const auto outputRow = result[iPoint];
             Math::ReconstructionBasisView values;
             if (basisRead && derivative < _cachedDerivatives)
-                values = {basisRead->View<R::TableRows>()[iPoint].data(), _cachedDerivatives, int(n), _cachedDerivatives};
+                values = {cachedBasis[iPoint].data(), _cachedDerivatives, int(n), _cachedDerivatives};
             else
             {
                 polynomial.Reconstruction(scratch, {points(iPoint, 0), points(iPoint, 1), points(iPoint, 2)},
@@ -100,10 +103,10 @@ namespace DNDS::CFV
             }
             for (index component = 0; component < components; ++component)
             {
-                real value = derivative == 0 ? u(iCell, component) : 0;
+                real value = derivative == 0 ? meanRow[component] : 0;
                 for (index mode = 0; mode < n; ++mode)
-                    value += values(derivative, mode) * rec(iCell, component * n + mode);
-                result(iPoint, component) = value;
+                    value += values(derivative, mode) * coefficientRow[component * n + mode];
+                outputRow[component] = value;
             }
         }
     }

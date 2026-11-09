@@ -69,6 +69,8 @@ namespace DNDS::Cauchy
     struct ExecutionSettings
     {
         std::string device = "cpu", layout = "aos", communication = "mpi-direct";
+        std::string fieldGrouping = "coupled";
+        std::string transferPreflight = "collective";
         int hostThreads = 0;
         bool checkAccess = true;
         bool overlap = true;
@@ -81,7 +83,9 @@ namespace DNDS::Cauchy
         {
             DNDS_FIELD(device, "Required numerical backend; no implicit fallback");
             DNDS_FIELD(layout, "Physical flow table: aos, soa, aosoa32");
+            DNDS_FIELD(fieldGrouping, "equationBlocks: separate flow/RANS/species fields; coupled: one physical table with the same logical blocks");
             DNDS_FIELD(communication, "Payload transport");
+            DNDS_FIELD(transferPreflight, "MPI launch validation: collective (default) or abortOnFailure (local checks, fatal MPI abort, no per-launch global agreement); setup remains collective");
             DNDS_FIELD(hostThreads, "CPU worker count; zero means inline execution");
             DNDS_FIELD(checkAccess, "Validate declared scheduled accesses at submission");
             DNDS_FIELD(overlap, "Overlap input halo exchanges with owned-only core work; false waits then runs unsplit kernels");
@@ -92,12 +96,15 @@ namespace DNDS::Cauchy
     {
         std::string file;
         int dimension = 2;
+        int elevation = 0, bisect = 0;
         std::array<real, 3> periodicLengths{0, 0, 0};
         std::map<std::string, int> boundaryIds;
         DNDS_DECLARE_CONFIG(MeshSettings)
         {
             DNDS_FIELD(file, "CGNS input path; an injected mesh needs no file");
             DNDS_FIELD(dimension, "Geometric dimension, independent of flow component count");
+            DNDS_FIELD(elevation, "Native geometry order elevation: 0 keeps input order, 1 elevates to O2", DNDS::Config::range(0, 1));
+            DNDS_FIELD(bisect, "Native uniform bisection passes after partition and optional elevation", DNDS::Config::range(0, 4));
             DNDS_FIELD(periodicLengths, "Translation from PERIODIC_n to its donor; zero disables that direction");
             config.field_schema(&T::boundaryIds, "boundaryIds", "Explicit CGNS boundary name to integer zone",
                                 []() -> Json
@@ -137,8 +144,9 @@ namespace DNDS::Cauchy
         real reconstructionTolerance = 0;
         bool characteristicLimiter = true, faceFallback = true;
         bool reconstructionBoundaryFromPolynomial = true;
+        bool firstOrderConvection = false;
         std::string viscousGradient = "primitive";
-        bool viscousLimited = true, noGRPOnWall = false;
+        bool viscousLimited = true, noGRPOnWall = false, noRsOnWall = false;
         bool positivity = false;
         real temperatureFloor = 1e-12;
         real positivityBetaCutoff = 1e-3;
@@ -152,6 +160,9 @@ namespace DNDS::Cauchy
         CFV::ReconstructionSettings cfv;
         CFV::LimitedVRSettings limitedVR;
         RiemannSettings riemann;
+        /// Direct linear/constant FV uses center-point flux/source evaluation.
+        /// cfv.intOrder still controls geometric measures and VR setup.
+        int RHSIntegrationOrder() const { return reconstruction == "variational" ? cfv.intOrder : 1; }
         void ValidatePositivity() const;
         DNDS_DECLARE_CONFIG(NumericsSettings)
         {
@@ -164,9 +175,11 @@ namespace DNDS::Cauchy
             DNDS_FIELD(characteristicLimiter, "Use equation-provided cell-mean face characteristics for 3WBAP");
             DNDS_FIELD(faceFallback, "Fall back to the cell mean at inadmissible face values; disable for non-PP accuracy studies");
             DNDS_FIELD(reconstructionBoundaryFromPolynomial, "Project current face polynomial through BC each VR sweep; false uses mean-based boundary values");
+            DNDS_FIELD(firstOrderConvection, "P0 face operator: cell means and jump-only normal viscosity; separate reconstruction remains available for RANS/volume sources. Used by bottom pMG");
             DNDS_FIELD(viscousGradient, "primitive retains the cell-gradient scheme; polynomial uses cached polynomial derivatives and Euler's normal face-jump penalty");
             DNDS_FIELD(viscousLimited, "Use the filtered flux polynomial for polynomial viscosity; false uses the unlimited VR guess");
             DNDS_FIELD(noGRPOnWall, "Disable the polynomial normal jump penalty on no-slip walls, retaining the polynomial gradient");
+            DNDS_FIELD(noRsOnWall, "Euler wall option: use the same physical wall state on both convective sides, retaining the previously formed viscous gradient");
             DNDS_FIELD(positivity, "Mean-preserving reconstruction and implicit correction PP; flow5 SSPRK also uses conservative flux blending");
             DNDS_FIELD(temperatureFloor, "Minimum temperature enforced through the equation's internal-energy bound");
             DNDS_FIELD(positivityBetaCutoff, "Set numerically tiny reconstruction beta to zero; matches legacy's mean fallback");
@@ -227,6 +240,8 @@ namespace DNDS::Cauchy
     struct ImplicitLinearSettings
     {
         std::string method = "gmres", preconditioner = "sgs";
+        std::string stopping = "residual";
+        std::string componentScaling = "none";
         index iterations = 20;
         int subspace = 10;
         real relativeTolerance = .1, absoluteTolerance = 1e-12;
@@ -234,6 +249,8 @@ namespace DNDS::Cauchy
         {
             DNDS_FIELD(method, "sgs stationary sweeps, ilu stationary defect correction, or restarted left-gmres");
             DNDS_FIELD(preconditioner, "Fixed sgs or rank-local ilu for GMRES; unused by stationary methods");
+            DNDS_FIELD(stopping, "residual uses tolerance checks; fixedCount executes exactly iterations for SGS/ILU, omits true-residual reporting and checks the final update is finite; tolerances are ignored");
+            DNDS_FIELD(componentScaling, "GMRES metric: none or meanState (Euler volume-averaged absolute conservative magnitudes with a common momentum scale and kinetic energy scale; requires a compressible flow5 block)");
             DNDS_FIELD(iterations, "Maximum linear iterations per nonlinear correction");
             DNDS_FIELD(subspace, "Restarted GMRES subspace size");
             DNDS_FIELD(relativeTolerance, "Relative true-residual tolerance");
@@ -253,27 +270,49 @@ namespace DNDS::Cauchy
     struct ImplicitILUSettings
     {
         int fill = 0;
+        int preconditionerCorrections = 1;
         bool coreFirst = true;
+        std::string ordering = "natural";
         DNDS_DECLARE_CONFIG(ImplicitILUSettings)
         {
             DNDS_FIELD(fill, "Local ILU stencil expansion 0..5, or -1 for complete LU");
+            DNDS_FIELD(preconditionerCorrections, "Fixed zero-started ILU defect corrections per GMRES preconditioner call; corrections after the first exchange the iterate halo. Stationary ILU instead uses linear.iterations");
             DNDS_FIELD(coreFirst, "Order core before dependent cells before symbolic fill");
+            DNDS_FIELD(ordering, "Rank-local factor ordering: natural or rcm (CorrectRCM), followed by optional stable core grouping; does not reorder mesh/DOFs");
         }
     };
     struct ImplicitPositivitySettings
     {
-        std::string rhsMode = "rhs";
-        std::string rhsReduction = "cell";
-        real rhsScale = 1, rhsRelax = .5, incrementRelax = 1;
+        std::string rhsFPPMode = "rhs";
+        std::string rhsFPPReduction = "cell";
+        real rhsFPPScale = 1, rhsFPPRelax = .5, incrementRelax = 1;
         int compressionPower = 1;
         DNDS_DECLARE_CONFIG(ImplicitPositivitySettings)
         {
-            DNDS_FIELD(rhsMode, "none, rhs compression, or dTau compression; active only with numerics.positivity");
-            DNDS_FIELD(rhsReduction, "cell, minimumLimited or minimumAll; Euler global alpha flags, before RHS/dTau application");
-            DNDS_FIELD(rhsScale, "Euler RHS-PP trial increment multiplier");
-            DNDS_FIELD(rhsRelax, "Euler RHS/dTau density and energy relaxation in (0,1]");
+            DNDS_FIELD(rhsFPPMode, "RHS forecasted positivity preserving: none, rhs (scale solve defect), or dTau (shrink pseudo-step); active only with numerics.positivity");
+            DNDS_FIELD(rhsFPPReduction, "RHS-FPP factor scope: cell keeps local alpha; minimumLimited applies domain minimum only to alpha<1 cells; minimumAll applies it everywhere");
+            DNDS_FIELD(rhsFPPScale, "Euler RHS-FPP trial increment multiplier");
+            DNDS_FIELD(rhsFPPRelax, "Euler RHS/dTau density and energy relaxation in (0,1]");
             DNDS_FIELD(incrementRelax, "Euler accepted-correction relaxation in (0,1]");
             DNDS_FIELD(compressionPower, "Positive integer exponent multiplier in Euler alpha compression");
+        }
+    };
+    /// Partial solver controls are merged into the domain implicit defaults
+    /// once, before constructing a coarse smoother. They cannot alter physics,
+    /// the hierarchy or the finest convergence policy.
+    inline Json MultigridSmootherSchema()
+    {
+        return {{"type", "object"}, {"additionalProperties", false}, {"properties", {{"diagonal", {{"type", "string"}}}, {"jacobianAction", {{"type", "string"}}}, {"roeDissipation", {{"type", "boolean"}}}, {"pseudoCFL", {{"type", "number"}}}, {"maxPseudoCFL", {{"type", "number"}}}, {"relaxation", {{"type", "number"}}}, {"linear", ImplicitLinearSettings::schema()}, {"sgs", ImplicitSGSSettings::schema()}, {"ilu", ImplicitILUSettings::schema()}, {"positivity", ImplicitPositivitySettings::schema()}}}};
+    }
+    struct MultigridLevelSettings
+    {
+        index preSmooth = -1, postSmooth = -1;
+        Json solver = Json::object();
+        DNDS_DECLARE_CONFIG(MultigridLevelSettings)
+        {
+            DNDS_FIELD(preSmooth, "Coarse nonlinear corrections before descent; -1 inherits preSmooth, or coarseSmooth at the bottom");
+            DNDS_FIELD(postSmooth, "Corrections after ascent; -1 inherits postSmooth, or zero at the bottom; bottom uses their sum");
+            config.field_json_schema(&T::solver, "solver", "Partial independent smoother controls; unspecified fields inherit domain implicit defaults", MultigridSmootherSchema);
         }
     };
     struct PolynomialMultigridSettings
@@ -281,7 +320,12 @@ namespace DNDS::Cauchy
         int levels = 0;
         index cycles = 50, preSmooth = 1, postSmooth = 1, coarseSmooth = 4;
         real damping = 1;
+        bool reuseCoarseRate = true;
+        /// Match Euler's omission of coarse RHS/dTau PP by default.
+        /// Reconstruction/increment PP remain independently active.
+        bool coarseRHSFPP = false;
         std::vector<index> updateComponents;
+        std::map<std::string, MultigridLevelSettings> coarseLevelSettings;
         DNDS_DECLARE_CONFIG(PolynomialMultigridSettings)
         {
             DNDS_FIELD(levels, "0 disables pMG; 1 adds direct-gradient O2; 2 also adds first-order convection, retaining viscosity");
@@ -289,6 +333,9 @@ namespace DNDS::Cauchy
             DNDS_FIELD(preSmooth, "Bounded nonlinear corrections before restriction");
             DNDS_FIELD(postSmooth, "Bounded nonlinear corrections after prolongation");
             DNDS_FIELD(coarseSmooth, "Bounded nonlinear corrections at the coarsest level");
+            DNDS_FIELD(reuseCoarseRate, "Reuse a version-validated direct-gradient coarse tau rate for its first correction; independent of finest measured-rate reuse");
+            DNDS_FIELD(coarseRHSFPP, "Opt in to RHS/dTau positivity limiting on coarse levels; default false forces coarse rhsFPPMode=none after level overrides, matching Euler. Reconstruction and increment PP remain unchanged");
+            config.field_map_of<MultigridLevelSettings>(&T::coarseLevelSettings, "coarseLevelSettings", "Independent coarse-level controls keyed by 1 or 2; finest uses domain implicit and the common pre/post counts");
             DNDS_FIELD(damping, "Physical coarse-correction multiplier in (0,1]");
             DNDS_FIELD(updateComponents, "Distinct logical equation indices updated by pMG; empty updates all. Other means remain frozen; finest convergence still uses residualComponents");
         }
@@ -296,6 +343,7 @@ namespace DNDS::Cauchy
     struct ImplicitSettings
     {
         std::string diagonal = "entries", jacobianAction = "assembled";
+        std::string sourceJacobianMode = "center";
         index iterations = 100, minIterations = 1;
         index consoleInterval = 0;
         real relativeTolerance = 1e-8, absoluteTolerance = 1e-11;
@@ -312,6 +360,10 @@ namespace DNDS::Cauchy
         ImplicitPositivitySettings positivity;
         PolynomialMultigridSettings multigrid;
         void Validate() const;
+        /// Resolve one coarse smoother by merging its partial solver settings
+        /// into domain defaults and validating the resulting typed controls.
+        /// The returned settings disable recursive multigrid. Level 1 is O2.
+        ImplicitSettings ResolveCoarseLevel(index level) const;
         /// Operator-level validation after resolving an equation's dimension.
         /// Configuration checks name syntax first; material setup resolves
         /// component names against the actual equation schema before execution.
@@ -319,13 +371,14 @@ namespace DNDS::Cauchy
         DNDS_DECLARE_CONFIG(ImplicitSettings)
         {
             DNDS_FIELD(diagonal, "entries or full block diagonal storage");
-            DNDS_FIELD(jacobianAction, "assembled or semiMatrixFree off-diagonal blocks; the diagonal and local ILU factors remain explicit");
+            DNDS_FIELD(jacobianAction, "assembled (canonical) or directEvaluated off-diagonal Ax; semiMatrixFree is a compatibility spelling. Diagonal blocks and ILU factors remain explicit");
+            DNDS_FIELD(sourceJacobianMode, "center: retained one-point mean source linearization; rhsQuadrature: opt-in variational source derivatives at the RHS source quadrature");
             DNDS_FIELD(iterations, "Maximum nonlinear corrections per physical stage");
             DNDS_FIELD(minIterations, "Minimum corrections before accepting a stage");
             DNDS_FIELD(consoleInterval, "Rank-zero nonlinear residual/VR progress interval; zero disables it");
             DNDS_FIELD(relativeTolerance, "Selected-component stage residual tolerance relative to its configured reference");
-            DNDS_FIELD(absoluteTolerance, "Per-component absolute volume-weighted stage residual tolerance");
-            DNDS_FIELD(normOrder, "Volume-weighted residual norm: 1 or 2");
+            DNDS_FIELD(absoluteTolerance, "Per-component absolute volume-integrated stage residual tolerance");
+            DNDS_FIELD(normOrder, "Volume-integrated residual norm order: 1 or 2");
             DNDS_FIELD(residualReference, "runningMaximum (Euler default) or initial per-component reference within one solve; reset at solve entry");
             DNDS_FIELD(residualComponents, "Named nonlinear and DITR convergence components, e.g. rho, flow.rhou or rhoY:H2. Default [rho]; empty selects all. Names resolve against the equation schema");
             DNDS_FIELD(pseudoCFL, "Initial local pseudo-time CFL for each stage");

@@ -257,8 +257,14 @@ TEST_CASE("Equation primitive and mixture boundary producers preserve full energ
         CHECK(rhoY[k] / face[0] == doctest::Approx(before[k] / expected[0]).epsilon(3e-12));
     rhoY = before;
     const auto exterior = walls.At(7).Exterior(evaluator, fromPressure, {rhoY.data(), fixture.species - 1}, normal, location, .4, &frame);
-    CHECK(evaluator.Evaluate(exterior, {rhoY.data(), fixture.species - 1}).thermo.temperature == doctest::Approx(2100 / fixture.scales.T0).epsilon(3e-12));
-    CHECK(rhoY == before);
+    const auto exteriorProperties = evaluator.Evaluate(exterior, {rhoY.data(), fixture.species - 1});
+    // Isothermal exterior uses prescribed temperature and interior pressure,
+    // with velocity mirrored about the wall. Density and rhoY change together;
+    // it is mass fraction, not conservative species density, that is retained.
+    CHECK(exteriorProperties.thermo.temperature == doctest::Approx(input.temperature).epsilon(3e-12));
+    CHECK(exteriorProperties.thermo.pressure == doctest::Approx(pressure).epsilon(3e-12));
+    for (int k = 0; k < fixture.species - 1; ++k)
+        CHECK(rhoY[k] / exterior[0] == doctest::Approx(before[k] / fromPressure[0]).epsilon(3e-12));
     CHECK_THROWS(fixture.equation.IndependentMassFractions({{"missing-species", .1}}));
     CHECK_THROWS(fixture.equation.IndependentMassFractions({{fixture.material.SpeciesNames().back(), .2}}));
 }

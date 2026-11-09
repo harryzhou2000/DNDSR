@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DNDS/MPI/Failure.hpp"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include <optional>
 
@@ -8,12 +9,15 @@ namespace DNDS::Runtime
     /// Collective preparation, then nonblocking payload progression. The new
     /// field preserves storage by default and stays private until Commit; source shape/read
     /// lease span both preparation and transfer. No partial destination escapes.
-    /// @pre Every rank participates in matching construction/Commit order, even
+    /// @pre Every rank participates in matching construction/transport order, even
     /// with zero rows. Caller supplies the real source element schema (native
     /// ArrayStorage is type-erased), a completed producer, and the correct device
     /// context. Drain before redistribution or MPI_Finalize; rebuild downstream
     /// payloads/stencils for the returned shape. Commit publishes once, not an
     /// atomic transaction across multiple separately migrated fields.
+    /// Completion exceptions propagate locally to a fail-fast application
+    /// boundary. Commit does not agree errors after an MPI-containing Wait;
+    /// successful publication on a peer does not certify distributed success.
     class DynamicRowTransfer
     {
         ArrayStorage::Shared _source, _destination;
@@ -42,6 +46,7 @@ namespace DNDS::Runtime
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("dynamic row transfer failed");
                 valid = false;
             }
             route.Context()->Preflight(valid, "dynamic transfer source reservation failed on a rank");
@@ -52,6 +57,7 @@ namespace DNDS::Runtime
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("dynamic row transfer failed");
                 valid = false;
             }
             route.Context()->Preflight(valid, "dynamic transfer destination allocation failed on a rank");
@@ -72,6 +78,7 @@ namespace DNDS::Runtime
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("dynamic row transfer failed");
                 _error = std::current_exception();
                 throw;
             }
@@ -89,6 +96,7 @@ namespace DNDS::Runtime
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("dynamic row transfer failed");
                 _error = std::current_exception();
                 throw;
             }
@@ -98,15 +106,11 @@ namespace DNDS::Runtime
         ArrayStorage::Shared Commit()
         {
             DNDS_check_throw_info(!_committed, "dynamic transfer already committed");
-            try
-            {
-                Wait();
-            }
-            catch (...)
-            {
-                _error = std::current_exception();
-            }
-            _routeOwner->Context()->Preflight(!_error, "dynamic transfer failed; destination was not published");
+            // Wait may fail while a peer is still advancing its transport.
+            // Propagate immediately; an error-agreement collective here would
+            // not prove that every peer can leave its Wait. Publication is local
+            // after successful completion, not distributed failure recovery.
+            Wait();
             _committed = true;
             return std::move(_destination);
         }

@@ -6,7 +6,7 @@
 namespace DNDS::Cauchy::JacobianDetail
 {
     /// Geometry-only setup traversal shared by the two evaluated snapshots.
-    /// Preserve FV quadrature order and repeated periodic-image contributions.
+    /// Preserve centered face-incidence order and repeated periodic-image contributions.
     /// Boundary/self contributions stay diagonal. Point construction belongs
     /// to the caller: flow5 retains a Roe sample ordinal; equation physics does
     /// not. No EOS, numerical cache, lease or MPI ownership belongs here.
@@ -25,9 +25,10 @@ namespace DNDS::Cauchy::JacobianDetail
                 const auto &sample = samples[entry];
                 if (sample.other == UnInitIndex || sample.other == iCell)
                     continue;
-                const auto slot = std::find(neighbors.begin(), neighbors.end(), sample.other);
-                DNDS_check_throw_info(slot != neighbors.end(), "evaluated Jacobian stencil is missing an adjacent cell");
-                row[slot - neighbors.begin()].push_back(makePoint(sample, entry));
+                const index slot = sample.jacobianColumn;
+                DNDS_check_throw_info(slot >= 0 && slot < index(neighbors.size()) && neighbors[slot] == sample.other,
+                                      "evaluated Jacobian stencil has an invalid prepared column");
+                row[slot].push_back(makePoint(sample, entry));
             }
         }
     }

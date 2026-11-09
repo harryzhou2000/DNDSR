@@ -1,3 +1,4 @@
+#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Core/DomainPlacement.hpp"
 #include <nlohmann/json.hpp>
 #include <set>
@@ -40,7 +41,7 @@ namespace DNDS::Cauchy
         MPI_Bcast(reference.data(), length, MPI_CHAR, 0, simulation);
         valid &= serialized == reference && length > 0;
         MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, simulation);
-        DNDS_check_throw_info(valid, "Cauchy domain groups are invalid or differ across simulation ranks");
+        MPI::CheckPreflight(valid, "Cauchy domain groups are invalid or differ across simulation ranks");
         for (const auto &group : groups)
         {
             const auto found = std::find(group.ranks.begin(), group.ranks.end(), state->rank);

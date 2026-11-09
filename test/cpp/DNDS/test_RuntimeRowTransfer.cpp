@@ -6,6 +6,7 @@
 #include "DNDS/Runtime/Array/RowBuilder.hpp"
 #include <optional>
 #include <atomic>
+#include <string>
 
 using namespace DNDS::Runtime;
 
@@ -46,6 +47,25 @@ int main(int argc, char **argv)
         auto binding = PayloadPlan(route, source.Layout(), destination.Layout(), ElementSchema::For<double>()).Bind(source, destination);
         binding.BeginScheduled(ExecutionContext::Host(), rank != 0).Wait();
         return 0; // Reaching this line is a failed fail-fast contract.
+    }
+    if (argc == 2 && std::string(argv[1]) == "--test-abort-transfer-conflict")
+    {
+        int rank = 0, size = 0;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &size);
+        RowTransferPlan route(MPI_COMM_WORLD, 1, 1, {{(rank + 1) % size, 0, 0}});
+        Array<int64_t> source(RowLayout::Dense(1, 5)), destination(RowLayout::Dense(1, 5));
+        TransferOptions options;
+        options.preflight = TransferPreflight::AbortOnFailure;
+        auto binding = PayloadPlan(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<int64_t>()).Bind(source, destination, TransferTransport::Direct, options);
+        // Only rank0 conflicts. Peers may already post requests: the failing
+        // rank must abort MPI immediately, never throw into local recovery.
+        std::optional<Array<int64_t>::WriteLease> write;
+        if (!rank)
+            write.emplace(source.Write());
+        binding.Begin().Wait();
+        MPI_Finalize();
+        return 0; // CTest expects nonzero; reaching this point is a failure.
     }
     doctest::Context ctx;
     ctx.applyCommandLine(argc, argv);
@@ -252,6 +272,52 @@ TEST_CASE("Communication context agrees its immutable safety policy before prepa
         CHECK_THROWS(payload.Bind(source, destination, TransferTransport::Direct,
                                   {TransferMode::Persistent, rank == 0 ? checked : unchecked, 11}));
         payload.Bind(source, destination, TransferTransport::Direct, {TransferMode::Persistent, checked, 11}).Begin().Wait();
+    }
+}
+
+TEST_CASE("Fail-fast MPI launches preserve padded rows in eager and checked execution")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    RowTransferPlan route(MPI_COMM_WORLD, 3, 2, {{(rank + 1) % size, 2, 0}, {rank, 0, 1}});
+    Array<int64_t> source(RowLayout::Dense(3, 5, 7)), destination(RowLayout::Dense(2, 5, 8));
+    CHECK(TransferOptions{}.preflight == TransferPreflight::Inherit);
+    EagerEngine engine(0, std::make_shared<AccessTrackingContext>());
+    const auto stream = engine.CreateCPUStream();
+    for (auto mode : {TransferMode::Persistent, TransferMode::Transient})
+    {
+        TransferOptions options;
+        options.mode = mode;
+        options.preflight = TransferPreflight::AbortOnFailure;
+        auto binding = PayloadPlan(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<int64_t>()).Bind(source, destination, TransferTransport::Direct, options);
+        for (int iteration = 0; iteration < 3; ++iteration)
+        {
+            {
+                auto write = source.Write();
+                for (DNDS::index iRow = 0; iRow < 3; ++iRow)
+                    for (DNDS::index j = 0; j < 5; ++j)
+                        write.At(iRow, j) = 1000 * iteration + 100 * rank + 10 * iRow + j;
+            }
+            auto operation = iteration == 0 ? binding.Begin() : iteration == 1 ? binding.BeginScheduled(stream.Context())
+                                                                               : binding.BeginChecked(stream);
+            operation.Wait();
+            const auto read = destination.Read();
+            for (DNDS::index j = 0; j < 5; ++j)
+            {
+                CHECK(read.At(0, j) == 1000 * iteration + 100 * ((rank + 1) % size) + 20 + j);
+                CHECK(read.At(1, j) == 1000 * iteration + 100 * rank + j);
+            }
+        }
+    }
+    // A disagreement must still fail collectively at binding construction,
+    // before either rank can enter a different launch protocol.
+    if (size > 1)
+    {
+        TransferOptions options;
+        if (!rank)
+            options.preflight = TransferPreflight::AbortOnFailure;
+        CHECK_THROWS(PayloadPlan(route, source.Layout(), destination.Layout(), ElementSchema::Arithmetic<int64_t>()).Bind(source, destination, TransferTransport::Direct, options));
     }
 }
 
@@ -1071,23 +1137,7 @@ TEST_CASE("Native empty routes and generation validation")
     CHECK_THROWS(binding.Begin());
 }
 
-TEST_CASE("Native reducer failure drains MPI and invalidates partial output")
-{
-    int rank;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    Array<int32_t> a(RowLayout::Dense(1, 1)), b(RowLayout::Dense(1, 1));
-    RowTransferPlan route(MPI_COMM_WORLD, 1, 1, {{rank, 0, 0}});
-    auto reducer = Reducer::Custom<int32_t>(ElementSchema::Arithmetic<int32_t>(), "throws", [](int32_t &, int32_t)
-                                            { throw std::runtime_error("custom reduction failed"); }, 0);
-    auto binding = PayloadPlan(route, a.Layout(), b.Layout(), ElementSchema::Arithmetic<int32_t>()).Bind(a, b, reducer);
-    auto operation = binding.Begin();
-    CHECK_THROWS(operation.Wait());
-    CHECK_FALSE(b.IsValid());
-    CHECK_THROWS(b.Read());
-    CHECK(a.Storage().IsIdle());
-    CHECK(b.Storage().IsIdle());
-    CHECK_THROWS_WITH(operation.Wait(), "custom reduction failed"); // Reports the stored failure; no repeated combine.
-}
+// Unsafe reducer completion is exercised by the distributed-failure fixture.
 
 #ifdef DNDS_USE_CUDA
 TEST_CASE_TEMPLATE("Native CUDA reduction dispatch covers wide rows without requiring device MPI", T,

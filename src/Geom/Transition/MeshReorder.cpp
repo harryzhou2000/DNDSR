@@ -1,3 +1,4 @@
+#include "DNDS/MPI/Failure.hpp"
 #include "Geom/Transition/ReorderPlan.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
 #include <algorithm>
@@ -123,6 +124,7 @@ namespace DNDS::Geom
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("mesh reordering failed");
             valid = 0;
         }
         MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
@@ -136,6 +138,7 @@ namespace DNDS::Geom
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("mesh reordering failed");
             valid = 0;
         }
         MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
@@ -152,6 +155,7 @@ namespace DNDS::Geom
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("mesh reordering failed");
             valid = 0;
         }
         MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
@@ -159,16 +163,11 @@ namespace DNDS::Geom
         for (const auto &field : registry.companions)
             if (field.prepare && reorderedKinds.count(field.kind))
             {
-                std::unique_ptr<PreparedCompanion> prepared;
-                try
-                {
-                    prepared = field.prepare(transfers.at(field.kind), mpi);
-                    valid = bool(prepared);
-                }
-                catch (...)
-                {
-                    valid = 0;
-                }
+                // A user companion may itself use collective row transfers.
+                // Propagate its exception; only its returned local readiness
+                // may be agreed here after every callback has completed.
+                auto prepared = field.prepare(transfers.at(field.kind), mpi);
+                valid = bool(prepared);
                 MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
                 DNDS_check_throw_info(valid, "staged field preparation failed on a rank; sources remain unpublished");
                 result.fields.push_back(std::move(prepared));

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "DNDS/MPI/MPI.hpp"
-#include <cstdio>
+#include "DNDS/MPI/Failure.hpp"
 #include <exception>
 #include <utility>
 
@@ -11,18 +11,20 @@ namespace DNDS::Runtime::CommunicationDetail
     /// selected policy must agree, even when several valid contexts exist.
     inline void AgreePolicy(MPI_Comm comm, bool enabled)
     {
-        DNDS_check_throw_info(comm != MPI_COMM_NULL, "preflight policy agreement needs a communicator");
+        MPI::CheckPreflight(comm != MPI_COMM_NULL, "preflight policy agreement needs a communicator");
         int policy[]{int(enabled), -int(enabled)};
         MPI_Allreduce(MPI_IN_PLACE, policy, 2, MPI_INT, MPI_MIN, comm);
-        DNDS_check_throw_info(policy[0] == -policy[1], "collective preflight policy differs between ranks");
+        MPI::CheckPreflight(policy[0] == -policy[1], "collective preflight policy differs between ranks");
     }
     /// Required all-rank agreement. Protocol/schema choices use this regardless
     /// of the optional safety policy; do not substitute it for routing data.
     inline void RequireAll(bool valid, MPI_Comm comm, const char *message)
     {
+        if (!valid)
+            MPI::AbortIfSolverFailure(message);
         int all = valid;
         MPI_Allreduce(MPI_IN_PLACE, &all, 1, MPI_INT, MPI_MIN, comm);
-        DNDS_check_throw_info(all, message);
+        MPI::CheckPreflight(all, message);
     }
 
     /// Optional safety agreement, not a numerical or routing collective.
@@ -35,12 +37,8 @@ namespace DNDS::Runtime::CommunicationDetail
             RequireAll(valid, comm, message);
         else if (!valid)
         {
-            int rank = 0;
-            MPI_Comm_rank(comm, &rank);
-            std::fprintf(stderr, "Runtime rank %d: %s (collective preflight disabled; aborting)\n", rank, message);
-            std::fflush(stderr);
-            MPI_Abort(comm, 1);
-            DNDS_check_throw_info(false, message); // An MPI error handler must not permit publication.
+            MPI::AbortIfSolverFailure(message);
+            MPI::Abort(comm, message);
         }
     }
 
@@ -57,6 +55,7 @@ namespace DNDS::Runtime::CommunicationDetail
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure(message);
             failure = std::current_exception();
         }
         try

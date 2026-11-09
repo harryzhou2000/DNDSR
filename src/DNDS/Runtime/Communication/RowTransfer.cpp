@@ -2,6 +2,7 @@
 #include "DNDS/Runtime/Communication/DevicePacking.hpp"
 #include "DNDS/Runtime/Communication/TransferAccess.hpp"
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
+#include "DNDS/MPI/Failure.hpp"
 #include <algorithm>
 #include <climits>
 #include <numeric>
@@ -31,7 +32,7 @@ namespace DNDS::Runtime
             int64_t controls[]{valid && value == reference, uniformWidth ? *uniformWidth : -1,
                                uniformWidth ? -*uniformWidth : 1};
             MPI_Allreduce(MPI_IN_PLACE, controls, uniformWidth ? 3 : 1, MPI_INT64_T, MPI_MIN, comm);
-            DNDS_check_throw_info(controls[0], "transfer schema/policy or source layout/epoch differs between ranks");
+            MPI::CheckPreflight(controls[0], "transfer schema/policy or source layout/epoch differs between ranks");
             if (uniformWidth)
                 *uniformWidth = controls[1] >= 0 && controls[1] == -controls[2] ? controls[1] : -1;
         }
@@ -340,8 +341,8 @@ namespace DNDS::Runtime
         const bool sourceCollisions = _reverse ? _state->collisions : _state->reverseCollisions;
         int controls[]{int(Valid() && !sourceCollisions && sent == SourceRows()), int(_reverse), -int(_reverse)};
         MPI_Allreduce(MPI_IN_PLACE, controls, 3, MPI_INT, MPI_MIN, Communicator());
-        DNDS_check_throw_info(controls[0] && controls[1] == -controls[2],
-                              "sender ordering requires uniform route direction and each source row exactly once");
+        MPI::CheckPreflight(controls[0] && controls[1] == -controls[2],
+                            "sender ordering requires uniform route direction and each source row exactly once");
         std::shared_ptr<State> state;
         std::vector<index> oldToNew;
         bool valid = true;
@@ -367,6 +368,7 @@ namespace DNDS::Runtime
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("MPI row transfer preparation failed");
             valid = false;
         }
         Context()->Preflight(valid, "cannot allocate sender-ordered route");
@@ -398,6 +400,7 @@ namespace DNDS::Runtime
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("MPI row transfer preparation failed");
         }
         Context()->Preflight(bool(destination), "cannot infer destination row layout");
         return *destination;
@@ -491,6 +494,7 @@ namespace DNDS::Runtime
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("MPI row transfer preparation failed");
             valid = false;
         }
         // Everything below is local (MPI datatype constructors are not
@@ -519,6 +523,7 @@ namespace DNDS::Runtime
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("MPI row transfer preparation failed");
             valid = false;
         }
         state->route.Context()->Preflight(valid, "row payload destination/edge width mismatch or MPI layout compilation failure");
@@ -613,13 +618,15 @@ namespace DNDS::Runtime
         state->transport = transport;
         state->options = std::move(options);
         state->collectivePreflight = (state->options.context ? state->options.context : state->plan->route.Context())->ChecksCollectivePreflight();
+        if (state->options.preflight != TransferPreflight::Inherit)
+            state->collectivePreflight = state->options.preflight == TransferPreflight::Collective;
         const auto routeComm = state->plan->route.Communicator();
         // Fixed control fields need no string broadcast. Min(x,-x) proves
         // exact agreement in one collective; widen before negating INT_MIN.
         const int64_t controls[]{int(state->options.mode), bool(state->options.context), state->options.tag,
                                  bool(state->reducer), int(transport),
                                  state->reducer ? int(state->reducer->initialization) : 0, bool(state->options.provider), state->options.allowStreamOrderedDeviceMemory,
-                                 state->collectivePreflight};
+                                 state->collectivePreflight, int(state->options.preflight)};
         constexpr index controlNumber = sizeof(controls) / sizeof(controls[0]);
         int64_t agreed[2 * controlNumber + 1];
         for (index i = 0; i < controlNumber; ++i)
@@ -632,8 +639,12 @@ namespace DNDS::Runtime
         bool controlsAgree = true;
         for (index i = 0; i < controlNumber; ++i)
             controlsAgree = controlsAgree && agreed[2 * i] == -agreed[2 * i + 1];
-        DNDS_check_throw_info(controlsAgree, "transfer binding policy differs between ranks");
-        DNDS_check_throw_info(agreed[2 * controlNumber], "Array layout differs from compiled payload");
+        MPI::CheckPreflight(controlsAgree, "transfer binding policy differs between ranks");
+        MPI::CheckPreflight(agreed[2 * controlNumber], "Array layout differs from compiled payload");
+        DNDS_check_throw_info(state->options.preflight == TransferPreflight::Inherit ||
+                                  state->options.preflight == TransferPreflight::Collective ||
+                                  state->options.preflight == TransferPreflight::AbortOnFailure,
+                              "invalid MPI transfer preflight policy");
         if (state->options.provider)
         {
             Agree(state->options.provider->Name(), routeComm);
@@ -663,6 +674,7 @@ namespace DNDS::Runtime
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("MPI row transfer preparation failed");
                 valid = false;
             }
         }
@@ -793,6 +805,7 @@ namespace DNDS::Runtime
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("MPI row transfer preparation failed");
             valid = false;
         }
         // Copy/direct bindings do not allocate a workspace. Reducer/transport
@@ -899,6 +912,7 @@ namespace DNDS::Runtime
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("MPI row transfer preparation failed");
             valid = false;
         }
 
@@ -1004,6 +1018,7 @@ namespace DNDS::Runtime
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("MPI row transfer preparation failed");
             valid = false;
         }
         _state->Preflight(valid, "checked MPI stream preflight failed on a rank");
@@ -1033,6 +1048,7 @@ namespace DNDS::Runtime
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("MPI row transfer preparation failed");
                 op->CancelPrepared();
                 throw;
             }
@@ -1073,6 +1089,8 @@ namespace DNDS::Runtime
                 continue;
             }
             valid = valid && state->options.context == _context &&
+                    bool(_bindings.front()._state) &&
+                    state->collectivePreflight == _bindings.front()._state->collectivePreflight &&
                     state->options.mode == TransferMode::Persistent &&
                     state->source.GetDevice() == Device::Host() && state->destination.GetDevice() == Device::Host() &&
                     (state->transport == TransferTransport::Direct || state->transport == TransferTransport::HostPacked) &&
@@ -1108,14 +1126,16 @@ namespace DNDS::Runtime
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("MPI row transfer preparation failed");
             valid = false;
         }
         try
         {
-            _context->Preflight(valid, "transfer group reservation failed on a rank");
+            _bindings.front()._state->Preflight(valid, "transfer group reservation failed on a rank");
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("MPI row transfer preparation failed");
             for (auto &operation : operations)
                 operation._state->CancelPrepared();
             throw;
@@ -1141,10 +1161,7 @@ namespace DNDS::Runtime
             }
             catch (...)
             {
-                // A previously observed failure is retained for observers, but
-                // replacing an already drained operation must still be safe.
-                if (_state && _state->started)
-                    std::terminate();
+                MPI::Abort(_state ? _state->binding->comm : MPI_COMM_WORLD, "transfer replacement completion failed");
             }
             _state = std::move(other._state);
             _provider = std::move(other._provider);
@@ -1153,16 +1170,20 @@ namespace DNDS::Runtime
     }
     TransferOperation::~TransferOperation()
     {
+        // Waiting while unwinding a rank-local exception can strand this rank
+        // before the application reaches its fatal handler: a peer may never
+        // post the matching operation. Normal RAII retirement still drains;
+        // exceptional retirement of active MPI work is unconditionally fatal.
+        if (_state && _state->started && std::uncaught_exceptions())
+            DNDS::assert_false_info("no exception while an MPI transfer is active", __FILE__, __LINE__,
+                                    "cannot drain an active MPI transfer during exception unwinding; aborting instead of risking unmatched MPI waits");
         try
         {
             Wait();
         }
         catch (...)
         {
-            // A reducer failure has drained communication and poisoned output.
-            // Explicit Wait reports it; destruction must never retry the reducer.
-            if (_state && _state->started)
-                std::terminate();
+            MPI::Abort(_state ? _state->binding->comm : MPI_COMM_WORLD, "transfer destruction completion failed");
         }
     }
     bool TransferOperation::PostPackedSends(bool wait)
@@ -1171,24 +1192,37 @@ namespace DNDS::Runtime
         auto &b = *s.binding;
         if (s.sendsStarted)
             return true;
-        if (wait)
-            s.packedReady.Wait();
-        else if (!s.packedReady.Ready())
-            return false;
-        if (b.options.mode == TransferMode::Persistent)
+        try
         {
-            if (!b.sends.empty())
-                MPI_Startall(int(b.sends.size()), b.sends.data());
+            if (wait)
+                s.packedReady.Wait();
+            else if (!s.packedReady.Ready())
+                return false;
+            if (b.options.mode == TransferMode::Persistent)
+            {
+                if (!b.sends.empty())
+                    MPI_Startall(int(b.sends.size()), b.sends.data());
+            }
+            else
+            {
+                b.sends.clear();
+                for (int peer = 0; peer < int(b.plan->route.SendRows().size()); ++peer)
+                    if (!b.plan->route.SendRows()[peer].empty())
+                    {
+                        b.sends.push_back(MPI_REQUEST_NULL);
+                        MPI_Isend(b.PackedPointer(false, peer), b.PackedCount(false, peer), b.plan->schema.Type(), peer, b.options.tag, b.comm, &b.sends.back());
+                    }
+            }
         }
-        else
+        catch (const std::exception &error)
         {
-            b.sends.clear();
-            for (int peer = 0; peer < int(b.plan->route.SendRows().size()); ++peer)
-                if (!b.plan->route.SendRows()[peer].empty())
-                {
-                    b.sends.push_back(MPI_REQUEST_NULL);
-                    MPI_Isend(b.PackedPointer(false, peer), b.PackedCount(false, peer), b.plan->schema.Type(), peer, b.options.tag, b.comm, &b.sends.back());
-                }
+            // Receives are posted but sends may be missing. Neither a retry,
+            // a destructor drain nor an error Allreduce can be matched safely.
+            MPI::Abort(b.comm, std::string("packed MPI send preparation failed after receives were posted: ") + error.what());
+        }
+        catch (...)
+        {
+            MPI::Abort(b.comm, "packed MPI send preparation failed after receives were posted");
         }
         s.sendsStarted = true;
         return true;
@@ -1293,38 +1327,9 @@ namespace DNDS::Runtime
         }
         catch (...)
         {
-            s.error = std::current_exception();
-            // Incoming messages are already drained. Outgoing messages must also
-            // finish before releasing storage, even if a custom combine throws.
-            MPI_Waitall(int(b.sends.size()), b.sends.data(), MPI_STATUSES_IGNORE);
-            try
-            {
-                s.destination.Fail();
-            }
-            catch (...)
-            {
-            }
-            try
-            {
-                s.workspace.Fail();
-            }
-            catch (...)
-            {
-            }
-            try
-            {
-                s.source.Wait();
-            }
-            catch (...)
-            {
-            }
-            s.started = false;
-            s.checked.Complete();
-            {
-                std::lock_guard<std::mutex> lock(b.mutex);
-                b.active = false;
-            }
-            std::rethrow_exception(s.error);
+            // Do not drain sends or synchronize devices after a local failure:
+            // peers may never post matching work. Owners survive until abort.
+            MPI::Abort(b.comm, "MPI destination completion/reduction failed");
         }
     }
     void TransferOperation::Wait()
@@ -1348,7 +1353,7 @@ namespace DNDS::Runtime
         }
         catch (...)
         {
-            s.error = std::current_exception();
+            MPI::Abort(b.comm, "MPI source completion failed");
         }
         s.started = false;
         s.checked.Complete();

@@ -104,22 +104,34 @@ namespace DNDS::CFV
             .def_readonly("relativeCutoff", &HardEigen::SVDInverseDiagnostics::relativeCutoff)
             .def_readonly("rawCondition", &HardEigen::SVDInverseDiagnostics::rawCondition)
             .def_readonly("retainedCondition", &HardEigen::SVDInverseDiagnostics::retainedCondition);
+        py::class_<FiniteVolumeMetricOptions>(m, "FiniteVolumeMetricOptions")
+            .def(py::init<>())
+            .def_readwrite("integrationOrder", &FiniteVolumeMetricOptions::integrationOrder)
+            .def_readwrite("faceIntegrationOrder", &FiniteVolumeMetricOptions::faceIntegrationOrder)
+            .def_readwrite("axisymmetric", &FiniteVolumeMetricOptions::axisymmetric)
+            .def_readwrite("collectivePreflight", &FiniteVolumeMetricOptions::collectivePreflight);
         py::class_<FiniteVolumePlan>(m, "FiniteVolumePlan")
-            .def_static("ConstructMetrics", &FiniteVolumePlan::ConstructMetrics, py::arg("mesh"), py::arg("intOrder") = 5, py::arg("axisymmetric") = false, py::arg("collective_preflight") = true,
-                        "Collective CPU preparation. All ranks must call with matching settings.")
+            .def_static("ConstructMetrics", py::overload_cast<ssp<Geom::UnstructuredMesh>, FiniteVolumeMetricOptions>(&FiniteVolumePlan::ConstructMetrics),
+                        py::arg("mesh"), py::arg("options"), "Collective metric preparation with named options.")
+            .def_static("ConstructMetrics", [](ssp<Geom::UnstructuredMesh> mesh, int intOrder, bool axisymmetric, bool collectivePreflight, int faceIntOrder)
+                        {
+                            FiniteVolumeMetricOptions options;
+                            options.integrationOrder = intOrder;
+                            options.axisymmetric = axisymmetric;
+                            options.collectivePreflight = collectivePreflight;
+                            options.faceIntegrationOrder = faceIntOrder;
+                            return FiniteVolumePlan::ConstructMetrics(std::move(mesh), options); }, py::arg("mesh"), py::arg("intOrder") = 5, py::arg("axisymmetric") = false, py::kw_only(), py::arg("collective_preflight") = true, py::arg("faceIntOrder") = 0, "Collective CPU preparation. All ranks must call with matching settings.")
             .def("Validate", &FiniteVolumePlan::Validate)
             .def("NumCell", &FiniteVolumePlan::NumCell)
             .def("NumCellProc", &FiniteVolumePlan::NumCellProc)
             .def("NumFaceProc", &FiniteVolumePlan::NumFaceProc)
             .def("Axisymmetric", &FiniteVolumePlan::Axisymmetric)
             .def("BuildField", py::overload_cast<index>(&FiniteVolumePlan::BuildField, py::const_))
-            .def("BuildFieldWithLayout", py::overload_cast<Runtime::RowLayout, Runtime::Device>(&FiniteVolumePlan::BuildField, py::const_),
-                 py::arg("prototype"), py::arg("device") = Runtime::Device::Host())
-            .def("BindHalo", &FiniteVolumePlan::BindHalo, "Collective persistent direct MPI binding; explicitly begin/wait on each field stage.")
+            .def("BuildFieldWithLayout", py::overload_cast<Runtime::RowLayout, Runtime::Device>(&FiniteVolumePlan::BuildField, py::const_), py::arg("prototype"), py::arg("device") = Runtime::Device::Host())
+            .def("BindHalo", &FiniteVolumePlan::BindHalo, py::arg("field"), py::arg("options") = Runtime::TransferOptions{}, "Collective persistent direct MPI binding; explicitly begin/wait on each field stage.")
             .def("GetCellVol", &FiniteVolumePlan::GetCellVol)
             .def("GetCellCent", &FiniteVolumePlan::GetCellCent)
-            .def("BuildCellMaxLenScale", &FiniteVolumePlan::BuildCellMaxLenScale,
-                 "CPU setup: derive Euler-compatible principal-axis maximum lengths for local metric rows; rebuild after mesh changes.");
+            .def("BuildCellMaxLenScale", &FiniteVolumePlan::BuildCellMaxLenScale, "CPU setup: derive Euler-compatible principal-axis maximum lengths for local metric rows; rebuild after mesh changes.");
         py::class_<ReconstructionBoundaryValues>(m, "ReconstructionBoundaryValues")
             .def_property_readonly("values", [](ReconstructionBoundaryValues &value)
                                    { return Runtime::PythonArray::Share(value.values); });

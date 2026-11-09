@@ -25,6 +25,8 @@ namespace DNDS::Runtime
             std::map<int, std::weak_ptr<const int>> tags;
             ~State()
             {
+                if (comm != MPI_COMM_NULL && std::uncaught_exceptions())
+                    MPI::AbortIfSolverFailure("solver unwinding before communicator release");
                 int finalized = 0;
                 MPI_Finalized(&finalized);
                 if (!finalized && comm != MPI_COMM_NULL)
@@ -95,6 +97,16 @@ namespace DNDS::Runtime
         Transient
     };
 
+    /// MPI launch validation, agreed collectively when the binding is built.
+    /// AbortOnFailure retains local checks but posts requests without a global
+    /// agreement. Any local launch failure aborts MPI; it cannot be recovered.
+    enum class TransferPreflight
+    {
+        Inherit,
+        Collective,
+        AbortOnFailure
+    };
+
     struct TransferOptions
     {
         TransferMode mode = TransferMode::Persistent;
@@ -109,5 +121,7 @@ namespace DNDS::Runtime
         /// Default rejects Direct endpoints from cudaMallocAsync/VMM pools;
         /// select explicit packing or validate the MPI build before opting in.
         bool allowStreamOrderedDeviceMemory = false;
+        /// Resolve once at binding from the selected context when Inherit.
+        TransferPreflight preflight = TransferPreflight::Inherit;
     };
 }

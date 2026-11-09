@@ -94,7 +94,9 @@ namespace DNDS::Cauchy
         /// the latest global VR update against its positive configured tolerance.
         /// Nonnegative control.correctionLimit selects a bounded FAS smoother;
         /// that cap reports work and does not imply physical-stage acceptance.
-        /// All ranks agree the override and initial pseudo-CFL before iteration.
+        /// With collectiveChecks enabled ranks agree controls before iteration;
+        /// otherwise the caller must supply identical controls/order on all
+        /// ranks and fail fast on local errors. Local validation stays active.
         NonlinearIterationReport Solve(CFV::FVField &state, const CFV::FVField &source,
                                        real mass, real rhsScale, real time, int stage = 0, NonlinearSolveControl control = {});
         /// Exactly one pseudo-time/Jacobian/linear/PP update, with no convergence
@@ -109,7 +111,11 @@ namespace DNDS::Cauchy
                                              const CFV::FVField *cachedRate = nullptr);
         /// FAS operator in the same normalized convention as Solve. No input
         /// mean mutation; Evaluate may refresh ghosts and reconstruction scratch.
-        void EvaluateEquation(CFV::FVField &state, CFV::FVField &value, real mass, real rhsScale, real time);
+        /// Optional rate receives the unscaled spatial dU/dt from this same
+        /// evaluation, avoiding cancellation when mass*U dominates the defect.
+        /// It must be distinct from state/value and have no conflicting leases.
+        void EvaluateEquation(CFV::FVField &state, CFV::FVField &value, real mass, real rhsScale, real time,
+                              CFV::FVField *rate = nullptr);
         /// Rank-local snapshot after the most recent equation evaluation.
         std::pair<int, real> ReconstructionStats() const;
         /// Already agreed by the FV reconstruction's global norm. No MPI here.
@@ -160,9 +166,21 @@ namespace DNDS::Cauchy
         /// split allocation/layout and EOS/source/PP dispatch. No nested solve.
         EquationNonlinearIterationReport CorrectOnce(EquationDofs &state, const EquationDofs &source, real mass, real rhsScale, real time,
                                                      int stage = 0, NonlinearSolveControl control = {}, const EquationDofs *cachedRate = nullptr);
+        /// Evaluate dU/dt with aux preparation before reconstruction/RHS and
+        /// retain that publication for a subsequent cached CorrectOnce.
+        /// Pointwise volume normalization writes owned values only. State/rate
+        /// must be distinct; caller coordinates state/time/cache usage on ranks.
+        void EvaluateRate(EquationDofs &state, EquationDofs &rate, real time);
+        /// Frozen auxiliary publication from the last rate/operator evaluation.
+        /// A subsequent cached correction preserves it; after a mean update it
+        /// describes the previous linearization, not the updated state. Read-only
+        /// diagnostics may inspect its buffers/generations after joining work.
+        const AuxiliaryValues &PreparedAuxValues() const;
         /// Same normalized stage operator as the field adapter, without
         /// changing owned means. Polynomial FAS uses this same operator.
-        void EvaluateEquation(EquationDofs &state, EquationDofs &value, real mass, real rhsScale, real time);
+        /// Optional rate follows the field adapter's distinct-output contract.
+        void EvaluateEquation(EquationDofs &state, EquationDofs &value, real mass, real rhsScale, real time,
+                              EquationDofs *rate = nullptr);
         /// Caller agrees scale/selection and releases conflicting views before
         /// entry. Candidate EOS/raw-species checks precede any state mutation.
         /// With PP enabled, use Euler relaxed/common increment compression,

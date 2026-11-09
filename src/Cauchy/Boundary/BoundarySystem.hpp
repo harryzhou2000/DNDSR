@@ -55,10 +55,13 @@ namespace DNDS::Cauchy
         /// Resolved absolute wall velocity in the mesh-bound Cartesian frame.
         /// Shared kinematics for equation-specific adiabatic wall producers.
         Vector3 WallVelocityAt(const Vector3 &point, const RigidFrame *frame = nullptr) const;
-        /// Physical face value for reconstruction/gradient input. Wall normal
+        /// Physical wall trace for diagnostics/prescribed wall data. Wall normal
         /// is outward from the interior parent. Extrapolation leaves U unchanged.
         FlowState FaceValue(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0, const RigidFrame *frame = nullptr) const;
-        /// Riemann exterior state. Wall velocity is prescribed; this initial
+        /// Euler-compatible Riemann/VR exterior state. Isothermal no-slip
+        /// reflects velocity and sets rho=p/(R*T_wall), preserving composition.
+        /// Direct conservative gradients instead consume (inside+exterior)/2.
+        /// Wall velocity is prescribed; this initial
         /// rigid-frame implementation does not imply deforming ALE support.
         FlowState Exterior(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0, const RigidFrame *frame = nullptr) const;
         /// Column-major derivative of Exterior with respect to its conservative
@@ -67,6 +70,11 @@ namespace DNDS::Cauchy
         /// callers linearize a selected physical state, not the switch itself.
         /// This model-owned BC derivative is separate from Riemann dissipation.
         std::array<real, 25> ExteriorJacobian(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0, const RigidFrame *frame = nullptr) const;
+        /// Euler's approximate linMode=1 protocol: homogeneous wall reflection
+        /// before thermal/scalar correction; zero for non-wall boundaries.
+        /// Distinct from the exact physical derivative above. No branch
+        /// derivative or wall-temperature derivative enters LU-SGS/Roe blocks.
+        std::array<real, 25> ApproximateExteriorJacobian(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0, const RigidFrame *frame = nullptr) const;
     };
     class BoundarySystem
     {
@@ -81,5 +89,12 @@ namespace DNDS::Cauchy
         explicit BoundarySystem(const std::map<std::string, BoundarySettings> &settings);
         const BoundaryCondition &At(int zone) const;
         void ValidateUsed(const std::set<int> &zones) const;
+        /// Check distinct resolved producers, independent of mesh quadrature
+        /// count. This is also valid for standalone auxiliary preparation.
+        void ValidateEquationProducers(const std::vector<int> &usedZones) const
+        {
+            for (const int zone : usedZones)
+                At(zone).ValidateEquationProducer();
+        }
     };
 }

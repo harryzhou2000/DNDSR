@@ -3,10 +3,25 @@
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Euler/Gas.hpp"
+#include "Cauchy/Physics/EquationFlux.hpp"
 
 namespace C = DNDS::Cauchy;
 namespace F = C::Riemann;
 namespace L = DNDS::Euler::Gas;
+TEST_CASE("Scalar convection uses the caller's fixed dissipation independently of flow flux")
+{
+    // Two scalars share a frozen face speed. Acoustic changes/flow selection
+    // cannot change this result; reversing the face reverses its flux.
+    for (const auto &pair : {std::pair<double, double>{2, 5}, {0, 3}})
+    {
+        const double a = pair.first, b = pair.second, uL = .3, uR = -.2, lambda = .4;
+        const double expected = .5 * (uL * a + uR * b - lambda * (b - a));
+        CHECK(C::AdvectedScalarFlux(a, b, uL, uR, lambda) == doctest::Approx(expected));
+        CHECK(C::AdvectedScalarFlux(b, a, -uR, -uL, lambda) == doctest::Approx(-expected));
+        CHECK(C::AdvectedScalarFlux(a, b, .7, .7, .7) == doctest::Approx(.7 * a));
+        CHECK(C::AdvectedScalarFlux(a, b, -.7, -.7, .7) == doctest::Approx(-.7 * b));
+    }
+}
 TEST_CASE("Every Cauchy Riemann selection matches legacy perfect gas facial and mean state behavior")
 {
     C::EquationSettings settings;

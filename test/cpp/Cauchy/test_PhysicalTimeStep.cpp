@@ -6,6 +6,7 @@
 #include "Euler/Gas.hpp"
 #include "CartesianFixture.hpp"
 #include <limits>
+#include <iomanip>
 
 namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
@@ -13,6 +14,19 @@ namespace A = DNDS::Algebra;
 static DNDS::MPIInfo mpi;
 namespace
 {
+    void CheckFlatMeanIntegral(std::array<double, 2> error, const char *label)
+    {
+        // These fixtures have flat faces and cellwise constant integrands.
+        // A zero-polynomial trial retains its parent's quadrature, whereas an
+        // independent constant FV operator now uses midpoint. Their sums are
+        // equal mathematically, but the floating-point operation counts differ.
+        MPI_Allreduce(MPI_IN_PLACE, error.data(), 2, MPI_DOUBLE, MPI_MAX, mpi.comm);
+        if (!mpi.rank)
+            std::cout << "MEAN_QUADRATURE_COMPARISON " << label << " max_difference=" << std::setprecision(17) << error[0]
+                      << " max_magnitude=" << error[1] << std::endl;
+        CHECK((std::isfinite(error[0]) && std::isfinite(error[1]) &&
+               error[0] <= 128 * std::numeric_limits<double>::epsilon() * std::max(1., error[1])));
+    }
     R::RowLayout Layout(int scenario)
     {
         return scenario == 0 ? R::RowLayout::Dense(0, 5) : scenario == 1 ? R::RowLayout::ColMajor(0, 5, {8, 1})
@@ -212,10 +226,17 @@ TEST_CASE("Equation mean trial and thermal dt preserve all block layouts and the
     reference.Evaluate(referenceState, expected, *referenceWork, engine, stream);
     {
         const auto a = rhs.ReadOwned(), b = expected.ReadOwned();
+        std::array<double, 2> error{};
         for (const auto *name : {"flow", "species"})
             for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
                 for (DNDS::index j = 0; j < a.Block(name).ComponentNumber(); ++j)
-                    CHECK(a.Block(name)(iCell, j) == doctest::Approx(b.Block(name)(iCell, j)).epsilon(1e-11).scale(1e-12));
+                {
+                    const double left = a.Block(name)(iCell, j), right = b.Block(name)(iCell, j);
+                    const double difference = std::abs(left - right);
+                    error[0] = std::isfinite(difference) ? std::max(error[0], difference) : std::numeric_limits<double>::infinity();
+                    error[1] = std::max({error[1], std::abs(left), std::abs(right)});
+                }
+        CheckFlatMeanIntegral(error, "mixture");
     }
     fv.InitializeConstant(state, {1.3, .1, -.2, .05, 1}, {{"H2", .03}, {"O2", .23}}, 4, setup.workers, {{"rhoNuTilde", .02}});
     const C::EquationDofOperations::Binding boundBefore(state);
@@ -403,13 +424,20 @@ TEST_CASE("Typed mean residual skips VR and filtering without modifying the norm
             CHECK(difference > 1e-4);
         }
         const auto actual = residual.Owned().Read(), oracle = expected.Owned().Read(), rec = guess.Read();
+        std::array<double, 2> error{};
         for (DNDS::index iCell = 0; iCell < state.Owned().RowCount(); ++iCell)
         {
             for (int j = 0; j < 5; ++j)
-                CHECK(actual.View<R::UniformTableRows>()(iCell, j) == oracle.View<R::UniformTableRows>()(iCell, j));
+            {
+                const double left = actual.View<R::UniformTableRows>()(iCell, j), right = oracle.View<R::UniformTableRows>()(iCell, j);
+                const double difference = std::abs(left - right);
+                error[0] = std::isfinite(difference) ? std::max(error[0], difference) : std::numeric_limits<double>::infinity();
+                error[1] = std::max({error[1], std::abs(left), std::abs(right)});
+            }
             for (DNDS::index j = 0; j < guess.RowSize(iCell); ++j)
                 CHECK(rec.View<R::UniformTableRows>()(iCell, j) == .01);
         }
+        CheckFlatMeanIntegral(error, "flow5");
         if (mpi.size > 1)
         {
             CHECK_THROWS([&]

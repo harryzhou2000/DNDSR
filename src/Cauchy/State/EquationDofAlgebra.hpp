@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Cauchy/State/EquationDofs.hpp"
+#include "Cauchy/State/EquationViews.hpp"
 #include "DNDS/Algebra/LocalProducts.hpp"
 #include <optional>
 
@@ -102,10 +102,38 @@ namespace DNDS::Cauchy
             if (y)
                 readY.emplace(y->ReadOwned());
             auto write = output.WriteOwned();
-            for (index iBlock = 0; iBlock < output.BlockNumber(); ++iBlock)
-                Algebra::ApplyHostRows(operation, write.Block(iBlock),
-                                       readX ? readX->Block(iBlock).owned : EquationBlockArrayView<const real>{},
-                                       readY ? readY->Block(iBlock).owned : EquationBlockArrayView<const real>{}, a, b);
+            const EquationViewLayout<real> destination(output, write);
+            if (readY)
+            {
+                const EquationViewLayout<const real> left(*x, *readX), right(*y, *readY);
+                const auto kernel = [&](auto out, auto u, auto v)
+                { Algebra::ApplyHostRows(operation, out, u, v, a, b); };
+                // This operator opts into just the dynamic-width coupled AoS
+                // family. Other layouts/groupings retain the general kernel.
+                if (destination.Table() && left.Table() && right.Table() && destination.Flow5() && left.Flow5() && right.Flow5())
+                    DispatchCPUEquationViews<EquationViewKind::CombinedAoS>(kernel, destination, left, right);
+                else
+                    DispatchCPUEquationViews<>(kernel, destination, left, right);
+            }
+            else if (readX)
+            {
+                const EquationViewLayout<const real> source(*x, *readX);
+                const auto kernel = [&](auto out, auto u)
+                { Algebra::ApplyHostRows(operation, out, u, EquationBlockedView<const real>{}, a, b); };
+                if (destination.Table() && source.Table() && destination.Flow5() && source.Flow5())
+                    DispatchCPUEquationViews<EquationViewKind::CombinedAoS>(kernel, destination, source);
+                else
+                    DispatchCPUEquationViews<>(kernel, destination, source);
+            }
+            else
+            {
+                const auto kernel = [&](auto out)
+                { Algebra::ApplyHostRows(operation, out, EquationBlockedView<const real>{}, EquationBlockedView<const real>{}, a, b); };
+                if (destination.Table() && destination.Flow5())
+                    DispatchCPUEquationViews<EquationViewKind::CombinedAoS>(kernel, destination);
+                else
+                    DispatchCPUEquationViews<>(kernel, destination);
+            }
         }
 
     public:
@@ -122,31 +150,33 @@ namespace DNDS::Cauchy
         /// caller owns its communicator/reduction and distributed error policy.
         /// Descriptors/scopes are resolved once; no per-element schema checks,
         /// halo access or global payload flattening occurs.
-        static std::vector<real> LocalProducts(const State &x, const std::vector<const State *> &probes)
+        static std::vector<real> LocalProducts(const State &x, const std::vector<const State *> &probes,
+                                               const std::vector<real> &inverseScales = {})
         {
             CheckCompatible(x, x);
+            DNDS_check_throw_info(inverseScales.empty() || index(inverseScales.size()) == x.ComponentNumber(), "equation product scale width differs");
             for (const auto *probe : probes)
             {
                 DNDS_check_throw_info(probe, "null equation product probe");
                 CheckCompatible(x, *probe);
             }
             const auto read = x.ReadOwned();
-            const auto layout = read.ComponentLayout();
-            const auto values = layout.View();
+            const EquationViewLayout<const real> values(x, read);
             std::vector<State::ReadScope> readers;
-            std::vector<Algebra::DofComponentLayout<const real>> layouts;
             readers.reserve(probes.size());
-            layouts.reserve(probes.size());
             for (const auto *probe : probes)
-            {
                 readers.push_back(probe->ReadOwned());
-                layouts.push_back(readers.back().ComponentLayout());
-            }
-            std::vector<Algebra::DofComponentView<const real>> inputs;
-            for (const auto &input : layouts)
-                inputs.push_back(input.View());
             std::vector<real> result(probes.size(), 0);
-            Algebra::Detail::AccumulateLocalProducts(values, inputs, values.RowCount(), values.ComponentNumber(), result);
+            for (index k = 0; k < index(probes.size()); ++k)
+            {
+                const EquationViewLayout<const real> input(*probes[k], readers[k]);
+                const auto kernel = [&](auto u, auto v)
+                { result[k] = Algebra::Detail::AccumulateLocalProduct(u, v, u.RowCount(), u.ComponentNumber(), inverseScales); };
+                if (values.Table() && input.Table() && values.Flow5() && input.Flow5())
+                    DispatchCPUEquationViews<EquationViewKind::CombinedAoS>(kernel, values, input);
+                else
+                    DispatchCPUEquationViews<>(kernel, values, input);
+            }
             return result;
         }
     };

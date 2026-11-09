@@ -39,6 +39,7 @@
 /// - WriteIndexVectorPerRank
 /// - ArrayGlobalOffset_One semantics (rank-0-only write)
 /// - ArrayGlobalOffset_Parts auto-offset
+#include "DNDS/MPI/Failure.hpp"
 #include "DNDS/Serializer/SerializerBase.hpp"
 
 #include <hdf5.h>
@@ -156,6 +157,8 @@ namespace DNDS::Serializer
 
         ~SerializerH5() override
         {
+            if (std::uncaught_exceptions())
+                MPI::AbortIfSolverFailure("solver unwinding before parallel HDF5 close");
             CloseFileNonVirtual();
             MPI_Comm_free(&commDup);
         }

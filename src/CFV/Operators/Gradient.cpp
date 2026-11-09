@@ -48,6 +48,32 @@ namespace DNDS::CFV
         }
     }
 
+    void GradientPlan::ExtractLinearGradients(const FVField &coefficients, const VariationalReconstructionPlan &reconstruction,
+                                              FVField &gradient, bool ghost) const
+    {
+        const index dim = _data->metrics.Dimension(), modes = reconstruction.NRecDOF();
+        DNDS_check_throw_info(gradient.Width() > 0 && gradient.Width() % dim == 0 && modes >= dim &&
+                                  reconstruction.Metrics().Cells().SameOrder(_data->metrics.Cells()),
+                              "linear gradient extraction has incompatible shape or mesh");
+        const index components = gradient.Width() / dim;
+        _data->metrics.ValidateField(gradient, dim * components);
+        _data->metrics.ValidateField(coefficients, modes * components);
+        const auto &source = ghost ? coefficients.Ghost() : coefficients.Owned();
+        auto &destination = ghost ? gradient.Ghost() : gradient.Owned();
+        DNDS_check_throw_info(!Algebra::Detail::Overlaps(source.Storage(), destination.Storage()), "linear gradient output aliases coefficients");
+        const auto geometry = _data->metrics.AcquireRead();
+        const auto cells = geometry.HostView().cells;
+        const auto read = source.Read();
+        auto write = destination.Write();
+        const auto input = read.View<Runtime::UniformTableRows>();
+        const auto output = write.View<Runtime::UniformTableRows>();
+        const index first = ghost ? _data->metrics.NumCell() : 0;
+        for (index iRow = 0; iRow < output.RowCount(); ++iRow)
+            for (index j = 0; j < components; ++j)
+                for (index d = 0; d < dim; ++d)
+                    output(iRow, j * dim + d) = input(iRow, j * modes + d) / cells(first + iRow, 7);
+    }
+
     void GradientPlan::Evaluate(const FVField &mean, const Runtime::Array<real> &boundaryValues, FVField &gradient,
                                 const std::vector<index> &periodicVectorStarts, ReconstructionRegion region) const
     {

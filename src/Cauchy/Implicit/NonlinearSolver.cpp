@@ -2,8 +2,9 @@
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
 #include "Cauchy/Implicit/PositivityReduction.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
+#include "Cauchy/Implicit/LinearScaling.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
-#include "DNDS/Runtime/Communication/CollectiveValidation.hpp"
+#include "Cauchy/Core/LocalStage.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -22,7 +23,7 @@ namespace DNDS::Cauchy
         R::ArrayStorage::Shared stateOwned, stateGhost;
         CFV::FVField spatial, defect, candidate;
         R::Array<real> inversePseudoTime;
-        AlphaReduction rhsReduction = AlphaReduction::Cell;
+        AlphaReduction rhsFPPReduction = AlphaReduction::Cell;
         std::optional<R::Array<real>> cellRHSAlpha;
         std::shared_ptr<LinearProblemContext> problem;
         std::unique_ptr<LinearSolver> linear;
@@ -35,23 +36,23 @@ namespace DNDS::Cauchy
               spatial(fv.Metrics().BuildField(state.Owned().Layout())), defect(fv.Metrics().BuildField(state.Owned().Layout())), candidate(fv.Metrics().BuildField(state.Owned().Layout())),
               inversePseudoTime(R::RowLayout::Dense(fv.Metrics().NumCell(), 1)),
               problem(fv.BuildLinearProblem(state, settings.diagonal == "block" ? DiagonalStorage::Block : DiagonalStorage::Entries,
-                                            settings.jacobianAction == "semiMatrixFree" ? OffDiagonalStorage::SemiMatrixFree : OffDiagonalStorage::Assembled))
+                                            (settings.jacobianAction == "directEvaluated" || settings.jacobianAction == "semiMatrixFree") ? OffDiagonalStorage::DirectEvaluated : OffDiagonalStorage::Assembled))
         {
-            rhsReduction = settings.positivity.rhsReduction == "cell" ? AlphaReduction::Cell : settings.positivity.rhsReduction == "minimumLimited" ? AlphaReduction::MinimumLimited
-                                                                                                                                                    : AlphaReduction::MinimumAll;
-            if (positivity && settings.positivity.rhsMode != "none" && rhsReduction != AlphaReduction::Cell)
+            rhsFPPReduction = settings.positivity.rhsFPPReduction == "cell" ? AlphaReduction::Cell : settings.positivity.rhsFPPReduction == "minimumLimited" ? AlphaReduction::MinimumLimited
+                                                                                                                                                             : AlphaReduction::MinimumAll;
+            if (positivity && settings.positivity.rhsFPPMode != "none" && rhsFPPReduction != AlphaReduction::Cell)
                 cellRHSAlpha.emplace(R::RowLayout::Dense(fv.Metrics().NumCell(), 1));
         }
         void PrepareLinear(const CFV::FVField &state, bool overlap)
         {
             linear = std::make_unique<LinearSolver>(problem, state, [&](auto &field)
-                                                    { return discrete.Metrics().BindHalo(field); }, NonlinearDetail::ResolveLinear(settings), LinearExecution{overlap, settings.collectiveChecks});
+                                                    { return discrete.BindHalo(field); }, NonlinearDetail::ResolveLinear(settings), LinearExecution{overlap, settings.collectiveChecks});
         }
         template <class F>
         void Stage(F &&run) const
         {
-            R::CommunicationDetail::LocalStage(mpi.comm, settings.collectiveChecks,
-                                               std::forward<F>(run), "nonlinear local phase failed");
+            RunLocalStage(mpi, settings.collectiveChecks,
+                          std::forward<F>(run), "nonlinear local phase failed");
         }
     };
     NonlinearSolver::NonlinearSolver(const FiniteVolume &discrete, CFV::FVField &state, std::shared_ptr<FiniteVolume::Workspace> workspace,
@@ -95,8 +96,8 @@ namespace DNDS::Cauchy
         std::array<bool, 5> active{};
         {
             const NonlinearPhaseTimer entryTimer(control.profile, NonlinearProfile::Entry);
-            MPI::LocalStage(data.mpi, [&]
-                            {
+            data.Stage([&]
+                       {
             if (cachedRate)
             {
                 data.discrete.Metrics().ValidateField(*cachedRate, 5);
@@ -112,19 +113,22 @@ namespace DNDS::Cauchy
                                       control.correctionLimit >= -1 && control.correctionLimit <= data.settings.iterations &&
                                       (control.initialPseudoCFL == 0 || (std::isfinite(control.initialPseudoCFL) && control.initialPseudoCFL >= data.settings.pseudoCFL && control.initialPseudoCFL <= data.settings.maxPseudoCFL)),
                                   "invalid implicit stage state/source/coefficients"); });
-            int componentMask = 0;
-            for (int j = 0; j < 5; ++j)
-                if (active[j])
-                    componentMask |= 1 << j;
-            const std::array<real, 6> coefficients{mass, rhsScale, time, control.initialPseudoCFL, real(componentMask),
-                                                   real(singleCorrection) + 2 * real(bool(cachedRate))};
-            auto minimum = coefficients, maximum = coefficients;
-            MPI_Allreduce(MPI_IN_PLACE, minimum.data(), 6, MPI_DOUBLE, MPI_MIN, data.mpi.comm);
-            MPI_Allreduce(MPI_IN_PLACE, maximum.data(), 6, MPI_DOUBLE, MPI_MAX, data.mpi.comm);
-            index minLimit = control.correctionLimit, maxLimit = minLimit;
-            MPI_Allreduce(MPI_IN_PLACE, &minLimit, 1, MPI_INT64_T, MPI_MIN, data.mpi.comm);
-            MPI_Allreduce(MPI_IN_PLACE, &maxLimit, 1, MPI_INT64_T, MPI_MAX, data.mpi.comm);
-            DNDS_check_throw_info(minimum == maximum && minLimit == maxLimit, "implicit stage coefficients differ between ranks");
+            if (data.settings.collectiveChecks)
+            {
+                int componentMask = 0;
+                for (int j = 0; j < 5; ++j)
+                    if (active[j])
+                        componentMask |= 1 << j;
+                const std::array<real, 6> coefficients{mass, rhsScale, time, control.initialPseudoCFL, real(componentMask),
+                                                       real(singleCorrection) + 2 * real(bool(cachedRate))};
+                auto minimum = coefficients, maximum = coefficients;
+                MPI_Allreduce(MPI_IN_PLACE, minimum.data(), 6, MPI_DOUBLE, MPI_MIN, data.mpi.comm);
+                MPI_Allreduce(MPI_IN_PLACE, maximum.data(), 6, MPI_DOUBLE, MPI_MAX, data.mpi.comm);
+                index minLimit = control.correctionLimit, maxLimit = minLimit;
+                MPI_Allreduce(MPI_IN_PLACE, &minLimit, 1, MPI_INT64_T, MPI_MIN, data.mpi.comm);
+                MPI_Allreduce(MPI_IN_PLACE, &maxLimit, 1, MPI_INT64_T, MPI_MAX, data.mpi.comm);
+                DNDS_check_throw_info(minimum == maximum && minLimit == maxLimit, "implicit stage coefficients differ between ranks");
+            }
         }
         auto geometry = data.discrete.Metrics().AcquireRead();
         const auto metric = geometry.HostView();
@@ -155,13 +159,13 @@ namespace DNDS::Cauchy
                 const auto output = write.View<R::UniformTableRows>();
                 for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
                 {
-                    const real volume = metric.GetCellVol(iCell); norm[5] += volume;
+                    const real volume = metric.GetCellVol(iCell); if (!singleCorrection) norm[5] += volume;
                     for (int j = 0; j < 5; ++j)
                     {
                         const real value = rhsScale * residual(iCell, j) + volume * (constant(iCell, j) - mass * mean(iCell, j));
                         DNDS_check_throw_info(std::isfinite(value), "nonfinite implicit stage defect");
                         output(iCell, j) = active[j] ? value : 0;
-                        norm[j] += data.settings.normOrder == 1 ? std::abs(value) : value * value / volume;
+                        if (!singleCorrection) norm[j] += data.settings.normOrder == 1 ? std::abs(value) : value * value / volume;
                     }
                 } });
                 if (singleCorrection) return; // Defect is ready; no stopping norm is needed.
@@ -169,7 +173,7 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(std::isfinite(norm[5]) && norm[5] > 0, "invalid global stage volume");
                 for (int j = 0; j < 5; ++j)
                 {
-                    norms[j] = data.settings.normOrder == 1 ? norm[j] / norm[5] : std::sqrt(norm[j] / norm[5]);
+                    norms[j] = data.settings.normOrder == 1 ? norm[j] : std::sqrt(norm[j]);
                     DNDS_check_throw_info(std::isfinite(norms[j]), "nonfinite global stage norm");
                 } };
         const auto reconstruction = [&]
@@ -195,24 +199,24 @@ namespace DNDS::Cauchy
                     const real volume = metric.GetCellVol(iCell);
                     real value = spectral(iCell, 0) / (report.pseudoCFL * volume);
                     DNDS_check_throw_info(std::isfinite(value) && value > 0, "invalid implicit pseudo-time spectral sum");
-                    if (data.positivity && data.settings.positivity.rhsMode != "none")
+                    if (data.positivity && data.settings.positivity.rhsFPPMode != "none")
                     {
                         FlowState u, delta;
-                        for (int j = 0; j < 5; ++j) { u[j] = mean(iCell, j); delta[j] = defect(iCell, j) * data.settings.positivity.rhsScale / (value * volume); }
-                        const real alpha = FlowIncrementFraction(u, delta, data.discrete.ThermalConstraints(), data.settings.positivity.rhsRelax, 2, data.settings.positivity.compressionPower);
+                        for (int j = 0; j < 5; ++j) { u[j] = mean(iCell, j); delta[j] = defect(iCell, j) * data.settings.positivity.rhsFPPScale / (value * volume); }
+                        const real alpha = FlowIncrementFraction(u, delta, data.discrete.ThermalConstraints(), data.settings.positivity.rhsFPPRelax, 2, data.settings.positivity.compressionPower);
                         DNDS_check_throw_info(std::isfinite(alpha) && alpha >= 0 && alpha <= 1, "invalid implicit RHS PP fraction");
                         if (alpha < 1) { ++rhsLimited; rhsAlpha = std::min(rhsAlpha, alpha); }
                         if (alphaWrite)
                             alphas(iCell, 0) = alpha;
-                        else if (data.settings.positivity.rhsMode == "rhs")
+                        else if (data.settings.positivity.rhsFPPMode == "rhs")
                             for (int j = 0; j < 5; ++j) defect(iCell, j) *= alpha;
                         else value /= std::max(alpha, smallReal);
                     }
                     invTau(iCell, 0) = value;
                 } });
-                if (data.positivity && data.settings.positivity.rhsMode != "none")
+                if (data.positivity && data.settings.positivity.rhsFPPMode != "none")
                 {
-                    const auto global = AgreeAlphaStatistics(rhsLimited, rhsAlpha, data.rhsReduction, data.mpi.comm);
+                    const auto global = AgreeAlphaStatistics(rhsLimited, rhsAlpha, data.rhsFPPReduction, data.mpi.comm);
                     rhsLimited = global.limited;
                     rhsAlpha = global.minimum;
                     if (data.cellRHSAlpha && rhsAlpha < 1)
@@ -223,8 +227,8 @@ namespace DNDS::Cauchy
                     const auto invTau = inverse.View<R::UniformTableRows>(), defect = residual.View<R::UniformTableRows>();
                     for (index iCell = 0; iCell < local.RowCount(); ++iCell)
                     {
-                        const real alpha = SelectAlpha(local(iCell, 0), rhsAlpha, data.rhsReduction);
-                        if (data.settings.positivity.rhsMode == "rhs")
+                        const real alpha = SelectAlpha(local(iCell, 0), rhsAlpha, data.rhsFPPReduction);
+                        if (data.settings.positivity.rhsFPPMode == "rhs")
                             for (int j = 0; j < 5; ++j) defect(iCell, j) *= alpha;
                         else invTau(iCell, 0) /= std::max(alpha, smallReal);
                     } });
@@ -237,7 +241,8 @@ namespace DNDS::Cauchy
             }
             {
                 const NonlinearPhaseTimer linearTimer(control.profile, NonlinearProfile::LinearSolve);
-                report.lastLinear = data.linear->Solve(data.defect);
+                const auto scales = NonlinearDetail::LinearScales(data.settings, state, data.discrete.Metrics());
+                report.lastLinear = data.linear->Solve(data.defect, nullptr, scales);
                 report.linearIterations += report.lastLinear.iterations;
                 DNDS_check_throw_info(report.lastLinear.usable, "implicit linear correction is unusable");
             }
@@ -271,24 +276,39 @@ namespace DNDS::Cauchy
         }
         return NonlinearDetail::Iterate(data.settings, data.discrete.Equation().Schema(), data.mpi.rank, stage, control, NonlinearIterationReport{}, data.reconstructionTolerance, evaluate, measure, reconstruction, advance);
     }
-    void NonlinearSolver::EvaluateEquation(CFV::FVField &state, CFV::FVField &value, real mass, real rhsScale, real time)
+    void NonlinearSolver::EvaluateEquation(CFV::FVField &state, CFV::FVField &value, real mass, real rhsScale, real time, CFV::FVField *rate)
     {
         auto &data = *_data;
-        MPI::LocalStage(data.mpi, [&]
-                        {
+        data.Stage([&]
+                   {
             data.discrete.Metrics().ValidateField(value, 5);
             DNDS_check_throw_info(std::isfinite(mass) && mass >= 0 && std::isfinite(rhsScale) && rhsScale > 0 && std::isfinite(time), "invalid FAS equation coefficients");
             for (const auto *input : {&state.Owned(), &state.Ghost()})
                 DNDS_check_throw_info(!Algebra::Detail::Overlaps(value.Owned().Storage(), input->Storage()), "FAS equation output aliases state");
-            auto check = value.Owned().Write(); check.CancelUnmodified(); });
+            auto check = value.Owned().Write(); check.CancelUnmodified();
+            if (rate)
+            {
+                data.discrete.Metrics().ValidateField(*rate, 5);
+                for (const auto *input : {&state.Owned(), &state.Ghost(), &value.Owned(), &data.spatial.Owned()})
+                    DNDS_check_throw_info(!Algebra::Detail::Overlaps(rate->Owned().Storage(), input->Storage()), "FAS spatial rate aliases operator input/output");
+                auto rateCheck = rate->Owned().Write(); rateCheck.CancelUnmodified();
+            } });
         data.discrete.Evaluate(state, data.spatial, *data.workspace, *data.engine, data.stream, time);
         data.Stage([&]
                    {
             const auto geometry = data.discrete.Metrics().AcquireRead(); const auto metric = geometry.HostView();
             const auto meanRead = state.Owned().Read(), spatialRead = data.spatial.Owned().Read(); auto write = value.Owned().Write();
             const auto u = meanRead.View<R::UniformTableRows>(), r = spatialRead.View<R::UniformTableRows>(); const auto output = write.View<R::UniformTableRows>();
+            std::optional<R::Array<real>::WriteLease> rateWrite;
+            if (rate) rateWrite.emplace(rate->Owned().Write());
+            const auto spatialRate = rateWrite ? rateWrite->View<R::UniformTableRows>() : R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows>{};
             for (index iCell = 0; iCell < output.RowCount(); ++iCell)
-                for (int j = 0; j < 5; ++j) output(iCell, j) = mass * u(iCell, j) - rhsScale * r(iCell, j) / metric.GetCellVol(iCell); });
+                for (int j = 0; j < 5; ++j)
+                {
+                    const real rateValue = r(iCell, j) / metric.GetCellVol(iCell);
+                    output(iCell, j) = mass * u(iCell, j) - rhsScale * r(iCell, j) / metric.GetCellVol(iCell);
+                    if (rate) spatialRate(iCell, j) = rateValue;
+                } });
     }
     std::pair<int, real> NonlinearSolver::ReconstructionStats() const
     {

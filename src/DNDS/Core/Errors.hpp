@@ -30,8 +30,15 @@
 /// Prefer @ref DNDS_assert for hard invariants that must never fail; use
 /// the leveled `_l` variants (levels 0..DNDS_ASSERT_LEVEL_MAX-1) for checks
 /// that can be stripped in release builds via `-DDNDS_ASSERT_LEVEL=N`.
-/// Use @ref DNDS_check_throw for user-input / runtime validation where a
-/// recoverable exception is preferred over abort.
+/// Use @ref DNDS_check_throw for user-input and runtime validation, including
+/// local lease checks. Throwing does not imply that a solver can recover.
+///
+/// A production solver catch around collectively ordered work must terminate
+/// the run. This includes matched point-to-point MPI, collective I/O and
+/// callbacks that can enter them. Report locally and abort without another
+/// agreement or cleanup that can wait for peers (see DNDS/MPI/Failure.hpp).
+/// Coordinated unit tests may catch and recover when no peer can be stranded.
+/// Numerical retries use explicit status results rather than exceptions.
 ///
 /// The device variants (`DNDS_HD_*`) expand to host asserts on the host and to
 /// atomic-guarded PTX `trap` on CUDA devices so only one thread prints.

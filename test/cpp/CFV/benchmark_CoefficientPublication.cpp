@@ -107,7 +107,10 @@ namespace
                                   repetitions >= 8 && repetitions <= 100000 && trials > 0 && trials <= 8,
                               "coefficient probe arguments outside bounds");
         auto mesh = CauchyTest::PeriodicQuads(mpi, width);
-        auto metrics = F::FiniteVolumePlan::ConstructMetrics(mesh, degree + 2, false, false);
+        F::FiniteVolumeMetricOptions metricOptions;
+        metricOptions.integrationOrder = degree + 2;
+        metricOptions.collectivePreflight = false;
+        auto metrics = F::FiniteVolumePlan::ConstructMetrics(mesh, metricOptions);
         F::ReconstructionSettings settings;
         settings.maxOrder = degree;
         settings.intOrder = degree + 2;

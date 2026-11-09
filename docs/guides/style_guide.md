@@ -64,8 +64,13 @@ DNDS_check_throw_info(expr, info_string);  // always active with message
 
 Avoid raw `assert()`. The unqualified `DNDS_assert*` macros use the maximum
 assertion level and remain active in the default Release configuration. Prefer
-`DNDS_check_throw_info` for recoverable, non-hot configuration/input/runtime
-validation; do not rely on a Release build silently removing assertions.
+`DNDS_check_throw_info` for non-hot configuration, input and runtime checks.
+Local checks, including lease checks, may throw. In production solver code, a
+catch whose try may enter collectively ordered work must report locally and
+abort. This includes matched point-to-point MPI and collective I/O. A
+coordinated UT may catch and recover when peers are safe. See the
+[distributed exception contract](../architecture/RuntimeCallerContract.md#distributed-exceptions)
+for preflight and numerical retry rules.
 
 ### Templates and Eigen
 

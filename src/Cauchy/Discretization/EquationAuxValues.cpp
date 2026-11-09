@@ -1,3 +1,4 @@
+#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Discretization/EquationFiniteVolumeInternal.hpp"
 #include "Cauchy/Discretization/AuxiliaryReduction.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
@@ -65,8 +66,8 @@ namespace DNDS::Cauchy
             work.fields = result.fields; });
         for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
         {
-            result._data->meanHalo.push_back(Metrics().BindHalo(state.PhysicalField(iField)));
-            result._data->gradientHalo.push_back(Metrics().BindHalo(result.fields[iField]));
+            result._data->meanHalo.push_back(BindHalo(state.PhysicalField(iField)));
+            result._data->gradientHalo.push_back(BindHalo(result.fields[iField]));
         }
         return result;
     }
@@ -77,9 +78,16 @@ namespace DNDS::Cauchy
         using namespace EquationFVDetail;
         const MPIInfo mpi(Metrics().Communicator());
         const bool overlap = _data->settings.execution.overlap;
+        const auto stage = [&](auto &&action)
+        {
+            Metrics().Communication()->LocalStage(std::forward<decltype(action)>(action));
+        };
         std::optional<EquationPointEvaluator> evaluator;
-        Metrics().Communication()->LocalStage([&]
-                                              {
+        // This entry preflight follows the same optional validation policy as
+        // the later rank-local stages. Halo launches keep their own contract;
+        // unchecked failures must reach the application's fail-fast boundary.
+        stage([&]
+              {
             stream.Record().WaitHost();
             DNDS_check_throw_info(gradients._data && gradients._data->owner.lock() == _data && stream.Context().device == R::Device::Host(), "foreign mean gradient workspace or non-CPU stream");
             gradients._data->binding.Check(state);
@@ -95,10 +103,6 @@ namespace DNDS::Cauchy
         auto &work = *gradients._data;
         work.origin.reset();
         work.ghostsReady = false;
-        const auto stage = [&](auto &&action)
-        {
-            Metrics().Communication()->LocalStage(std::forward<decltype(action)>(action));
-        };
         const auto begin = [&](const auto &bindings)
         {
             std::vector<R::TransferOperation> operations;
@@ -140,8 +144,14 @@ namespace DNDS::Cauchy
                 const auto &sample = _data->samples[_data->boundaryEntries[_data->gradientBoundaryPoints[iPoint]]];
                 Gather(blocks, sample.cell, mean);
                 point.values = mean.values;
-                BoundaryValue(point, flowFirst, speciesFirst, independent, sample, *evaluator, frame, time, false,
+                BoundaryValue(point, flowFirst, speciesFirst, independent, sample, *evaluator, frame, time, true,
                               {model, ransFirst, &mean, walls ? wall.cellMean(sample.cell, 0) : 0});
+#ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
+                if (model && model->Kind() == Physics::RANS::ModelKind::SA && sample.boundary.kind == BoundaryKind::NoSlipWall)
+                    point.values[ransFirst] = 0;
+#endif
+                for (index j = 0; j < state.ComponentNumber(); ++j)
+                    point.values[j] = .5 * (mean.values[j] + point.values[j]);
                 first = 0;
                 for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
                 {
@@ -204,12 +214,14 @@ namespace DNDS::Cauchy
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("Cauchy equation auxiliary preparation failed");
             try
             {
                 stream.Record().WaitHost();
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("Cauchy equation auxiliary preparation failed");
             }
             work.origin.reset();
             work.ghostsReady = false;
@@ -219,8 +231,8 @@ namespace DNDS::Cauchy
     real FiniteVolume::StableStep(const EquationDofs &state, const AuxiliaryValues &values, real cfl, real time) const
     {
         real dt = std::numeric_limits<real>::max();
-        Metrics().Communication()->LocalStage([&]
-                                              {
+        MPI::LocalStage(MPIInfo(Metrics().Communicator()), [&]
+                        {
             DNDS_check_throw_info(std::isfinite(cfl) && cfl > 0, "positive CFL required");
             ValidateAuxValues(state, values, time);
             DNDS_check_throw_info(values.cellSpectralSum, "CFL selection requires prepared cell spectral sums");
@@ -372,6 +384,7 @@ namespace DNDS::Cauchy
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("Cauchy equation auxiliary preparation failed");
                 Cancel();
                 throw;
             }
@@ -488,18 +501,21 @@ namespace DNDS::Cauchy
                     {
                         right.values = left.values;
                         right.gradient = left.gradient;
-                        EquationFVDetail::BoundaryValue(right, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, true,
-                                                        {ransModel, ransFirst, &left, walls ? wallValues.cellMean(sample.cell, 0) : 0});
+                        // Euler's EvaluateDt uses the owned mean on both sides
+                        // of a physical boundary. Exterior targets belong to
+                        // reconstruction/RHS, not the mean spectral estimate.
                     }
                     else
                     {
                         EquationFVDetail::Gather(blocks, sample.other, right);
                         LoadGradients(sample.other, right);
-                        EquationFVDetail::RotatePoint(right, sample.rotation, vectorStarts);
+                        // Setup proves exact identity, including translational
+                        // periodic images. Keep the full transform for every
+                        // genuinely rotated component frame.
+                        if (sample.changesFrame)
+                            EquationFVDetail::RotatePoint(right, sample.rotation, vectorStarts);
                     }
-                    // A reflected two-equation wall state may have negative k;
-                    // evaluate its thermodynamics, not its turbulence closure.
-                    const auto rightProperties = sample.other == UnInitIndex ? Properties(right, evaluator, 1, !walls) : prepared(sample.other, right);
+                    const auto rightProperties = sample.other == UnInitIndex ? leftProperties : prepared(sample.other, right);
                     const Riemann::AcousticState rightData{{right.Flow(flowFirst), rightProperties[0]}, rightProperties[1]};
                     const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
                     const auto grid = frame.GridVelocity({sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]});
@@ -515,8 +531,6 @@ namespace DNDS::Cauchy
                             if (sample.other == UnInitIndex)
                             {
                                 face.values = left.values;
-                                EquationFVDetail::BoundaryValue(face, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, false,
-                                                                {ransModel, ransFirst, &left, wallValues.cellMean(sample.cell, 0)});
                             }
                             bound = std::max(bound, Properties(face, evaluator, wallValues.faces(sample.face, q))[2]);
                         }
@@ -637,9 +651,7 @@ namespace DNDS::Cauchy
         _data->equation.ResolveKernelProfile(state.Device());
         DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && std::isfinite(time), "equation auxiliary row space/time differs");
         DNDS_check_throw_info(_data->equation.HasMixture() == bool(workers), "equation auxiliary needs exactly its matching worker backend");
-        for (const auto &sample : _data->samples)
-            if (sample.other == UnInitIndex)
-                sample.boundary.ValidateEquationProducer();
+        _data->boundary.ValidateEquationProducers(_data->boundaryZones);
         const auto arrays = EquationAuxiliaryArrays(output);
         const index faces = index(_data->stencilFaces.size());
         const index rows[9]{Metrics().NumCellProc(), faces, faces, faces, Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCellProc() - Metrics().NumCell()};

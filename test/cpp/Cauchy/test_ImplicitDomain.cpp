@@ -77,7 +77,7 @@ TEST_CASE("Native physical implicit methods preserve uniform periodic flow and t
         CHECK(domain.Epoch().acceptedStep == 2);
         for (const auto &report : domain.LastImplicitStages())
             CHECK(report.converged);
-        domain.PrepareStep(.01);
+        REQUIRE(domain.PrepareStep(.01).accepted);
         std::optional<R::Array<double>::ReadLease> held;
         if (mpi.rank == 0)
             held.emplace(domain.Flow().Owned().Read());
@@ -205,7 +205,7 @@ TEST_CASE("Capped steady stages advance by default and reject only with explicit
             auto initial = domain.Discretization().Metrics().BuildField(domain.Flow().Owned().Layout());
             DNDS::Algebra::Copy(initial, domain.Flow());
             if (reject)
-                CHECK_THROWS(domain.Advance(.01));
+                CHECK_FALSE(domain.Advance(.01).accepted);
             else
                 CHECK_NOTHROW(domain.Advance(.01));
             CHECK(domain.Time() == 0);
@@ -256,7 +256,7 @@ TEST_CASE("Strict implicit acceptance requires settled VR in addition to a loose
             DensityWave(domain);
             if (strict)
             {
-                CHECK_THROWS(domain.Advance(.01));
+                CHECK_FALSE(domain.Advance(.01).accepted);
                 CHECK(domain.Epoch().acceptedStep == 0);
             }
             else
@@ -301,10 +301,10 @@ TEST_CASE("DITR coupled cap advances by default and rejects only with explicit c
     DensityWave(domain);
     const auto before = Integral(domain);
     const auto version = domain.Flow().Owned().Version();
+    const auto prepared = domain.PrepareStep(.01);
+    CHECK(prepared.accepted == !reject);
     if (reject)
-        CHECK_THROWS_WITH_AS(domain.PrepareStep(.01), doctest::Contains("last_residual"), std::exception);
-    else
-        CHECK_NOTHROW(domain.PrepareStep(.01));
+        CHECK(prepared.reason.find("last_residual") != std::string::npos);
     CHECK(domain.Time() == 0);
     CHECK(domain.Epoch().acceptedStep == 0);
     CHECK(domain.Flow().Owned().Version() == version);

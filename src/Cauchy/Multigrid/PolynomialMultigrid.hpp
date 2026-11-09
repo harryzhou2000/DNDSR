@@ -24,6 +24,11 @@ namespace DNDS::Cauchy
         std::shared_ptr<EquationData> _equationData;
 
     public:
+        /// Zero-based coarse-level controls, also usable to reproduce a level
+        /// operator independently. Level 0 uses direct-gradient O2 convection;
+        /// subsequent levels use mean convection with the same gradients for
+        /// diffusion and sources. No mesh/state ownership is changed.
+        static DomainSettings CoarseSettings(const DomainSettings &fine, index level);
         PolynomialMultigrid(ssp<Geom::UnstructuredMesh> mesh, const FiniteVolume &fine, CFV::FVField &state,
                             NonlinearSolver &fineSolver, Runtime::EagerEngine &engine, Runtime::ExecutionStream stream,
                             const DomainSettings &settings);
@@ -41,12 +46,16 @@ namespace DNDS::Cauchy
         /// One finest update, with bounded CorrectOnce smoothing at each level.
         /// No convergence loop/reference reset; pseudoCFL comes from the caller.
         /// Other-stage inputs in source must remain frozen throughout the cycle.
+        /// Optional rate is the caller's already evaluated finest dU/dt, as in
+        /// CorrectOnce. Caller guarantees current owned means/time/stage and
+        /// reconstruction provenance. It is consumed only by the first finest
+        /// smoother; further corrections evaluate their updated states normally.
         NonlinearIterationReport ApplyCycle(const CFV::FVField &source, real mass, real rhsScale, real time,
-                                            int stage = 0, real pseudoCFL = 0);
+                                            int stage = 0, real pseudoCFL = 0, const CFV::FVField *rate = nullptr);
         EquationNonlinearIterationReport ApplyCycle(const EquationDofs &source, real mass, real rhsScale, real time,
-                                                    int stage = 0, real pseudoCFL = 0);
+                                                    int stage = 0, real pseudoCFL = 0, const EquationDofs *rate = nullptr);
         /// Frozen stage trace shared with coarse levels after checking their
-        /// canonical boundary quadrature order. Performs no interface exchange.
+        /// canonical boundary quadrature order. Local alias binding only; no MPI.
         void SetBoundaryInputs(const BoundaryInputs &input);
     };
 }

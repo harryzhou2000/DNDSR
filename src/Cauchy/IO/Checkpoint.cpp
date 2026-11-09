@@ -1,3 +1,4 @@
+#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/IO/EquationArchive.hpp"
 #include "DNDS/Runtime/Array/ArrayIO.hpp"
@@ -115,6 +116,11 @@ namespace DNDS::Cauchy
                 if (settings.contains("numerics") && settings["numerics"].is_object())
                 {
                     auto &numerics = settings["numerics"];
+                    // Earlier archives predate the coarse convection switch.
+                    // Its false default preserves their operator; true remains
+                    // a deliberate numerical compatibility difference.
+                    if (!numerics.value("firstOrderConvection", false))
+                        numerics.erase("firstOrderConvection");
                     // Adding inactive limiter controls must not invalidate
                     // older non-LVR checkpoints. Active LVR controls remain a
                     // numerical compatibility requirement.
@@ -125,6 +131,10 @@ namespace DNDS::Cauchy
                     // means nor the compatible polynomial coefficient schema.
                     numerics.erase("reconstructionIterations");
                     numerics.erase("reconstructionTolerance");
+                    // Older archives predate this opt-in Euler wall mode.
+                    // An inactive option has no numerical compatibility effect.
+                    if (!numerics.value("noRsOnWall", false))
+                        numerics.erase("noRsOnWall");
                     // Missing viscous controls in older archives denote the
                     // original primitive-cell-gradient scheme. Selecting the
                     // polynomial operator is a visible numerical method change.
@@ -215,6 +225,7 @@ namespace DNDS::Cauchy
             }
             catch (const Json::exception &)
             {
+                MPI::AbortIfSolverFailure("Cauchy checkpoint validation failed");
                 return false;
             }
         }
@@ -696,10 +707,10 @@ namespace DNDS::Cauchy
         checkpoint->limitedVRHistory = std::move(mappedLimitedVRHistory);
         return checkpoint;
     }
-    void Domain::ReserveCheckpointRead(CheckpointRead &checkpoint)
+    void Domain::ReserveCheckpointRead(CheckpointRead &checkpoint, bool collectiveChecks)
     {
-        MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
-                        {
+        const auto reserve = [&]
+        {
             DNDS_check_throw_info(!checkpoint.committed && !checkpoint.destination, "checkpoint publication was already reserved or committed");
             checkpoint.source.emplace(_trial.ReadOwned());
             checkpoint.destination.emplace(_accepted.WriteOwned());
@@ -707,12 +718,16 @@ namespace DNDS::Cauchy
             {
                 checkpoint.input.push_back(checkpoint.source->Block(iBlock).owned);
                 checkpoint.output.push_back(checkpoint.destination->Block(iBlock));
-            } });
+            } };
+        if (collectiveChecks)
+            MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), reserve);
+        else
+            reserve();
         if (checkpoint.equationGuess)
-            checkpoint.reconstruction.emplace(_fv.ReserveReconstructionRestore(_equationWorkspace, *checkpoint.equationGuess));
+            checkpoint.reconstruction.emplace(_fv.ReserveReconstructionRestore(_equationWorkspace, *checkpoint.equationGuess, collectiveChecks));
         else
             checkpoint.reconstruction.emplace(_fv.ReserveReconstructionRestore(_workspace, *checkpoint.guess,
-                                                                               checkpoint.limitedVRHistory ? &*checkpoint.limitedVRHistory : nullptr));
+                                                                               checkpoint.limitedVRHistory ? &*checkpoint.limitedVRHistory : nullptr, collectiveChecks));
     }
     void Domain::CommitCheckpointRead(CheckpointRead &checkpoint)
     {

@@ -1,5 +1,7 @@
-#include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
+#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Implicit/JacobianGeometry.hpp"
+#include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
+#include "Cauchy/Physics/EquationFlux.hpp"
 #include <Eigen/Core>
 #include <optional>
 
@@ -59,15 +61,15 @@ namespace DNDS::Cauchy
                 prepared->hasRotatedFrames = fv._data->hasRotatedFrames;
                 auto read = fv.Metrics().AcquireRead();
                 const auto metric = read.HostView();
-                JacobianDetail::BuildStencilRows(fv._data->offsets, fv._data->samples, prepared->columns, prepared->rows,
+                JacobianDetail::BuildStencilRows(fv._data->jacobianOffsets, fv._data->jacobianSamples, prepared->columns, prepared->rows,
                                                  [&](const auto &sample, index entry)
                                                  {
-                                                     return Point{sample.other, sample.auxiliaryFace, entry, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, metric.GetFaceWeight(sample.point)};
+                                                     return Point{sample.other, sample.auxiliaryFace, entry, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, metric.GetFaceArea(sample.face)};
                                                  });
                 geometry = std::move(prepared);
             }
             if (roe)
-                magnitudes.resize(fv._data->samples.size());
+                magnitudes.resize(fv._data->jacobianSamples.size());
         }
         index Components() const override { return 5; }
         std::shared_ptr<const Algebra::DofSpace::Partition> RowSpaceIdentity() const override { return geometry->partition; }
@@ -107,13 +109,54 @@ namespace DNDS::Cauchy
                         if (!active[j] || !active[k])
                             output(j, k) = 0;
         }
+        void ApplyBlock(index iRow, index iBlock, InputVector input,
+                        Eigen::Ref<Eigen::VectorXd> output) const override
+        {
+            output.setZero();
+            for (const auto &point : geometry->rows[iRow][iBlock])
+            {
+                const auto right = RotateState(means[point.other], point.rotation);
+                FlowState direction{};
+                for (int j = 0; j < 5; ++j)
+                    direction[j] = active[j] ? input[j] : 0;
+                direction = RotateState(direction, point.rotation);
+                const auto &gas = equation.Gas();
+                real dp = direction[4];
+                real speedSquared = 0;
+                for (int d = 0; d < 3; ++d)
+                {
+                    const real velocity = right[1 + d] / right[0];
+                    speedSquared += velocity * velocity;
+                    dp -= velocity * direction[1 + d];
+                }
+                dp = (gas.gamma - 1) * (dp + .5 * speedSquared * direction[0]);
+                const auto derivative = PrepareCompressibleFluxDerivative(right, direction, gas.Pressure(right), dp,
+                                                                          point.normal, frame.GridVelocity(point.location));
+                const Eigen::Map<const Eigen::Matrix<real, 5, 1>> delta(direction.data());
+                Eigen::Matrix<real, 5, 1> dissipation = (radius[point.auxiliary][0] + radius[point.auxiliary][1]) * delta;
+                if (roe)
+                {
+                    const auto basis = equation.PrepareCharacteristics(means[iRow], right, point.normal);
+                    auto characteristic = (Eigen::Map<const Matrix>(basis.forward.data()) * delta).eval();
+                    const auto &signal = magnitudes[point.sample];
+                    for (int j = 0; j < 5; ++j)
+                        characteristic[j] *= signal[j < 3 ? 0 : j - 2];
+                    dissipation.noalias() = Eigen::Map<const Matrix>(basis.inverse.data()) * characteristic;
+                    dissipation += radius[point.auxiliary][1] * delta;
+                }
+                const real factor = .5 * scale * point.weight;
+                for (int j = 0; j < 5; ++j)
+                    if (active[j])
+                        output[j] += factor * (derivative[j] - dissipation[j]);
+            }
+        }
     };
 
     std::shared_ptr<LinearProblemContext> FiniteVolume::BuildLinearProblem(const CFV::FVField &prototype, DiagonalStorage diagonal, OffDiagonalStorage offDiagonal) const
     {
         Metrics().ValidateField(prototype, 5);
         _data->partition.Validate();
-        auto columns = FiniteVolumeDetail::JacobianColumns(_data->offsets, _data->samples);
+        auto columns = FiniteVolumeDetail::JacobianColumns(_data->jacobianOffsets, _data->jacobianSamples);
         return std::make_shared<LinearProblemContext>(prototype.Space(), 5, std::move(columns), _data->partition.Core(), diagonal, offDiagonal);
     }
     void FiniteVolume::PrepareJacobian(const CFV::FVField &state, const AuxiliaryValues &auxiliary,
@@ -148,7 +191,10 @@ namespace DNDS::Cauchy
         checkAlias(faceArray);
         checkAlias(inversePseudoTime);
         if (auxiliary._origin->boundary)
+        {
             checkAlias(auxiliary._origin->boundary->flow);
+            checkAlias(auxiliary._origin->boundary->faceFlow);
+        }
         if (auxiliary.meanThermodynamics)
             checkAlias(*auxiliary.meanThermodynamics);
         for (const auto *derived : {&auxiliary.derivedOwned, &auxiliary.derivedGhost})
@@ -174,7 +220,7 @@ namespace DNDS::Cauchy
         RHSScalarView incoming;
         if (auxiliary._origin->boundary)
         {
-            boundaryRead.emplace(auxiliary._origin->boundary->flow.Read());
+            boundaryRead.emplace(auxiliary._origin->boundary->faceFlow.Read());
             incoming = boundaryRead->View<R::UniformTableRows>();
         }
         if (auxiliary.meanThermodynamics)
@@ -227,6 +273,7 @@ namespace DNDS::Cauchy
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("Cauchy Jacobian preparation failed");
             diagonal->CancelUnmodified();
             throw;
         }
@@ -256,15 +303,15 @@ namespace DNDS::Cauchy
                 for (index j = 0; j < blocks->BlockNumber(iCell); ++j)
                     (*blocks)(iCell, j).setZero();
             const auto left = Load(mean, iCell);
-            for (index entry = _data->offsets[iCell]; entry < _data->offsets[iCell + 1]; ++entry)
+            for (index entry = _data->jacobianOffsets[iCell]; entry < _data->jacobianOffsets[iCell + 1]; ++entry)
             {
-                const auto &sample = _data->samples[entry];
+                const auto &sample = _data->jacobianSamples[entry];
                 const auto iAux = sample.auxiliaryFace;
                 const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]}, point{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]};
                 const auto gridVelocity = frame.GridVelocity(point);
                 const real convection = radius(iAux, 0), diffusion = radius(iAux, 1);
                 DNDS_check_throw_info(std::isfinite(convection) && convection >= 0 && std::isfinite(diffusion) && diffusion >= 0, "invalid face spectral radius in Jacobian");
-                const real factor = .5 * controls.residualScale * metric.GetFaceWeight(sample.point);
+                const real factor = .5 * controls.residualScale * metric.GetFaceArea(sample.face);
                 if (!controls.roeDissipation && sample.other == UnInitIndex)
                 {
                     own.diagonal().array() += factor * (convection + diffusion);
@@ -277,7 +324,15 @@ namespace DNDS::Cauchy
                 if (controls.roeDissipation)
                 {
                     const auto characteristic = _data->equation.PrepareCharacteristics(left, right, normal);
-                    DNDS_check_throw_info(!characteristic.componentwiseFallback, "Roe Jacobian requires a valid physical characteristic basis");
+                    // A componentwise limiter fallback is not a Roe matrix.
+                    // Retain the physical failure and identify the mean states
+                    // before the application aborts the distributed solve.
+                    if (characteristic.componentwiseFallback)
+                        DNDS_check_throw_info(false, fmt::format(
+                                                         "Roe Jacobian requires a valid physical characteristic basis: cell={} face={} neighbor={} zone={} "
+                                                         "left=[{:.17g},{:.17g},{:.17g},{:.17g},{:.17g}] right=[{:.17g},{:.17g},{:.17g},{:.17g},{:.17g}] sound={:.17g}",
+                                                         iCell, sample.face, sample.other, sample.zone,
+                                                         left[0], left[1], left[2], left[3], left[4], right[0], right[1], right[2], right[3], right[4], characteristic.soundSpeed));
                     const auto leftData = prepared(iCell, left);
                     const auto rightData = sample.other == UnInitIndex ? _data->equation.PrepareFluxState(right) : prepared(sample.other, right);
                     const auto model = _data->equation.PrepareRiemann(_data->flux, leftData, rightData, leftData, rightData, normal, gridVelocity);
@@ -313,7 +368,7 @@ namespace DNDS::Cauchy
                 {
                     if (controls.roeDissipation)
                     {
-                        const auto boundary = sample.boundary.kind == BoundaryKind::Interface ? std::array<real, 25>{} : sample.boundary.ExteriorJacobian(_data->equation.Gas(), left, normal, point, time, &frame);
+                        const auto boundary = sample.boundary.ApproximateExteriorJacobian(_data->equation.Gas(), left, normal, point, time, &frame);
                         own.noalias() += other * Eigen::Map<const Matrix>(boundary.data());
                     }
                 }

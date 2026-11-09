@@ -45,6 +45,24 @@ retains the complete standalone API; reduced profiles omit unused matrix tables
 and reject unavailable operations before communication or output mutation.
 Basis caching remains independent of this selection.
 
+## Maintained face geometry
+
+`FiniteVolumePlan` always stores one face-centered record alongside its RHS
+quadrature records. `AcquireRead().HostView()` exposes `GetFaceCent(iFace)`,
+`GetFaceMeanNorm(iFace)` and `GetFaceArea(iFace)`. The center is the mapped
+reference-element center; the mean normal is the normalized surface integral
+of the normal; area is the scalar surface measure. On curved faces, area is
+not the magnitude of the integrated normal vector. Axisymmetric measures
+include radius; a zero-weight face on the axis retains its geometric normal.
+
+Construction integrates geometry once and publishes both tables. With
+`faceIntOrder=1`, the single RHS point uses this maintained center, mean normal
+and integrated area. Higher-order RHS uses its own point normals and weights;
+it does not change the maintained face record. Approximate FV Jacobians can
+therefore use one face record at every polynomial degree, without traversing
+RHS quadrature. Both tables share the metric publication's mesh version
+validation, read leases, and explicit device residency lifetime.
+
 ## Supported mathematics
 
 * Cell-centered planar 2D and volumetric 3D unstructured cells, scalar or multiple
@@ -169,6 +187,30 @@ new cache for new locations. Geometry/order mutations invalidate it through
 the metric stamp. `Evaluate(...,derivative)` samples the central derivative-mode
 ordinal (0=value, 1..dimension=gradient, higher modes include Hessians). Its
 input ghost reads are omitted when all selected cells are owned.
+
+`EvaluateValueGradient(mean,coefficients,outputs)` accepts a
+`PolynomialSampleOutputs` bundle with an optional `values` array and three
+optional Cartesian `gradients` arrays. Allocate each requested output with
+`sampler.Size()` rows and the field's component count. All outputs are in the
+donor reference frame. No halo exchange, output allocation or implicit layout
+conversion occurs. At least one output is required; gradient slots outside
+the mesh dimension and derivatives of a value-only plan are rejected.
+Input/output aliases and duplicate/overlapping outputs are rejected before
+writes, including shared empty arrays on ranks with no owned query points.
+Outputs must have independent payload access identities, even when separate
+metadata handles describe the same buffer.
+If evaluation fails, discard the bundle rather than publishing partial data.
+
+The CPU implementation combines values, dx and dy for cached owned 2D P3
+six-component AoS queries. Fixed row access retains each parent's physical
+row pitch, including padding; each coefficient feeds the three sums in the
+reference evaluator's mode order. Other layouts, widths, ghost queries,
+cache policies and partial requests retain independent `Evaluate` calls.
+The public checks and leases stay in the prologue, outside the point loop.
+Cauchy uses the bundle for variational RANS source sampling; source physics,
+communication, version publication and source Jacobian preparation remain
+Cauchy responsibilities. This is a CPU facility; device-resident fields fail
+explicitly instead of staging implicitly.
 
 Rigid periodicity transforms both sample locations and derivative tensors during
 setup. `BuildWorkspace(components,periodicVectorStarts)` declares sorted disjoint

@@ -35,7 +35,7 @@ namespace DNDS::Cauchy
                     real speed = 0;
                     for (int d = 0; d < 3; ++d)
                         speed += (inside[1 + d] / inside[0] - grid[d]) * normal[d];
-                    if (speed >= properties.thermo.soundSpeed)
+                    if (speed > properties.thermo.soundSpeed)
                         return inside;
                     if (speed > 0)
                     {
@@ -72,7 +72,7 @@ namespace DNDS::Cauchy
             else
                 for (int d = 0; d < 3; ++d)
                     target[d] += factor * (wall[d] - velocity[d]);
-            if (!exterior && condition.kind == BoundaryKind::NoSlipWall && condition.isothermal)
+            if (condition.kind == BoundaryKind::NoSlipWall && condition.isothermal)
             {
                 const auto properties = evaluator.Evaluate(inside, rhoY, 0, {});
                 const real density = properties.thermo.pressure / (properties.thermo.gasConstant * condition.temperature);
@@ -80,8 +80,7 @@ namespace DNDS::Cauchy
                     rhoY[k] *= density / rho;
                 return evaluator.FromPrimitive({density, target[0], target[1], target[2], properties.thermo.pressure}, rhoY, condition.temperature);
             }
-            // Exterior wall reflection never extrapolates wall temperature.
-            // Same full internal energy/composition, with changed kinetic energy.
+            // Adiabatic reflection retains internal energy and composition.
             auto result = inside;
             for (int d = 0; d < 3; ++d)
             {

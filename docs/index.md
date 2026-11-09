@@ -22,6 +22,8 @@ distributed gates and the measured gains and regressions by shape.
 ## Architecture entry points
 
 Cauchy development starts at the [solver contracts and ledger](architecture/Cauchy.md).
+The [November 5 pMG and distributed-failure audit](dev/cauchy_pmg_distributed_errors_2026-11-05.md)
+records the coarse-gradient correction, fail-fast boundary and publication checks.
 The [multidomain input and restart guide](guides/cauchy_multidomain.md) gives the
 configuration shape, CGNS/HDF loader boundaries and simulation archive layout.
 The [equation-state contract](architecture/CauchyState.md) documents semantic
@@ -32,6 +34,9 @@ The [native LVR guide](architecture/CauchyLimitedVR.md) documents penalty
 ownership, sensor ordering, halo phases and warm-state restart semantics.
 Native linear operators, Jacobian assembly, staged SGS and local ILU are described
 in [Cauchy implicit operator contracts](architecture/CauchyImplicit.md).
+The [boundary convention guide](architecture/CauchyBoundary.md) distinguishes
+Euler exterior targets, conservative gradient traces, viscous wall laws,
+farfield switching and approximate implicit boundary derivatives.
 The [Cauchy positivity policy](architecture/CauchyPositivity.md) specifies
 thermal constraints, component scopes and preserved Euler repair ordering.
 The [Cauchy audit fix record](dev/cauchy_audit_fix.md) tracks the shared SST

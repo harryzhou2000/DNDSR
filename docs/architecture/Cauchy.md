@@ -230,20 +230,28 @@ the GIL around native work; it never infers external stream dependencies.
 The production executable uses DNDS MPI initialization/finalization, segmented
 `CsvLog` histories and `argparse` with typed JSON overrides and recorded effective
 configuration. It visits domains in the agreed global order and uses the
-coordinated restart/output controller. Domain objects and communicator owners
-are destroyed before MPI finalization on every exit path.
+coordinated restart/output controller. On normal exits, domain and communicator
+owners are destroyed before MPI finalization. Unexpected exceptions abort MPI
+immediately without a final agreement/finalization; see the
+[distributed exception contract](RuntimeCallerContract.md#distributed-exceptions).
 
 `CoordinatedSchedule` is a scalar mock of the frozen-trace contract, not a fluid
 integrator. All domains read the same old trace snapshot for a round. Only each
 domain root publishes its candidate to the control communicator. Failure leaves
 accepted time and traces unchanged; retry uses a fresh trial identity. Domain
-callbacks must coordinate their internal collective phases before returning or
-throwing. MPI process failure recovery is not promised.
+callbacks own their internal collective phases. Unexpected exceptions propagate
+directly to the fatal boundary. Only a nonfinite returned candidate is agreed
+after all callbacks return. MPI process failure recovery is not promised.
 
 The [equation-state contract](CauchyState.md) describes semantic `EquationDofs`
 bindings, physical ownership, layout-aware block views and explicit kernel
 dispatch. `Domain` now holds accepted/trial bindings while preserving the
-physical `State()` and flow5 `Flow()` accessors.
+physical `State()` and flow5 `Flow()` accessors. The latter requires a dedicated
+flow5 allocation; coupled extended states use `Dofs()` block access instead.
+`execution.fieldGrouping` defaults to `coupled`; it may instead select
+`equationBlocks`, independently of the AoS/SoA/AoSoA `execution.layout`. The full logical
+`ResidualState()` remains available with either grouping; `Residual()` is the
+dedicated-flow5 convenience.
 
 `DNDS/Algebra/DofBundle` composes named numerical blocks on one row space. It
 contains no equation/BC/mesh policy. Blocks retain their individual physical
@@ -638,8 +646,9 @@ Direct callers serialize phase calls and retain a queued transaction through its
 stream join. Host-side `Finish` follows the join; a queued CPU continuation may
 finish directly after its dependent phase. Synchronous `Evaluate` also joins outstanding borrowed auxiliary/RHS
 work before an exceptional controller unwind. Runtime deliberately marks partial
-write allocations as failed during unwinding; replace failed outputs/workspace
-before retrying, and preserve the accepted input. Do not clear failure state or
+write allocations as failed during unwinding. Standalone local operators may
+replace failed outputs/workspace; unexpected distributed errors must reach the
+fatal boundary. Preserve accepted input and do not clear failure state or
 treat a failed partial packet as a valid cache. A controlled worker/rejection test
 checks joining, explicit failed-buffer reuse rejection and recovery with fresh
 scratch, without intentionally executing a dangling reference.

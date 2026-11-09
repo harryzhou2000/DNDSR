@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DNDS/MPI/Failure.hpp"
 #include "DNDS/Runtime/Array/Array.hpp"
 #include "DNDS/Runtime/Storage/ElementSchema.hpp"
 #include "DNDS/Serializer/SerializerBase.hpp"
@@ -38,6 +39,7 @@ namespace DNDS::Runtime
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("runtime array I/O preparation failed");
             }
             IOCheck(bool(storage), mpi, perRank,
                     "Array checkpoint requires a live published source on every rank");
@@ -168,6 +170,7 @@ namespace DNDS::Runtime
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("runtime array I/O preparation failed");
             }
             IOCheck(bool(region), mpi, perRank, "native Array row partition is invalid or differs from saved rank metadata");
             return *region;
@@ -184,6 +187,7 @@ namespace DNDS::Runtime
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("runtime array I/O preparation failed");
                 valid = false;
             }
             IOCheck(valid, mpi, perRank, "Array element schema is unregistered or requested identity differs from its registration");
@@ -221,6 +225,7 @@ namespace DNDS::Runtime
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("runtime array I/O preparation failed");
             valid = false;
         }
         Detail::IOCheck(valid, mpi, perRank, "Array checkpoint cannot acquire its source read lease");
@@ -432,6 +437,7 @@ namespace DNDS::Runtime
                     }
                     catch (...)
                     {
+                        MPI::AbortIfSolverFailure("runtime array I/O preparation failed");
                         valid = false;
                     }
                     Detail::IOCheck(valid, mpi, perRank, "invalid native physical-layout descriptor");
@@ -485,6 +491,7 @@ namespace DNDS::Runtime
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("runtime array I/O preparation failed");
             valid = false;
         }
         Detail::IOCheck(valid, mpi, perRank, "native Array output policy disagrees with logical shape or allocation failed");

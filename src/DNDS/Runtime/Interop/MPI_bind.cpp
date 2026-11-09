@@ -48,7 +48,11 @@ namespace DNDS::Runtime
                  py::arg("mpi"), py::arg("collective_preflight") = true)
             .def_property_readonly("collective_preflight", &CommunicationContext::ChecksCollectivePreflight);
         py::enum_<TransferMode>(m, "TransferMode").value("Persistent", TransferMode::Persistent).value("Transient", TransferMode::Transient);
-        py::class_<TransferOptions>(m, "TransferOptions", "Persistent/transient request policy, independent of transport. Caller matches context/tag across ranks; transient mode remains collective.")
+        py::enum_<TransferPreflight>(m, "TransferPreflight", "Inherit resolves the immutable communication context by default. Collective agrees launch rejection before posting. AbortOnFailure omits that agreement and aborts on a local launch failure.")
+            .value("Inherit", TransferPreflight::Inherit)
+            .value("Collective", TransferPreflight::Collective)
+            .value("AbortOnFailure", TransferPreflight::AbortOnFailure);
+        py::class_<TransferOptions>(m, "TransferOptions", "Persistent/transient request policy, independent of transport. Caller matches context/tag and collective launch order across ranks. Binding setup is always collective; AbortOnFailure launch rejection is fatal and cannot be caught for recovery.")
             .def(py::init([](TransferMode mode, std::shared_ptr<CommunicationContext> context, int tag, std::shared_ptr<TransferProvider> provider)
                           { return TransferOptions{mode, std::move(context), tag, std::move(provider)}; }),
                  py::arg("mode") = TransferMode::Persistent,
@@ -57,7 +61,8 @@ namespace DNDS::Runtime
             .def_readwrite("context", &TransferOptions::context)
             .def_readwrite("tag", &TransferOptions::tag)
             .def_readwrite("provider", &TransferOptions::provider)
-            .def_readwrite("allow_stream_ordered_device_memory", &TransferOptions::allowStreamOrderedDeviceMemory);
+            .def_readwrite("allow_stream_ordered_device_memory", &TransferOptions::allowStreamOrderedDeviceMemory)
+            .def_readwrite("preflight", &TransferOptions::preflight, "Inherit by default. Collective/AbortOnFailure explicitly override the context. Both retain local checks. Collective reports a rejection before posting; AbortOnFailure omits that agreement and aborts on a local launch failure. Does not make unmatched rank-local launch ordering safe.");
     }
     void BindMPIEagerPython(py::module_ &m)
     {
@@ -78,6 +83,6 @@ namespace DNDS::Runtime
                  { return self.operation->Test(); }, py::call_guard<py::gil_scoped_release>())
             .def("wait", [](PythonDynamicTransfer &self)
                  { self.operation->Wait(); }, py::call_guard<py::gil_scoped_release>())
-            .def("commit", &PythonDynamicTransfer::Commit, "Collectively wait/check and publish this field only. Validate all migrated fields before publishing a new mesh epoch.");
+            .def("commit", &PythonDynamicTransfer::Commit, "Wait for transport and publish this local field only. Completion errors propagate locally: abort the MPI run, without attempting a post-error collective. Validate all migrated fields before publishing a new mesh epoch; no distributed rollback.");
     }
 }

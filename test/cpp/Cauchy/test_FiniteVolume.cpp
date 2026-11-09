@@ -3,6 +3,7 @@
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/Simulation.hpp"
+#include "Cauchy/Core/StepResult.hpp"
 #include "../CFV/ReconstructionFixture.hpp"
 #include "../Geom/NativeMeshOverlapFixture.hpp"
 #include "CartesianFixture.hpp"
@@ -722,7 +723,7 @@ TEST_CASE("Cauchy rejects inadmissible trial collectively and retries without ac
         }
     }
     const auto before = domain.State().Clone();
-    CHECK_THROWS(domain.Advance(1e4));
+    CHECK_FALSE(domain.Advance(1e4).accepted);
     CHECK(domain.Time() == 0);
     CHECK(domain.Epoch().acceptedStep == 0);
     {
@@ -1117,7 +1118,9 @@ TEST_CASE("Cauchy thermal PP rejects invalid low-order stages collectively witho
         }
     }
     const auto saved = domain.State().Clone();
-    CHECK_THROWS_WITH_AS(domain.Advance(1e4), doctest::Contains("both low/high PP stage candidates"), std::exception);
+    const auto rejected = domain.Advance(1e4);
+    CHECK_FALSE(rejected.accepted);
+    CHECK(rejected.reason.find("admissible low-order stage") != std::string::npos);
     CHECK(domain.Time() == 0);
     CHECK(domain.Epoch().acceptedStep == 0);
     {
@@ -1461,7 +1464,7 @@ TEST_CASE("Auxiliary reuse rejects active writers changed inputs replaced output
     CHECK_THROWS(fv.PrepareAuxValues(state, aux));
     CHECK_THROWS(fv.ValidateAuxValues(state, aux));
 }
-TEST_CASE("Auxiliary boundary spectral statistics use the supplied physical stage time")
+TEST_CASE("Mean boundary spectra use stage kinematics while analytic RHS uses boundary stage time")
 {
     const auto mesh = CFVTest::CartesianHexes(mpi, 4);
     C::DomainSettings settings;
@@ -1469,6 +1472,8 @@ TEST_CASE("Auxiliary boundary spectral statistics use the supplied physical stag
     settings.numerics.reconstruction = "constant";
     settings.numerics.cfv.maxOrder = 1;
     settings.initialPrimitive = {1, .3, .2, .1, 1};
+    settings.motion.angularVelocity = {0, 0, .4};
+    settings.motion.translationVelocity = {.1, .07, 0};
     auto &bc = settings.boundaries["7"];
     bc.kind = "analytic";
     bc.primitive = settings.initialPrimitive;
@@ -1487,8 +1492,6 @@ TEST_CASE("Auxiliary boundary spectral statistics use the supplied physical stag
     fv.PrepareAuxValues(state, first, 0);
     fv.PrepareAuxValues(state, second, .6);
     CHECK_THROWS(fv.ValidateAuxValues(state, first, .6));
-    const auto meshRead = mesh->AcquireRead(DNDS::Geom::MeshReadRequirements::CellFlux());
-    const auto topology = meshRead.HostView();
     const auto geometry = fv.Metrics().AcquireRead();
     const auto metric = geometry.HostView();
     double difference = 0;
@@ -1504,21 +1507,14 @@ TEST_CASE("Auxiliary boundary spectral statistics use the supplied physical stag
             {
                 const auto normal = metric.GetFaceNorm(q), point = metric.GetFacePoint(q);
                 const double ownAcoustic = std::sqrt(settings.equation.gamma);
-                double normalSpeed = .3 * normal[0] + .2 * normal[1] + .1 * normal[2];
+                // Independent rigid-grid velocity in mesh axes. Euler's
+                // physical-boundary spectral estimate uses only the mean,
+                // while kinematics still depend on the supplied stage time.
+                const double angle = .4 * entry.second;
+                const double gx = std::cos(angle) * .1 + std::sin(angle) * .07 - .4 * point[1];
+                const double gy = -std::sin(angle) * .1 + std::cos(angle) * .07 + .4 * point[0];
+                const double normalSpeed = (.3 - gx) * normal[0] + (.2 - gy) * normal[1] + .1 * normal[2];
                 speed = std::max(speed, std::abs(normalSpeed) + ownAcoustic);
-                if (topology.FaceCells(iFace)[1] != DNDS::UnInitIndex)
-                    continue;
-                // Independent analytic vortex formula, without calling the
-                // BoundarySystem/ProfileValue implementation under test.
-                constexpr double pi = 3.14159265358979323846;
-                const double x = point[0] - .3 * entry.second - .25, y = point[1] - .2 * entry.second - .2;
-                const double r2 = x * x + y * y, rotation = 1 / pi * std::exp(.5 * (1 - r2));
-                const double temperature = 1 - (settings.equation.gamma - 1) * 4 / (8 * settings.equation.gamma * pi * pi) * std::exp(1 - r2);
-                const double boundaryAcoustic = std::sqrt(settings.equation.gamma * temperature);
-                const double velocityJump = rotation * (-y * normal[0] + x * normal[1]);
-                speed = std::max(speed, std::abs(normalSpeed + velocityJump) + boundaryAcoustic);
-                jump = std::max(jump, std::abs(velocityJump) + std::abs(boundaryAcoustic - ownAcoustic));
-                pressure = std::min(pressure, std::pow(temperature, settings.equation.gamma / (settings.equation.gamma - 1)));
             }
             CHECK(spectral.View()(iAux, 0) == doctest::Approx(speed).epsilon(5e-13));
             CHECK(spectral.View()(iAux, 1) == 0);
@@ -1529,6 +1525,18 @@ TEST_CASE("Auxiliary boundary spectral statistics use the supplied physical stag
     }
     MPI_Allreduce(MPI_IN_PLACE, &difference, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
     CHECK(difference > 1e-3);
+    // Preserve the original boundary-time regression purpose in the RHS,
+    // whose analytic exterior must still be evaluated at the physical stage.
+    auto earlier = fv.Metrics().BuildField(5), later = fv.Metrics().BuildField(5);
+    auto workspace = fv.BuildWorkspace(state);
+    R::EagerEngine engine;
+    const auto stream = engine.CreateCPUStream();
+    const auto meanVersion = state.Owned().Version();
+    fv.Evaluate(state, earlier, *workspace, engine, stream, 0);
+    fv.Evaluate(state, later, *workspace, engine, stream, .6);
+    A::Axpy(later, -1., earlier);
+    CHECK(A::NormGlobal(later) > 1e-3);
+    CHECK(state.Owned().Version() == meanVersion);
 }
 TEST_CASE("A checkpoint predating spatial Riemann options retains explicit manual behavior")
 {
@@ -2015,6 +2023,115 @@ TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen in
             MPI_Allreduce(&differs, &anyDiffers, 1, MPI_INT, MPI_MAX, mpi.comm);
             CHECK(anyDiffers == 1);
         }
+    }
+}
+
+TEST_CASE("Direct FV consumes physical gradients without coefficients and splits flux from source")
+{
+    auto mesh = CFVTest::CartesianHexes(mpi, 3);
+    mesh->TransformCoords([](DNDS::Geom::tPoint p) -> DNDS::Geom::tPoint
+                          { return {2 * p[0], .7 * p[1], 1.3 * p[2]}; });
+    for (const bool p0 : {false, true})
+    {
+        C::DomainSettings settings;
+        settings.mesh.dimension = 3;
+        settings.numerics.reconstruction = "gradient";
+        settings.numerics.cfv.maxOrder = 3; // Must not leak a VR width/basis requirement into direct FV.
+        settings.numerics.firstOrderConvection = p0;
+        settings.boundaries["7"].kind = "extrapolate";
+        settings.motion.angularVelocity = {.1, -.2, .15};
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto mean = fv.Metrics().BuildField(5), gradient = fv.Metrics().BuildField(R::RowLayout::ColMajor(0, 15, {8, 1}));
+        auto combined = fv.Metrics().BuildField(5), split = fv.Metrics().BuildField(5);
+        const double g[5][3]{{.01, -.02, .03}, {.02, .01, -.01}, {-.01, .02, .01}, {.01, .01, .02}, {.03, -.01, .02}};
+        const C::FlowState base{1, .2, -.1, .05, 3};
+        const auto geometry = fv.Metrics().AcquireRead();
+        const auto metric = geometry.HostView();
+        {
+            auto u = mean.Owned().Write(), grad = gradient.Owned().Write();
+            for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            {
+                const auto x = metric.GetCellBary(iCell);
+                for (int j = 0; j < 5; ++j)
+                {
+                    u.View()(iCell, j) = base[j];
+                    for (int d = 0; d < 3; ++d)
+                    {
+                        u.View()(iCell, j) += g[j][d] * x[d];
+                        grad.View()(iCell, j * 3 + d) = g[j][d];
+                    }
+                }
+            }
+        }
+        fv.BindHalo(mean).Begin().Wait();
+        fv.BindHalo(gradient).Begin().Wait();
+        auto faces = fv.BuildFaceFluxBuffer(5);
+        const auto u = mean.Owned().Read(), ug = mean.Ghost().Read(), grad = gradient.Owned().Read(), gg = gradient.Ghost().Read();
+        C::RHSReadViews input;
+        input.mean = {u.View<R::UniformTableRows>(), ug.View<R::UniformTableRows>()};
+        if (!p0)
+            input.conservativeGradient = C::RHSFieldView{grad.View<R::UniformTableRows>(), gg.View<R::UniformTableRows>()};
+        std::atomic<DNDS::index> fallbacks{0};
+        const auto op = fv.AcquireRHSOperator();
+        {
+            auto a = combined.Owned().Write(), b = split.Owned().Write(), face = faces.Write();
+            C::RHSWriteViews out{a.View<R::UniformTableRows>(), {}, &fallbacks};
+            op.Apply(input, out, DNDS::CFV::ReconstructionRegion::All, .3);
+            out.residual = b.View<R::UniformTableRows>();
+            out.faceFlux = face.View<R::UniformTableRows>();
+            op.ApplyFlux(input, out, DNDS::CFV::ReconstructionRegion::All, .3);
+            op.AddSource(input, out, DNDS::CFV::ReconstructionRegion::All, .3);
+            if (!p0)
+            {
+                auto missing = input;
+                missing.conservativeGradient.reset();
+                CHECK_THROWS(op.ApplyFlux(missing, out));
+            }
+        }
+        const auto a = combined.Owned().Read(), b = split.Owned().Read(), flux = faces.Read();
+        const auto topologyRead = mesh->AcquireRead(DNDS::Geom::MeshReadRequirements::CellFlux());
+        const auto topology = topologyRead.HostView();
+        const auto frame = fv.Motion().At(.3);
+        for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+        {
+            C::FlowState meanState{}, gathered{}, independent{};
+            for (int j = 0; j < 5; ++j)
+                meanState[j] = u.View()(iCell, j);
+            const auto source = frame.RotationSource(meanState);
+            for (int j = 0; j < 5; ++j)
+                gathered[j] = independent[j] = metric.GetCellVol(iCell) * source[j];
+            const auto cellFaces = topology.CellFaces(iCell);
+            for (DNDS::rowsize slot = 0; slot < DNDS::rowsize(cellFaces.size()); ++slot)
+            {
+                const auto iFace = cellFaces[slot];
+                const auto row = std::lower_bound(fv.AuxiliaryFaces().begin(), fv.AuxiliaryFaces().end(), iFace) - fv.AuxiliaryFaces().begin();
+                const auto parents = topology.FaceCells(iFace);
+                const auto anchor = parents[0] >= 0 && parents[0] < fv.Metrics().NumCell() ? parents[0] : parents[1];
+                for (int j = 0; j < 5; ++j)
+                    gathered[j] += (anchor == iCell ? 1 : -1) * flux.View()(row, j);
+                if (!p0)
+                {
+                    const auto point = metric.GetFaceCent(iFace);
+                    const auto normal = ((topology.CellIsFaceBack(iCell, iFace, slot) ? 1 : -1) * metric.GetFaceMeanNorm(iFace)).eval();
+                    C::FlowState value = base;
+                    for (int j = 0; j < 5; ++j)
+                        for (int d = 0; d < 3; ++d)
+                            value[j] += g[j][d] * point[d];
+                    const auto physical = C::Riemann::PhysicalFlux(equation.PrepareFluxState(value).flow, {normal[0], normal[1], normal[2]}, frame.GridVelocity({point[0], point[1], point[2]}));
+                    for (int j = 0; j < 5; ++j)
+                        independent[j] -= metric.GetFaceArea(iFace) * physical[j];
+                }
+            }
+            for (int j = 0; j < 5; ++j)
+            {
+                CHECK(a.View()(iCell, j) == b.View()(iCell, j));
+                CHECK(a.View()(iCell, j) == doctest::Approx(gathered[j]).epsilon(3e-12).scale(1));
+                if (!p0)
+                    CHECK(a.View()(iCell, j) == doctest::Approx(independent[j]).epsilon(3e-12).scale(1));
+            }
+        }
+        CHECK(fallbacks == 0);
     }
 }
 

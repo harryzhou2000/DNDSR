@@ -1,3 +1,4 @@
+#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/State/EquationDofs.hpp"
 #include <limits>
 #include <algorithm>
@@ -282,6 +283,7 @@ namespace DNDS::Cauchy
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("Cauchy equation lease acquisition failed");
             for (auto &lease : _owned)
                 lease.CancelUnmodified();
             for (auto &lease : _ghost)
@@ -338,6 +340,7 @@ namespace DNDS::Cauchy
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("Cauchy equation lease acquisition failed");
             CancelUnmodified();
             throw;
         }

@@ -13,7 +13,14 @@ namespace DNDS::Cauchy
             InterfaceSettings settings;
             std::shared_ptr<R::CommunicationContext> context;
             std::optional<Geom::BoundaryPatch> patch;
-            std::vector<index> receiverRows;
+            struct ReceiverRow
+            {
+                index row;
+                bool faceCenter;
+            };
+            // A single distributed match/sample batch, with explicit output
+            // destinations in the quadrature and face-centered packet tables.
+            std::vector<ReceiverRow> receiverRows;
             std::optional<std::pair<Geom::RigidPose, Geom::RigidPose>> poses;
             std::optional<CFV::DistributedInterfaceSamplingPlan> sampling;
             std::optional<CFV::DistributedSamplingWorkspace> workspace;
@@ -64,12 +71,9 @@ namespace DNDS::Cauchy
             connection.donor = domainIndex(settings.donor);
             connection.receiver = domainIndex(settings.receiver);
             connection.context = std::make_shared<R::CommunicationContext>(coupling);
-            // Patch construction is domain-collective. Nonmembers never enter
-            // it or allocate a dummy mesh. Agree errors on the coupling context
-            // only after each participating domain has completed its work.
-            std::string error;
-            int valid = 1;
-            try
+            // Patch construction is domain-collective. A local exception must
+            // propagate to the fatal boundary, not to a coupling reduction
+            // while another donor rank is still constructing the patch.
             {
                 if (auto &fv = data.discrete[connection.donor])
                     connection.patch = fv->BuildBoundaryPatch(settings.donorZone);
@@ -78,16 +82,13 @@ namespace DNDS::Cauchy
                     const auto &points = fv->BoundaryPoints();
                     for (index iPoint = 0; iPoint < index(points.size()); ++iPoint)
                         if (points[iPoint].interface && points[iPoint].zone == settings.receiverZone)
-                            connection.receiverRows.push_back(iPoint);
+                            connection.receiverRows.push_back({iPoint, false});
+                    const auto &faces = fv->BoundaryFaces();
+                    for (index iFace = 0; iFace < index(faces.size()); ++iFace)
+                        if (faces[iFace].interface && faces[iFace].zone == settings.receiverZone)
+                            connection.receiverRows.push_back({iFace, true});
                 }
             }
-            catch (const std::exception &exception)
-            {
-                valid = 0;
-                error = exception.what();
-            }
-            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, coupling);
-            DNDS_check_throw_info(valid, "interface patch construction failed: " + error);
             index counts[2]{connection.patch ? connection.patch->Size() : 0, index(connection.receiverRows.size())};
             MPI_Allreduce(MPI_IN_PLACE, counts, 2, MPI_INT64_T, MPI_SUM, coupling);
             DNDS_check_throw_info(counts[0] > 0 && counts[1] > 0, "interface donor patch or receiver boundary quadrature is globally empty; check zone IDs");
@@ -171,9 +172,10 @@ namespace DNDS::Cauchy
                         for(index iPoint=0;iPoint<index(connection.receiverRows.size());++iPoint)
                         {
                             const auto row=connection.receiverRows[iPoint];
-                            const auto world=frame.WorldPoint(receiver->BoundaryPoints()[row].point);
+                            const auto &point = row.faceCenter ? receiver->BoundaryFaces()[row.row] : receiver->BoundaryPoints()[row.row];
+                            const auto world=frame.WorldPoint(point.point);
                             for(int d=0;d<3;++d) p.View()(iPoint,d)=world[d];
-                            key.View()(iPoint,0)=row;
+                            key.View()(iPoint,0)=iPoint;
                         }
                     } });
                 Geom::InterfaceSearchSettings search;
@@ -215,14 +217,19 @@ namespace DNDS::Cauchy
                 const auto receiverFrame=data.motion[connection.receiver].At(time);
                 const auto read=connection.values.Read();
                 auto write=data.incoming[connection.receiver]->flow.Write();
+                auto faceWrite=data.incoming[connection.receiver]->faceFlow.Write();
                 const auto values=read.View<R::UniformTableRows>();
                 const auto output=write.View<R::UniformTableRows>();
+                const auto faceOutput=faceWrite.View<R::UniformTableRows>();
                 for(index iPoint=0;iPoint<index(connection.receiverRows.size());++iPoint)
                 {
                     FlowState value;
                     for(int j=0;j<5;++j) value[j]=values(iPoint,j);
                     value=receiverFrame.LocalState(donorFrame.WorldState(value));
-                    for(int j=0;j<5;++j) output(connection.receiverRows[iPoint],j)=value[j];
+                    const auto row = connection.receiverRows[iPoint];
+                    for(int j=0;j<5;++j)
+                        if (row.faceCenter) faceOutput(row.row,j)=value[j];
+                        else output(row.row,j)=value[j];
                 } });
         }
         MPI::LocalStage(data.mpi, [&]

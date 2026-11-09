@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/Implicit/LinearProblem.hpp"
+#include "Cauchy/State/EquationDofs.hpp"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include <Eigen/LU>
 #include <optional>
@@ -76,6 +77,12 @@ TEST_CASE("Native linear action overlaps direct MPI with core and preserves froz
     receive[previous] = {0, 1};
     const auto route = R::RowTransferPlan::Known(communication, 4, 2, send, receive);
     const A::DofSpace space(communication, 4, 2, "mock coupled flow5");
+    C::EquationSchema schema{"mock-flow5", "mock-energy", "identity", {}};
+    C::EquationBlockSchema flow;
+    flow.name = "flow";
+    for (int j = 0; j < 5; ++j)
+        flow.components.push_back({"q" + std::to_string(j), "", "flow"});
+    schema.blocks.push_back(std::move(flow));
     const std::vector<std::vector<DNDS::index>> columns{{1}, {0, 2}, {1, 3, 4}, {2, 5}};
     for (auto mode : {C::DiagonalStorage::Entries, C::DiagonalStorage::Block})
         for (int layout = 0; layout < 3; ++layout)
@@ -109,7 +116,15 @@ TEST_CASE("Native linear action overlaps direct MPI with core and preserves froz
                 problem.Apply(input, split, C::LinearRegion::HaloDependent);
             }
             problem.Apply(input, full);
-            const auto a = full.Owned().Read(), c = split.Owned().Read();
+            Field logicalResult(space, format);
+            auto logicalInput = C::EquationDofs::Coupled(schema, input), logicalOutput = C::EquationDofs::Coupled(schema, logicalResult);
+            {
+                auto transfer = binding.Begin();
+                problem.Apply(logicalInput, logicalOutput, C::LinearRegion::Core);
+                transfer.Wait();
+                problem.Apply(logicalInput, logicalOutput, C::LinearRegion::HaloDependent);
+            }
+            const auto a = full.Owned().Read(), c = split.Owned().Read(), logicalRead = logicalResult.Owned().Read();
             for (DNDS::index iCell = 0; iCell < 4; ++iCell)
             {
                 Vector expected = Diagonal(iCell, mode) * Input(rank, iCell);
@@ -119,6 +134,7 @@ TEST_CASE("Native linear action overlaps direct MPI with core and preserves froz
                 {
                     CHECK(a.View<R::UniformTableRows>()(iCell, j) == doctest::Approx(expected[j]).epsilon(1e-13));
                     CHECK(a.View<R::UniformTableRows>()(iCell, j) == c.View<R::UniformTableRows>()(iCell, j));
+                    CHECK(logicalRead.View<R::UniformTableRows>()(iCell, j) == doctest::Approx(expected[j]).epsilon(1e-13));
                 }
             }
             problem.ApplySGS(b, input, forward, result);
@@ -254,6 +270,11 @@ TEST_CASE("Native linear action overlaps direct MPI with core and preserves froz
 TEST_CASE("Linear matrix construction rejects invalid topology and supports empty owners")
 {
     const A::DofSpace space(2, 1);
+    C::LinearProblemContext bound(space, 5, {{1}, {0}}, {}, C::DiagonalStorage::Block);
+    const auto columns = std::make_shared<const std::vector<std::vector<DNDS::index>>>(std::vector<std::vector<DNDS::index>>{{1}, {0}});
+    CHECK_NOTHROW(bound.ValidateColumns(columns));
+    CHECK_NOTHROW(bound.ValidateColumns(columns));
+    CHECK_THROWS(bound.ValidateColumns(std::make_shared<const std::vector<std::vector<DNDS::index>>>(std::vector<std::vector<DNDS::index>>{{2}, {0}})));
     CHECK_THROWS(C::LinearProblemContext(space, 5, {{1}, {2}}, {1}, C::DiagonalStorage::Block));
     CHECK_THROWS(C::LinearProblemContext(space, 5, {{1, 1}, {0}}, {}, C::DiagonalStorage::Block));
     CHECK_THROWS(C::LinearProblemContext(space, 5, {{0}, {0}}, {}, C::DiagonalStorage::Block));
@@ -342,6 +363,52 @@ TEST_CASE("Cauchy native ILU copies only local coefficients and validates orderi
     zero.FactorizeILU();
     CHECK_NOTHROW(zero.ApplyILU(rhs, forward, output));
 }
+TEST_CASE("RCM factor ordering preserves local parts and solves the same dense system")
+{
+    auto communication = std::make_shared<R::CommunicationContext>(MPI_COMM_WORLD);
+    const A::DofSpace space(communication, 4, 0);
+    // A scrambled path 0--2--1--3 has one edge spanning each part.
+    const std::vector<std::vector<DNDS::index>> columns{{2}, {2, 3}, {0, 1}, {1}};
+    for (bool parts : {false, true})
+        for (bool coreFirst : {false, true})
+        {
+            C::LinearProblemContext problem(space, 5, columns, {0, 1, 2, 3}, C::DiagonalStorage::Block);
+            FillMatrix(problem);
+            Field rhs(space, 5), forward(space, 5), result(space, 5);
+            Eigen::MatrixXd matrix = Eigen::MatrixXd::Zero(20, 20);
+            Eigen::VectorXd b(20);
+            {
+                auto write = rhs.Owned().Write();
+                for (DNDS::index iCell = 0; iCell < 4; ++iCell)
+                {
+                    matrix.block<5, 5>(5 * iCell, 5 * iCell) = Diagonal(iCell, C::DiagonalStorage::Block);
+                    for (auto other : columns[iCell])
+                        if (!parts || iCell / 2 == other / 2)
+                            matrix.block<5, 5>(5 * iCell, 5 * other) = OffDiagonal(iCell, other);
+                    for (int j = 0; j < 5; ++j)
+                        write.View()(iCell, j) = b[5 * iCell + j] = RightHandSide(0, iCell)[j];
+                }
+            }
+            problem.PrepareILUStructure(-1, coreFirst, parts ? std::vector<DNDS::index>{0, 2, 4} : std::vector<DNDS::index>{}, "rcm");
+            problem.FactorizeILU();
+            problem.ApplyILU(rhs, forward, result);
+            const auto expected = matrix.fullPivLu().solve(b).eval();
+            const auto read = result.Owned().Read();
+            for (DNDS::index iCell = 0; iCell < 4; ++iCell)
+                for (int j = 0; j < 5; ++j)
+                    CHECK(read.View()(iCell, j) == doctest::Approx(expected[5 * iCell + j]).epsilon(1e-12));
+            // For incomplete factors all RHS rows are ready. The returned
+            // order exposes the factor scan, independently of dense equality.
+            problem.PrepareILUStructure(0, coreFirst, {}, "rcm");
+            // Peripheral-root search from0 reaches3. CM from3 visits
+            // 3,1,2,0; reversing gives0,2,1,3, distinct from natural0,1,2,3.
+            CHECK(problem.ILUForwardCore() == std::vector<DNDS::index>{0, 2, 1, 3});
+        }
+    const A::DofSpace empty(communication, 0, 0);
+    C::LinearProblemContext zero(empty, 5, {}, {}, C::DiagonalStorage::Block);
+    CHECK_NOTHROW(zero.PrepareILUStructure(0, true, {}, "rcm"));
+    CHECK_THROWS(zero.PrepareILUStructure(0, true, {}, "unknown"));
+}
 TEST_CASE("Linear diagonal preparation handles general component counts and reports guarded inverse fallback")
 {
     const A::DofSpace space(1);
@@ -385,6 +452,49 @@ TEST_CASE("Linear diagonal preparation handles general component counts and repo
     }
     CHECK_THROWS(problem.InvertDiagonal());
     CHECK_THROWS(problem.ApplySGS(rhs, input, forward, output));
+}
+TEST_CASE("Common block inverse widths preserve a dense solve and guarded fallback")
+{
+    const A::DofSpace space(1);
+    for (const DNDS::index width : {5, 6, 7, 8})
+    {
+        C::LinearProblemContext problem(space, width, {{}}, {0}, C::DiagonalStorage::Block);
+        Field rhs(space, width), forward(space, width), output(space, width);
+        Eigen::MatrixXd matrix(width, width);
+        Eigen::VectorXd b(width);
+        for (DNDS::index j = 0; j < width; ++j)
+        {
+            b[j] = 1 + .1 * j;
+            for (DNDS::index i = 0; i < width; ++i)
+                matrix(i, j) = i == j ? 3 + .2 * i : .01 * (i + 1) / (j + 1);
+        }
+        {
+            auto diagonal = problem.Diagonal().Write(), source = rhs.Owned().Write();
+            for (DNDS::index j = 0; j < width * width; ++j)
+                diagonal.View()(0, j) = matrix.data()[j];
+            for (DNDS::index j = 0; j < width; ++j)
+                source.View()(0, j) = b[j];
+        }
+        problem.InvertDiagonal();
+        CHECK(problem.LastInverseFallbacks() == 0);
+        auto sweep = problem.BeginSGSZero(rhs, forward, output);
+        sweep.Lower();
+        sweep.Upper();
+        sweep.Finish();
+        const Eigen::VectorXd expected = matrix.fullPivLu().solve(b);
+        {
+            const auto read = output.Owned().Read();
+            for (DNDS::index j = 0; j < width; ++j)
+                CHECK(read.View()(0, j) == doctest::Approx(expected[j]).epsilon(1e-12));
+        }
+        {
+            auto diagonal = problem.Diagonal().Write();
+            for (DNDS::index j = 0; j < width * width; ++j)
+                diagonal.View()(0, j) = 1;
+        }
+        problem.InvertDiagonal();
+        CHECK(problem.LastInverseFallbacks() == 1);
+    }
 }
 TEST_CASE("Staged SGS retains numeric allocations and row metadata after original owners expire")
 {

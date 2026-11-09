@@ -96,7 +96,7 @@ TEST_CASE("Frozen trace rounds give identical shared and disjoint rank numerical
             CHECK_THROWS(split.Context(domain));
     const auto before = second.Traces();
     CHECK_THROWS(second.Advance(.125, [&](I, const auto &, const auto &) -> double
-                                { if (rank == 0) throw std::runtime_error("rank-local failure"); return 7; }));
+                                { return rank == 0 ? std::numeric_limits<double>::quiet_NaN() : 7; }));
     CHECK(second.Traces() == before);
     CHECK(second.Epoch().acceptedStep == 5);
     CHECK_THROWS(second.Advance(rank == 0 ? -1 : .125, [](I, const auto &, const auto &)

@@ -1,3 +1,4 @@
+#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Core/Simulation.hpp"
 #include "Cauchy/Interface/InterfaceCoupling.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
@@ -10,26 +11,14 @@ namespace DNDS::Cauchy
 {
     namespace
     {
-        // A failure in one domain cannot skip a later communicator shared with
-        // another local domain. Finish the agreed domain order before control
-        // ranks report an error. Each action coordinates its own domain errors.
+        // Actions may perform collective I/O. Do not catch and continue to a
+        // control agreement: peers may not have left the failing domain action.
         template <class Action>
         void LocalDomains(const DomainPlacement &placement, Action &&action)
         {
-            std::exception_ptr failure;
             for (index iDomain = 0; iDomain < placement.DomainNumber(); ++iDomain)
                 if (placement.DomainRank(iDomain) >= 0)
-                    try
-                    {
-                        action(iDomain);
-                    }
-                    catch (...)
-                    {
-                        if (!failure)
-                            failure = std::current_exception();
-                    }
-            MPI::LocalStage(MPIInfo(placement.Control()), [&]
-                            { if (failure) std::rethrow_exception(failure); }, "Cauchy I/O failed in another domain");
+                    action(iDomain);
         }
         void AgreePath(const MPIInfo &mpi, const std::string &path)
         {
@@ -164,49 +153,56 @@ namespace DNDS::Cauchy
             MPI::LocalStage(MPIInfo(_placement.Context(iDomain)->Communicator()), [&]
                             { DNDS_check_throw_info(checkpoints[iDomain]->time == time && checkpoints[iDomain]->epoch.acceptedStep == uint64_t(step),
                                                     "domain checkpoint clock differs from its simulation manifest"); }); });
+        if (_interfaces)
+        {
+            // Prepare separate donor coefficients and complete their halos.
+            // The accepted workspace/guess remains untouched until commit.
+            std::vector<std::optional<CFV::FVField>> coefficients;
+            std::vector<InterfaceDomainInput> ports;
+            MPI::LocalStage(control, [&]
+                            { coefficients.resize(_domains.size()); ports.resize(_domains.size()); });
+            LocalDomains(_placement, [&](index iDomain)
+                         {
+                auto &domain = GetDomain(iDomain);
+                const auto &candidate = *checkpoints[iDomain];
+                const MPIInfo mpi(_placement.Context(iDomain)->Communicator());
+                MPI::LocalStage(mpi, [&]
+                                {
+                    DNDS_check_throw_info(bool(candidate.guess), "interface checkpoint requires a flow5 reconstruction");
+                    coefficients[iDomain].emplace(domain._fv.Metrics().BuildField(candidate.guess->Layout()));
+                    const auto read = candidate.guess->Read(); auto write = coefficients[iDomain]->Owned().Write();
+                    const auto input = read.View<Runtime::UniformTableRows>(); const auto output = write.View<Runtime::UniformTableRows>();
+                    for (index iCell = 0; iCell < output.RowCount(); ++iCell)
+                        for (index j = 0; j < output.RowSize(iCell); ++j) output(iCell, j) = input(iCell, j); });
+                auto &means = domain._trial.CoupledField();
+                domain._fv.BindHalo(means).Begin().Wait();
+                domain._fv.BindHalo(*coefficients[iDomain]).Begin().Wait();
+                ports[iDomain] = {&domain._fv, &means, &*coefficients[iDomain]}; });
+            StateEpoch epoch;
+            epoch.acceptedStep = uint64_t(step);
+            _interfaces->Refresh(ports, time, epoch);
+            LocalDomains(_placement, [&](index iDomain)
+                         { if (const auto *input = _interfaces->Inputs(iDomain)) GetDomain(iDomain).BindInterfaceInputs(*input); });
+        }
         try
         {
-            if (_interfaces)
-            {
-                // Prepare separate donor coefficients and complete their halos.
-                // The accepted workspace/guess remains untouched until commit.
-                std::vector<std::optional<CFV::FVField>> coefficients;
-                std::vector<InterfaceDomainInput> ports;
-                MPI::LocalStage(control, [&]
-                                { coefficients.resize(_domains.size()); ports.resize(_domains.size()); });
-                LocalDomains(_placement, [&](index iDomain)
-                             {
-                    auto &domain = GetDomain(iDomain);
-                    const auto &candidate = *checkpoints[iDomain];
-                    const MPIInfo mpi(_placement.Context(iDomain)->Communicator());
-                    MPI::LocalStage(mpi, [&]
-                                    {
-                        DNDS_check_throw_info(bool(candidate.guess), "interface checkpoint requires a flow5 reconstruction");
-                        coefficients[iDomain].emplace(domain._fv.Metrics().BuildField(candidate.guess->Layout()));
-                        const auto read = candidate.guess->Read(); auto write = coefficients[iDomain]->Owned().Write();
-                        const auto input = read.View<Runtime::UniformTableRows>(); const auto output = write.View<Runtime::UniformTableRows>();
-                        for (index iCell = 0; iCell < output.RowCount(); ++iCell)
-                            for (index j = 0; j < output.RowSize(iCell); ++j) output(iCell, j) = input(iCell, j); });
-                    auto &means = domain._trial.CoupledField();
-                    domain._fv.Metrics().BindHalo(means).Begin().Wait();
-                    domain._fv.Metrics().BindHalo(*coefficients[iDomain]).Begin().Wait();
-                    ports[iDomain] = {&domain._fv, &means, &*coefficients[iDomain]}; });
-                StateEpoch epoch;
-                epoch.acceptedStep = uint64_t(step);
-                _interfaces->Refresh(ports, time, epoch);
-                LocalDomains(_placement, [&](index iDomain)
-                             { if (const auto *input = _interfaces->Inputs(iDomain)) GetDomain(iDomain).BindInterfaceInputs(*input); });
-            }
-            LocalDomains(_placement, [&](index iDomain)
-                         { GetDomain(iDomain).ReserveCheckpointRead(*checkpoints[iDomain]); });
+            // All reservation work is local, including reconstruction writers.
+            // This one control preflight prevents any domain from publishing if
+            // another domain cannot reserve, without catching collective I/O.
+            MPI::LocalStage(control, [&]
+                            { LocalDomains(_placement, [&](index iDomain)
+                                           { GetDomain(iDomain).ReserveCheckpointRead(*checkpoints[iDomain], false); }); });
         }
         catch (...)
         {
+            MPI::AbortIfSolverFailure("Cauchy checkpoint reservation failed");
             // Reserved writers cancel without changing their generations.
             checkpoints.clear();
             if (_interfaces)
             {
                 _interfaces->Discard();
+                // Already validated accepted-packet aliases. Binding is local
+                // and does not perform I/O, search, transfer or MPI agreement.
                 LocalDomains(_placement, [&](index iDomain)
                              { if (const auto *input = _interfaces->Inputs(iDomain)) GetDomain(iDomain).BindInterfaceInputs(*input); });
             }

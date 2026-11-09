@@ -31,6 +31,14 @@ For `F_f(U_f)=b_f`, the coarse equation is
 The incoming coarse reference remains unchanged throughout its recursive child
 cycle. State and residual restriction need not be the same operator.
 
+`FASCycleSettings::preSmoothByLevel` and `postSmoothByLevel` optionally supply
+one nonnegative count per noncoarsest level, indexed from the finest. Empty
+vectors retain the scalar pre/post counts. The bottom uses `coarseSmooth`.
+Each level already owns its independent smoother callback; these counts change
+only how often it is called, without introducing a level convergence loop or
+changing its linear solver/physics. Cauchy resolves its named coarse-level
+solver controls into those callbacks separately.
+
 An optional `cancelIdentityLinearTerm` edge is reserved for a caller-proven
 identity state restriction and the same removable linear operator on both
 levels. Both levels must supply `applyForIdentityTau`; generic default edges

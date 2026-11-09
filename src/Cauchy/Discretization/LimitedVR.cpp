@@ -78,8 +78,8 @@ namespace DNDS::Cauchy
           branches(data.metrics.BuildField(3)), seeds(data.metrics.BuildField(3)), temporary(data.metrics.BuildField(3)),
           previous(R::RowLayout::Dense(data.metrics.NumCell(), 2)), base(R::RowLayout::Dense(data.metrics.NumCell(), 2)),
           alpha(R::RowLayout::Dense(data.metrics.NumCell(), 1)), sampledFaces(R::RowLayout::Dense(data.limitedVRGeometry ? 2 * index(data.limitedVRGeometry->faces.size()) : 0, prototype.components)),
-          sampledPP(R::RowLayout::Dense(data.positivitySamples ? data.positivitySamples->Size() : 0, prototype.components)), targetHalo(data.metrics.BindHalo(target.coefficients)),
-          branchHalo(data.metrics.BindHalo(branches)), seedHalo(data.metrics.BindHalo(seeds))
+          sampledPP(R::RowLayout::Dense(data.positivitySamples ? data.positivitySamples->Size() : 0, prototype.components)), targetHalo(data.BindHalo(target.coefficients)),
+          branchHalo(data.BindHalo(branches)), seedHalo(data.BindHalo(seeds))
     {
         // Current physical adapter dispatches only compressible flow5. Generic
         // CFV penalties/targets and scalar stencils do not assume this width.

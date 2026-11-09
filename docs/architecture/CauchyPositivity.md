@@ -43,14 +43,69 @@ or nonfinite repair is an explicit failure, not a successful PP update.
 
 ## Operations and their scopes
 
+RHS FPP means **RHS forecasted positivity preserving**. Its factor can be
+applied to either the implicit solve defect or the pseudo-step; it is not a
+selection of the spatial RHS algorithm. Current configuration separates the
+three operators:
+
+```json
+{
+  "time": {
+    "positivity": {"enabled": false, "relax": 0.8, "scale": 1, "increaseLimit": 2}
+  },
+  "defaults": {
+    "implicit": {
+      "positivity": {
+        "rhsFPPMode": "rhs", "rhsFPPReduction": "cell",
+        "rhsFPPScale": 1, "rhsFPPRelax": 0.5,
+        "incrementRelax": 1, "compressionPower": 1
+      },
+      "multigrid": {"coarseRHSFPP": false}
+    },
+    "numerics": {
+      "positivity": true, "positivityReconstruction": "Euler",
+      "positivityCompressToMean": true, "positivityVolumePoints": true,
+      "positivityBetaPower": 1, "positivityBetaCutoff": 0.001
+    }
+  }
+}
+```
+
+Domain settings can override the `defaults` sections. Physical dt PP has its
+own enable flag; `numerics.positivity` currently gates reconstruction and
+implicit thermal PP. `rhsFPPMode` selects none, complete-defect scaling (`rhs`)
+or scalar pseudo-step compression (`dTau`). `rhsFPPScale` multiplies only the
+trial increment; `rhsFPPRelax` sets its Euler relaxed density/energy threshold.
+`incrementRelax` separately controls the post-linear correction.
+
+`rhsFPPReduction` preserves Euler's factor sharing. For original cell factors
+`[1,.8,.3]`, `cell` applies `[1,.8,.3]`; `minimumLimited` applies `[1,.3,.3]`;
+`minimumAll` applies `[.3,.3,.3]`. The minimum spans the domain communicator.
+The trigger count records original limited cells. Even cell mode retains the
+required global diagnostic statistics; disabled RHS FPP performs neither its
+factor calculation nor these reductions. This scope does not select a new
+spatial flux blend or a global increment-repair method.
+
+The former development keys `rhsMode`, `rhsReduction`, `rhsScale`, `rhsRelax`
+and `coarseRHSPositivity` are renamed to the RHS-FPP keys above. Unknown config
+keys fail explicitly. Archived run configs retain their original source/schema
+provenance; their immutable records are not rewritten.
+
 | Operation | Factor calculation | Application |
 | --- | --- | --- |
 | Reconstruction beta | Density, sensible energy and temperature at the configured cell/face/source quadrature points | Flow5 and species coefficient difference from the selected reference polynomial; not RANS |
-| Implicit RHS compression | Thermal trial `U + rhsScale*dTau*defect/V` | Entire solve defect, as Euler's `cres *= alpha` |
+| Implicit RHS compression | Thermal trial `U + rhsFPPScale*dTau*defect/V` | Entire solve defect, as Euler's `cres *= alpha` |
 | Implicit dTau compression | Same thermal trial | Replace scalar dTau by `max(alpha,smallReal)*dTau`; no second component-wise RHS scaling |
 | Implicit increment compression | Thermal trial with the selected nonlinear correction | Entire correction, including RANS and species, before final repair |
 | Implicit final increment repair | Density and thermal bound of the proposed update | Entire correction, then separate RANS repair, addition, and species mean repair |
 | Physical dt restriction | Thermal trial with `dt*scale*R/V` | A scalar global timestep restriction; no independent RANS/species positivity scale |
+
+Coarse pMG defaults follow Euler's omission of the RHS/dTau limiter:
+`implicit.multigrid.coarseRHSFPP=false` forces coarse rhsFPPMode to none
+after level overrides. True enables the inherited/per-level RHS/dTau policy.
+This switch does not disable finest RHS/dTau limiting, reconstruction beta or
+final increment compression/repair. It changes numerical policy, independently
+of optional collective diagnostics and MPI launch validation.
 
 Thermal factors depend on species through energy, even though there is no
 additional minimum over individual species or RANS positivity ratios. A scalar
@@ -59,6 +114,15 @@ also accepts the logical extended state; it uses the same mixture reference
 energies and `compress=1`, with no independent species/RANS positivity minimum.
 This is a timestep proposal, not a proof that every explicit stage is positive.
 Extended explicit flux blending remains unavailable.
+
+Equation reconstruction PP uses `CFV::PolynomialSamplingPlan::EvaluateValues`
+for its value-only samples. This retains the same geometry/shape validation and
+read/write leases as generic `Evaluate(..., 0)`. Cached owned AoS fields with
+5/6/7 components and 2D P1/P3 mode counts use bounded CPU kernels; every other
+layout, width, ghost or cache configuration retains generic evaluation. Source
+derivative sampling stays in the original evaluator translation unit, avoiding
+changes to its generated loop when value kernels are specialized. This changes
+execution only, not positivity points, policy or reconstruction arithmetic.
 
 ## Explicit stage acceptance and retry
 

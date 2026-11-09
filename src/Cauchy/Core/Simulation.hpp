@@ -10,6 +10,9 @@ namespace DNDS::Cauchy
     /// Local domain phases run serially on shared ranks and concurrently on
     /// disjoint communicators. Physical stages share one clock and consume a
     /// frozen interface round. Caller serializes stepping and external mutation.
+    /// Unexpected exceptions must escape to a fail-fast MPI application boundary;
+    /// catching locally and entering MPI/finalization can strand other ranks.
+    /// A rejected StepResult certifies a collectively agreed numerical retry.
     class Simulation
     {
         SimulationConfig _config;
@@ -36,7 +39,7 @@ namespace DNDS::Cauchy
         /// domains. All accepted destinations are reserved before any domain
         /// publishes. Process failure recovery is unsupported. DITR currently
         /// retains its single-domain coupled-iteration driver.
-        void Advance(real dt);
+        [[nodiscard]] StepResult Advance(real dt);
         /// Parallel persistent-ID checkpoint on each domain communicator.
         /// A multi-domain HDF5 manifest references immutable child files and
         /// is published only after every domain write succeeds. Existing
