@@ -464,7 +464,7 @@ TEST_CASE("Domain timestep growth follows committed dt through prepare discard a
         C::Domain domain("step", mesh, settings, time);
         CHECK(domain.PreviousTimeStep() == 0);
         CHECK(domain.LimitPhysicalStep(.01).dt == .01);
-        domain.Advance(.001);
+        REQUIRE(domain.Advance(.001).accepted);
         const auto version = domain.Flow().Owned().Version();
         const auto limit = domain.LimitPhysicalStep(.1);
         CHECK(limit.dt == .002);
@@ -473,11 +473,11 @@ TEST_CASE("Domain timestep growth follows committed dt through prepare discard a
         CHECK(limit.growthLimited);
         CHECK(domain.Flow().Owned().Version() == version);
         CHECK(domain.Time() == .001);
-        domain.PrepareStep(.004);
+        REQUIRE(domain.PrepareStep(.004).accepted);
         domain.DiscardStep();
         CHECK(domain.PreviousTimeStep() == .001);
         CHECK(domain.LimitPhysicalStep(.1).dt == .002);
-        domain.PrepareStep(.003);
+        REQUIRE(domain.PrepareStep(.003).accepted);
         std::optional<R::Array<double>::ReadLease> read;
         if (mpi.rank == 0)
             read.emplace(domain.Flow().Owned().Read());

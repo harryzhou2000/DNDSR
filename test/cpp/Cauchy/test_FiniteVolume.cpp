@@ -4,6 +4,7 @@
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/Simulation.hpp"
 #include "Cauchy/Core/StepResult.hpp"
+#include "DNDS/Algebra/DofHalo.hpp"
 #include "../CFV/ReconstructionFixture.hpp"
 #include "../Geom/NativeMeshOverlapFixture.hpp"
 #include "CartesianFixture.hpp"
@@ -45,7 +46,7 @@ TEST_CASE("Default Cauchy CGNS loader propagates the configured preflight policy
         CHECK(domain.Discretization().Metrics().Communication()->ChecksCollectivePreflight() == checks);
         for (auto kind : {DNDS::Geom::EntityKind::Cell, DNDS::Geom::EntityKind::Node, DNDS::Geom::EntityKind::Face, DNDS::Geom::EntityKind::Bnd})
             CHECK(domain.Discretization().Mesh().Entities(kind).ChecksCollectivePreflight() == checks);
-        simulation.Advance(1e-4);
+        REQUIRE(simulation.Advance(1e-4).accepted);
         auto read = domain.Flow().Owned().Read();
         for (DNDS::index iCell = 0; iCell < domain.Discretization().Metrics().NumCell(); ++iCell)
             for (int j = 0; j < 5; ++j)
@@ -86,15 +87,30 @@ TEST_CASE("Cauchy collective switch reaches prepared halos without changing the 
                     write.View()(iCell, j) = values[j];
             }
         }
-        auto workspace = fv.BuildWorkspace(state);
-        R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
-        const auto stream = engine.CreateCPUStream();
-        reductions = 0;
         struct CountingScope
         {
             CountingScope() { countReductions = true; }
             ~CountingScope() { countReductions = false; }
         };
+        if (!checks)
+        {
+            const auto countBinding = [&](const auto &bind)
+            {
+                reductions = 0;
+                CountingScope count;
+                bind();
+                return reductions.load();
+            };
+            const auto ordinary = countBinding([&]
+                                               { (void)fv.Metrics().BindHalo(state); });
+            const auto tracked = countBinding([&]
+                                              { (void)fv.Metrics().BindTrackedHalo(state); });
+            CHECK(tracked == ordinary); // Same required protocols; no safety-only reduction.
+        }
+        auto workspace = fv.BuildWorkspace(state);
+        R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateCPUStream();
+        reductions = 0;
         {
             CountingScope count;
             fv.Evaluate(state, result, *workspace, engine, stream);
@@ -532,7 +548,7 @@ TEST_CASE("Cauchy SSPRK3 preserves periodic constants and rolls back rejected tr
     C::Domain domain("periodic", mesh, settings);
     const auto exact = domain.Equation().Gas().Conservative(settings.initialPrimitive);
     for (int i = 0; i < 3; ++i)
-        domain.Advance(.001);
+        REQUIRE(domain.Advance(.001).accepted);
     CHECK(domain.Time() == doctest::Approx(.003));
     CHECK(domain.Epoch().acceptedStep == 3);
     CHECK(domain.LastFaceFallbacks() == 0);
@@ -542,7 +558,7 @@ TEST_CASE("Cauchy SSPRK3 preserves periodic constants and rolls back rejected tr
             for (int j = 0; j < 5; ++j)
                 CHECK(read.View()(iCell, j) == doctest::Approx(exact[j]).epsilon(2e-13));
     }
-    domain.PrepareStep(.001);
+    REQUIRE(domain.PrepareStep(.001).accepted);
     std::optional<R::Array<double>::ReadLease> held;
     if (mpi.rank == 0)
         held.emplace(domain.Flow().Owned().Read());
@@ -620,7 +636,7 @@ TEST_CASE("Cauchy periodic transport SSPRK3 advances a smooth physical state and
         }
     }
     for (int step = 0; step < 10; ++step)
-        domain.Advance(.001);
+        REQUIRE(domain.Advance(.001).accepted);
     double error = 0, mass = 0;
     const auto read = domain.Flow().Owned().Read();
     for (DNDS::index iCell = 0; iCell < fv.NumCell(); ++iCell)
@@ -649,7 +665,7 @@ TEST_CASE("Every Cauchy Riemann selection is integrated into periodic SSPRK3")
         settings.numerics.cfv.maxOrder = 1;
         settings.initialPrimitive = {1.2, .4, -.2, .3, 1.1};
         C::Domain domain("flow", mesh, settings);
-        domain.Advance(.001);
+        REQUIRE(domain.Advance(.001).accepted);
         const auto exact = domain.Equation().Gas().Conservative(settings.initialPrimitive);
         const auto read = domain.Flow().Owned().Read();
         for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
@@ -678,7 +694,7 @@ TEST_CASE("Cauchy variational reconstruction with WBAP advances a nonconstant co
         }
     }
     for (int step = 0; step < 3; ++step)
-        domain.Advance(.001);
+        REQUIRE(domain.Advance(.001).accepted);
     double mass = 0;
     const auto read = domain.Flow().Owned().Read();
     for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
@@ -701,7 +717,7 @@ TEST_CASE("Cauchy physical execution includes ranks with empty owned cells")
     settings.numerics.cfv.maxOrder = 1;
     C::Domain domain("empty", mesh, settings);
     CHECK(domain.StableStep(.5) > 0);
-    domain.Advance(.001);
+    REQUIRE(domain.Advance(.001).accepted);
     CHECK(domain.Epoch().acceptedStep == 1);
     CHECK(domain.Time() == .001);
     CHECK(A::NormGlobal(domain.Residual()) < 1e-13);
@@ -732,7 +748,7 @@ TEST_CASE("Cauchy rejects inadmissible trial collectively and retries without ac
             for (int j = 0; j < 5; ++j)
                 CHECK(actual.View()(iCell, j) == saved.View()(iCell, j));
     }
-    domain.Advance(.0001);
+    REQUIRE(domain.Advance(.0001).accepted);
     CHECK(domain.Epoch().acceptedStep == 1);
     const auto &rhs = domain.Residual();
     std::optional<R::Array<double>::ReadLease> held;
@@ -772,14 +788,14 @@ TEST_CASE("Cauchy matching-partition restart preserves layouts continuation and 
         source.WriteCheckpoint(file, resolved, true);
         restored.ReadCheckpoint(file, resolved);
         CHECK(restored.Epoch().acceptedStep == 0);
-        source.Advance(.001);
+        REQUIRE(source.Advance(.001).accepted);
         source.WriteCheckpoint(file, resolved, true);
         CHECK_THROWS(restored.ReadCheckpoint(file, C::Json{{"test", "wrong"}}));
         CHECK(restored.Time() == 0);
         restored.ReadCheckpoint(file, resolved);
         CHECK(restored.Flow().Owned().Layout().Kind() == source.Flow().Owned().Layout().Kind());
-        source.Advance(.001);
-        restored.Advance(.001);
+        REQUIRE(source.Advance(.001).accepted);
+        REQUIRE(restored.Advance(.001).accepted);
         CHECK(restored.Time() == source.Time());
         CHECK(restored.Epoch().acceptedStep == source.Epoch().acceptedStep);
         {
@@ -788,7 +804,7 @@ TEST_CASE("Cauchy matching-partition restart preserves layouts continuation and 
                 for (int j = 0; j < 5; ++j)
                     CHECK(left.View()(iCell, j) == right.View()(iCell, j));
         }
-        restored.PrepareStep(.001);
+        REQUIRE(restored.PrepareStep(.001).accepted);
         restored.Residual();
         CHECK_THROWS(restored.CommitStep());
         const auto shifted = CauchyTest::PeriodicQuads(mpi, 4);
@@ -807,7 +823,7 @@ TEST_CASE("Cauchy real single-domain Simulation owns its accepted clock and rest
     const auto config = C::SimulationConfig::ResolveCollective({{"defaults", {{"numerics", {{"cfv", {{"maxOrder", 1}}}}}}}}, mpi.comm);
     C::Simulation simulation(config, mpi.comm, [](DNDS::index, const auto &, const auto &domainMPI)
                              { return CauchyTest::PeriodicQuads(domainMPI, 4); });
-    simulation.Advance(.001);
+    REQUIRE(simulation.Advance(.001).accepted);
     CHECK(simulation.Step() == 1);
     CHECK(simulation.Time() == simulation.GetDomain(0).Time());
     std::optional<R::Array<double>::ReadLease> held;
@@ -816,17 +832,17 @@ TEST_CASE("Cauchy real single-domain Simulation owns its accepted clock and rest
     CHECK_THROWS(simulation.Advance(.001));
     CHECK(simulation.Step() == 1);
     held.reset();
-    simulation.Advance(.001);
+    REQUIRE(simulation.Advance(.001).accepted);
     CHECK(simulation.Step() == 2);
     int pid = int(getpid());
     MPI_Bcast(&pid, 1, MPI_INT, 0, mpi.comm);
     const auto file = (std::filesystem::temp_directory_path() / ("cauchy-simulation-" + std::to_string(pid) + ".h5")).string();
     simulation.GetDomain(0).WriteCheckpoint(file, config.Root());
-    simulation.Advance(.001);
+    REQUIRE(simulation.Advance(.001).accepted);
     simulation.ReadCheckpoint(file);
     CHECK(simulation.Step() == 2);
     CHECK(simulation.Time() == .002);
-    simulation.Advance(.001);
+    REQUIRE(simulation.Advance(.001).accepted);
     CHECK(simulation.Step() == 3);
     CHECK(simulation.Time() == .003);
     if (mpi.rank == 0)
@@ -854,7 +870,7 @@ TEST_CASE("Cauchy P3 non-PP vortex cell-average evolution converges and conserve
         const auto initial = domain.Diagnostics(settings, {});
         CHECK(initial[10] < 1e-14);
         for (int step = 0; step < 4; ++step)
-            domain.Advance(.0025);
+            REQUIRE(domain.Advance(.0025).accepted);
         const auto final = domain.Diagnostics(settings, {});
         INFO("width=" << width << " error=" << final[10] << " update=" << final[9]);
         CHECK(domain.LastFaceFallbacks() == 0);
@@ -890,7 +906,7 @@ TEST_CASE("Cauchy P3 characteristic 3WBAP advances shock data with inline and wo
             }
         }
         const auto before = domain.Diagnostics(settings, {});
-        domain.Advance(1e-4);
+        REQUIRE(domain.Advance(1e-4).accepted);
         const auto after = domain.Diagnostics(settings, {});
         CHECK(after[2] > 0);
         CHECK(after[3] > 0);
@@ -914,16 +930,16 @@ TEST_CASE("Cauchy observation cadence leaves a fixed-sweep P3 trajectory unchang
     for (int step = 0; step < 3; ++step)
     {
         observed.Diagnostics(settings, {});
-        observed.Advance(.001);
-        control.Advance(.001);
+        REQUIRE(observed.Advance(.001).accepted);
+        REQUIRE(control.Advance(.001).accepted);
     }
     const auto accepted = observed.Diagnostics(settings, {});
-    observed.PrepareStep(.002);
+    REQUIRE(observed.PrepareStep(.002).accepted);
     CHECK(observed.Diagnostics(settings, {}) == accepted);
     observed.DiscardStep();
     CHECK(observed.Diagnostics(settings, {}) == accepted);
-    observed.Advance(.001);
-    control.Advance(.001);
+    REQUIRE(observed.Advance(.001).accepted);
+    REQUIRE(control.Advance(.001).accepted);
     auto a = observed.Flow().Owned().Read(), b = control.Flow().Owned().Read();
     for (DNDS::index iCell = 0; iCell < observed.Discretization().Metrics().NumCell(); ++iCell)
         for (int j = 0; j < 5; ++j)
@@ -994,7 +1010,7 @@ TEST_CASE("Cauchy P3 thermal PP preserves means and global conservation with for
     bool stageLimited = false;
     for (int step = 0; step < 5; ++step)
     {
-        domain.Advance(1e-4);
+        REQUIRE(domain.Advance(1e-4).accepted);
         const auto pp = domain.LastPositivity();
         limited |= pp[0] > 0 || pp[2] > 0;
         stageLimited |= pp[2] > 0;
@@ -1036,8 +1052,8 @@ TEST_CASE("Inactive Cauchy P3 thermal PP leaves the full numerical trajectory bi
             C::Domain protectedFlow("protected", mesh, settings);
             for (int step = 0; step < 3; ++step)
             {
-                reference.Advance(.001);
-                protectedFlow.Advance(.001);
+                REQUIRE(reference.Advance(.001).accepted);
+                REQUIRE(protectedFlow.Advance(.001).accepted);
                 const auto factors = protectedFlow.LastPositivity();
                 CHECK(factors[0] == 0);
                 CHECK(factors[1] == 1);
@@ -1076,14 +1092,14 @@ TEST_CASE("Cauchy P3 fixed-sweep restart preserves the polynomial warm start and
             settings.numerics.positivity = true;
             C::Domain uninterrupted("flow", mesh, settings), restored("flow", mesh, settings);
             for (int step = 0; step < 3; ++step)
-                uninterrupted.Advance(.001);
+                REQUIRE(uninterrupted.Advance(.001).accepted);
             const C::Json resolved{{"test", "p3-warm-start"}, {"layout", layout}, {"flux", flux}};
             uninterrupted.WriteCheckpoint(path, resolved, true);
             restored.ReadCheckpoint(path, resolved);
             for (int step = 0; step < 3; ++step)
             {
-                uninterrupted.Advance(.001);
-                restored.Advance(.001);
+                REQUIRE(uninterrupted.Advance(.001).accepted);
+                REQUIRE(restored.Advance(.001).accepted);
                 CHECK(uninterrupted.LastPositivity() == restored.LastPositivity());
                 auto expected = uninterrupted.Flow().Owned().Read(), actual = restored.Flow().Owned().Read();
                 for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
@@ -1129,7 +1145,7 @@ TEST_CASE("Cauchy thermal PP rejects invalid low-order stages collectively witho
             for (int j = 0; j < 5; ++j)
                 CHECK(actual.View()(iCell, j) == expected.View()(iCell, j));
     }
-    CHECK_NOTHROW(domain.Advance(1e-5));
+    REQUIRE(domain.Advance(1e-5).accepted);
     CHECK(domain.Time() == 1e-5);
     CHECK(domain.Epoch().acceptedStep == 1);
     CHECK(domain.Discretization().Admissible(domain.Flow()));
@@ -1547,7 +1563,7 @@ TEST_CASE("A checkpoint predating spatial Riemann options retains explicit manua
     const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
     C::Domain source("fluid", mesh, config.Domains()[0].settings), restored("fluid", mesh, config.Domains()[0].settings);
-    source.Advance(.001);
+    REQUIRE(source.Advance(.001).accepted);
     auto oldConfig = config.Root();
     oldConfig["domains"][0]["settings"]["numerics"]["riemann"].erase("useStencil");
     source.WriteCheckpoint(path, oldConfig);
@@ -1582,7 +1598,7 @@ TEST_CASE("Checkpoint PP policy preserves pre-Euler archives without silently ch
         C::Json input{{"defaults", {{"numerics", {{"positivity", positivity}, {"positivityReconstruction", "Segment"}}}}}};
         const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
         C::Domain source("fluid", mesh, config.Domains()[0].settings), restored("fluid", mesh, config.Domains()[0].settings);
-        source.Advance(.001);
+        REQUIRE(source.Advance(.001).accepted);
         auto oldConfig = config.Root();
         auto &oldNumerics = oldConfig["domains"][0]["settings"]["numerics"];
         for (const auto *name : {"positivityReconstruction", "positivityVolumePoints", "positivityCompressToMean", "positivityBetaPower"})

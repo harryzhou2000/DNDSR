@@ -107,11 +107,11 @@ TEST_CASE("Multi-domain BDF2 restart reserves every domain and redistributes by 
         const auto path = CheckpointPath(split ? "split-" : "shared-");
         C::Json input{{"domains", Domains(split)}, {"time", {{"method", "bdf2"}}}, {"defaults", {{"initialPrimitive", {1, .1, .2, .03, 1}}, {"initialProfile", {{"kind", "isentropicVortex"}, {"strength", .2}, {"period", 10}}}, {"numerics", {{"reconstruction", "variational"}, {"limiter", "none"}, {"reconstructionIterations", 4}, {"cfv", {{"maxOrder", 2}}}}}, {"implicit", {{"iterations", 30}, {"absoluteTolerance", 1e-12}}}}}};
         C::Simulation source(C::SimulationConfig::ResolveCollective(input, mpi.comm), mpi.comm, factory);
-        source.Advance(.001);
-        source.Advance(.002);
+        REQUIRE(source.Advance(.001).accepted);
+        REQUIRE(source.Advance(.002).accepted);
         const auto saved = TorusValues(source);
         source.WriteCheckpoint(path, true);
-        source.Advance(.0015);
+        REQUIRE(source.Advance(.0015).accepted);
         const auto continuation = TorusValues(source);
         std::array<uint64_t, 2> versions{};
         for (I iDomain = 0; iDomain < 2; ++iDomain)
@@ -131,7 +131,7 @@ TEST_CASE("Multi-domain BDF2 restart reserves every domain and redistributes by 
         CHECK(source.Step() == 2);
         CHECK(source.Time() == .003);
         CHECK(TorusValues(source) == saved);
-        source.Advance(.0015);
+        REQUIRE(source.Advance(.0015).accepted);
         CHECK(TorusValues(source) == continuation);
         // Republishing uses a new child generation. Reverse sharing and use
         // SoA/P3 to exercise actual redistribution and intentional cold VR.
@@ -144,7 +144,7 @@ TEST_CASE("Multi-domain BDF2 restart reserves every domain and redistributes by 
         CHECK(redistributed.Step() == source.Step());
         CHECK(redistributed.Time() == source.Time());
         CHECK(TorusValues(redistributed) == continuation);
-        CHECK_NOTHROW(redistributed.Advance(.0005));
+        REQUIRE(redistributed.Advance(.0005).accepted);
         RemoveCheckpoint(path);
     }
 }
@@ -168,11 +168,11 @@ TEST_CASE("Coordinated domains retain single-domain time equations and atomic pu
             }
         for (int step = 0; step < 2; ++step)
         {
-            simulation.Advance(.001);
+            REQUIRE(simulation.Advance(.001).accepted);
             for (I iDomain = 0; iDomain < 2; ++iDomain)
                 if (reference[iDomain])
                 {
-                    reference[iDomain]->Advance(.001);
+                    REQUIRE(reference[iDomain]->Advance(.001).accepted);
                     CHECK(Values(simulation.GetDomain(iDomain)) == Values(*reference[iDomain]));
                     CHECK(simulation.GetDomain(iDomain).Time() == simulation.Time());
                 }
@@ -193,11 +193,11 @@ TEST_CASE("Coordinated domains retain single-domain time equations and atomic pu
         for (I iDomain = 0; iDomain < 2; ++iDomain)
             if (simulation.Local(iDomain))
                 CHECK(Values(simulation.GetDomain(iDomain)) == before[iDomain]);
-        simulation.Advance(.001);
+        REQUIRE(simulation.Advance(.001).accepted);
         for (I iDomain = 0; iDomain < 2; ++iDomain)
             if (reference[iDomain])
             {
-                reference[iDomain]->Advance(.001);
+                REQUIRE(reference[iDomain]->Advance(.001).accepted);
                 CHECK(Values(simulation.GetDomain(iDomain)) == Values(*reference[iDomain]));
             }
     }
@@ -220,7 +220,7 @@ TEST_CASE("P3 flow5 crosses a posed disk interface with dense and sparse distrib
             C::Simulation sparse(sparseConfig, mpi.comm, factory);
             const auto initial = Integrals(sparse);
             for (int step = 0; step < 3; ++step)
-                sparse.Advance(.001);
+                REQUIRE(sparse.Advance(.001).accepted);
             const auto final = Integrals(sparse);
             const auto diagnostics = sparse.GetInterfaceDiagnostics();
             CHECK(diagnostics.queryPoints > 0);
@@ -248,7 +248,7 @@ TEST_CASE("P3 flow5 crosses a posed disk interface with dense and sparse distrib
                 connection["routing"] = "allGatherBoundary";
             C::Simulation dense(C::SimulationConfig::ResolveCollective(input, mpi.comm), mpi.comm, factory);
             for (int step = 0; step < 3; ++step)
-                dense.Advance(.001);
+                REQUIRE(dense.Advance(.001).accepted);
             for (I iDomain = 0; iDomain < 2; ++iDomain)
                 if (sparse.Local(iDomain))
                     CHECK(Values(sparse.GetDomain(iDomain)) == Values(dense.GetDomain(iDomain)));
@@ -276,12 +276,12 @@ TEST_CASE("P3 flow5 crosses a posed disk interface with dense and sparse distrib
                 // packets; diagnostics/CFL must not consume trial-time traces.
                 CHECK(sparse.Step() == 3);
                 CHECK(sparse.GetDomain(0).StableStep(.2) > 0);
-                sparse.Advance(.001);
+                REQUIRE(sparse.Advance(.001).accepted);
                 const std::array<std::vector<double>, 2> continuation{Values(sparse.GetDomain(0)), Values(sparse.GetDomain(1))};
                 sparse.ReadCheckpoint(path);
                 CHECK(sparse.Step() == 3);
                 CHECK(sparse.GetDomain(0).StableStep(.2) > 0);
-                sparse.Advance(.001);
+                REQUIRE(sparse.Advance(.001).accepted);
                 for (I iDomain = 0; iDomain < 2; ++iDomain)
                     CHECK(Values(sparse.GetDomain(iDomain)) == continuation[iDomain]);
                 RemoveCheckpoint(path);

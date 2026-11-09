@@ -46,13 +46,13 @@ TEST_CASE("Production DITR controller uses common limits unless an override is s
     C::TimeSettings time;
     time.method = "ditr";
     C::Domain inherited("inherited", mesh, settings, time);
-    inherited.Advance(.01);
+    REQUIRE(inherited.Advance(.01).accepted);
     REQUIRE(inherited.LastImplicitStages().size() == 1);
     CHECK(inherited.LastImplicitStages()[0].converged);
     CHECK(inherited.LastImplicitStages()[0].iterations == 3);
     time.ditr.iterations = time.ditr.minIterations = 1;
     C::Domain overridden("overridden", mesh, settings, time);
-    overridden.Advance(.01);
+    REQUIRE(overridden.Advance(.01).accepted);
     REQUIRE(overridden.LastImplicitStages().size() == 1);
     CHECK(overridden.LastImplicitStages()[0].converged);
     CHECK(overridden.LastImplicitStages()[0].iterations == 1);
@@ -71,8 +71,8 @@ TEST_CASE("Native physical implicit methods preserve uniform periodic flow and t
         time.method = method;
         C::Domain domain("uniform", mesh, settings, time);
         const auto initial = Integral(domain);
-        domain.Advance(.01);
-        domain.Advance(.02);
+        REQUIRE(domain.Advance(.01).accepted);
+        REQUIRE(domain.Advance(.02).accepted);
         CHECK(domain.Time() == doctest::Approx(.03));
         CHECK(domain.Epoch().acceptedStep == 2);
         for (const auto &report : domain.LastImplicitStages())
@@ -115,12 +115,12 @@ TEST_CASE("P3 implicit periodic transport conserves flow and discard restores th
             DensityWave(retried);
             DensityWave(direct);
             const auto initial = Integral(retried);
-            retried.PrepareStep(.005);
+            REQUIRE(retried.PrepareStep(.005).accepted);
             retried.DiscardStep();
             CHECK(retried.Time() == 0);
             CHECK(retried.Epoch().acceptedStep == 0);
-            retried.Advance(.005);
-            direct.Advance(.005);
+            REQUIRE(retried.Advance(.005).accepted);
+            REQUIRE(direct.Advance(.005).accepted);
             CHECK(retried.Time() == .005);
             CHECK(retried.LastFaceFallbacks() == 0);
             {
@@ -166,7 +166,7 @@ TEST_CASE("Steady BDF1 infinite-dt mode removes a nonconstant residual without a
         DensityWave(domain);
         const auto before = domain.Diagnostics(config.Domains()[0].settings, {});
         REQUIRE(before[4] > 1e-3);
-        simulation.Advance(.01); // Irrelevant finite placeholder in steady mode.
+        REQUIRE(simulation.Advance(.01).accepted); // Irrelevant finite placeholder in steady mode.
         CHECK(domain.Steady());
         CHECK(domain.Time() == 0);
         CHECK(simulation.Time() == 0);
@@ -207,7 +207,7 @@ TEST_CASE("Capped steady stages advance by default and reject only with explicit
             if (reject)
                 CHECK_FALSE(domain.Advance(.01).accepted);
             else
-                CHECK_NOTHROW(domain.Advance(.01));
+                REQUIRE(domain.Advance(.01).accepted);
             CHECK(domain.Time() == 0);
             CHECK(domain.Epoch().acceptedStep == (reject ? 0 : 1));
             REQUIRE(domain.LastImplicitStages().size() == 1);
@@ -261,7 +261,7 @@ TEST_CASE("Strict implicit acceptance requires settled VR in addition to a loose
             }
             else
             {
-                domain.Advance(.01);
+                REQUIRE(domain.Advance(.01).accepted);
                 CHECK(domain.Epoch().acceptedStep == 1);
             }
             CHECK(domain.Time() == 0);
@@ -358,7 +358,7 @@ TEST_CASE("Rotating physical domains retain a uniform inertial flow with explici
         C::Domain domain("rotating", mesh, settings, time);
         const auto world = domain.Equation().Gas().Conservative(settings.initialPrimitive);
         for (int step = 0; step < 4; ++step)
-            domain.Advance(.001);
+            REQUIRE(domain.Advance(.001).accepted);
         const auto frame = domain.Discretization().Motion().At(domain.Time());
         const auto exact = frame.LocalState(world);
         const auto read = domain.Flow().Owned().Read();

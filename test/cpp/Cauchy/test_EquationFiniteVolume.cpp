@@ -877,7 +877,7 @@ TEST_CASE("Tagged mixture state initializes distributed Domain and prescribed bo
                 offset += I(block.components.size());
             }
         }
-        domain.Advance(1e-5);
+        REQUIRE(domain.Advance(1e-5).accepted);
         Compare(domain.Dofs(), before, 2e-12);
     }
     C::BoundarySystem boundary(normalized.settings.boundaries, mixture.equation);
@@ -994,7 +994,7 @@ TEST_CASE("Explicit mixture rejects inadmissible raw flow or species and retries
                     output(iCell, j) = input(iCell, j);
         }
     }
-    direct.Advance(dt);
+    REQUIRE(direct.Advance(dt).accepted);
     Compare(domain.Dofs(), direct.GetDomain(0).Dofs(), 0);
     auto oracle = original.Clone();
     auto rhs = C::EquationDofOperations::NewVector(oracle);
@@ -1068,7 +1068,7 @@ TEST_CASE("Configured mixture Domains advance every block through production tim
             const auto densityConfig = C::SimulationConfig::ResolveCollective(densityInput, mpi.comm);
             C::Domain densityOnly("density-only", mesh, densityConfig.Domains()[0].settings, densityConfig.Time());
             const auto unchanged = densityOnly.Dofs().Clone();
-            densityOnly.Advance(totalTime / steps);
+            REQUIRE(densityOnly.Advance(totalTime / steps).accepted);
             CHECK(densityOnly.LastCoupledIterations() == 1);
             CHECK(densityOnly.LastCoupledTargetRatio() <= 1);
             REQUIRE(densityOnly.LastImplicitStages().size() == 1);
@@ -1102,7 +1102,7 @@ TEST_CASE("Configured mixture Domains advance every block through production tim
         int firstStep = 0;
         if (scenario == 1)
         {
-            domain.PrepareStep(totalTime / steps);
+            REQUIRE(domain.PrepareStep(totalTime / steps).accepted);
             const C::EquationDofOperations::Binding before(domain.Dofs());
             {
                 const auto location = domain.Dofs().LocateBlock("species");
@@ -1116,7 +1116,7 @@ TEST_CASE("Configured mixture Domains advance every block through production tim
             firstStep = 1;
         }
         for (int step = firstStep; step < steps; ++step)
-            domain.Advance(totalTime / steps);
+            REQUIRE(domain.Advance(totalTime / steps).accepted);
         CHECK(domain.Epoch().acceptedStep == uint64_t(steps));
         CHECK(domain.Time() == doctest::Approx(totalTime).epsilon(2e-15));
         if (scenario)
@@ -1168,7 +1168,7 @@ TEST_CASE("Configured mixture Domains advance every block through production tim
     const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
     C::Simulation simulation(config, mpi.comm, [&](I, const auto &, const auto &)
                              { return mesh; });
-    simulation.Advance(totalTime);
+    REQUIRE(simulation.Advance(totalTime).accepted);
     for (I iDomain = 0; iDomain < 2; ++iDomain)
     {
         const auto &domain = simulation.GetDomain(iDomain);

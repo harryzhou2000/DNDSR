@@ -6,6 +6,8 @@ Status: **source integrated; acceptance in progress**. Source candidate
 `b22e69e43657f2fe7d1e4f1aa054782d2c8f7cc7`; common base `aec8d0e4`.
 Implementation lives in the isolated `codex/cauchy-audit-integration` worktree.
 The original checkouts and historical experiment outputs remain untouched.
+See the [second source audit](plan57_source_audit.md) for the direct comparison
+against the optimized parent and the prior audit plans.
 
 ## Semantic integration decisions
 

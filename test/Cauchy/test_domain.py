@@ -62,7 +62,7 @@ def test_configured_rans_fields_wall_setup_implicit_restart_and_output(tmp_path,
     residual = domain.residual_fields()
     assert set(residual) == set(fields)
     assert all(np.all(np.isfinite(array.numpy())) for array in residual.values())
-    domain.advance(1e-6)
+    assert domain.advance(1e-6).accepted
     for report in domain.implicit_stages:
         assert len(report.residual) == 5 + len(initial)
         assert report.converged, (report.iterations, report.residual_target_ratio,
@@ -76,7 +76,7 @@ def test_configured_rans_fields_wall_setup_implicit_restart_and_output(tmp_path,
     saved = {name: array.numpy().copy() for name, array in fields.items()}
     path = MPI.COMM_WORLD.bcast(str(tmp_path / "sa.h5") if MPI.COMM_WORLD.rank == 0 else None, root=0)
     domain.write_checkpoint(path, json.dumps(config))
-    domain.advance(1e-6)
+    assert domain.advance(1e-6).accepted
     domain.read_checkpoint(path, json.dumps(config))
     for name, array in fields.items():
         np.testing.assert_array_equal(array.numpy(), saved[name])
@@ -159,7 +159,7 @@ def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_p
     assert domain.limit_physical_step(1e-6).dt == 1e-6
     np.testing.assert_array_equal(fields["flow"].numpy(), before_flow)
     np.testing.assert_array_equal(fields["species"].numpy(), before_species)
-    domain.advance(1e-6)
+    assert domain.advance(1e-6).accepted
     np.testing.assert_allclose(fields["flow"].numpy(), before_flow, rtol=1e-11, atol=1e-12)
     local_change = np.max(np.abs(fields["species"].numpy() - before_species), initial=0.)
     assert MPI.COMM_WORLD.allreduce(local_change, op=MPI.MAX) > 1e-10
@@ -181,7 +181,7 @@ def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_p
     saved = {name: array.numpy().copy() for name, array in fields.items()}
     path = MPI.COMM_WORLD.bcast(str(tmp_path / "mixture.h5") if MPI.COMM_WORLD.rank == 0 else None, root=0)
     domain.write_checkpoint(path, json.dumps(config))
-    domain.advance(1e-6)
+    assert domain.advance(1e-6).accepted
     domain.read_checkpoint(path, json.dumps(config))
     assert domain.time == 1e-6 and domain.step == 1
     for name, array in fields.items():
@@ -203,17 +203,17 @@ def test_configured_mixture_fields_implicit_step_and_native_worker_refresh(tmp_p
         split_fields = split.fields
         initial_split_flow = split_fields["flow"].numpy()
         initial_split_species = split_fields["species"].numpy()
-        split.advance(1e-6)
+        assert split.advance(1e-6).accepted
         np.testing.assert_allclose(split_fields["flow"].numpy(), initial_split_flow, rtol=1e-11, atol=1e-12)
         change = np.max(np.abs(split_fields["species"].numpy() - initial_split_species), initial=0.)
         assert MPI.COMM_WORLD.allreduce(change, op=MPI.MAX) > 1e-10
         assert all(report.converged for report in split.implicit_stages)
         split_path = path + ".strang"
         split.write_checkpoint(split_path, json.dumps(split_config))
-        split.advance(1e-6)
+        assert split.advance(1e-6).accepted
         expected = {name: array.numpy() for name, array in split_fields.items()}
         split.read_checkpoint(split_path, json.dumps(split_config))
-        split.advance(1e-6)
+        assert split.advance(1e-6).accepted
         for name, array in split_fields.items():
             np.testing.assert_array_equal(array.numpy(), expected[name])
 
@@ -261,8 +261,8 @@ def test_tagged_physical_inputs_match_code_unit_frontend():
     physical, _ = build_domain(layout="soa", workers=2, tagged=True)
     code, _ = build_domain(layout="soa", workers=2)
     np.testing.assert_allclose(physical.flow.numpy(), code.flow.numpy(), rtol=2e-14, atol=2e-14)
-    physical.advance(.001)
-    code.advance(.001)
+    assert physical.advance(.001).accepted
+    assert code.advance(.001).accepted
     np.testing.assert_allclose(physical.flow.numpy(), code.flow.numpy(), rtol=2e-14, atol=2e-14)
 
 
@@ -303,8 +303,8 @@ def test_coordinated_simulation_python_owners_and_reversed_subgroups(split, tmp_
                            "boundaries": {str(zone): {"kind": "farfield"} for zone in zones}},
               "time": {"method": "bdf2"}}
     simulation = Simulation(meshes, control, json.dumps(config))
-    simulation.advance(.001)
-    simulation.advance(.001)
+    assert simulation.advance(.001).accepted
+    assert simulation.advance(.001).accepted
     assert simulation.step == 2
     assert simulation.interface_diagnostics().query_points == 0
     local = world.rank % 2 if split else 1
@@ -314,7 +314,7 @@ def test_coordinated_simulation_python_owners_and_reversed_subgroups(split, tmp_
     archive = world.bcast(str(tmp_path / "simulation.h5") if world.rank == 0 else None, root=0)
     shared_flow = domain.flow
     simulation.write_checkpoint(archive, reconstruction=True)
-    simulation.advance(.001)
+    assert simulation.advance(.001).accepted
     simulation.read_checkpoint(archive)
     assert simulation.step == domain.step == 2
     assert simulation.time == domain.time == .002
@@ -361,11 +361,11 @@ def test_shared_state_real_residual_ssprk3_and_restart(tmp_path, layout, flux, w
     assert domain.flow.identity == flow.identity
     assert domain.stable_step(.5) > 0
     np.testing.assert_allclose(domain.residual().numpy(), 0, atol=3e-13)
-    domain.advance(.001)
+    assert domain.advance(.001).accepted
     assert domain.step == 1
     assert domain.time == .001
     with flow.read():
-        domain.prepare_step(.001)
+        assert domain.prepare_step(.001).accepted
         with pytest.raises(RuntimeError):
             domain.commit_step()
     domain.commit_step()
@@ -375,7 +375,7 @@ def test_shared_state_real_residual_ssprk3_and_restart(tmp_path, layout, flux, w
     with pytest.raises(RuntimeError):
         domain.read_checkpoint(path, "{" if MPI.COMM_WORLD.rank == 0 else '{}')
     saved = flow.numpy().copy()
-    domain.advance(.001)
+    assert domain.advance(.001).accepted
     domain.read_checkpoint(path, '{"test":"python"}')
     assert domain.step == 2
     assert domain.time == .002
@@ -391,7 +391,7 @@ def test_configured_implicit_method_and_retained_shared_state(tmp_path, method, 
     domain, primitive = build_domain(method=method)
     flow = domain.flow
     before = flow.numpy().copy()
-    domain.advance(.001)
+    assert domain.advance(.001).accepted
     assert len(domain.implicit_stages) == stages
     if method == "ditr":
         assert domain.coupled_iterations == 1
@@ -403,10 +403,10 @@ def test_configured_implicit_method_and_retained_shared_state(tmp_path, method, 
     np.testing.assert_allclose(flow.numpy(), before, atol=2e-14)
     path = MPI.COMM_WORLD.bcast(str(tmp_path / "implicit.h5") if MPI.COMM_WORLD.rank == 0 else None, root=0)
     domain.write_checkpoint(path, '{"test":"implicit-python"}', include_reconstruction=True)
-    domain.advance(.002)
+    assert domain.advance(.002).accepted
     domain.read_checkpoint(path, '{"test":"implicit-python"}')
     assert domain.step == 1 and domain.time == .001
-    domain.advance(.002)
+    assert domain.advance(.002).accepted
     assert all(report.converged for report in domain.implicit_stages)
     # The same Python Array handle continues to reference the bound allocation.
     assert domain.flow.identity == flow.identity
@@ -437,7 +437,7 @@ def test_explicit_numerical_rejection_returns_a_status():
     assert domain.time == 0 and domain.step == 0
     np.testing.assert_array_equal(flow.numpy(), saved)
     domain.discard_step()
-    domain.advance(1e-6)
+    assert domain.advance(1e-6).accepted
     assert domain.step == 1
 
 
@@ -468,7 +468,7 @@ def test_explicit_derived_refresh_shared_storage_and_freshness():
 def test_steady_bdf1_override_keeps_the_physical_clock_frozen():
     domain, _ = build_domain(method="esdirk4", steady=True)
     before = domain.flow.numpy().copy()
-    domain.advance(.03)
+    assert domain.advance(.03).accepted
     assert domain.steady and domain.time == 0 and domain.step == 1
     assert len(domain.implicit_stages) == 1 and domain.implicit_stages[0].converged
     assert domain.previous_dt == 0
@@ -485,20 +485,20 @@ def test_physical_step_selection_retains_state_and_restores_growth_history(tmp_p
     initial = domain.limit_physical_step(.01)
     assert isinstance(initial, PhysicalStepLimit)
     assert initial.dt == .01 and initial.minimum_alpha == 1
-    domain.advance(.001)
+    assert domain.advance(.001).accepted
     with flow.read():
         bound = domain.limit_physical_step(.1)
     assert bound.dt == .002 and bound.growth_limited
     assert bound.limited_cells == 0 and bound.minimum_alpha == 1
     assert domain.previous_dt == .001 and domain.time == .001 and domain.step == 1
     np.testing.assert_allclose(flow.numpy(), before, atol=3e-14)
-    domain.prepare_step(.003)
+    assert domain.prepare_step(.003).accepted
     domain.discard_step()
     assert domain.previous_dt == .001
     assert domain.limit_physical_step(.1).dt == .002
     path = MPI.COMM_WORLD.bcast(str(tmp_path / "time-step.h5") if MPI.COMM_WORLD.rank == 0 else None, root=0)
     domain.write_checkpoint(path, '{"test":"physical-step-python"}')
-    domain.advance(.004)
+    assert domain.advance(.004).accepted
     assert domain.previous_dt == .004
     domain.read_checkpoint(path, '{"test":"physical-step-python"}')
     assert domain.previous_dt == .001
@@ -512,13 +512,13 @@ def test_native_lvr_config_and_warm_restart_through_shared_python_arrays(tmp_pat
     domain, _ = build_domain(layout=layout, method="bdf1", lvr_variant=variant)
     flow = domain.flow
     before = flow.numpy().copy()
-    domain.advance(.001)
+    assert domain.advance(.001).accepted
     assert domain.step == 1 and domain.time == .001
     assert domain.implicit_stages[0].converged
     np.testing.assert_allclose(flow.numpy(), before, atol=3e-14)
     path = MPI.COMM_WORLD.bcast(str(tmp_path / "lvr.h5") if MPI.COMM_WORLD.rank == 0 else None, root=0)
     domain.write_checkpoint(path, '{"test":"lvr-python"}', include_reconstruction=True)
-    domain.advance(.001)
+    assert domain.advance(.001).accepted
     domain.read_checkpoint(path, '{"test":"lvr-python"}')
     assert domain.flow.identity == flow.identity
     assert domain.step == 1 and domain.time == .001

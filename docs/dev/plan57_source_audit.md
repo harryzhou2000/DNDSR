@@ -34,6 +34,23 @@ coherent Geom acquisitions. Historical candidate measurements are not reissued
 as timings of this merge. The planned GPU copy annotations, production
 communication worker, Jacobi extension and pMG pool remain plan 56 work.
 
+The second pass found another test gap: several positive-path C++ and Python
+tests ignored the new `StepResult`. Previously a rejection threw and failed
+the test; after the merge, two rejected trajectories could accidentally
+compare equal. Existing step, restart, pMG, PP and multidomain tests now
+require an accepted result before checking or committing the state. Their
+numerical-rejection and exceptional-validation tests are separate and
+unchanged. This is a test-only correction to the frozen production source.
+
+The audit also found an extra safety reduction in tracked halo construction.
+`DofHalo` now uses the route's setup policy for the local compatibility
+check. Ordinary and tracked binding must have identical required MPI counts
+with checks off. Both still validate locally; the tracked publication record
+and all routing, schema and transport protocols remain. A production catch
+around tracked halo retirement or preparation now takes the same fatal path
+as the underlying transfer. This small production follow-up supersedes
+`0e111174` for the BSSCA candidate.
+
 This audit distinguishes source retention from numerical and performance
 acceptance. The affected two-rank C++ and Python checks passed; device 0 passed
 the single-device descriptor suite. The additional CFV/Geom/BC/SST gate and

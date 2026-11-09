@@ -188,7 +188,7 @@ TEST_CASE("Explicit RANS repairs scalars separately from the uncompressed flow5 
         // The raw first stage has a negative RANS scalar. Its independent
         // scalar repair is allowed, but must not compress any flow component.
         const double dt = 2 * criticalDt;
-        simulation.Advance(dt);
+        REQUIRE(simulation.Advance(dt).accepted);
         CHECK(simulation.Time() == dt);
         CHECK(simulation.Step() == 1);
         CHECK(domain.PreviousTimeStep() == dt);

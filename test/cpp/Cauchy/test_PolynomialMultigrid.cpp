@@ -575,10 +575,10 @@ TEST_CASE("Cauchy pMG physical discard and reprepare retain the fine reconstruct
         C::Domain reference("reference", mesh, settings, time), retry("retry", mesh, settings, time);
         Fill(reference.Discretization(), equation, reference.Flow(), 0);
         Fill(retry.Discretization(), equation, retry.Flow(), 0);
-        reference.Advance(.001);
-        retry.PrepareStep(.001);
+        REQUIRE(reference.Advance(.001).accepted);
+        REQUIRE(retry.PrepareStep(.001).accepted);
         retry.DiscardStep();
-        retry.PrepareStep(.001);
+        REQUIRE(retry.PrepareStep(.001).accepted);
         {
             std::optional<R::Array<double>::ReadLease> retained;
             if (mpi.rank == 0)
@@ -802,10 +802,10 @@ TEST_CASE("Equation Domain performs one spatial FAS update per DITR coupled stag
     const auto equation = C::EquationSetup::Resolve(settings.equation).equation;
     Fill(reference.Discretization(), equation, reference.Flow(), 0);
     Fill(retry.Discretization(), equation, retry.Flow(), 0);
-    reference.Advance(.001);
-    retry.PrepareStep(.001);
+    REQUIRE(reference.Advance(.001).accepted);
+    REQUIRE(retry.PrepareStep(.001).accepted);
     retry.DiscardStep();
-    retry.Advance(.001);
+    REQUIRE(retry.Advance(.001).accepted);
     CHECK(retry.Time() == .001);
     REQUIRE(retry.LastImplicitStages().size() == 1);
     const auto &report = retry.LastImplicitStages().front();

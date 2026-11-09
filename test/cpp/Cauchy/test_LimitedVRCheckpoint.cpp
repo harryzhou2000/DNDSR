@@ -134,7 +134,7 @@ TEST_CASE("LVR warm restart and output cadence preserve the complete implicit tr
                 const auto warm = Path("warm-"), rewritten = Path("rewritten-"), cold = Path("cold-"), coldWritten = Path("cold-written-");
                 C::Domain source("fluid", mesh, settings, time), resumed("fluid", mesh, settings, time);
                 Initialize(source);
-                source.Advance(1e-6);
+                REQUIRE(source.Advance(1e-6).accepted);
                 if (method == "ditr")
                 {
                     CHECK(source.LastCoupledIterations() == 2);
@@ -155,19 +155,19 @@ TEST_CASE("LVR warm restart and output cadence preserve the complete implicit tr
                 // other. Neither coefficients nor retained limiter gates may drift.
                 source.Diagnostics(settings, {});
                 source.Diagnostics(settings, {});
-                source.Advance(1e-6);
-                resumed.Advance(1e-6);
+                REQUIRE(source.Advance(1e-6).accepted);
+                REQUIRE(resumed.Advance(1e-6).accepted);
                 source.WriteCheckpoint(warm, root, true);
                 resumed.WriteCheckpoint(rewritten, root, true);
                 Same(ReadWarm(warm), ReadWarm(rewritten));
 
                 const auto beforeTrial = ReadWarm(warm);
-                source.PrepareStep(1e-6);
+                REQUIRE(source.PrepareStep(1e-6).accepted);
                 source.WriteCheckpoint(warm, root, true);
                 Same(beforeTrial, ReadWarm(warm)); // Pending trial stores accepted warm state.
                 source.DiscardStep();
-                source.Advance(1e-6);
-                resumed.Advance(1e-6);
+                REQUIRE(source.Advance(1e-6).accepted);
+                REQUIRE(resumed.Advance(1e-6).accepted);
                 source.WriteCheckpoint(warm, root, true);
                 resumed.WriteCheckpoint(rewritten, root, true);
                 Same(ReadWarm(warm), ReadWarm(rewritten));
@@ -195,7 +195,7 @@ TEST_CASE("LVR checkpoint remaps warm history under local permutation and cold-s
     auto mesh = G::OverlapTest::BuildNativeFixture(mpi, mpi.size > 2, 12).mesh;
     C::Domain source("fluid", mesh, settings, time);
     Initialize(source);
-    source.Advance(1e-6);
+    REQUIRE(source.Advance(1e-6).accepted);
     const auto warm = Path("permutation-"), rewritten = Path("permutation-read-");
     source.WriteCheckpoint(warm, root, true);
     const auto expected = ReadWarm(warm);
@@ -243,7 +243,7 @@ TEST_CASE("LVR warm restart redistributes nonzero history from fewer writers int
             auto mesh = G::OverlapTest::BuildNativeFixture(writers, false, 12).mesh;
             C::Domain source("fluid", mesh, settings, time);
             Initialize(source);
-            source.Advance(1e-6);
+            REQUIRE(source.Advance(1e-6).accepted);
             source.WriteCheckpoint(warm, Root(settings, time, writers.size), true);
         }
         MPI_Comm_free(&writerComm);
@@ -285,7 +285,7 @@ TEST_CASE("LVR fine reconstruction connects to limited-gradient and constant pol
     time.method = "bdf1";
     C::Domain domain("fluid", mesh, settings, time);
     Initialize(domain);
-    domain.Advance(1e-6);
+    REQUIRE(domain.Advance(1e-6).accepted);
     CHECK(domain.Epoch().acceptedStep == 1);
     CHECK(domain.Discretization().Admissible(domain.Flow()));
     REQUIRE(domain.LastImplicitStages().size() == 1);

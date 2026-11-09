@@ -92,6 +92,7 @@ namespace DNDS::Algebra
                         }
                         catch (...)
                         {
+                            MPI::AbortIfSolverFailure("tracked halo retirement failed");
                         }
                     }
                     _data->publication.reset();
@@ -120,8 +121,10 @@ namespace DNDS::Algebra
         /// ordinary direct h-indexed transfer is the default transport.
         DofHalo(Field &field, Runtime::RowTransferPlan route, Runtime::TransferOptions options = {})
         {
-            MPI::LocalStage(MPIInfo(route.Communicator()), [&]
-                            {
+            // This only validates local field/route compatibility. The route
+            // still owns the required collective payload/binding protocols.
+            route.Context()->LocalStage([&]
+                                        {
                 field.Validate();
                 DNDS_check_throw_info(field.Device() == Runtime::Device::Host() && !route.HasCollisions() &&
                     route.SourceRows() == index(field.Space().OwnedRows()) && route.DestinationRows() == index(field.Space().GhostRows()),
@@ -144,6 +147,7 @@ namespace DNDS::Algebra
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("tracked halo preparation failed");
             } // Carry local failure into the existing MPI preflight.
             const auto validate = [&]
             {

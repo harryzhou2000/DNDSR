@@ -194,8 +194,8 @@ TEST_CASE("Mixture BDF2 restart restores species history and warm reconstruction
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 3);
     C::Domain source("mixture", mesh, settings, time);
     InitializeMixtureWave(source);
-    source.Advance(1e-5);
-    source.Advance(2e-5);
+    REQUIRE(source.Advance(1e-5).accepted);
+    REQUIRE(source.Advance(2e-5).accepted);
     const C::Json metadata{{"test", "mixture history"}};
     source.WriteCheckpoint(path, metadata, true);
     settings.execution.layout = "aosoa32";
@@ -211,8 +211,8 @@ TEST_CASE("Mixture BDF2 restart restores species history and warm reconstruction
     restored.ReadCheckpoint(path, metadata);
     CompareEquation(restored.Dofs(), source.Dofs());
     CHECK(restored.PreviousTimeStep() == source.PreviousTimeStep());
-    source.Advance(1.5e-5);
-    restored.Advance(1.5e-5);
+    REQUIRE(source.Advance(1.5e-5).accepted);
+    REQUIRE(restored.Advance(1.5e-5).accepted);
     CompareEquation(restored.Dofs(), source.Dofs(), 2e-13);
     Remove({path});
 }
@@ -279,9 +279,9 @@ TEST_CASE("Physical Strang source composes with transport and preserves retry an
         };
         for (const double dt : {1e-5, 1.5e-5})
         {
-            source.Advance(dt);
+            REQUIRE(source.Advance(dt).accepted);
             halfStep(reference, .5 * dt);
-            reference.Advance(dt);
+            REQUIRE(reference.Advance(dt).accepted);
             halfStep(reference, .5 * dt);
             CompareEquation(source.Dofs(), reference.Dofs(), 3e-10);
             if (dt == 1e-5)
@@ -295,7 +295,7 @@ TEST_CASE("Physical Strang source composes with transport and preserves retry an
                                       { return CauchyTest::PeriodicQuads(domainMPI, 3); });
             for (DNDS::index iDomain = 0; iDomain < 2; ++iDomain)
                 InitializeMixtureWave(coordinated.GetDomain(iDomain));
-            coordinated.Advance(1e-5);
+            REQUIRE(coordinated.Advance(1e-5).accepted);
             for (DNDS::index iDomain = 0; iDomain < 2; ++iDomain)
                 CompareEquation(coordinated.GetDomain(iDomain).Dofs(), firstStep, 3e-10);
         }
@@ -312,11 +312,11 @@ TEST_CASE("Physical Strang source composes with transport and preserves retry an
         C::Domain restored("mixture", mesh, settings, time);
         restored.ReadCheckpoint(path, metadata);
         const auto accepted = source.Dofs().Clone();
-        source.PrepareStep(1.2e-5);
+        REQUIRE(source.PrepareStep(1.2e-5).accepted);
         source.DiscardStep();
         CompareEquation(source.Dofs(), accepted);
-        source.Advance(1.2e-5);
-        restored.Advance(1.2e-5);
+        REQUIRE(source.Advance(1.2e-5).accepted);
+        REQUIRE(restored.Advance(1.2e-5).accepted);
         CompareEquation(source.Dofs(), restored.Dofs(), 2e-13);
         Remove({path});
     }
@@ -418,8 +418,8 @@ TEST_CASE("Configured RANS BDF2 restores all fields across layouts and rejects c
                 sa(iCell, 0) *= 1 + .02 * std::sin(6.283185307179586 * source.Discretization().Metrics().GetCellCent(iCell)[0]);
         }
         CHECK(source.StableStep(.5) > 0);
-        source.Advance(1e-4);
-        source.Advance(2e-4);
+        REQUIRE(source.Advance(1e-4).accepted);
+        REQUIRE(source.Advance(2e-4).accepted);
         REQUIRE(!source.LastImplicitStages().empty());
         CHECK(source.LastImplicitStages().back().converged);
         const C::Json metadata = config.Root();
@@ -467,8 +467,8 @@ TEST_CASE("Configured RANS BDF2 restores all fields across layouts and rejects c
         };
         compare(0);
         CHECK(restored.PreviousTimeStep() == source.PreviousTimeStep());
-        source.Advance(1.5e-4);
-        restored.Advance(1.5e-4);
+        REQUIRE(source.Advance(1.5e-4).accepted);
+        REQUIRE(restored.Advance(1.5e-4).accepted);
         compare(2e-12);
         settings.equation.rans.useQCR = true;
         C::Domain different("sa", mesh, settings, time);
@@ -636,12 +636,12 @@ TEST_CASE("Implicit restart preserves variable BDF2 history and rebuilds live DI
         const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
         C::Domain source("flow", mesh, settings, time), restored("flow", mesh, settings, time);
         Initialize(source);
-        source.Advance(.001);
-        source.Advance(.002);
+        REQUIRE(source.Advance(.001).accepted);
+        REQUIRE(source.Advance(.002).accepted);
         const C::Json metadata{{"test", method + " native continuation"}};
         source.WriteCheckpoint(path, metadata, true);
         if (method == "ditr")
-            restored.Advance(.0007); // build an old intermediate binding before replacement
+            REQUIRE(restored.Advance(.0007).accepted); // build an old intermediate binding before replacement
         const auto oldTime = restored.Time();
         const auto oldDt = restored.PreviousTimeStep();
         const auto oldStep = restored.Epoch().acceptedStep;
@@ -657,8 +657,8 @@ TEST_CASE("Implicit restart preserves variable BDF2 history and rebuilds live DI
         CHECK(restored.Time() == source.Time());
         CHECK(restored.PreviousTimeStep() == .002);
         CHECK(restored.Epoch().acceptedStep == source.Epoch().acceptedStep);
-        source.Advance(.0015);
-        restored.Advance(.0015);
+        REQUIRE(source.Advance(.0015).accepted);
+        REQUIRE(restored.Advance(.0015).accepted);
         const auto a = source.Flow().Owned().Read(), b = restored.Flow().Owned().Read();
         for (DNDS::index iCell = 0; iCell < source.Discretization().Metrics().NumCell(); ++iCell)
             for (int j = 0; j < 5; ++j)
@@ -680,8 +680,8 @@ TEST_CASE("Restart dt growth reads the accepted scalar and supports files predat
         time.positivity.enabled = true;
         auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
         C::Domain source("flow", mesh, settings, time), restored("flow", mesh, settings, time);
-        source.Advance(.001);
-        source.Advance(.002);
+        REQUIRE(source.Advance(.001).accepted);
+        REQUIRE(source.Advance(.002).accepted);
         source.WriteCheckpoint(path, metadata);
         restored.ReadCheckpoint(path, metadata);
         CHECK(restored.PreviousTimeStep() == .002);
@@ -782,7 +782,7 @@ TEST_CASE("Rigid motion restart retains absolute-state convention and BDF histor
     const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 3);
     C::Domain source("flow", mesh, config.Domains()[0].settings, config.Time());
-    source.Advance(.001);
+    REQUIRE(source.Advance(.001).accepted);
     source.WriteCheckpoint(path, config.Root());
     {
         auto serializer = std::make_shared<DNDS::Serializer::SerializerH5>(mpi);
@@ -798,8 +798,8 @@ TEST_CASE("Rigid motion restart retains absolute-state convention and BDF histor
     C::Domain restored("flow", mesh, config.Domains()[0].settings, config.Time());
     restored.ReadCheckpoint(path, config.Root());
     CHECK(restored.Time() == source.Time());
-    source.Advance(.002);
-    restored.Advance(.002);
+    REQUIRE(source.Advance(.002).accepted);
+    REQUIRE(restored.Advance(.002).accepted);
     const auto a = source.Flow().Owned().Read(), b = restored.Flow().Owned().Read();
     const auto u = a.View<R::UniformTableRows>(), v = b.View<R::UniformTableRows>();
     for (DNDS::index iCell = 0; iCell < u.RowCount(); ++iCell)
