@@ -63,3 +63,13 @@ Focused coverage lives in `test_ReconstructionCapabilities.cpp`: 2D/3D degrees
 core work, WBAP, rotated and self-periodic cases, empty ranks, sampling without
 matrices, and independent raw/preconditioner profiles under complete truncation.
 The older symmetry/Jacobi oracle remains in `test_FVCompletion.cpp`.
+
+The scoped reconstruction basis view exposes `FaceMatrix(point, side)` as a
+device-callable column-major derivatives-by-modes view. Both `(derivative, mode)`
+and `[derivative][mode]` retain extent/stride information; keep the enclosing
+basis read scope alive through use. This replaces the unshaped pointer accessor
+without adding ownership work to numerical loops or changing cache policy.
+Element shape data is separate: host setup uses
+`Geom::Elem::GetCachedShapeAtQuadrature(type, order, point)` for immutable N and
+parametric first derivatives. CFV/Cauchy no longer reach into that cache's
+private storage. Device operators continue to use explicitly published views.

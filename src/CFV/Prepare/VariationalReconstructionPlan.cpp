@@ -183,7 +183,7 @@ namespace DNDS::CFV
                 const tPoint center{cell(iCell, 1), cell(iCell, 2), cell(iCell, 3)};
                 for (int iG = 0; iG < q.GetNumPoints(); ++iG)
                 {
-                    const auto &shape = Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(INT_ORDER_MAX).at(iG);
+                    const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, INT_ORDER_MAX, iG);
                     const tPoint p = PPhysicsCoordD01Nj(coords, shape);
                     polynomial.Derivatives(full, p, center, cell(iCell, 7));
                     const real weight = CellJacobianDet(dim, coords, shape) * q.GetWeight(iG) * (geometry->axisymmetric ? p[1] : 1.);
@@ -208,8 +208,8 @@ namespace DNDS::CFV
                 DNDS_check_throw_info(iL >= 0 && iL < mesh.NumCellProc() &&
                                           (iR == UnInitIndex || (iR >= 0 && iR < mesh.NumCellProc())), "VR stencil lacks face parent closure");
                 mesh.GetCoordsOnFace(iFace, coords);
-                const tPoint midpoint = PPhysicsCoordD01Nj(coords, Geom::Elem::detail::NBufferAtQuadrature.buf.at(mesh.GetFaceElement(iFace).type).at(1).at(0));
-                const auto jac = ShapeJacobianCoordD01Nj(coords, Geom::Elem::detail::NBufferAtQuadrature.buf.at(mesh.GetFaceElement(iFace).type).at(1).at(0));
+                const tPoint midpoint = PPhysicsCoordD01Nj(coords, Geom::Elem::GetCachedShapeAtQuadrature(mesh.GetFaceElement(iFace).type, 1, 0));
+                const auto jac = ShapeJacobianCoordD01Nj(coords, Geom::Elem::GetCachedShapeAtQuadrature(mesh.GetFaceElement(iFace).type, 1, 0));
                 tPoint normal = dim == 2 ? FacialJacobianToNormVec<2>(jac) : FacialJacobianToNormVec<3>(jac);
                 normal.normalize();
                 const tPoint baryL{cell(iL, 4), cell(iL, 5), cell(iL, 6)};
@@ -228,7 +228,7 @@ namespace DNDS::CFV
                     const Quadrature quadrature(element, geometry->intOrder);
                     for (int iG = 0; iG < quadrature.GetNumPoints(); ++iG)
                     {
-                        const auto &shape = Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(geometry->intOrder).at(iG);
+                        const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, geometry->intOrder, iG);
                         area += FacialJacobianToNormVec<2>(ShapeJacobianCoordD01Nj(coords, shape)).norm() * quadrature.GetWeight(iG);
                     }
                 }

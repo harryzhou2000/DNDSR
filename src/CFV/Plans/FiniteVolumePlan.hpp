@@ -272,13 +272,18 @@ namespace DNDS::CFV
         Runtime::ArrayView<const real, false, Runtime::TableRows> face;
         Runtime::ArrayView<const index, false, Runtime::FixedRows<1>> faceOffsets;
         int modes, derivatives;
-        DNDS_DEVICE_CALLABLE const real *FaceMatrix(index iPoint, int side) const { return face[2 * iPoint + side].data(); }
+        /// Column-major derivatives-by-modes view, borrowing this scope's cache.
+        /// Rows retain their component stride; no Eigen or host-only owner is
+        /// carried into a kernel. The parent stencil validates iPoint and side.
+        DNDS_DEVICE_CALLABLE auto FaceMatrix(index iPoint, int side) const
+        {
+            return Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::ColMajorTable>{
+                face[2 * iPoint + side].data(), nullptr, derivatives, modes, derivatives, nullptr, Runtime::RowLayoutKind::ColMajorTable};
+        }
         /// Column-major derivatives-by-modes matrix; derivative includes order0.
         DNDS_DEVICE_CALLABLE real FaceDerivative(index iPoint, int side, int derivative, int mode) const
         {
-            if constexpr (Runtime::AccessBoundsChecks)
-                DNDS_HD_assert(derivative >= 0 && derivative < derivatives && mode >= 0 && mode < modes);
-            return FaceMatrix(iPoint, side)[mode * derivatives + derivative];
+            return FaceMatrix(iPoint, side)(derivative, mode);
         }
     };
     /// Pins the geometry generation and Runtime cache allocations once outside

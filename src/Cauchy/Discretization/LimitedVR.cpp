@@ -40,7 +40,7 @@ namespace DNDS::Cauchy
                 const auto element = mesh.GetFaceElement(face);
                 // Match legacy iG=-1: mapped one-point reference center, not
                 // the area-weighted centroid (different on curved elements).
-                const auto &shape = Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(1).at(0);
+                const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, 1, 0);
                 const Geom::tPoint center = Geom::Elem::PPhysicsCoordD01Nj(coordinates, shape);
                 Geom::tPoint normal = Geom::tPoint::Zero();
                 for (index q = metric.FaceQuadratureBegin(face); q < metric.FaceQuadratureEnd(face); ++q)

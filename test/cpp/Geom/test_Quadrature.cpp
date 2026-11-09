@@ -32,6 +32,26 @@
 using namespace DNDS::Geom;
 using namespace DNDS::Geom::Elem;
 
+TEST_CASE("Public cached shape access matches direct element evaluation")
+{
+    for (auto type : {Line2, Tri3, Quad4, Tet4, Hex8})
+    {
+        Element element{type};
+        const int order = 3;
+        const auto count = GetQuadratureScheme(element.GetParamSpace(), order);
+        for (int iPoint = 0; iPoint < count; ++iPoint)
+        {
+            tPoint point{0, 0, 0};
+            t_real weight = 0;
+            GetQuadraturePoint(element.GetParamSpace(), count, iPoint, point, weight);
+            tD01Nj direct(4, element.GetNumNodes());
+            element.GetD01Nj(point, direct);
+            const auto &cached = GetCachedShapeAtQuadrature(type, order, iPoint);
+            CHECK((direct.array() == cached.array()).all());
+        }
+    }
+}
+
 // ===================================================================
 // Helper functions for polynomial integration
 // ===================================================================

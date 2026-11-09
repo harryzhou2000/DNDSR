@@ -46,7 +46,7 @@ namespace DNDS::Cauchy
                 real volume = 0;
                 for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
                 {
-                    const auto &shape = Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(order).at(iQ);
+                    const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, order, iQ);
                     const Geom::tPoint point = Geom::Elem::PPhysicsCoordD01Nj(coords, shape);
                     const real jacobian = Geom::Elem::CellJacobianDet(mesh.Dimension(), coords, shape);
                     DNDS_check_throw_info(std::isfinite(jacobian) && jacobian > 0, "initial field requires positive finite cell Jacobians");

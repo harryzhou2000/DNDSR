@@ -339,6 +339,9 @@ TEST_CASE("Shared basis policies snapshot points and sample cubic values and der
             auto scope = plan.AcquireBasisRead();
             const auto cache = scope.HostView();
             const auto iPoint = cache.faceOffsets(iFace, 0);
+            const auto matrix = cache.FaceMatrix(iPoint, side);
+            CHECK(matrix.RowCount() == expectedRows);
+            CHECK(matrix.Width() == plan.NRecDOF());
             const double scale = geometry.HostView().cells(0, 7);
             CHECK(basis.rows() == expectedRows);
             if (expectedRows >= 3)
@@ -350,7 +353,11 @@ TEST_CASE("Shared basis policies snapshot points and sample cubic values and der
                 CHECK(basis(3, 2) == doctest::Approx(2 / (scale * scale)));
             for (int derivative = 0; derivative < expectedRows; ++derivative)
                 for (int mode = 0; mode < plan.NRecDOF(); ++mode)
+                {
                     CHECK(cache.FaceDerivative(iPoint, side, derivative, mode) == basis(derivative, mode));
+                    CHECK(matrix[derivative][mode] == basis(derivative, mode));
+                    CHECK(matrix.DynamicView()(derivative, mode) == basis(derivative, mode));
+                }
         }
         {
             auto c = cells.Write();

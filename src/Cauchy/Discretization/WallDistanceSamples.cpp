@@ -62,7 +62,7 @@ namespace DNDS::Cauchy
             real sum = 0;
             for (index iPoint = 0; iPoint < index(row.size()); ++iPoint)
             {
-                const auto &shape = Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(intOrder).at(iPoint);
+                const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, intOrder, iPoint);
                 real distance = 0;
                 for (index iNode = 0; iNode < index(nodes.size()); ++iNode)
                     distance += shape(0, iNode) * distances[size_t(iNode)];

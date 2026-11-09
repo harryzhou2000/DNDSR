@@ -51,7 +51,7 @@ __global__ void MetricProbe(C::FiniteVolumeHostView metrics, C::ReconstructionBa
         return;
     result(0, 0) = metrics.GetCellVol(0);
     result(0, 1) = metrics.GetCellCent(0)[0];
-    result(0, 2) = basis.FaceDerivative(iPoint, side, 0, 0);
+    result(0, 2) = basis.FaceMatrix(iPoint, side)[1][1];
     result(0, 3) = mesh.CellNodes(0).size();
     result(0, 4) = mesh.Coord(mesh.CellNodes(0)[0])[0];
 }
@@ -82,7 +82,7 @@ TEST_CASE("Device publications retain actual mesh metrics and basis with explici
     const auto values = host.Read();
     CHECK(values.View()(0, 0) == metrics.GetCellVol(0));
     CHECK(values.View()(0, 1) == metrics.GetCellCent(0)[0]);
-    CHECK(values.View()(0, 2) == plan.GetCachedFaceBasis(face, side, 0)(0, 0));
+    CHECK(values.View()(0, 2) == plan.GetCachedFaceBasis(face, side, 0)(1, 1));
     CHECK(values.View()(0, 3) == view.CellNodes(0).size());
     CHECK(values.View()(0, 4) == view.Coord(view.CellNodes(0)[0])[0]);
     CHECK(resident.Buffers().size() >= 14);

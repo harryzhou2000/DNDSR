@@ -502,7 +502,7 @@ namespace DNDS::Cauchy
                         const auto element = topology.GetCellElement(iCell);
                         const Geom::Elem::Quadrature quadrature(element, order);
                         for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
-                            append(Geom::Elem::PPhysicsCoordD01Nj(coords, Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(order).at(iQ)));
+                            append(Geom::Elem::PPhysicsCoordD01Nj(coords, Geom::Elem::GetCachedShapeAtQuadrature(element.type, order, iQ)));
                     }
                 }
             }
@@ -1398,7 +1398,7 @@ namespace DNDS::Cauchy
             real volume = 0;
             for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
             {
-                const auto &shape = Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(order).at(iQ);
+                const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, order, iQ);
                 const Geom::tPoint point = Geom::Elem::PPhysicsCoordD01Nj(coords, shape);
                 const real weight = Geom::Elem::CellJacobianDet(mesh.Dimension(), coords, shape) * quadrature.GetWeight(iQ);
                 const auto value = frame.LocalState(ProfileValue(profile, primitive, gas, frame.WorldPoint({point[0], point[1], point[2]}), time));

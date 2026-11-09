@@ -254,7 +254,7 @@ namespace DNDS::Cauchy
                     for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
                     {
                         const index iPoint = sourceOffsets[iCell] + iQ;
-                        const auto &shape = Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(order).at(iQ);
+                        const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, order, iQ);
                         const auto point = Geom::Elem::PPhysicsCoordD01Nj(coords, shape);
                         c(iPoint, 0) = iCell;
                         for (int d = 0; d < 3; ++d)

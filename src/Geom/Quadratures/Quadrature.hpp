@@ -82,6 +82,15 @@ namespace DNDS::Geom::Elem
 
     } // namespace detail
 
+    /// Immutable host shape cache at one element quadrature point. Rows are
+    /// N, dN/dxi, dN/deta, dN/dzeta; columns are element nodes. This cache is
+    /// independent of FV reconstruction bases and owns its data for process
+    /// lifetime. Device consumers use explicitly uploaded metric/shape views.
+    inline const tD01Nj &GetCachedShapeAtQuadrature(ElemType type, int order, index iPoint)
+    {
+        return detail::NBufferAtQuadrature.buf.at(type).at(order).at(iPoint);
+    }
+
     // =========================================================================
     // Quadrature Class
     // =========================================================================
@@ -122,7 +131,7 @@ namespace DNDS::Geom::Elem
                 t_real w;
                 GetQuadraturePoint(ps, int_scheme, iG, pParam, w);
                 TAcc acc;
-                f(acc, iG, pParam, detail::NBufferAtQuadrature.buf.at(elem.type).at(int_order).at(iG));
+                f(acc, iG, pParam, GetCachedShapeAtQuadrature(elem.type, int_order, iG));
                 buf += acc * w;
             }
         }

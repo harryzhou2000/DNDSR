@@ -86,7 +86,7 @@ namespace DNDS::CFV
                 tPoint bary = tPoint::Zero(), plainMoment = tPoint::Zero();
                 for (int iG = 0; iG < exact.GetNumPoints(); ++iG)
                 {
-                    const auto &shape = Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(INT_ORDER_MAX).at(iG);
+                    const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, INT_ORDER_MAX, iG);
                     const real det = CellJacobianDet(view.Dimension(), coords, shape);
                     DNDS_check_throw_info(std::isfinite(det) && det > 0, "FV cell has nonpositive Jacobian");
                     const tPoint p = PPhysicsCoordD01Nj(coords, shape);
@@ -98,7 +98,7 @@ namespace DNDS::CFV
                 }
                 for (int iG = 0; iG < quadrature.GetNumPoints(); ++iG)
                 {
-                    const auto &shape = Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(intOrder).at(iG);
+                    const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, intOrder, iG);
                     const tPoint p = PPhysicsCoordD01Nj(coords, shape);
                     bary += p * CellJacobianDet(view.Dimension(), coords, shape) * quadrature.GetWeight(iG) * (axisymmetric ? p[1] : 1.);
                 }
@@ -106,7 +106,7 @@ namespace DNDS::CFV
                 bary /= volume;
                 for (int d = 0; d < 3; ++d)
                     radial(iCell, d) = axisymmetric ? (plainMoment[d] - plainVolume * bary[d]) / volume : 0;
-                const auto cent = PPhysicsCoordD01Nj(coords, Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(1).at(0));
+                const auto cent = PPhysicsCoordD01Nj(coords, Geom::Elem::GetCachedShapeAtQuadrature(element.type, 1, 0));
                 const tPoint box = (coords.colwise() - bary).array().abs().rowwise().maxCoeff();
                 const real scale = box.head(view.Dimension()).maxCoeff();
                 DNDS_check_throw_info(std::isfinite(volume) && scale > 0, "invalid FV cell geometry");
@@ -129,7 +129,7 @@ namespace DNDS::CFV
                     const Quadrature measure(element, intOrder);
                     for (int iG = 0; iG < measure.GetNumPoints(); ++iG)
                     {
-                        const auto &shape = Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(intOrder).at(iG);
+                        const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, intOrder, iG);
                         const auto jacobian = ShapeJacobianCoordD01Nj(coords, shape);
                         const tPoint normal = view.Dimension() == 2 ? FacialJacobianToNormVec<2>(jacobian) : FacialJacobianToNormVec<3>(jacobian);
                         const auto position = PPhysicsCoordD01Nj(coords, shape);
@@ -153,7 +153,7 @@ namespace DNDS::CFV
                     }
                     DNDS_check_throw_info(std::isfinite(integratedArea) && integratedArea >= 0, "invalid integrated face measure");
                 }
-                const tPoint center = PPhysicsCoordD01Nj(coords, Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(1).at(0));
+                const tPoint center = PPhysicsCoordD01Nj(coords, Geom::Elem::GetCachedShapeAtQuadrature(element.type, 1, 0));
                 // A face on the symmetry axis has zero weighted area but still
                 // needs a valid geometric direction for boundary evaluation.
                 if (axisymmetric && integratedArea == 0)
@@ -270,7 +270,7 @@ namespace DNDS::CFV
             tJacobi inertia = tJacobi::Zero();
             for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
             {
-                const auto &shape = Geom::Elem::detail::NBufferAtQuadrature.buf.at(element.type).at(INT_ORDER_MAX).at(iQ);
+                const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, INT_ORDER_MAX, iQ);
                 const tPoint centered = PPhysicsCoordD01Nj(coordinates, shape) - bary;
                 // Legacy inertia uses the geometric Jacobian even in radial
                 // integration, with its metric volume and barycentre.
