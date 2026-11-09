@@ -256,7 +256,13 @@ TEST_CASE("NCCL packed CSR empty ownership and omitted POD bytes preserve receiv
 }
 TEST_CASE("NCCL enqueue overlaps core work with gated transfer and retains leases and workspace")
 {
-    R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
+    R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
+    auto control = R::CommunicationContext::Duplicate(mpi.comm);
+    std::weak_ptr<R::CommunicationContext> retainedControl = control;
+    auto ownedProvider = R::NCCLTransferProvider::Create(control, device);
+    CHECK(ownedProvider->ControlContext()->Communicator() == control->Communicator());
+    auto options = Options();
+    options.provider = ownedProvider;
     auto comm = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
     auto compute = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
     R::Array<double> source(Shape(1, 17, 5), device), destination(Shape(2, 17, 5), device), output(Shape(0, 17, 5), device);
@@ -264,7 +270,10 @@ TEST_CASE("NCCL enqueue overlaps core work with gated transfer and retains lease
     std::vector<R::RowRequest> requests;
     for (I iRow = 0; iRow < 17; ++iRow)
         requests.push_back({(mpi.rank + 1) % mpi.size, iRow, iRow});
-    auto binding = std::make_unique<R::TransferBinding>(R::PayloadPlan(R::RowTransferPlan(mpi.comm, 17, 17, requests), source.Layout(), destination.Layout(), R::ElementSchema::For<double>()).Bind(source, destination, R::TransferTransport::DevicePacked, Options()));
+    auto binding = std::make_unique<R::TransferBinding>(R::PayloadPlan(R::RowTransferPlan(mpi.comm, 17, 17, requests), source.Layout(), destination.Layout(), R::ElementSchema::For<double>()).Bind(source, destination, R::TransferTransport::DevicePacked, options));
+    options.provider.reset();
+    ownedProvider.reset();
+    control.reset();
     const auto core = [](auto c, auto input, auto result)
     { Core<<<1,128,0,static_cast<cudaStream_t>(c.stream)>>>(input, result); LaunchOK(); };
     R::SubmitArrays(engine, compute, core, R::Read(source), R::Write(output));
@@ -285,8 +294,17 @@ TEST_CASE("NCCL enqueue overlaps core work with gated transfer and retains lease
     source = {};
     destination = {};
     binding.reset();
+    CHECK_FALSE(retainedControl.expired());
+    auto cpu = engine.CreateCPUStream();
+    std::atomic<bool> consumed{false};
+    cpu.WaitFor(haloReady); // May retire numerical captures on this worker.
+    engine.Submit(cpu, [&](R::ExecutionContext)
+                  { consumed = true; });
     gate.Release();
-    engine.Synchronize();
+    engine.Close(); // Progress provider status and retire its owners on controller.
+    CHECK(consumed.load());
+    CHECK(haloReady.Ready());
+    CHECK(retainedControl.expired());
     const auto result = retained.To(R::Device::Host());
     const auto read = result.Read();
     for (I iRow = 0; iRow < 17; ++iRow)

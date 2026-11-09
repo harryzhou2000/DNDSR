@@ -36,6 +36,9 @@ namespace DNDS::Runtime
             .def(py::init([](const MPIInfo &mpi, Device device)
                           { return NCCLTransferProvider::Create(mpi.comm, device); }),
                  py::arg("mpi"), py::arg("device"))
+            .def(py::init([](std::shared_ptr<CommunicationContext> context, Device device)
+                          { return NCCLTransferProvider::Create(std::move(context), device); }),
+                 py::arg("context"), py::arg("device"))
             .def_static("available", &NCCLTransferProvider::Available)
             .def("check_async_error", &NCCLTransferProvider::CheckAsyncError)
             .def("abort", &NCCLTransferProvider::Abort);

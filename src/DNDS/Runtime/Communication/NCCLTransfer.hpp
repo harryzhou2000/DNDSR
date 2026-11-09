@@ -5,7 +5,8 @@
 namespace DNDS::Runtime
 {
     /// One rank per CUDA device. MPI bootstraps only; prepared payload operations
-    /// are stream ordered. Keep the provider alive through binding/engine work.
+    /// are stream ordered. Managed Enqueue retains the provider on the runtime's
+    /// controller through completion; manual Begin remains caller-managed.
     /// Shared-communicator submissions must have matching per-peer call order
     /// across ranks. Use separate providers for independent communication lanes.
     /// Direct requires contiguous described fields; DevicePacked handles general
@@ -23,9 +24,13 @@ namespace DNDS::Runtime
         /// Collective setup on comm, outside hot execution/capture. Device
         /// ordinal is rank-local; each rank must select a distinct physical GPU.
         static std::shared_ptr<NCCLTransferProvider> Create(MPI_Comm comm, Runtime::Device device);
-        /// Nonblocking error observation for caller-managed recovery/progress.
-        /// Errors are rank-local; coordinate cancellation across participating
-        /// ranks. An engine event alone cannot diagnose a stalled remote peer.
+        /// Share the actual bootstrap/control owner without duplicating MPI.
+        /// Raw-communicator Create is the compatibility isolated-namespace path.
+        static std::shared_ptr<NCCLTransferProvider> Create(std::shared_ptr<CommunicationContext> context, Runtime::Device device);
+        std::shared_ptr<const CommunicationContext> ControlContext() const;
+        /// Nonblocking error observation for manual progress. Managed runtime
+        /// progress polls this too and aborts on asynchronous transport failure;
+        /// collaborative solver paths never recover from exceptions.
         void CheckAsyncError() const;
         /// Explicit cancellation of this communicator and all its bindings.
         /// Drain engine work before releasing arrays or their native streams.

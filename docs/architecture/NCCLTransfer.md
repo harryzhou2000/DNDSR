@@ -18,6 +18,11 @@ As with other CMake options, an existing cached NCCL choice remains in force.
 `NCCLTransferProvider::Available()` reports build capability; `Create` validates
 the runtime placement. Explicit unsupported requests throw, without MPI fallback.
 
+`Create(sharedCommunicationContext, device)` retains that exact bootstrap/control
+owner without MPI duplication. The raw `MPI_Comm` overload retains its historical
+isolated-namespace behavior. Dispose the last provider/context owner on the
+creating controller thread before MPI finalization.
+
 No Torch link or automatic package installation is required. An existing NCCL distribution,
 including a separately installed NVIDIA wheel, can supply the library. It is not
 copied into DNDSR. The installed local Python library retains the configured
@@ -107,18 +112,25 @@ collectively during setup. Hot NCCL submission has no MPI collective preflight.
 Bootstrap identity is checked as well: congruent MPI groups alone do not prove
 that ranks selected the same NCCL communicator.
 Rank-local stale epochs, lease errors or mismatched application submission order
-therefore require caller-coordinated recovery; other ranks cannot infer that a
-peer stopped submitting. The optional schedule checker is not implemented.
+cannot be recovered by a collaborative solver: abort without draining potentially
+unmatched peer work. Coordinated validation tests may catch before submission.
+The optional scheduled-access checker validates declared local dependencies;
+it cannot prove that remote ranks submit matching NCCL calls.
 
-`CheckAsyncError()` is a nonblocking provider error observation. `Abort()` cancels
-the provider and its bindings; drain accepted engine work before releasing
-buffers or streams. During error recovery, poll provider status instead of
-indefinitely waiting for a remote peer. Observe errors explicitly and coordinate
-cancellation across ranks. Engine CUDA completion alone does not diagnose every
-NCCL transport failure. Failed accesses are poisoned rather than published as
-successful values. A failed communicator is terminal; create a new one for
-recovery. Destroy its last control-plane owner on an MPI-permitted thread before
-MPI finalization.
+`Enqueue` registers a controller-side binding/provider owner before launch.
+Runtime progress polls asynchronous NCCL errors while work is pending, then drops
+that owner only after numerical retirement. A CPU worker may observe the CUDA
+prefix without performing final MPI/NCCL disposal. This adds no per-kernel event
+or host completion wait. `Close`/`Synchronize` progress these records alongside
+managed MPI and streams; external handles may be dropped after submission.
+An asynchronous transport failure takes a terminal abort path rather than
+waiting on a possibly stalled prefix. Remote schedule omissions that NCCL does
+not diagnose remain caller errors.
+
+`CheckAsyncError()` and `Abort()` remain manual-provider facilities. Raw `Begin`
+callers must retain and retire their operations and observe provider errors.
+Failed accesses are poisoned rather than published as successful values. Solver
+exception handlers abort; no exception-based distributed recovery is provided.
 
 Static peer/count descriptors and prepared buffers leave a future capture path,
 but graph capture, graph pools and capture validation are not implemented by

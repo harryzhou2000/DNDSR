@@ -45,7 +45,9 @@ namespace DNDS::Runtime
     {
         struct Binding;
         Device device;
+        std::shared_ptr<CommunicationContext> controlOwner;
         MPI_Comm control = MPI_COMM_NULL;
+        const std::thread::id controller = std::this_thread::get_id();
         ncclComm_t comm = nullptr;
         ncclUniqueId identity;
         std::mutex submission;
@@ -64,12 +66,12 @@ namespace DNDS::Runtime
         }
         ~State()
         {
+            // NCCL/MPI disposal is controller work, even when a CPU worker
+            // observes the device event that retires the numerical accesses.
+            if (std::this_thread::get_id() != controller)
+                std::terminate();
             if (comm && !aborted.load())
                 ncclCommDestroy(comm);
-            int finalized = 0;
-            MPI_Finalized(&finalized);
-            if (!finalized && control != MPI_COMM_NULL)
-                MPI_Comm_free(&control);
         }
     };
     struct NCCLTransferProvider::State::Binding final : Detail::TransferProviderBinding,
@@ -186,6 +188,7 @@ namespace DNDS::Runtime
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("solver NCCL launch failed");
                 owner->Abort();
                 throw;
             }
@@ -239,7 +242,8 @@ namespace DNDS::Runtime
                     catch (...)
                     {
                         error = std::current_exception();
-                        binding->owner->Abort();
+                        // Managed progress reports this terminal failure on
+                        // the controller; an event observer may be a worker.
                     }
                 source.pending.Complete(!error);
                 destination.pending.Complete(!error);
@@ -269,6 +273,7 @@ namespace DNDS::Runtime
                 }
                 catch (...)
                 {
+                    MPI::AbortIfSolverFailure("solver NCCL completion failed");
                     error = std::current_exception();
                     binding->owner->Abort();
                     try
@@ -334,6 +339,7 @@ namespace DNDS::Runtime
             }
             catch (...)
             {
+                MPI::AbortIfSolverFailure("solver NCCL operation failed before completion");
                 auto error = std::current_exception();
                 // A failed immediate launch may have submitted packing before
                 // producing its completion event. Drain that prefix too before
@@ -381,13 +387,57 @@ namespace DNDS::Runtime
         }
         void Enqueue(EagerEngine &engine, const ExecutionStream &stream) const override
         {
-            auto op = std::make_shared<Operation>(shared_from_this(), stream.Context(), true, false, engine.ChecksAccess());
-            engine.SubmitOperation(stream, [op](ExecutionContext context)
-                                   {
+            struct PendingProvider final : ExecutionProgress
+            {
+                std::shared_ptr<const Binding> binding;
+                std::atomic<bool> retired{false};
+                std::exception_ptr failure; // Published by retired's release/acquire.
+                explicit PendingProvider(std::shared_ptr<const Binding> value) : binding(std::move(value)) {}
+                bool Poll() override
+                {
+                    if (!retired.load(std::memory_order_acquire))
+                    {
+                        try
+                        {
+                            binding->owner->Check();
+                        }
+                        catch (...)
+                        {
+                            // A transport failure can leave peers or a CUDA
+                            // prefix pending forever. Do not enter a drain or
+                            // recover by unwinding partially completed work.
+                            MPI::Abort(binding->owner->control, "managed NCCL asynchronous failure");
+                        }
+                        return false;
+                    }
+                    if (failure)
+                        MPI::Abort(binding->owner->control, "managed NCCL retirement failed");
+                    binding.reset(); // Final provider disposal stays on controller.
+                    return true;
+                }
+            };
+            auto pending = std::make_shared<PendingProvider>(shared_from_this());
+            engine.RegisterProgress(pending); // Before issuing any native work.
+            try
+            {
+                auto op = std::make_shared<Operation>(shared_from_this(), stream.Context(), true, false, engine.ChecksAccess());
+                engine.SubmitOperation(stream, [op](ExecutionContext context)
+                                       {
                                        op->source.pending.Validate();
                                        op->destination.pending.Validate();
-                                       op->binding->Launch(context, op->source.View<uint8_t>().data, op->destination.View<uint8_t>().data); }, [op](std::exception_ptr error) noexcept
-                                   { op->Retire(error); }, packed ? std::vector<ScheduledBufferAccess>{{source, AccessMode::Read}, {destination, AccessMode::Write}, {send, AccessMode::Write}, {receive, AccessMode::Write}} : std::vector<ScheduledBufferAccess>{{source, AccessMode::Read}, {destination, AccessMode::Write}});
+                                       op->binding->Launch(context, op->source.View<uint8_t>().data, op->destination.View<uint8_t>().data); }, [op, pending](std::exception_ptr error) noexcept
+                                       {
+                                       op->Retire(error);
+                                       pending->failure = op->error;
+                                       op->binding.reset(); // pending is the controller-side anchor.
+                                       pending->retired.store(true, std::memory_order_release); }, packed ? std::vector<ScheduledBufferAccess>{{source, AccessMode::Read}, {destination, AccessMode::Write}, {send, AccessMode::Write}, {receive, AccessMode::Write}} : std::vector<ScheduledBufferAccess>{{source, AccessMode::Read}, {destination, AccessMode::Write}});
+            }
+            catch (...)
+            {
+                MPI::AbortIfSolverFailure("managed NCCL submission rejected");
+                pending->retired.store(true, std::memory_order_release); // No accepted command.
+                throw;
+            }
         }
     };
 
@@ -396,6 +446,13 @@ namespace DNDS::Runtime
     void NCCLTransferProvider::Abort() const noexcept { _state->Abort(); }
     std::shared_ptr<NCCLTransferProvider> NCCLTransferProvider::Create(MPI_Comm comm, Runtime::Device device)
     {
+        return Create(CommunicationContext::Duplicate(comm), device);
+    }
+    std::shared_ptr<const CommunicationContext> NCCLTransferProvider::ControlContext() const { return _state->controlOwner; }
+    std::shared_ptr<NCCLTransferProvider> NCCLTransferProvider::Create(std::shared_ptr<CommunicationContext> context, Runtime::Device device)
+    {
+        DNDS_check_throw_info(context, "NCCL setup needs a communication context");
+        const auto comm = context->Communicator();
         DNDS_check_throw_info(comm != MPI_COMM_NULL, "NCCL setup needs an MPI communicator");
         int count = 0;
         const auto status = cudaGetDeviceCount(&count);
@@ -404,7 +461,8 @@ namespace DNDS::Runtime
         auto state = std::make_shared<State>();
         state->device = device;
         CheckCUDA(cudaSetDevice(device.ordinal));
-        DNDS_check_throw_info(MPI_Comm_dup(comm, &state->control) == MPI_SUCCESS, "NCCL control communicator duplication failed");
+        state->controlOwner = std::move(context);
+        state->control = comm;
         int rank = 0, size = 0;
         MPI_Comm_rank(comm, &rank);
         MPI_Comm_size(comm, &size);
@@ -463,6 +521,12 @@ namespace DNDS::Runtime
         DNDS_check_throw_info(false, "NCCL provider is unavailable; configure DNDS_USE_CUDA and DNDS_USE_NCCL");
         return {};
     }
+    std::shared_ptr<NCCLTransferProvider> NCCLTransferProvider::Create(std::shared_ptr<CommunicationContext>, Runtime::Device)
+    {
+        DNDS_check_throw_info(false, "NCCL provider is unavailable; configure DNDS_USE_CUDA and DNDS_USE_NCCL");
+        return {};
+    }
+    std::shared_ptr<const CommunicationContext> NCCLTransferProvider::ControlContext() const { return {}; }
     std::shared_ptr<Detail::TransferProviderBinding> NCCLTransferProvider::Bind(
         const TransferPayload &, Buffer, Buffer, std::shared_ptr<const Reducer>, TransferTransport, const TransferOptions &, bool) const
     {

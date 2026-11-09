@@ -289,8 +289,10 @@ No host completion wait is needed between these phases. The caller must order
 producer readiness, consumer readiness, private scratch reuse and per-peer call
 order across bindings sharing a provider. Scheduled reservations are not a
 dependency proof. Immediate access still needs observed completion. Observe
-provider asynchronous errors and coordinate cancellation; do not assume a CUDA
-prefix alone can diagnose a failed remote peer. Default MPI behavior is unchanged.
+provider asynchronous errors for manual operations. Managed Enqueue registers a
+controller-held provider owner and polls errors during runtime progress; a
+transport failure aborts without draining unmatched work. A CUDA prefix alone
+cannot diagnose a missing remote submission. Default MPI behavior is unchanged.
 
 ## Schemas, reductions and redistribution
 
