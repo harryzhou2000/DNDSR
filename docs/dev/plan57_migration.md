@@ -61,7 +61,8 @@ against the optimized parent and the prior audit plans.
   and `plan57-tests/source-audit-tooling.log`.
 - Python modules rebuilt and installed. The focused np2 rerun passed per rank:
   CFV 13 (four NCCL skips), Cauchy Domain 23, Cauchy operators two.
-  `plan57-tests/python-callers-fixed/` retains the logs. The old default-policy
+  `plan57-tests/final-audit/` retains the final source-matched logs; the first
+  repaired run is retained in `plan57-tests/python-callers-fixed/`. The old default-policy
   and split-field assertions failed before their test callers were updated;
   the rerun compares logical blocks across the new default coupled layout and
   explicit split/permuted fields. The install emitted stub-generation warnings;
@@ -73,9 +74,17 @@ against the optimized parent and the prior audit plans.
   first configuration with MPI compiler wrappers hid include flags from nvcc;
   a separate configure with native C/C++ compilers and explicit FindMPI paths
   fixed it. The gate tests descriptors, not NCCL or distributed GPU execution.
-- Maintained MG factor/full convergence matrices: unrun.
-- Matched timing and numerical parity require new BSSCA results. Historical
-  measurements are preserved under their original pins.
+- Maintained MG factor matrices: all 70 cylinder and 126 NACA applicable
+  32-correction members passed the receipt audit; these are capped trials.
+  All 21 full cylinder runs converged. Refactor and integrated Cauchy
+  have exact logged histories, linear counts, and stored cylinder fields
+  and wall pressures for all seven policies. The full NACA convergence
+  and the sustained timing check remain separate gates.
+- Source `7493806b` is the production benchmark pin. The diff from that
+  pin through the checkpoint-test follow-up `80720f7b` does not change
+  application or library sources. The
+  [plan 57 experiment index](https://github.com/harryzhou2000/dndsr-next-plan/tree/main/experiments/cauchy-cpu-next/plan57-migration)
+  records the new BSSCA runs. Historical measurements keep their own pins.
 
 ## Audit commits (all 47)
 
