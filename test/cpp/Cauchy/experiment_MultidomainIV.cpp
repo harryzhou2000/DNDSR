@@ -41,7 +41,7 @@ namespace
                 sums[2] += volume;
                 cells += u.RowCount();
                 MPI_Allreduce(MPI_IN_PLACE, &volume, 1, MPI_DOUBLE, MPI_SUM, domain.Discretization().Metrics().Communicator());
-                const auto error = domain.Discretization().Error(domain.Flow(), settings.initialProfile, settings.initialPrimitive, simulation.Time());
+                const auto error = domain.Discretization().Error(domain.Dofs(), settings.initialProfile, settings.initialPrimitive, simulation.Time());
                 if (simulation.Placement().DomainRank(iDomain) == 0)
                 {
                     sums[3] += volume * error[0][0];

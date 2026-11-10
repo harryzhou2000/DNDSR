@@ -388,7 +388,8 @@ TEST_CASE("Nonzero quadratic temperature does not introduce viscosity at Euler o
         const int modes = basis.Size() - 1;
         auto mean = fv.Metrics().BuildField(5), coefficient = fv.Metrics().BuildField(5 * modes);
         auto residual = fv.Metrics().BuildField(5), inviscid = fv.Metrics().BuildField(5);
-        fv.Initialize(mean, {}, settings.boundaries["7"].primitive);
+        auto logicalMean = C::EquationDofs::Coupled(equation.Schema(), mean);
+        fv.Initialize(logicalMean, {}, settings.boundaries["7"].primitive);
         DNDS::Algebra::Fill(coefficient, 0.);
         {
             auto write = coefficient.Owned().Write();

@@ -496,9 +496,9 @@ TEST_CASE("Auxiliary provenance and persistent workspaces reject a different row
     const size_t auxBytes = values.meanThermodynamics->Storage().Bytes();
     const auto auxBacking = R::Buffer::Allocate(2 * auxBytes);
     values.meanThermodynamics = R::Array<double>::FromStorage(auxLayout, auxBacking.Subspan(0, auxBytes));
-    fv.PrepareAuxValues(state, values);
+    fv.PrepareAuxValues(other, values);
     values.meanThermodynamics = R::Array<double>::FromStorage(auxLayout, auxBacking.Subspan(auxBytes, auxBytes));
-    CHECK_THROWS(fv.ValidateAuxValues(state, values));
+    CHECK_THROWS(fv.ValidateAuxValues(other, values));
 }
 TEST_CASE("Cauchy communication worker preserves nonconstant P3 RHS")
 {
@@ -1264,7 +1264,7 @@ TEST_CASE("Cauchy thermal PP rejects invalid low-order stages collectively witho
     REQUIRE(domain.Advance(1e-5).accepted);
     CHECK(domain.Time() == 1e-5);
     CHECK(domain.Epoch().acceptedStep == 1);
-    CHECK(domain.Discretization().Admissible(domain.Flow()));
+    CHECK(domain.Discretization().Admissible(domain.Dofs()));
 }
 
 TEST_CASE("Canonical flow5 positivity workspace produces the established high and low residuals without the archived FV frontend")
@@ -1522,10 +1522,11 @@ TEST_CASE("Stateless auxiliary preparation supports independently optional face 
         }
         auto halo = fv.Metrics().BindHalo(state);
         halo.Begin().Wait();
+        auto logical = Bind(fv, state);
         const auto ownedVersion = state.Owned().Version(), ghostVersion = state.Ghost().Version();
         auto all = fv.BuildAuxiliaryValues({true, true, true, true, true, true, true});
-        fv.PrepareAuxValues(state, all, .25);
-        CHECK_NOTHROW(fv.ValidateAuxValues(state, all, .25));
+        fv.PrepareAuxValues(logical, all, .25);
+        CHECK_NOTHROW(fv.ValidateAuxValues(logical, all, .25));
         CHECK(state.Owned().Version() == ownedVersion);
         CHECK(state.Ghost().Version() == ghostVersion);
         const double h = 1. / 8, a = std::sqrt(settings.equation.gamma * primitive[4] / primitive[0]);
@@ -1540,8 +1541,8 @@ TEST_CASE("Stateless auxiliary preparation supports independently optional face 
                 CHECK(pressureRead.View()(iCell, 0) == doctest::Approx(primitive[4]).epsilon(3e-13));
             }
         }
-        CHECK(fv.StableStep(state, all, .4, .25) == doctest::Approx(.4 * h * h / expected).epsilon(3e-13));
-        CHECK_THROWS(fv.ValidateAuxValues(state, all, .5));
+        CHECK(fv.StableStep(logical, all, .4, .25) == doctest::Approx(.4 * h * h / expected).epsilon(3e-13));
+        CHECK_THROWS(fv.ValidateAuxValues(logical, all, .5));
         for (int selection = 0; selection < 5; ++selection)
         {
             C::AuxiliaryRequest request;
@@ -1549,8 +1550,8 @@ TEST_CASE("Stateless auxiliary preparation supports independently optional face 
             request.faceSpectralRadius = request.faceWaveJump = request.facePressureMinimum = selection < 2;
             request.cellSpectralSum = request.cellWaveJump = request.cellPressureMinimum = selection == 0 || selection == 2;
             auto selected = fv.BuildAuxiliaryValues(request);
-            fv.PrepareAuxValues(state, selected, .25);
-            CHECK_NOTHROW(fv.ValidateAuxValues(state, selected, .25));
+            fv.PrepareAuxValues(logical, selected, .25);
+            CHECK_NOTHROW(fv.ValidateAuxValues(logical, selected, .25));
             const auto compare = [](const auto &reference, const auto &actual)
             {
                 if (!actual)
@@ -1578,7 +1579,7 @@ TEST_CASE("Stateless auxiliary preparation supports independently optional face 
                 CHECK_FALSE(selected.faceSpectralRadius);
                 CHECK_FALSE(selected.cellWaveJump);
                 CHECK_FALSE(selected.cellPressureMinimum);
-                CHECK_THROWS(fv.StableStep(state, selected, .4, .25));
+                CHECK_THROWS(fv.StableStep(logical, selected, .4, .25));
             }
         }
     }
@@ -1592,58 +1593,59 @@ TEST_CASE("Auxiliary reuse rejects active writers changed inputs replaced output
     const auto equation = C::EquationSystem::Resolve(settings.equation);
     C::FiniteVolume fv(mesh, settings, equation);
     auto state = fv.Metrics().BuildField(5);
-    fv.Initialize(state, settings.initialProfile, settings.initialPrimitive);
+    auto logical = Bind(fv, state);
+    fv.Initialize(logical, settings.initialProfile, settings.initialPrimitive);
     auto halo = fv.Metrics().BindHalo(state);
     halo.Begin().Wait();
     auto aux = fv.BuildAuxiliaryValues({true, true, true, true, true, true, true});
-    CHECK_THROWS(fv.ValidateAuxValues(state, aux));
-    fv.PrepareAuxValues(state, aux);
+    CHECK_THROWS(fv.ValidateAuxValues(logical, aux));
+    fv.PrepareAuxValues(logical, aux);
     {
         auto write = state.Owned().Write();
-        CHECK_THROWS(fv.ValidateAuxValues(state, aux));
+        CHECK_THROWS(fv.ValidateAuxValues(logical, aux));
         write.CancelUnmodified();
     }
-    CHECK_NOTHROW(fv.ValidateAuxValues(state, aux));
+    CHECK_NOTHROW(fv.ValidateAuxValues(logical, aux));
     {
         auto write = aux.meanThermodynamics->Write();
-        CHECK_THROWS(fv.ValidateAuxValues(state, aux));
+        CHECK_THROWS(fv.ValidateAuxValues(logical, aux));
     }
-    CHECK_THROWS(fv.ValidateAuxValues(state, aux));
-    fv.PrepareAuxValues(state, aux);
+    CHECK_THROWS(fv.ValidateAuxValues(logical, aux));
+    fv.PrepareAuxValues(logical, aux);
     {
         auto write = state.Ghost().Write();
     }
-    CHECK_THROWS(fv.ValidateAuxValues(state, aux));
-    fv.PrepareAuxValues(state, aux);
+    CHECK_THROWS(fv.ValidateAuxValues(logical, aux));
+    fv.PrepareAuxValues(logical, aux);
     {
         auto write = state.Owned().Write();
     }
-    CHECK_THROWS(fv.ValidateAuxValues(state, aux));
-    fv.PrepareAuxValues(state, aux);
+    CHECK_THROWS(fv.ValidateAuxValues(logical, aux));
+    fv.PrepareAuxValues(logical, aux);
     aux.faceWaveJump = aux.faceWaveJump->Clone();
-    CHECK_THROWS(fv.ValidateAuxValues(state, aux));
-    fv.PrepareAuxValues(state, aux);
+    CHECK_THROWS(fv.ValidateAuxValues(logical, aux));
+    fv.PrepareAuxValues(logical, aux);
     aux.faceWaveJump.reset();
-    CHECK_THROWS(fv.ValidateAuxValues(state, aux));
+    CHECK_THROWS(fv.ValidateAuxValues(logical, aux));
     aux.meanThermodynamics = R::Array<DNDS::real>(R::RowLayout::Dense(fv.Metrics().NumCellProc(), 2));
-    CHECK_THROWS(fv.PrepareAuxValues(state, aux));
-    CHECK_THROWS(fv.ValidateAuxValues(state, aux));
+    CHECK_THROWS(fv.PrepareAuxValues(logical, aux));
+    CHECK_THROWS(fv.ValidateAuxValues(logical, aux));
     // Correct shape with shared storage is still invalid: no source mutation.
     C::AuxiliaryValues alias;
     alias.cellWaveJump.emplace(fv.Metrics().BuildField(1));
     alias.cellPressureMinimum = alias.cellWaveJump;
-    CHECK_THROWS(fv.PrepareAuxValues(state, alias));
+    CHECK_THROWS(fv.PrepareAuxValues(logical, alias));
     C::AuxiliaryValues empty;
-    fv.PrepareAuxValues(state, empty);
-    CHECK_NOTHROW(fv.ValidateAuxValues(state, empty));
+    fv.PrepareAuxValues(logical, empty);
+    CHECK_NOTHROW(fv.ValidateAuxValues(logical, empty));
     empty.faceWaveJump.emplace(R::RowLayout::Dense(DNDS::index(fv.AuxiliaryFaces().size()), 1));
-    CHECK_THROWS(fv.ValidateAuxValues(state, empty));
+    CHECK_THROWS(fv.ValidateAuxValues(logical, empty));
     {
         auto mutation = mesh->versions.BeginMutation(R::Change::Geometry);
         mutation.Commit();
     }
-    CHECK_THROWS(fv.PrepareAuxValues(state, aux));
-    CHECK_THROWS(fv.ValidateAuxValues(state, aux));
+    CHECK_THROWS(fv.PrepareAuxValues(logical, aux));
+    CHECK_THROWS(fv.ValidateAuxValues(logical, aux));
 }
 TEST_CASE("Mean boundary spectra use stage kinematics while analytic RHS uses boundary stage time")
 {
@@ -1664,15 +1666,16 @@ TEST_CASE("Mean boundary spectra use stage kinematics while analytic RHS uses bo
     const auto equation = C::EquationSystem::Resolve(settings.equation);
     C::FiniteVolume fv(mesh, settings, equation);
     auto state = fv.Metrics().BuildField(5);
-    fv.Initialize(state, settings.initialProfile, settings.initialPrimitive);
+    auto logical = Bind(fv, state);
+    fv.Initialize(logical, settings.initialProfile, settings.initialPrimitive);
     auto halo = fv.Metrics().BindHalo(state);
     halo.Begin().Wait();
     C::AuxiliaryRequest request;
     request.faceSpectralRadius = request.faceWaveJump = request.facePressureMinimum = true;
     auto first = fv.BuildAuxiliaryValues(request), second = fv.BuildAuxiliaryValues(request);
-    fv.PrepareAuxValues(state, first, 0);
-    fv.PrepareAuxValues(state, second, .6);
-    CHECK_THROWS(fv.ValidateAuxValues(state, first, .6));
+    fv.PrepareAuxValues(logical, first, 0);
+    fv.PrepareAuxValues(logical, second, .6);
+    CHECK_THROWS(fv.ValidateAuxValues(logical, first, .6));
     const auto geometry = fv.Metrics().AcquireRead();
     const auto metric = geometry.HostView();
     double difference = 0;
@@ -1709,7 +1712,7 @@ TEST_CASE("Mean boundary spectra use stage kinematics while analytic RHS uses bo
     // Preserve the original boundary-time regression purpose in the RHS,
     // whose analytic exterior must still be evaluated at the physical stage.
     auto earlier = fv.Metrics().BuildField(5), later = fv.Metrics().BuildField(5);
-    auto logical = Bind(fv, state), earlierState = Bind(fv, earlier), laterState = Bind(fv, later);
+    auto earlierState = Bind(fv, earlier), laterState = Bind(fv, later);
     auto workspace = fv.BuildWorkspace(logical);
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
@@ -2335,7 +2338,8 @@ TEST_CASE("RHS checked and production-fatal policies share normal arithmetic")
     const auto equation = C::EquationSystem::Resolve(settings.equation);
     C::FiniteVolume fv(mesh, settings, equation);
     auto mean = fv.Metrics().BuildField(5), checked = fv.Metrics().BuildField(5), fatal = fv.Metrics().BuildField(5);
-    fv.Initialize(mean, {}, settings.initialPrimitive);
+    auto logical = Bind(fv, mean);
+    fv.Initialize(logical, {}, settings.initialPrimitive);
     fv.BindHalo(mean).Begin().Wait();
     const auto owned = mean.Owned().Read(), ghost = mean.Ghost().Read();
     C::RHSReadViews input;

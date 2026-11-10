@@ -104,8 +104,8 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
     auto equationB = C::EquationDofs::Coupled(equation.Schema(), b);
     auto equationRA = C::EquationDofs::Coupled(equation.Schema(), ra);
     auto equationRB = C::EquationDofs::Coupled(equation.Schema(), rb);
-    reference.InitializeField(equationA);
-    coupled.InitializeField(equationB);
+    reference.Initialize(equationA, settings.initialProfile, settings.initialPrimitive);
+    coupled.Initialize(equationB, settings.initialProfile, settings.initialPrimitive);
     auto workA = reference.BuildWorkspace(equationA);
     auto workB = coupled.BuildWorkspace(equationB);
     auto incoming = coupled.BuildBoundaryInputs();
@@ -172,10 +172,11 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
         for (I iCell = 0; iCell < tau.RowCount(); ++iCell)
             write.View()(iCell, 0) = 10;
     }
-    auto ja = reference.BuildLinearProblem(a, C::DiagonalStorage::Block), jb = coupled.BuildLinearProblem(b, C::DiagonalStorage::Block);
+    auto ja = reference.BuildLinearProblem(equationA, C::DiagonalStorage::Block),
+         jb = coupled.BuildLinearProblem(equationB, C::DiagonalStorage::Block);
     const C::JacobianPreparation controls{3, .7, true};
-    reference.PrepareJacobian(a, auxA, tau, *ja, controls, time);
-    coupled.PrepareJacobian(b, auxB, tau, *jb, controls, time);
+    reference.PrepareJacobian(equationA, auxA, tau, *ja, controls, time, {}, workA.get());
+    coupled.PrepareJacobian(equationB, auxB, tau, *jb, controls, time, {}, workB.get());
     // Full physical field a/b is an independent nonconstant action input.
     ja->Apply(a, ra);
     jb->Apply(b, rb);
@@ -190,7 +191,7 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
     {
         auto write = incoming.faceFlow.Write(); // Either table's debug write invalidates publication.
     }
-    CHECK_THROWS(coupled.ValidateAuxValues(b, auxB, time));
+    CHECK_THROWS(coupled.ValidateAuxValues(equationB, auxB, time));
 }
 int main(int argc, char **argv)
 {

@@ -132,6 +132,9 @@ TEST_CASE("LVR warm restart and output cadence preserve the complete implicit tr
         for (const std::string layout : {"aos", "soa", "aosoa32"})
             for (const std::string method : {"bdf1", "ditr"})
             {
+                CAPTURE(variant);
+                CAPTURE(layout);
+                CAPTURE(method);
                 const auto settings = Settings(variant, layout);
                 C::TimeSettings time;
                 time.method = method;
@@ -295,7 +298,7 @@ TEST_CASE("LVR fine reconstruction connects to limited-gradient and constant pol
     Initialize(domain);
     REQUIRE(domain.Advance(1e-6).accepted);
     CHECK(domain.Epoch().acceptedStep == 1);
-    CHECK(domain.Discretization().Admissible(domain.Flow()));
+    CHECK(domain.Discretization().Admissible(domain.Dofs()));
     REQUIRE(domain.LastImplicitStages().size() == 1);
     const auto &report = domain.LastImplicitStages()[0];
     CHECK(report.multigridCycles == 1);

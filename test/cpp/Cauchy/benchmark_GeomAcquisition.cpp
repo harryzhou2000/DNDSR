@@ -105,6 +105,7 @@ namespace
         const auto &metrics = fv.Metrics();
         const auto &reconstruction = fv.Reconstruction();
         auto mean = metrics.BuildField(5);
+        auto logicalMean = C::EquationDofs::Coupled(equation.Schema(), mean);
         auto work = reconstruction.BuildWorkspace(5);
         auto boundary = reconstruction.BuildBoundaryValues(5);
         {
@@ -126,7 +127,7 @@ namespace
         C::AuxiliaryRequest request;
         request.meanThermodynamics = request.faceSpectralRadius = request.cellSpectralSum = true;
         auto auxiliary = fv.BuildAuxiliaryValues(request);
-        fv.PrepareAuxValues(mean, auxiliary);
+        fv.PrepareAuxValues(logicalMean, auxiliary);
         reconstruction.DoReconstructionIterTo(mean, work.coefficients, work, boundary);
         std::vector<double> reference;
         {
@@ -155,9 +156,9 @@ namespace
             {"rhs_acquire", repetitions, [&]
              { auto operation = fv.AcquireRHSOperator(); }},
             {"auxiliary_begin_abandon", repetitions, [&]
-             { auto preparation = fv.BeginAuxValues(mean, auxiliary); }},
+             { auto preparation = fv.BeginAuxValues(logicalMean, auxiliary); }},
             {"auxiliary_complete", kernels, [&]
-             { fv.PrepareAuxValues(mean, auxiliary); }},
+             { fv.PrepareAuxValues(logicalMean, auxiliary); }},
             {"reconstruction_all", kernels, [&]
              { reconstruction.DoReconstructionIterTo(mean, work.coefficients, work, boundary); }},
             {"reconstruction_core", kernels, [&]
@@ -175,8 +176,8 @@ namespace
             DNDS_check_throw_info(observedRows == metrics.NumCell(), "unexpected mesh read row count");
             // Abandoned auxiliary begins publish no valid provenance. Refresh
             // before validating; the benchmark never consumes those outputs.
-            fv.PrepareAuxValues(mean, auxiliary);
-            fv.ValidateAuxValues(mean, auxiliary);
+            fv.PrepareAuxValues(logicalMean, auxiliary);
+            fv.ValidateAuxValues(logicalMean, auxiliary);
             reconstruction.DoReconstructionIterTo(mean, work.coefficients, work, boundary, F::ReconstructionRegion::Core);
             reconstruction.DoReconstructionIterTo(mean, work.coefficients, work, boundary, F::ReconstructionRegion::HaloDependent);
             {

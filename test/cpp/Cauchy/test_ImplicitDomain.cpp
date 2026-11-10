@@ -150,7 +150,7 @@ TEST_CASE("P3 implicit periodic transport conserves flow and discard restores th
                 CHECK(report.reconstructionIterations <= settings.numerics.reconstructionIterations);
                 CHECK(report.reconstructionRelativeUpdate <= settings.numerics.reconstructionTolerance);
             }
-            CHECK(retried.Discretization().Admissible(retried.Flow()));
+            CHECK(retried.Discretization().Admissible(retried.Dofs()));
         }
 }
 TEST_CASE("Steady BDF1 infinite-dt mode removes a nonconstant residual without advancing physical time")
@@ -213,7 +213,7 @@ TEST_CASE("Capped steady stages advance by default and reject only with explicit
             REQUIRE(domain.LastImplicitStages().size() == 1);
             CHECK_FALSE(domain.LastImplicitStages()[0].converged);
             CHECK_THROWS(domain.CommitStep());
-            CHECK(domain.Discretization().Admissible(domain.Flow()));
+            CHECK(domain.Discretization().Admissible(domain.Dofs()));
             const auto expected = initial.Owned().Read(), actual = domain.Flow().Owned().Read();
             bool changed = false;
             for (DNDS::index iCell = 0; iCell < actual.View().RowCount(); ++iCell)
@@ -331,7 +331,7 @@ TEST_CASE("DITR coupled cap advances by default and rejects only with explicit c
         domain.CommitStep();
         CHECK(domain.Time() == doctest::Approx(.01));
         CHECK(domain.Epoch().acceptedStep == 1);
-        CHECK(domain.Discretization().Admissible(domain.Flow()));
+        CHECK(domain.Discretization().Admissible(domain.Dofs()));
     }
 }
 TEST_CASE("Rotating physical domains retain a uniform inertial flow with explicit and implicit stage times")

@@ -152,18 +152,10 @@ namespace DNDS::Cauchy
         }
     };
 
-    std::shared_ptr<LinearProblemContext> FiniteVolume::BuildLinearProblem(const CFV::FVField &prototype, DiagonalStorage diagonal, OffDiagonalStorage offDiagonal) const
+    void FiniteVolume::PrepareFlow5Jacobian(const CFV::FVField &state, const AuxiliaryValues &auxiliary,
+                                            const R::Array<real> &inversePseudoTime, LinearProblemContext &output,
+                                            JacobianPreparation controls, real time) const
     {
-        Metrics().ValidateField(prototype, 5);
-        _data->partition.Validate();
-        auto columns = FiniteVolumeDetail::JacobianColumns(_data->jacobianOffsets, _data->jacobianSamples);
-        return std::make_shared<LinearProblemContext>(prototype.Space(), 5, std::move(columns), _data->partition.Core(), diagonal, offDiagonal);
-    }
-    void FiniteVolume::PrepareJacobian(const CFV::FVField &state, const AuxiliaryValues &auxiliary,
-                                       const R::Array<real> &inversePseudoTime, LinearProblemContext &output,
-                                       JacobianPreparation controls, real time) const
-    {
-        ValidateAuxValues(state, auxiliary, time);
         const Algebra::ComponentSelection selection(5, controls.updateComponents);
         std::array<bool, 5> active{};
         for (int j = 0; j < 5; ++j)
@@ -190,10 +182,11 @@ namespace DNDS::Cauchy
         checkAlias(state.Ghost());
         checkAlias(faceArray);
         checkAlias(inversePseudoTime);
-        if (auxiliary._origin->boundary)
+        const auto boundary = PreparedBoundaryInputs(auxiliary);
+        if (boundary)
         {
-            checkAlias(auxiliary._origin->boundary->flow);
-            checkAlias(auxiliary._origin->boundary->faceFlow);
+            checkAlias(boundary->flow);
+            checkAlias(boundary->faceFlow);
         }
         if (auxiliary.meanThermodynamics)
             checkAlias(*auxiliary.meanThermodynamics);
@@ -218,9 +211,9 @@ namespace DNDS::Cauchy
         std::optional<DerivedFields::ReadScope> derivedOwned, derivedGhost;
         std::optional<R::Array<real>::ReadLease> boundaryRead;
         RHSScalarView incoming;
-        if (auxiliary._origin->boundary)
+        if (boundary)
         {
-            boundaryRead.emplace(auxiliary._origin->boundary->faceFlow.Read());
+            boundaryRead.emplace(boundary->faceFlow.Read());
             incoming = boundaryRead->View<R::UniformTableRows>();
         }
         if (auxiliary.meanThermodynamics)

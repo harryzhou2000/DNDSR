@@ -104,7 +104,7 @@ namespace CauchyBenchmark
                         for (int j : {1, 2, 3})
                             DNDS_check_throw_info(std::memcmp(&x(iCell, j), &y(iCell, j), sizeof(double)) == 0,
                                                   "pMG benchmark changed a frozen component"); });
-                DNDS_check_throw_info(fv.Admissible(trial), "pMG benchmark produced an inadmissible mean");
+                DNDS_check_throw_info(fv.Admissible(trialState), "pMG benchmark produced an inadmissible mean");
                 row["calls"].push_back({{"repetition", repetition}, {"max_rank_seconds", elapsed}, {"nonlinear_corrections", report.iterations}, {"linear_iterations", report.linearIterations}, {"level_corrections", report.levelCorrections}, {"cycles", report.multigridCycles}, {"initial_full_defect", initial}, {"final_full_defect", final}, {"reported_initial_residual", report.initialResidual}, {"reported_residual", report.residual}, {"converged", report.converged}, {"frozen_components_preserved", true}});
             }
             output.push_back(std::move(row));

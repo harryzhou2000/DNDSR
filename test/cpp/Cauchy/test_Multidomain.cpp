@@ -232,8 +232,8 @@ TEST_CASE("P3 flow5 crosses a posed disk interface with dense and sparse distrib
                 {
                     const auto &domain = sparse.GetDomain(iDomain);
                     const auto &settings = sparseConfig.Domains()[iDomain].settings;
-                    error = std::max(error, domain.Discretization().Error(domain.Flow(), settings.initialProfile, settings.initialPrimitive, sparse.Time())[2][0]);
-                    CHECK(domain.Discretization().Admissible(domain.Flow()));
+                    error = std::max(error, domain.Discretization().Error(domain.Dofs(), settings.initialProfile, settings.initialPrimitive, sparse.Time())[2][0]);
+                    CHECK(domain.Discretization().Admissible(domain.Dofs()));
                 }
             MPI_Allreduce(MPI_IN_PLACE, &error, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
             if (mpi.rank == 0)

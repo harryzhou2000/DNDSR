@@ -186,7 +186,8 @@ TEST_CASE("Finest FAS acceptance shares selected-component L1 L2 convergence wit
             const auto equation = C::EquationSystem::Resolve(settings.equation);
             C::FiniteVolume fine(mesh, settings, equation);
             auto state = fine.Metrics().BuildField(5), source = fine.Metrics().BuildField(5);
-            fine.Initialize(state, {}, {1, 0, 0, 0, 1});
+            auto input = Bind(fine, state), right = Bind(fine, source);
+            fine.Initialize(input, {}, {1, 0, 0, 0, 1});
             const auto mean = equation.Gas().Conservative({1, 0, 0, 0, 1});
             {
                 auto write = source.Owned().Write();
@@ -200,7 +201,6 @@ TEST_CASE("Finest FAS acceptance shares selected-component L1 L2 convergence wit
             }
             R::EagerEngine engine;
             const auto stream = engine.CreateCPUStream();
-            auto input = Bind(fine, state), right = Bind(fine, source);
             auto smoother = MakeSolver(fine, input, engine, stream, settings);
             C::PolynomialMultigrid solver(mesh, fine, input, smoother, engine, stream, settings);
             const auto version = state.Owned().Version();
@@ -408,12 +408,12 @@ TEST_CASE("Polynomial FAS fixed points and preflight errors preserve fine means"
     const auto equation = C::EquationSystem::Resolve(settings.equation);
     C::FiniteVolume fine(mesh, settings, equation);
     auto state = fine.Metrics().BuildField(5), source = fine.Metrics().BuildField(5), wrong = fine.Metrics().BuildField(4);
-    fine.Initialize(state, {}, {1, .2, -.1, 0, 1});
+    auto input = Bind(fine, state), forcing = Bind(fine, source);
+    fine.Initialize(input, {}, {1, .2, -.1, 0, 1});
     A::Copy(source, state);
     A::Scale(source, 10.);
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
-    auto input = Bind(fine, state), forcing = Bind(fine, source);
     auto workspace = fine.BuildWorkspace(input);
     C::NonlinearSolver smoother(
         fine, input, workspace, engine, stream, settings,

@@ -67,9 +67,17 @@ TEST_CASE("Physical timestep PP agrees with Euler global compress-one bounds acr
         C::DomainSettings settings;
         settings.numerics.temperatureFloor = .02;
         settings.numerics.pressureFloor = .008;
-        C::FiniteVolume fv(mesh, settings, C::EquationSystem::Resolve(settings.equation));
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
         auto state = fv.Metrics().BuildField(Layout(scenario)), residual = fv.Metrics().BuildField(Layout(scenario));
-        fv.Initialize(state, {}, {1, 0, 0, 0, 1});
+        auto logicalState = C::EquationDofs::Coupled(equation.Schema(), state);
+        auto logicalResidual = logicalState.RebindCoupled(residual);
+        const C::EquationThermalPolicy thermalPolicy(equation, settings.numerics.densityFloor,
+                                                     settings.numerics.temperatureFloor,
+                                                     settings.numerics.sensibleEnergyFloor,
+                                                     settings.numerics.pressureFloor);
+        const auto thermal = thermalPolicy.View();
+        fv.Initialize(logicalState, {}, {1, 0, 0, 0, 1});
         const C::FlowState mean{1, 0, 0, 0, 2.5};
         const std::array<C::FlowState, 4> deltas{{{-5, 0, 0, 0, 0}, {0, 0, 0, 0, -20}, {0, 20, 0, 0, 0}, {.25, 0, 0, 0, 0}}};
         const double dt = .05, scale = 1.5, relax = .8;
@@ -89,7 +97,7 @@ TEST_CASE("Physical timestep PP agrees with Euler global compress-one bounds acr
         {
             const auto meanVersion = state.Owned().Version(), rhsVersion = residual.Owned().Version();
             auto operation = binding.Begin();
-            const auto result = fv.LimitPhysicalStep(state, residual, dt, relax, scale, power);
+            const auto result = fv.LimitPhysicalStep(logicalState, logicalResidual, thermal, dt, relax, scale, power);
             operation.Wait();
             double expected = 1;
             for (const auto &delta : deltas)
@@ -101,23 +109,25 @@ TEST_CASE("Physical timestep PP agrees with Euler global compress-one bounds acr
             CHECK(state.Owned().Version() == meanVersion);
             CHECK(residual.Owned().Version() == rhsVersion);
         }
-        CHECK_THROWS(fv.LimitPhysicalStep(state, state, dt, relax, scale));
-        CHECK_THROWS(fv.LimitPhysicalStep(state, residual, dt, 0, scale));
-        CHECK_THROWS(fv.LimitPhysicalStep(state, residual, dt, relax, 0));
-        CHECK_THROWS(fv.LimitPhysicalStep(state, residual, dt, relax, scale, 0));
-        CHECK_THROWS(fv.LimitPhysicalStep(state, residual, mpi.rank == 0 ? std::numeric_limits<double>::quiet_NaN() : dt, relax, scale));
+        CHECK_THROWS(fv.LimitPhysicalStep(logicalState, logicalState, thermal, dt, relax, scale));
+        CHECK_THROWS(fv.LimitPhysicalStep(logicalState, logicalResidual, thermal, dt, 0, scale));
+        CHECK_THROWS(fv.LimitPhysicalStep(logicalState, logicalResidual, thermal, dt, relax, 0));
+        CHECK_THROWS(fv.LimitPhysicalStep(logicalState, logicalResidual, thermal, dt, relax, scale, 0));
+        CHECK_THROWS(fv.LimitPhysicalStep(logicalState, logicalResidual, thermal,
+                                          mpi.rank == 0 ? std::numeric_limits<double>::quiet_NaN() : dt, relax, scale));
         if (mpi.size > 1)
-            CHECK_THROWS(fv.LimitPhysicalStep(state, residual, mpi.rank == 0 ? 2 * dt : dt, relax, scale));
+            CHECK_THROWS(fv.LimitPhysicalStep(logicalState, logicalResidual, thermal,
+                                              mpi.rank == 0 ? 2 * dt : dt, relax, scale));
         {
             auto write = residual.Owned().Write();
             for (DNDS::index iCell = 0; iCell < residual.Owned().RowCount(); ++iCell)
                 if (fv.Metrics().Cells().LocalToGlobal(iCell) == 0)
                     write.View()(iCell, 4) = std::numeric_limits<double>::infinity();
         }
-        CHECK_THROWS(fv.LimitPhysicalStep(state, residual, dt, relax, scale));
+        CHECK_THROWS(fv.LimitPhysicalStep(logicalState, logicalResidual, thermal, dt, relax, scale));
         CHECK(state.Owned().IsValid());
         A::Fill(residual, 0.);
-        const auto unchanged = fv.LimitPhysicalStep(state, residual, dt, relax, scale);
+        const auto unchanged = fv.LimitPhysicalStep(logicalState, logicalResidual, thermal, dt, relax, scale);
         CHECK(unchanged.dt == dt);
         CHECK(unchanged.minimumAlpha == 1);
         CHECK(unchanged.limitedCells == 0);
@@ -129,7 +139,7 @@ TEST_CASE("Physical timestep PP agrees with Euler global compress-one bounds acr
                 r.View<R::UniformTableRows>()(iCell, 0) = -1;
             }
         }
-        const auto impossible = fv.LimitPhysicalStep(state, residual, dt, relax, scale);
+        const auto impossible = fv.LimitPhysicalStep(logicalState, logicalResidual, thermal, dt, relax, scale);
         CHECK(impossible.dt == 0);
         CHECK(impossible.minimumAlpha == 0);
     }

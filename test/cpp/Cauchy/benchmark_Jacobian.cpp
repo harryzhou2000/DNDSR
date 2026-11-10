@@ -10,6 +10,13 @@
 
 namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
+namespace
+{
+    C::EquationDofs Bind(const C::FiniteVolume &fv, const DNDS::CFV::FVField &field)
+    {
+        return C::EquationDofs::Coupled(fv.Equation().Schema(), field);
+    }
+}
 using I = DNDS::index;
 using J = nlohmann::ordered_json;
 
@@ -84,17 +91,17 @@ namespace
         C::AuxiliaryRequest request;
         request.meanThermodynamics = request.faceSpectralRadius = true;
         auto auxiliary = fv.BuildAuxiliaryValues(request);
-        fv.PrepareAuxValues(state, auxiliary);
+        fv.PrepareAuxValues(Bind(fv, state), auxiliary);
         const auto storage = mode == "assembled" ? C::OffDiagonalStorage::Assembled : C::OffDiagonalStorage::SemiMatrixFree;
         const uint64_t before = ResidentBytes();
-        auto problem = fv.BuildLinearProblem(state, C::DiagonalStorage::Entries, storage);
+        auto problem = fv.BuildLinearProblem(Bind(fv, state), C::DiagonalStorage::Entries, storage);
         C::LinearSolveSettings linear;
         linear.maxIterations = 5;
         linear.relativeTolerance = linear.absoluteTolerance = 0;
         C::LinearSolver solver(problem, state, [&](auto &field)
                                { return metrics.BindHalo(field); }, linear, {true, false});
         const auto prepare = [&]
-        { fv.PrepareJacobian(state, auxiliary, inverseTau, *problem, {1000, 1, false}); };
+        { fv.PrepareJacobian(Bind(fv, state), auxiliary, inverseTau, *problem, {1000, 1, false}); };
         const auto pair = [&]
         { problem->ApplySGS(rhs, state, forward, update); };
         const auto measure = [&](auto &&operation, int count)
@@ -115,7 +122,7 @@ namespace
         {
             J phases;
             phases["auxiliary"] = measure([&]
-                                          { fv.PrepareAuxValues(state, auxiliary); }, repetitions);
+                                          { fv.PrepareAuxValues(Bind(fv, state), auxiliary); }, repetitions);
             phases["prepare_warm"] = measure(prepare, repetitions);
             // Inversion is lazy: refresh its input outside this isolated timer.
             prepare();
@@ -146,9 +153,9 @@ namespace
         }
         // Allocate the other producer only after memory/timing observations.
         // Compare complete actions and SGS outputs, not just diagonal blocks.
-        auto reference = fv.BuildLinearProblem(state, C::DiagonalStorage::Entries,
+        auto reference = fv.BuildLinearProblem(Bind(fv, state), C::DiagonalStorage::Entries,
                                                mode == "assembled" ? C::OffDiagonalStorage::SemiMatrixFree : C::OffDiagonalStorage::Assembled);
-        fv.PrepareJacobian(state, auxiliary, inverseTau, *reference, {1000, 1, false});
+        fv.PrepareJacobian(Bind(fv, state), auxiliary, inverseTau, *reference, {1000, 1, false});
         reference->InvertDiagonal();
         auto expected = metrics.BuildField(5), referenceForward = metrics.BuildField(5);
         const auto equal = [&](const auto &a, const auto &b)

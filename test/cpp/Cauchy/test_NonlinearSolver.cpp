@@ -21,6 +21,11 @@ static C::EquationDofs Bind(const C::FiniteVolume &fv, const DNDS::CFV::FVField 
 {
     return C::EquationDofs::Coupled(fv.Equation().Schema(), field);
 }
+static void InitializeFlow5(C::FiniteVolume &fv, DNDS::CFV::FVField &field, const C::FlowState &primitive)
+{
+    auto state = Bind(fv, field);
+    fv.Initialize(state, {}, primitive);
+}
 static C::NonlinearSolver MakeSolver(const C::FiniteVolume &fv, C::EquationDofs &state,
                                      R::EagerEngine &engine, const R::ExecutionStream &stream,
                                      const C::DomainSettings &settings)
@@ -159,7 +164,7 @@ TEST_CASE("Implicit convergence retains initial and running references without h
     policy.Observe({1e-300, 100, 0, 0, 0});
     CHECK_FALSE(policy.Accepted());
     CHECK(std::isfinite(policy.TargetRatio()));
-    for (const std::vector<std::string> components : {std::vector<std::string>{"rho", "flow.rho"}, {"missing"}})
+    for (const auto &components : {std::vector<std::string>{"rho", "flow.rho"}, {"missing"}})
     {
         exact.residualComponents = components;
         CHECK_THROWS(schema.ResolveComponents(exact.residualComponents));
@@ -197,7 +202,7 @@ TEST_CASE("Distributed implicit L1 L2 norms and selected-component stops use the
             C::FiniteVolume fv(mesh, settings, equation);
             const auto layout = order == 1 ? R::RowLayout::ColMajor(0, 5) : R::RowLayout::TiledColMajor(0, 5, 4);
             auto state = fv.Metrics().BuildField(layout), source = fv.Metrics().BuildField(layout);
-            fv.Initialize(state, {}, {1, 0, 0, 0, 1});
+            InitializeFlow5(fv, state, {1, 0, 0, 0, 1});
             const auto mean = equation.Gas().Conservative({1, 0, 0, 0, 1});
             {
                 auto write = source.Owned().Write();
@@ -237,7 +242,7 @@ TEST_CASE("One correction reuses the ordinary solve update without a stopping lo
     const auto equation = C::EquationSystem::Resolve(settings.equation);
     C::FiniteVolume fv(mesh, settings, equation);
     auto reference = fv.Metrics().BuildField(5), single = fv.Metrics().BuildField(5), source = fv.Metrics().BuildField(5);
-    fv.Initialize(reference, {}, {1, .1, 0, 0, 1});
+    InitializeFlow5(fv, reference, {1, .1, 0, 0, 1});
     A::Copy(single, reference);
     A::Copy(source, reference);
     A::Scale(source, 20.);
@@ -305,7 +310,7 @@ TEST_CASE("Global Euler RHS alpha policies affect unmarked rows only for minimum
             const auto layout = std::string(scope) == "cell" ? R::RowLayout::Dense(0, 5) : std::string(scope) == "minimumLimited" ? R::RowLayout::ColMajor(0, 5)
                                                                                                                                   : R::RowLayout::TiledColMajor(0, 5, 8);
             auto state = fv.Metrics().BuildField(layout), source = fv.Metrics().BuildField(layout);
-            fv.Initialize(state, {}, {1, 0, 0, 0, 1});
+            InitializeFlow5(fv, state, {1, 0, 0, 0, 1});
             {
                 auto write = source.Owned().Write();
                 for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
@@ -329,7 +334,7 @@ TEST_CASE("Global Euler RHS alpha policies affect unmarked rows only for minimum
             CHECK(report.minimumRHSAlpha > 0);
             CHECK(report.minimumRHSAlpha < 1);
             CHECK(report.iterations == 1);
-            CHECK(fv.Admissible(state));
+            CHECK(fv.Admissible(Bind(fv, state)));
             DNDS::real maximumGoodChange = 0;
             {
                 auto read = state.Owned().Read();
@@ -433,7 +438,7 @@ TEST_CASE("Implicit stage cap reports unconverged and sessions exclude concurren
     const auto equation = C::EquationSystem::Resolve(settings.equation);
     C::FiniteVolume fv(mesh, settings, equation);
     auto state = fv.Metrics().BuildField(5), source = fv.Metrics().BuildField(5);
-    fv.Initialize(state, {}, {1, .1, 0, 0, 1});
+    InitializeFlow5(fv, state, {1, .1, 0, 0, 1});
     A::Fill(source, 0.);
     R::EagerEngine engine(2);
     const auto stream = engine.CreateCPUStream();
@@ -442,7 +447,7 @@ TEST_CASE("Implicit stage cap reports unconverged and sessions exclude concurren
     const auto report = solver.Solve(logical, right, 1, 1, .1);
     CHECK_FALSE(report.converged);
     CHECK(report.iterations == 1);
-    CHECK(fv.Admissible(state));
+    CHECK(fv.Admissible(Bind(fv, state)));
     auto hierarchyAlias = solver.RetainForMultigrid();
     auto lease = hierarchyAlias.ReserveForMultigrid();
     std::atomic<bool> entered{false}, release{false};
@@ -468,7 +473,7 @@ TEST_CASE("Implicit bad corrections reject without poisoning state and nonlinear
     const auto equation = C::EquationSystem::Resolve(settings.equation);
     C::FiniteVolume fv(mesh, settings, equation);
     auto state = fv.Metrics().BuildField(5), source = fv.Metrics().BuildField(5);
-    fv.Initialize(state, {}, {1, .1, 0, 0, 1});
+    InitializeFlow5(fv, state, {1, .1, 0, 0, 1});
     const auto target = equation.Gas().Conservative({1, .1, 0, 0, 1});
     {
         auto write = source.Owned().Write();
@@ -499,7 +504,7 @@ TEST_CASE("Implicit bad corrections reject without poisoning state and nonlinear
     CHECK_THROWS(solver.Solve(logical, right, 20, 1, .1));
     CHECK(state.Owned().IsValid());
     CHECK(state.Owned().Version() == generation);
-    CHECK(fv.Admissible(state));
+    CHECK(fv.Admissible(Bind(fv, state)));
     {
         auto write = source.Owned().Write();
         for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
@@ -518,7 +523,7 @@ TEST_CASE("Subset correction masks before Euler PP and preserves frozen means ex
     C::FiniteVolume fv(mesh, settings, equation);
     auto state = fv.Metrics().BuildField(5), increment = fv.Metrics().BuildField(5), source = fv.Metrics().BuildField(5);
     const auto initial = equation.Gas().Conservative({1, .3, -.1, .05, 1});
-    fv.Initialize(state, {}, {1, .3, -.1, .05, 1});
+    InitializeFlow5(fv, state, {1, .3, -.1, .05, 1});
     C::FlowState delta{};
     delta[4] = -2 * C::PositivityDetail::InternalEnergy(initial);
     {
@@ -543,7 +548,7 @@ TEST_CASE("Subset correction masks before Euler PP and preserves frozen means ex
     const auto result = solver.ApplyCorrection(logical, deltaState, 1, {4});
     CHECK(result.first == 1);
     CHECK(result.second == alpha);
-    CHECK(fv.Admissible(state));
+    CHECK(fv.Admissible(Bind(fv, state)));
     {
         const auto read = state.Owned().Read();
         for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
@@ -554,7 +559,7 @@ TEST_CASE("Subset correction masks before Euler PP and preserves frozen means ex
                     CHECK(std::memcmp(&read.View()(iCell, j), &initial[j], sizeof(double)) == 0);
     }
     const auto generation = state.Owned().Version();
-    for (const std::vector<DNDS::index> bad : {std::vector<DNDS::index>{0, 0}, {5}})
+    for (const auto &bad : {std::vector<DNDS::index>{0, 0}, {5}})
     {
         C::NonlinearSolveControl control;
         control.updateComponents = bad;
@@ -585,7 +590,7 @@ TEST_CASE("Optional nonlinear phase output preserves exact corrections and recor
     const auto equation = C::EquationSystem::Resolve(settings.equation);
     C::FiniteVolume fv(mesh, settings, equation);
     auto plain = fv.Metrics().BuildField(5), profiled = fv.Metrics().BuildField(5), source = fv.Metrics().BuildField(5);
-    fv.Initialize(plain, {}, {1, 0, 0, 0, 1});
+    InitializeFlow5(fv, plain, {1, 0, 0, 0, 1});
     A::Copy(profiled, plain);
     {
         const auto read = plain.Owned().Read();

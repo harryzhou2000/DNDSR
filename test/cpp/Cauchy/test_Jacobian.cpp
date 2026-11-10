@@ -11,6 +11,19 @@
 namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
 static DNDS::MPIInfo mpi;
+namespace
+{
+    C::EquationDofs Bind(const C::FiniteVolume &fv, const DNDS::CFV::FVField &field)
+    {
+        return C::EquationDofs::Coupled(fv.Equation().Schema(), field);
+    }
+    void InitializeFlow(const C::FiniteVolume &fv, DNDS::CFV::FVField &field,
+                        const C::FlowProfileSettings &profile, const C::FlowState &primitive)
+    {
+        auto state = Bind(fv, field);
+        fv.Initialize(state, profile, primitive);
+    }
+}
 
 TEST_CASE("Six-component frozen face leaves retain EOS coupling and additive matrix and strided product semantics")
 {
@@ -112,7 +125,9 @@ TEST_CASE("Integrated approximate Jacobian matches frozen-spectral flux differen
         if (periodic)
             request.derived = {C::DerivedQuantity::Temperature, C::DerivedQuantity::MolecularViscosity};
         auto auxiliary = fv.BuildAuxiliaryValues(request);
-        fv.PrepareAuxValues(state, auxiliary, time);
+        auto logicalState = Bind(fv, state);
+        auto workspace = fv.BuildWorkspace(logicalState);
+        fv.PrepareAuxValues(logicalState, auxiliary, time);
         const auto stateVersion = state.Owned().Version();
         for (auto diagonal : {C::DiagonalStorage::Entries, C::DiagonalStorage::Block})
             for (auto mode : {C::OffDiagonalStorage::Assembled, C::OffDiagonalStorage::SemiMatrixFree})
@@ -121,12 +136,12 @@ TEST_CASE("Integrated approximate Jacobian matches frozen-spectral flux differen
                 // derivatives. Full block/Roe mode supplies them for this oracle.
                 if (!periodic && diagonal == C::DiagonalStorage::Entries)
                     continue;
-                auto problem = fv.BuildLinearProblem(state, diagonal, mode);
+                auto problem = fv.BuildLinearProblem(logicalState, diagonal, mode);
                 C::JacobianPreparation controls;
                 controls.physicalMass = 3;
                 controls.residualScale = .7;
                 controls.roeDissipation = !periodic;
-                fv.PrepareJacobian(state, auxiliary, inverseTau, *problem, controls, time);
+                fv.PrepareJacobian(logicalState, auxiliary, inverseTau, *problem, controls, time, {}, workspace.get());
                 problem->InvertDiagonal();
                 problem->Apply(delta, action);
                 auto geometry = fv.Metrics().AcquireRead();
@@ -206,14 +221,14 @@ TEST_CASE("Integrated approximate Jacobian matches frozen-spectral flux differen
                 }
                 CHECK(state.Owned().Version() == stateVersion);
             }
-        auto problem = fv.BuildLinearProblem(state, C::DiagonalStorage::Entries);
-        CHECK_THROWS(fv.PrepareJacobian(state, auxiliary, inverseTau, *problem, {0, 1, true}));
-        CHECK_THROWS(fv.PrepareJacobian(state, auxiliary, inverseTau, *problem, {-1, 1, false}));
+        auto problem = fv.BuildLinearProblem(Bind(fv, state), C::DiagonalStorage::Entries);
+        CHECK_THROWS(fv.PrepareJacobian(Bind(fv, state), auxiliary, inverseTau, *problem, {0, 1, true}));
+        CHECK_THROWS(fv.PrepareJacobian(Bind(fv, state), auxiliary, inverseTau, *problem, {-1, 1, false}));
         const auto outputVersion = problem->Diagonal().Version();
         {
             auto writer = state.Owned().Write();
         }
-        CHECK_THROWS(fv.PrepareJacobian(state, auxiliary, inverseTau, *problem));
+        CHECK_THROWS(fv.PrepareJacobian(Bind(fv, state), auxiliary, inverseTau, *problem));
         CHECK(problem->Diagonal().Version() == outputVersion);
     }
 }
@@ -282,20 +297,22 @@ TEST_CASE("Frozen physical semi-matrix-free blocks agree with assembled action, 
             C::AuxiliaryRequest request;
             request.faceSpectralRadius = request.meanThermodynamics = request.cellWaveJump = request.cellPressureMinimum = true;
             auto auxiliary = fv.BuildAuxiliaryValues(request);
-            fv.PrepareAuxValues(state, auxiliary);
+            auto logicalState = Bind(fv, state);
+            auto workspace = fv.BuildWorkspace(logicalState);
+            fv.PrepareAuxValues(logicalState, auxiliary);
             fv.Metrics().BindHalo(*auxiliary.cellWaveJump).Begin().Wait();
             fv.Metrics().BindHalo(*auxiliary.cellPressureMinimum).Begin().Wait();
             for (int approximation = 0; approximation < 3; ++approximation)
             {
                 const auto mode = approximation == 0 ? C::DiagonalStorage::Entries : C::DiagonalStorage::Block;
-                auto a = fv.BuildLinearProblem(state, mode);
-                auto m = fv.BuildLinearProblem(state, mode, C::OffDiagonalStorage::SemiMatrixFree);
+                auto a = fv.BuildLinearProblem(logicalState, mode);
+                auto m = fv.BuildLinearProblem(logicalState, mode, C::OffDiagonalStorage::SemiMatrixFree);
                 CHECK_FALSE(m->HasAssembledOffDiagonal());
                 CHECK_THROWS(m->OffDiagonal());
                 CHECK_THROWS(m->ReadOffDiagonal());
                 C::JacobianPreparation controls{3, .7, approximation == 2};
-                fv.PrepareJacobian(state, auxiliary, inverseTau, *a, controls);
-                fv.PrepareJacobian(state, auxiliary, inverseTau, *m, controls);
+                fv.PrepareJacobian(logicalState, auxiliary, inverseTau, *a, controls, 0, {}, workspace.get());
+                fv.PrepareJacobian(logicalState, auxiliary, inverseTau, *m, controls, 0, {}, workspace.get());
                 if (layout == 1 && approximation < 2)
                 {
                     // Compare the logical physical producer with the established
@@ -342,7 +359,7 @@ TEST_CASE("Frozen physical semi-matrix-free blocks agree with assembled action, 
                     const auto generation = m->OffDiagonalGeneration(), diagonalVersion = m->Diagonal().Version();
                     auto held = m->ReadOffDiagonal();
                     CHECK_THROWS(m->PublishOffDiagonalEvaluator(m->PreparedOffDiagonalEvaluator()));
-                    CHECK_THROWS(fv.PrepareJacobian(state, auxiliary, inverseTau, *m, controls));
+                    CHECK_THROWS(fv.PrepareJacobian(Bind(fv, state), auxiliary, inverseTau, *m, controls));
                     CHECK(m->OffDiagonalGeneration() == generation);
                     CHECK(m->Diagonal().Version() == diagonalVersion);
                 }
@@ -402,14 +419,14 @@ TEST_CASE("Frozen physical semi-matrix-free blocks agree with assembled action, 
                 // A fresh snapshot may reuse geometry without changing action.
                 a->Apply(delta, assembled);
                 const auto old = m->PreparedOffDiagonalEvaluator();
-                fv.PrepareJacobian(state, auxiliary, inverseTau, *m, controls);
+                fv.PrepareJacobian(logicalState, auxiliary, inverseTau, *m, controls, 0, {}, workspace.get());
                 CHECK(old != m->PreparedOffDiagonalEvaluator());
                 m->Apply(delta, evaluated);
                 EqualFields(assembled, evaluated);
             }
             // Live mean mutation must not change an already prepared operator.
-            auto frozen = fv.BuildLinearProblem(state, C::DiagonalStorage::Entries, C::OffDiagonalStorage::SemiMatrixFree);
-            fv.PrepareJacobian(state, auxiliary, inverseTau, *frozen);
+            auto frozen = fv.BuildLinearProblem(Bind(fv, state), C::DiagonalStorage::Entries, C::OffDiagonalStorage::SemiMatrixFree);
+            fv.PrepareJacobian(Bind(fv, state), auxiliary, inverseTau, *frozen);
             frozen->Apply(delta, assembled);
             {
                 auto u = state.Owned().Write();
@@ -420,7 +437,7 @@ TEST_CASE("Frozen physical semi-matrix-free blocks agree with assembled action, 
             meanHalo.Begin().Wait();
             frozen->Apply(delta, evaluated);
             EqualFields(assembled, evaluated);
-            CHECK_THROWS(fv.PrepareJacobian(state, auxiliary, inverseTau, *frozen)); // stale aux, before writes
+            CHECK_THROWS(fv.PrepareJacobian(Bind(fv, state), auxiliary, inverseTau, *frozen)); // stale aux, before writes
         }
     }
 }
@@ -437,7 +454,7 @@ TEST_CASE("Selected physical Jacobians are principal matrices after periodic fra
         C::FiniteVolume fv(mesh, settings, C::EquationSystem::Resolve(settings.equation));
         auto state = fv.Metrics().BuildField(5), direction = fv.Metrics().BuildField(5), projected = fv.Metrics().BuildField(5);
         auto expected = fv.Metrics().BuildField(5), actual = fv.Metrics().BuildField(5);
-        fv.Initialize(state, {}, {1.1, .4, -.2, .1, 1});
+        InitializeFlow(fv, state, {}, {1.1, .4, -.2, .1, 1});
         {
             auto x = direction.Owned().Write(), p = projected.Owned().Write();
             for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
@@ -454,7 +471,7 @@ TEST_CASE("Selected physical Jacobians are principal matrices after periodic fra
         C::AuxiliaryRequest request;
         request.faceSpectralRadius = true;
         auto auxiliary = fv.BuildAuxiliaryValues(request);
-        fv.PrepareAuxValues(state, auxiliary);
+        fv.PrepareAuxValues(Bind(fv, state), auxiliary);
         R::Array<double> inverseTau(R::RowLayout::Dense(fv.Metrics().NumCell(), 1));
         {
             auto write = inverseTau.Write();
@@ -462,12 +479,14 @@ TEST_CASE("Selected physical Jacobians are principal matrices after periodic fra
                 write.View()(iCell, 0) = 3;
         }
         auto semantic = C::EquationDofs::Coupled(C::EquationSystem::Resolve(settings.equation).Schema(), state);
+        auto workspace = fv.BuildWorkspace(semantic);
         auto packet = fv.BuildAuxiliaryValues(request);
         fv.PrepareAuxValues(semantic, packet);
         for (auto diagonal : {C::DiagonalStorage::Entries, C::DiagonalStorage::Block})
             for (auto storage : {C::OffDiagonalStorage::Assembled, C::OffDiagonalStorage::SemiMatrixFree})
             {
-                auto full = fv.BuildLinearProblem(state, diagonal, storage), subset = fv.BuildLinearProblem(state, diagonal, storage);
+                auto full = fv.BuildLinearProblem(semantic, diagonal, storage),
+                     subset = fv.BuildLinearProblem(semantic, diagonal, storage);
                 // The logical producer's scalar approximation must project
                 // after periodic transformation in both diagonal layouts.
                 auto logicalFull = fv.BuildLinearProblem(semantic, diagonal, storage), logicalSubset = fv.BuildLinearProblem(semantic, diagonal, storage);
@@ -486,9 +505,9 @@ TEST_CASE("Selected physical Jacobians are principal matrices after periodic fra
                             CHECK(a.View()(iCell, j) == doctest::Approx(j == 1 || j == 4 ? b.View()(iCell, j) : x.View()(iCell, j)).epsilon(3e-12).scale(1));
                 }
                 C::JacobianPreparation controls{2, .7, diagonal == C::DiagonalStorage::Block};
-                fv.PrepareJacobian(state, auxiliary, inverseTau, *full, controls);
+                fv.PrepareJacobian(semantic, auxiliary, inverseTau, *full, controls, 0, {}, workspace.get());
                 controls.updateComponents = {4, 1};
-                fv.PrepareJacobian(state, auxiliary, inverseTau, *subset, controls);
+                fv.PrepareJacobian(semantic, auxiliary, inverseTau, *subset, controls, 0, {}, workspace.get());
                 full->Apply(projected, expected);
                 subset->Apply(direction, actual);
                 const auto x = direction.Owned().Read(), a = actual.Owned().Read(), b = expected.Owned().Read();

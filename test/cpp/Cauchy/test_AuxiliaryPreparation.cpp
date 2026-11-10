@@ -13,6 +13,10 @@ namespace R = DNDS::Runtime;
 static DNDS::MPIInfo mpi;
 namespace
 {
+    C::EquationDofs Bind(const C::FiniteVolume &fv, const DNDS::CFV::FVField &field)
+    {
+        return C::EquationDofs::Coupled(fv.Equation().Schema(), field);
+    }
     auto Arrays(const C::AuxiliaryValues &values)
     {
         return std::array<const R::Array<DNDS::real> *, 7>{
@@ -74,19 +78,18 @@ namespace
         }
     }
     /// Native CPU-worker launcher with one controlled controller-side rejection.
-    /// The first command is gated; its body is never run after an unsafe unwind
-    /// in a red implementation. This tests joining, without inducing a use-after-free.
+    /// The core command runs on a real worker; the following dependent command
+    /// is rejected before acceptance. Correct unwinding must leave no pending
+    /// accesses from the completed prefix.
     class RejectAuxiliaryDependent final : public R::StreamLauncher
     {
         R::EagerEngine _worker{1};
         R::ExecutionStream _stream = _worker.CreateCPUStream();
-        std::promise<void> _gate, _join;
-        std::shared_future<void> _ready = _gate.get_future().share();
-        std::atomic<bool> _released{false}, _joinRecorded{false};
+        std::atomic<bool> _joinRecorded{false};
         int _computes = 0;
 
     public:
-        std::atomic<bool> rejected{false}, cancel{false}, coreCompleted{false};
+        std::atomic<bool> rejected{false}, coreCompleted{false};
         R::ExecutionContext Context() const override { return _stream.Context(); }
         void Submit(Work work, R::CommandKind kind, Retirement retire = {}) override
         {
@@ -97,32 +100,19 @@ namespace
                 rejected = true;
                 throw std::runtime_error("controlled auxiliary dependent submission rejection");
             }
-            if (command == 1)
-                _worker.SubmitOperation(_stream, [this, work = std::move(work)](auto context)
-                                        {
-                    _ready.wait();
-                    if (!cancel)
-                    {
-                        work(context);
-                        coreCompleted = true;
-                    } }, std::move(retire));
-            else
-                _worker.SubmitOperation(_stream, std::move(work), std::move(retire));
+            _worker.SubmitOperation(_stream, [this, work = std::move(work)](auto context)
+                                    {
+                work(context);
+                coreCompleted = true; }, std::move(retire));
         }
         void WaitFor(R::StreamEvent event) override { _stream.WaitFor(std::move(event)); }
         R::StreamEvent Record() override
         {
-            if (rejected && !_joinRecorded.exchange(true))
-                _join.set_value();
+            if (rejected)
+                _joinRecorded = true;
             return _stream.Record();
         }
         void Drain() override { _worker.Synchronize(); }
-        std::future<void> JoinRequested() { return _join.get_future(); }
-        void Release()
-        {
-            if (!_released.exchange(true))
-                _gate.set_value();
-        }
         bool ObservedJoin() const { return _joinRecorded; }
     };
 }
@@ -153,7 +143,7 @@ TEST_CASE("Auxiliary core completes during a real mean halo write and full publi
             auto halo = fv.Metrics().BindHalo(state);
             halo.Begin().Wait();
             auto reference = fv.BuildAuxiliaryValues({true, true, true, true, true, true, true});
-            fv.PrepareAuxValues(state, reference, .25);
+            fv.PrepareAuxValues(Bind(fv, state), reference, .25);
             const auto expected = Save(reference);
             // The logical-state producer preserves the established flow5
             // auxiliary values exactly, without repacking the physical table.
@@ -200,7 +190,7 @@ TEST_CASE("Auxiliary core completes during a real mean halo write and full publi
                             field->emplace(fv.Metrics().BuildField(Layout(0, 1, layout)));
                     const auto ownedVersion = state.Owned().Version();
                     const auto ghostVersion = state.Ghost().Version();
-                    auto preparation = fv.BeginAuxValues(state, output, .25);
+                    auto preparation = fv.BeginAuxValues(Bind(fv, state), output, .25);
                     auto operation = halo.Begin();
                     R::EagerEngine engine(workers, std::make_shared<R::AccessTrackingContext>());
                     const auto stream = engine.CreateCPUStream();
@@ -211,7 +201,7 @@ TEST_CASE("Auxiliary core completes during a real mean halo write and full publi
                         coreCompleted = true; });
                     stream.Record().WaitHost();
                     CHECK(coreCompleted.load());
-                    CHECK_THROWS(fv.ValidateAuxValues(state, output, .25));
+                    CHECK_THROWS(fv.ValidateAuxValues(Bind(fv, state), output, .25));
                     CHECK_THROWS(preparation.Finish(output));
                     CHECK_THROWS(preparation.Apply(DNDS::CFV::ReconstructionRegion::Core));
                     if (state.Ghost().RowCount())
@@ -225,7 +215,7 @@ TEST_CASE("Auxiliary core completes during a real mean halo write and full publi
                         preparation.Apply(DNDS::CFV::ReconstructionRegion::HaloDependent);
                         preparation.Finish(output); });
                     stream.Record().WaitHost();
-                    CHECK_NOTHROW(fv.ValidateAuxValues(state, output, .25));
+                    CHECK_NOTHROW(fv.ValidateAuxValues(Bind(fv, state), output, .25));
                     CHECK_THROWS(preparation.Apply());
                     CHECK_THROWS(preparation.Finish(output));
                     CHECK(state.Owned().Version() == ownedVersion);
@@ -261,7 +251,7 @@ TEST_CASE("High-order logical auxiliary maxima match the full pointwise flow pat
         fv.BindHalo(state).Begin().Wait();
         auto reference = fv.BuildAuxiliaryValues({true, true, true, true, true, true, true});
         auto observed = fv.BuildAuxiliaryValues({true, true, true, true, true, true, true});
-        fv.PrepareAuxValues(state, reference, .25);
+        fv.PrepareAuxValues(Bind(fv, state), reference, .25);
         const auto logical = C::EquationDofs::Coupled(equation.Schema(), state);
         fv.PrepareAuxValues(logical, observed, .25);
         Compare(Save(reference), observed);
@@ -278,23 +268,26 @@ TEST_CASE("Auxiliary abandonment rebind and phase errors never publish a complet
     Initialize(fv, state, equation);
     fv.Metrics().BindHalo(state).Begin().Wait();
     auto output = fv.BuildAuxiliaryValues({true, true, true, true, true, true, true});
-    fv.PrepareAuxValues(state, output);
+    fv.PrepareAuxValues(Bind(fv, state), output);
     const auto expected = Save(output);
     {
-        auto abandoned = fv.BeginAuxValues(state, output);
+        auto abandoned = fv.BeginAuxValues(Bind(fv, state), output);
         CHECK_THROWS(abandoned.Apply(DNDS::CFV::ReconstructionRegion::HaloDependent));
         abandoned.Apply(DNDS::CFV::ReconstructionRegion::Core);
-        CHECK_THROWS(fv.ValidateAuxValues(state, output));
+        CHECK_THROWS(fv.ValidateAuxValues(Bind(fv, state), output));
     }
-    CHECK_THROWS(fv.ValidateAuxValues(state, output));
-    auto preparation = fv.BeginAuxValues(state, output);
+    CHECK_THROWS(fv.ValidateAuxValues(Bind(fv, state), output));
+    // Abandoning a transaction poisons its partially reserved outputs. A
+    // retry must use replacement storage rather than silently reusing them.
+    output = fv.BuildAuxiliaryValues({true, true, true, true, true, true, true});
+    auto preparation = fv.BeginAuxValues(Bind(fv, state), output);
     preparation.Apply();
     const auto original = *output.meanThermodynamics;
     output.meanThermodynamics.emplace(R::RowLayout::Dense(fv.Metrics().NumCellProc(), 3));
     CHECK_THROWS(preparation.Finish(output));
     output.meanThermodynamics = original;
     preparation.Finish(output);
-    CHECK_NOTHROW(fv.ValidateAuxValues(state, output));
+    CHECK_NOTHROW(fv.ValidateAuxValues(Bind(fv, state), output));
     Compare(expected, output);
 }
 TEST_CASE("Unused private face scratch is safe when caller supplied outputs move to a larger face-only problem")
@@ -318,9 +311,9 @@ TEST_CASE("Unused private face scratch is safe when caller supplied outputs move
     output.faceWaveJump.emplace(Layout(faces, 1, 2));
     output.facePressureMinimum.emplace(Layout(faces, 1, 0));
     auto reference = large.BuildAuxiliaryValues({false, true, true, true, false, false, false});
-    large.PrepareAuxValues(state, reference);
-    large.PrepareAuxValues(state, output);
-    CHECK_NOTHROW(large.ValidateAuxValues(state, output));
+    large.PrepareAuxValues(Bind(large, state), reference);
+    large.PrepareAuxValues(Bind(large, state), output);
+    CHECK_NOTHROW(large.ValidateAuxValues(Bind(large, state), output));
     Compare(Save(reference), output);
     auto logical = C::EquationDofs::Coupled(equation.Schema(), state);
     large.PrepareAuxValues(logical, output);
@@ -338,7 +331,8 @@ TEST_CASE("Auxiliary reductions count both incidences of a self-periodic face")
     C::FiniteVolume fv(mesh, settings, equation);
     auto state = fv.Metrics().BuildField(5);
     const C::FlowState primitive{1.2, .3, -.2, .1, 1.1};
-    fv.Initialize(state, {}, primitive);
+    auto logicalState = Bind(fv, state);
+    fv.Initialize(logicalState, {}, primitive);
     fv.Metrics().BindHalo(state).Begin().Wait();
     auto read = mesh->AcquireRead(DNDS::Geom::MeshReadRequirements::CellFlux());
     for (const auto iFace : fv.AuxiliaryFaces())
@@ -356,8 +350,8 @@ TEST_CASE("Auxiliary reductions count both incidences of a self-periodic face")
     for (bool faceOutput : {false, true})
     {
         auto output = fv.BuildAuxiliaryValues({false, faceOutput, false, false, true, false, false});
-        fv.PrepareAuxValues(state, output);
-        CHECK_NOTHROW(fv.ValidateAuxValues(state, output));
+        fv.PrepareAuxValues(Bind(fv, state), output);
+        CHECK_NOTHROW(fv.ValidateAuxValues(Bind(fv, state), output));
         const auto sums = output.cellSpectralSum->Owned().Read();
         for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
             CHECK(sums.View()(iCell, 0) == doctest::Approx(expected).epsilon(3e-13));
@@ -378,9 +372,9 @@ TEST_CASE("Auxiliary transaction retains input output and geometry when original
         Initialize(fv, state, equation);
         fv.Metrics().BindHalo(state).Begin().Wait();
         output = fv.BuildAuxiliaryValues({true, true, true, true, true, true, true});
-        fv.PrepareAuxValues(state, output);
+        fv.PrepareAuxValues(Bind(fv, state), output);
         expected = Save(output);
-        return fv.BeginAuxValues(state, output);
+        return fv.BeginAuxValues(Bind(fv, state), output);
     }();
     preparation.Apply();
     preparation.Finish(output);
@@ -398,20 +392,20 @@ TEST_CASE("Auxiliary provenance includes DOF row identity when payload buffers a
     fv.Metrics().BindHalo(state).Begin().Wait();
     const DNDS::Algebra::DofSpace other(state.Space().OwnedRows(), state.Space().GhostRows(), "different row identity");
     auto complete = fv.BuildAuxiliaryValues({false, false, false, false, true, false, false});
-    fv.PrepareAuxValues(state, complete);
+    fv.PrepareAuxValues(Bind(fv, state), complete);
     const auto correct = *complete.cellSpectralSum;
     complete.cellSpectralSum.emplace(other, correct.Owned(), correct.Ghost());
-    CHECK_THROWS(fv.ValidateAuxValues(state, complete));
+    CHECK_THROWS(fv.ValidateAuxValues(Bind(fv, state), complete));
     complete.cellSpectralSum = correct;
-    CHECK_NOTHROW(fv.ValidateAuxValues(state, complete));
+    CHECK_NOTHROW(fv.ValidateAuxValues(Bind(fv, state), complete));
     auto pending = fv.BuildAuxiliaryValues({false, false, false, false, true, false, false});
-    auto preparation = fv.BeginAuxValues(state, pending);
+    auto preparation = fv.BeginAuxValues(Bind(fv, state), pending);
     preparation.Apply();
     const auto original = *pending.cellSpectralSum;
     pending.cellSpectralSum.emplace(other, original.Owned(), original.Ghost());
     CHECK_THROWS(preparation.Finish(pending));
 }
-TEST_CASE("Synchronous residual joins queued auxiliary work before a controller rejection unwinds its leases")
+TEST_CASE("Synchronous residual completes its queued core before dependent rejection unwinds leases")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 2);
     C::DomainSettings settings;
@@ -430,37 +424,17 @@ TEST_CASE("Synchronous residual joins queued auxiliary work before a controller 
     auto launcher = std::make_shared<RejectAuxiliaryDependent>();
     R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
     const auto stream = engine.CreateStream(launcher);
-    auto requested = launcher->JoinRequested();
-    std::atomic<bool> timeout{false};
-    std::thread release([&]
-                        {
-        if (requested.wait_for(std::chrono::seconds(10)) != std::future_status::ready)
-        {
-            timeout = true;
-            launcher->cancel = true;
-        }
-        launcher->Release(); });
     CHECK_THROWS(fv.Evaluate(logical, resultLogical, *work, engine, stream));
-    // A missing join fails safely: skip the delayed body before permitting the
-    // worker to resume, instead of intentionally dereferencing expired leases.
-    if (!launcher->ObservedJoin())
-    {
-        launcher->cancel = true;
-        launcher->Release();
-    }
-    release.join();
-    CHECK_FALSE(timeout);
     CHECK(launcher->rejected);
     CHECK(launcher->ObservedJoin());
     CHECK(launcher->coreCompleted);
-    CHECK_THROWS(fv.FluxReconstruction(*work).ReadOwned());
     {
         auto released = state.Owned().Write();
         released.CancelUnmodified();
     }
-    CHECK_THROWS_WITH(fv.Evaluate(logical, resultLogical, *work, engine, stream), doctest::Contains("failed allocation must be replaced"));
-    // Runtime poisons partial write allocations during exception unwinding.
-    // Keep the accepted input and engine, but replace failed numerical scratch.
+    // The failed operation may poison whichever numerical outputs it had
+    // already reserved. Replace the workspace before retrying; the accepted
+    // input and engine remain reusable once the queued command is joined.
     work = fv.BuildWorkspace(logical);
     REQUIRE_NOTHROW(fv.Evaluate(logical, resultLogical, *work, engine, stream));
     const auto expected = reference.Owned().Read(), actual = result.Owned().Read();

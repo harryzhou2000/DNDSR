@@ -368,14 +368,14 @@ namespace DNDS::Cauchy
                                        LinearProblemContext &output, JacobianPreparation controls, real time, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
                                        const Workspace *sourceReconstruction) const
     {
+        ValidateAuxValues(state, auxiliary, time);
         if (controls.roeDissipation && sourceReconstruction && HasRoeJacobianKernel(*sourceReconstruction))
         {
             DNDS_check_throw_info(!workers && state.ComponentNumber() == 5 && state.PhysicalFieldNumber() == 1,
                                   "flow5 Roe Jacobian specialization received an extended physical state");
-            PrepareJacobian(state.CoupledField(), auxiliary, inversePseudoTime, output, controls, time);
+            PrepareFlow5Jacobian(state.CoupledField(), auxiliary, inversePseudoTime, output, controls, time);
             return;
         }
-        ValidateAuxValues(state, auxiliary, time);
         output.Validate();
         const index nv = state.ComponentNumber(), owned = Metrics().NumCell(), all = Metrics().NumCellProc();
         DNDS_check_throw_info(output.Space().Same(state.Space()) && output.Components() == nv && !controls.roeDissipation,

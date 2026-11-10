@@ -448,22 +448,6 @@ namespace DNDS::Cauchy
             return average;
         }
     }
-    void FiniteVolume::Initialize(CFV::FVField &state, const FlowProfileSettings &profile, const FlowState &primitive) const
-    {
-        Metrics().Communication()->LocalStage([&]
-                                              {
-            Metrics().ValidateField(state, 5);
-            auto meshRead = _data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
-            const auto mesh = meshRead.HostView();
-            auto write = state.Owned().Write();
-            auto values = write.View<R::UniformTableRows>();
-            const auto frame = _data->motion.At(0);
-            for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
-            {
-                const auto average = CellAverage(mesh, iCell, profile, primitive, _data->equation.Gas(), 0, frame);
-                for (int j = 0; j < 5; ++j) values(iCell, j) = average[j];
-            } });
-    }
     void FiniteVolume::Initialize(EquationDofs &state, const FlowProfileSettings &profile, const FlowState &primitive) const
     {
         _data->equation.ValidateStateSchema(state);
@@ -482,39 +466,6 @@ namespace DNDS::Cauchy
                 for (int j = 0; j < 5; ++j)
                     flow(iCell, j) = average[j];
             } });
-    }
-    std::array<FlowState, 3> FiniteVolume::Error(const CFV::FVField &state, const FlowProfileSettings &profile, const FlowState &primitive, real time) const
-    {
-        std::array<FlowState, 3> errors{};
-        real volume = 0;
-        Metrics().Communication()->LocalStage([&]
-                                              {
-            auto meshRead = _data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
-            const auto mesh = meshRead.HostView();
-            auto geometry = Metrics().AcquireRead();
-            const auto metric = geometry.HostView();
-            auto read = state.Owned().Read(); const auto values = read.View<R::UniformTableRows>();
-            const auto frame = _data->motion.At(time);
-            for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
-            {
-                const auto exact = CellAverage(mesh, iCell, profile, primitive, _data->equation.Gas(), time, frame);
-                const real weight = metric.GetCellVol(iCell); volume += weight;
-                for (int j = 0; j < 5; ++j)
-                {
-                    const real error = std::abs(values(iCell, j) - exact[j]);
-                    errors[0][j] += weight * error; errors[1][j] += weight * error * error;
-                    errors[2][j] = std::max(errors[2][j], error);
-                }
-            } });
-        MPI_Allreduce(MPI_IN_PLACE, &volume, 1, MPI_DOUBLE, MPI_SUM, Metrics().Communicator());
-        for (int i = 0; i < 3; ++i)
-            MPI_Allreduce(MPI_IN_PLACE, errors[i].data(), 5, MPI_DOUBLE, i == 2 ? MPI_MAX : MPI_SUM, Metrics().Communicator());
-        for (int j = 0; j < 5; ++j)
-        {
-            errors[0][j] /= volume;
-            errors[1][j] = std::sqrt(errors[1][j] / volume);
-        }
-        return errors;
     }
     std::array<FlowState, 3> FiniteVolume::Error(const EquationDofs &state, const FlowProfileSettings &profile, const FlowState &primitive, real time) const
     {
@@ -554,19 +505,6 @@ namespace DNDS::Cauchy
         return errors;
     }
     const ThermalBounds &FiniteVolume::ThermalConstraints() const { return _data->PerfectGasBounds(); }
-    bool FiniteVolume::Admissible(const CFV::FVField &state) const
-    {
-        int valid = 1;
-        Metrics().Communication()->LocalStage([&]
-                                              {
-            Metrics().ValidateField(state, 5);
-            auto read = state.Owned().Read();
-            const auto input = read.View<R::UniformTableRows>();
-            for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
-                valid &= ThermallyAdmissible(Load(input, iCell), _data->PerfectGasBounds()); });
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, Metrics().Communicator());
-        return valid;
-    }
     bool FiniteVolume::Admissible(const EquationDofs &state) const
     {
         _data->equation.ValidateStateSchema(state);
@@ -1348,6 +1286,16 @@ namespace DNDS::Cauchy
                                                   ghosts ? directViscousGhost.back().View<R::UniformTableRows>() : RHSScalarView{}});
                 }
             }
+            std::optional<R::Array<real>::ReadLease> primitiveOwned, primitiveGhost;
+            RHSFieldView primitiveGradientValues;
+            if (primitiveGradient)
+            {
+                primitiveOwned.emplace(primitiveGradient->Owned().Read());
+                if (ghosts)
+                    primitiveGhost.emplace(primitiveGradient->Ghost().Read());
+                primitiveGradientValues = {primitiveOwned->View<R::UniformTableRows>(),
+                                           primitiveGhost ? primitiveGhost->View<R::UniformTableRows>() : RHSScalarView{}};
+            }
             auto boundaryWrite = boundaryMomentumFlux.Write();
             const auto wallFlux = boundaryWrite.View<R::FixedRows<3>>();
             auto faceWrite = (faceOutput ? *faceOutput : faceFlux).Write();
@@ -1450,6 +1398,13 @@ namespace DNDS::Cauchy
                 }
                 if (ransModel)
                     RANSStateView{ransModel->Kind(), ransModel->ComponentNumber()}.RepairReconstruction(ransMean[iCell], point.values.data() + ransFirst);
+                if (primitiveGradient)
+                {
+                    const auto row = primitiveGradientValues[iCell];
+                    for (int j = 0; j < 5; ++j)
+                        for (int d = 0; d < dim; ++d)
+                            point.gradient(flowFirst + j, d) = row[j * dim + d];
+                }
                 // Equation reconstruction PP deliberately uses Euler's final
                 // property-repaired thermal postcheck. Requiring the raw
                 // species simplex again here would reject coefficients that
@@ -1608,55 +1563,132 @@ namespace DNDS::Cauchy
                     const bool wall = !internal && boundaryKind == BoundaryKind::NoSlipWall;
                     if (viscous && (internal || wall))
                     {
-                        const real inverseDistance = wall && noGRPOnWall ? 0 : 1 / sample.viscousDistance;
-                        for (index j = 0; j < width; ++j)
+                        if (primitiveGradient)
                         {
-                            face.values[j] = .5 * (left.values[j] + right.values[j]);
-                            for (int d = 0; d < 3; ++d)
-                                face.gradient(j, d) = .5 * (left.gradient(j, d) + right.gradient(j, d)) +
-                                                      normal[d] * (right.values[j] - left.values[j]) * inverseDistance;
+                            DNDS_assert_info(!ransModel && independent == 0 && flowFirst == 0 && width == 5,
+                                             "primitive-gradient leaf requires pure flow5");
+                            const auto &gas = owner->equation.Gas();
+                            auto primitive = gas.Primitive(leftFlow);
+                            FlowGradient gradient{};
+                            for (int j = 0; j < 5; ++j)
+                                for (int d = 0; d < 3; ++d)
+                                    gradient[j][d] = left.gradient(flowFirst + j, d);
+                            Gather(meanBlocks, iCell, cellMean);
+                            const auto ownMean = cellMean.Flow(flowFirst);
+                            const auto ownPrimitive = gas.Primitive(ownMean);
+                            FlowState rightMean;
+                            if (internal)
+                            {
+                                Gather(meanBlocks, sample.other, cellMean);
+                                rightMean = sample.changesFrame
+                                                ? FiniteVolumeDetail::RotateState(cellMean.Flow(flowFirst), sample.rotation)
+                                                : cellMean.Flow(flowFirst);
+                            }
+                            else
+                                rightMean = FiniteVolumeDetail::BoundaryGradientValue(sample, gas, ownMean, time, frame, incoming);
+                            const auto rightPrimitive = gas.Primitive(rightMean);
+                            const Geom::tPoint distance = !internal
+                                                              ? Geom::tPoint(sample.ownPoint - metric.GetCellBary(iCell))
+                                                              : Geom::tPoint(sample.otherPoint - metric.GetCellBary(iCell));
+                            const real lengthSquared = distance.squaredNorm();
+                            DNDS_assert_info(lengthSquared > 0, "zero primitive viscous stencil displacement");
+                            const std::array<real, 5> own{ownPrimitive.density, ownPrimitive.velocity[0], ownPrimitive.velocity[1],
+                                                          ownPrimitive.velocity[2], ownPrimitive.temperature};
+                            const std::array<real, 5> neighbor{rightPrimitive.density, rightPrimitive.velocity[0], rightPrimitive.velocity[1],
+                                                               rightPrimitive.velocity[2], rightPrimitive.temperature};
+                            for (int j = 0; j < 5; ++j)
+                            {
+                                real projected = 0;
+                                for (int d = 0; d < 3; ++d)
+                                {
+                                    if (internal)
+                                        gradient[j][d] = .5 * (gradient[j][d] + right.gradient(flowFirst + j, d));
+                                    projected += gradient[j][d] * distance[d];
+                                }
+                                for (int d = 0; d < 3; ++d)
+                                    gradient[j][d] += (neighbor[j] - own[j] - projected) * distance[d] / lengthSquared;
+                            }
+                            if (internal)
+                            {
+                                const auto other = gas.Primitive(rightFlow);
+                                for (int d = 0; d < 3; ++d)
+                                    primitive.velocity[d] = .5 * (primitive.velocity[d] + other.velocity[d]);
+                            }
+                            else
+                            {
+                                FlowState faceMean{};
+                                for (int j = 0; j < 5; ++j)
+                                    faceMean[j] = .5 * (leftFlow[j] + rightFlow[j]);
+                                primitive = gas.Primitive(faceMean);
+                                if (!sample.boundary.isothermal)
+                                {
+                                    real heat = 0;
+                                    for (int d = 0; d < 3; ++d)
+                                        heat += gradient[4][d] * normal[d];
+                                    for (int d = 0; d < 3; ++d)
+                                        gradient[4][d] -= heat * normal[d];
+                                }
+                            }
+                            const auto diffusion = gas.ViscousFlux(primitive, gradient, normal);
+                            for (int j = 0; j < 5; ++j)
+                            {
+                                flux[j] -= diffusion[j];
+                                if (produceLow)
+                                    lowFlux[j] -= diffusion[j];
+                            }
                         }
+                        else
+                        {
+                            const real inverseDistance = wall && noGRPOnWall ? 0 : 1 / sample.viscousDistance;
+                            for (index j = 0; j < width; ++j)
+                            {
+                                face.values[j] = .5 * (left.values[j] + right.values[j]);
+                                for (int d = 0; d < 3; ++d)
+                                    face.gradient(j, d) = .5 * (left.gradient(j, d) + right.gradient(j, d)) +
+                                                          normal[d] * (right.values[j] - left.values[j]) * inverseDistance;
+                            }
 #ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
-                        if (wallSAViscousInterior != 0)
-                            for (int d = 0; d < 3; ++d)
-                                face.gradient(ransFirst, d) -= normal[d] * wallSAViscousInterior * inverseDistance;
+                            if (wallSAViscousInterior != 0)
+                                for (int d = 0; d < 3; ++d)
+                                    face.gradient(ransFirst, d) -= normal[d] * wallSAViscousInterior * inverseDistance;
 #endif
-                        if (wallFluxState)
-                            prepareWallState();
-                        const auto faceFlow = face.Flow(flowFirst);
-                        const auto point = evaluator.Evaluate(faceFlow, face.Species(speciesFirst, independent), 0, {true, true, true, false, false});
-                        struct SpeciesGradient
-                        {
-                            const PointScratch &point;
-                            index first;
-                            real operator()(int k, int d) const { return point.gradient(first + k, d); }
-                        };
-                        EquationTransportOptions transportOptions{wall && !sample.boundary.isothermal, wall};
-                        if (ransFirst >= 0)
-                        {
-                            const auto &model = owner->equation.RANS();
-                            const index iQ = sample.point - metric.FaceQuadratureBegin(sample.face);
-                            // Transport does not consume the DES source length.
-                            const auto ransPoint = RANSPoint(face, flowFirst, ransFirst, model, point, wallValues.faces(sample.face, iQ), 0);
-                            const auto turbulent = model.Transport(ransPoint);
-                            transportOptions.turbulentViscosity = turbulent.viscosity;
-                            transportOptions.turbulentConductivity = turbulent.conductivity;
-                            transportOptions.turbulentSpeciesDiffusivity = turbulent.speciesDiffusivity;
-                            transportOptions.useQCR = model.Settings().useQCR;
-                            const auto diffusionRANS = model.DiffusionFlux(ransPoint, Eigen::Vector3d{normal[0], normal[1], normal[2]}, turbulent.viscosity);
-                            for (int j = 0; j < model.ComponentNumber(); ++j)
-                                flux[ransFirst + j] -= diffusionRANS[j];
+                            if (wallFluxState)
+                                prepareWallState();
+                            const auto faceFlow = face.Flow(flowFirst);
+                            const auto point = evaluator.Evaluate(faceFlow, face.Species(speciesFirst, independent), 0, {true, true, true, false, false});
+                            struct SpeciesGradient
+                            {
+                                const PointScratch &point;
+                                index first;
+                                real operator()(int k, int d) const { return point.gradient(first + k, d); }
+                            };
+                            EquationTransportOptions transportOptions{wall && !sample.boundary.isothermal, wall};
+                            if (ransFirst >= 0)
+                            {
+                                const auto &model = owner->equation.RANS();
+                                const index iQ = sample.point - metric.FaceQuadratureBegin(sample.face);
+                                // Transport does not consume the DES source length.
+                                const auto ransPoint = RANSPoint(face, flowFirst, ransFirst, model, point, wallValues.faces(sample.face, iQ), 0);
+                                const auto turbulent = model.Transport(ransPoint);
+                                transportOptions.turbulentViscosity = turbulent.viscosity;
+                                transportOptions.turbulentConductivity = turbulent.conductivity;
+                                transportOptions.turbulentSpeciesDiffusivity = turbulent.speciesDiffusivity;
+                                transportOptions.useQCR = model.Settings().useQCR;
+                                const auto diffusionRANS = model.DiffusionFlux(ransPoint, Eigen::Vector3d{normal[0], normal[1], normal[2]}, turbulent.viscosity);
+                                for (int j = 0; j < model.ComponentNumber(); ++j)
+                                    flux[ransFirst + j] -= diffusionRANS[j];
+                            }
+                            const auto diffusion = PrepareViscousFlux(faceFlow, face.FlowDerivative(flowFirst), point, face.Species(speciesFirst, independent),
+                                                                      SpeciesGradient{face, speciesFirst}, normal, speciesFlux, transport, transportOptions);
+                            for (int j = 0; j < 5; ++j)
+                            {
+                                flux[flowFirst + j] -= diffusion[j];
+                                if (produceLow)
+                                    lowFlux[flowFirst + j] -= diffusion[j];
+                            }
+                            for (int k = 0; k < independent; ++k)
+                                flux[speciesFirst + k] -= speciesFlux[k];
                         }
-                        const auto diffusion = PrepareViscousFlux(faceFlow, face.FlowDerivative(flowFirst), point, face.Species(speciesFirst, independent),
-                                                                  SpeciesGradient{face, speciesFirst}, normal, speciesFlux, transport, transportOptions);
-                        for (int j = 0; j < 5; ++j)
-                        {
-                            flux[flowFirst + j] -= diffusion[j];
-                            if (produceLow)
-                                lowFlux[flowFirst + j] -= diffusion[j];
-                        }
-                        for (int k = 0; k < independent; ++k)
-                            flux[speciesFirst + k] -= speciesFlux[k];
                     }
                     if (sample.boundaryPoint != UnInitIndex)
                         for (int d = 0; d < 3; ++d)
@@ -2281,7 +2313,7 @@ namespace DNDS::Cauchy
                 work.PublishSourceState(state, time); });
             return;
         }
-        std::optional<EquationAuxiliaryPreparation> preparation;
+        std::optional<AuxiliaryPreparation> preparation;
         local([&]
               {
             ValidateWorkspace(state, work);
@@ -2678,9 +2710,58 @@ namespace DNDS::Cauchy
     {
         auto session = work.session.Acquire();
         DNDS_check_throw_info(work.owner == _data, "foreign equation reconstruction workspace");
-        EquationDofOperations::Fill(work.coefficients, 0);
-        for (auto &field : work.fields)
-            Algebra::Fill(field.reconstruction.temporary, 0.);
+        // Reserve every destination before changing any value. In particular,
+        // a retained LVR history reader must not allow coefficients to be
+        // cleared first and only then report the conflict.
+        std::optional<EquationDofs::WriteScope> coefficients;
+        std::vector<R::Array<real>::WriteLease> temporary;
+        std::optional<R::Array<real>::WriteLease> previous, alpha;
+        try
+        {
+            coefficients.emplace(work.coefficients.WriteOwned());
+            temporary.reserve(work.fields.size());
+            for (auto &field : work.fields)
+                temporary.emplace_back(field.reconstruction.temporary.Owned().Write());
+            if (work.limitedVR)
+            {
+                previous.emplace(work.limitedVR->previous.Write());
+                alpha.emplace(work.limitedVR->alpha.Write());
+            }
+        }
+        catch (...)
+        {
+            if (coefficients)
+                coefficients->CancelUnmodified();
+            for (auto &write : temporary)
+                write.CancelUnmodified();
+            if (previous)
+                previous->CancelUnmodified();
+            if (alpha)
+                alpha->CancelUnmodified();
+            throw;
+        }
+        {
+            const auto layout = coefficients->ComponentLayout();
+            const auto values = layout.View();
+            for (index iCell = 0; iCell < values.RowCount(); ++iCell)
+                for (index j = 0; j < values.ComponentNumber(); ++j)
+                    values(iCell, j) = 0;
+        }
+        for (auto &write : temporary)
+        {
+            const auto values = write.View<R::UniformTableRows>();
+            for (index iCell = 0; iCell < values.RowCount(); ++iCell)
+                for (index j = 0; j < values.Width(); ++j)
+                    values(iCell, j) = 0;
+        }
+        for (auto *write : {previous ? &*previous : nullptr, alpha ? &*alpha : nullptr})
+            if (write)
+            {
+                const auto values = write->View<R::UniformTableRows>();
+                for (index iCell = 0; iCell < values.RowCount(); ++iCell)
+                    for (index j = 0; j < values.Width(); ++j)
+                        values(iCell, j) = 0;
+            }
         work.sourceState.reset();
         work.sourceCoefficients.reset();
         work.rhsState.reset();
@@ -2793,7 +2874,7 @@ namespace DNDS::Cauchy
         local([&]
               { stream.Record().WaitHost(); });
         std::optional<EquationPointEvaluator> evaluator;
-        std::optional<EquationAuxiliaryPreparation> auxiliaryPreparation;
+        std::optional<AuxiliaryPreparation> auxiliaryPreparation;
         std::optional<R::Array<real>::ReadLease> incomingRead;
         RHSScalarView incoming;
         // A Cantera auxiliary pass and RHS pass may share a single worker

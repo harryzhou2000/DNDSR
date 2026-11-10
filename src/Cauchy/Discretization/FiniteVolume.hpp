@@ -45,7 +45,7 @@ namespace DNDS::Cauchy
     };
     /// Optional prepared inputs to the stateless auxiliary property kernels.
     /// Two-equation RANS requires meanGradients. No implicit gradient solve or
-    /// exchange is performed by BeginAuxValues/EquationAuxiliaryPreparation.
+    /// exchange is performed by BeginAuxValues/AuxiliaryPreparation.
     struct EquationAuxiliaryInputs
     {
         std::optional<std::reference_wrapper<const EquationMeanGradients>> meanGradients;
@@ -88,22 +88,6 @@ namespace DNDS::Cauchy
     private:
         friend class FiniteVolume;
         bool _derivedThermodynamics = false;
-        struct Origin
-        {
-            std::shared_ptr<const void> owner;
-            // Allocation identity alone does not identify a row view: distinct
-            // ArrayStorage objects can share one allocation at different offsets.
-            Runtime::ArrayStorage::Shared ownedStorage, ghostStorage;
-            uint64_t ownedVersion, ghostVersion, ownedShape, ghostShape;
-            real time;
-            std::optional<BoundaryInputs> boundary;
-            std::array<bool, 7> present{};
-            std::array<Runtime::ArrayStorage::Shared, 7> storage{};
-            std::array<Runtime::ArrayStorage::Shared, 3> ghosts{};
-            std::array<Runtime::ArrayStorage::Shared, 2> derived{};
-            std::array<uint64_t, 7> versions{}, shapes{};
-        };
-        std::optional<Origin> _origin;
         struct EquationOrigin;
         std::shared_ptr<const EquationOrigin> _equationOrigin;
         // Only needed when a cell reduction is requested without its matching
@@ -365,25 +349,27 @@ namespace DNDS::Cauchy
         void LimitReconstructionPP(const EquationDofs &state, Workspace &workspace) const;
         /// Collective count/min snapshot; no implicit refresh or mutation.
         std::pair<index, real> PositivityReconstructionStats(const Workspace &workspace) const;
-        /// Whole-equation counterpart of AuxiliaryPreparation. Holds numeric
-        /// input scopes and reserves optional output arrays before writing.
+        /// Whole-equation auxiliary transaction. Holds numeric input scopes
+        /// and reserves optional output arrays before writing.
         /// Core reads owned inputs only; complete every input field's halo
         /// before HaloDependent. All runs those phases consecutively. No MPI
         /// or hidden state update occurs here. Finish publishes exact source,
         /// output and time provenance. Do not replace buffers during the scope.
         /// Keep FV/derived-bundle owners on the controller through worker joins;
         /// retained preparation plans may own MPI resources indirectly.
-        class EquationAuxiliaryPreparation
+        class AuxiliaryPreparation
         {
             struct State;
             std::unique_ptr<State> _state;
-            explicit EquationAuxiliaryPreparation(std::unique_ptr<State> state);
+            explicit AuxiliaryPreparation(std::unique_ptr<State> state);
             friend class FiniteVolume;
 
         public:
-            EquationAuxiliaryPreparation(EquationAuxiliaryPreparation &&) noexcept;
-            EquationAuxiliaryPreparation &operator=(EquationAuxiliaryPreparation &&) noexcept;
-            ~EquationAuxiliaryPreparation();
+            AuxiliaryPreparation(const AuxiliaryPreparation &) = delete;
+            AuxiliaryPreparation &operator=(const AuxiliaryPreparation &) = delete;
+            AuxiliaryPreparation(AuxiliaryPreparation &&) noexcept;
+            AuxiliaryPreparation &operator=(AuxiliaryPreparation &&) noexcept;
+            ~AuxiliaryPreparation();
             void Apply(CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All);
             void Finish(AuxiliaryValues &output);
         };
@@ -392,9 +378,9 @@ namespace DNDS::Cauchy
         /// even an empty rank uses the same outer schedule. Boundary producers
         /// match Workspace. Two-equation closures require a current
         /// explicit mean-gradient publication; neither overload exchanges data.
-        EquationAuxiliaryPreparation BeginAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time = 0,
-                                                    std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
-                                                    EquationAuxiliaryInputs inputs = {}) const;
+        AuxiliaryPreparation BeginAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time = 0,
+                                            std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
+                                            EquationAuxiliaryInputs inputs = {}) const;
         void PrepareAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time = 0,
                               std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
                               EquationAuxiliaryInputs inputs = {}) const;
@@ -486,8 +472,6 @@ namespace DNDS::Cauchy
         /// native row space. No payload is copied from the prototype. Evaluated
         /// mode omits off-diagonal storage; PrepareJacobian supplies its frozen
         /// physical snapshot. Both modes retain explicit diagonal storage.
-        std::shared_ptr<LinearProblemContext> BuildLinearProblem(const CFV::FVField &prototype, DiagonalStorage diagonal,
-                                                                 OffDiagonalStorage offDiagonal = OffDiagonalStorage::Assembled) const;
         std::shared_ptr<LinearProblemContext> BuildLinearProblem(const EquationDofs &prototype, DiagonalStorage diagonal,
                                                                  OffDiagonalStorage offDiagonal = OffDiagonalStorage::Assembled) const;
         /// Prepare integrated approximate-Jacobian coefficients from
@@ -497,9 +481,6 @@ namespace DNDS::Cauchy
         /// Semi-matrix-free mode copies frozen physical data, reuses immutable
         /// geometry, and regenerates blocks during action/SGS/ILU filling. It
         /// retains no live mean/auxiliary leases after preparation returns.
-        void PrepareJacobian(const CFV::FVField &state, const AuxiliaryValues &auxiliary,
-                             const Runtime::Array<real> &inversePseudoTime, LinearProblemContext &output,
-                             JacobianPreparation controls = {}, real time = 0) const;
         /// Whole-equation CPU approximation with the same integrated/scalar
         /// dissipation convention. Uses actual conservative EOS derivatives,
         /// ALE/rotation terms, mean-state chemical source derivatives and scalar
@@ -569,50 +550,6 @@ namespace DNDS::Cauchy
         /// inputs consumed by the same numerical operator.
         AuxiliaryRequest CompleteRHSAuxiliaryRequest(AuxiliaryRequest request = {}) const;
         const std::vector<index> &AuxiliaryFaces() const;
-        /// Move-only CPU preparation transaction. Core reads owned means only;
-        /// finish the mean halo before HaloDependent. All runs both phases.
-        /// Face values are evaluated once, cell reductions preserve sorted-face
-        /// order, and no output validates until Finish. The scope retains all
-        /// allocations and leases; do not invoke its phases concurrently.
-        /// This is a synchronous CPU phase API. If a caller submits a phase to
-        /// an engine, retain the transaction through the stream join. Host-side
-        /// Finish follows that join; a queued continuation may Finish directly
-        /// after its synchronous dependent phase. Evaluate owns these joins.
-        class AuxiliaryPreparation
-        {
-            struct State;
-            std::unique_ptr<State> _state;
-            explicit AuxiliaryPreparation(std::unique_ptr<State> state);
-            friend class FiniteVolume;
-
-        public:
-            AuxiliaryPreparation(const AuxiliaryPreparation &) = delete;
-            AuxiliaryPreparation &operator=(const AuxiliaryPreparation &) = delete;
-            AuxiliaryPreparation(AuxiliaryPreparation &&) noexcept;
-            AuxiliaryPreparation &operator=(AuxiliaryPreparation &&) noexcept;
-            ~AuxiliaryPreparation();
-            void Apply(CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All);
-            /// Publish to the same output buffers (or an exact sharing copy).
-            /// Reject incomplete work or replaced outputs. Releases all leases;
-            /// abandoning a scope leaves the result without valid provenance.
-            void Finish(AuxiliaryValues &output);
-        };
-        /// Begin without acquiring the input ghost lease. The caller must order
-        /// its halo completion before the dependent phase. The input relation
-        /// is Adj::Cell2CellFace, using the conservative cell-node-cell core.
-        /// Requested outputs remain reserved until Finish/destruction. Unwinding
-        /// after partial writes follows Runtime failure semantics: replace failed
-        /// output buffers/workspace before retrying. No communication is posted.
-        AuxiliaryPreparation BeginAuxValues(const CFV::FVField &state, AuxiliaryValues &output, real time = 0, const BoundaryInputs *boundary = nullptr) const;
-        /// Stateless fused CPU operator. Input halos must already be current and
-        /// host-visible. Writes only the explicit optional outputs, performs no
-        /// communication/global reduction, and never mutates state or FV caches.
-        /// Private face scratch belongs to output, not the immutable FV plan.
-        void PrepareAuxValues(const CFV::FVField &state, AuxiliaryValues &output, real time = 0, const BoundaryInputs *boundary = nullptr) const;
-        /// Reject changed inputs, geometry, boundary time, output selection,
-        /// cell row identity or overwritten buffers before a result is reused.
-        void ValidateAuxValues(const CFV::FVField &state, const AuxiliaryValues &values, real time = 0) const;
-        real StableStep(const CFV::FVField &state, const AuxiliaryValues &values, real cfl, real time = 0) const;
         real StableStep(const EquationDofs &state, const AuxiliaryValues &values, real cfl, real time = 0) const;
         /// Interpretation of stored polynomial rows; independent of physical
         /// flow schema. Restart may restore means and cold-start incompatible
@@ -625,8 +562,6 @@ namespace DNDS::Cauchy
         /// All ranks enter with matching finite positive dt/scale, relax in
         /// (0,1], and positive compressionPower. Mean residual must be ready
         /// and nonaliased with state. Uses the equation's thermal energy bounds.
-        PhysicalStepLimit LimitPhysicalStep(const CFV::FVField &state, const CFV::FVField &meanResidual,
-                                            real dt, real relax, real scale, int compressionPower = 1) const;
         /// Whole-equation compress=1 bound with logical, strided owned inputs.
         /// Caller supplies the matching model's frozen thermal policy and
         /// retains its coefficient buffers. Species move with flow along the
@@ -638,7 +573,6 @@ namespace DNDS::Cauchy
         /// profile. The current producer is available for pure perfect-gas
         /// flow5 states; extended states use InitializeConstant/InitializeField.
         void Initialize(EquationDofs &state, const FlowProfileSettings &profile, const FlowState &primitive) const;
-        void Initialize(CFV::FVField &state, const FlowProfileSettings &profile, const FlowState &primitive) const;
         /// Fill exact code-unit conservative values in equation-schema order.
         /// Applies the initial rigid-frame rotation to flow momentum only.
         /// Caller resolves/validates physical input with ResolvePhysicalState.
@@ -662,11 +596,8 @@ namespace DNDS::Cauchy
         void InitializeField(EquationDofs &state, const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers = {}) const;
         /// Volume-normalized L1/L2/Linf error in conservative cell averages.
         std::array<FlowState, 3> Error(const EquationDofs &state, const FlowProfileSettings &profile, const FlowState &primitive, real time) const;
-        std::array<FlowState, 3> Error(const CFV::FVField &state, const FlowProfileSettings &profile, const FlowState &primitive, real time) const;
-        real StableStep(const CFV::FVField &state, real cfl) const;
         /// Collective owned-only admissibility; never repairs a state silently.
         bool Admissible(const EquationDofs &state) const;
-        bool Admissible(const CFV::FVField &state) const;
         index LastFaceFallbacks(const Workspace &workspace) const;
         /// Full-state variant also refreshes sampled source inputs from the
         /// retained polynomial before publishing their Jacobian provenance.
@@ -700,6 +631,15 @@ namespace DNDS::Cauchy
                                 const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers) const;
 
     private:
+        /// Resolve the retained interface publication after the canonical
+        /// equation-level provenance check. Both legacy-produced auxiliary
+        /// packets and native equation packets use this one leaf input.
+        std::optional<BoundaryInputs> PreparedBoundaryInputs(const AuxiliaryValues &values) const;
+        /// Established fixed perfect-gas Roe leaf selected by the equation
+        /// Jacobian resolver. It is not a second public state API.
+        void PrepareFlow5Jacobian(const CFV::FVField &state, const AuxiliaryValues &auxiliary,
+                                  const Runtime::Array<real> &inversePseudoTime, LinearProblemContext &output,
+                                  JacobianPreparation controls, real time) const;
         ReconstructionRestore ReserveReconstructionRestoreImpl(Workspace &workspace, const EquationDofs &guess,
                                                                const Runtime::Array<real> *limitedVRHistory,
                                                                std::shared_ptr<Workspace> retained, bool collectiveChecks = true) const;

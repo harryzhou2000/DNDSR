@@ -29,50 +29,6 @@ namespace DNDS::Cauchy
                 result.dt *= result.minimumAlpha;
         }
     }
-    PhysicalStepLimit FiniteVolume::LimitPhysicalStep(const CFV::FVField &state, const CFV::FVField &residual,
-                                                      real dt, real relax, real scale, int compressionPower) const
-    {
-        namespace R = Runtime;
-        const MPIInfo mpi(Metrics().Communicator());
-        MPI::LocalStage(mpi, [&]
-                        {
-            Metrics().ValidateField(state, 5); Metrics().ValidateField(residual, 5);
-            CheckStepControls(dt, relax, scale, compressionPower);
-            DNDS_check_throw_info(state.Device() == R::Device::Host() && residual.Device() == R::Device::Host(),
-                                  "invalid physical timestep PP inputs or unavailable backend");
-            for (const auto *input : {&state.Owned(), &state.Ghost()})
-                DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), residual.Owned().Storage()), "physical timestep residual aliases its state"); });
-        AgreeStepControls(mpi, dt, relax, scale, compressionPower);
-        PhysicalStepLimit result{dt};
-        const auto geometry = Metrics().AcquireRead();
-        const auto metric = geometry.HostView();
-        MPI::LocalStage(mpi, [&]
-                        {
-            const auto meanRead = state.Owned().Read(), residualRead = residual.Owned().Read();
-            const auto mean = meanRead.View<R::UniformTableRows>(), rhs = residualRead.View<R::UniformTableRows>();
-            for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
-            {
-                FlowState value{}, increment{};
-                for (int j = 0; j < 5; ++j)
-                {
-                    value[j] = mean(iCell, j);
-                    increment[j] = (dt * scale) * rhs(iCell, j) / metric.GetCellVol(iCell);
-                    DNDS_check_throw_info(std::isfinite(increment[j]), "nonfinite physical timestep PP trial increment");
-                }
-                DNDS_check_throw_info(ThermallyAdmissible(value, ThermalConstraints()), "physical timestep PP requires admissible means");
-                // Euler's physical-step caller uses compress=1; RHS/dTau and
-                // accepted-correction controls use compress=2 elsewhere.
-                const real alpha = FlowIncrementFraction(value, increment, ThermalConstraints(), relax, 1, compressionPower);
-                DNDS_check_throw_info(std::isfinite(alpha) && alpha >= 0 && alpha <= 1, "invalid physical timestep PP fraction");
-                if (alpha < 1)
-                {
-                    ++result.limitedCells;
-                    result.minimumAlpha = std::min(result.minimumAlpha, alpha);
-                }
-            } });
-        ReduceStepLimit(result, mpi);
-        return result;
-    }
     PhysicalStepLimit FiniteVolume::LimitPhysicalStep(const EquationDofs &state, const EquationDofs &residual,
                                                       const EquationThermalView &thermal, real dt, real relax, real scale, int compressionPower) const
     {

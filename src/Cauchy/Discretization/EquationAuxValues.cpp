@@ -181,7 +181,7 @@ namespace DNDS::Cauchy
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                 _data->gradient.Evaluate(state.PhysicalField(iField), work.boundary[iField], gradients.fields[iField], work.vectors[iField], region);
         };
-        std::optional<EquationAuxiliaryPreparation> preparation;
+        std::optional<AuxiliaryPreparation> preparation;
         try
         {
             auto means = begin(work.meanHalo);
@@ -313,7 +313,7 @@ namespace DNDS::Cauchy
         }
     };
 
-    struct FiniteVolume::EquationAuxiliaryPreparation::State
+    struct FiniteVolume::AuxiliaryPreparation::State
     {
         std::shared_ptr<const Data> data;
         EquationDofs source;
@@ -638,11 +638,11 @@ namespace DNDS::Cauchy
             phase = 2;
         }
     };
-    FiniteVolume::EquationAuxiliaryPreparation::EquationAuxiliaryPreparation(std::unique_ptr<State> state) : _state(std::move(state)) {}
-    FiniteVolume::EquationAuxiliaryPreparation::EquationAuxiliaryPreparation(EquationAuxiliaryPreparation &&) noexcept = default;
-    FiniteVolume::EquationAuxiliaryPreparation &FiniteVolume::EquationAuxiliaryPreparation::operator=(EquationAuxiliaryPreparation &&) noexcept = default;
-    FiniteVolume::EquationAuxiliaryPreparation::~EquationAuxiliaryPreparation() = default;
-    void FiniteVolume::EquationAuxiliaryPreparation::Apply(CFV::ReconstructionRegion region)
+    FiniteVolume::AuxiliaryPreparation::AuxiliaryPreparation(std::unique_ptr<State> state) : _state(std::move(state)) {}
+    FiniteVolume::AuxiliaryPreparation::AuxiliaryPreparation(AuxiliaryPreparation &&) noexcept = default;
+    FiniteVolume::AuxiliaryPreparation &FiniteVolume::AuxiliaryPreparation::operator=(AuxiliaryPreparation &&) noexcept = default;
+    FiniteVolume::AuxiliaryPreparation::~AuxiliaryPreparation() = default;
+    void FiniteVolume::AuxiliaryPreparation::Apply(CFV::ReconstructionRegion region)
     {
         DNDS_check_throw_info(_state, "equation auxiliary scope is finished or moved");
         DNDS_check_throw_info(region == CFV::ReconstructionRegion::All || region == CFV::ReconstructionRegion::Core || region == CFV::ReconstructionRegion::HaloDependent, "invalid auxiliary region");
@@ -651,7 +651,7 @@ namespace DNDS::Cauchy
         if (region != CFV::ReconstructionRegion::Core)
             _state->Dependent();
     }
-    void FiniteVolume::EquationAuxiliaryPreparation::Finish(AuxiliaryValues &output)
+    void FiniteVolume::AuxiliaryPreparation::Finish(AuxiliaryValues &output)
     {
         DNDS_check_throw_info(_state && _state->phase == 2, "cannot publish incomplete equation auxiliary preparation");
         const auto a = EquationAuxiliaryArrays(_state->buffers), b = EquationAuxiliaryArrays(output);
@@ -677,11 +677,10 @@ namespace DNDS::Cauchy
                     origin->gradientVersions.push_back({array->Version(), array->ShapeVersion()});
                 }
         output._equationOrigin = std::move(origin);
-        output._origin.reset();
         _state.reset();
     }
-    FiniteVolume::EquationAuxiliaryPreparation FiniteVolume::BeginAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time,
-                                                                            std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, EquationAuxiliaryInputs inputs) const
+    FiniteVolume::AuxiliaryPreparation FiniteVolume::BeginAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time,
+                                                                    std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, EquationAuxiliaryInputs inputs) const
     {
         Metrics().Validate();
         _data->partition.Validate();
@@ -739,10 +738,9 @@ namespace DNDS::Cauchy
         const bool needScratch = (arrays[4] && !arrays[1]) || (arrays[5] && !arrays[2]) || (arrays[6] && !arrays[3]);
         if (needScratch && (!output._faceScratch || output._faceScratch->RowCount() != faces))
             output._faceScratch.emplace(R::RowLayout::Dense(faces, 3));
-        auto prepared = std::make_unique<EquationAuxiliaryPreparation::State>(_data, state, output, time, std::move(workers), inputs);
+        auto prepared = std::make_unique<AuxiliaryPreparation::State>(_data, state, output, time, std::move(workers), inputs);
         output._equationOrigin.reset();
-        output._origin.reset();
-        return EquationAuxiliaryPreparation(std::move(prepared));
+        return AuxiliaryPreparation(std::move(prepared));
     }
     void FiniteVolume::PrepareAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time,
                                         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, EquationAuxiliaryInputs inputs) const
@@ -755,15 +753,8 @@ namespace DNDS::Cauchy
     {
         Metrics().Validate();
         _data->equation.ValidateStateSchema(state);
-        if (values._origin)
-        {
-            DNDS_check_throw_info(!_data->equation.HasMixture() && !_data->equation.HasRANS() &&
-                                      state.ComponentNumber() == 5 && state.PhysicalFieldNumber() == 1,
-                                  "flow5 auxiliary publication cannot serve this equation profile");
-            ValidateAuxValues(state.CoupledField(), values, time);
-            return;
-        }
-        DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && values._equationOrigin && !values._origin, "equation auxiliary publication is missing or belongs to another path");
+        DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && values._equationOrigin,
+                              "equation auxiliary publication is missing or belongs to another path");
         const auto read = state.ReadWithGhost();
         const auto &origin = *values._equationOrigin;
         DNDS_check_throw_info(origin.owner.lock().get() == _data.get() && origin.time == time, "equation auxiliary plan/time is stale");
@@ -803,5 +794,11 @@ namespace DNDS::Cauchy
             {
                 const auto pin = (*field)->ReadCurrent(state, _data->equation);
             }
+    }
+    std::optional<BoundaryInputs> FiniteVolume::PreparedBoundaryInputs(const AuxiliaryValues &values) const
+    {
+        if (values._equationOrigin)
+            return values._equationOrigin->boundary;
+        return std::nullopt;
     }
 }
