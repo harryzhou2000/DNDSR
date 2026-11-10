@@ -1466,7 +1466,9 @@ namespace DNDS::Cauchy
             const auto &baseFluxSettings = fluxPolicy.settings;
             const bool useWaveJump = owner->settings.numerics.riemann.useStencil && fluxPolicy.transverseSignal;
             const bool usePressureMinimum = owner->settings.numerics.riemann.useStencil && fluxPolicy.pressureStencil;
-            DNDS_check_throw_info((!useWaveJump || waveJump.owned.data) && (!usePressureMinimum || pressureMinimum.owned.data),
+            const bool preparedWaveJump = auxiliary && bool(auxiliary->get().cellWaveJump);
+            const bool preparedPressureMinimum = auxiliary && bool(auxiliary->get().cellPressureMinimum);
+            DNDS_check_throw_info((!useWaveJump || preparedWaveJump) && (!usePressureMinimum || preparedPressureMinimum),
                                   "required equation RHS stencil auxiliary is absent");
             const int species = owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() : 0;
             const int independent = std::max(0, species - 1);
