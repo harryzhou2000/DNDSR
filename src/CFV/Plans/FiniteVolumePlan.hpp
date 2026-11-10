@@ -85,6 +85,7 @@ namespace DNDS::CFV
     namespace Detail
     {
         struct FiniteVolumeData;
+        struct ReconstructionIdentity;
         struct ReconstructionData;
         struct ReconstructionPlacementData;
         struct ReconstructionDeviceView;
@@ -235,7 +236,7 @@ namespace DNDS::CFV
     struct ReconstructionBoundaryValues
     {
         Runtime::Array<real> values;
-        std::shared_ptr<const Detail::ReconstructionData> plan;
+        std::shared_ptr<const Detail::ReconstructionIdentity> plan;
     };
     struct BoundaryQuadraturePoint
     {
@@ -254,7 +255,7 @@ namespace DNDS::CFV
     {
         index first = 0, count = 0;
         Runtime::Array<real> forward, inverse;
-        std::shared_ptr<const Detail::ReconstructionData> plan;
+        std::shared_ptr<const Detail::ReconstructionIdentity> plan;
         uint64_t forwardVersion = 0, inverseVersion = 0;
         uint64_t forwardIdentity = 0, inverseIdentity = 0;
     };
@@ -264,6 +265,11 @@ namespace DNDS::CFV
     struct ReconstructionResidencyOptions
     {
         bool mesh = false, metrics = false, basis = false;
+        /// Keep the CPU preparation publication reachable from the placed
+        /// handle. Disable only when all later setup/debug queries use the host
+        /// plan separately; device operators retain their own immutable arrays,
+        /// row space, halo route and scalar metadata.
+        bool retainHostPayloads = true;
     };
     /// Explicit CUDA numerical kernel selection. CPU placement ignores this
     /// choice; backend resolution occurs once per submitted CFV operation.
@@ -370,9 +376,9 @@ namespace DNDS::CFV
         friend class PolynomialSamplingPlan;
         std::shared_ptr<const Detail::ReconstructionData> _data;
         std::shared_ptr<const Detail::ReconstructionPlacementData> _device;
+        std::shared_ptr<const Detail::ReconstructionIdentity> _identity;
         explicit VariationalReconstructionPlan(std::shared_ptr<const Detail::ReconstructionData> data,
-                                               std::shared_ptr<const Detail::ReconstructionPlacementData> device = {})
-            : _data(std::move(data)), _device(std::move(device)) {}
+                                               std::shared_ptr<const Detail::ReconstructionPlacementData> device = {});
         void DoReconstructionIterImpl(const FVField &mean, const FVField &input, ReconstructionWorkspace &work,
                                       const ReconstructionBoundaryValues &boundary, ReconstructionRegion region,
                                       const FVField *target, const Runtime::Array<real> *alpha) const;
@@ -387,6 +393,15 @@ namespace DNDS::CFV
         void SubmitDeviceLimiterWBAP_3OrderTo(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                                               const FVField &, ReconstructionWorkspace &, int, FaceCharacteristicTransformRef,
                                               ReconstructionRegion, const Runtime::Array<real> *, real) const;
+        const ReconstructionSettings &PlacementSettings() const;
+        ReconstructionCapabilities PlacementCapabilities() const;
+        ReconstructionStorageReport PlacementStorageReport() const;
+        ReconstructionInverseDiagnostics PlacementInverseDiagnostics() const;
+        int PlacementNRecDOF() const;
+        index PlacementOwnedRows() const;
+        index PlacementBoundaryPoints() const;
+        FVField BuildDeviceField(Runtime::RowLayout) const;
+        void ValidatePlacement() const;
 
     public:
         /// Collective CPU setup. The immutable capabilities must agree on all
@@ -395,11 +410,14 @@ namespace DNDS::CFV
         static VariationalReconstructionPlan ConstructRecCoeff(FiniteVolumePlan metrics, ReconstructionSettings settings = {},
                                                                ReconstructionCapabilities capabilities = {});
         /// Return the same public CFV plan placed on one backend. CUDA setup is
-        /// synchronous; hot submissions are stream ordered. The returned plan
-        /// never exposes a device-specific plan or workspace type to callers.
+        /// synchronous; hot submissions are stream ordered. Set
+        /// retainHostPayloads=false only after preparing mutable host operands;
+        /// the returned frozen placement then rejects host-only setup queries.
+        /// No device-specific plan or workspace type is exposed to callers.
         VariationalReconstructionPlan Place(Runtime::Device, Runtime::ExecutionContext,
                                             ReconstructionResidencyOptions = {}) const;
         Runtime::Device Device() const;
+        bool RetainsHostPayloads() const { return bool(_data); }
         bool SupportsKernel(ReconstructionDeviceKernel) const;
         std::vector<ResidentBufferInfo> ResidentBuffers() const;
         ReconstructionResidentRead AcquireResidentRead() const;

@@ -158,7 +158,8 @@ namespace DNDS::CFV
             .def(py::init<>())
             .def_readwrite("mesh", &ReconstructionResidencyOptions::mesh)
             .def_readwrite("metrics", &ReconstructionResidencyOptions::metrics)
-            .def_readwrite("basis", &ReconstructionResidencyOptions::basis);
+            .def_readwrite("basis", &ReconstructionResidencyOptions::basis)
+            .def_readwrite("retain_host_payloads", &ReconstructionResidencyOptions::retainHostPayloads);
         py::class_<ResidentBufferInfo>(m, "ResidentBufferInfo")
             .def_readonly("name", &ResidentBufferInfo::name)
             .def_readonly("bytes", &ResidentBufferInfo::bytes)
@@ -186,6 +187,7 @@ namespace DNDS::CFV
                  py::arg("device"), py::arg("context"), py::arg("options") = ReconstructionResidencyOptions{},
                  "Return the same logical CFV plan placed on the requested backend. CUDA setup is explicit and synchronous.")
             .def("Device", &VariationalReconstructionPlan::Device)
+            .def("RetainsHostPayloads", &VariationalReconstructionPlan::RetainsHostPayloads)
             .def("SupportsKernel", &VariationalReconstructionPlan::SupportsKernel)
             .def("ResidentBuffers", &VariationalReconstructionPlan::ResidentBuffers)
             .def("BuildWorkspace", py::overload_cast<index, std::vector<index>>(&VariationalReconstructionPlan::BuildWorkspace, py::const_),

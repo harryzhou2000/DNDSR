@@ -61,7 +61,7 @@ namespace DNDS::CFV
         const index n = NRecDOF(), components = mean.Width();
         Detail::ValidateVectorBlocks(components, periodicVectorStarts);
         Metrics().ValidateField(mean, components), Metrics().ValidateField(output, n * components);
-        DNDS_check_throw_info(boundary.plan == _data && boundary.values.GetDevice() == R::Device::Host() &&
+        DNDS_check_throw_info(boundary.plan == _identity && boundary.values.GetDevice() == R::Device::Host() &&
                                   boundary.values.Layout().Kind() == R::RowLayoutKind::Table && boundary.values.RowCount() == NumBoundaryQuadrature() &&
                                   boundary.values.Layout().Width() == components,
                               "linear boundary shape/plan mismatch");

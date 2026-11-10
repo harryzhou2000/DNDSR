@@ -10,6 +10,10 @@
 
 namespace DNDS::CFV::Detail
 {
+    /// Stable logical plan identity independent of host/device payload lifetime.
+    struct ReconstructionIdentity
+    {
+    };
     /// Implementation storage. Public plans expose no mutable aliases to it.
     struct FiniteVolumeData
     {
@@ -43,6 +47,7 @@ namespace DNDS::CFV::Detail
     };
     struct ReconstructionData
     {
+        std::shared_ptr<const ReconstructionIdentity> identity;
         FiniteVolumePlan metrics;
         ReconstructionSettings settings;
         ReconstructionCapabilities capabilities;
@@ -68,7 +73,7 @@ namespace DNDS::CFV::Detail
         std::optional<Runtime::Array<real>> boundaryInjection;
         Runtime::Array<index> boundaryPoints;
         ReconstructionData(FiniteVolumePlan m, ReconstructionSettings s, ReconstructionCapabilities c)
-            : metrics(std::move(m)), settings(s), capabilities(c), n(Math::PolynomialSize(metrics.Dimension(), s.maxOrder) - 1),
+            : identity(std::make_shared<const ReconstructionIdentity>()), metrics(std::move(m)), settings(s), capabilities(c), n(Math::PolynomialSize(metrics.Dimension(), s.maxOrder) - 1),
               cachedDerivatives(s.cacheDiffBase ? Math::TaylorBasis(metrics.Dimension(), s.maxOrder).DerivativeNumber(s.cacheDiffBaseOrder) : 0) {}
     };
     inline void Zero(FVField &field)

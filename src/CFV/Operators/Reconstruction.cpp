@@ -48,13 +48,23 @@ namespace DNDS::CFV
             AddScheduledAccess(accesses, array.Storage(), mode);
         }
     }
-    const FiniteVolumePlan &VariationalReconstructionPlan::Metrics() const { return _data->metrics; }
-    const ReconstructionSettings &VariationalReconstructionPlan::Settings() const { return _data->settings; }
-    int VariationalReconstructionPlan::NRecDOF() const { return _data->n; }
-    ReconstructionCapabilities VariationalReconstructionPlan::Capabilities() const { return _data->capabilities; }
+    const FiniteVolumePlan &VariationalReconstructionPlan::Metrics() const
+    {
+        DNDS_check_throw_info(_data, "device-only reconstruction placement has no host metric publication");
+        return _data->metrics;
+    }
+    const ReconstructionSettings &VariationalReconstructionPlan::Settings() const
+    {
+        return _data ? _data->settings : PlacementSettings();
+    }
+    int VariationalReconstructionPlan::NRecDOF() const { return _data ? _data->n : PlacementNRecDOF(); }
+    ReconstructionCapabilities VariationalReconstructionPlan::Capabilities() const
+    {
+        return _data ? _data->capabilities : PlacementCapabilities();
+    }
     void VariationalReconstructionPlan::Require(ReconstructionOperation operation) const
     {
-        if (_data->capabilities.Supports(operation))
+        if (Capabilities().Supports(operation))
             return;
         const char *name = "unknown";
         switch (operation)
@@ -80,6 +90,8 @@ namespace DNDS::CFV
     ReconstructionStorageReport VariationalReconstructionPlan::StorageReport() const
     {
         Validate();
+        if (!_data)
+            return PlacementStorageReport();
         ReconstructionStorageReport result;
         std::vector<uint64_t> identities;
         const auto add = [&](const char *name, const auto &array)
@@ -143,54 +155,70 @@ namespace DNDS::CFV
     {
         Require(ReconstructionOperation::InverseDiagnostics);
         Validate();
-        return _data->inverseDiagnostics;
+        return _data ? _data->inverseDiagnostics : PlacementInverseDiagnostics();
     }
     HardEigen::SVDInverseDiagnostics VariationalReconstructionPlan::GetCellInverseDiagnostics(index iCell) const
     {
         Require(ReconstructionOperation::InverseDiagnostics);
         Validate();
+        DNDS_check_throw_info(_data, "per-cell inverse diagnostics require retained host payloads");
         DNDS_check_throw_info(iCell >= 0 && iCell < Metrics().NumCell(), "inverse diagnostic cell is not owned");
         auto read = _data->inverseConditions->Read();
         const auto values = read.View<Runtime::FixedRows<4>>();
         return {_data->n, Eigen::Index(values(iCell, 0)), values(iCell, 3), values(iCell, 1), values(iCell, 2)};
     }
-    void VariationalReconstructionPlan::Validate() const { Metrics().Validate(); }
+    void VariationalReconstructionPlan::Validate() const
+    {
+        DNDS_check_throw_info(_identity, "reconstruction plan is empty");
+        if (_data)
+            Metrics().Validate();
+        if (_device)
+            ValidatePlacement();
+    }
     ReconstructionWorkspace VariationalReconstructionPlan::BuildWorkspace(index components, std::vector<index> periodicVectorStarts) const
     {
         Validate();
-        DNDS_check_throw_info(components > 0 && components <= INT_MAX / _data->n, "invalid reconstruction component count");
+        const auto n = NRecDOF();
+        DNDS_check_throw_info(components > 0 && components <= INT_MAX / n, "invalid reconstruction component count");
         Detail::ValidateVectorBlocks(components, periodicVectorStarts);
         if (_device)
-            return BuildDeviceWorkspace(components, R::RowLayout::Dense(Metrics().NumCell(), _data->n * components),
+            return BuildDeviceWorkspace(components, R::RowLayout::Dense(PlacementOwnedRows(), n * components),
                                         std::move(periodicVectorStarts));
-        return {Metrics().BuildField(_data->n * components),
-                R::Array<real>(R::RowLayout::Dense(6, _data->n * components)), components, _data, std::move(periodicVectorStarts)};
+        return {Metrics().BuildField(n * components),
+                R::Array<real>(R::RowLayout::Dense(6, n * components)), components, _data, std::move(periodicVectorStarts)};
     }
     ReconstructionWorkspace VariationalReconstructionPlan::BuildWorkspace(index components, R::RowLayout prototype,
                                                                           std::vector<index> periodicVectorStarts) const
     {
         Validate();
-        DNDS_check_throw_info(components > 0 && components <= INT_MAX / _data->n && !prototype.IsVariable() &&
-                                  prototype.Width() == _data->n * components,
+        const auto n = NRecDOF();
+        DNDS_check_throw_info(components > 0 && components <= INT_MAX / n && !prototype.IsVariable() &&
+                                  prototype.Width() == n * components,
                               "reconstruction physical prototype width mismatch");
         Detail::ValidateVectorBlocks(components, periodicVectorStarts);
         if (_device)
             return BuildDeviceWorkspace(components, std::move(prototype), std::move(periodicVectorStarts));
         return {Metrics().BuildField(prototype),
-                R::Array<real>(R::RowLayout::Dense(6, _data->n * components)), components, _data, std::move(periodicVectorStarts)};
+                R::Array<real>(R::RowLayout::Dense(6, n * components)), components, _data, std::move(periodicVectorStarts)};
     }
     FVField VariationalReconstructionPlan::BuildCoefficients(index components) const
     {
         Validate();
-        DNDS_check_throw_info(components > 0 && components <= INT_MAX / _data->n, "invalid reconstruction component count");
-        return Metrics().BuildField(R::RowLayout::Dense(Metrics().NumCell(), _data->n * components), Device());
+        const auto n = NRecDOF();
+        DNDS_check_throw_info(components > 0 && components <= INT_MAX / n, "invalid reconstruction component count");
+        if (_device)
+            return BuildDeviceField(R::RowLayout::Dense(PlacementOwnedRows(), n * components));
+        return Metrics().BuildField(R::RowLayout::Dense(Metrics().NumCell(), n * components), Device());
     }
     FVField VariationalReconstructionPlan::BuildCoefficients(index components, R::RowLayout prototype) const
     {
         Validate();
-        DNDS_check_throw_info(components > 0 && components <= INT_MAX / _data->n && !prototype.IsVariable() &&
-                                  prototype.Width() == _data->n * components,
+        const auto n = NRecDOF();
+        DNDS_check_throw_info(components > 0 && components <= INT_MAX / n && !prototype.IsVariable() &&
+                                  prototype.Width() == n * components,
                               "reconstruction physical prototype width mismatch");
+        if (_device)
+            return BuildDeviceField(std::move(prototype));
         return Metrics().BuildField(std::move(prototype), Device());
     }
     ReconstructionBoundaryValues VariationalReconstructionPlan::BuildBoundaryValues(index components) const
@@ -199,9 +227,12 @@ namespace DNDS::CFV
         DNDS_check_throw_info(!_device,
                               "build mutable boundary values on the host plan, then place them on the selected backend");
         DNDS_check_throw_info(components > 0, "boundary value component count must be positive");
-        return {R::Array<real>(R::RowLayout::Dense(NumBoundaryQuadrature(), components)), _data};
+        return {R::Array<real>(R::RowLayout::Dense(NumBoundaryQuadrature(), components)), _identity};
     }
-    index VariationalReconstructionPlan::NumBoundaryQuadrature() const { return _data->boundaryPoints.RowCount(); }
+    index VariationalReconstructionPlan::NumBoundaryQuadrature() const
+    {
+        return _data ? _data->boundaryPoints.RowCount() : PlacementBoundaryPoints();
+    }
     BoundaryQuadraturePoint VariationalReconstructionPlan::GetBoundaryQuadrature(index iPoint) const
     {
         Validate();
@@ -220,10 +251,10 @@ namespace DNDS::CFV
                               "build mutable characteristic transforms on the host plan, then place them on the selected backend");
         DNDS_check_throw_info(first >= 0 && count >= 0 && count <= 64, "invalid characteristic component range");
         if (count == 0)
-            return FaceCharacteristicTransform{first, 0, {}, {}, _data};
+            return FaceCharacteristicTransform{first, 0, {}, {}, _identity};
         FaceCharacteristicTransform result{first, count,
                                            R::Array<real>(R::RowLayout::Dense(Metrics().NumFaceProc(), count * count)),
-                                           R::Array<real>(R::RowLayout::Dense(Metrics().NumFaceProc(), count * count)), _data};
+                                           R::Array<real>(R::RowLayout::Dense(Metrics().NumFaceProc(), count * count)), _identity};
         for (auto *array : {&result.forward, &result.inverse})
         {
             auto write = array->Write();
@@ -240,7 +271,7 @@ namespace DNDS::CFV
         Validate();
         DNDS_check_throw_info(!_device, "finalize characteristic transforms before backend placement");
         transform.forwardVersion = transform.inverseVersion = 0;
-        DNDS_check_throw_info(transform.plan == _data && transform.first >= 0 && transform.count >= 0 && transform.count <= 64,
+        DNDS_check_throw_info(transform.plan == _identity && transform.first >= 0 && transform.count >= 0 && transform.count <= 64,
                               "characteristic transform belongs to another plan or has an invalid range");
         const index count = transform.count;
         if (count == 0)
@@ -387,7 +418,7 @@ namespace DNDS::CFV
         const index nv = work.components, n = _data->n;
         Detail::ValidateVectorBlocks(nv, work.periodicVectorStarts);
         Metrics().ValidateField(mean, nv);
-        DNDS_check_throw_info(boundary.plan == _data, "boundary quadrature values belong to another plan");
+        DNDS_check_throw_info(boundary.plan == _identity, "boundary quadrature values belong to another plan");
         CheckArray(boundary.values, NumBoundaryQuadrature(), nv);
         // All leases and layout projection happen before the numerical loops.
         Metrics().ValidateField(input, n * nv);
@@ -615,11 +646,11 @@ namespace DNDS::CFV
         }
         const auto *selectedTransform = transform && transform->get().count ? &transform->get() : nullptr;
         if (transform && !selectedTransform)
-            DNDS_check_throw_info(transform->get().plan == _data && transform->get().first >= 0 && transform->get().first <= nv,
+            DNDS_check_throw_info(transform->get().plan == _identity && transform->get().first >= 0 && transform->get().first <= nv,
                                   "disabled face characteristic transform belongs to another plan or has an invalid offset");
         if (selectedTransform)
         {
-            DNDS_check_throw_info(selectedTransform->plan == _data && selectedTransform->first >= 0 && selectedTransform->count > 0 &&
+            DNDS_check_throw_info(selectedTransform->plan == _identity && selectedTransform->first >= 0 && selectedTransform->count > 0 &&
                                       selectedTransform->first <= nv && selectedTransform->count <= nv - selectedTransform->first,
                                   "invalid face characteristic transform range/plan");
             CheckArray(selectedTransform->forward, Metrics().NumFaceProc(), selectedTransform->count * selectedTransform->count);

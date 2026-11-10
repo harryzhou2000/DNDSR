@@ -13,7 +13,7 @@ flowchart TD
     F --> P[Same plan type with immutable CUDA placement]
     P --> N[Numeric matrices, neighbors and work lists on CUDA]
     P --> X[Optional mesh, metrics and cached basis]
-    P --> R[Retained read scope and source-generation pin]
+    P --> R[Retained placement ownership and optional host plan]
     R --> V[Borrowed device views]
     U[Device U and URec owned/ghost fields] --> K[CUDA Jacobi or WBAP]
     B[Device boundary values and face transforms] --> K
@@ -32,6 +32,18 @@ basis also needs the metric quadrature offsets. Missing optional capabilities
 throw. Mesh data uses the existing `UnstructuredMeshSnapshot`, including its
 device-callable view; CFV does not create another topology implementation.
 
+Host-payload retention is explicit. `options.retainHostPayloads=true` is the
+default and keeps the CPU plan available for setup queries and diagnostics.
+With `false`, the returned placed plan releases the originating reconstruction
+and metric arrays after upload. It retains only a stable logical identity,
+settings/capabilities and global diagnostics, the distributed row-space,
+communication context and halo route, plus the requested device publications.
+Build and place mutable boundary values and characteristic transforms while the
+host plan is available. A device-only handle can still validate, allocate
+coefficients/workspace, bind halos and execute Jacobi/WBAP/commit; host-only
+queries such as `Metrics()`, geometry sampling and per-cell inverse diagnostics
+fail explicitly. `RetainsHostPayloads()` exposes the resolved choice.
+
 `ResidentBuffers()` reports retained numeric capacities, names and placements, including
 payload and metadata allocations of the optional mesh snapshot. Shared mesh
 allocations are counted once. This is an allocation-capacity manifest, excluding
@@ -43,9 +55,11 @@ Plan copies share the publication. Managed operation records retain the logical
 plan, placement payload, device buffers and all submitted operands through
 actual completion. Kernel views are plain borrows valid only within that
 retained operation. Preparation's stream is not retained as an immutable
-buffer's later access context. Geometry,
-topology/distribution or layout changes invalidate the source plan before reuse;
-solution changes do not invalidate geometric caches.
+buffer's later access context. A retained host plan continues to validate its
+source geometry generation. A device-only placement is a frozen independent
+publication: later host geometry/topology changes do not rewrite it, and callers
+must construct a new placement rather than mix it with fields/routes from the
+new mesh generation. Solution changes do not invalidate geometric caches.
 
 Device halo-binding validation inherits the source metrics' communication
 policy. Payload setup and selected MPI/provider protocols remain explicit.
@@ -187,7 +201,10 @@ alias checks stay outside scalar kernel loops even in unchecked builds.
 
 `cfv_test_reconstruction_cuda` compares nonzero CPU/GPU fields across physical
 layouts, split core/dependent work, characteristic transforms, rotated periodic
-vectors, axisymmetry and degree-three3D with37 components. It also exercises
+vectors, axisymmetry and degree-three3D with37 components. It also destroys the
+host plan behind a device-only publication and then exercises metadata,
+device-packed halo, Jacobi, a nonempty characteristic WBAP transform and commit.
+The suite further exercises
 unsupported SOR, invalid indicators, stale publications and optional query data.
 CTest includes one GPU and two ranks with one GPU each. Existing Runtime CUDA
 tests cover array indexing, alignment, async release, algebra and interop.

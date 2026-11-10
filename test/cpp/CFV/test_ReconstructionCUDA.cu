@@ -90,6 +90,59 @@ TEST_CASE("Device publications retain actual mesh metrics and basis with explici
     CHECK_THROWS(minimal.AcquireResidentRead().MetricView());
     CHECK_THROWS(minimal.MeshSnapshot());
 }
+TEST_CASE("Device-only reconstruction placement releases host payloads and remains executable")
+{
+    auto fixture = G::OverlapTest::BuildNativeFixture(mpi, false);
+    auto metrics = C::FiniteVolumePlan::ConstructMetrics(fixture.mesh);
+    std::optional<C::VariationalReconstructionPlan> resident;
+    std::optional<C::FVField> mean;
+    std::optional<C::FaceCharacteristicTransform> transform;
+    C::ReconstructionBoundaryValues boundary;
+    {
+        auto host = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics);
+        auto hostBoundary = host.BuildBoundaryValues(5);
+        {
+            auto write = hostBoundary.values.Write();
+            for (I iRow = 0; iRow < hostBoundary.values.RowCount(); ++iRow)
+                for (I iComp = 0; iComp < 5; ++iComp)
+                    write.View()(iRow, iComp) = 1 + .01 * iComp;
+        }
+        C::ReconstructionResidencyOptions options;
+        options.retainHostPayloads = false;
+        resident.emplace(host.Place(R::Device::CUDA(0), R::ExecutionContext::CUDA(0), options));
+        boundary = resident->PlaceBoundaryValues(hostBoundary);
+        transform.emplace(resident->PlaceFaceTransform(host.BuildFaceTransform(0, 5)));
+        mean.emplace(metrics.BuildField(R::RowLayout::ColMajor(0, 5, {32, 1}), resident->Device()));
+        Fill(*mean, 1.0);
+    }
+    REQUIRE(resident);
+    REQUIRE(mean);
+    CHECK_FALSE(resident->RetainsHostPayloads());
+    CHECK_THROWS(resident->Metrics());
+    resident->Validate();
+    CHECK(resident->Settings().maxOrder == 2);
+    CHECK(resident->Capabilities().Supports(C::ReconstructionOperation::Sweep));
+    CHECK(resident->StorageReport().retainedAllocationBytes > 0);
+    auto coefficients = resident->BuildCoefficients(5, R::RowLayout::TiledColMajor(0, 5 * resident->NRecDOF(), 8));
+    auto work = resident->BuildWorkspace(5, coefficients.Owned().Layout());
+    Fill(coefficients, .02);
+    Halo(*resident, *mean).Begin(R::ExecutionContext::CUDA(0)).Wait();
+    auto coefficientHalo = Halo(*resident, coefficients, R::TransferTransport::DevicePacked);
+    for (int step = 0; step < 2; ++step)
+    {
+        coefficientHalo.Begin(R::ExecutionContext::CUDA(0)).Wait();
+        resident->DoReconstructionIter(*mean, coefficients, work, boundary, jacobiKernel);
+        resident->CommitReconstruction(coefficients, work);
+    }
+    resident->DoLimiterWBAP_3Order(coefficients, work, 1, std::cref(*transform));
+    resident->CommitReconstruction(coefficients, work);
+    resident->CheckStatus(work);
+    const auto hostArray = coefficients.Owned().To(R::Device::Host());
+    const auto hostValues = hostArray.Read();
+    for (I iRow = 0; iRow < hostValues.View().RowCount(); ++iRow)
+        for (I iComp = 0; iComp < I(coefficients.Width()); ++iComp)
+            CHECK(std::isfinite(hostValues.View()(iRow, iComp)));
+}
 TEST_CASE("CUDA Jacobi and WBAP agree with CPU for physical DOF layouts and direct MPI split work")
 {
     auto fixture = G::OverlapTest::BuildNativeFixture(mpi, false);
