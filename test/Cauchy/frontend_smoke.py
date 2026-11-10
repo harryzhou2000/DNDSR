@@ -94,11 +94,16 @@ def main():
         multi["time"]["method"] = "bdf2"
         multi["time"]["steps"] = 1
         multi["output"]["prefix"] = str(folder / "multi")
+        multi["output"]["implicit"] = {"visualizationInterval": 1}
         multi_config = folder / "multi.json"
         multi_config.write_text(json.dumps(multi))
         run(multi_config)
         for i_domain in range(2):
             assert (folder / f"multi-D{i_domain}-final.vtkhdf").exists()
+            internal = sorted(folder.glob(f"multi-D{i_domain}-S1_0_*.vtkhdf"))
+            assert internal
+            assert all(path.with_name(path.stem + "-manifest.json").is_file()
+                       for path in internal)
             with (folder / f"multi-D{i_domain}-history.csv").open() as stream:
                 assert len(list(csv.DictReader(stream))) == 2
         if args.np > 1:

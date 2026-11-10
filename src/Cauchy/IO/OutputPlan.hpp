@@ -58,7 +58,9 @@ namespace DNDS::Cauchy
         std::string CheckpointPath(const std::string &token) const;
         std::string VisualizationPrefix(index domain, const std::string &token) const;
         std::string SnapshotManifestPath(const std::string &token) const;
+        std::string InternalSnapshotManifestPath(index domain, const std::string &token) const;
         static std::string StepToken(uint64_t step);
+        static std::string InternalToken(uint64_t step, index stage, index iteration);
         static std::string TimeToken(real time);
         static uint64_t NextTimeOrdinal(real time, real interval);
         static real TimeAt(uint64_t ordinal, real interval);

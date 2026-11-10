@@ -113,6 +113,9 @@ static int Run(int argc, char **argv, double started)
             const auto &time = config.Time();
             const auto domainCount = DNDS::index(config.Domains().size());
             const DNDS::Cauchy::OutputPlan outputPlan(output, domainCount);
+            const DNDS::index internalVisualizationInterval = output.implicit.visualizationInterval < 0
+                                                                  ? output.implicit.checkpointInterval
+                                                                  : output.implicit.visualizationInterval;
             const auto &restoredOutput = simulation.RestoredOutputController();
             const bool continueOutput = restoredOutput && restoredOutput->is_object() &&
                                         restoredOutput->value("prefix", std::string{}) == output.prefix;
@@ -150,7 +153,34 @@ static int Run(int argc, char **argv, double started)
                         simulation.Placement().DomainRank(iDomain) == 0, logger,
                         continueOutput ? std::optional(outputState.history.at(size_t(iDomain))) : std::nullopt); });
                 domain.SetProgressObserver([&, iDomain](const DNDS::Cauchy::NonlinearProgress &entry)
-                                           { progress[iDomain]->CaptureIteration(entry); }); });
+                                           {
+                    progress[iDomain]->CaptureIteration(entry);
+                    if (internalVisualizationInterval <= 0 || entry.iteration % internalVisualizationInterval)
+                        return;
+                    const auto token = DNDS::Cauchy::OutputPlan::InternalToken(simulation.Step() + 1, entry.stage, entry.iteration);
+                    const auto prefix = outputPlan.VisualizationPrefix(iDomain, token);
+                    domain.WriteInternalVisualization(prefix, output.hdfDeflateLevel);
+                    if (simulation.Placement().DomainRank(iDomain) == 0)
+                    {
+                        DNDS::Cauchy::Json surfaces = DNDS::Cauchy::Json::array();
+                        for (int rank = 0; rank < int(config.Domains()[iDomain].placement.ranks.size()); ++rank)
+                            surfaces.push_back(prefix + "_surface_rank" + std::to_string(rank) + ".csv");
+                        const DNDS::Cauchy::Json manifest{
+                            {"schema", "dndsr.cauchy.internal-snapshot.v1"},
+                            {"restartScope", "visualization_only"},
+                            {"domain", iDomain},
+                            {"step", simulation.Step() + 1},
+                            {"stage", entry.stage},
+                            {"coupledStage", entry.coupledStage},
+                            {"iteration", entry.iteration},
+                            {"time", domain.InternalObservationTime()},
+                            {"volume", prefix + ".vtkhdf"},
+                            {"surface", std::move(surfaces)}};
+                        std::ofstream file(outputPlan.InternalSnapshotManifestPath(iDomain, token));
+                        file << manifest.dump(2) << '\n';
+                        DNDS_check_throw_info(bool(file), "cannot write Cauchy internal snapshot manifest");
+                    }
+                }); });
             DNDS::Cauchy::Json localDomains = DNDS::Cauchy::Json::array();
             for (DNDS::index iDomain = 0; iDomain < domainCount; ++iDomain)
                 if (simulation.Local(iDomain) && simulation.Placement().DomainRank(iDomain) == 0)

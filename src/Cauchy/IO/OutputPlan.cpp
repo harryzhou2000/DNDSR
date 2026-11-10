@@ -121,7 +121,17 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(!token.empty(), "snapshot token is empty");
         return _settings.prefix + token + "-manifest.json";
     }
+    std::string OutputPlan::InternalSnapshotManifestPath(index domain, const std::string &token) const
+    {
+        DNDS_check_throw_info(!token.empty(), "internal snapshot token is empty");
+        return DomainPrefix(domain) + token + "-manifest.json";
+    }
     std::string OutputPlan::StepToken(uint64_t step) { return "-S" + std::to_string(step); }
+    std::string OutputPlan::InternalToken(uint64_t step, index stage, index iteration)
+    {
+        DNDS_check_throw_info(stage >= 0 && iteration >= 0, "internal output stage/iteration is invalid");
+        return StepToken(step) + "_" + std::to_string(stage) + "_" + std::to_string(iteration);
+    }
     std::string OutputPlan::TimeToken(real time)
     {
         DNDS_check_throw_info(std::isfinite(time), "output time is nonfinite");

@@ -73,7 +73,7 @@ namespace DNDS::Cauchy
         StateEpoch _epoch;
         StateEpoch _trialEpoch;
         uint64_t _nextTrial = 0;
-        real _time = 0, _trialTime = 0, _trialDt = 0, _lastAcceptedDt = 0;
+        real _time = 0, _trialTime = 0, _trialDt = 0, _lastAcceptedDt = 0, _progressTime = 0;
         bool _trialReady = false;
         index _lastFallbacks = 0;
         bool _positivity = false, _steady = false, _rejectUnconvergedStages = false;
@@ -154,6 +154,7 @@ namespace DNDS::Cauchy
         /// capacity. No halo exchange; caller ensures ready ghosts when used.
         bool RefreshDerived(DerivedFields &fields, bool onlyIfStale = false) const;
         real Time() const { return _time; }
+        real InternalObservationTime() const { return _progressTime; }
         /// Actual last committed physical step, including retry halving. Zero
         /// for steady/fresh state or an older restart without this information.
         real PreviousTimeStep() const { return _lastAcceptedDt; }
@@ -234,6 +235,10 @@ namespace DNDS::Cauchy
         /// force xyz, VR sweeps/update, density L1/L2/Linf analytic errors, Tmin.
         std::array<real, 14> Diagnostics(const DomainSettings &settings, const std::vector<int> &forceZones);
         void WriteVisualization(const std::string &prefix, int hdfDeflateLevel = 0);
+        /// Observe the current nonlinear trial at a synchronous progress
+        /// boundary. This uses the stage's already-finalized reconstruction and
+        /// never rebuilds or mutates the accepted observation workspace.
+        void WriteInternalVisualization(const std::string &prefix, int hdfDeflateLevel = 0) const;
         /// Native parallel restart with persistent cell IDs and per-cell mesh
         /// validation. Default omits reconstruction; opt in for compatible
         /// fixed-sweep continuation. BDF history is stored when applicable.

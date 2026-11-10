@@ -496,6 +496,8 @@ namespace DNDS::Cauchy
                 const bool accepted = _timeStepper->SolvePreparedStage(equation, _trial,
                                                                        [&](EquationDofs &trial, const EquationDofs &source, real mass, real rhsScale, real time, int stage)
                                                                        {
+                                                                           _progressTime = time;
+                                                                           SetTimeStage(stage);
                                                                            return RecordImplicitStage(_multigrid ? _multigrid->Solve(source, mass, rhsScale, time, stage, ProgressControl())
                                                                                                                  : _implicit->Solve(trial, source, mass, rhsScale, time, stage, ProgressControl()));
                                                                        });
@@ -679,6 +681,16 @@ namespace DNDS::Cauchy
     {
         EvaluateObservation();
         _fv.WriteVisualization(_accepted, *_observationReconstruction, *_observationWorkspace, prefix, _time, hdfDeflateLevel, _workers);
+    }
+    void Domain::WriteInternalVisualization(const std::string &prefix, int hdfDeflateLevel) const
+    {
+        const MPIInfo mpi(_fv.Metrics().Communicator());
+        MPI::LocalStage(mpi, [&]
+                        { DNDS_check_throw_info(_timeStepper && _trialEpoch.trial && _restoreReconstruction &&
+                                                    std::isfinite(_progressTime),
+                                                "Cauchy internal visualization has no active implicit trial"); });
+        _fv.WriteVisualization(_trial, *_reconstruction, *_workspace, prefix, _progressTime,
+                               hdfDeflateLevel, _workers);
     }
     void Domain::EvaluateObservation()
     {

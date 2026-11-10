@@ -77,13 +77,20 @@ to `target`, rather than incremented. If an unsnapped `t+dt` cannot advance the
 floating-point clock, the frontend fails explicitly. Step- and time-based
 triggers at the same accepted state are coalesced into one snapshot bundle.
 
-## Current internal-iteration boundary
+## Internal-iteration boundary
 
 Iteration and stage progress are fully represented in the detailed history and
-console. Restartable checkpoints or visualization *during* a nonlinear
-iteration are rejected during configuration rather than silently ignored. A
-correct implementation must archive the active ODE stage/coupled-stage,
-nonlinear state, pseudo-time controls, history fields and reconstruction needed
-to resume that exact solve. Until that controller state is serializable, use
-zero internal checkpoint/visualization cadence.
+console. A positive `output.implicit.visualizationInterval` writes the current
+trial and its already-finalized reconstruction at the quiescent nonlinear
+observation boundary. It does not rerun reconstruction and therefore cannot
+change the numerical trajectory. Each per-domain product has an
+`internal-snapshot.v1` manifest whose `restartScope` is
+`visualization_only`.
+
+Exact internal checkpoints remain rejected during configuration rather than
+being mislabeled as accepted-state archives. Their implementation must archive
+the active ODE stage/coupled-stage, nonlinear state, pseudo-time controls,
+history fields and both DITR reconstruction publications needed to resume that
+exact solve. Keep `output.implicit.checkpointInterval=0` until that state is
+available.
 

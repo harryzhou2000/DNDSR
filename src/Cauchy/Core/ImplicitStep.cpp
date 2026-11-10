@@ -57,6 +57,7 @@ namespace DNDS::Cauchy
                 [this, solver, multigrid](const auto &equation, const auto &rate, real cfl)
                 {
                     const auto &c = equation.coefficients;
+                    _progressTime = c.time;
                     SetTimeStage(equation.coupledStage);
                     return multigrid ? multigrid->ApplyCycle(equation.resOther, c.inverseDt, c.rhsScale, c.time, equation.coupledStage, cfl, std::cref(rate))
                                      : solver->CorrectOnce(equation.state, equation.resOther, c.inverseDt, c.rhsScale, c.time,
@@ -142,6 +143,7 @@ namespace DNDS::Cauchy
         };
         const auto solve = [&](EquationDofs &state, const EquationDofs &source, real mass, real scale, real time, int stage)
         {
+            _progressTime = time;
             SetTimeStage(stage);
             const auto progress = ProgressControl();
             return RecordImplicitStage(_multigrid ? _multigrid->Solve(source, mass, scale, time, stage, progress)
