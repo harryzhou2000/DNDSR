@@ -36,7 +36,8 @@ namespace
         R::EagerEngine engine(0);
         const auto stream = engine.CreateCPUStream();
         auto work = fixture.fv.BuildWorkspace(state, fixture.physical.workers);
-        C::NonlinearSolver solver(fixture.fv, state, work, engine, stream, settings,
+        auto reconstruction = fixture.fv.BuildReconstructionState(state);
+        C::NonlinearSolver solver(fixture.fv, state, reconstruction, work, engine, stream, settings,
                                   DNDS::Algebra::ComponentSelection(state.ComponentNumber()), fixture.physical.workers);
         constexpr double mass = 1e6;
         solver.EvaluateEquation(state, source, mass, 1, 0);
@@ -44,7 +45,7 @@ namespace
         const auto reset = [&]
         {
             C::EquationDofOperations::Copy(state, fixture.state);
-            fixture.fv.ResetReconstruction(*work);
+            fixture.fv.ResetReconstruction(*reconstruction, *work);
             auto write = state.WriteOwned();
             const auto flow = write.Block("flow");
             for (I iCell = 0; iCell < fixture.fv.Metrics().NumCell(); ++iCell)
@@ -52,7 +53,7 @@ namespace
         };
         const auto solve = [&](C::NonlinearProfile &profile)
         {
-            const auto report = solver.Solve(state, source, mass, 1, 0, 0, {1, 0, &profile});
+            const auto report = solver.Solve(state, source, mass, 1, 0, 0, {1, 0, std::ref(profile)});
             DNDS_check_throw_info(!report.converged && report.iterations == 1 && report.linearIterations == 5 &&
                                       profile.residualEvaluations == 2 && report.initialResidual[4] > 0 && report.residual[4] < report.initialResidual[4],
                                   "nonlinear assessment changed work or failed to reduce its energy defect");
@@ -108,10 +109,11 @@ namespace
                 flow(iCell, 4) += .0001 * flow(iCell, 0);
         }
         auto alternativeWork = fixture.fv.BuildWorkspace(alternate, fixture.physical.workers);
-        C::NonlinearSolver other(fixture.fv, alternate, alternativeWork, engine, stream, settings,
+        auto alternativeReconstruction = fixture.fv.BuildReconstructionState(alternate);
+        C::NonlinearSolver other(fixture.fv, alternate, alternativeReconstruction, alternativeWork, engine, stream, settings,
                                  DNDS::Algebra::ComponentSelection(alternate.ComponentNumber()), fixture.physical.workers);
         C::NonlinearProfile unused;
-        const auto report = other.Solve(alternate, source, mass, 1, 0, 0, {1, 0, &unused});
+        const auto report = other.Solve(alternate, source, mass, 1, 0, 0, {1, 0, std::ref(unused)});
         const auto actual = Plan53::RHSFixture::Values(alternate);
         DNDS_check_throw_info(actual.size() == expected.size(), "storage-mode oracle field sizes differ");
         bool valid = report.iterations == 1 && report.linearIterations == 5;

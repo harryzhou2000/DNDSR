@@ -98,11 +98,12 @@ TEST_CASE("Characteristic WBAP transforms only flow5 across combined and segment
     Fill(segmented, fv, true);
     auto combinedResidual = C::EquationDofOperations::NewVector(combined);
     auto segmentedResidual = C::EquationDofOperations::NewVector(segmented);
+    auto combinedReconstruction = fv.BuildReconstructionState(combined), segmentedReconstruction = fv.BuildReconstructionState(segmented);
     auto combinedWork = fv.BuildWorkspace(combined), segmentedWork = fv.BuildWorkspace(segmented);
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
-    fv.Evaluate(combined, combinedResidual, *combinedWork, engine, stream);
-    fv.Evaluate(segmented, segmentedResidual, *segmentedWork, engine, stream);
+    fv.Evaluate(combined, combinedResidual, *combinedReconstruction, *combinedWork, engine, stream);
+    fv.Evaluate(segmented, segmentedResidual, *segmentedReconstruction, *segmentedWork, engine, stream);
 
     const auto compare = [](const C::EquationDofs &a, const C::EquationDofs &b)
     {
@@ -118,7 +119,8 @@ TEST_CASE("Characteristic WBAP transforms only flow5 across combined and segment
         }
     };
     compare(combinedResidual, segmentedResidual);
-    compare(fv.FluxReconstruction(*combinedWork), fv.FluxReconstruction(*segmentedWork));
+    compare(fv.FluxReconstruction(*combinedReconstruction, *combinedWork),
+            fv.FluxReconstruction(*segmentedReconstruction, *segmentedWork));
     CHECK(fv.LastCharacteristicFallbacks(*combinedWork) == fv.LastCharacteristicFallbacks(*segmentedWork));
 }
 
@@ -143,14 +145,15 @@ TEST_CASE("Ordered six-component assembled faces match permuted storage and dire
         auto permuted = State(fv, false);
         Fill(ordered, fv, true);
         Fill(permuted, fv, true);
+        auto reconstruction = fv.BuildReconstructionState(ordered), referenceReconstruction = fv.BuildReconstructionState(permuted);
         auto work = fv.BuildWorkspace(ordered), referenceWork = fv.BuildWorkspace(permuted);
         auto residual = C::EquationDofOperations::NewVector(ordered), referenceResidual = C::EquationDofOperations::NewVector(permuted);
         auto auxiliary = fv.BuildAuxiliaryValues({true, true}), referenceAuxiliary = fv.BuildAuxiliaryValues({true, true});
         R::EagerEngine engine;
         const auto stream = engine.CreateCPUStream();
         constexpr double time = .3;
-        fv.Evaluate(ordered, residual, *work, auxiliary, engine, stream, time);
-        fv.Evaluate(permuted, referenceResidual, *referenceWork, referenceAuxiliary, engine, stream, time);
+        fv.Evaluate(ordered, residual, *reconstruction, *work, auxiliary, engine, stream, time);
+        fv.Evaluate(permuted, referenceResidual, *referenceReconstruction, *referenceWork, referenceAuxiliary, engine, stream, time);
         R::Array<double> tau(R::RowLayout::Dense(fv.Metrics().NumCell(), 1));
         {
             auto write = tau.Write();
@@ -171,9 +174,12 @@ TEST_CASE("Ordered six-component assembled faces match permuted storage and dire
                     blocks(iCell, iBlock).setConstant(std::numeric_limits<double>::quiet_NaN());
             }
         }
-        fv.PrepareJacobian(ordered, auxiliary, tau, *matrix, {3, .7, false}, time, {}, work.get());
-        fv.PrepareJacobian(permuted, referenceAuxiliary, tau, *reference, {3, .7, false}, time, {}, referenceWork.get());
-        fv.PrepareJacobian(ordered, auxiliary, tau, *action, {3, .7, false}, time, {}, work.get());
+        fv.PrepareJacobian(ordered, auxiliary, tau, *matrix, {3, .7, false}, time, {},
+                           C::FiniteVolume::JacobianContext{*reconstruction, *work});
+        fv.PrepareJacobian(permuted, referenceAuxiliary, tau, *reference, {3, .7, false}, time, {},
+                           C::FiniteVolume::JacobianContext{*referenceReconstruction, *referenceWork});
+        fv.PrepareJacobian(ordered, auxiliary, tau, *action, {3, .7, false}, time, {},
+                           C::FiniteVolume::JacobianContext{*reconstruction, *work});
         const auto blocks = matrix->OffDiagonal().Read(), other = reference->OffDiagonal().Read();
         const auto diagonal = matrix->Diagonal().Read(), otherDiagonal = reference->Diagonal().Read();
         Eigen::VectorXd direction(6), result(6);
@@ -219,7 +225,7 @@ TEST_CASE("Explicit RANS repairs scalars separately from the uncompressed flow5 
         const auto original = domain.Dofs().Clone();
         double criticalDt = std::numeric_limits<double>::infinity();
         {
-            const auto &rhs = domain.ResidualState();
+            const auto &rhs = domain.Residual();
             const auto initial = original.ReadOwned(), residual = rhs.ReadOwned();
             const auto values = initial.Block("rans"), rate = residual.Block("rans");
             for (I iCell = 0; iCell < values.RowCount(); ++iCell)
@@ -242,6 +248,7 @@ TEST_CASE("Explicit RANS repairs scalars separately from the uncompressed flow5 
         auto oracle = original.Clone();
         auto rhs = C::EquationDofOperations::NewVector(oracle);
         const auto &fv = domain.Discretization();
+        auto reconstruction = fv.BuildReconstructionState(oracle);
         auto work = fv.BuildWorkspace(oracle);
         R::EagerEngine engine(workers);
         const auto stream = engine.CreateCPUStream();
@@ -249,7 +256,7 @@ TEST_CASE("Explicit RANS repairs scalars separately from the uncompressed flow5 
         int repaired = 0;
         for (int stage = 0; stage < 3; ++stage)
         {
-            fv.Evaluate(oracle, rhs, *work, engine, stream, stageTime[stage]);
+            fv.Evaluate(oracle, rhs, *reconstruction, *work, engine, stream, stageTime[stage]);
             const auto base = original.ReadOwned(), residual = rhs.ReadOwned();
             auto output = oracle.WriteOwned();
             for (I iBlock = 0; iBlock < oracle.BlockNumber(); ++iBlock)
@@ -320,11 +327,12 @@ TEST_CASE("RANS wall force uses the completed RHS momentum flux with the physica
             sa(iCell, 0) = .02;
         }
     }
+    auto reconstruction = fv.BuildReconstructionState(state);
     auto work = fv.BuildWorkspace(state);
     CHECK_THROWS(fv.LastBoundaryForce(*work, {7}));
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
-    fv.Evaluate(state, result, *work, engine, stream);
+    fv.Evaluate(state, result, *reconstruction, *work, engine, stream);
     const auto force = fv.LastBoundaryForce(*work, {7});
     // Piecewise-constant pressure on the two x-walls is 1.05 / 1.15.
     // Each wall has area one, and the normal points out of the fluid.
@@ -394,14 +402,15 @@ TEST_CASE("RANS FV integrates quadrature sources and their positive implicit des
             // DES mode, otherwise a wrong mesh length would be invisible here.
             const double omega = std::string(name) == "KOmegaSST" ? 20 : .1;
             Fill(state, fv, false, omega);
+            auto reconstructionState = fv.BuildReconstructionState(state);
             auto work = fv.BuildWorkspace(state);
             R::EagerEngine engine;
             const auto stream = engine.CreateCPUStream();
-            fv.Evaluate(state, result, *work, engine, stream);
+            fv.Evaluate(state, result, *reconstructionState, *work, engine, stream);
             auto aux = fv.BuildAuxiliaryValues({true, true});
             auto uncachedAux = fv.BuildAuxiliaryValues({false, true});
-            fv.PrepareCorrectionAux(state, *work, uncachedAux, engine, stream, 0);
-            fv.PrepareCorrectionAux(state, *work, aux, engine, stream, 0);
+            fv.PrepareCorrectionAux(state, *reconstructionState, *work, uncachedAux, engine, stream, 0);
+            fv.PrepareCorrectionAux(state, *reconstructionState, *work, aux, engine, stream, 0);
             {
                 const auto a = aux.faceSpectralRadius->Read(), b = uncachedAux.faceSpectralRadius->Read();
                 const auto cached = a.View<R::UniformTableRows>(), direct = b.View<R::UniformTableRows>();
@@ -430,13 +439,15 @@ TEST_CASE("RANS FV integrates quadrature sources and their positive implicit des
                     }
                     // Correction preparation must update destruction from the new mean,
                     // while retaining the polynomial and leaving the prior RHS untouched.
-                    fv.PrepareCorrectionAux(state, *work, aux, engine, stream, 0);
+                    fv.PrepareCorrectionAux(state, *reconstructionState, *work, aux, engine, stream, 0);
                 }
-                fv.PrepareJacobian(state, aux, tau, *matrix, controls, 0, {}, work.get());
+                fv.PrepareJacobian(state, aux, tau, *matrix, controls, 0, {},
+                                   C::FiniteVolume::JacobianContext{*reconstructionState, *work});
                 if (!refresh)
                 {
                     auto evaluated = fv.BuildLinearProblem(state, C::DiagonalStorage::Block, C::OffDiagonalStorage::SemiMatrixFree);
-                    fv.PrepareJacobian(state, aux, tau, *evaluated, controls, 0, {}, work.get());
+                    fv.PrepareJacobian(state, aux, tau, *evaluated, controls, 0, {},
+                                       C::FiniteVolume::JacobianContext{*reconstructionState, *work});
                     const auto producer = evaluated->PreparedOffDiagonalEvaluator();
                     const auto stored = matrix->OffDiagonal().Read();
                     // A strided arbitrary direction exercises every flow and
@@ -461,9 +472,11 @@ TEST_CASE("RANS FV integrates quadrature sources and their positive implicit des
                         auto subset = fv.BuildLinearProblem(state, C::DiagonalStorage::Block);
                         auto selected = controls;
                         selected.updateComponents = {4, 5};
-                        fv.PrepareJacobian(state, aux, tau, *subset, selected, 0, {}, work.get());
+                        fv.PrepareJacobian(state, aux, tau, *subset, selected, 0, {},
+                                           C::FiniteVolume::JacobianContext{*reconstructionState, *work});
                         auto selectedAction = fv.BuildLinearProblem(state, C::DiagonalStorage::Block, C::OffDiagonalStorage::DirectEvaluated);
-                        fv.PrepareJacobian(state, aux, tau, *selectedAction, selected, 0, {}, work.get());
+                        fv.PrepareJacobian(state, aux, tau, *selectedAction, selected, 0, {},
+                                           C::FiniteVolume::JacobianContext{*reconstructionState, *work});
                         const auto diagonal = matrix->Diagonal().Read(), subDiagonal = subset->Diagonal().Read();
                         const auto subBlocks = subset->OffDiagonal().Read();
                         for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
@@ -587,10 +600,11 @@ TEST_CASE("Zero-SA wall convection retains the interior SA viscous jump")
     auto state = State(fv, true);
     Fill(state, fv, false);
     auto result = C::EquationDofOperations::NewVector(state);
+    auto reconstruction = fv.BuildReconstructionState(state);
     auto work = fv.BuildWorkspace(state);
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
-    fv.Evaluate(state, result, *work, engine, stream);
+    fv.Evaluate(state, result, *reconstruction, *work, engine, stream);
 
     DNDS::Physics::RANS::Point point;
     point.state << 1, 0, 0, 0, 2.5, .02, 0;
@@ -784,10 +798,11 @@ TEST_CASE("RANS P3 residual and WBAP preserve split layout and core halo schedul
             auto state = State(fv, variant);
             Fill(state, fv, true);
             auto result = C::EquationDofOperations::NewVector(state);
+            auto reconstruction = fv.BuildReconstructionState(state);
             auto work = fv.BuildWorkspace(state);
             R::EagerEngine engine(variant ? 2 : 0);
             const auto stream = engine.CreateCPUStream();
-            fv.Evaluate(state, result, *work, engine, stream);
+            fv.Evaluate(state, result, *reconstruction, *work, engine, stream);
             const auto read = result.ReadOwned();
             I position = 0;
             double magnitude = 0;
@@ -1092,7 +1107,7 @@ TEST_CASE("RANS final thermal increment compression retains Euler whole-vector s
             }
             R::EagerEngine engine(split ? 2 : 0);
             const auto stream = engine.CreateCPUStream();
-            C::NonlinearSolver solver(fv, state, fv.BuildWorkspace(state), engine, stream,
+            C::NonlinearSolver solver(fv, state, fv.BuildReconstructionState(state), fv.BuildWorkspace(state), engine, stream,
                                       settings, A::ComponentSelection(state.ComponentNumber()));
             const auto report = solver.ApplyCorrection(state, delta);
             REQUIRE(report.second < 1);
@@ -1138,8 +1153,9 @@ TEST_CASE("P3 thermal reconstruction compression preserves admissible RANS linea
             C::FiniteVolume fv(mesh, settings, equation);
             auto state = State(fv, reference);
             fv.InitializeConstant(state, {1, 0, 0, 0, 1}, {}, 0, {}, initial);
+            auto reconstruction = fv.BuildReconstructionState(state);
             auto work = fv.BuildWorkspace(state);
-            auto guess = fv.ReconstructionGuess(*work);
+            auto guess = fv.ReconstructionGuess(*reconstruction);
             C::EquationDofOperations::Fill(guess, 0);
             const int modes = fv.Reconstruction().NRecDOF();
             {
@@ -1153,13 +1169,13 @@ TEST_CASE("P3 thermal reconstruction compression preserves admissible RANS linea
                 }
             }
             const C::EquationDofOperations::Binding unchangedMeans(state), unchangedGuess(guess);
-            fv.LimitReconstructionPP(state, *work);
+            fv.LimitReconstructionPP(state, *reconstruction, *work);
             CHECK_NOTHROW(unchangedMeans.Check(state, true));
             CHECK_NOTHROW(unchangedGuess.Check(guess, true));
             const auto stats = fv.PositivityReconstructionStats(*work);
             REQUIRE(stats.first > 0);
             REQUIRE(stats.second < 1);
-            const auto read = fv.FluxReconstruction(*work).ReadOwned();
+            const auto read = fv.FluxReconstruction(*reconstruction, *work).ReadOwned();
             const auto flow = read.Block("flow"), rans = read.Block("rans");
             for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
             {
@@ -1193,8 +1209,9 @@ TEST_CASE("SA reference-quality failure preserves thermally admissible uncompres
         C::FiniteVolume fv(mesh, settings, Equation(settings));
         auto state = State(fv, split);
         fv.InitializeConstant(state, {1, 0, 0, 0, 1}, {}, 0, {}, {{"rhoNuTilde", .02}});
+        auto reconstruction = fv.BuildReconstructionState(state);
         auto work = fv.BuildWorkspace(state);
-        auto guess = fv.ReconstructionGuess(*work);
+        auto guess = fv.ReconstructionGuess(*reconstruction);
         C::EquationDofOperations::Fill(guess, 0);
         const int modes = fv.Reconstruction().NRecDOF();
         const I cells = fv.Metrics().NumCell();
@@ -1228,8 +1245,8 @@ TEST_CASE("SA reference-quality failure preserves thermally admissible uncompres
             for (I iCell = 0; iCell < cells; ++iCell)
                 REQUIRE(read.View()(iCell, location.firstComponent) < 0);
         }
-        fv.LimitReconstructionPP(state, *work);
-        const auto input = guess.ReadOwned(), output = fv.FluxReconstruction(*work).ReadOwned();
+        fv.LimitReconstructionPP(state, *reconstruction, *work);
+        const auto input = guess.ReadOwned(), output = fv.FluxReconstruction(*reconstruction, *work).ReadOwned();
         for (const auto *name : {"flow", "rans"})
         {
             const auto a = input.Block(name), b = output.Block(name);
@@ -1268,8 +1285,9 @@ TEST_CASE("RANS reconstruction PP preserves flow and scalar polynomials independ
                 const double scalarMean = scenario == 1 ? 1e-30 : .02;
                 const std::map<std::string, double> initial = sa ? std::map<std::string, double>{{"rhoNuTilde", scalarMean}} : std::map<std::string, double>{{"rhoK", scalarMean}, {"rhoOmega", scalarMean * 5}};
                 fv.InitializeConstant(state, {1, 0, 0, 0, 1}, {}, 0, {}, initial);
+                auto reconstruction = fv.BuildReconstructionState(state);
                 auto work = fv.BuildWorkspace(state);
-                auto guess = fv.ReconstructionGuess(*work);
+                auto guess = fv.ReconstructionGuess(*reconstruction);
                 C::EquationDofOperations::Fill(guess, 0);
                 const int modes = fv.Reconstruction().NRecDOF();
                 const I cells = fv.Metrics().NumCell();
@@ -1330,12 +1348,12 @@ TEST_CASE("RANS reconstruction PP preserves flow and scalar polynomials independ
                     }
                 }
                 const C::EquationDofOperations::Binding meanBefore(state), guessBefore(guess);
-                fv.LimitReconstructionPP(state, *work);
+                fv.LimitReconstructionPP(state, *reconstruction, *work);
                 CHECK_NOTHROW(meanBefore.Check(state, true));
                 CHECK_NOTHROW(guessBefore.Check(guess, true));
                 if (scenario != 2)
                     CHECK(fv.PositivityReconstructionStats(*work).first == 0);
-                const auto read = fv.FluxReconstruction(*work).ReadOwned();
+                const auto read = fv.FluxReconstruction(*reconstruction, *work).ReadOwned();
                 const auto flow = read.Block("flow"), rans = read.Block("rans");
                 for (I iCell = 0; iCell < cells; ++iCell)
                 {
@@ -1382,7 +1400,7 @@ TEST_CASE("SA implicit updates repair scalars after flow compression without unf
         auto delta = C::EquationDofOperations::NewVector(state);
         R::EagerEngine engine(variant ? 2 : 0);
         const auto stream = engine.CreateCPUStream();
-        C::NonlinearSolver solver(fv, state, fv.BuildWorkspace(state), engine, stream, settings, A::ComponentSelection(6));
+        C::NonlinearSolver solver(fv, state, fv.BuildReconstructionState(state), fv.BuildWorkspace(state), engine, stream, settings, A::ComponentSelection(6));
         C::EquationDofOperations::Fill(delta, 0);
         {
             auto write = delta.WriteOwned();
@@ -1488,8 +1506,9 @@ TEST_CASE("RANS nonlinear stages recover a manufactured viscous source balance")
             C::EquationDofOperations::Copy(state, target);
             R::EagerEngine engine(variant ? 2 : 0);
             const auto stream = engine.CreateCPUStream();
+            auto targetReconstruction = fv.BuildReconstructionState(target);
             auto targetWork = fv.BuildWorkspace(target);
-            fv.Evaluate(target, rhs, *targetWork, engine, stream);
+            fv.Evaluate(target, rhs, *targetReconstruction, *targetWork, engine, stream);
             {
                 const auto read = target.ReadOwned(), rhsRead = rhs.ReadOwned();
                 auto write = source.WriteOwned(), stateWrite = state.WriteOwned();
@@ -1505,7 +1524,7 @@ TEST_CASE("RANS nonlinear stages recover a manufactured viscous source balance")
                         }
                 }
             }
-            C::NonlinearSolver solver(fv, state, fv.BuildWorkspace(state), engine, stream, settings, A::ComponentSelection(state.ComponentNumber()));
+            C::NonlinearSolver solver(fv, state, fv.BuildReconstructionState(state), fv.BuildWorkspace(state), engine, stream, settings, A::ComponentSelection(state.ComponentNumber()));
             const auto report = solver.Solve(state, source, 20, 1, 0);
             CAPTURE(variant);
             CAPTURE(model);
@@ -1558,8 +1577,8 @@ TEST_CASE("SA cached corrections retain pre-RHS auxiliary publication across CPU
         C::EquationDofOperations::Fill(source, 0.);
         R::EagerEngine engine(workers);
         const auto stream = engine.CreateCPUStream();
-        C::NonlinearSolver a(fv, direct, fv.BuildWorkspace(direct), engine, stream, settings, A::ComponentSelection(6));
-        C::NonlinearSolver b(fv, cached, fv.BuildWorkspace(cached), engine, stream, settings, A::ComponentSelection(6));
+        C::NonlinearSolver a(fv, direct, fv.BuildReconstructionState(direct), fv.BuildWorkspace(direct), engine, stream, settings, A::ComponentSelection(6));
+        C::NonlinearSolver b(fv, cached, fv.BuildReconstructionState(cached), fv.BuildWorkspace(cached), engine, stream, settings, A::ComponentSelection(6));
         CHECK_THROWS_WITH(b.PreparedAuxValues(), doctest::Contains("not been prepared"));
         b.EvaluateRate(cached, rate, .2);
         fv.ValidateAuxValues(cached, b.PreparedAuxValues(), .2);
@@ -1568,7 +1587,7 @@ TEST_CASE("SA cached corrections retain pre-RHS auxiliary publication across CPU
         const auto sumVersion = b.PreparedAuxValues().cellSpectralSum->Owned().Version();
         const auto oldOwnedVersion = cached.PhysicalField(0).Owned().Version();
         const auto fresh = a.CorrectOnce(direct, source, 0., 1., .2);
-        const auto reused = b.CorrectOnce(cached, source, 0., 1., .2, 0, {}, &rate);
+        const auto reused = b.CorrectOnce(cached, source, 0., 1., .2, 0, {}, std::cref(rate));
         CHECK(fresh.linearIterations == reused.linearIterations);
         CHECK(cached.PhysicalField(0).Owned().Version() > oldOwnedVersion);
         CHECK(b.PreparedAuxValues().meanThermodynamics->Version() == meanVersion);
@@ -1617,14 +1636,15 @@ TEST_CASE("P0 jump-only face viscosity retains physical gradients in the SA volu
                 rans(iCell, 0) = nu;
             }
         }
+        auto reconstructionState = fv.BuildReconstructionState(state);
         auto workspace = fv.BuildWorkspace(state);
         R::EagerEngine engine;
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(state, combined, *workspace, engine, stream);
+        fv.Evaluate(state, combined, *reconstructionState, *workspace, engine, stream);
         C::EquationDofOperations::Fill(sourceOnly, 0.);
-        fv.AddSource(state, sourceOnly, *workspace);
+        fv.AddSource(state, sourceOnly, *reconstructionState, *workspace);
         auto auxiliary = fv.BuildAuxiliaryValues({true, true});
-        fv.PrepareCorrectionAux(state, *workspace, auxiliary, engine, stream, 0);
+        fv.PrepareCorrectionAux(state, *reconstructionState, *workspace, auxiliary, engine, stream, 0);
         R::Array<double> tau(R::RowLayout::Dense(fv.Metrics().NumCell(), 1));
         {
             auto write = tau.Write();
@@ -1632,7 +1652,8 @@ TEST_CASE("P0 jump-only face viscosity retains physical gradients in the SA volu
                 write.View()(iCell, 0) = 2;
         }
         auto matrix = fv.BuildLinearProblem(state, C::DiagonalStorage::Block);
-        fv.PrepareJacobian(state, auxiliary, tau, *matrix, {3, .7, false}, 0, {}, workspace.get());
+        fv.PrepareJacobian(state, auxiliary, tau, *matrix, {3, .7, false}, 0, {},
+                           C::FiniteVolume::JacobianContext{*reconstructionState, *workspace});
         const auto diagonalRead = matrix->Diagonal().Read();
         const auto diagonal = diagonalRead.View<R::TableRows>();
         const auto read = sourceOnly.ReadOwned();

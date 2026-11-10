@@ -61,21 +61,22 @@ def test_prepared_capabilities_preserve_sweep_and_freeze_operation_contract():
     mean = metrics.BuildField(1)
     mean.owned.assign(np.array([function(metrics.GetCellCent(i)) for i in range(metrics.NumCell())]).reshape(-1, 1))
     metrics.BindHalo(mean).begin().wait()
-    workspaces = []
+    states = []
     for plan in (full, lean):
         work = plan.BuildWorkspace(1)
-        work.coefficients.owned.assign(np.full((metrics.NumCell(), plan.NRecDOF()), .17))
+        coefficients = plan.BuildCoefficients(1)
+        coefficients.owned.assign(np.full((metrics.NumCell(), plan.NRecDOF()), .17))
         boundary = plan.BuildBoundaryValues(1)
         boundary.values.assign(np.array([function(plan.GetBoundaryQuadrature(i).point)
                                         for i in range(plan.NumBoundaryQuadrature())]).reshape(-1, 1))
-        metrics.BindHalo(work.coefficients).begin().wait()
-        plan.DoReconstructionIter(mean, work, boundary)
-        workspaces.append(work)
-    np.testing.assert_array_equal(workspaces[0].coefficients.owned.numpy(), workspaces[1].coefficients.owned.numpy())
+        metrics.BindHalo(coefficients).begin().wait()
+        plan.DoReconstructionIter(mean, coefficients, work, boundary)
+        states.append((coefficients, work))
+    np.testing.assert_array_equal(states[0][0].owned.numpy(), states[1][0].owned.numpy())
     output = metrics.BuildField(lean.NRecDOF())
     output.owned.assign(np.full((metrics.NumCell(), lean.NRecDOF()), -13.))
     with pytest.raises(RuntimeError, match="not prepared"):
-        lean.ApplyLinearOperator(workspaces[1].coefficients, output)
+        lean.ApplyLinearOperator(states[1][0], output)
     np.testing.assert_array_equal(output.owned.numpy(), np.full((metrics.NumCell(), lean.NRecDOF()), -13.))
 
 
@@ -103,6 +104,7 @@ def test_reconstruction_shared_buffers_explicit_halo_and_point_sampling(cache_en
         assert np.isfinite(cell.rawCondition)
     mean = metrics.BuildField(1)
     work = plan.BuildWorkspace(1)
+    coefficients = plan.BuildCoefficients(1)
     bc = plan.BuildBoundaryValues(1)
     centers = np.array([metrics.GetCellCent(i) for i in range(metrics.NumCell())]).reshape(-1, 3)
     expected = np.array([function(p) for p in centers]).reshape(-1, 1)
@@ -118,38 +120,38 @@ def test_reconstruction_shared_buffers_explicit_halo_and_point_sampling(cache_en
     assert options.preflight == R.TransferPreflight.Inherit
     options.preflight = R.TransferPreflight.AbortOnFailure
     metrics.BindHalo(mean, options).begin().wait()
-    halo = metrics.BindHalo(work.coefficients)
+    halo = metrics.BindHalo(coefficients)
     for _ in range(180):
         halo.begin().wait()
-        plan.DoReconstructionIter(mean, work, bc)
+        plan.DoReconstructionIter(mean, coefficients, work, bc)
     ids = R.Array(R.RowLayout.dense(metrics.NumCell(), 1), np.int64)
     points = R.Array(R.RowLayout.dense(metrics.NumCell(), 3))
     output = R.Array(R.RowLayout.dense(metrics.NumCell(), 1))
     ids.assign(np.arange(metrics.NumCell(), dtype=np.int64).reshape(-1, 1))
     points.assign(centers + [.017, -.011, 0])
-    plan.Evaluate(mean, work.coefficients, ids, points, output)
+    plan.Evaluate(mean, coefficients, ids, points, output)
     np.testing.assert_allclose(output.numpy(), expected + 2*.017 + .5*.011, atol=1e-9, rtol=1e-9)
     cache = CFV.PolynomialSamplingPlan(plan, ids, points)
     points.assign(np.full((metrics.NumCell(), 3), 100.0))
-    cache.Evaluate(mean, work.coefficients, output, 1)
+    cache.Evaluate(mean, coefficients, output, 1)
     np.testing.assert_allclose(output.numpy(), 2, atol=1e-9)
     rhs = metrics.BuildField(plan.NRecDOF())
     residual = metrics.BuildField(plan.NRecDOF())
     correction = metrics.BuildField(plan.NRecDOF())
     halo.begin().wait()
     plan.BuildRightHandSide(mean, bc, rhs)
-    plan.ComputeResidual(rhs, work.coefficients, residual)
+    plan.ComputeResidual(rhs, coefficients, residual)
     plan.ApplyLocalPreconditioner(residual, correction)
     np.testing.assert_allclose(correction.owned.numpy(), 0, atol=1e-9)
     # An active input writer is rejected before a numerical sweep can run.
     with mean.owned.write():
         with pytest.raises(RuntimeError):
-            plan.DoReconstructionIter(mean, work, bc)
-    coefficients = work.coefficients.owned
-    snapshot = coefficients.numpy()
+            plan.DoReconstructionIter(mean, coefficients, work, bc)
+    retained = coefficients.owned
+    snapshot = retained.numpy()
     del work, plan, metrics, mean, grid, halo
     gc.collect()
-    np.testing.assert_array_equal(coefficients.numpy(), snapshot)
+    np.testing.assert_array_equal(retained.numpy(), snapshot)
 
 
 @pytest.mark.mpi
@@ -161,15 +163,16 @@ def test_two_domains_interface_sampling_and_transform_publication():
     mean = metrics.BuildField(6)
     mean.owned.assign(np.tile(np.arange(6, dtype=np.float64), (metrics.NumCell(), 1)))
     work = plan.BuildWorkspace(6)
+    coefficients = plan.BuildCoefficients(6)
     metrics.BindHalo(mean).begin().wait()
-    metrics.BindHalo(work.coefficients).begin().wait()
+    metrics.BindHalo(coefficients).begin().wait()
     transform = plan.BuildFaceTransform(0, 5)
     same = transform.forward.numpy()
     transform.forward.assign(same)  # even an equal-value write needs publication
     with pytest.raises(RuntimeError, match="finalize"):
-        plan.DoLimiterWBAP_3Order(work, 2, transform)
+        plan.DoLimiterWBAP_3Order(coefficients, work, 2, transform)
     plan.FinalizeFaceTransform(transform)
-    plan.DoLimiterWBAP_3Order(work, 2, transform)
+    plan.DoLimiterWBAP_3Order(coefficients, work, 2, transform)
     if MPI.COMM_WORLD.size != 1:
         return  # The distributed API is exercised separately below and in C++.
     donor_patch = Geom.BoundaryPatch.Create(donor, list(range(donor.NumBnd())))
@@ -187,7 +190,7 @@ def test_two_domains_interface_sampling_and_transform_publication():
     mapping = Geom.InterfacePointMap.Match(donor_patch, points, ids)
     sample = CFV.InterfaceSamplingPlan(plan, mapping)
     result = R.Array(R.RowLayout.dense(len(query), 6))
-    sample.Evaluate(mean, work.coefficients, result)
+    sample.Evaluate(mean, coefficients, result)
     np.testing.assert_allclose(result.numpy(), np.tile(np.arange(6), (len(query), 1)))
     wrong_metrics = CFV.FiniteVolumePlan.ConstructMetrics(receiver)
     wrong_plan = CFV.VariationalReconstructionPlan.ConstructRecCoeff(wrong_metrics)
@@ -203,9 +206,10 @@ def test_distributed_interface_owner_sampling_and_query_order():
     plan = CFV.VariationalReconstructionPlan.ConstructRecCoeff(metrics)
     mean = metrics.BuildField(1)
     work = plan.BuildWorkspace(1)
+    coefficients = plan.BuildCoefficients(1)
     mean.owned.assign(np.full((metrics.NumCell(), 1), MPI.COMM_WORLD.rank + 1.0))
     metrics.BindHalo(mean).begin().wait()
-    metrics.BindHalo(work.coefficients).begin().wait()
+    metrics.BindHalo(coefficients).begin().wait()
     patch = Geom.BoundaryPatch.Create(donor, list(range(donor.NumBnd())))
     target = Geom.BoundaryPatch.Create(receiver, list(range(receiver.NumBnd())))
     query = []
@@ -227,7 +231,7 @@ def test_distributed_interface_owner_sampling_and_query_order():
         scratch = sampler.BuildWorkspace(1)
         output = R.Array(R.RowLayout.dense(len(query), 1))
         assert mapping.HasLocalDonor()
-        sampler.EvaluateCoupled(mean, work.coefficients, scratch, output)
+        sampler.EvaluateCoupled(mean, coefficients, scratch, output)
         expected = np.array([mapping.Get(i).donorRank + 1.0 for i in range(len(query))]).reshape(-1, 1)
         np.testing.assert_array_equal(output.numpy(), expected)
     assert [maps[0].Get(i).geometry.donorOriginalId for i in range(len(query))] == [
@@ -269,25 +273,26 @@ def test_stride_aware_reconstruction_uses_shared_runtime_physical_fields(format)
     prototype = R.RowLayout.col_major(0, 2, 8, 1) if format == "col" else R.RowLayout.tiled_col_major(0, 2, 8)
     mean = metrics.BuildFieldWithLayout(R.RowLayout.col_major(0, 1, 8, 1))
     work = plan.BuildWorkspaceWithLayout(1, prototype)
+    coefficients = plan.BuildCoefficientsWithLayout(1, prototype)
     bc = plan.BuildBoundaryValues(1)
     centers = np.array([metrics.GetCellCent(i) for i in range(metrics.NumCell())]).reshape(-1, 3)
     mean.owned.assign(np.array([function(p) for p in centers]).reshape(-1, 1))
     bc.values.assign(np.array([function(plan.GetBoundaryQuadrature(i).point)
                               for i in range(plan.NumBoundaryQuadrature())]).reshape(-1, 1))
     metrics.BindHalo(mean).begin().wait()
-    halo = metrics.BindHalo(work.coefficients)
+    halo = metrics.BindHalo(coefficients)
     for _ in range(180):
         halo.begin().wait()
-        plan.DoReconstructionIter(mean, work, bc)
+        plan.DoReconstructionIter(mean, coefficients, work, bc)
     ids = R.Array(R.RowLayout.dense(metrics.NumCell(), 1), np.dtype("int64"))
     points = R.Array(R.RowLayout.dense(metrics.NumCell(), 3))
     values = R.Array(R.RowLayout.col_major(metrics.NumCell(), 1, 8, 1))
     ids.assign(np.arange(metrics.NumCell(), dtype=np.int64).reshape(-1, 1))
     points.assign(centers + [0.01, -0.02, 0])
-    plan.Evaluate(mean, work.coefficients, ids, points, values)
+    plan.Evaluate(mean, coefficients, ids, points, values)
     expected = np.array([function(p + [0.01, -0.02, 0]) for p in centers]).reshape(-1, 1)
     np.testing.assert_allclose(values.numpy(), expected, atol=1e-9, rtol=1e-9)
-    assert work.coefficients.owned.layout.kind == prototype.kind
+    assert coefficients.owned.layout.kind == prototype.kind
 
 
 @pytest.mark.mpi
@@ -321,48 +326,51 @@ def test_device_reconstruction_publication_layouts_and_python_shared_buffers(bac
     width = components * plan.NRecDOF()
     cpu = plan.BuildWorkspace(components)
     gpu = resident.BuildWorkspaceWithLayout(components, R.RowLayout.tiled_col_major(0, width, 8))
+    cpu_coefficients = plan.BuildCoefficients(components)
+    gpu_coefficients = resident.BuildCoefficientsWithLayout(components, R.RowLayout.tiled_col_major(0, width, 8))
     mean = metrics.BuildField(components)
     gpu_mean = metrics.BuildFieldWithLayout(R.RowLayout.col_major(0, components, 32, 1), device)
     values = 1 + .01 * np.arange(metrics.NumCell() * components).reshape(-1, components)
     mean.owned.assign(values)
     gpu_mean.owned.assign(values)
-    coefficients = .02 + .001 * np.arange(metrics.NumCell() * width).reshape(-1, width)
-    cpu.coefficients.owned.assign(coefficients)
-    gpu.coefficients.owned.assign(coefficients)
+    initial_coefficients = .02 + .001 * np.arange(metrics.NumCell() * width).reshape(-1, width)
+    cpu_coefficients.owned.assign(initial_coefficients)
+    gpu_coefficients.owned.assign(initial_coefficients)
     boundary = plan.BuildBoundaryValues(components)
     boundary.values.assign(np.ones((plan.NumBoundaryQuadrature(), components)))
     gpu_boundary = resident.PlaceBoundaryValues(boundary)
     metrics.BindHalo(mean).begin().wait()
     resident.BindHalo(gpu_mean, R.TransferTransport.DevicePacked, options).begin(context).wait()
-    cpu_halo, gpu_halo = metrics.BindHalo(cpu.coefficients), resident.BindHalo(gpu.coefficients, R.TransferTransport.DevicePacked, options)
+    cpu_halo = metrics.BindHalo(cpu_coefficients)
+    gpu_halo = resident.BindHalo(gpu_coefficients, R.TransferTransport.DevicePacked, options)
     engine = R.EagerEngine()
     stream = engine.cuda_stream(0)
     comm = engine.cuda_stream(0)
     for _ in range(3):
         cpu_halo.begin().wait()
-        plan.DoReconstructionIter(mean, cpu, boundary)
+        plan.DoReconstructionIter(mean, cpu_coefficients, cpu, boundary)
         if backend == "nccl":
             comm.wait_for(stream.record())
             gpu_halo.enqueue(engine, comm)
-            resident.SubmitReconstructionIterTo(engine, stream, gpu_mean, gpu.coefficients, gpu, gpu_boundary,
+            resident.SubmitReconstructionIterTo(engine, stream, gpu_mean, gpu_coefficients, gpu, gpu_boundary,
                                                 CFV.ReconstructionRegion.Core, kernel)
             stream.wait_for(comm.record())
-            resident.SubmitReconstructionIterTo(engine, stream, gpu_mean, gpu.coefficients, gpu, gpu_boundary,
+            resident.SubmitReconstructionIterTo(engine, stream, gpu_mean, gpu_coefficients, gpu, gpu_boundary,
                                                 CFV.ReconstructionRegion.HaloDependent, kernel)
         else:
             gpu_halo.begin(context).wait()
-            resident.SubmitReconstructionIterTo(engine, stream, gpu_mean, gpu.coefficients, gpu, gpu_boundary, kernel=kernel)
-        resident.SubmitCommitReconstruction(engine, stream, gpu)
+            resident.SubmitReconstructionIterTo(engine, stream, gpu_mean, gpu_coefficients, gpu, gpu_boundary, kernel=kernel)
+        resident.SubmitCommitReconstruction(engine, stream, gpu_coefficients, gpu)
         engine.synchronize()
         resident.CheckStatus(gpu)
-        np.testing.assert_allclose(gpu.coefficients.owned.numpy(), cpu.coefficients.owned.numpy(), rtol=1e-9, atol=1e-10)
+        np.testing.assert_allclose(gpu_coefficients.owned.numpy(), cpu_coefficients.owned.numpy(), rtol=1e-9, atol=1e-10)
     for order in (2, 1):
         cpu_halo.begin().wait()
         gpu_halo.begin(context).wait()
-        plan.DoLimiterWBAP_3Order(cpu, order)
-        resident.DoLimiterWBAP_3Order(gpu, order)
-        np.testing.assert_allclose(gpu.coefficients.owned.numpy(), cpu.coefficients.owned.numpy(), rtol=1e-8, atol=1e-9)
-    retained = gpu.coefficients.owned
+        plan.DoLimiterWBAP_3Order(cpu_coefficients, cpu, order)
+        resident.DoLimiterWBAP_3Order(gpu_coefficients, gpu, order)
+        np.testing.assert_allclose(gpu_coefficients.owned.numpy(), cpu_coefficients.owned.numpy(), rtol=1e-8, atol=1e-9)
+    retained = gpu_coefficients.owned
     expected = retained.numpy()
     del gpu, resident, gpu_halo
     gc.collect()

@@ -226,6 +226,18 @@ namespace DNDS::Cauchy
         };
         struct Workspace;
         struct MeanWorkspace;
+        struct ReconstructionState;
+        /// Synchronous managed borrow of one durable reconstruction publication
+        /// and the scratch that sampled it. Split flux/source/Jacobian calls
+        /// must name both; Workspace never retains the coefficient allocation.
+        struct JacobianContext
+        {
+            std::reference_wrapper<Workspace> workspace;
+            std::optional<std::reference_wrapper<const ReconstructionState>> reconstruction;
+            explicit JacobianContext(Workspace &scratch) : workspace(scratch) {}
+            JacobianContext(const ReconstructionState &state, Workspace &scratch)
+                : workspace(scratch), reconstruction(std::cref(state)) {}
+        };
         /// Reserved synchronous warm-guess publication. Construction validates
         /// every input and retains its reads, destination writes and workspace.
         /// Commit performs only prevalidated copies; abandonment cancels the
@@ -261,9 +273,12 @@ namespace DNDS::Cauchy
         /// Reservation is memory-only. With collectiveChecks=false it performs
         /// no MPI; the caller must agree all reservations before any Commit.
         /// Simulation uses that mode for one cross-domain publication preflight.
-        ReconstructionRestore ReserveReconstructionRestore(std::shared_ptr<Workspace> workspace, const EquationDofs &guess,
-                                                           const Runtime::Array<real> *limitedVRHistory = nullptr,
+        ReconstructionRestore ReserveReconstructionRestore(std::shared_ptr<ReconstructionState> state, const EquationDofs &guess,
+                                                           std::optional<std::reference_wrapper<const Runtime::Array<real>>> limitedVRHistory = std::nullopt,
                                                            bool collectiveChecks = true) const;
+        /// Allocate the durable warm coefficients and their communication
+        /// bindings independently of the reusable scratch workspace.
+        std::shared_ptr<ReconstructionState> BuildReconstructionState(EquationDofs &state) const;
         /// Full logical-state CPU workspace on the same geometry/CFV plans.
         /// Each physical field keeps its layout and shared row routing; no
         /// whole-state packing is performed. Matching schema/physical grouping
@@ -301,7 +316,7 @@ namespace DNDS::Cauchy
         /// agreements and aborts on local rejection; matching call order stays
         /// the caller's responsibility. Required setup protocols and numerical
         /// reductions remain. Access checking is an independent engine choice.
-        void Evaluate(EquationDofs &state, EquationDofs &residual, Workspace &workspace,
+        void Evaluate(EquationDofs &state, EquationDofs &residual, ReconstructionState &reconstruction, Workspace &workspace,
                       Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
         /// Prepare the requested auxiliary outputs during the mean exchange,
         /// before reconstruction/RHS. RHS reads this explicit publication;
@@ -309,15 +324,15 @@ namespace DNDS::Cauchy
         /// setup without recomputing and overwriting RHS-refined signals.
         /// Buffers must be distinct from state/residual and retained through
         /// this synchronous call. The no-aux overload retains its old scope.
-        void Evaluate(EquationDofs &state, EquationDofs &residual, Workspace &workspace,
+        void Evaluate(EquationDofs &state, EquationDofs &residual, ReconstructionState &reconstruction, Workspace &workspace,
                       AuxiliaryValues &auxiliary, Runtime::EagerEngine &engine,
                       const Runtime::ExecutionStream &stream, real time = 0) const;
         /// The same mean/gradient/reconstruction/limiter preparation as Evaluate,
         /// including completed halos, but no flux/source evaluation or dummy
         /// residual allocation. Use before independent EvaluateFlux/AddSource.
-        void PrepareReconstruction(EquationDofs &state, Workspace &workspace, Runtime::EagerEngine &engine,
+        void PrepareReconstruction(EquationDofs &state, ReconstructionState &reconstruction, Workspace &workspace, Runtime::EagerEngine &engine,
                                    const Runtime::ExecutionStream &stream, real time = 0) const;
-        void RefreshSamplingInputs(EquationDofs &state, Workspace &workspace, Runtime::EagerEngine &engine,
+        void RefreshSamplingInputs(EquationDofs &state, ReconstructionState &reconstruction, Workspace &workspace, Runtime::EagerEngine &engine,
                                    const Runtime::ExecutionStream &stream) const;
         /// Same synchronous collective/access contract as Evaluate. Only this
         /// trial's private scratch and distinct residual are written; state
@@ -326,17 +341,23 @@ namespace DNDS::Cauchy
         /// as in Euler; it is not a separately configured P0 FV operator.
         void EvaluateMean(EquationDofs &state, EquationDofs &residual, MeanWorkspace &workspace,
                           Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
-        const EquationDofs &ReconstructionGuess(const Workspace &workspace) const;
+        const EquationDofs &ReconstructionGuess(const ReconstructionState &state) const;
         /// Collective transactional owned warm-guess restore: finite-value and
         /// lease preflight precedes every write. No halo transfer/mean mutation.
         /// Caller joins workspace work and supplies a distinct snapshot.
-        void RestoreReconstructionGuess(Workspace &workspace, const EquationDofs &guess,
-                                        const Runtime::Array<real> *limitedVRHistory = nullptr) const;
-        std::optional<Runtime::Array<real>> LimitedVRHistory(const Workspace &workspace) const;
+        void RestoreReconstructionGuess(ReconstructionState &state, const EquationDofs &guess,
+                                        std::optional<std::reference_wrapper<const Runtime::Array<real>>> limitedVRHistory = std::nullopt) const;
+        /// Copy one complete durable polynomial publication, including the
+        /// finalized limiter/PP coefficients and LVR history. Used when a new
+        /// DITR midpoint starts from the accepted endpoint publication while
+        /// both stages continue to share scratch.
+        void CopyReconstructionState(ReconstructionState &destination,
+                                     const ReconstructionState &source) const;
+        std::optional<Runtime::Array<real>> LimitedVRHistory(const ReconstructionState &state) const;
         std::optional<Runtime::Array<real>> LimitedVRAlpha(const Workspace &workspace) const;
         /// Local reset; caller coordinates failures and joins workspace work.
-        void ResetReconstruction(Workspace &workspace) const;
-        const EquationDofs &FluxReconstruction(const Workspace &workspace) const;
+        void ResetReconstruction(ReconstructionState &state, Workspace &workspace) const;
+        const EquationDofs &FluxReconstruction(const ReconstructionState &state, const Workspace &workspace) const;
         /// Latest complete equation evaluation's global coefficient-update
         /// norm. No extra reduction occurs when reading these diagnostics.
         /// Fixed sweeps without a tolerance leave the update norm unmeasured
@@ -346,7 +367,7 @@ namespace DNDS::Cauchy
         /// Owned-only polynomial projection. Standalone use starts from the
         /// unlimited guess; Evaluate preserves its preceding WBAP result.
         /// No halo transfer occurs here. Caller serializes workspace/state.
-        void LimitReconstructionPP(const EquationDofs &state, Workspace &workspace) const;
+        void LimitReconstructionPP(const EquationDofs &state, ReconstructionState &reconstruction, Workspace &workspace) const;
         /// Collective count/min snapshot; no implicit refresh or mutation.
         std::pair<index, real> PositivityReconstructionStats(const Workspace &workspace) const;
         /// Whole-equation auxiliary transaction. Holds numeric input scopes
@@ -441,9 +462,6 @@ namespace DNDS::Cauchy
             /// invariant and disabled-fallback failures abort directly.
             RHSKernelDiagnostics ApplyFluxBorrowedFatal(const RHSReadViews &input, const RHSWriteViews &output,
                                                         CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0) const;
-            /// Compatibility spelling for the checked borrowed-view entry.
-            RHSKernelDiagnostics Apply(const RHSReadViews &input, const RHSWriteViews &output,
-                                       CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0) const;
             /// Overwrite selected residual rows with integrated face flux only.
             /// Optional faceFlux follows the documented canonical face order.
             RHSKernelDiagnostics ApplyFlux(const RHSReadViews &input, const RHSWriteViews &output,
@@ -464,10 +482,13 @@ namespace DNDS::Cauchy
         /// from state and workspace arrays. A face buffer is optional and follows
         /// AuxiliaryFaces() with the same orientation as RHSWriteViews::faceFlux.
         /// Caller serializes workspace use and coordinates distributed failures.
-        void EvaluateFlux(const EquationDofs &state, EquationDofs &residual, Workspace &workspace,
+        void EvaluateFlux(const EquationDofs &state, EquationDofs &residual,
+                          const ReconstructionState &reconstruction, Workspace &workspace,
                           CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0,
-                          Runtime::Array<real> *faceFlux = nullptr, const AuxiliaryValues *auxiliary = nullptr) const;
-        void AddSource(const EquationDofs &state, EquationDofs &residual, Workspace &workspace, real time = 0) const;
+                          std::optional<std::reference_wrapper<Runtime::Array<real>>> faceFlux = std::nullopt,
+                          std::optional<std::reference_wrapper<const AuxiliaryValues>> auxiliary = std::nullopt) const;
+        void AddSource(const EquationDofs &state, EquationDofs &residual,
+                       const ReconstructionState &reconstruction, Workspace &workspace, real time = 0) const;
         /// Allocate a fixed cell-face-cell matrix stencil using the prototype's
         /// native row space. No payload is copied from the prototype. Evaluated
         /// mode omits off-diagonal storage; PrepareJacobian supplies its frozen
@@ -492,15 +513,16 @@ namespace DNDS::Cauchy
         /// The caller completes halos, serializes matrix/input bindings and
         /// coordinates failures. No inverses/factors are updated implicitly.
         /// Output writers are reserved together; partial failure poisons them.
-        /// RANS/source publication requires sourceReconstruction
-        /// from a successful Evaluate at this state/time. Values/coefficients
+        /// RANS/source publication requires a JacobianContext containing the
+        /// solver-owned reconstruction state and its scratch workspace from a
+        /// successful Evaluate at this state/time. Values/coefficients
         /// must remain unchanged. RANS derivatives use its current center
         /// gradients even on P0; chemical derivatives use the cell mean.
         void PrepareJacobian(const EquationDofs &state, const AuxiliaryValues &auxiliary,
                              const Runtime::Array<real> &inversePseudoTime, LinearProblemContext &output,
                              JacobianPreparation controls = {}, real time = 0,
                              std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
-                             const Workspace *sourceReconstruction = nullptr) const;
+                             std::optional<JacobianContext> context = std::nullopt) const;
         FiniteVolume(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const EquationSystem &equation);
         bool SharesPlan(const FiniteVolume &other) const { return _data && _data == other._data; }
         const CFV::FiniteVolumePlan &Metrics() const;
@@ -603,8 +625,15 @@ namespace DNDS::Cauchy
         /// retained polynomial before publishing their Jacobian provenance.
         /// PrepareJacobian separately evaluates the mean-state source matrix;
         /// this call evaluates neither chemical rates nor the physical RHS.
-        void PrepareCorrectionAux(EquationDofs &state, Workspace &workspace, AuxiliaryValues &auxiliary,
+        void PrepareCorrectionAux(EquationDofs &state, ReconstructionState &reconstruction, Workspace &workspace, AuxiliaryValues &auxiliary,
                                   Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time) const;
+        /// Rebind and, when needed, resample only the source/Jacobian
+        /// publication from a stage's durable finalized polynomial. This does
+        /// not touch auxiliary face/cell signals, so a DITR endpoint can retain
+        /// its RHS-refined auxiliary packet after another stage used shared
+        /// reconstruction scratch.
+        void RefreshCorrectionSource(EquationDofs &state, ReconstructionState &reconstruction,
+                                     Workspace &workspace, real time) const;
         const ThermalBounds &ThermalConstraints() const;
         /// Collective checked projection of a fresh copy of the unlimited
         /// guess into flux coefficients, retaining the unlimited guess. Reads only
@@ -613,9 +642,9 @@ namespace DNDS::Cauchy
         /// Explicit outputs are limited coefficients and per-call beta stats.
         /// Does not reconstruct, exchange, advance time or change cell means.
         index LastCharacteristicFallbacks(const Workspace &workspace) const;
-        /// Flow5 explicit conservative-blend compatibility. This is an
-        /// operator-local specialization; generic equations do not expose a
-        /// separately constructed low-order residual yet.
+        /// Specialized flow5 conservative-blend output. This is an
+        /// operator-local capability; generic equations do not yet construct a
+        /// separate low-order residual.
         const EquationDofs &LowOrderResidual(const Workspace &workspace) const;
         /// Collective sum of the last completed equation RHS's wall momentum
         /// flux, in mesh axes, with the same sign as pressure*n - traction.
@@ -626,31 +655,35 @@ namespace DNDS::Cauchy
         /// All conservative blocks plus mean thermodynamic/species fields and
         /// reconstructed boundary traces. Reads an observation workspace only;
         /// does not modify the production reconstruction or any state values.
-        void WriteVisualization(const EquationDofs &state, const Workspace &workspace,
+        void WriteVisualization(const EquationDofs &state, const ReconstructionState &reconstruction, const Workspace &workspace,
                                 const std::string &prefix, real time, int hdfDeflateLevel,
                                 const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers) const;
 
     private:
         /// Resolve the retained interface publication after the canonical
-        /// equation-level provenance check. Both legacy-produced auxiliary
-        /// packets and native equation packets use this one leaf input.
+        /// equation-level provenance check. Every equation packet uses this one
+        /// leaf input.
         std::optional<BoundaryInputs> PreparedBoundaryInputs(const AuxiliaryValues &values) const;
         /// Established fixed perfect-gas Roe leaf selected by the equation
         /// Jacobian resolver. It is not a second public state API.
         void PrepareFlow5Jacobian(const CFV::FVField &state, const AuxiliaryValues &auxiliary,
                                   const Runtime::Array<real> &inversePseudoTime, LinearProblemContext &output,
                                   JacobianPreparation controls, real time) const;
-        ReconstructionRestore ReserveReconstructionRestoreImpl(Workspace &workspace, const EquationDofs &guess,
-                                                               const Runtime::Array<real> *limitedVRHistory,
-                                                               std::shared_ptr<Workspace> retained, bool collectiveChecks = true) const;
+        ReconstructionRestore ReserveReconstructionRestoreImpl(ReconstructionState &state, const EquationDofs &guess,
+                                                               std::optional<std::reference_wrapper<const Runtime::Array<real>>> limitedVRHistory,
+                                                               std::shared_ptr<ReconstructionState> retained, bool collectiveChecks = true,
+                                                               std::optional<std::reference_wrapper<const EquationDofs>> finalized = std::nullopt) const;
         std::shared_ptr<Workspace> BuildWorkspaceImpl(EquationDofs &state,
                                                       std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
                                                       bool meanOnly, WorkspaceOptions options = WorkspaceOptions()) const;
-        void EvaluateImpl(EquationDofs &state, EquationDofs *residual, Workspace &workspace,
-                          Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time,
-                          AuxiliaryValues *auxiliary = nullptr) const;
-        void ValidateEquationSourceJacobian(const EquationDofs &state, const Workspace &workspace, real time) const;
-        bool AddEquationSourceJacobian(const EquationDofs &state, const Workspace &workspace,
+        void EvaluateImpl(EquationDofs &state, std::optional<std::reference_wrapper<EquationDofs>> residual,
+                          ReconstructionState &reconstruction, Workspace &workspace, Runtime::EagerEngine &engine,
+                          const Runtime::ExecutionStream &stream, real time,
+                          std::optional<std::reference_wrapper<AuxiliaryValues>> auxiliary = std::nullopt) const;
+        void ValidateEquationSourceJacobian(const EquationDofs &state,
+                                            const JacobianContext &context, real time) const;
+        bool AddEquationSourceJacobian(const EquationDofs &state,
+                                       const JacobianContext &context,
                                        const Runtime::Array<real>::WriteLease &diagonal, DiagonalStorage storage,
                                        real scale, EquationPointEvaluator &evaluator,
                                        const EquationFVDetail::MeanLinearizationOutput *linearization = nullptr) const;

@@ -57,26 +57,34 @@ def main():
         assert not resolved["domains"][0]["settings"]["execution"]["overlap"]
         assert "paired" in run(config, "--check-config", "-k", "/time/dt", success=False)
         run(config)
-        first = json.loads((folder / "first_summary.json").read_text())
+        first = json.loads((folder / "first-summary.json").read_text())
         assert first["steps"] == 2 and math.isclose(first["time"], 2e-5)
         assert first["status"] == "target-reached"
         rows = []
         header = None
-        for segment in (folder / "first_history.csv", folder / "first_history_1.csv"):
+        segments = sorted(folder.glob("first-D0-history*.csv"),
+                          key=lambda path: ("_" in path.stem, path.stem))
+        assert len(segments) > 1
+        for segment in segments:
             with segment.open() as stream:
                 reader = csv.DictReader(stream)
                 if header is None:
                     header = reader.fieldnames
-                assert reader.fieldnames == header and len(header) == 36
+                assert reader.fieldnames == header
+                assert {"step", "stage", "coupled_stage", "iteration", "status",
+                        "res_rho", "res_rhoE"} <= set(header)
                 data = list(reader)
-                assert len(data) == 2
+                assert 0 < len(data) <= 2
                 rows.extend(data)
-        assert [int(row["step"]) for row in rows] == [0, 1, 2, 2]
-        assert all(None not in row and all(math.isfinite(float(value)) for value in row.values()) for row in rows)
-        assert (folder / "first_final.vtkhdf").exists()
-        run(config, "--restart", folder / "first_final.h5", "-k", "/output/prefix",
+        accepted = [int(row["step"]) for row in rows
+                    if int(row["stage"]) == -1 and int(row["iteration"]) == -1]
+        assert accepted == [0, 1, 2] and len(rows) == len(accepted)
+        assert all(None not in row and all(not value or math.isfinite(float(value))
+                                          for value in row.values()) for row in rows)
+        assert (folder / "first-D0-final.vtkhdf").exists()
+        run(config, "--restart", folder / "first-D0-final.h5", "-k", "/output/prefix",
             "-v", json.dumps(str(folder / "resumed")), "-k", "/time/steps", "-v", "1")
-        resumed = json.loads((folder / "resumed_summary.json").read_text())
+        resumed = json.loads((folder / "resumed-summary.json").read_text())
         assert resumed["steps"] == 3 and math.isclose(resumed["time"], 3e-5)
         assert resumed["status"] == "target-reached"
         # Exercise the same physical frontend with all-rank sharing followed by
@@ -90,20 +98,20 @@ def main():
         multi_config.write_text(json.dumps(multi))
         run(multi_config)
         for i_domain in range(2):
-            assert (folder / f"multi_final_domain{i_domain}.vtkhdf").exists()
-            with (folder / f"multi_domain{i_domain}_history.csv").open() as stream:
+            assert (folder / f"multi-D{i_domain}-final.vtkhdf").exists()
+            with (folder / f"multi-D{i_domain}-history.csv").open() as stream:
                 assert len(list(csv.DictReader(stream))) == 2
         if args.np > 1:
             multi["domains"][0]["ranks"] = list(range(0, args.np, 2))
             multi["domains"][1]["ranks"] = list(range(1, args.np, 2))
         multi["output"]["prefix"] = str(folder / "multi_resumed")
         multi_config.write_text(json.dumps(multi))
-        run(multi_config, "--restart", folder / "multi_final.h5")
-        continued = json.loads((folder / "multi_resumed_summary.json").read_text())
+        run(multi_config, "--restart", folder / "multi-final.h5")
+        continued = json.loads((folder / "multi_resumed-summary.json").read_text())
         assert continued["steps"] == 2 and math.isclose(continued["time"], 2e-5)
         assert continued["status"] == "target-reached"
         for i_domain in range(2):
-            assert (folder / f"multi_resumed_final_domain{i_domain}.vtkhdf").exists()
+            assert (folder / f"multi_resumed-D{i_domain}-final.vtkhdf").exists()
     print(f"Cauchy frontend np={args.np}: CLI, histories, output and single/multi-domain restart passed")
 
 

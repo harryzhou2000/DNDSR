@@ -29,7 +29,7 @@ namespace
     }
     std::vector<double> Values(const C::Domain &domain)
     {
-        const auto read = domain.Flow().Owned().Read();
+        const auto read = domain.Dofs().CoupledField().Owned().Read();
         const auto values = read.View<R::UniformTableRows>();
         std::vector<double> result;
         for (I iCell = 0; iCell < values.RowCount(); ++iCell)
@@ -46,7 +46,7 @@ namespace
                 const auto &domain = simulation.GetDomain(iDomain);
                 const auto geometry = domain.Discretization().Metrics().AcquireRead();
                 const auto metric = geometry.HostView();
-                const auto read = domain.Flow().Owned().Read();
+                const auto read = domain.Dofs().CoupledField().Owned().Read();
                 const auto u = read.View<R::UniformTableRows>();
                 for (I iCell = 0; iCell < u.RowCount(); ++iCell)
                 {
@@ -82,7 +82,7 @@ namespace
             if (simulation.Local(iDomain))
             {
                 const auto &domain = simulation.GetDomain(iDomain);
-                const auto read = domain.Flow().Owned().Read();
+                const auto read = domain.Dofs().CoupledField().Owned().Read();
                 for (I iCell = 0; iCell < domain.Discretization().Metrics().NumCell(); ++iCell)
                 {
                     const auto point = domain.Discretization().Metrics().GetCellCent(iCell);
@@ -116,17 +116,17 @@ TEST_CASE("Multi-domain BDF2 restart reserves every domain and redistributes by 
         std::array<uint64_t, 2> versions{};
         for (I iDomain = 0; iDomain < 2; ++iDomain)
             if (source.Local(iDomain))
-                versions[iDomain] = source.GetDomain(iDomain).Flow().Owned().Version();
+                versions[iDomain] = source.GetDomain(iDomain).Dofs().CoupledField().Owned().Version();
         std::optional<R::Array<double>::ReadLease> held;
         if (source.Placement().DomainRank(1) == 0)
-            held.emplace(source.GetDomain(1).Flow().Owned().Read());
+            held.emplace(source.GetDomain(1).Dofs().CoupledField().Owned().Read());
         CHECK_THROWS(source.ReadCheckpoint(path));
         held.reset();
         CHECK(source.Step() == 3);
         CHECK(TorusValues(source) == continuation);
         for (I iDomain = 0; iDomain < 2; ++iDomain)
             if (source.Local(iDomain))
-                CHECK(source.GetDomain(iDomain).Flow().Owned().Version() == versions[iDomain]);
+                CHECK(source.GetDomain(iDomain).Dofs().CoupledField().Owned().Version() == versions[iDomain]);
         source.ReadCheckpoint(path);
         CHECK(source.Step() == 2);
         CHECK(source.Time() == .003);
@@ -185,7 +185,7 @@ TEST_CASE("Coordinated domains retain single-domain time equations and atomic pu
                 before[iDomain] = Values(simulation.GetDomain(iDomain));
         std::optional<R::Array<double>::ReadLease> held;
         if (simulation.Placement().DomainRank(1) == 0)
-            held.emplace(simulation.GetDomain(1).Flow().Owned().Read());
+            held.emplace(simulation.GetDomain(1).Dofs().CoupledField().Owned().Read());
         CHECK_THROWS(simulation.Advance(.001));
         CHECK(simulation.Step() == 2);
         CHECK(simulation.Time() == .002);
@@ -257,7 +257,7 @@ TEST_CASE("P3 flow5 crosses a posed disk interface with dense and sparse distrib
                 const auto old = Values(sparse.GetDomain(0));
                 std::optional<R::Array<double>::ReadLease> held;
                 if (mpi.rank == 0)
-                    held.emplace(sparse.GetDomain(1).Flow().Owned().Read());
+                    held.emplace(sparse.GetDomain(1).Dofs().CoupledField().Owned().Read());
                 CHECK_THROWS(sparse.Advance(.001));
                 held.reset();
                 CHECK(sparse.Step() == 3);
@@ -269,7 +269,7 @@ TEST_CASE("P3 flow5 crosses a posed disk interface with dense and sparse distrib
                 {
                     std::optional<R::Array<double>::ReadLease> heldRestart;
                     if (mpi.rank == 0)
-                        heldRestart.emplace(sparse.GetDomain(1).Flow().Owned().Read());
+                        heldRestart.emplace(sparse.GetDomain(1).Dofs().CoupledField().Owned().Read());
                     CHECK_THROWS(sparse.ReadCheckpoint(path));
                 }
                 // Failed publication must also restore accepted interface

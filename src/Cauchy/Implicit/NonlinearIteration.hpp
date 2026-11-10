@@ -5,6 +5,7 @@
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include <chrono>
 #include <tuple>
+#include <type_traits>
 
 namespace DNDS::Cauchy::NonlinearDetail
 {
@@ -71,6 +72,9 @@ namespace DNDS::Cauchy::NonlinearDetail
             if (_seconds)
                 _start = Clock::now();
         }
+        PhaseTimer(const std::optional<std::reference_wrapper<NonlinearProfile>> &profile,
+                   NonlinearProfile::Phase phase)
+            : PhaseTimer(profile ? &profile->get() : nullptr, phase) {}
         PhaseTimer(const PhaseTimer &) = delete;
         PhaseTimer &operator=(const PhaseTimer &) = delete;
         ~PhaseTimer()
@@ -96,11 +100,32 @@ namespace DNDS::Cauchy::NonlinearDetail
                    ResidualObservation observation = ResidualObservation::BeforeUpdate)
     {
         (void)rank; // Output is emitted only through control.progress.
+        // A default logical-equation report has no compile-time width. Resolve
+        // it once from the schema before constructing the convergence policy;
+        // production callers may still provide a populated report to retain
+        // accumulated multigrid work and controller diagnostics.
+        if constexpr (std::is_same_v<std::decay_t<decltype(report.residual)>, std::vector<real>>)
+        {
+            index components = 0;
+            for (const auto &block : schema.blocks)
+                components += index(block.components.size());
+            if (report.residual.empty())
+                report.residual.assign(size_t(components), 0);
+        }
         BasicResidualConvergence<decltype(report.residual)> convergence(settings, schema, report.residual);
         report.pseudoCFL = control.initialPseudoCFL == 0 ? settings.pseudoCFL : control.initialPseudoCFL;
         const index limit = control.correctionLimit < 0 ? settings.iterations : control.correctionLimit;
         const bool afterUpdate = observation == ResidualObservation::AfterUpdate;
         DNDS_check_throw_info(!afterUpdate || limit > 0, "post-update residual observation requires at least one update");
+        if (control.state)
+        {
+            auto &state = control.state->get();
+            state.stage = stage;
+            state.coupledStage = -1;
+            state.iteration = 0;
+            state.converged = state.terminal = state.capped = state.rejected = false;
+            state.pseudoCFL = report.pseudoCFL;
+        }
         for (index iteration = afterUpdate ? 1 : 0; iteration <= limit; ++iteration)
         {
             // A time problem may update several coupledStages here, with one
@@ -111,7 +136,7 @@ namespace DNDS::Cauchy::NonlinearDetail
                 const PhaseTimer timer(control.profile, NonlinearProfile::Residual);
                 evaluate();
                 if (control.profile)
-                    ++control.profile->residualEvaluations;
+                    ++control.profile->get().residualEvaluations;
             }
             std::tie(report.reconstructionIterations, report.reconstructionRelativeUpdate) = reconstruction();
             {
@@ -130,28 +155,49 @@ namespace DNDS::Cauchy::NonlinearDetail
                 // iteration is the first completed correction.
                 const index reportedIteration = std::max(iteration, index(1));
                 const bool initialBeforeUpdate = !afterUpdate && iteration == 0;
-                if (control.progress && !initialBeforeUpdate)
+                const auto copy = [](const auto &values)
+                { return std::vector<real>(values.begin(), values.end()); };
+                const NonlinearProgress progress{stage,
+                                                 -1,
+                                                 reportedIteration,
+                                                 converged,
+                                                 converged || iteration == limit,
+                                                 copy(report.residual),
+                                                 copy(report.initialResidual),
+                                                 copy(report.referenceResidual),
+                                                 report.residualTargetRatio,
+                                                 report.pseudoCFL,
+                                                 report.linearIterations,
+                                                 report.rhsLimited,
+                                                 report.incrementLimited,
+                                                 report.minimumRHSAlpha,
+                                                 report.minimumIncrementAlpha,
+                                                 report.reconstructionIterations,
+                                                 report.reconstructionRelativeUpdate};
+                if (control.state)
                 {
-                    const auto copy = [](const auto &values)
-                    { return std::vector<real>(values.begin(), values.end()); };
-                    control.progress(NonlinearProgress{stage,
-                                                       -1,
-                                                       reportedIteration,
-                                                       converged,
-                                                       converged || iteration == limit,
-                                                       copy(report.residual),
-                                                       copy(report.initialResidual),
-                                                       copy(report.referenceResidual),
-                                                       report.residualTargetRatio,
-                                                       report.pseudoCFL,
-                                                       report.linearIterations,
-                                                       report.rhsLimited,
-                                                       report.incrementLimited,
-                                                       report.minimumRHSAlpha,
-                                                       report.minimumIncrementAlpha,
-                                                       report.reconstructionIterations,
-                                                       report.reconstructionRelativeUpdate});
+                    auto &state = control.state->get();
+                    state.iteration = iteration;
+                    state.converged = progress.converged;
+                    state.terminal = progress.terminal;
+                    state.capped = progress.terminal && !progress.converged;
+                    state.residual = progress.residual;
+                    state.initialResidual = progress.initialResidual;
+                    state.referenceResidual = progress.referenceResidual;
+                    state.residualTargetRatio = progress.residualTargetRatio;
+                    state.pseudoCFL = progress.pseudoCFL;
+                    state.linearIterations = progress.linearIterations;
+                    state.multigridCycles = report.multigridCycles;
+                    state.levelCorrections = report.levelCorrections;
+                    state.rhsLimited = progress.rhsLimited;
+                    state.incrementLimited = progress.incrementLimited;
+                    state.minimumRHSAlpha = progress.minimumRHSAlpha;
+                    state.minimumIncrementAlpha = progress.minimumIncrementAlpha;
+                    state.reconstructionIterations = progress.reconstructionIterations;
+                    state.reconstructionRelativeUpdate = progress.reconstructionRelativeUpdate;
                 }
+                if (control.progress && !initialBeforeUpdate)
+                    control.progress(progress);
                 if (converged || iteration == limit)
                 {
                     report.converged = converged;

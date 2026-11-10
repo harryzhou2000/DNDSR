@@ -32,7 +32,7 @@ def extract(source):
     before("            // Initialize before the additive source entrance.",
            "            assemblySetup.Finish();\n"
            "            ::DiagnosticTiming::Scope assemblyFreeze(::DiagnosticTiming::Block::JacobianFreeze);\n")
-    before("            if ((chemical || rans) && sourceReconstruction)\n",
+    before("            if ((chemical || rans) && sourceWorkspace)\n",
            "            assemblyFreeze.Finish();\n"
            "            ::DiagnosticTiming::Scope assemblySource(::DiagnosticTiming::Block::JacobianSource);\n")
     before("            // A block-shaped output is already the row's dense workspace.",

@@ -2,6 +2,7 @@
 #include "doctest.h"
 
 #include "Cauchy/IO/ProgressOutput.hpp"
+#include "Cauchy/IO/OutputPlan.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -119,4 +120,38 @@ TEST_CASE("One progress controller constructs iteration stage and step CSV rows"
     CHECK_FALSE(std::getline(second, line));
     CHECK_FALSE(std::filesystem::exists(bare + "_2.csv"));
     std::filesystem::remove_all(directory);
+}
+
+TEST_CASE("Resolved output plan centralizes names cadence inheritance and exact endpoint snapping")
+{
+    C::OutputSettings settings;
+    settings.prefix = "/tmp/cauchy-plan/case";
+    settings.checkpointInterval = 7;
+    settings.visualizationInterval = -1;
+    settings.checkpointTimeInterval = .25;
+    settings.visualizationTimeInterval = -1;
+    settings.endpointSnapRelativeTolerance = 1e-10;
+    const C::OutputPlan plan(settings, 2);
+    CHECK(plan.VisualizationInterval() == 7);
+    CHECK(plan.VisualizationTimeInterval() == .25);
+    CHECK(plan.DomainPrefix(1) == "/tmp/cauchy-plan/case-D1");
+    CHECK(plan.HistoryBare(0) == "/tmp/cauchy-plan/case-D0-history");
+    CHECK(plan.CheckpointPath("-S12") == "/tmp/cauchy-plan/case-S12.h5");
+    CHECK(plan.VisualizationPrefix(1, "-final") == "/tmp/cauchy-plan/case-D1-final");
+    CHECK(plan.SnapshotManifestPath("-S12") == "/tmp/cauchy-plan/case-S12-manifest.json");
+    CHECK(C::OutputPlan::NextTimeOrdinal(.5, .25) == 3);
+    CHECK(C::OutputPlan::TimeAt(3, .25) == .75);
+
+    const auto snapped = plan.SnapStep(.25, .25000000001, 2, 2, 2);
+    REQUIRE(snapped.exactTime);
+    CHECK(*snapped.exactTime == .5);
+    CHECK(snapped.dt == .25);
+    const auto ordinary = plan.SnapStep(.5, .1, 2, 3, 3);
+    CHECK_FALSE(ordinary.exactTime);
+    CHECK(ordinary.dt == .1);
+    CHECK_THROWS(plan.SnapStep(1e20, 1e-10, 0, 0, 0));
+
+    const auto token = C::OutputPlan::TimeToken(.1);
+    REQUIRE(token.rfind("-T", 0) == 0);
+    CHECK(std::stod(token.substr(2)) == .1);
 }

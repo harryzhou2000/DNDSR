@@ -107,20 +107,20 @@ TEST_CASE("P3 viscous face derivatives reproduce polynomial heat conduction and 
             auto splitWrite = split.Owned().Write();
             auto meanOperation = meanHalo.Begin(), recOperation = recHalo.Begin();
             engine.Submit(stream, [rhs, input, output = splitWrite.View<R::UniformTableRows>(), diagnostics = std::ref(diagnostics)](auto)
-                          { diagnostics.get().Merge(rhs.Apply(input, {output}, DNDS::CFV::ReconstructionRegion::Core)); });
+                          { diagnostics.get().Merge(rhs.ApplyBorrowedChecked(input, {output}, DNDS::CFV::ReconstructionRegion::Core)); });
             meanOperation.Wait();
             recOperation.Wait();
             auto ghost = mean.Ghost().Read(), recGhost = coefficients.Ghost().Read();
             input.mean.ghost = ghost.View<R::UniformTableRows>();
             input.coefficients.ghost = recGhost.View<R::UniformTableRows>();
             engine.Submit(stream, [rhs, input, output = splitWrite.View<R::UniformTableRows>(), diagnostics = std::ref(diagnostics)](auto)
-                          { diagnostics.get().Merge(rhs.Apply(input, {output}, DNDS::CFV::ReconstructionRegion::HaloDependent)); });
+                          { diagnostics.get().Merge(rhs.ApplyBorrowedChecked(input, {output}, DNDS::CFV::ReconstructionRegion::HaloDependent)); });
             auto fullWrite = full.Owned().Write(), inviscidWrite = inviscid.Owned().Write();
             engine.Submit(stream, [rhs, input, output = fullWrite.View<R::UniformTableRows>(), base = inviscidWrite.View<R::UniformTableRows>(), diagnostics = std::ref(diagnostics)](auto) mutable
                           {
-                diagnostics.get().Merge(rhs.Apply(input, {output}));
+                diagnostics.get().Merge(rhs.ApplyBorrowedChecked(input, {output}));
                 input.includeViscosity = false;
-                diagnostics.get().Merge(rhs.Apply(input, {base})); });
+                diagnostics.get().Merge(rhs.ApplyBorrowedChecked(input, {base})); });
             stream.Record().WaitHost();
             CHECK(diagnostics.FaceFallbacks() == 0);
         }
@@ -183,15 +183,16 @@ TEST_CASE("Polynomial viscosity exchanges the selected limited or unlimited coef
                 }
                 auto state = C::EquationDofs::Coupled(equation.Schema(), mean);
                 auto result = C::EquationDofs::Coupled(equation.Schema(), actual);
+                auto reconstruction = fv.BuildReconstructionState(state);
                 auto work = fv.BuildWorkspace(state);
                 R::EagerEngine engine(overlap ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
                 const auto stream = engine.CreateCPUStream();
-                fv.Evaluate(state, result, *work, engine, stream);
+                fv.Evaluate(state, result, *reconstruction, *work, engine, stream);
                 // Independently refresh both published coefficient fields before
                 // the direct stateless operator. A stale unlimited halo from the
                 // final VR commit would disagree with this reference on np>1.
-                auto flux = fv.FluxReconstruction(*work).CoupledField();
-                auto guess = fv.ReconstructionGuess(*work).CoupledField();
+                auto flux = fv.FluxReconstruction(*reconstruction, *work).CoupledField();
+                auto guess = fv.ReconstructionGuess(*reconstruction).CoupledField();
                 auto fluxOperation = fv.Metrics().BindHalo(flux).Begin();
                 fluxOperation.Wait();
                 auto guessOperation = fv.Metrics().BindHalo(guess).Begin();
@@ -207,16 +208,16 @@ TEST_CASE("Polynomial viscosity exchanges the selected limited or unlimited coef
                 {
                     auto write = expected.Owned().Write();
                     const auto rhs = fv.AcquireRHSOperator();
-                    diagnostics.Merge(rhs.Apply(input, {write.View<R::UniformTableRows>()}));
+                    diagnostics.Merge(rhs.ApplyBorrowedChecked(input, {write.View<R::UniformTableRows>()}));
                     auto bad = input;
                     bad.viscousCoefficients = C::RHSFieldView{};
-                    CHECK_THROWS(rhs.Apply(bad, {write.View<R::UniformTableRows>()}));
+                    CHECK_THROWS(rhs.ApplyBorrowedChecked(bad, {write.View<R::UniformTableRows>()}));
                 }
                 if (!limited)
                 {
                     auto write = alternative.Owned().Write();
                     input.viscousCoefficients.reset();
-                    diagnostics.Merge(fv.AcquireRHSOperator().Apply(input, {write.View<R::UniformTableRows>()}));
+                    diagnostics.Merge(fv.AcquireRHSOperator().ApplyBorrowedChecked(input, {write.View<R::UniformTableRows>()}));
                 }
                 const auto a = actual.Owned().Read(), b = expected.Owned().Read(), other = alternative.Owned().Read();
                 int differs = 0;
@@ -297,11 +298,13 @@ TEST_CASE("Unified equation orchestration preserves primitive-gradient flow5 vis
         auto genericWork = fv.BuildWorkspace(
             generic, std::nullopt,
             C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic});
+        auto genericReconstruction = fv.BuildReconstructionState(generic);
+        auto reconstruction = fv.BuildReconstructionState(state);
         auto work = fv.BuildWorkspace(state);
         R::EagerEngine engine(overlap ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(generic, expectedState, *genericWork, engine, stream);
-        fv.Evaluate(state, actual, *work, engine, stream);
+        fv.Evaluate(generic, expectedState, *genericReconstruction, *genericWork, engine, stream);
+        fv.Evaluate(state, actual, *reconstruction, *work, engine, stream);
         const auto a = actual.CoupledField().Owned().Read(), b = expected.Owned().Read();
         const auto av = a.View<R::UniformTableRows>(), bv = b.View<R::UniformTableRows>();
         for (DNDS::index iCell = 0; iCell < av.RowCount(); ++iCell)
@@ -331,11 +334,12 @@ TEST_CASE("Polynomial wall viscosity has the Euler normal jump and noGRP switch"
         auto state = C::EquationDofs::Coupled(equation.Schema(), mean);
         auto output = C::EquationDofs::Coupled(equation.Schema(), residual);
         fv.InitializeConstant(state, settings.initialPrimitive);
+        auto reconstruction = fv.BuildReconstructionState(state);
         auto work = fv.BuildWorkspace(state);
         R::EagerEngine engine(2);
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(state, output, *work, engine, stream);
-        const auto &coefficients = fv.FluxReconstruction(*work).CoupledField();
+        fv.Evaluate(state, output, *reconstruction, *work, engine, stream);
+        const auto &coefficients = fv.FluxReconstruction(*reconstruction, *work).CoupledField();
         {
             const auto u = mean.Owned().Read(), ug = mean.Ghost().Read(), c = coefficients.Owned().Read(), cg = coefficients.Ghost().Read();
             C::RHSReadViews input;
@@ -344,7 +348,7 @@ TEST_CASE("Polynomial wall viscosity has the Euler normal jump and noGRP switch"
             input.includeViscosity = false;
             auto output = inviscid.Owned().Write();
             C::RHSLocalDiagnostics diagnostics;
-            diagnostics.Merge(fv.AcquireRHSOperator().Apply(input, {output.View<R::UniformTableRows>()}));
+            diagnostics.Merge(fv.AcquireRHSOperator().ApplyBorrowedChecked(input, {output.View<R::UniformTableRows>()}));
             CHECK(diagnostics.FaceFallbacks() == 0);
         }
         const auto actual = residual.Owned().Read(), base = inviscid.Owned().Read();
@@ -404,9 +408,9 @@ TEST_CASE("Nonzero quadratic temperature does not introduce viscosity at Euler o
         C::RHSLocalDiagnostics diagnostics;
         {
             auto output = residual.Owned().Write(), base = inviscid.Owned().Write();
-            diagnostics.Merge(rhs.Apply(input, {output.View<R::UniformTableRows>()}));
+            diagnostics.Merge(rhs.ApplyBorrowedChecked(input, {output.View<R::UniformTableRows>()}));
             input.includeViscosity = false;
-            diagnostics.Merge(rhs.Apply(input, {base.View<R::UniformTableRows>()}));
+            diagnostics.Merge(rhs.ApplyBorrowedChecked(input, {base.View<R::UniformTableRows>()}));
         }
         const auto a = residual.Owned().Read(), b = inviscid.Owned().Read();
         for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)

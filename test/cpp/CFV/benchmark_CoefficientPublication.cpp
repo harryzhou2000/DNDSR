@@ -25,16 +25,18 @@ namespace
     struct Field
     {
         F::FVField mean;
+        F::FVField coefficients;
         F::ReconstructionWorkspace work;
         F::ReconstructionBoundaryValues boundary;
         R::TransferBinding meanHalo, coefficientHalo;
         uint64_t identity;
         Field(const F::VariationalReconstructionPlan &plan, I components, const std::string &layout)
             : mean(plan.Metrics().BuildField(Layout(layout, components))),
+              coefficients(plan.BuildCoefficients(components, Layout(layout, plan.NRecDOF() * components))),
               work(plan.BuildWorkspace(components, Layout(layout, plan.NRecDOF() * components))),
               boundary(plan.BuildBoundaryValues(components)),
-              meanHalo(plan.Metrics().BindHalo(mean)), coefficientHalo(plan.Metrics().BindHalo(work.coefficients)),
-              identity(work.coefficients.Owned().Identity()) {}
+              meanHalo(plan.Metrics().BindHalo(mean)), coefficientHalo(plan.Metrics().BindHalo(coefficients)),
+              identity(coefficients.Owned().Identity()) {}
     };
     double Value(int field, I global, I component)
     {
@@ -51,7 +53,7 @@ namespace
     void Copy(Field &field)
     {
         auto source = field.work.temporary.Owned().Read();
-        auto destination = field.work.coefficients.Owned().Write();
+        auto destination = field.coefficients.Owned().Write();
         const auto src = source.View<R::UniformTableRows>();
         const auto dst = destination.View<R::UniformTableRows>();
         for (I iCell = 0; iCell < src.RowCount(); ++iCell)
@@ -62,19 +64,19 @@ namespace
         // Bounded candidate, no swap/rebinding: these matching unpadded layouts
         // make the whole-buffer Runtime copy exactly the same logical payload.
         // Production commit remains unchanged until the measured decision.
-        field.work.coefficients.Owned().CopyFrom(field.work.temporary.Owned()).Wait();
+        field.coefficients.Owned().CopyFrom(field.work.temporary.Owned()).Wait();
     }
     void CheckCopy(Field &field, const DNDS::Geom::EntitySpace &cells)
     {
         // A pre-existing binding must still address the published allocation.
         // The expected remote values use global IDs, independent of MPI routes.
         field.coefficientHalo.Begin().Wait();
-        auto owned = field.work.coefficients.Owned().Read();
-        auto ghost = field.work.coefficients.Ghost().Read();
+        auto owned = field.coefficients.Owned().Read();
+        auto ghost = field.coefficients.Ghost().Read();
         const auto local = owned.View<R::UniformTableRows>();
         const auto remote = ghost.View<R::UniformTableRows>();
         for (I iCell = 0; iCell < cells.NumLocal(); ++iCell)
-            for (I component = 0; component < field.work.coefficients.Width(); ++component)
+            for (I component = 0; component < field.coefficients.Width(); ++component)
                 DNDS_check_throw_info((iCell < cells.NumOwned() ? local(iCell, component) : remote(iCell - cells.NumOwned(), component)) ==
                                           Value(2, cells.LocalToGlobal(iCell), component),
                                       "coefficient publication or retained binding changed logical values");
@@ -129,13 +131,13 @@ namespace
         const I kernels = std::max<I>(4, std::min<I>(32, repetitions / 100));
         std::vector<Phase> phases{
             {"production_commit", repetitions, true, [&](Field &field)
-             { plan.CommitReconstruction(field.work); }},
+             { plan.CommitReconstruction(field.coefficients, field.work); }},
             {"bare_row_copy", repetitions, true, Copy},
             {"native_array_copy", repetitions, true, NativeCopy},
             {"sweep_without_commit", kernels, false, [&](Field &field)
-             { plan.DoReconstructionIterTo(field.mean, field.work.coefficients, field.work, field.boundary); }},
+             { plan.DoReconstructionIterTo(field.mean, field.coefficients, field.work, field.boundary); }},
             {"wbap_without_commit", kernels, false, [&](Field &field)
-             { plan.DoLimiterWBAP_3OrderTo(field.work, degree); }}};
+             { plan.DoLimiterWBAP_3OrderTo(field.coefficients, field.work, degree); }}};
         for (int trial = 0; trial < trials; ++trial)
         {
             J measurements;
@@ -147,12 +149,12 @@ namespace
                 for (auto &field : fields)
                 {
                     Fill(field->mean, metrics.Cells(), 0);
-                    Fill(field->work.coefficients, metrics.Cells(), 1);
+                    Fill(field->coefficients, metrics.Cells(), 1);
                     Fill(field->work.temporary, metrics.Cells(), 2);
                     field->meanHalo.Begin().Wait();
                     field->coefficientHalo.Begin().Wait();
                     meanVersions.push_back(field->mean.Owned().Version());
-                    coefficientVersions.push_back(field->work.coefficients.Owned().Version());
+                    coefficientVersions.push_back(field->coefficients.Owned().Version());
                 }
                 const auto seconds = Measure(mpi, phase.repetitions, [&]
                                              { for (auto &field : fields) phase.action(*field); });
@@ -160,9 +162,9 @@ namespace
                 {
                     auto &field = *fields[iField];
                     DNDS_check_throw_info(field.mean.Owned().Version() == meanVersions[iField] &&
-                                              field.work.coefficients.Owned().Identity() == field.identity,
+                                              field.coefficients.Owned().Identity() == field.identity,
                                           "probe mutated means or replaced the bound coefficient allocation");
-                    DNDS_check_throw_info(phase.copy || field.work.coefficients.Owned().Version() == coefficientVersions[iField],
+                    DNDS_check_throw_info(phase.copy || field.coefficients.Owned().Version() == coefficientVersions[iField],
                                           "compute-only probe changed its frozen coefficient input");
                     if (phase.copy)
                         CheckCopy(field, metrics.Cells());

@@ -681,6 +681,11 @@ namespace DNDS::Cauchy
                                   data->output.diagnostics.maxBytes > 0 && data->output.diagnostics.rotatedFiles > 0 && !data->output.prefix.empty(),
                               "invalid Cauchy output controls");
         DNDS_check_throw_info(data->output.hdfDeflateLevel >= 0 && data->output.hdfDeflateLevel <= 9, "Cauchy output hdfDeflateLevel must be in [0,9]");
+        const auto internalVisualization = data->output.implicit.visualizationInterval < 0
+                                               ? data->output.implicit.checkpointInterval
+                                               : data->output.implicit.visualizationInterval;
+        DNDS_check_throw_info(data->output.implicit.checkpointInterval == 0 && internalVisualization == 0,
+                              "restartable internal-iteration checkpoint/visualization output is not available yet; use zero cadence");
         return SimulationConfig(std::move(data));
     }
     std::vector<DomainRankGroup> SimulationConfig::RankGroups() const

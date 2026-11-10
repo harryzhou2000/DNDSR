@@ -123,6 +123,7 @@ int main(int argc, char **argv)
         C::AuxiliaryRequest request;
         request.meanThermodynamics = request.faceSpectralRadius = request.cellSpectralSum = true;
         auto workspace = fv.BuildWorkspace(logicalState);
+        auto reconstruction = fv.BuildReconstructionState(logicalState);
         auto auxiliary = fv.BuildAuxiliaryValues(request);
         R::EagerEngine engine(0, checked ? std::make_shared<R::AccessTrackingContext>() : nullptr);
         const auto stream = engine.CreateCPUStream();
@@ -150,9 +151,9 @@ int main(int argc, char **argv)
                     std::cout << "CAUCHY_PMG_BENCH " << C::Json{{"cells", global}, {"np", mpi.size}, {"degree", 3}, {"trial", trial}, {"repetitions", repetitions}, {"checked", checked}, {"overlap", overlap}, {"import", import}, {"topology", topology}, {"fv_prepare", preparation}, {"mass", 1e5}, {"positivity", false}, {"owned_generation_preserved", true}, {"variants", std::move(variants)}}.dump() << std::endl;
                 continue;
             }
-            fv.Evaluate(logicalState, logicalResidual, *workspace, engine, stream);
+            fv.Evaluate(logicalState, logicalResidual, *reconstruction, *workspace, engine, stream);
             const double evaluate = measure([&]
-                                            { fv.Evaluate(logicalState, logicalResidual, *workspace, engine, stream); }, repetitions);
+                                            { fv.Evaluate(logicalState, logicalResidual, *reconstruction, *workspace, engine, stream); }, repetitions);
             const double auxiliaryTime = measure([&]
                                                  { fv.PrepareAuxValues(logicalState, auxiliary); }, repetitions);
             fv.ValidateAuxValues(logicalState, auxiliary);
@@ -160,7 +161,7 @@ int main(int argc, char **argv)
             {
                 const auto rhs = fv.AcquireRHSOperator();
                 const auto u = state.Owned().Read(), ug = state.Ghost().Read();
-                const auto &coefficients = fv.FluxReconstruction(*workspace).CoupledField();
+                const auto &coefficients = fv.FluxReconstruction(*reconstruction, *workspace).CoupledField();
                 const auto r = coefficients.Owned().Read(), rg = coefficients.Ghost().Read();
                 const auto thermo = auxiliary.meanThermodynamics->Read();
                 auto output = rawResidual.Owned().Write();
@@ -172,7 +173,7 @@ int main(int argc, char **argv)
                 C::RHSWriteViews writes;
                 writes.residual = output.View<R::UniformTableRows>();
                 rawRHS = measure([&]
-                                 { diagnostics.Merge(rhs.Apply(reads, writes)); }, repetitions);
+                                 { diagnostics.Merge(rhs.ApplyBorrowedChecked(reads, writes)); }, repetitions);
                 DNDS_check_throw_info(diagnostics.FaceFallbacks() == 0, "benchmark encountered an inadmissible reconstructed face");
             }
             double difference = 0;
@@ -212,7 +213,8 @@ int main(int argc, char **argv)
                                             { halo.Begin().Wait(); }, repetitions);
             C::Json controllers;
             if (extra)
-                controllers = CauchyBenchmark::ControllerPhases(fv, logicalState, *workspace, engine, stream, settings, checked, repetitions, measure);
+                controllers = CauchyBenchmark::ControllerPhases(fv, logicalState, *reconstruction, *workspace,
+                                                                engine, stream, settings, checked, repetitions, measure);
             DNDS_check_throw_info(state.Owned().Version() == ownedVersion, "benchmark changed its frozen means");
             DNDS_check_throw_info(std::isfinite(A::NormGlobal(update)), "nonfinite local factor solve");
             if (mpi.rank == 0)

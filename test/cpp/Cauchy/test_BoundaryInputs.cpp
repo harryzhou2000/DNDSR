@@ -36,7 +36,8 @@ TEST_CASE("VR wall targets use reflected exterior states in both flow and equati
         }
     }
     auto expected = plan.BuildWorkspace(5);
-    DNDS::Algebra::Fill(expected.coefficients, 0.);
+    auto expectedCoefficients = plan.BuildCoefficients(5);
+    DNDS::Algebra::Fill(expectedCoefficients, 0.);
     auto boundary = plan.BuildBoundaryValues(5);
     {
         const auto read = state.Owned().Read();
@@ -58,11 +59,11 @@ TEST_CASE("VR wall targets use reflected exterior states in both flow and equati
         }
     }
     fv.Metrics().BindHalo(state).Begin().Wait();
-    fv.Metrics().BindHalo(expected.coefficients).Begin().Wait();
-    plan.DoReconstructionIter(state, expected, boundary);
+    fv.Metrics().BindHalo(expectedCoefficients).Begin().Wait();
+    plan.DoReconstructionIter(state, expectedCoefficients, expected, boundary);
     const auto check = [&](const auto &coefficients)
     {
-        const auto a = coefficients.Owned().Read(), b = expected.coefficients.Owned().Read();
+        const auto a = coefficients.Owned().Read(), b = expectedCoefficients.Owned().Read();
         const auto actual = a.template View<R::UniformTableRows>(), oracle = b.View<R::UniformTableRows>();
         for (I iCell = 0; iCell < actual.RowCount(); ++iCell)
             for (I j = 0; j < actual.Width(); ++j)
@@ -72,9 +73,10 @@ TEST_CASE("VR wall targets use reflected exterior states in both flow and equati
     const auto stream = engine.CreateCPUStream();
     auto logical = C::EquationDofs::Coupled(equation.Schema(), state);
     auto output = C::EquationDofs::Coupled(equation.Schema(), residual);
+    auto reconstruction = fv.BuildReconstructionState(logical);
     auto equationWorkspace = fv.BuildWorkspace(logical);
-    fv.Evaluate(logical, output, *equationWorkspace, engine, stream);
-    check(fv.ReconstructionGuess(*equationWorkspace).CoupledField());
+    fv.Evaluate(logical, output, *reconstruction, *equationWorkspace, engine, stream);
+    check(fv.ReconstructionGuess(*reconstruction).CoupledField());
 }
 
 TEST_CASE("Published interface packets reproduce analytic P3 boundaries through auxiliary RHS and frozen Jacobian operators")
@@ -106,6 +108,8 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
     auto equationRB = C::EquationDofs::Coupled(equation.Schema(), rb);
     reference.Initialize(equationA, settings.initialProfile, settings.initialPrimitive);
     coupled.Initialize(equationB, settings.initialProfile, settings.initialPrimitive);
+    auto reconstructionA = reference.BuildReconstructionState(equationA);
+    auto reconstructionB = coupled.BuildReconstructionState(equationB);
     auto workA = reference.BuildWorkspace(equationA);
     auto workB = coupled.BuildWorkspace(equationB);
     auto incoming = coupled.BuildBoundaryInputs();
@@ -147,8 +151,8 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
     coupled.SetBoundaryInputs(*workB, incoming);
     R::EagerEngine engine(2);
     const auto stream = engine.CreateCPUStream();
-    reference.Evaluate(equationA, equationRA, *workA, engine, stream, time);
-    coupled.Evaluate(equationB, equationRB, *workB, engine, stream, time);
+    reference.Evaluate(equationA, equationRA, *reconstructionA, *workA, engine, stream, time);
+    coupled.Evaluate(equationB, equationRB, *reconstructionB, *workB, engine, stream, time);
     const auto compare = [](const auto &left, const auto &right)
     {
         const auto ar = left.Owned().Read(), br = right.Owned().Read();
@@ -158,8 +162,8 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
                 CHECK(u(iCell, j) == v(iCell, j));
     };
     compare(ra, rb);
-    compare(reference.FluxReconstruction(*workA).CoupledField(),
-            coupled.FluxReconstruction(*workB).CoupledField());
+    compare(reference.FluxReconstruction(*reconstructionA, *workA).CoupledField(),
+            coupled.FluxReconstruction(*reconstructionB, *workB).CoupledField());
     C::AuxiliaryRequest request;
     request.faceSpectralRadius = true;
     auto auxA = reference.BuildAuxiliaryValues(request), auxB = coupled.BuildAuxiliaryValues(request);
@@ -175,8 +179,10 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
     auto ja = reference.BuildLinearProblem(equationA, C::DiagonalStorage::Block),
          jb = coupled.BuildLinearProblem(equationB, C::DiagonalStorage::Block);
     const C::JacobianPreparation controls{3, .7, true};
-    reference.PrepareJacobian(equationA, auxA, tau, *ja, controls, time, {}, workA.get());
-    coupled.PrepareJacobian(equationB, auxB, tau, *jb, controls, time, {}, workB.get());
+    reference.PrepareJacobian(equationA, auxA, tau, *ja, controls, time, {},
+                              C::FiniteVolume::JacobianContext{*reconstructionA, *workA});
+    coupled.PrepareJacobian(equationB, auxB, tau, *jb, controls, time, {},
+                            C::FiniteVolume::JacobianContext{*reconstructionB, *workB});
     // Full physical field a/b is an independent nonconstant action input.
     ja->Apply(a, ra);
     jb->Apply(b, rb);

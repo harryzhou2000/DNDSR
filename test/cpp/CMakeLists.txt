@@ -319,15 +319,15 @@ if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_include_directories(cauchy_benchmark_rhs_execution PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
     target_link_libraries(cauchy_benchmark_rhs_execution PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
     target_link_options(cauchy_benchmark_rhs_execution PRIVATE
-        "LINKER:--wrap=_ZNK4DNDS3CFV16FiniteVolumePlan8BindHaloERNS_7Algebra8DofFieldIdLm18446744073709551615EEE"
-        "LINKER:--wrap=_ZNK4DNDS3CFV16FiniteVolumePlan15BindTrackedHaloERNS_7Algebra8DofFieldIdLm18446744073709551615EEE"
+        "LINKER:--wrap=_ZNK4DNDS3CFV16FiniteVolumePlan8BindHaloERNS_7Algebra8DofFieldIdLm18446744073709551615EEENS_7Runtime15TransferOptionsE"
+        "LINKER:--wrap=_ZNK4DNDS3CFV16FiniteVolumePlan15BindTrackedHaloERNS_7Algebra8DofFieldIdLm18446744073709551615EEENS_7Runtime15TransferOptionsE"
         "LINKER:--wrap=_ZN4DNDS7Runtime6Detail9CopyBytesEPKvNS0_6DeviceEPvS4_mNS0_16ExecutionContextE"
         "LINKER:--wrap=_ZNK4DNDS3CFV29VariationalReconstructionPlan22DoReconstructionIterToERKNS_7Algebra8DofFieldIdLm18446744073709551615EEES6_RNS0_23ReconstructionWorkspaceERKNS0_28ReconstructionBoundaryValuesENS0_20ReconstructionRegionE")
     add_executable(cauchy_benchmark_coefficient_rhs EXCLUDE_FROM_ALL Cauchy/benchmark_CoefficientRHSCost.cpp)
     target_include_directories(cauchy_benchmark_coefficient_rhs PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
     target_link_libraries(cauchy_benchmark_coefficient_rhs PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
     target_link_options(cauchy_benchmark_coefficient_rhs PRIVATE
-        "LINKER:--wrap=_ZNK4DNDS3CFV29VariationalReconstructionPlan20CommitReconstructionERNS0_23ReconstructionWorkspaceE")
+        "LINKER:--wrap=_ZNK4DNDS3CFV29VariationalReconstructionPlan20CommitReconstructionERNS_7Algebra8DofFieldIdLm18446744073709551615EEERNS0_23ReconstructionWorkspaceE")
 endif()
 add_executable(cauchy_experiment_multidomain_iv EXCLUDE_FROM_ALL Cauchy/experiment_MultidomainIV.cpp)
 target_include_directories(cauchy_experiment_multidomain_iv PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
@@ -356,7 +356,7 @@ add_dependencies(cauchy_unit_tests dnds_test_cauchy_rans_state dnds_test_cauchy_
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_rans_fv)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_interface_iteration)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_limited_vr dnds_test_cauchy_limited_vr_checkpoint)
-add_dependencies(cauchy_unit_tests dnds_test_cauchy_config dnds_test_cauchy_progress_output dnds_test_cauchy_physics dnds_test_cauchy_derived_fields dnds_test_cauchy_riemann dnds_test_cauchy_riemann_legacy dnds_test_cauchy_finite_volume dnds_test_cauchy_foundation dnds_test_cauchy_linear dnds_test_cauchy_linear_solver dnds_test_cauchy_jacobian)
+add_dependencies(cauchy_unit_tests dnds_test_cauchy_config dnds_test_cauchy_config_shared dnds_test_cauchy_progress_output dnds_test_cauchy_physics dnds_test_cauchy_derived_fields dnds_test_cauchy_riemann dnds_test_cauchy_riemann_legacy dnds_test_cauchy_finite_volume dnds_test_cauchy_foundation dnds_test_cauchy_linear dnds_test_cauchy_linear_solver dnds_test_cauchy_jacobian)
 add_dependencies(all_unit_tests cauchy_unit_tests)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_nonlinear)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_polynomial_multigrid)
@@ -943,16 +943,16 @@ if(Python_EXECUTABLE)
     set(_nonlinear_diagnostic_header "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic/ExtractedEquationPipeline.cpp")
     add_custom_command(OUTPUT "${_nonlinear_diagnostic_header}"
         COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy/extract_pipeline_diagnostic.py"
-            "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/EquationFiniteVolume.cpp" "${_nonlinear_diagnostic_header}"
-        DEPENDS Cauchy/extract_pipeline_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/EquationFiniteVolume.cpp"
+            "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume.cpp" "${_nonlinear_diagnostic_header}"
+        DEPENDS Cauchy/extract_pipeline_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume.cpp"
         VERBATIM)
     target_sources(cauchy_diagnostic_driver_phases PRIVATE "${_nonlinear_diagnostic_header}")
     set_source_files_properties("${_nonlinear_diagnostic_header}" PROPERTIES HEADER_FILE_ONLY TRUE)
     set(_equation_nonlinear_diagnostic "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic/ExtractedEquationNonlinear.cpp")
     add_custom_command(OUTPUT "${_equation_nonlinear_diagnostic}"
         COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy/extract_nonlinear_diagnostic.py"
-            "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/EquationNonlinearSolver.cpp" "${_equation_nonlinear_diagnostic}"
-        DEPENDS Cauchy/extract_nonlinear_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/EquationNonlinearSolver.cpp"
+            "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/NonlinearSolver.cpp" "${_equation_nonlinear_diagnostic}"
+        DEPENDS Cauchy/extract_nonlinear_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/NonlinearSolver.cpp"
         VERBATIM)
     target_sources(cauchy_diagnostic_driver_phases PRIVATE "${_equation_nonlinear_diagnostic}")
     set_source_files_properties("${_equation_nonlinear_diagnostic}" PROPERTIES HEADER_FILE_ONLY FALSE)

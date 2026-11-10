@@ -34,9 +34,10 @@ TEST_CASE("Jacobi and WBAP core work overlaps real direct MPI and preserves unsp
     auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics);
     auto mean = metrics.BuildField(2);
     auto reference = plan.BuildWorkspace(2), split = plan.BuildWorkspace(2);
+    auto referenceCoefficients = plan.BuildCoefficients(2), splitCoefficients = plan.BuildCoefficients(2);
     Fill(mean, 1);
-    Fill(reference.coefficients, 0.2);
-    Fill(split.coefficients, 0.2);
+    Fill(referenceCoefficients, 0.2);
+    Fill(splitCoefficients, 0.2);
     auto boundary = plan.BuildBoundaryValues(2);
     {
         auto write = boundary.values.Write();
@@ -45,34 +46,34 @@ TEST_CASE("Jacobi and WBAP core work overlaps real direct MPI and preserves unsp
                 write.View()(row, component) = 1 + component;
     }
     auto meanHalo = metrics.BindHalo(mean);
-    auto referenceHalo = metrics.BindHalo(reference.coefficients), splitHalo = metrics.BindHalo(split.coefficients);
+    auto referenceHalo = metrics.BindHalo(referenceCoefficients), splitHalo = metrics.BindHalo(splitCoefficients);
     meanHalo.Begin().Wait();
     referenceHalo.Begin().Wait();
-    plan.DoReconstructionIter(mean, reference, boundary);
+    plan.DoReconstructionIter(mean, referenceCoefficients, reference, boundary);
     {
         auto pendingMean = meanHalo.Begin();
         auto pendingRec = splitHalo.Begin();
         // Even if MPI finishes quickly, active operation leases remain until
         // completion is observed. Core therefore proves no ghost reads/writes.
-        plan.DoReconstructionIterTo(mean, split.coefficients, split, boundary, C::ReconstructionRegion::Core);
+        plan.DoReconstructionIterTo(mean, splitCoefficients, split, boundary, C::ReconstructionRegion::Core);
         if (mpi.size > 1 && mean.Owned().RowCount() > 0)
-            CHECK_THROWS(plan.CommitReconstruction(split)); // owned send input still pinned
+            CHECK_THROWS(plan.CommitReconstruction(splitCoefficients, split)); // owned send input still pinned
         pendingMean.Wait();
         pendingRec.Wait();
     }
-    plan.DoReconstructionIterTo(mean, split.coefficients, split, boundary, C::ReconstructionRegion::HaloDependent);
-    plan.CommitReconstruction(split);
-    Equal(reference.coefficients, split.coefficients);
+    plan.DoReconstructionIterTo(mean, splitCoefficients, split, boundary, C::ReconstructionRegion::HaloDependent);
+    plan.CommitReconstruction(splitCoefficients, split);
+    Equal(referenceCoefficients, splitCoefficients);
     for (int order = plan.Settings().maxOrder; order >= 1; --order)
     {
         referenceHalo.Begin().Wait();
-        plan.DoLimiterWBAP_3Order(reference, order);
+        plan.DoLimiterWBAP_3Order(referenceCoefficients, reference, order);
         auto pending = splitHalo.Begin();
-        plan.DoLimiterWBAP_3OrderTo(split, order, std::nullopt, C::ReconstructionRegion::Core);
+        plan.DoLimiterWBAP_3OrderTo(splitCoefficients, split, order, std::nullopt, C::ReconstructionRegion::Core);
         pending.Wait();
-        plan.DoLimiterWBAP_3OrderTo(split, order, std::nullopt, C::ReconstructionRegion::HaloDependent);
-        plan.CommitReconstruction(split);
-        Equal(reference.coefficients, split.coefficients);
+        plan.DoLimiterWBAP_3OrderTo(splitCoefficients, split, order, std::nullopt, C::ReconstructionRegion::HaloDependent);
+        plan.CommitReconstruction(splitCoefficients, split);
+        Equal(referenceCoefficients, splitCoefficients);
     }
     R::Array<double> indicator(R::RowLayout::Dense(metrics.NumCell(), 1));
     {
@@ -80,21 +81,21 @@ TEST_CASE("Jacobi and WBAP core work overlaps real direct MPI and preserves unsp
         for (I row = 0; row < metrics.NumCell(); ++row)
             write.View()(row, 0) = -1;
     }
-    plan.DoLimiterWBAP_3OrderTo(split, 1, std::nullopt, C::ReconstructionRegion::All, &indicator, 0);
-    plan.CommitReconstruction(split);
-    Equal(reference.coefficients, split.coefficients); // inactive is exact passthrough
+    plan.DoLimiterWBAP_3OrderTo(splitCoefficients, split, 1, std::nullopt, C::ReconstructionRegion::All, &indicator, 0);
+    plan.CommitReconstruction(splitCoefficients, split);
+    Equal(referenceCoefficients, splitCoefficients); // inactive is exact passthrough
     referenceHalo.Begin().Wait();
     splitHalo.Begin().Wait();
-    plan.DoLimiterWBAP_3Order(reference, 1);
+    plan.DoLimiterWBAP_3Order(referenceCoefficients, reference, 1);
     {
         auto write = indicator.Write();
         for (I row = 0; row < metrics.NumCell(); ++row)
             write.View()(row, 0) = 0;
     }
-    plan.DoLimiterWBAP_3OrderTo(split, 1, std::nullopt, C::ReconstructionRegion::All, &indicator, 0);
-    plan.CommitReconstruction(split);
-    Equal(reference.coefficients, split.coefficients); // equality activates
-    CHECK_THROWS(plan.DoLimiterWBAP_3OrderTo(split, 1, std::nullopt, C::ReconstructionRegion::All, nullptr,
+    plan.DoLimiterWBAP_3OrderTo(splitCoefficients, split, 1, std::nullopt, C::ReconstructionRegion::All, &indicator, 0);
+    plan.CommitReconstruction(splitCoefficients, split);
+    Equal(referenceCoefficients, splitCoefficients); // equality activates
+    CHECK_THROWS(plan.DoLimiterWBAP_3OrderTo(splitCoefficients, split, 1, std::nullopt, C::ReconstructionRegion::All, nullptr,
                                              std::numeric_limits<double>::quiet_NaN()));
     if (metrics.NumCell())
     {
@@ -102,7 +103,7 @@ TEST_CASE("Jacobi and WBAP core work overlaps real direct MPI and preserves unsp
             auto write = indicator.Write();
             write.View()(0, 0) = std::numeric_limits<double>::quiet_NaN();
         }
-        CHECK_THROWS(plan.DoLimiterWBAP_3OrderTo(split, 1, std::nullopt, C::ReconstructionRegion::All, &indicator, 0));
+        CHECK_THROWS(plan.DoLimiterWBAP_3OrderTo(splitCoefficients, split, 1, std::nullopt, C::ReconstructionRegion::All, &indicator, 0));
     }
 }
 
@@ -116,10 +117,11 @@ TEST_CASE("Core-first SOR uses a separate frozen send snapshot during split exec
     auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
     auto mean = metrics.BuildField(1), snapshot = metrics.BuildField(plan.NRecDOF());
     auto reference = plan.BuildWorkspace(1), split = plan.BuildWorkspace(1);
+    auto referenceCoefficients = plan.BuildCoefficients(1), splitCoefficients = plan.BuildCoefficients(1);
     Fill(mean, 1);
     Fill(snapshot, 0.2);
-    Fill(reference.coefficients, 0.2);
-    Fill(split.coefficients, 0.2);
+    Fill(referenceCoefficients, 0.2);
+    Fill(splitCoefficients, 0.2);
     auto boundary = plan.BuildBoundaryValues(1);
     {
         auto write = boundary.values.Write();
@@ -127,8 +129,8 @@ TEST_CASE("Core-first SOR uses a separate frozen send snapshot during split exec
             write.View()(row, 0) = 1;
     }
     metrics.BindHalo(mean).Begin().Wait();
-    metrics.BindHalo(reference.coefficients).Begin().Wait();
-    plan.DoReconstructionIter(mean, reference, boundary);
+    metrics.BindHalo(referenceCoefficients).Begin().Wait();
+    plan.DoReconstructionIter(mean, referenceCoefficients, reference, boundary);
     auto snapshotHalo = metrics.BindHalo(snapshot);
     auto pending = snapshotHalo.Begin();
     plan.DoReconstructionIterTo(mean, snapshot, split, boundary, C::ReconstructionRegion::Core);
@@ -136,8 +138,8 @@ TEST_CASE("Core-first SOR uses a separate frozen send snapshot during split exec
     plan.DoReconstructionIterTo(mean, snapshot, split, boundary, C::ReconstructionRegion::HaloDependent);
     // The To operator fills update scratch. Publish only after both regions,
     // exactly as the production split path does, before observing coefficients.
-    plan.CommitReconstruction(split);
-    Equal(reference.coefficients, split.coefficients);
+    plan.CommitReconstruction(splitCoefficients, split);
+    Equal(referenceCoefficients, splitCoefficients);
 }
 
 TEST_CASE("CFV split operators share eager ordering across inline and worker CPU launchers")
@@ -147,8 +149,9 @@ TEST_CASE("CFV split operators share eager ordering across inline and worker CPU
     auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics);
     auto mean = metrics.BuildField(1);
     auto reference = plan.BuildWorkspace(1);
+    auto referenceCoefficients = plan.BuildCoefficients(1);
     Fill(mean, 1);
-    Fill(reference.coefficients, 0.3);
+    Fill(referenceCoefficients, 0.3);
     auto boundary = plan.BuildBoundaryValues(1);
     {
         auto write = boundary.values.Write();
@@ -157,13 +160,14 @@ TEST_CASE("CFV split operators share eager ordering across inline and worker CPU
     }
     auto meanHalo = metrics.BindHalo(mean);
     meanHalo.Begin().Wait();
-    metrics.BindHalo(reference.coefficients).Begin().Wait();
-    plan.DoReconstructionIter(mean, reference, boundary);
+    metrics.BindHalo(referenceCoefficients).Begin().Wait();
+    plan.DoReconstructionIter(mean, referenceCoefficients, reference, boundary);
     for (auto workers : {size_t(0), size_t(2)})
     {
         auto split = plan.BuildWorkspace(1);
-        Fill(split.coefficients, 0.3);
-        auto halo = metrics.BindHalo(split.coefficients);
+        auto splitCoefficients = plan.BuildCoefficients(1);
+        Fill(splitCoefficients, 0.3);
+        auto halo = metrics.BindHalo(splitCoefficients);
         R::EagerEngine engine(workers, std::make_shared<R::AccessTrackingContext>());
         auto core = engine.CreateCPUStream(), ring = engine.CreateCPUStream();
         R::MPIProgress progress;
@@ -172,28 +176,29 @@ TEST_CASE("CFV split operators share eager ordering across inline and worker CPU
         // preserving the exact same numerical reference result. Each record
         // retains its operands and declares reads/writes at submission.
         for (int repeat = 0; repeat < 8; ++repeat)
-            plan.SubmitReconstructionIterTo(engine, core, mean, split.coefficients, split, boundary,
+            plan.SubmitReconstructionIterTo(engine, core, mean, splitCoefficients, split, boundary,
                                             C::ReconstructionRegion::Core);
         ring.WaitFor(core.Record());
         ring.WaitFor(communication);
-        plan.SubmitReconstructionIterTo(engine, ring, mean, split.coefficients, split, boundary,
+        plan.SubmitReconstructionIterTo(engine, ring, mean, splitCoefficients, split, boundary,
                                         C::ReconstructionRegion::HaloDependent);
-        plan.SubmitCommitReconstruction(engine, ring, split);
+        plan.SubmitCommitReconstruction(engine, ring, splitCoefficients, split);
         progress.Drain();
         engine.Synchronize();
-        Equal(reference.coefficients, split.coefficients);
+        Equal(referenceCoefficients, splitCoefficients);
         auto limitedReference = plan.BuildWorkspace(1);
-        DNDS::Algebra::Copy(limitedReference.coefficients, reference.coefficients);
+        auto limitedReferenceCoefficients = plan.BuildCoefficients(1);
+        DNDS::Algebra::Copy(limitedReferenceCoefficients, referenceCoefficients);
         for (int order = plan.Settings().maxOrder; order >= 1; --order)
         {
-            metrics.BindHalo(limitedReference.coefficients).Begin().Wait();
+            metrics.BindHalo(limitedReferenceCoefficients).Begin().Wait();
             halo.Begin().Wait();
-            plan.DoLimiterWBAP_3Order(limitedReference, order);
-            plan.SubmitLimiterWBAP_3OrderTo(engine, ring, split, order, std::nullopt,
+            plan.DoLimiterWBAP_3Order(limitedReferenceCoefficients, limitedReference, order);
+            plan.SubmitLimiterWBAP_3OrderTo(engine, ring, splitCoefficients, split, order, std::nullopt,
                                             C::ReconstructionRegion::All);
-            plan.SubmitCommitReconstruction(engine, ring, split);
+            plan.SubmitCommitReconstruction(engine, ring, splitCoefficients, split);
             engine.Synchronize();
-            Equal(limitedReference.coefficients, split.coefficients);
+            Equal(limitedReferenceCoefficients, splitCoefficients);
         }
     }
 }
@@ -226,9 +231,10 @@ TEST_CASE("CPU FV reconstruction limiter and linear actions agree across mixed D
         const I components = 5, width = plan.NRecDOF() * components;
         auto referenceMean = metrics.BuildField(components);
         auto reference = plan.BuildWorkspace(components);
+        auto referenceCoefficients = plan.BuildCoefficients(components);
         auto boundary = plan.BuildBoundaryValues(components);
         Fill(referenceMean, 1.0);
-        Fill(reference.coefficients, .02);
+        Fill(referenceCoefficients, .02);
         {
             auto write = boundary.values.Write();
             for (I iRow = 0; iRow < boundary.values.RowCount(); ++iRow)
@@ -239,44 +245,45 @@ TEST_CASE("CPU FV reconstruction limiter and linear actions agree across mixed D
         {
             CAPTURE(sor);
             CAPTURE(format);
-            Fill(reference.coefficients, .02);
+            Fill(referenceCoefficients, .02);
             const auto recShape = format == 0 ? R::RowLayout::ColMajor(0, width, {32, 1}) : R::RowLayout::TiledColMajor(0, width, 8);
             auto mean = metrics.BuildField(format == 0 ? R::RowLayout::TiledColMajor(0, components, 8) : R::RowLayout::ColMajor(0, components, {32, 1}));
             auto work = plan.BuildWorkspace(components, recShape);
+            auto coefficients = plan.BuildCoefficients(components, recShape);
             Fill(mean, 1.0);
-            Fill(work.coefficients, .02);
+            Fill(coefficients, .02);
             auto refMeanHalo = metrics.BindHalo(referenceMean), meanHalo = metrics.BindHalo(mean);
-            auto refHalo = metrics.BindHalo(reference.coefficients), halo = metrics.BindHalo(work.coefficients);
+            auto refHalo = metrics.BindHalo(referenceCoefficients), halo = metrics.BindHalo(coefficients);
             refMeanHalo.Begin().Wait();
             meanHalo.Begin().Wait();
             for (int iteration = 0; iteration < 4; ++iteration)
             {
                 refHalo.Begin().Wait();
                 halo.Begin().Wait();
-                plan.DoReconstructionIter(referenceMean, reference, boundary);
-                plan.DoReconstructionIter(mean, work, boundary);
-                Equal(reference.coefficients, work.coefficients);
+                plan.DoReconstructionIter(referenceMean, referenceCoefficients, reference, boundary);
+                plan.DoReconstructionIter(mean, coefficients, work, boundary);
+                Equal(referenceCoefficients, coefficients);
             }
             auto transform = plan.BuildFaceTransform(0, components);
             for (int order = settings.maxOrder; order >= 1; --order)
             {
                 refHalo.Begin().Wait();
                 halo.Begin().Wait();
-                plan.DoLimiterWBAP_3Order(reference, order, std::cref(transform));
-                plan.DoLimiterWBAP_3Order(work, order, std::cref(transform));
-                Equal(reference.coefficients, work.coefficients);
+                plan.DoLimiterWBAP_3Order(referenceCoefficients, reference, order, std::cref(transform));
+                plan.DoLimiterWBAP_3Order(coefficients, work, order, std::cref(transform));
+                Equal(referenceCoefficients, coefficients);
             }
             refHalo.Begin().Wait();
             halo.Begin().Wait();
             auto refResult = metrics.BuildField(width), result = metrics.BuildField(recShape);
-            plan.ApplyLinearOperator(reference.coefficients, refResult);
-            plan.ApplyLinearOperator(work.coefficients, result);
+            plan.ApplyLinearOperator(referenceCoefficients, refResult);
+            plan.ApplyLinearOperator(coefficients, result);
             Equal(refResult, result);
             plan.BuildRightHandSide(referenceMean, boundary, refResult);
             plan.BuildRightHandSide(mean, boundary, result);
             Equal(refResult, result);
-            plan.ApplyLocalPreconditioner(reference.coefficients, refResult);
-            plan.ApplyLocalPreconditioner(work.coefficients, result);
+            plan.ApplyLocalPreconditioner(referenceCoefficients, refResult);
+            plan.ApplyLocalPreconditioner(coefficients, result);
             Equal(refResult, result);
         }
     }

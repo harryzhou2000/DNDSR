@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "DNDS/Runtime/Communication/NCCLTransfer.hpp"
+#include "DNDS/Runtime/Communication/MPIProgress.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include <cuda_runtime.h>
@@ -310,6 +311,80 @@ TEST_CASE("NCCL enqueue overlaps core work with gated transfer and retains lease
     for (I iRow = 0; iRow < 17; ++iRow)
         for (I j = 0; j < 5; ++j)
             CHECK(read.View()(iRow, j) == Value((mpi.rank + 1) % mpi.size, iRow, j, 0));
+}
+TEST_CASE("CUDA producer chains device-packed MPI and NCCL across streams through pending shutdown")
+{
+    R::EagerEngine engine(1, std::make_shared<R::AccessTrackingContext>());
+    auto control = R::CommunicationContext::Duplicate(mpi.comm);
+    std::weak_ptr<R::CommunicationContext> retainedControl = control;
+    auto localProvider = R::NCCLTransferProvider::Create(control, device);
+    R::TransferOptions ncclOptions;
+    ncclOptions.provider = localProvider;
+
+    auto producer = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+    auto mpiStream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+    auto ncclStream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+    auto observer = engine.CreateCPUStream();
+    R::Array<double> source(Shape(1, 17, 5), device);
+    R::Array<double> mpiRows(Shape(2, 17, 5), device);
+    R::Array<double> ncclRows(Shape(0, 17, 5), device);
+    const int previous = (mpi.rank + mpi.size - 1) % mpi.size;
+    const int twicePrevious = (previous + mpi.size - 1) % mpi.size;
+    std::vector<R::RowRequest> requests;
+    for (I iRow = 0; iRow < 17; ++iRow)
+        requests.push_back({previous, iRow, iRow});
+    auto route = R::RowTransferPlan(mpi.comm, 17, 17, requests);
+    auto mpiBinding = std::make_unique<R::TransferBinding>(
+        R::PayloadPlan(route, source.Layout(), mpiRows.Layout(), R::ElementSchema::For<double>())
+            .Bind(source, mpiRows, R::TransferTransport::DevicePacked));
+    auto ncclBinding = std::make_unique<R::TransferBinding>(
+        R::PayloadPlan(std::move(route), mpiRows.Layout(), ncclRows.Layout(), R::ElementSchema::For<double>())
+            .Bind(mpiRows, ncclRows, R::TransferTransport::DevicePacked, ncclOptions));
+
+    R::SubmitArrays(engine, producer, [](auto c, auto output)
+                    { Produce<<<1,128,0,static_cast<cudaStream_t>(c.stream)>>>(output, mpi.rank, 7); LaunchOK(); }, R::Write(source));
+    // CUDA-aware MPI is not stream ordered: the controller must observe the
+    // producer before MPI may reserve/read its device buffer. The subsequent
+    // MPI completion is exported as an event for the stream-ordered NCCL leg.
+    producer.Record().WaitHost();
+    auto mpiOperation = mpiBinding->BeginScheduled(mpiStream);
+    R::MPIProgress mpiProgress;
+    const auto mpiReady = mpiProgress.Import(std::move(mpiOperation));
+    // MPI completion is a host-progress event, not a CUDA-stream event. The
+    // controller observes unpack completion before entering the fully
+    // stream-ordered NCCL segment.
+    mpiReady.WaitHost();
+    TestGate gate;
+    gate.Enqueue(engine, ncclStream);
+    ncclBinding->Enqueue(engine, ncclStream);
+    const auto resultReady = ncclStream.Record();
+    CHECK_FALSE(resultReady.Ready());
+
+    auto retained = ncclRows;
+    source = {};
+    mpiRows = {};
+    ncclRows = {};
+    mpiBinding.reset();
+    ncclBinding.reset();
+    ncclOptions.provider.reset();
+    localProvider.reset();
+    control.reset();
+    CHECK_FALSE(retainedControl.expired());
+
+    std::atomic<bool> observed{false};
+    observer.WaitFor(resultReady);
+    engine.Submit(observer, [&](R::ExecutionContext)
+                  { observed = true; });
+    gate.Release();
+    engine.Close();
+    CHECK(observed.load());
+    CHECK(resultReady.Ready());
+    CHECK(retainedControl.expired());
+    const auto host = retained.To(R::Device::Host());
+    const auto read = host.Read();
+    for (I iRow = 0; iRow < 17; ++iRow)
+        for (I j = 0; j < 5; ++j)
+            CHECK(read.View()(iRow, j) == Value(twicePrevious, iRow, j, 7));
 }
 TEST_CASE("Unchecked NCCL missing producer edge demonstrably transfers a stale epoch")
 {

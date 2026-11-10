@@ -260,10 +260,10 @@ def build_domain(layout="aos", flux="Roe", workers=0, method="ssprk3", steady=Fa
 def test_tagged_physical_inputs_match_code_unit_frontend():
     physical, _ = build_domain(layout="soa", workers=2, tagged=True)
     code, _ = build_domain(layout="soa", workers=2)
-    np.testing.assert_allclose(physical.flow.numpy(), code.flow.numpy(), rtol=2e-14, atol=2e-14)
+    np.testing.assert_allclose(physical.fields["flow"].numpy(), code.fields["flow"].numpy(), rtol=2e-14, atol=2e-14)
     assert physical.advance(.001).accepted
     assert code.advance(.001).accepted
-    np.testing.assert_allclose(physical.flow.numpy(), code.flow.numpy(), rtol=2e-14, atol=2e-14)
+    np.testing.assert_allclose(physical.fields["flow"].numpy(), code.fields["flow"].numpy(), rtol=2e-14, atol=2e-14)
 
 
 @pytest.mark.mpi
@@ -275,7 +275,7 @@ def test_spatial_expression_uses_physical_state_units_and_conservative_output():
     rho, u, v, w, p = primitive
     u += .1  # Physical velocity increment .3 / U0=3.
     expected = np.array([rho, rho*u, rho*v, rho*w, p/.4 + .5*rho*(u*u+v*v+w*w)])
-    values = domain.flow.numpy()
+    values = domain.fields["flow"].numpy()
     np.testing.assert_allclose(values, np.broadcast_to(expected, values.shape), rtol=2e-13, atol=2e-13)
 
 
@@ -312,7 +312,7 @@ def test_coordinated_simulation_python_owners_and_reversed_subgroups(split, tmp_
     domain = simulation.domain(local)
     assert domain.time == simulation.time
     archive = world.bcast(str(tmp_path / "simulation.h5") if world.rank == 0 else None, root=0)
-    shared_flow = domain.flow
+    shared_flow = domain.fields["flow"]
     simulation.write_checkpoint(archive, reconstruction=True)
     assert simulation.advance(.001).accepted
     simulation.read_checkpoint(archive)
@@ -320,7 +320,7 @@ def test_coordinated_simulation_python_owners_and_reversed_subgroups(split, tmp_
     assert simulation.time == domain.time == .002
     # Restoring preserves the original Domain/accepted allocation, including
     # handles retained across read. The C++ test uses nonconstant BDF states.
-    np.testing.assert_array_equal(shared_flow.numpy(), domain.flow.numpy())
+    np.testing.assert_array_equal(shared_flow.numpy(), domain.fields["flow"].numpy())
     simulation.write_visualization(str(Path(archive).with_suffix("")))
     if world.rank == 0:
         for i_domain in range(2):
@@ -337,7 +337,7 @@ def test_coordinated_simulation_python_owners_and_reversed_subgroups(split, tmp_
         Simulation(meshes, control, json.dumps(bad))
     # reference_internal retains the Simulation, while a shared native Array
     # independently retains its allocation after both frontend handles vanish.
-    flow = domain.flow
+    flow = domain.fields["flow"]
     del simulation
     assert domain.step == 2
     del domain
@@ -356,11 +356,11 @@ def test_shared_state_real_residual_ssprk3_and_restart(tmp_path, layout, flux, w
     domain, primitive = build_domain(layout, flux, workers)
     rho, u, v, w, p = primitive
     exact = [rho, rho*u, rho*v, rho*w, p/.4 + .5*rho*(u*u+v*v+w*w)]
-    flow = domain.flow
+    flow = domain.fields["flow"]
     np.testing.assert_allclose(flow.numpy(), np.tile(exact, (flow.shape[0], 1)), atol=1e-14)
-    assert domain.flow.identity == flow.identity
+    assert domain.fields["flow"].identity == flow.identity
     assert domain.stable_step(.5) > 0
-    np.testing.assert_allclose(domain.residual().numpy(), 0, atol=3e-13)
+    np.testing.assert_allclose(domain.residual_fields()["flow"].numpy(), 0, atol=3e-13)
     assert domain.advance(.001).accepted
     assert domain.step == 1
     assert domain.time == .001
@@ -389,7 +389,7 @@ def test_shared_state_real_residual_ssprk3_and_restart(tmp_path, layout, flux, w
 @pytest.mark.parametrize("method,stages", [("bdf2", 1), ("esdirk4", 5), ("ditr", 1)])
 def test_configured_implicit_method_and_retained_shared_state(tmp_path, method, stages):
     domain, primitive = build_domain(method=method)
-    flow = domain.flow
+    flow = domain.fields["flow"]
     before = flow.numpy().copy()
     assert domain.advance(.001).accepted
     assert len(domain.implicit_stages) == stages
@@ -409,7 +409,7 @@ def test_configured_implicit_method_and_retained_shared_state(tmp_path, method, 
     assert domain.advance(.002).accepted
     assert all(report.converged for report in domain.implicit_stages)
     # The same Python Array handle continues to reference the bound allocation.
-    assert domain.flow.identity == flow.identity
+    assert domain.fields["flow"].identity == flow.identity
     np.testing.assert_allclose(flow.numpy(), before, atol=3e-14)
 
 
@@ -426,7 +426,7 @@ def test_rank_local_invalid_config_is_collectively_rejected():
 @pytest.mark.mpi
 def test_explicit_numerical_rejection_returns_a_status():
     domain, _ = build_domain(layout="soa", flux="rusanov", workers=0)
-    flow = domain.flow
+    flow = domain.fields["flow"]
     if MPI.COMM_WORLD.rank == 0 and flow.shape[0]:
         # A physical pressure jump has a finite RHS but an enormous explicit
         # timestep makes the stage inadmissible. The acceptance is collective.
@@ -449,13 +449,13 @@ def test_explicit_derived_refresh_shared_storage_and_freshness():
     assert not fields.current(domain)
     assert fields.refresh(domain)
     rho, _, _, _, p = primitive
-    np.testing.assert_allclose(fields.values.numpy(), np.tile([p/rho, p], (domain.flow.shape[0], 1)))
+    np.testing.assert_allclose(fields.values.numpy(), np.tile([p/rho, p], (domain.fields["flow"].shape[0], 1)))
     assert fields.current(domain)
     assert not fields.refresh(domain, only_if_stale=True)
     retained = fields.values
-    before = domain.flow.numpy().copy()
+    before = domain.fields["flow"].numpy().copy()
     if before.shape[0]:
-        domain.flow[0, 4] = before[0, 4] + .1
+        domain.fields["flow"][0, 4] = before[0, 4] + .1
         assert not fields.current(domain)
     fields.refresh(domain)
     assert retained.identity == fields.values.identity
@@ -467,19 +467,19 @@ def test_explicit_derived_refresh_shared_storage_and_freshness():
 @pytest.mark.mpi
 def test_steady_bdf1_override_keeps_the_physical_clock_frozen():
     domain, _ = build_domain(method="esdirk4", steady=True)
-    before = domain.flow.numpy().copy()
+    before = domain.fields["flow"].numpy().copy()
     assert domain.advance(.03).accepted
     assert domain.steady and domain.time == 0 and domain.step == 1
     assert len(domain.implicit_stages) == 1 and domain.implicit_stages[0].converged
     assert domain.previous_dt == 0
-    np.testing.assert_allclose(domain.flow.numpy(), before, atol=3e-14)
+    np.testing.assert_allclose(domain.fields["flow"].numpy(), before, atol=3e-14)
 
 
 @pytest.mark.mpi
 @pytest.mark.parametrize("method", ["ssprk3", "bdf2"])
 def test_physical_step_selection_retains_state_and_restores_growth_history(tmp_path, method):
     domain, _ = build_domain(layout="soa", workers=2, method=method, time_pp=True)
-    flow = domain.flow
+    flow = domain.fields["flow"]
     before = flow.numpy().copy()
     assert domain.previous_dt == 0
     initial = domain.limit_physical_step(.01)
@@ -510,7 +510,7 @@ def test_physical_step_selection_retains_state_and_restores_growth_history(tmp_p
 @pytest.mark.parametrize("variant,layout", [("v2", "soa"), ("v3", "aosoa32")])
 def test_native_lvr_config_and_warm_restart_through_shared_python_arrays(tmp_path, variant, layout):
     domain, _ = build_domain(layout=layout, method="bdf1", lvr_variant=variant)
-    flow = domain.flow
+    flow = domain.fields["flow"]
     before = flow.numpy().copy()
     assert domain.advance(.001).accepted
     assert domain.step == 1 and domain.time == .001
@@ -520,6 +520,6 @@ def test_native_lvr_config_and_warm_restart_through_shared_python_arrays(tmp_pat
     domain.write_checkpoint(path, '{"test":"lvr-python"}', include_reconstruction=True)
     assert domain.advance(.001).accepted
     domain.read_checkpoint(path, '{"test":"lvr-python"}')
-    assert domain.flow.identity == flow.identity
+    assert domain.fields["flow"].identity == flow.identity
     assert domain.step == 1 and domain.time == .001
     np.testing.assert_allclose(flow.numpy(), before, atol=3e-14)

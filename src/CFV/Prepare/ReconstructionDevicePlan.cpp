@@ -66,14 +66,12 @@ namespace DNDS::CFV
             DNDS_check_throw_info(work.devicePlan == data && work.components > 0 && work.components <= INT_MAX / n &&
                                       work.deviceBlocks > 0 && work.deviceBlocks <= 256,
                                   "device workspace belongs to another publication or has an invalid shape");
-            work.coefficients.Validate();
             work.temporary.Validate();
-            DNDS_check_throw_info(work.coefficients.Device() == data->device && work.temporary.Device() == data->device &&
-                                      work.coefficients.Width() == n * work.components && work.temporary.Width() == n * work.components &&
-                                      work.coefficients.Space().Same(work.temporary.Space()) && work.coefficients.Space().Same(*data->dofs),
+            DNDS_check_throw_info(work.temporary.Device() == data->device &&
+                                      work.temporary.Width() == n * work.components &&
+                                      work.temporary.Space().Same(*data->dofs),
                                   "device workspace fields invalid");
-            DNDS_check_throw_info(!Algebra::Detail::Overlaps(work.coefficients.Owned().Storage(), work.temporary.Owned().Storage()) &&
-                                      work.scratch.GetDevice() == data->device && work.scratch.Layout().Kind() == R::RowLayoutKind::Table && work.scratch.RowCount() == work.deviceBlocks * 6 &&
+            DNDS_check_throw_info(work.scratch.GetDevice() == data->device && work.scratch.Layout().Kind() == R::RowLayoutKind::Table && work.scratch.RowCount() == work.deviceBlocks * 6 &&
                                       work.scratch.Layout().Width() == n * work.components && work.deviceStatus.GetDevice() == data->device && work.deviceStatus.Layout().Kind() == R::RowLayoutKind::Table &&
                                       work.deviceStatus.RowCount() == 1 && work.deviceStatus.Layout().Width() == 1 &&
                                       work.devicePeriodicVectorStarts.Identity() == work.devicePeriodicIdentity &&
@@ -82,6 +80,17 @@ namespace DNDS::CFV
                                       work.devicePeriodicVectorStarts.Layout().Kind() == R::RowLayoutKind::Table &&
                                       work.devicePeriodicVectorStarts.Layout().Width() == 1,
                                   "device workspace output/scratch/status mismatch");
+        }
+        void ValidateDeviceWorkspace(const std::shared_ptr<const Detail::ReconstructionPlacementData> &data,
+                                     const ReconstructionWorkspace &work, const FVField &coefficients)
+        {
+            ValidateDeviceWorkspace(data, work);
+            coefficients.Validate();
+            DNDS_check_throw_info(coefficients.Device() == data->device &&
+                                      coefficients.Width() == data->view.n * work.components &&
+                                      coefficients.Space().Same(work.temporary.Space()) &&
+                                      !Algebra::Detail::Overlaps(coefficients.Owned().Storage(), work.temporary.Owned().Storage()),
+                                  "device coefficient state and scratch are incompatible or alias");
         }
         Detail::DeviceWorkSelection Selection(const Detail::ReconstructionPlacementData &data, ReconstructionRegion region)
         {
@@ -246,7 +255,7 @@ namespace DNDS::CFV
         auto deviceStarts = starts.To(Device());
         const auto periodicIdentity = deviceStarts.Identity();
         const auto periodicVersion = deviceStarts.Version();
-        return {Metrics().BuildField(prototype, Device()), Metrics().BuildField(prototype, Device()),
+        return {Metrics().BuildField(prototype, Device()),
                 R::Array<real>(R::RowLayout::Dense(blocks * 6, prototype.Width()), Device()),
                 components, _data, std::move(periodic), std::move(deviceStarts),
                 R::Array<int>(R::RowLayout::Dense(1, 1), Device()), blocks,
@@ -299,12 +308,12 @@ namespace DNDS::CFV
     {
         ValidateDeviceStream(*this, stream);
         DNDS_check_throw_info(SupportsKernel(kernel), "requested CUDA reconstruction kernel is unavailable on this device/build");
-        ValidateDeviceWorkspace(_device, work);
+        ValidateDeviceWorkspace(_device, work, input);
         ValidateDeviceField(*this, mean, work.components);
         ValidateDeviceField(*this, input, work.components * _device->view.n);
         for (const auto *array : {&mean.Owned(), &mean.Ghost(), &input.Owned(), &input.Ghost(), &boundary.values})
             DNDS_check_throw_info(!Algebra::Detail::Overlaps(array->Storage(), work.temporary.Owned().Storage()), "device Jacobi output aliases an input");
-        DNDS_check_throw_info(mean.Space().Same(work.coefficients.Space()) && input.Space().Same(work.coefficients.Space()), "device fields belong to different spaces");
+        DNDS_check_throw_info(mean.Space().Same(input.Space()) && input.Space().Same(work.temporary.Space()), "device fields belong to different spaces");
         DNDS_check_throw_info(boundary.plan == _data, "device boundary plan mismatch");
         ValidateArray(boundary.values, Device(), NumBoundaryQuadrature(), work.components);
         DNDS_check_throw_info(!Algebra::Detail::Overlaps(input.Owned().Storage(), work.temporary.Owned().Storage()) &&
@@ -330,29 +339,31 @@ namespace DNDS::CFV
                             R::Read(boundary.values), R::Write(work.temporary.Owned()), R::Read(work.devicePeriodicVectorStarts), R::Read(work.deviceStatus));
     }
     void VariationalReconstructionPlan::SubmitDeviceCommitReconstruction(
-        R::EagerEngine &engine, const R::ExecutionStream &stream, ReconstructionWorkspace &work) const
+        R::EagerEngine &engine, const R::ExecutionStream &stream, FVField &coefficients,
+        ReconstructionWorkspace &work) const
     {
         // Stable owned-only publication: coefficient ghosts remain stale until
         // exchange. Keep leases and the device-status guard in any future copy
         // optimization; Runtime::Array::CopyFrom alone does not provide the guard.
         ValidateDeviceStream(*this, stream);
-        ValidateDeviceWorkspace(_device, work);
+        ValidateDeviceWorkspace(_device, work, coefficients);
         auto pin = _device;
         R::SubmitArrays(engine, stream, [pin](R::ExecutionContext context, auto input, auto output, auto status)
-                        { Detail::LaunchCommit(context, input, output, status); }, R::Read(work.temporary.Owned()), R::Write(work.coefficients.Owned()), R::Read(work.deviceStatus));
+                        { Detail::LaunchCommit(context, input, output, status); }, R::Read(work.temporary.Owned()), R::Write(coefficients.Owned()), R::Read(work.deviceStatus));
     }
     void VariationalReconstructionPlan::SubmitDeviceLimiterWBAP_3OrderTo(
-        R::EagerEngine &engine, const R::ExecutionStream &stream, ReconstructionWorkspace &work, int order,
+        R::EagerEngine &engine, const R::ExecutionStream &stream, const FVField &coefficients,
+        ReconstructionWorkspace &work, int order,
         FaceCharacteristicTransformRef transform, ReconstructionRegion region, const R::Array<real> *indicator,
         real threshold) const
     {
         ValidateDeviceStream(*this, stream);
-        ValidateDeviceWorkspace(_device, work);
+        ValidateDeviceWorkspace(_device, work, coefficients);
         DNDS_check_throw_info(order >= 1 && order <= Settings().maxOrder && std::isfinite(threshold), "invalid device limiter order/threshold");
-        for (const auto *input : {&work.coefficients.Owned(), &work.coefficients.Ghost(), &work.scratch})
+        for (const auto *input : std::array<const R::Array<real> *, 3>{&coefficients.Owned(), &coefficients.Ghost(), &work.scratch})
             DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), work.temporary.Owned().Storage()), "device limiter output aliases its input/scratch");
-        DNDS_check_throw_info(!Algebra::Detail::Overlaps(work.coefficients.Owned().Storage(), work.scratch.Storage()) &&
-                                  !Algebra::Detail::Overlaps(work.coefficients.Ghost().Storage(), work.scratch.Storage()),
+        DNDS_check_throw_info(!Algebra::Detail::Overlaps(coefficients.Owned().Storage(), work.scratch.Storage()) &&
+                                  !Algebra::Detail::Overlaps(coefficients.Ghost().Storage(), work.scratch.Storage()),
                               "device limiter scratch aliases coefficients");
         const auto selection = Selection(*_device, region);
         const auto n = _device->view.n;
@@ -394,9 +405,9 @@ namespace DNDS::CFV
         { Detail::LaunchWBAP(context, pin->view, selection, {blocks}, {owned, ghost}, output, scratch, {left, right, first, count}, active, status, begin, modes, threshold, blocksCount); };
         if (region == ReconstructionRegion::Core)
             R::SubmitArrays(engine, stream, [launch](R::ExecutionContext c, auto owned, auto output, auto scratch, auto blocks, auto left, auto right, auto active, auto status)
-                            { launch(c, owned, R::ArrayView<const real>{}, output, scratch, blocks, left, right, active, status); }, R::Read(work.coefficients.Owned()), R::Write(work.temporary.Owned()), R::ReadWrite(work.scratch), R::Read(work.devicePeriodicVectorStarts), R::Read(forward), R::Read(inverse), R::Read(activation), R::ReadWrite(work.deviceStatus));
+                            { launch(c, owned, R::ArrayView<const real>{}, output, scratch, blocks, left, right, active, status); }, R::Read(coefficients.Owned()), R::Write(work.temporary.Owned()), R::ReadWrite(work.scratch), R::Read(work.devicePeriodicVectorStarts), R::Read(forward), R::Read(inverse), R::Read(activation), R::ReadWrite(work.deviceStatus));
         else
-            R::SubmitArrays(engine, stream, launch, R::Read(work.coefficients.Owned()), R::Read(work.coefficients.Ghost()), R::Write(work.temporary.Owned()),
+            R::SubmitArrays(engine, stream, launch, R::Read(coefficients.Owned()), R::Read(coefficients.Ghost()), R::Write(work.temporary.Owned()),
                             R::ReadWrite(work.scratch), R::Read(work.devicePeriodicVectorStarts), R::Read(forward), R::Read(inverse), R::Read(activation), R::ReadWrite(work.deviceStatus));
     }
     void VariationalReconstructionPlan::CheckStatus(const ReconstructionWorkspace &work) const

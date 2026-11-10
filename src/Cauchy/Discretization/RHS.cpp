@@ -58,12 +58,6 @@ namespace DNDS::Cauchy
         return RHSOperator(std::make_shared<RHSOperator::ReadData>(_data));
     }
 
-    RHSKernelDiagnostics FiniteVolume::RHSOperator::Apply(const RHSReadViews &input, const RHSWriteViews &output,
-                                                          CFV::ReconstructionRegion region, real time) const
-    {
-        return ApplyBorrowedChecked(input, output, region, time);
-    }
-
     RHSKernelDiagnostics FiniteVolume::RHSOperator::ApplyBorrowedChecked(const RHSReadViews &input, const RHSWriteViews &output,
                                                                          CFV::ReconstructionRegion region, real time) const
     {

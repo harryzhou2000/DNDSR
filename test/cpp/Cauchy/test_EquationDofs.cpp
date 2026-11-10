@@ -820,7 +820,7 @@ TEST_CASE("Coupled matrix action ILU SGS and left GMRES preserve separate and pe
                 CHECK(again.converged);
                 CHECK(again.iterations == report.iterations);
                 const auto warmGuess = solver.Solution();
-                const auto warm = solver.Solve(rhs, &warmGuess);
+                const auto warm = solver.Solve(rhs, std::cref(warmGuess));
                 CHECK(warm.converged);
                 CHECK(warm.iterations == 0);
             }

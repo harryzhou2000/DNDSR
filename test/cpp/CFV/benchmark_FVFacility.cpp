@@ -76,6 +76,7 @@ void Run(DNDS::MPIInfo mpi, const char *file, int degree, int sweeps, int trials
             prepareNative(), prepareLegacy();
         auto mean = metrics->BuildField(5);
         auto work = plan->BuildWorkspace(5);
+        auto coefficients = plan->BuildCoefficients(5);
         auto boundary = plan->BuildBoundaryValues(5);
         C::tUDof<5> oldMean;
         C::tURec<5> oldRec, oldNext, limited, scratch;
@@ -96,14 +97,14 @@ void Run(DNDS::MPIInfo mpi, const char *file, int degree, int sweeps, int trials
         }
         for (I iCell = 0; iCell < mesh->NumCellProc(); ++iCell)
             indicator(iCell, 0) = 1;
-        auto meanHalo = metrics->BindHalo(mean), halo = metrics->BindHalo(work.coefficients);
+        auto meanHalo = metrics->BindHalo(mean), halo = metrics->BindHalo(coefficients);
         meanHalo.Begin().Wait();
         oldMean.trans.startPersistentPull(), oldMean.trans.waitPersistentPull();
         typename C::VariationalReconstruction<dim>::template TFBoundary<5> bc =
             [](const auto &, const auto &, I, I, int, const G::tPoint &, const G::tPoint &, G::t_index)
         { return Eigen::Matrix<double, 5, 1>::Zero().eval(); };
         auto nativeSweep = [&]
-        { halo.Begin().Wait(); plan->DoReconstructionIter(mean, work, boundary); };
+        { halo.Begin().Wait(); plan->DoReconstructionIter(mean, coefficients, work, boundary); };
         auto legacySweep = [&]
         {
             oldRec.trans.startPersistentPull(), oldRec.trans.waitPersistentPull();
@@ -127,7 +128,7 @@ void Run(DNDS::MPIInfo mpi, const char *file, int degree, int sweeps, int trials
             iterateNative(), iterateLegacy();
         double difference = 0, maximum = 0;
         {
-            auto read = work.coefficients.Owned().Read();
+            auto read = coefficients.Owned().Read();
             auto values = read.template View<R::TableRows>();
             for (I iCell = 0; iCell < metrics->NumCell(); ++iCell)
                 for (int v = 0; v < 5; ++v)
@@ -153,12 +154,12 @@ void Run(DNDS::MPIInfo mpi, const char *file, int degree, int sweeps, int trials
         const double nativeLimiter = measure([&]
                                              {
             for (int order = degree; order >= 1; --order)
-            { plan->DoLimiterWBAP_3Order(work, order); halo.Begin().Wait(); } });
+            { plan->DoLimiterWBAP_3Order(coefficients, work, order); halo.Begin().Wait(); } });
         const double legacyLimiter = measure([&]
                                              { legacy.template DoLimiterWBAP_3<5>(oldMean, oldRec, limited, scratch, indicator, true, identity, identity, true); });
         double limiterDifference = 0, maxLimiterDifference = 0;
         {
-            auto read = work.coefficients.Owned().Read();
+            auto read = coefficients.Owned().Read();
             const auto values = read.template View<R::TableRows>();
             for (I iCell = 0; iCell < metrics->NumCell(); ++iCell)
                 for (int component = 0; component < 5; ++component)

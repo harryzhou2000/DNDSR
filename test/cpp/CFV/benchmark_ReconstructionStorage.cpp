@@ -125,8 +125,9 @@ namespace
         // separate processes; small independent UTs remain the numerical oracle.
         auto mean = metrics.BuildField(5);
         auto work = plan.BuildWorkspace(5);
+        auto coefficients = plan.BuildCoefficients(5);
         Fill(mean, *mesh);
-        Fill(work.coefficients, *mesh);
+        Fill(coefficients, *mesh);
         auto boundary = plan.BuildBoundaryValues(5);
         {
             auto write = boundary.values.Write();
@@ -135,13 +136,13 @@ namespace
                     write.View()(iPoint, component) = std::cos(.11 * iPoint + .17 * component);
         }
         metrics.BindHalo(mean).Begin().Wait();
-        metrics.BindHalo(work.coefficients).Begin().Wait();
-        plan.DoReconstructionIterTo(mean, work.coefficients, work, boundary);
+        metrics.BindHalo(coefficients).Begin().Wait();
+        plan.DoReconstructionIterTo(mean, coefficients, work, boundary);
         const auto sweepDigest = Digest(work.temporary);
         J limiterDigest = nullptr;
         if (capabilities.wbap)
         {
-            plan.DoLimiterWBAP_3OrderTo(work, degree);
+            plan.DoLimiterWBAP_3OrderTo(coefficients, work, degree);
             limiterDigest = Digest(work.temporary);
         }
         int provided = MPI_THREAD_SINGLE;

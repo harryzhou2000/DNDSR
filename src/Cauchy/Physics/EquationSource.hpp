@@ -26,8 +26,9 @@ namespace DNDS::Cauchy
     /// work if launched asynchronously. No implicit device/host fallback.
     void EvaluateChemicalSource(const EquationSystem &equation, const EquationDofs &state,
                                 EquationDofs &values, Physics::Chemistry::ChemicalWorkerPool::Lease worker,
-                                Runtime::Array<real> *jacobian = nullptr, real sourceScale = 1,
-                                const DerivedFields *temperatureGuess = nullptr);
+                                std::optional<std::reference_wrapper<Runtime::Array<real>>> jacobian = std::nullopt,
+                                real sourceScale = 1,
+                                std::optional<std::reference_wrapper<const DerivedFields>> temperatureGuess = std::nullopt);
     /// Existing Euler constant-volume CVODE step on owned logical rows, with
     /// distinct input/output allocations and any uniform physical layouts.
     /// Replaces every output component: flow5 and nonchemical blocks are copied

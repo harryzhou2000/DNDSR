@@ -534,26 +534,25 @@ extern "C" int MPI_Testall(int n, MPI_Request *requests, int *ready, MPI_Status 
 
 using Metrics = DNDS::CFV::FiniteVolumePlan;
 using Field = DNDS::CFV::FVField;
-extern "C" DNDS::Runtime::TransferBinding RealHalo(const Metrics *, Field &) asm("__real__ZNK4DNDS3CFV16FiniteVolumePlan8BindHaloERNS_7Algebra8DofFieldIdLm18446744073709551615EEE");
-extern "C" DNDS::Runtime::TransferBinding WrapHalo(const Metrics *, Field &) asm("__wrap__ZNK4DNDS3CFV16FiniteVolumePlan8BindHaloERNS_7Algebra8DofFieldIdLm18446744073709551615EEE");
-extern "C" DNDS::Runtime::TransferBinding WrapHalo(const Metrics *m, Field &field)
+using TransferOptions = DNDS::Runtime::TransferOptions;
+extern "C" DNDS::Runtime::TransferBinding RealHalo(const Metrics *, Field &, TransferOptions) asm("__real__ZNK4DNDS3CFV16FiniteVolumePlan8BindHaloERNS_7Algebra8DofFieldIdLm18446744073709551615EEENS_7Runtime15TransferOptionsE");
+extern "C" DNDS::Runtime::TransferBinding WrapHalo(const Metrics *, Field &, TransferOptions) asm("__wrap__ZNK4DNDS3CFV16FiniteVolumePlan8BindHaloERNS_7Algebra8DofFieldIdLm18446744073709551615EEENS_7Runtime15TransferOptionsE");
+extern "C" DNDS::Runtime::TransferBinding WrapHalo(const Metrics *m, Field &field, TransferOptions options)
 {
     if (Plan53::originalBindings)
-        return RealHalo(m, field);
+        return RealHalo(m, field, std::move(options));
     m->ValidateField(field, field.Width());
     auto route = m->Cells().BuildRowTransferPlan(m->Communication());
-    DNDS::Runtime::TransferOptions options;
     options.provider = Plan53::provider;
     return DNDS::Runtime::PayloadPlan(route, field.Owned().Layout(), field.Ghost().Layout(), DNDS::Runtime::ElementSchema::For<double>()).Bind(field.Owned(), field.Ghost(), DNDS::Runtime::TransferTransport::Direct, options);
 }
-extern "C" DNDS::Algebra::DofHalo<> RealTracked(const Metrics *, Field &) asm("__real__ZNK4DNDS3CFV16FiniteVolumePlan15BindTrackedHaloERNS_7Algebra8DofFieldIdLm18446744073709551615EEE");
-extern "C" DNDS::Algebra::DofHalo<> WrapTracked(const Metrics *, Field &) asm("__wrap__ZNK4DNDS3CFV16FiniteVolumePlan15BindTrackedHaloERNS_7Algebra8DofFieldIdLm18446744073709551615EEE");
-extern "C" DNDS::Algebra::DofHalo<> WrapTracked(const Metrics *m, Field &field)
+extern "C" DNDS::Algebra::DofHalo<> RealTracked(const Metrics *, Field &, TransferOptions) asm("__real__ZNK4DNDS3CFV16FiniteVolumePlan15BindTrackedHaloERNS_7Algebra8DofFieldIdLm18446744073709551615EEENS_7Runtime15TransferOptionsE");
+extern "C" DNDS::Algebra::DofHalo<> WrapTracked(const Metrics *, Field &, TransferOptions) asm("__wrap__ZNK4DNDS3CFV16FiniteVolumePlan15BindTrackedHaloERNS_7Algebra8DofFieldIdLm18446744073709551615EEENS_7Runtime15TransferOptionsE");
+extern "C" DNDS::Algebra::DofHalo<> WrapTracked(const Metrics *m, Field &field, TransferOptions options)
 {
     if (Plan53::originalBindings)
-        return RealTracked(m, field);
+        return RealTracked(m, field, std::move(options));
     m->ValidateField(field, field.Width());
-    DNDS::Runtime::TransferOptions options;
     options.provider = Plan53::provider;
     return DNDS::Algebra::DofHalo<>(field, m->Cells().BuildRowTransferPlan(m->Communication()), options);
 }

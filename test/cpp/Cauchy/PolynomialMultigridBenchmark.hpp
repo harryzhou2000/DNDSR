@@ -40,13 +40,15 @@ namespace CauchyBenchmark
             auto sourceState = C::EquationDofs::Coupled(fv.Equation().Schema(), source);
             auto valueState = C::EquationDofs::Coupled(fv.Equation().Schema(), value);
             std::shared_ptr<C::FiniteVolume::Workspace> workspace;
+            std::shared_ptr<C::FiniteVolume::ReconstructionState> reconstruction;
             std::optional<C::NonlinearSolver> smoother;
             std::optional<C::PolynomialMultigrid> multigrid;
             const double preparation = measure([&]
                                                {
                 workspace = fv.BuildWorkspace(trialState);
+                reconstruction = fv.BuildReconstructionState(trialState);
                 smoother.emplace(
-                    fv, trialState, workspace, engine, stream, settings,
+                    fv, trialState, reconstruction, workspace, engine, stream, settings,
                     A::ComponentSelection(trialState.ComponentNumber(),
                                           trialState.Schema().ResolveComponents(settings.implicit.residualComponents)));
                 if (variant) multigrid.emplace(mesh, fv, trialState, *smoother, engine, stream, settings); });
@@ -72,7 +74,7 @@ namespace CauchyBenchmark
             {
                 // Cold guesses make both independent residual evaluations
                 // comparable. This evaluation/reset is outside Solve timing.
-                fv.ResetReconstruction(*workspace);
+                fv.ResetReconstruction(*reconstruction, *workspace);
                 smoother->EvaluateEquation(trialState, valueState, mass, 1, 0);
                 A::LinearCombination(defect, 1., source, -1., value);
                 return A::NormGlobal(defect);
@@ -82,7 +84,7 @@ namespace CauchyBenchmark
             {
                 A::Copy(trial, frozen);
                 const double initial = norm();
-                fv.ResetReconstruction(*workspace);
+                fv.ResetReconstruction(*reconstruction, *workspace);
                 C::EquationNonlinearIterationReport report;
                 const double elapsed = measure([&]
                                                { report = multigrid ? multigrid->Solve(sourceState, mass, 1, 0) : smoother->Solve(trialState, sourceState, mass, 1, 0, 0, {5}); });

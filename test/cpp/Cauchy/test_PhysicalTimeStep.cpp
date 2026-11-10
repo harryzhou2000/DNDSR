@@ -197,11 +197,12 @@ TEST_CASE("Equation mean trial and thermal dt preserve all block layouts and the
         }
     }
     auto rhs = C::EquationDofOperations::NewVector(state);
+    auto reconstruction = fv.BuildReconstructionState(state);
     auto regular = fv.BuildWorkspace(state, setup.workers);
-    const auto &guess = fv.ReconstructionGuess(*regular);
+    const auto &guess = fv.ReconstructionGuess(*reconstruction);
     auto seed = C::EquationDofOperations::NewVector(guess);
     C::EquationDofOperations::Fill(seed, .0001);
-    fv.RestoreReconstructionGuess(*regular, seed);
+    fv.RestoreReconstructionGuess(*reconstruction, seed);
     const C::EquationDofOperations::Binding before(state), warm(guess);
     auto meanWork = fv.BuildMeanWorkspace(state, setup.workers);
     R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
@@ -232,8 +233,9 @@ TEST_CASE("Equation mean trial and thermal dt preserve all block layouts and the
         }
     }
     auto expected = C::EquationDofOperations::NewVector(referenceState);
+    auto referenceReconstruction = reference.BuildReconstructionState(referenceState);
     auto referenceWork = reference.BuildWorkspace(referenceState, setup.workers);
-    reference.Evaluate(referenceState, expected, *referenceWork, engine, stream);
+    reference.Evaluate(referenceState, expected, *referenceReconstruction, *referenceWork, engine, stream);
     {
         const auto a = rhs.ReadOwned(), b = expected.ReadOwned();
         std::array<double, 2> error{};
@@ -374,11 +376,12 @@ TEST_CASE("Typed mean residual skips VR and filtering without modifying the norm
         }
         auto logical = C::EquationDofs::Coupled(equation.Schema(), state);
         auto output = C::EquationDofs::Coupled(equation.Schema(), residual);
+        auto reconstruction = fv.BuildReconstructionState(logical);
         auto regular = fv.BuildWorkspace(logical);
-        const auto &guess = fv.ReconstructionGuess(*regular);
+        const auto &guess = fv.ReconstructionGuess(*reconstruction);
         auto seed = C::EquationDofOperations::NewVector(guess);
         C::EquationDofOperations::Fill(seed, .01);
-        fv.RestoreReconstructionGuess(*regular, seed);
+        fv.RestoreReconstructionGuess(*reconstruction, seed);
         const auto guessVersion = guess.CoupledField().Owned().Version(), meanVersion = state.Owned().Version();
         auto work = fv.BuildMeanWorkspace(logical);
         R::EagerEngine engine(scenario ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
@@ -404,8 +407,9 @@ TEST_CASE("Typed mean residual skips VR and filtering without modifying the norm
         }
         auto referenceLogical = C::EquationDofs::Coupled(reference.Equation().Schema(), referenceState);
         auto expectedLogical = C::EquationDofs::Coupled(reference.Equation().Schema(), expected);
+        auto referenceReconstruction = reference.BuildReconstructionState(referenceLogical);
         auto referenceWork = reference.BuildWorkspace(referenceLogical);
-        reference.Evaluate(referenceLogical, expectedLogical, *referenceWork, engine, stream);
+        reference.Evaluate(referenceLogical, expectedLogical, *referenceReconstruction, *referenceWork, engine, stream);
         if (equation.Viscous())
         {
             // The real viscous residual differs on this nonconstant thermal
@@ -423,8 +427,9 @@ TEST_CASE("Typed mean residual skips VR and filtering without modifying the norm
             }
             auto viscousState = C::EquationDofs::Coupled(equation.Schema(), values);
             auto viscousOutput = C::EquationDofs::Coupled(equation.Schema(), output);
+            auto viscousReconstruction = viscous.BuildReconstructionState(viscousState);
             auto viscousWork = viscous.BuildWorkspace(viscousState);
-            viscous.Evaluate(viscousState, viscousOutput, *viscousWork, engine, stream);
+            viscous.Evaluate(viscousState, viscousOutput, *viscousReconstruction, *viscousWork, engine, stream);
             double difference = 0;
             {
                 const auto meanRHS = residual.Owned().Read(), viscousRHS = output.Owned().Read();
@@ -473,13 +478,13 @@ TEST_CASE("Domain timestep growth follows committed dt through prepare discard a
         CHECK(domain.PreviousTimeStep() == 0);
         CHECK(domain.LimitPhysicalStep(.01).dt == .01);
         REQUIRE(domain.Advance(.001).accepted);
-        const auto version = domain.Flow().Owned().Version();
+        const auto version = domain.Dofs().CoupledField().Owned().Version();
         const auto limit = domain.LimitPhysicalStep(.1);
         CHECK(limit.dt == .002);
         CHECK(limit.minimumAlpha == 1);
         CHECK(limit.limitedCells == 0);
         CHECK(limit.growthLimited);
-        CHECK(domain.Flow().Owned().Version() == version);
+        CHECK(domain.Dofs().CoupledField().Owned().Version() == version);
         CHECK(domain.Time() == .001);
         REQUIRE(domain.PrepareStep(.004).accepted);
         domain.DiscardStep();
@@ -488,7 +493,7 @@ TEST_CASE("Domain timestep growth follows committed dt through prepare discard a
         REQUIRE(domain.PrepareStep(.003).accepted);
         std::optional<R::Array<double>::ReadLease> read;
         if (mpi.rank == 0)
-            read.emplace(domain.Flow().Owned().Read());
+            read.emplace(domain.Dofs().CoupledField().Owned().Read());
         CHECK_THROWS(domain.CommitStep());
         CHECK(domain.PreviousTimeStep() == .001);
         read.reset();

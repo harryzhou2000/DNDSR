@@ -62,7 +62,9 @@ namespace DNDS::Cauchy
     }
     void EvaluateChemicalSource(const EquationSystem &equation, const EquationDofs &state,
                                 EquationDofs &values, Physics::Chemistry::ChemicalWorkerPool::Lease worker,
-                                Runtime::Array<real> *jacobian, real sourceScale, const DerivedFields *temperatureGuess)
+                                std::optional<std::reference_wrapper<Runtime::Array<real>>> jacobian,
+                                real sourceScale,
+                                std::optional<std::reference_wrapper<const DerivedFields>> temperatureGuess)
     {
         equation.ValidateStateSchema(state);
         state.RequireCompatible(values);
@@ -89,21 +91,22 @@ namespace DNDS::Cauchy
             columns.push_back(speciesFirst + k);
         if (jacobian)
         {
+            const auto &matrix = jacobian->get();
             DNDS_check_throw_info(components > 0 && components <= std::numeric_limits<index>::max() / components, "source Jacobian row width overflows");
-            DNDS_check_throw_info(jacobian->GetDevice() == state.Device() && jacobian->RowCount() == index(state.Space().OwnedRows()) &&
-                                      !jacobian->Layout().IsVariable() && jacobian->Layout().Width() == components * components,
+            DNDS_check_throw_info(matrix.GetDevice() == state.Device() && matrix.RowCount() == index(state.Space().OwnedRows()) &&
+                                      !matrix.Layout().IsVariable() && matrix.Layout().Width() == components * components,
                                   "chemical source Jacobian shape/backend differs");
             for (const auto *bound : std::array<const EquationDofs *, 2>{&state, &values})
                 for (index iField = 0; iField < bound->PhysicalFieldNumber(); ++iField)
                     for (const auto *array : {&bound->PhysicalField(iField).Owned(), &bound->PhysicalField(iField).Ghost()})
-                        DNDS_check_throw_info(!Algebra::Detail::Overlaps(jacobian->Storage(), array->Storage()), "source Jacobian aliases equation storage");
+                        DNDS_check_throw_info(!Algebra::Detail::Overlaps(matrix.Storage(), array->Storage()), "source Jacobian aliases equation storage");
         }
         auto evaluator = equation.MakePointEvaluator(std::move(worker), {false, false, false, true, bool(jacobian)});
         std::optional<DerivedFields::ReadScope> guess;
         if (temperatureGuess)
         {
-            DNDS_check_throw_info(!temperatureGuess->GhostPart(), "source temperature guess must be owned");
-            guess.emplace(temperatureGuess->ReadTemperatureGuess(state, equation));
+            DNDS_check_throw_info(!temperatureGuess->get().GhostPart(), "source temperature guess must be owned");
+            guess.emplace(temperatureGuess->get().ReadTemperatureGuess(state, equation));
         }
         auto input = state.ReadOwned();
         const auto flow = input.Block("flow").owned;
@@ -113,7 +116,7 @@ namespace DNDS::Cauchy
         try
         {
             if (jacobian)
-                jacobianWrite.emplace(jacobian->Write());
+                jacobianWrite.emplace(jacobian->get().Write());
             output.emplace(values.WriteOwned());
         }
         catch (...)

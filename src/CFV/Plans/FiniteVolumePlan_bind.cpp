@@ -148,7 +148,6 @@ namespace DNDS::CFV
             .def_property_readonly("inverse", [](FaceCharacteristicTransform &value)
                                    { return Runtime::PythonArray::Share(value.inverse); });
         py::class_<ReconstructionWorkspace>(m, "ReconstructionWorkspace")
-            .def_readonly("coefficients", &ReconstructionWorkspace::coefficients)
             .def_readonly("temporary", &ReconstructionWorkspace::temporary);
         py::enum_<ReconstructionDeviceKernel>(m, "ReconstructionDeviceKernel")
             .value("FP64", ReconstructionDeviceKernel::FP64)
@@ -193,6 +192,9 @@ namespace DNDS::CFV
                  py::arg("components"), py::arg("periodicVectorStarts") = std::vector<index>{})
             .def("BuildWorkspaceWithLayout", py::overload_cast<index, Runtime::RowLayout, std::vector<index>>(&VariationalReconstructionPlan::BuildWorkspace, py::const_),
                  py::arg("components"), py::arg("prototype"), py::arg("periodicVectorStarts") = std::vector<index>{})
+            .def("BuildCoefficients", py::overload_cast<index>(&VariationalReconstructionPlan::BuildCoefficients, py::const_), py::arg("components"))
+            .def("BuildCoefficientsWithLayout", py::overload_cast<index, Runtime::RowLayout>(&VariationalReconstructionPlan::BuildCoefficients, py::const_),
+                 py::arg("components"), py::arg("prototype"))
             .def("BuildBoundaryValues", &VariationalReconstructionPlan::BuildBoundaryValues)
             .def("PlaceBoundaryValues", &VariationalReconstructionPlan::PlaceBoundaryValues)
             .def("NumBoundaryQuadrature", &VariationalReconstructionPlan::NumBoundaryQuadrature)
@@ -202,7 +204,7 @@ namespace DNDS::CFV
             .def("FinalizeFaceTransform", &VariationalReconstructionPlan::FinalizeFaceTransform,
                  "Validate and publish matrices after filling from cell means; any later write requires re-finalization.")
             .def("DoReconstructionIter", &VariationalReconstructionPlan::DoReconstructionIter,
-                 py::arg("mean"), py::arg("workspace"), py::arg("boundary"),
+                 py::arg("mean"), py::arg("coefficients"), py::arg("workspace"), py::arg("boundary"),
                  py::arg("kernel") = ReconstructionDeviceKernel::FP64,
                  "One synchronous backend-resolved sweep and commit. Release Python aliases and refresh input halos first.")
             .def("DoReconstructionIterTo", &VariationalReconstructionPlan::DoReconstructionIterTo,
@@ -217,18 +219,18 @@ namespace DNDS::CFV
                  "CPU A-weighted penalty sweep. Freeze finite target and alpha in [0,1]; refresh input halos before dependent work and commit only after all rows finish.")
             .def("CommitReconstruction", &VariationalReconstructionPlan::CommitReconstruction)
             .def("SubmitCommitReconstruction", &VariationalReconstructionPlan::SubmitCommitReconstruction,
-                 py::arg("engine"), py::arg("stream"), py::arg("workspace"),
+                 py::arg("engine"), py::arg("stream"), py::arg("coefficients"), py::arg("workspace"),
                  "Enqueue temporary-to-coefficient publication on the selected backend stream.")
-            .def("DoLimiterWBAP_3Order", [](const VariationalReconstructionPlan &plan, ReconstructionWorkspace &work, int order, const FaceCharacteristicTransform *transform)
-                 { plan.DoLimiterWBAP_3Order(work, order, transform ? FaceCharacteristicTransformRef(std::cref(*transform)) : std::nullopt); }, py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr, "Call in descending order with a coefficient halo exchange after each order.")
-            .def("DoLimiterWBAP_3OrderTo", [](const VariationalReconstructionPlan &plan, ReconstructionWorkspace &work, int order, const FaceCharacteristicTransform *transform, ReconstructionRegion region, const Runtime::Array<real> *indicator, real threshold)
-                 { plan.DoLimiterWBAP_3OrderTo(work, order,
+            .def("DoLimiterWBAP_3Order", [](const VariationalReconstructionPlan &plan, FVField &coefficients, ReconstructionWorkspace &work, int order, const FaceCharacteristicTransform *transform)
+                 { plan.DoLimiterWBAP_3Order(coefficients, work, order, transform ? FaceCharacteristicTransformRef(std::cref(*transform)) : std::nullopt); }, py::arg("coefficients"), py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr, "Call in descending order with a coefficient halo exchange after each order.")
+            .def("DoLimiterWBAP_3OrderTo", [](const VariationalReconstructionPlan &plan, const FVField &coefficients, ReconstructionWorkspace &work, int order, const FaceCharacteristicTransform *transform, ReconstructionRegion region, const Runtime::Array<real> *indicator, real threshold)
+                 { plan.DoLimiterWBAP_3OrderTo(coefficients, work, order,
                                                transform ? FaceCharacteristicTransformRef(std::cref(*transform)) : std::nullopt,
-                                               region, indicator, threshold); }, py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr, py::arg("region") = ReconstructionRegion::All, py::arg("indicator") = nullptr, py::arg("threshold") = 0)
-            .def("SubmitLimiterWBAP_3OrderTo", [](const VariationalReconstructionPlan &plan, Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, ReconstructionWorkspace &work, int order, const FaceCharacteristicTransform *transform, ReconstructionRegion region, const Runtime::Array<real> *indicator, real threshold)
-                 { plan.SubmitLimiterWBAP_3OrderTo(engine, stream, work, order,
+                                               region, indicator, threshold); }, py::arg("coefficients"), py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr, py::arg("region") = ReconstructionRegion::All, py::arg("indicator") = nullptr, py::arg("threshold") = 0)
+            .def("SubmitLimiterWBAP_3OrderTo", [](const VariationalReconstructionPlan &plan, Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, const FVField &coefficients, ReconstructionWorkspace &work, int order, const FaceCharacteristicTransform *transform, ReconstructionRegion region, const Runtime::Array<real> *indicator, real threshold)
+                 { plan.SubmitLimiterWBAP_3OrderTo(engine, stream, coefficients, work, order,
                                                    transform ? FaceCharacteristicTransformRef(std::cref(*transform)) : std::nullopt,
-                                                   region, indicator, threshold); }, py::arg("engine"), py::arg("stream"), py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr, py::arg("region") = ReconstructionRegion::All, py::arg("indicator") = nullptr, py::arg("threshold") = 0, "Enqueue one descending limiter order through the common CFV plan.")
+                                                   region, indicator, threshold); }, py::arg("engine"), py::arg("stream"), py::arg("coefficients"), py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr, py::arg("region") = ReconstructionRegion::All, py::arg("indicator") = nullptr, py::arg("threshold") = 0, "Enqueue one descending limiter order through the common CFV plan.")
             .def("BindHalo", &VariationalReconstructionPlan::BindHalo, py::arg("field"), py::arg("transport") = Runtime::TransferTransport::Direct, py::arg("options") = Runtime::TransferOptions{}, "Collective payload binding for this plan placement; explicitly order consumers after transfer completion.")
             .def("CheckStatus", &VariationalReconstructionPlan::CheckStatus)
             .def("Evaluate", &VariationalReconstructionPlan::Evaluate)

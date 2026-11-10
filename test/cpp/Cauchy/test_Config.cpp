@@ -177,6 +177,8 @@ TEST_CASE("Deprecated time and output aliases are exclusive with their canonical
     CHECK_THROWS_WITH(C::SimulationConfig::Resolve({{"output", {{"interval", 7}}}}, 1,
                                                    {{"/output/checkpointInterval", 7}}),
                       doctest::Contains("only output.checkpointInterval"));
+    CHECK_THROWS_WITH(C::SimulationConfig::Resolve({{"output", {{"implicit", {{"checkpointInterval", 2}}}}}}, 1),
+                      doctest::Contains("internal-iteration"));
 }
 TEST_CASE("Reconstruction PP controls are explicit and reject unsupported compatibility combinations")
 {

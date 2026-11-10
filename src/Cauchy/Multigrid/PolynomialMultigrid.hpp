@@ -51,7 +51,8 @@ namespace DNDS::Cauchy
         /// reconstruction provenance. It is consumed only by the first finest
         /// smoother; further corrections evaluate their updated states normally.
         EquationNonlinearIterationReport ApplyCycle(const EquationDofs &source, real mass, real rhsScale, real time,
-                                                    int stage = 0, real pseudoCFL = 0, const EquationDofs *rate = nullptr);
+                                                    int stage = 0, real pseudoCFL = 0,
+                                                    std::optional<std::reference_wrapper<const EquationDofs>> rate = std::nullopt);
         /// Frozen stage trace shared with coarse levels after checking their
         /// canonical boundary quadrature order. Local alias binding only; no MPI.
         void SetBoundaryInputs(const BoundaryInputs &input);

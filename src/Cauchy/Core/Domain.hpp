@@ -31,6 +31,7 @@ namespace DNDS::Cauchy
         EquationDofs _accepted, _trial;
         EquationDofs _residualState;
         EquationDofs _initial;
+        std::shared_ptr<FiniteVolume::ReconstructionState> _reconstruction, _observationReconstruction;
         std::shared_ptr<FiniteVolume::Workspace> _workspace, _observationWorkspace;
         std::optional<EquationDofs> _reconstructionBackup, _observationState;
         std::optional<Runtime::Array<real>> _limitedVRBackup;
@@ -43,6 +44,7 @@ namespace DNDS::Cauchy
         std::unique_ptr<PolynomialMultigrid> _multigrid;
         std::unique_ptr<EquationTimeStepper> _timeStepper;
         std::vector<EquationNonlinearIterationReport> _lastImplicit;
+        NonlinearSolveState _coupledNonlinearState;
         std::function<void(const NonlinearProgress &)> _progressObserver;
         index _lastCoupledIterations = 0;
         real _lastCoupledTargetRatio = 0;
@@ -54,7 +56,7 @@ namespace DNDS::Cauchy
             EquationTimeStepper::Evaluate evaluate;
             std::function<EquationNonlinearIterationReport(const ODE::CoupledStageEquation<EquationDofs> &, const EquationDofs &, real)> correct;
             std::function<std::pair<int, real>()> reconstruction;
-            std::function<void()> reset;
+            std::shared_ptr<FiniteVolume::ReconstructionState> state;
         };
         std::function<CoupledStageOperator(EquationDofs &)> _coupledFactory;
         std::optional<CoupledStageOperator> _coupledMiddle;
@@ -95,8 +97,6 @@ namespace DNDS::Cauchy
         void NormalizeRate(EquationDofs &rate);
         bool RecordImplicitStage(EquationNonlinearIterationReport report);
         bool Admissible(const EquationDofs &state) const;
-        static CFV::FVField &FlowField(EquationDofs &state);
-        static const CFV::FVField &FlowField(const EquationDofs &state);
         Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time, EquationSetup setup);
         Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const ResolvedPhysicalInputs &inputs, const TimeSettings &time, EquationSetup setup);
         void BeginTrial(real dt);
@@ -148,17 +148,11 @@ namespace DNDS::Cauchy
         /// retains the pool, never an acquired worker. Serialize operator and
         /// Domain use or provide sufficient capacity; no implicit pool exists.
         std::optional<Physics::Chemistry::ChemicalWorkerPool> ChemicalWorkers() const { return _workers; }
-        const Algebra::DofBundle &State() const { return _accepted.Fields(); }
+        EquationDofs &Dofs() { return _accepted; }
         const EquationDofs &Dofs() const { return _accepted; }
         /// Synchronous local point refresh using this domain's explicit worker
         /// capacity. No halo exchange; caller ensures ready ghosts when used.
         bool RefreshDerived(DerivedFields &fields, bool onlyIfStale = false) const;
-        /// Coarse debugging/input boundary. Release writers before a trial and
-        /// all views before commit; aliases intentionally block conflicting writes.
-        /// Legacy/debug convenience for a dedicated physical flow5 field.
-        /// Coupled extended tables use Dofs().ReadOwned().Block("flow") instead.
-        CFV::FVField &Flow() { return FlowField(_accepted); }
-        const CFV::FVField &Flow() const { return FlowField(_accepted); }
         real Time() const { return _time; }
         /// Actual last committed physical step, including retry halving. Zero
         /// for steady/fresh state or an older restart without this information.
@@ -232,12 +226,9 @@ namespace DNDS::Cauchy
         /// workspace is overwritten at the next residual/stage; share/copy
         /// explicitly if it must outlive that operation. Invalidates any
         /// prepared trial because the reconstruction/trial workspace is reused.
-        /// Requires a dedicated physical flow5 field, like Flow(). Use
-        /// ResidualState() for coupled extended-equation allocations.
-        const CFV::FVField &Residual();
-        /// Full logical integrated residual; shares the same overwriteable
-        /// workspace and candidate-invalidating semantics as Residual().
-        const EquationDofs &ResidualState();
+        /// Full logical integrated residual; shares overwriteable workspace
+        /// and invalidates any prepared candidate.
+        const EquationDofs &Residual();
         /// Collective diagnostics of the accepted state. Recomputes its RHS;
         /// no state/time update. Returns mass, energy, rho/p minima, residual L2,
         /// force xyz, VR sweeps/update, density L1/L2/Linf analytic errors, Tmin.

@@ -283,7 +283,10 @@ namespace DNDS::CFV
     /// Own iteration scratch once; kernels never grow per-cell vectors.
     struct ReconstructionWorkspace
     {
-        FVField coefficients, temporary;
+        /// Scratch output for one reconstruction/limiter pass. Durable
+        /// coefficients are caller-owned orchestration state and are supplied
+        /// explicitly to every operation.
+        FVField temporary;
         Runtime::Array<real> scratch;
         index components;
         std::shared_ptr<const Detail::ReconstructionData> plan;
@@ -379,9 +382,9 @@ namespace DNDS::CFV
                                               const ReconstructionBoundaryValues &, ReconstructionRegion,
                                               ReconstructionDeviceKernel) const;
         void SubmitDeviceCommitReconstruction(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
-                                              ReconstructionWorkspace &) const;
+                                              FVField &, ReconstructionWorkspace &) const;
         void SubmitDeviceLimiterWBAP_3OrderTo(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
-                                              ReconstructionWorkspace &, int, FaceCharacteristicTransformRef,
+                                              const FVField &, ReconstructionWorkspace &, int, FaceCharacteristicTransformRef,
                                               ReconstructionRegion, const Runtime::Array<real> *, real) const;
 
     public:
@@ -416,6 +419,11 @@ namespace DNDS::CFV
         ReconstructionWorkspace BuildWorkspace(index components, std::vector<index> periodicVectorStarts = {}) const;
         ReconstructionWorkspace BuildWorkspace(index components, Runtime::RowLayout coefficientPrototype,
                                                std::vector<index> periodicVectorStarts = {}) const;
+        /// Allocate durable coefficient storage independently of scratch.
+        /// Solver orchestration owns the returned field and may reuse a
+        /// compatible scratch workspace across serialized states.
+        FVField BuildCoefficients(index components) const;
+        FVField BuildCoefficients(index components, Runtime::RowLayout coefficientPrototype) const;
         ReconstructionBoundaryValues BuildBoundaryValues(index components) const;
         ReconstructionBoundaryValues PlaceBoundaryValues(const ReconstructionBoundaryValues &) const;
         index NumBoundaryQuadrature() const;
@@ -429,7 +437,7 @@ namespace DNDS::CFV
         /// Both methods write temporary then publish owned output. SOR follows
         /// logical cell order using new local predecessors and old other values.
         /// No implicit MPI, allocation in the cell loop, or callbacks.
-        void DoReconstructionIter(const FVField &mean, ReconstructionWorkspace &work,
+        void DoReconstructionIter(const FVField &mean, FVField &coefficients, ReconstructionWorkspace &work,
                                   const ReconstructionBoundaryValues &boundary,
                                   ReconstructionDeviceKernel kernel = ReconstructionDeviceKernel::FP64) const;
         /// Writes selected rows of temporary only; input is immutable for both
@@ -469,22 +477,22 @@ namespace DNDS::CFV
                                                ReconstructionRegion region = ReconstructionRegion::All) const;
         /// Copy the completed temporary into owned coefficients. The caller
         /// certifies every owned row was produced and all old sends completed.
-        void CommitReconstruction(ReconstructionWorkspace &work) const;
+        void CommitReconstruction(FVField &coefficients, ReconstructionWorkspace &work) const;
         void SubmitCommitReconstruction(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
-                                        ReconstructionWorkspace &work) const;
+                                        FVField &coefficients, ReconstructionWorkspace &work) const;
         /// One descending-order 3WBAP pass. Call degree..1 and exchange the
         /// coefficient halo after EACH pass, matching the legacy schedule.
-        void DoLimiterWBAP_3Order(ReconstructionWorkspace &work, int order,
+        void DoLimiterWBAP_3Order(FVField &coefficients, ReconstructionWorkspace &work, int order,
                                   FaceCharacteristicTransformRef transform = std::nullopt) const;
         /// Out-of-place selected-row pass. Call Core and HaloDependent against
         /// the same immutable coefficients, then commit/exchange before the
         /// next descending order. Inactive rows copy input unchanged.
-        void DoLimiterWBAP_3OrderTo(ReconstructionWorkspace &work, int order,
+        void DoLimiterWBAP_3OrderTo(const FVField &coefficients, ReconstructionWorkspace &work, int order,
                                     FaceCharacteristicTransformRef transform = std::nullopt,
                                     ReconstructionRegion region = ReconstructionRegion::All,
                                     const Runtime::Array<real> *indicator = nullptr, real threshold = 0) const;
         void SubmitLimiterWBAP_3OrderTo(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
-                                        ReconstructionWorkspace &work, int order,
+                                        const FVField &coefficients, ReconstructionWorkspace &work, int order,
                                         FaceCharacteristicTransformRef transform = std::nullopt,
                                         ReconstructionRegion region = ReconstructionRegion::All,
                                         const Runtime::Array<real> *indicator = nullptr, real threshold = 0) const;

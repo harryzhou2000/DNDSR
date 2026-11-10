@@ -100,7 +100,10 @@ int main(int argc, char **argv)
         C::FiniteVolume fv(mesh, settings, equation);
         auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(6));
         auto result = C::EquationDofOperations::NewVector(state);
+        auto reconstruction = fv.BuildReconstructionState(state);
         auto workspace = fv.BuildWorkspace(state);
+        auto reconstructionBinding = workspace->BindReconstruction(reconstruction->coefficients,
+                                                                   reconstruction->fluxCoefficients);
         R::Array<DNDS::real> meanSourceDiagonal(R::RowLayout::Dense(fv.Metrics().NumCell(), 6));
 
         using Eval = E::DiagnosticEulerSA;
@@ -189,17 +192,20 @@ int main(int argc, char **argv)
         const auto ownedVersion = state.PhysicalField(0).Owned().Version();
         if (operation == "halo")
         {
-            auto write = workspace->coefficients.PhysicalField(0).Owned().Write();
-            const auto values = write.View<R::UniformTableRows>();
-            const int modes = fv.Reconstruction().NRecDOF();
-            for (I iCell = 0; iCell < values.RowCount(); ++iCell)
-                for (int j = 0; j < 6; ++j)
-                    for (int mode = 0; mode < modes; ++mode)
-                        values(iCell, j * modes + mode) = oldRec[iCell](mode, j) =
-                            .01 * (mode + 1) + .02 * j + .001 * mesh->OriginalEntityId(DNDS::Geom::EntityKind::Cell, iCell);
+            {
+                auto write = reconstruction->coefficients.PhysicalField(0).Owned().Write();
+                const auto values = write.View<R::UniformTableRows>();
+                const int modes = fv.Reconstruction().NRecDOF();
+                for (I iCell = 0; iCell < values.RowCount(); ++iCell)
+                    for (int j = 0; j < 6; ++j)
+                        for (int mode = 0; mode < modes; ++mode)
+                            values(iCell, j * modes + mode) = oldRec[iCell](mode, j) =
+                                .01 * (mode + 1) + .02 * j + .001 * mesh->OriginalEntityId(DNDS::Geom::EntityKind::Cell, iCell);
+            }
+            C::EquationDofOperations::Copy(reconstruction->fluxCoefficients, reconstruction->coefficients);
         }
         auto meanHalo = workspace->owner->BindHalo(state.PhysicalField(0));
-        auto coefficientHalo = workspace->owner->BindHalo(workspace->coefficients.PhysicalField(0));
+        auto coefficientHalo = workspace->owner->BindHalo(reconstruction->coefficients.PhysicalField(0));
         const auto haloNative = [&]
         {
             meanHalo.Begin().Wait();
@@ -223,7 +229,7 @@ int main(int argc, char **argv)
             const auto readyVersion = gradient.Version();
             workspace->RefreshDirectGradients(false);
             DNDS_check_throw_info(gradient.Version() == readyVersion, "ready direct gradient was rewritten");
-            auto &input = workspace->fluxCoefficients.PhysicalField(0).Owned();
+            auto &input = reconstruction->fluxCoefficients.PhysicalField(0).Owned();
             const DNDS::real coefficient = input.Read().View()(0, 0);
             const DNDS::real previous = gradient.Read().View()(0, 0);
             DNDS::real scale;
@@ -273,7 +279,7 @@ int main(int argc, char **argv)
         { workspace->ApplyRHS(state, result, DNDS::CFV::ReconstructionRegion::All, evaluatorNative, 0); };
         const auto nativeSource = [&]
         {
-            workspace->PrepareVolumeSource(state, &result, evaluatorNative);
+            workspace->PrepareVolumeSource(state, std::ref(result), evaluatorNative);
             auto write = meanSourceDiagonal.Write();
             const auto diagonal = write.View<R::FixedRows<6>>();
             for (I iCell = 0; iCell < diagonal.RowCount(); ++iCell)
@@ -341,7 +347,7 @@ int main(int argc, char **argv)
                         error = std::max(error, std::abs(values(iCell, j) - expected));
                         magnitude = std::max(magnitude, std::abs(expected));
                     }
-                const auto coefficientRead = workspace->coefficients.PhysicalField(0).Ghost().Read();
+                const auto coefficientRead = reconstruction->coefficients.PhysicalField(0).Ghost().Read();
                 const auto rec = coefficientRead.View<R::UniformTableRows>();
                 const int modes = fv.Reconstruction().NRecDOF();
                 for (I iCell = 0; iCell < rec.RowCount(); ++iCell)

@@ -14,7 +14,7 @@ namespace
     std::array<double, 5> Integral(const C::Domain &domain)
     {
         std::array<double, 5> value{};
-        const auto read = domain.Flow().Owned().Read();
+        const auto read = domain.Dofs().CoupledField().Owned().Read();
         const auto data = read.View<R::UniformTableRows>();
         for (DNDS::index iCell = 0; iCell < data.RowCount(); ++iCell)
             for (int j = 0; j < 5; ++j)
@@ -25,7 +25,7 @@ namespace
     void DensityWave(C::Domain &domain)
     {
         constexpr double pi = 3.14159265358979323846;
-        auto write = domain.Flow().Owned().Write();
+        auto write = domain.Dofs().CoupledField().Owned().Write();
         const auto values = write.View<R::UniformTableRows>();
         for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
         {
@@ -80,7 +80,7 @@ TEST_CASE("Native physical implicit methods preserve uniform periodic flow and t
         REQUIRE(domain.PrepareStep(.01).accepted);
         std::optional<R::Array<double>::ReadLease> held;
         if (mpi.rank == 0)
-            held.emplace(domain.Flow().Owned().Read());
+            held.emplace(domain.Dofs().CoupledField().Owned().Read());
         CHECK_THROWS(domain.CommitStep());
         CHECK(domain.Time() == doctest::Approx(.03));
         held.reset();
@@ -124,7 +124,7 @@ TEST_CASE("P3 implicit periodic transport conserves flow and discard restores th
             CHECK(retried.Time() == .005);
             CHECK(retried.LastFaceFallbacks() == 0);
             {
-                const auto a = retried.Flow().Owned().Read(), b = direct.Flow().Owned().Read();
+                const auto a = retried.Dofs().CoupledField().Owned().Read(), b = direct.Dofs().CoupledField().Owned().Read();
                 for (DNDS::index iCell = 0; iCell < a.View().RowCount(); ++iCell)
                     for (int j = 0; j < 5; ++j)
                         CHECK(a.View()(iCell, j) == b.View()(iCell, j));
@@ -202,8 +202,8 @@ TEST_CASE("Capped steady stages advance by default and reject only with explicit
             time.method = "esdirk4"; // Domain construction also applies the steady override.
             C::Domain domain("capped-steady", CauchyTest::PeriodicQuads(mpi, 4), settings, time);
             DensityWave(domain);
-            auto initial = domain.Discretization().Metrics().BuildField(domain.Flow().Owned().Layout());
-            DNDS::Algebra::Copy(initial, domain.Flow());
+            auto initial = domain.Discretization().Metrics().BuildField(domain.Dofs().CoupledField().Owned().Layout());
+            DNDS::Algebra::Copy(initial, domain.Dofs().CoupledField());
             if (reject)
                 CHECK_FALSE(domain.Advance(.01).accepted);
             else
@@ -214,7 +214,7 @@ TEST_CASE("Capped steady stages advance by default and reject only with explicit
             CHECK_FALSE(domain.LastImplicitStages()[0].converged);
             CHECK_THROWS(domain.CommitStep());
             CHECK(domain.Discretization().Admissible(domain.Dofs()));
-            const auto expected = initial.Owned().Read(), actual = domain.Flow().Owned().Read();
+            const auto expected = initial.Owned().Read(), actual = domain.Dofs().CoupledField().Owned().Read();
             bool changed = false;
             for (DNDS::index iCell = 0; iCell < actual.View().RowCount(); ++iCell)
                 for (int j = 0; j < 5; ++j)
@@ -300,14 +300,14 @@ TEST_CASE("DITR coupled cap advances by default and rejects only with explicit c
     C::Domain domain("capped", mesh, settings, time);
     DensityWave(domain);
     const auto before = Integral(domain);
-    const auto version = domain.Flow().Owned().Version();
+    const auto version = domain.Dofs().CoupledField().Owned().Version();
     const auto prepared = domain.PrepareStep(.01);
     CHECK(prepared.accepted == !reject);
     if (reject)
         CHECK(prepared.reason.find("last_residual") != std::string::npos);
     CHECK(domain.Time() == 0);
     CHECK(domain.Epoch().acceptedStep == 0);
-    CHECK(domain.Flow().Owned().Version() == version);
+    CHECK(domain.Dofs().CoupledField().Owned().Version() == version);
     CHECK(Integral(domain) == before);
     CHECK(domain.LastCoupledIterations() == 1);
     CHECK(domain.LastCoupledTargetRatio() > 1);
@@ -361,7 +361,7 @@ TEST_CASE("Rotating physical domains retain a uniform inertial flow with explici
             REQUIRE(domain.Advance(.001).accepted);
         const auto frame = domain.Discretization().Motion().At(domain.Time());
         const auto exact = frame.LocalState(world);
-        const auto read = domain.Flow().Owned().Read();
+        const auto read = domain.Dofs().CoupledField().Owned().Read();
         const auto values = read.View<R::UniformTableRows>();
         for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
             for (int j = 0; j < 5; ++j)

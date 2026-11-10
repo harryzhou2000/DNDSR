@@ -23,6 +23,7 @@ TEST_CASE("Rotated periodic sector preserves vector linear fields across distrib
     settings.boundaryDerivativeWeights = {1, 0, 0, 0};
     auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
     auto work = plan.BuildWorkspace(4, {0});
+    auto coefficients = plan.BuildCoefficients(4);
     auto mean = metrics.BuildField(4);
     auto bc = plan.BuildBoundaryValues(4);
     auto gradient = metrics.BuildField(8);
@@ -30,7 +31,7 @@ TEST_CASE("Rotated periodic sector preserves vector linear fields across distrib
     auto gradBC = grad.BuildBoundaryValues(4);
     {
         auto geometry = metrics.AcquireRead();
-        auto u = mean.Owned().Write(), r = work.coefficients.Owned().Write();
+        auto u = mean.Owned().Write(), r = coefficients.Owned().Write();
         for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
         {
             const auto p = geometry.HostView().GetCellBary(iCell);
@@ -52,11 +53,11 @@ TEST_CASE("Rotated periodic sector preserves vector linear fields across distrib
         }
     }
     metrics.BindHalo(mean).Begin().Wait();
-    metrics.BindHalo(work.coefficients).Begin().Wait();
-    plan.DoReconstructionIter(mean, work, bc);
+    metrics.BindHalo(coefficients).Begin().Wait();
+    plan.DoReconstructionIter(mean, coefficients, work, bc);
     {
         auto geometry = metrics.AcquireRead();
-        auto read = work.coefficients.Owned().Read();
+        auto read = coefficients.Owned().Read();
         for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
             for (I component = 0; component < 4; ++component)
                 for (I mode = 0; mode < plan.NRecDOF(); ++mode)
@@ -121,10 +122,11 @@ TEST_CASE("Axisymmetric metrics and all gradient methods obey radial linear mome
     auto reconstruction = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
     auto mean = metrics.BuildField(1);
     auto work = reconstruction.BuildWorkspace(1);
+    auto coefficients = reconstruction.BuildCoefficients(1);
     auto boundary = reconstruction.BuildBoundaryValues(1);
     {
         auto geometry = metrics.AcquireRead();
-        auto u = mean.Owned().Write(), r = work.coefficients.Owned().Write(), b = boundary.values.Write();
+        auto u = mean.Owned().Write(), r = coefficients.Owned().Write(), b = boundary.values.Write();
         for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
         {
             const auto p = geometry.HostView().GetCellBary(iCell);
@@ -138,9 +140,9 @@ TEST_CASE("Axisymmetric metrics and all gradient methods obey radial linear mome
         }
     }
     metrics.BindHalo(mean).Begin().Wait();
-    metrics.BindHalo(work.coefficients).Begin().Wait();
-    reconstruction.DoReconstructionIter(mean, work, boundary);
-    auto read = work.coefficients.Owned().Read();
+    metrics.BindHalo(coefficients).Begin().Wait();
+    reconstruction.DoReconstructionIter(mean, coefficients, work, boundary);
+    auto read = coefficients.Owned().Read();
     auto geometry = metrics.AcquireRead();
     for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
         for (I mode = 0; mode < reconstruction.NRecDOF(); ++mode)
@@ -158,11 +160,12 @@ TEST_CASE("Raw reconstruction operators preserve symmetry and agree with a preco
     settings.jacobiRelax = .61;
     auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
     auto work = plan.BuildWorkspace(1);
+    auto coefficients = plan.BuildCoefficients(1);
     auto y = metrics.BuildField(plan.NRecDOF()), ax = metrics.BuildField(plan.NRecDOF()), ay = metrics.BuildField(plan.NRecDOF());
     auto mean = metrics.BuildField(1), rhs = metrics.BuildField(plan.NRecDOF()), residual = metrics.BuildField(plan.NRecDOF()), delta = metrics.BuildField(plan.NRecDOF());
     auto boundary = plan.BuildBoundaryValues(1);
     {
-        auto xWrite = work.coefficients.Owned().Write(), yWrite = y.Owned().Write(), u = mean.Owned().Write(), b = boundary.values.Write();
+        auto xWrite = coefficients.Owned().Write(), yWrite = y.Owned().Write(), u = mean.Owned().Write(), b = boundary.values.Write();
         for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
         {
             const auto id = mesh->OriginalEntityId(G::EntityKind::Cell, iCell);
@@ -177,13 +180,13 @@ TEST_CASE("Raw reconstruction operators preserve symmetry and agree with a preco
             b.View()(iPoint, 0) = std::sin(.2 * iPoint);
     }
     metrics.BindHalo(mean).Begin().Wait();
-    metrics.BindHalo(work.coefficients).Begin().Wait();
+    metrics.BindHalo(coefficients).Begin().Wait();
     metrics.BindHalo(y).Begin().Wait();
-    plan.ApplyLinearOperator(work.coefficients, ax);
+    plan.ApplyLinearOperator(coefficients, ax);
     plan.ApplyLinearOperator(y, ay);
     double local[4]{}, global[4]{};
     {
-        auto x = work.coefficients.Owned().Read(), yr = y.Owned().Read(), a = ax.Owned().Read(), b = ay.Owned().Read();
+        auto x = coefficients.Owned().Read(), yr = y.Owned().Read(), a = ax.Owned().Read(), b = ay.Owned().Read();
         for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
             for (I mode = 0; mode < plan.NRecDOF(); ++mode)
             {
@@ -198,21 +201,21 @@ TEST_CASE("Raw reconstruction operators preserve symmetry and agree with a preco
     CHECK(global[2] > 0);
     CHECK(global[3] > 0);
     plan.BuildRightHandSide(mean, boundary, rhs);
-    plan.ComputeResidual(rhs, work.coefficients, residual);
+    plan.ComputeResidual(rhs, coefficients, residual);
     plan.ApplyLocalPreconditioner(residual, delta);
-    plan.DoReconstructionIterTo(mean, work.coefficients, work, boundary);
+    plan.DoReconstructionIterTo(mean, coefficients, work, boundary);
     {
-        auto old = work.coefficients.Owned().Read(), next = work.temporary.Owned().Read(), step = delta.Owned().Read();
+        auto old = coefficients.Owned().Read(), next = work.temporary.Owned().Read(), step = delta.Owned().Read();
         for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
             for (I mode = 0; mode < plan.NRecDOF(); ++mode)
                 CHECK(next.View()(iCell, mode) == doctest::Approx(old.View()(iCell, mode) + settings.jacobiRelax * step.View()(iCell, mode)).epsilon(1e-10).scale(1));
     }
-    CHECK_THROWS(plan.ApplyLinearOperator(work.coefficients, work.coefficients));
+    CHECK_THROWS(plan.ApplyLinearOperator(coefficients, coefficients));
     CHECK_THROWS(plan.ApplyLocalPreconditioner(rhs, rhs));
     auto filteredSettings = settings;
     filteredSettings.svdTolerance = 1; // Every reciprocal is zero, but raw A/B must survive.
     auto filtered = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, filteredSettings);
-    filtered.ApplyLinearOperator(work.coefficients, ay);
+    filtered.ApplyLinearOperator(coefficients, ay);
     filtered.ApplyLocalPreconditioner(rhs, delta);
     {
         auto original = ax.Owned().Read(), raw = ay.Owned().Read(), zero = delta.Owned().Read();

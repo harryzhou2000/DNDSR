@@ -7,7 +7,7 @@
 
 namespace DNDS::Cauchy
 {
-    void FiniteVolume::WriteVisualization(const EquationDofs &state, const Workspace &workspace,
+    void FiniteVolume::WriteVisualization(const EquationDofs &state, const ReconstructionState &reconstruction, const Workspace &workspace,
                                           const std::string &prefix, real time, int hdfDeflateLevel,
                                           const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers) const
     {
@@ -84,7 +84,7 @@ namespace DNDS::Cauchy
             surface << "cell_id,zone,x,y,z,nx,ny,nz,weight,rho,p,u,v,w,T";
             if (species) for (const auto &name : equation.Mixture().SpeciesNames()) surface << ",Y:" << name;
             surface << '\n' << std::setprecision(17);
-            const auto &coefficients = FluxReconstruction(workspace);
+            const auto &coefficients = FluxReconstruction(reconstruction, workspace);
             const auto rec = coefficients.ReadOwned();
             const auto recBlocks = BlockViews(coefficients, rec);
             auto basis = _data->reconstruction.AcquireBasisRead();

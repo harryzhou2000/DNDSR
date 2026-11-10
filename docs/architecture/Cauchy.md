@@ -190,14 +190,14 @@ Python borrowed Domain ------retains----^     |
                                                    +-- persistent return bindings
                                                    +-- accepted/trial BoundaryInputs
                                                           -> shared ArrayStorage
-Python domain.flow / retained NumPy view ------------------> allocation + metadata
+Python domain.fields entry / retained NumPy view ----------> allocation + metadata
 ```
 
 Python `Simulation(meshes, mpi, config_json)` accepts one mesh slot per domain;
 nonmembers supply `None`. Each mesh communicator must match configured domain
 membership **and rank order** (identical or congruent, not merely similar).
-`simulation.domain(i)` retains its parent Simulation; a shared `domain.flow`
-Array independently retains storage after frontend destruction. All control
+`simulation.domain(i)` retains its parent Simulation; an Array obtained from
+`domain.fields` independently retains storage after frontend destruction. All control
 ranks call `advance`, including ranks with no local domain. Destroy communicator
 owners on an MPI-permitted thread before finalization. The initial Python tests
 cover shared meshes and reversed split communicators; the geometric rotating-IV
@@ -245,13 +245,12 @@ after all callbacks return. MPI process failure recovery is not promised.
 
 The [equation-state contract](CauchyState.md) describes semantic `EquationDofs`
 bindings, physical ownership, layout-aware block views and explicit kernel
-dispatch. `Domain` now holds accepted/trial bindings while preserving the
-physical `State()` and flow5 `Flow()` accessors. The latter requires a dedicated
-flow5 allocation; coupled extended states use `Dofs()` block access instead.
+dispatch. `Domain` holds accepted/trial bindings and exposes only the canonical
+`Dofs()` state API; physical fields and logical blocks are selected from that
+binding rather than through a flow5-only facade.
 `execution.fieldGrouping` defaults to `coupled`; it may instead select
 `equationBlocks`, independently of the AoS/SoA/AoSoA `execution.layout`. The full logical
-`ResidualState()` remains available with either grouping; `Residual()` is the
-dedicated-flow5 convenience.
+`Residual()` returns the complete logical residual with either grouping.
 
 `DNDS/Algebra/DofBundle` composes named numerical blocks on one row space. It
 contains no equation/BC/mesh policy. Blocks retain their individual physical

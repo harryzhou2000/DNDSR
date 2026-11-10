@@ -6,6 +6,30 @@
 
 namespace DNDS::Cauchy
 {
+    /// Live nonlinear controller state. This object contains only small,
+    /// JSON-serializable values; field payloads and runtime resources belong to
+    /// the checkpoint bundle and execution context respectively.
+    struct NonlinearSolveState
+    {
+        int schemaVersion = 1;
+        index attempt = 0, iteration = 0;
+        int stage = 0, coupledStage = -1;
+        bool converged = false, terminal = false, capped = false, rejected = false;
+        std::vector<real> residual, initialResidual, referenceResidual;
+        std::vector<std::string> convergenceComponents;
+        real residualTargetRatio = 0, pseudoCFL = 0;
+        index linearIterations = 0, multigridCycles = 0, rhsLimited = 0, incrementLimited = 0;
+        std::vector<index> levelCorrections;
+        real minimumRHSAlpha = 1, minimumIncrementAlpha = 1;
+        int reconstructionIterations = 0;
+        real reconstructionRelativeUpdate = 0;
+
+        Json ToJson() const;
+        static NonlinearSolveState FromJson(const Json &value);
+    };
+    void to_json(Json &value, const NonlinearSolveState &state);
+    void from_json(const Json &value, NonlinearSolveState &state);
+
     /// Sink-neutral nonlinear progress snapshot. Numerical solvers publish the
     /// same values to history/console observers; no file or MPI policy lives in
     /// this type. Vectors follow the equation schema's logical component order.
@@ -48,7 +72,7 @@ namespace DNDS::Cauchy
         real initialPseudoCFL = 0;  // 0 starts at the configured stage CFL
         /// Null means no clock queries or extra communication. A provided
         /// output resets per call and retains partial timings on exceptions.
-        NonlinearProfile *profile = nullptr;
+        std::optional<std::reference_wrapper<NonlinearProfile>> profile = std::nullopt;
         /// Empty updates all components. A subset solves the principal
         /// linear system with all other means frozen, including through PP.
         /// This never changes the separately configured convergence selection.
@@ -58,6 +82,9 @@ namespace DNDS::Cauchy
         /// receives copied scalar/vector data and may buffer it for a safe
         /// frontend flush boundary.
         std::function<void(const NonlinearProgress &)> progress;
+        /// Optional live controller publication. Iterate updates it before the
+        /// progress observer, so checkpoint/console/CSV see one state source.
+        std::optional<std::reference_wrapper<NonlinearSolveState>> state;
     };
     template <class Norms>
     struct BasicNonlinearIterationReport
@@ -77,7 +104,6 @@ namespace DNDS::Cauchy
         real reconstructionRelativeUpdate = 0;
         Linear::LinearIterationReport lastLinear;
     };
-    using NonlinearIterationReport = BasicNonlinearIterationReport<FlowState>;
     using EquationNonlinearIterationReport = BasicNonlinearIterationReport<std::vector<real>>;
     /// CPU whole-equation stage adapter over the shared nonlinear iteration
     /// policy, equation FV and coupled linear driver. The explicit residual
@@ -104,7 +130,8 @@ namespace DNDS::Cauchy
         std::pair<index, real> ApplyCorrectionImpl(EquationDofs &state, const EquationDofs &increment, real scale, const std::vector<index> &components);
         EquationNonlinearIterationReport Execute(EquationDofs &state, const EquationDofs &source,
                                                  real mass, real rhsScale, real time, int stage,
-                                                 NonlinearSolveControl control, bool singleCorrection, const EquationDofs *cachedRate);
+                                                 NonlinearSolveControl control, bool singleCorrection,
+                                                 std::optional<std::reference_wrapper<const EquationDofs>> cachedRate);
 
     public:
         NonlinearSolver(const NonlinearSolver &) = delete;
@@ -114,7 +141,9 @@ namespace DNDS::Cauchy
         /// Explicit internal hierarchy alias; ordinary session copies are forbidden.
         NonlinearSolver RetainForMultigrid() const { return NonlinearSolver(_data); }
         Runtime::SessionAccess::Lease ReserveForMultigrid();
-        NonlinearSolver(const FiniteVolume &discrete, EquationDofs &state, std::shared_ptr<FiniteVolume::Workspace> workspace,
+        NonlinearSolver(const FiniteVolume &discrete, EquationDofs &state,
+                        std::shared_ptr<FiniteVolume::ReconstructionState> reconstruction,
+                        std::shared_ptr<FiniteVolume::Workspace> workspace,
                         Runtime::EagerEngine &engine, Runtime::ExecutionStream stream, const DomainSettings &settings,
                         const Algebra::ComponentSelection &residualSelection,
                         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt);
@@ -123,7 +152,8 @@ namespace DNDS::Cauchy
         /// One bounded correction retaining split allocation/layout and
         /// EOS/source/PP dispatch. No nested solve.
         EquationNonlinearIterationReport CorrectOnce(EquationDofs &state, const EquationDofs &source, real mass, real rhsScale, real time,
-                                                     int stage = 0, NonlinearSolveControl control = {}, const EquationDofs *cachedRate = nullptr);
+                                                     int stage = 0, NonlinearSolveControl control = {},
+                                                     std::optional<std::reference_wrapper<const EquationDofs>> cachedRate = std::nullopt);
         /// Evaluate dU/dt with aux preparation before reconstruction/RHS and
         /// retain that publication for a subsequent cached CorrectOnce.
         /// Pointwise volume normalization writes owned values only. State/rate
@@ -138,7 +168,7 @@ namespace DNDS::Cauchy
         /// changing owned means. Polynomial FAS uses this same operator.
         /// Optional rate follows the field adapter's distinct-output contract.
         void EvaluateEquation(EquationDofs &state, EquationDofs &value, real mass, real rhsScale, real time,
-                              EquationDofs *rate = nullptr);
+                              std::optional<std::reference_wrapper<EquationDofs>> rate = std::nullopt);
         /// Caller agrees scale/selection and releases conflicting views before
         /// entry. Candidate EOS/raw-species checks precede any state mutation.
         /// With PP enabled, use Euler relaxed/common increment compression,
@@ -150,6 +180,8 @@ namespace DNDS::Cauchy
         std::pair<index, real> ApplyCorrection(EquationDofs &state, const EquationDofs &correction, real scale = 1,
                                                const std::vector<index> &updateComponents = {});
         std::pair<int, real> ReconstructionStats() const;
+        const NonlinearSolveState &State() const;
+        Json StateJson() const { return State().ToJson(); }
         bool ReconstructionConverged() const;
         real ReconstructionTolerance() const;
     };

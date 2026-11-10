@@ -33,17 +33,19 @@ namespace
         // kernels. Complete elementwise output comparison, not just a digest.
         execution.OriginalBindings(true);
         auto reference = fv.BuildWorkspace(fixture.state, fixture.physical.workers);
+        auto referenceReconstruction = fv.BuildReconstructionState(fixture.state);
         execution.OriginalBindings(false);
         R::EagerEngine inlineEngine(0);
         const auto inlineStream = inlineEngine.CreateCPUStream();
         auto expected = C::EquationDofOperations::NewVector(fixture.state);
-        fv.ResetReconstruction(*reference);
+        fv.ResetReconstruction(*referenceReconstruction, *reference);
         for (int repetition = 0; repetition < repetitions; ++repetition)
-            fv.Evaluate(fixture.state, expected, *reference, inlineEngine, inlineStream);
+            fv.Evaluate(fixture.state, expected, *referenceReconstruction, *reference, inlineEngine, inlineStream);
         const auto oracle = Plan53::RHSFixture::Values(expected);
         auto work = fv.BuildWorkspace(fixture.state, fixture.physical.workers);
+        auto reconstruction = fv.BuildReconstructionState(fixture.state);
         for (int warm = 0; warm < 2; ++warm)
-            fv.Evaluate(fixture.state, fixture.residual, *work, engine, stream);
+            fv.Evaluate(fixture.state, fixture.residual, *reconstruction, *work, engine, stream);
         int provided = 0;
         MPI_Query_thread(&provided);
         const auto placements = execution.Placement();
@@ -61,12 +63,12 @@ namespace
                 const bool instrumented = (trial % 2 == 0) == (phase == 0);
                 // Both phases start from the same zero coefficients. Reset is
                 // outside timing; exactly five sweeps occur inside every RHS.
-                fv.ResetReconstruction(*work);
+                fv.ResetReconstruction(*reconstruction, *work);
                 MPI_Barrier(mpi.comm);
                 execution.BeginSample(instrumented);
                 const auto start = std::chrono::steady_clock::now();
                 for (int repetition = 0; repetition < repetitions; ++repetition)
-                    fv.Evaluate(fixture.state, fixture.residual, *work, engine, stream);
+                    fv.Evaluate(fixture.state, fixture.residual, *reconstruction, *work, engine, stream);
                 const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() / repetitions;
                 auto trace = execution.EndSample();
                 compare(); // Outside every numerical/transport clock.

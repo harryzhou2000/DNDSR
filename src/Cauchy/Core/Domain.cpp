@@ -122,6 +122,7 @@ namespace DNDS::Cauchy
         : _name(std::move(name)), _equation(std::move(setup.equation)), _workers(std::move(setup.workers)), _fv(PrepareWallField(mesh, _equation, inputs.settings), SpatialSettings(inputs.settings, time), _equation),
           _accepted(BuildState(_fv, _equation, inputs.settings, _workers, inputs.initialConservative)), _trial(_accepted.Clone()),
           _residualState(EquationDofOperations::NewVector(_accepted)), _initial(EquationDofOperations::NewVector(_accepted)),
+          _reconstruction(_fv.BuildReconstructionState(_trial)),
           _workspace(_fv.BuildWorkspace(_trial, _workers)),
           _engine(size_t(inputs.settings.execution.hostThreads), inputs.settings.execution.checkAccess ? std::make_shared<R::AccessTrackingContext>() : nullptr),
           _stream(_engine.CreateCPUStream())
@@ -143,20 +144,6 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(Admissible(_accepted), "Cauchy initial means violate density or minimum-temperature internal-energy bounds");
         ConfigureTimeStep(time, settings.implicit.positivity.compressionPower);
         InitializeImplicit(settings, time, mesh);
-    }
-    CFV::FVField &Domain::FlowField(EquationDofs &state)
-    {
-        const auto location = state.LocateBlock("flow");
-        auto &field = state.PhysicalField(location.physicalField);
-        DNDS_check_throw_info(location.firstComponent == 0 && field.Width() == 5, "Domain flow debug field requires a dedicated flow5 allocation");
-        return field;
-    }
-    const CFV::FVField &Domain::FlowField(const EquationDofs &state)
-    {
-        const auto location = state.LocateBlock("flow");
-        const auto &field = state.PhysicalField(location.physicalField);
-        DNDS_check_throw_info(location.firstComponent == 0 && field.Width() == 5, "Domain flow debug field requires a dedicated flow5 allocation");
-        return field;
     }
     bool Domain::Admissible(const EquationDofs &state) const
     {
@@ -249,7 +236,7 @@ namespace DNDS::Cauchy
     }
     StepResult Domain::UpdateStage(real dt, real historyWeight, real stageWeight, real stageTime)
     {
-        _fv.Evaluate(_trial, _residualState, *_workspace, _engine, _stream, stageTime);
+        _fv.Evaluate(_trial, _residualState, *_reconstruction, *_workspace, _engine, _stream, stageTime);
         _lastFallbacks += _fv.LastFaceFallbacks(*_workspace);
         _lastCharacteristicFallbacks += _fv.LastCharacteristicFallbacks(*_workspace);
         if (_equation.HasMixture() || _equation.HasRANS())
@@ -621,19 +608,14 @@ namespace DNDS::Cauchy
         _trialReady = false;
         _restoreReconstruction = false;
     }
-    const CFV::FVField &Domain::Residual()
-    {
-        ResidualState();
-        return FlowField(_residualState);
-    }
-    const EquationDofs &Domain::ResidualState()
+    const EquationDofs &Domain::Residual()
     {
         _trialReady = false;
         DNDS_check_throw_info(Admissible(_accepted), "accepted Cauchy mean is inadmissible");
         MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
                         {
             _stream.Record().WaitHost(); EquationDofOperations::Copy(_trial, _accepted); });
-        _fv.Evaluate(_trial, _residualState, *_workspace, _engine, _stream, _time);
+        _fv.Evaluate(_trial, _residualState, *_reconstruction, *_workspace, _engine, _stream, _time);
         _lastFallbacks = _fv.LastFaceFallbacks(*_workspace);
         _lastCharacteristicFallbacks = _fv.LastCharacteristicFallbacks(*_workspace);
         return _residualState;
@@ -696,7 +678,7 @@ namespace DNDS::Cauchy
     void Domain::WriteVisualization(const std::string &prefix, int hdfDeflateLevel)
     {
         EvaluateObservation();
-        _fv.WriteVisualization(_accepted, *_observationWorkspace, prefix, _time, hdfDeflateLevel, _workers);
+        _fv.WriteVisualization(_accepted, *_observationReconstruction, *_observationWorkspace, prefix, _time, hdfDeflateLevel, _workers);
     }
     void Domain::EvaluateObservation()
     {
@@ -706,7 +688,9 @@ namespace DNDS::Cauchy
             MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
                             { residual.emplace(EquationDofOperations::NewVector(_accepted)); });
             auto workspace = _fv.BuildWorkspace(_accepted, _workers);
+            auto reconstruction = _fv.BuildReconstructionState(_accepted);
             _observationState = std::move(residual);
+            _observationReconstruction = std::move(reconstruction);
             _observationWorkspace = std::move(workspace);
             if (_interfaceInputs)
                 _fv.SetBoundaryInputs(*_observationWorkspace, *_interfaceInputs);
@@ -717,8 +701,8 @@ namespace DNDS::Cauchy
         // boundary reconstruction than the one used by the implicit stage.
         // A pending/rejected trial owns a different polynomial; its backup is
         // the accepted guess until publication, just as for checkpoint writing.
-        const auto &guess = _restoreReconstruction ? *_reconstructionBackup : _fv.ReconstructionGuess(*_workspace);
-        _fv.RestoreReconstructionGuess(*_observationWorkspace, guess);
-        _fv.Evaluate(_accepted, *_observationState, *_observationWorkspace, _engine, _stream, _time);
+        const auto &guess = _restoreReconstruction ? *_reconstructionBackup : _fv.ReconstructionGuess(*_reconstruction);
+        _fv.RestoreReconstructionGuess(*_observationReconstruction, guess);
+        _fv.Evaluate(_accepted, *_observationState, *_observationReconstruction, *_observationWorkspace, _engine, _stream, _time);
     }
 }

@@ -46,7 +46,7 @@ namespace
     }
     void Initialize(C::Domain &domain)
     {
-        auto write = domain.Flow().Owned().Write();
+        auto write = domain.Dofs().CoupledField().Owned().Write();
         const auto output = write.View<R::UniformTableRows>();
         for (I iCell = 0; iCell < output.RowCount(); ++iCell)
         {

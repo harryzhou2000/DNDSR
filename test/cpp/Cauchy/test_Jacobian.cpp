@@ -141,7 +141,8 @@ TEST_CASE("Integrated approximate Jacobian matches frozen-spectral flux differen
                 controls.physicalMass = 3;
                 controls.residualScale = .7;
                 controls.roeDissipation = !periodic;
-                fv.PrepareJacobian(logicalState, auxiliary, inverseTau, *problem, controls, time, {}, workspace.get());
+                fv.PrepareJacobian(logicalState, auxiliary, inverseTau, *problem, controls, time, {},
+                                   C::FiniteVolume::JacobianContext{*workspace});
                 problem->InvertDiagonal();
                 problem->Apply(delta, action);
                 auto geometry = fv.Metrics().AcquireRead();
@@ -311,8 +312,10 @@ TEST_CASE("Frozen physical semi-matrix-free blocks agree with assembled action, 
                 CHECK_THROWS(m->OffDiagonal());
                 CHECK_THROWS(m->ReadOffDiagonal());
                 C::JacobianPreparation controls{3, .7, approximation == 2};
-                fv.PrepareJacobian(logicalState, auxiliary, inverseTau, *a, controls, 0, {}, workspace.get());
-                fv.PrepareJacobian(logicalState, auxiliary, inverseTau, *m, controls, 0, {}, workspace.get());
+                fv.PrepareJacobian(logicalState, auxiliary, inverseTau, *a, controls, 0, {},
+                                   C::FiniteVolume::JacobianContext{*workspace});
+                fv.PrepareJacobian(logicalState, auxiliary, inverseTau, *m, controls, 0, {},
+                                   C::FiniteVolume::JacobianContext{*workspace});
                 if (layout == 1 && approximation < 2)
                 {
                     // Compare the logical physical producer with the established
@@ -419,7 +422,8 @@ TEST_CASE("Frozen physical semi-matrix-free blocks agree with assembled action, 
                 // A fresh snapshot may reuse geometry without changing action.
                 a->Apply(delta, assembled);
                 const auto old = m->PreparedOffDiagonalEvaluator();
-                fv.PrepareJacobian(logicalState, auxiliary, inverseTau, *m, controls, 0, {}, workspace.get());
+                fv.PrepareJacobian(logicalState, auxiliary, inverseTau, *m, controls, 0, {},
+                                   C::FiniteVolume::JacobianContext{*workspace});
                 CHECK(old != m->PreparedOffDiagonalEvaluator());
                 m->Apply(delta, evaluated);
                 EqualFields(assembled, evaluated);
@@ -505,9 +509,11 @@ TEST_CASE("Selected physical Jacobians are principal matrices after periodic fra
                             CHECK(a.View()(iCell, j) == doctest::Approx(j == 1 || j == 4 ? b.View()(iCell, j) : x.View()(iCell, j)).epsilon(3e-12).scale(1));
                 }
                 C::JacobianPreparation controls{2, .7, diagonal == C::DiagonalStorage::Block};
-                fv.PrepareJacobian(semantic, auxiliary, inverseTau, *full, controls, 0, {}, workspace.get());
+                fv.PrepareJacobian(semantic, auxiliary, inverseTau, *full, controls, 0, {},
+                                   C::FiniteVolume::JacobianContext{*workspace});
                 controls.updateComponents = {4, 1};
-                fv.PrepareJacobian(semantic, auxiliary, inverseTau, *subset, controls, 0, {}, workspace.get());
+                fv.PrepareJacobian(semantic, auxiliary, inverseTau, *subset, controls, 0, {},
+                                   C::FiniteVolume::JacobianContext{*workspace});
                 full->Apply(projected, expected);
                 subset->Apply(direction, actual);
                 const auto x = direction.Owned().Read(), a = actual.Owned().Read(), b = expected.Owned().Read();

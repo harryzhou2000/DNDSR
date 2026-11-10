@@ -60,12 +60,14 @@ int main(int argc, char **argv)
             logical, std::nullopt,
             C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic});
         auto equationWork = fv.BuildWorkspace(logical);
+        auto physicalReconstruction = fv.BuildReconstructionState(logical);
+        auto equationReconstruction = fv.BuildReconstructionState(logical);
         R::EagerEngine engine;
         const auto stream = engine.CreateCPUStream();
         const auto physical = [&]
-        { fv.Evaluate(logical, physicalLogicalOutput, *physicalWork, engine, stream); };
+        { fv.Evaluate(logical, physicalLogicalOutput, *physicalReconstruction, *physicalWork, engine, stream); };
         const auto general = [&]
-        { fv.Evaluate(logical, logicalOutput, *equationWork, engine, stream); };
+        { fv.Evaluate(logical, logicalOutput, *equationReconstruction, *equationWork, engine, stream); };
         for (int warmup = 0; warmup < 3; ++warmup)
             physical(), general();
         double error = 0, magnitude = 0;

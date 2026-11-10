@@ -35,7 +35,7 @@ namespace
     }
     void Initialize(C::Domain &domain)
     {
-        auto write = domain.Flow().Owned().Write();
+        auto write = domain.Dofs().CoupledField().Owned().Write();
         for (DNDS::index iCell = 0; iCell < domain.Discretization().Metrics().NumCell(); ++iCell)
         {
             const auto value = Wave(domain, iCell);
@@ -154,7 +154,7 @@ TEST_CASE("Mixture restart redistributes every block and cold starts changed pol
         {
             C::Domain source("mixture", CauchyTest::PeriodicQuads(DNDS::MPIInfo(writers), 4), settings);
             InitializeMixtureWave(source);
-            source.ResidualState();
+            source.Residual();
             source.WriteCheckpoint(path, metadata, true);
         }
         MPI_Comm_free(&writers);
@@ -499,7 +499,7 @@ TEST_CASE("Older viscous archives retain primitive gradients and reject a silent
     C::Domain restored("flow", mesh, config.Domains()[0].settings);
     CHECK_NOTHROW(restored.ReadCheckpoint(path, config.Root()));
     {
-        const auto a = source.Flow().Owned().Read(), b = restored.Flow().Owned().Read();
+        const auto a = source.Dofs().CoupledField().Owned().Read(), b = restored.Dofs().CoupledField().Owned().Read();
         for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
             for (int j = 0; j < 5; ++j)
                 CHECK(a.View<R::UniformTableRows>()(iCell, j) == b.View<R::UniformTableRows>()(iCell, j));
@@ -508,9 +508,9 @@ TEST_CASE("Older viscous archives retain primitive gradients and reject a silent
     polynomialInput["defaults"]["numerics"]["viscousGradient"] = "polynomial";
     const auto polynomial = C::SimulationConfig::ResolveCollective(polynomialInput, mpi.comm);
     C::Domain changed("flow", mesh, polynomial.Domains()[0].settings);
-    const auto version = changed.Flow().Owned().Version();
+    const auto version = changed.Dofs().CoupledField().Owned().Version();
     CHECK_THROWS(changed.ReadCheckpoint(path, polynomial.Root()));
-    CHECK(changed.Flow().Owned().Version() == version);
+    CHECK(changed.Dofs().CoupledField().Owned().Version() == version);
     auto meanConvection = config.Root();
     meanConvection["domains"][0]["settings"]["numerics"]["firstOrderConvection"] = true;
     CHECK_THROWS(restored.ReadCheckpoint(path, meanConvection));
@@ -528,11 +528,11 @@ TEST_CASE("Older physical-boundary archives omit inactive composition without in
     source.WriteCheckpoint(path, old);
     C::Domain restored("flow", mesh, config.Domains()[0].settings);
     CHECK_NOTHROW(restored.ReadCheckpoint(path, config.Root()));
-    const auto version = restored.Flow().Owned().Version();
+    const auto version = restored.Dofs().CoupledField().Owned().Version();
     auto changed = config.Root();
     changed["domains"][0]["settings"]["boundaries"]["7"]["massFractions"] = C::Json{{"H2", .1}};
     CHECK_THROWS(restored.ReadCheckpoint(path, changed));
-    CHECK(restored.Flow().Owned().Version() == version);
+    CHECK(restored.Dofs().CoupledField().Owned().Version() == version);
     Remove({path});
 }
 TEST_CASE("Checkpoint changes MPI partition and polynomial degree using persistent cell IDs with cold reconstruction")
@@ -549,7 +549,7 @@ TEST_CASE("Checkpoint changes MPI partition and polynomial degree using persiste
             const auto config = C::SimulationConfig::ResolveCollective(input, writerComm);
             C::Domain source("fluid", CauchyTest::PeriodicQuads(writers, 6), config.Domains()[0].settings);
             Initialize(source);
-            source.Residual();
+            source.Residual().CoupledField();
             source.WriteCheckpoint(plain, config.Root());
             source.WriteCheckpoint(polynomial, config.Root(), true);
             auto serializer = std::make_shared<DNDS::Serializer::SerializerH5>(writers);
@@ -600,7 +600,7 @@ TEST_CASE("Checkpoint changes MPI partition and polynomial degree using persiste
     for (const auto &path : {plain, polynomial})
     {
         target.ReadCheckpoint(path, config.Root());
-        const auto read = target.Flow().Owned().Read();
+        const auto read = target.Dofs().CoupledField().Owned().Read();
         const auto values = read.View<R::UniformTableRows>();
         for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
         {
@@ -611,9 +611,9 @@ TEST_CASE("Checkpoint changes MPI partition and polynomial degree using persiste
     }
     auto incompatible = config.Root();
     incompatible["domains"][0]["settings"]["numerics"]["flux"] = "Roe";
-    const auto version = target.Flow().Owned().Version();
+    const auto version = target.Dofs().CoupledField().Owned().Version();
     CHECK_THROWS(target.ReadCheckpoint(plain, incompatible));
-    CHECK(target.Flow().Owned().Version() == version);
+    CHECK(target.Dofs().CoupledField().Owned().Version() == version);
     target.WriteCheckpoint(cold, config.Root(), true);
     auto serializer = std::make_shared<DNDS::Serializer::SerializerH5>(mpi);
     serializer->OpenFile(cold, true);
@@ -663,7 +663,7 @@ TEST_CASE("Implicit restart preserves variable BDF2 history and rebuilds live DI
         const auto oldStep = restored.Epoch().acceptedStep;
         std::optional<R::Array<double>::ReadLease> held;
         if (mpi.rank == 0)
-            held.emplace(restored.Flow().Owned().Read());
+            held.emplace(restored.Dofs().CoupledField().Owned().Read());
         CHECK_THROWS(restored.ReadCheckpoint(path, metadata));
         CHECK(restored.Time() == oldTime);
         CHECK(restored.PreviousTimeStep() == oldDt);
@@ -675,7 +675,7 @@ TEST_CASE("Implicit restart preserves variable BDF2 history and rebuilds live DI
         CHECK(restored.Epoch().acceptedStep == source.Epoch().acceptedStep);
         REQUIRE(source.Advance(.0015).accepted);
         REQUIRE(restored.Advance(.0015).accepted);
-        const auto a = source.Flow().Owned().Read(), b = restored.Flow().Owned().Read();
+        const auto a = source.Dofs().CoupledField().Owned().Read(), b = restored.Dofs().CoupledField().Owned().Read();
         for (DNDS::index iCell = 0; iCell < source.Discretization().Metrics().NumCell(); ++iCell)
             for (int j = 0; j < 5; ++j)
                 CHECK(a.View()(iCell, j) == b.View()(iCell, j));
@@ -732,10 +732,10 @@ TEST_CASE("Restart dt growth reads the accepted scalar and supports files predat
                     H5Aclose(attribute); H5Fclose(file);
                     DNDS_check_throw_info(written >= 0, "cannot write invalid accepted-dt fixture");
                 } });
-            const auto version = restored.Flow().Owned().Version();
+            const auto version = restored.Dofs().CoupledField().Owned().Version();
             const auto previous = restored.PreviousTimeStep(), clock = restored.Time();
             CHECK_THROWS(restored.ReadCheckpoint(path, metadata));
-            CHECK(restored.Flow().Owned().Version() == version);
+            CHECK(restored.Dofs().CoupledField().Owned().Version() == version);
             CHECK(restored.PreviousTimeStep() == previous);
             CHECK(restored.Time() == clock);
         }
@@ -765,7 +765,7 @@ TEST_CASE("CGNS checkpoint remains physical across independently built MPI parti
             C::Simulation simulation(config, writerComm);
             auto &domain = simulation.GetDomain(0);
             {
-                auto write = domain.Flow().Owned().Write();
+                auto write = domain.Dofs().CoupledField().Owned().Write();
                 for (DNDS::index iCell = 0; iCell < domain.Discretization().Metrics().NumCell(); ++iCell)
                 {
                     const auto expected = value(domain, iCell);
@@ -782,7 +782,7 @@ TEST_CASE("CGNS checkpoint remains physical across independently built MPI parti
     C::Simulation restored(config, mpi.comm);
     restored.ReadCheckpoint(path);
     const auto &domain = restored.GetDomain(0);
-    const auto read = domain.Flow().Owned().Read();
+    const auto read = domain.Dofs().CoupledField().Owned().Read();
     for (DNDS::index iCell = 0; iCell < domain.Discretization().Metrics().NumCell(); ++iCell)
     {
         const auto expected = value(domain, iCell);
@@ -816,7 +816,7 @@ TEST_CASE("Rigid motion restart retains absolute-state convention and BDF histor
     CHECK(restored.Time() == source.Time());
     REQUIRE(source.Advance(.002).accepted);
     REQUIRE(restored.Advance(.002).accepted);
-    const auto a = source.Flow().Owned().Read(), b = restored.Flow().Owned().Read();
+    const auto a = source.Dofs().CoupledField().Owned().Read(), b = restored.Dofs().CoupledField().Owned().Read();
     const auto u = a.View<R::UniformTableRows>(), v = b.View<R::UniformTableRows>();
     for (DNDS::index iCell = 0; iCell < u.RowCount(); ++iCell)
         for (int j = 0; j < 5; ++j)

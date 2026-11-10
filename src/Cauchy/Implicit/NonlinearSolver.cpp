@@ -15,10 +15,76 @@
 namespace DNDS::Cauchy
 {
     namespace R = Runtime;
+    void to_json(Json &value, const NonlinearSolveState &state)
+    {
+        value = Json{{"schema_version", state.schemaVersion},
+                     {"attempt", state.attempt},
+                     {"iteration", state.iteration},
+                     {"stage", state.stage},
+                     {"coupled_stage", state.coupledStage},
+                     {"converged", state.converged},
+                     {"terminal", state.terminal},
+                     {"capped", state.capped},
+                     {"rejected", state.rejected},
+                     {"residual", state.residual},
+                     {"initial_residual", state.initialResidual},
+                     {"reference_residual", state.referenceResidual},
+                     {"convergence_components", state.convergenceComponents},
+                     {"residual_target_ratio", state.residualTargetRatio},
+                     {"pseudo_cfl", state.pseudoCFL},
+                     {"linear_iterations", state.linearIterations},
+                     {"multigrid_cycles", state.multigridCycles},
+                     {"level_corrections", state.levelCorrections},
+                     {"rhs_limited", state.rhsLimited},
+                     {"increment_limited", state.incrementLimited},
+                     {"minimum_rhs_alpha", state.minimumRHSAlpha},
+                     {"minimum_increment_alpha", state.minimumIncrementAlpha},
+                     {"reconstruction_iterations", state.reconstructionIterations},
+                     {"reconstruction_relative_update", state.reconstructionRelativeUpdate}};
+    }
+    void from_json(const Json &value, NonlinearSolveState &state)
+    {
+        DNDS_check_throw_info(value.is_object() && value.value("schema_version", 0) == 1,
+                              "unsupported nonlinear solve state schema");
+        state.schemaVersion = 1;
+        state.attempt = value.at("attempt").get<index>();
+        state.iteration = value.at("iteration").get<index>();
+        state.stage = value.at("stage").get<int>();
+        state.coupledStage = value.at("coupled_stage").get<int>();
+        state.converged = value.at("converged").get<bool>();
+        state.terminal = value.at("terminal").get<bool>();
+        state.capped = value.at("capped").get<bool>();
+        state.rejected = value.at("rejected").get<bool>();
+        state.residual = value.at("residual").get<std::vector<real>>();
+        state.initialResidual = value.at("initial_residual").get<std::vector<real>>();
+        state.referenceResidual = value.at("reference_residual").get<std::vector<real>>();
+        state.convergenceComponents = value.at("convergence_components").get<std::vector<std::string>>();
+        state.residualTargetRatio = value.at("residual_target_ratio").get<real>();
+        state.pseudoCFL = value.at("pseudo_cfl").get<real>();
+        state.linearIterations = value.at("linear_iterations").get<index>();
+        state.multigridCycles = value.at("multigrid_cycles").get<index>();
+        state.levelCorrections = value.at("level_corrections").get<std::vector<index>>();
+        state.rhsLimited = value.at("rhs_limited").get<index>();
+        state.incrementLimited = value.at("increment_limited").get<index>();
+        state.minimumRHSAlpha = value.at("minimum_rhs_alpha").get<real>();
+        state.minimumIncrementAlpha = value.at("minimum_increment_alpha").get<real>();
+        state.reconstructionIterations = value.at("reconstruction_iterations").get<int>();
+        state.reconstructionRelativeUpdate = value.at("reconstruction_relative_update").get<real>();
+        DNDS_check_throw_info(state.attempt >= 0 && state.iteration >= 0 && std::isfinite(state.pseudoCFL) &&
+                                  std::isfinite(state.residualTargetRatio) && std::isfinite(state.minimumRHSAlpha) &&
+                                  std::isfinite(state.minimumIncrementAlpha) && std::isfinite(state.reconstructionRelativeUpdate),
+                              "invalid nonlinear solve state values");
+    }
+    Json NonlinearSolveState::ToJson() const { return Json(*this); }
+    NonlinearSolveState NonlinearSolveState::FromJson(const Json &value)
+    {
+        return value.get<NonlinearSolveState>();
+    }
     struct NonlinearSolver::Data
     {
         R::SessionAccess session;
         FiniteVolume discrete;
+        std::shared_ptr<FiniteVolume::ReconstructionState> reconstruction;
         std::shared_ptr<FiniteVolume::Workspace> workspace;
         R::ExecutionStream stream;
         ImplicitSettings settings;
@@ -40,11 +106,14 @@ namespace DNDS::Cauchy
         std::optional<R::Array<real>> cellRHSAlpha;
         real reconstructionTolerance, densityFloor, temperatureFloor, pressureFloor;
         index flowFirst = -1, speciesFirst = -1, ransFirst = -1;
+        NonlinearSolveState nonlinearState;
 
-        Data(const FiniteVolume &fv, EquationDofs &state, std::shared_ptr<FiniteVolume::Workspace> work,
+        Data(const FiniteVolume &fv, EquationDofs &state,
+             std::shared_ptr<FiniteVolume::ReconstructionState> reconstructionState,
+             std::shared_ptr<FiniteVolume::Workspace> work,
              R::EagerEngine &executor, R::ExecutionStream lane, const DomainSettings &controls, ImplicitSettings implicit,
              std::optional<Physics::Chemistry::ChemicalWorkerPool> pool)
-            : discrete(fv), workspace(std::move(work)), stream(std::move(lane)), settings(std::move(implicit)),
+            : discrete(fv), reconstruction(std::move(reconstructionState)), workspace(std::move(work)), stream(std::move(lane)), settings(std::move(implicit)),
               mpi(fv.Metrics().Communicator()), binding(state), spatial(EquationDofOperations::NewVector(state)),
               defect(EquationDofOperations::NewVector(state)), candidate(EquationDofOperations::NewVector(state)),
               inversePseudoTime(R::RowLayout::Dense(fv.Metrics().NumCell(), 1)), workers(std::move(pool)),
@@ -161,6 +230,7 @@ namespace DNDS::Cauchy
     };
 
     NonlinearSolver::NonlinearSolver(const FiniteVolume &discrete, EquationDofs &state,
+                                     std::shared_ptr<FiniteVolume::ReconstructionState> reconstruction,
                                      std::shared_ptr<FiniteVolume::Workspace> workspace, R::EagerEngine &engine, R::ExecutionStream stream,
                                      const DomainSettings &settings, const Algebra::ComponentSelection &residualSelection,
                                      std::optional<Physics::Chemistry::ChemicalWorkerPool> workers)
@@ -182,11 +252,11 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(residualSelection.All() || residualSelection.Indices().back() < state.ComponentNumber(), "equation residual selection exceeds its dimension");
             implicit.ValidateComponents(state.ComponentNumber());
             settings.numerics.ValidatePositivity();
-            DNDS_check_throw_info(workspace && (!implicit.roeDissipation || discrete.HasRoeJacobianKernel(*workspace)),
+            DNDS_check_throw_info(reconstruction && workspace && (!implicit.roeDissipation || discrete.HasRoeJacobianKernel(*workspace)),
                                   "equation nonlinear Roe profile is not connected yet");
             DNDS_check_throw_info(!implicit.requireConvergedReconstruction || settings.numerics.reconstruction != "variational" || settings.numerics.reconstructionTolerance > 0,
                                   "strict implicit VR acceptance requires a positive reconstructionTolerance");
-            DNDS_check_throw_info(workspace && stream.Context().device == R::Device::Host(), "equation implicit stage needs a CPU workspace and stream");
+            DNDS_check_throw_info(reconstruction && workspace && stream.Context().device == R::Device::Host(), "equation implicit stage needs reconstruction state, CPU workspace and stream");
             stream.Record().WaitHost();
             discrete.Equation().ValidateStateSchema(state);
             discrete.ValidateWorkspace(state, *workspace);
@@ -196,7 +266,7 @@ namespace DNDS::Cauchy
         AgreeEquationBinding(state, mpi.comm);
         NonlinearDetail::AgreeControls(mpi, serialized);
         MPI::LocalStage(mpi, [&]
-                        { _data = std::make_shared<Data>(discrete, state, std::move(workspace), engine, std::move(stream), settings, std::move(implicit), std::move(workers)); });
+                        { _data = std::make_shared<Data>(discrete, state, std::move(reconstruction), std::move(workspace), engine, std::move(stream), settings, std::move(implicit), std::move(workers)); });
         MPI::LocalStage(mpi, [&]
                         { _data->ValidateMeans(state); });
         _data->PrepareLinear(state, settings.execution.overlap);
@@ -205,10 +275,12 @@ namespace DNDS::Cauchy
     EquationNonlinearIterationReport NonlinearSolver::Solve(EquationDofs &state, const EquationDofs &source,
                                                             real mass, real rhsScale, real time, int stage, NonlinearSolveControl control)
     {
-        return Execute(state, source, mass, rhsScale, time, stage, std::move(control), false, nullptr);
+        return Execute(state, source, mass, rhsScale, time, stage, std::move(control), false, std::nullopt);
     }
     EquationNonlinearIterationReport NonlinearSolver::CorrectOnce(EquationDofs &state, const EquationDofs &source,
-                                                                  real mass, real rhsScale, real time, int stage, NonlinearSolveControl control, const EquationDofs *cachedRate)
+                                                                  real mass, real rhsScale, real time, int stage,
+                                                                  NonlinearSolveControl control,
+                                                                  std::optional<std::reference_wrapper<const EquationDofs>> cachedRate)
     {
         control.correctionLimit = 1;
         return Execute(state, source, mass, rhsScale, time, stage, std::move(control), true, cachedRate);
@@ -226,7 +298,7 @@ namespace DNDS::Cauchy
             for (const auto *input : {&state, &data.spatial})
                 EquationDofOperations::RequireDistinct(*input, rate);
             auto write = rate.WriteOwned(); write.CancelUnmodified(); });
-        data.discrete.Evaluate(state, data.spatial, *data.workspace, data.auxiliary, engine, data.stream, time);
+        data.discrete.Evaluate(state, data.spatial, *data.reconstruction, *data.workspace, data.auxiliary, engine, data.stream, time);
         data.PublishAuxiliary(state, time);
         data.Stage([&]
                    {
@@ -246,19 +318,22 @@ namespace DNDS::Cauchy
         return _data->auxiliary;
     }
     EquationNonlinearIterationReport NonlinearSolver::Execute(EquationDofs &state, const EquationDofs &source,
-                                                              real mass, real rhsScale, real time, int stage, NonlinearSolveControl control, bool singleCorrection, const EquationDofs *cachedRate)
+                                                              real mass, real rhsScale, real time, int stage,
+                                                              NonlinearSolveControl control, bool singleCorrection,
+                                                              std::optional<std::reference_wrapper<const EquationDofs>> cachedRate)
     {
         DNDS_check_throw_info(_data, "nonlinear session was moved");
         auto session = _data->session.Acquire(_nestedSession.lock());
         auto &data = *_data;
         auto engine = data.stream.LockEngine();
         if (control.profile)
-            *control.profile = {};
-        const NonlinearDetail::PhaseTimer total(control.profile, NonlinearProfile::Total);
+            control.profile->get() = {};
+        auto *profile = control.profile ? &control.profile->get() : nullptr;
+        const NonlinearDetail::PhaseTimer total(profile, NonlinearProfile::Total);
         const index nv = data.binding.snapshot.ComponentNumber();
         Algebra::ComponentSelection selection(nv);
         {
-            const NonlinearDetail::PhaseTimer entry(control.profile, NonlinearProfile::Entry);
+            const NonlinearDetail::PhaseTimer entry(profile, NonlinearProfile::Entry);
             std::string serialized;
             data.Stage([&]
                        {
@@ -266,8 +341,8 @@ namespace DNDS::Cauchy
                 data.binding.Check(state);
                 if (cachedRate)
                 {
-                    state.RequireCompatible(*cachedRate);
-                    EquationDofOperations::RequireDistinct(data.spatial, *cachedRate);
+                    state.RequireCompatible(cachedRate->get());
+                    EquationDofOperations::RequireDistinct(data.spatial, cachedRate->get());
                 }
                 data.ValidateMeans(state);
                 EquationDofOperations::CheckCompatible(state, source);
@@ -289,13 +364,16 @@ namespace DNDS::Cauchy
         }
         EquationNonlinearIterationReport initial;
         initial.residual.resize(size_t(nv));
+        ++data.nonlinearState.attempt;
+        data.nonlinearState.convergenceComponents = data.settings.residualComponents;
+        control.state = std::ref(data.nonlinearState);
         auto geometry = data.discrete.Metrics().AcquireRead();
         const auto metric = geometry.HostView();
         const auto evaluate = [&]
         {
             if (!cachedRate)
             {
-                data.discrete.Evaluate(state, data.spatial, *data.workspace, data.auxiliary, engine, data.stream, time);
+                data.discrete.Evaluate(state, data.spatial, *data.reconstruction, *data.workspace, data.auxiliary, engine, data.stream, time);
                 data.PublishAuxiliary(state, time);
                 return;
             }
@@ -305,12 +383,15 @@ namespace DNDS::Cauchy
             // Collective callers must make this cache choice consistently.
             if (!data.AuxiliaryCurrent(state, time))
             {
-                data.discrete.PrepareCorrectionAux(state, *data.workspace, data.auxiliary, engine, data.stream, time);
+                data.discrete.PrepareCorrectionAux(state, *data.reconstruction, *data.workspace, data.auxiliary, engine, data.stream, time);
                 data.PublishAuxiliary(state, time);
             }
+            else
+                data.discrete.RefreshCorrectionSource(state, *data.reconstruction,
+                                                      *data.workspace, time);
             data.Stage([&]
                        {
-                const auto read = cachedRate->ReadOwned(); auto write = data.spatial.WriteOwned();
+                const auto read = cachedRate->get().ReadOwned(); auto write = data.spatial.WriteOwned();
                 for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
                 {
                     const auto rate = read.Block(iBlock).owned;
@@ -357,7 +438,7 @@ namespace DNDS::Cauchy
                 index rhsLimited = 0;
                 real rhsAlpha = 1;
                 {
-                    const NonlinearDetail::PhaseTimer timer(control.profile, NonlinearProfile::PseudoTimePP);
+                    const NonlinearDetail::PhaseTimer timer(profile, NonlinearProfile::PseudoTimePP);
                     // Aux is prepared before reconstruction/RHS. Never refresh
                     // it here: RHS may consume or refine the prepared signals.
                     data.Stage([&]
@@ -414,18 +495,19 @@ namespace DNDS::Cauchy
                     }
                 }
                 {
-                    const NonlinearDetail::PhaseTimer timer(control.profile, NonlinearProfile::Jacobian);
+                    const NonlinearDetail::PhaseTimer timer(profile, NonlinearProfile::Jacobian);
                     data.Stage([&] { data.discrete.PrepareJacobian(state, data.auxiliary, data.inversePseudoTime, *data.problem,
-                        {mass, rhsScale, false, selection.Indices()}, time, data.workers, data.workspace.get()); });
+                        {mass, rhsScale, false, selection.Indices()}, time, data.workers,
+                        FiniteVolume::JacobianContext{*data.reconstruction, *data.workspace}); });
                 }
                 {
-                    const NonlinearDetail::PhaseTimer timer(control.profile, NonlinearProfile::LinearSolve);
+                    const NonlinearDetail::PhaseTimer timer(profile, NonlinearProfile::LinearSolve);
                     const auto scales = NonlinearDetail::LinearScales(data.settings, state, data.discrete.Metrics());
-                    report.lastLinear = data.linear->Solve(data.defect, nullptr, scales);
+                    report.lastLinear = data.linear->Solve(data.defect, std::nullopt, scales);
                     report.linearIterations += report.lastLinear.iterations;
                     DNDS_check_throw_info(report.lastLinear.usable, "equation implicit linear correction is unusable");
                 }
-                const NonlinearDetail::PhaseTimer timer(control.profile, NonlinearProfile::Correction);
+                const NonlinearDetail::PhaseTimer timer(profile, NonlinearProfile::Correction);
                 const auto result = ApplyCorrectionImpl(state, data.linear->Solution(), data.settings.relaxation, selection.Indices());
                 if (data.positivity)
                 {
@@ -437,15 +519,37 @@ namespace DNDS::Cauchy
             auto report = std::move(initial);
             report.pseudoCFL = control.initialPseudoCFL == 0 ? data.settings.pseudoCFL : control.initialPseudoCFL;
             {
-                const NonlinearDetail::PhaseTimer timer(control.profile, NonlinearProfile::Residual);
+                const NonlinearDetail::PhaseTimer timer(profile, NonlinearProfile::Residual);
                 evaluate();
                 if (control.profile)
-                    ++control.profile->residualEvaluations;
+                    ++control.profile->get().residualEvaluations;
             }
             measure(report.residual);
             std::tie(report.reconstructionIterations, report.reconstructionRelativeUpdate) = reconstruction();
             advance(report);
             report.iterations = 1;
+            auto &stateSnapshot = data.nonlinearState;
+            stateSnapshot.stage = stage;
+            stateSnapshot.coupledStage = -1;
+            stateSnapshot.iteration = 1;
+            stateSnapshot.converged = false;
+            stateSnapshot.terminal = true;
+            stateSnapshot.capped = false;
+            stateSnapshot.rejected = false;
+            stateSnapshot.residual = report.residual;
+            stateSnapshot.initialResidual = report.initialResidual;
+            stateSnapshot.referenceResidual = report.referenceResidual;
+            stateSnapshot.residualTargetRatio = report.residualTargetRatio;
+            stateSnapshot.pseudoCFL = report.pseudoCFL;
+            stateSnapshot.linearIterations = report.linearIterations;
+            stateSnapshot.multigridCycles = report.multigridCycles;
+            stateSnapshot.levelCorrections = report.levelCorrections;
+            stateSnapshot.rhsLimited = report.rhsLimited;
+            stateSnapshot.incrementLimited = report.incrementLimited;
+            stateSnapshot.minimumRHSAlpha = report.minimumRHSAlpha;
+            stateSnapshot.minimumIncrementAlpha = report.minimumIncrementAlpha;
+            stateSnapshot.reconstructionIterations = report.reconstructionIterations;
+            stateSnapshot.reconstructionRelativeUpdate = report.reconstructionRelativeUpdate;
             return report;
         }
         return NonlinearDetail::Iterate(data.settings, state.Schema(), data.mpi.rank, stage, control, std::move(initial), data.reconstructionTolerance, evaluate, measure, reconstruction, advance);
@@ -453,6 +557,11 @@ namespace DNDS::Cauchy
     std::pair<int, real> NonlinearSolver::ReconstructionStats() const
     {
         return {_data->discrete.LastReconstructionIterations(*_data->workspace), _data->discrete.LastReconstructionUpdate(*_data->workspace)};
+    }
+    const NonlinearSolveState &NonlinearSolver::State() const
+    {
+        DNDS_check_throw_info(_data, "nonlinear session was moved");
+        return _data->nonlinearState;
     }
     bool NonlinearSolver::ReconstructionConverged() const
     {
@@ -605,7 +714,8 @@ namespace DNDS::Cauchy
         }
         return {limited, minimum};
     }
-    void NonlinearSolver::EvaluateEquation(EquationDofs &state, EquationDofs &value, real mass, real rhsScale, real time, EquationDofs *rate)
+    void NonlinearSolver::EvaluateEquation(EquationDofs &state, EquationDofs &value, real mass, real rhsScale, real time,
+                                           std::optional<std::reference_wrapper<EquationDofs>> rate)
     {
         DNDS_check_throw_info(_data, "nonlinear session was moved");
         auto session = _data->session.Acquire(_nestedSession.lock());
@@ -620,12 +730,12 @@ namespace DNDS::Cauchy
             auto write = value.WriteOwned(); write.CancelUnmodified();
             if (rate)
             {
-                EquationDofOperations::CheckCompatible(state, *rate);
+                EquationDofOperations::CheckCompatible(state, rate->get());
                 for (const auto *input : {&state, &value, &data.spatial})
-                    EquationDofOperations::RequireDistinct(*input, *rate);
-                auto rateWrite = rate->WriteOwned(); rateWrite.CancelUnmodified();
+                    EquationDofOperations::RequireDistinct(*input, rate->get());
+                auto rateWrite = rate->get().WriteOwned(); rateWrite.CancelUnmodified();
             } });
-        data.discrete.Evaluate(state, data.spatial, *data.workspace, data.auxiliary, engine, data.stream, time);
+        data.discrete.Evaluate(state, data.spatial, *data.reconstruction, *data.workspace, data.auxiliary, engine, data.stream, time);
         data.PublishAuxiliary(state, time);
         data.Stage([&]
                    {
@@ -635,7 +745,7 @@ namespace DNDS::Cauchy
             const auto mean = ul.View(), residual = rl.View(); const auto output = wl.View();
             std::optional<EquationDofs::WriteScope> rateWrite;
             std::optional<Algebra::DofComponentLayout<real>> rateLayout;
-            if (rate) rateWrite.emplace(rate->WriteOwned());
+            if (rate) rateWrite.emplace(rate->get().WriteOwned());
             if (rateWrite) rateLayout.emplace(rateWrite->ComponentLayout());
             const auto spatialRate = rateLayout ? rateLayout->View() : Algebra::DofComponentView<real>{};
             if (rate)

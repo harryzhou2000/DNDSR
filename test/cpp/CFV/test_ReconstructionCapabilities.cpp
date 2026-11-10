@@ -71,21 +71,23 @@ TEST_CASE("Sweep capability profiles preserve full Jacobi SOR and WBAP arithmeti
             Fill(mean, *mesh);
             metrics.BindHalo(mean).Begin().Wait();
             auto reference = full.BuildWorkspace(2);
-            Fill(reference.coefficients, *mesh);
-            metrics.BindHalo(reference.coefficients).Begin().Wait();
+            auto referenceCoefficients = full.BuildCoefficients(2);
+            Fill(referenceCoefficients, *mesh);
+            metrics.BindHalo(referenceCoefficients).Begin().Wait();
             auto boundary = Boundary(full, 2);
-            full.DoReconstructionIterTo(mean, reference.coefficients, reference, boundary);
+            full.DoReconstructionIterTo(mean, referenceCoefficients, reference, boundary);
 
             for (bool wbap : {false, true})
             {
                 auto lean = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings, C::ReconstructionCapabilities::ForSweeps(wbap));
                 auto work = lean.BuildWorkspace(2);
-                Fill(work.coefficients, *mesh);
+                auto coefficients = lean.BuildCoefficients(2);
+                Fill(coefficients, *mesh);
                 auto bc = Boundary(lean, 2);
-                auto pending = metrics.BindHalo(work.coefficients).Begin();
-                lean.DoReconstructionIterTo(mean, work.coefficients, work, bc, C::ReconstructionRegion::Core);
+                auto pending = metrics.BindHalo(coefficients).Begin();
+                lean.DoReconstructionIterTo(mean, coefficients, work, bc, C::ReconstructionRegion::Core);
                 pending.Wait();
-                lean.DoReconstructionIterTo(mean, work.coefficients, work, bc, C::ReconstructionRegion::HaloDependent);
+                lean.DoReconstructionIterTo(mean, coefficients, work, bc, C::ReconstructionRegion::HaloDependent);
                 Equal(reference.temporary, work.temporary);
 
                 const auto report = lean.StorageReport(), baseline = full.StorageReport();
@@ -99,19 +101,20 @@ TEST_CASE("Sweep capability profiles preserve full Jacobi SOR and WBAP arithmeti
                 CHECK(lean.GetInverseDiagnostics().rankCounts == full.GetInverseDiagnostics().rankCounts);
                 // An unavailable operation fails before output acquisition or mutation.
                 const auto version = work.temporary.Owned().Version();
-                CHECK_THROWS_WITH(lean.ApplyLinearOperator(work.coefficients, work.temporary), doctest::Contains("VR operation was not prepared: original linear system"));
+                CHECK_THROWS_WITH(lean.ApplyLinearOperator(coefficients, work.temporary), doctest::Contains("VR operation was not prepared: original linear system"));
                 CHECK(work.temporary.Owned().Version() == version);
                 if (!wbap)
-                    CHECK_THROWS(lean.DoLimiterWBAP_3OrderTo(work, degree));
+                    CHECK_THROWS(lean.DoLimiterWBAP_3OrderTo(coefficients, work, degree));
                 else
                 {
                     // Both limit the same nontrivial old coefficients, not the
                     // freshly computed sweep. Descending passes remain explicit.
                     auto limiterReference = full.BuildWorkspace(2);
-                    Fill(limiterReference.coefficients, *mesh);
-                    metrics.BindHalo(limiterReference.coefficients).Begin().Wait();
-                    full.DoLimiterWBAP_3OrderTo(limiterReference, degree);
-                    lean.DoLimiterWBAP_3OrderTo(work, degree);
+                    auto limiterReferenceCoefficients = full.BuildCoefficients(2);
+                    Fill(limiterReferenceCoefficients, *mesh);
+                    metrics.BindHalo(limiterReferenceCoefficients).Begin().Wait();
+                    full.DoLimiterWBAP_3OrderTo(limiterReferenceCoefficients, limiterReference, degree);
+                    lean.DoLimiterWBAP_3OrderTo(coefficients, work, degree);
                     Equal(limiterReference.temporary, work.temporary);
                 }
             }
@@ -145,12 +148,13 @@ TEST_CASE("Original operator and preconditioner profiles remain independent unde
     C::ReconstructionCapabilities wbapOnly{false, true, false, false, false};
     auto limiter = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings, wbapOnly);
     auto reference = full.BuildWorkspace(1), limited = limiter.BuildWorkspace(1);
-    Fill(reference.coefficients, *mesh);
-    Fill(limited.coefficients, *mesh);
-    metrics.BindHalo(reference.coefficients).Begin().Wait();
-    metrics.BindHalo(limited.coefficients).Begin().Wait();
-    full.DoLimiterWBAP_3OrderTo(reference, settings.maxOrder);
-    limiter.DoLimiterWBAP_3OrderTo(limited, settings.maxOrder);
+    auto referenceCoefficients = full.BuildCoefficients(1), limitedCoefficients = limiter.BuildCoefficients(1);
+    Fill(referenceCoefficients, *mesh);
+    Fill(limitedCoefficients, *mesh);
+    metrics.BindHalo(referenceCoefficients).Begin().Wait();
+    metrics.BindHalo(limitedCoefficients).Begin().Wait();
+    full.DoLimiterWBAP_3OrderTo(referenceCoefficients, reference, settings.maxOrder);
+    limiter.DoLimiterWBAP_3OrderTo(limitedCoefficients, limited, settings.maxOrder);
     Equal(reference.temporary, limited.temporary);
     inverse.ApplyLocalPreconditioner(x, actual);
     auto read = actual.Owned().Read();

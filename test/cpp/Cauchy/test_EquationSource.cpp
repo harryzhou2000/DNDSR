@@ -337,8 +337,8 @@ TEST_CASE("Attached RANS leaves mixture thermal bounds and chemical Jacobian col
     const I width = state.ComponentNumber();
     R::Array<double> jac(R::RowLayout::Dense(rows, width * width));
     R::Array<double> baseJac(R::RowLayout::Dense(rows, fixture.components * fixture.components));
-    C::EvaluateChemicalSource(fixture.equation, base, baseSource, fixture.workers.Acquire(), &baseJac);
-    C::EvaluateChemicalSource(equation, state, source, fixture.workers.Acquire(), &jac);
+    C::EvaluateChemicalSource(fixture.equation, base, baseSource, fixture.workers.Acquire(), std::ref(baseJac));
+    C::EvaluateChemicalSource(equation, state, source, fixture.workers.Acquire(), std::ref(jac));
     C::EquationThermalPolicy bounds(equation, 1e-10, .5, 0., 1e-10, fixture.workers.Acquire());
     C::EquationThermalPolicy baseBounds(fixture.equation, 1e-10, .5, 0., 1e-10, fixture.workers.Acquire());
     const auto input = state.ReadOwned(), output = source.ReadOwned(), baseInput = base.ReadOwned(), baseOutput = baseSource.ReadOwned();
@@ -516,7 +516,7 @@ TEST_CASE("Owned chemical sources honor separate layouts, stale temperature gues
         CHECK_FALSE(oldTemperature.Current(state, fixture.equation));
         auto activeGhost = state.PhysicalField(0).Ghost().Write();
         R::Array<double> jacobian(R::RowLayout::ColMajor(rows, fixture.components * fixture.components, {16, 1}));
-        C::EvaluateChemicalSource(fixture.equation, state, source, fixture.workers.Acquire(), &jacobian, .7, &oldTemperature);
+        C::EvaluateChemicalSource(fixture.equation, state, source, fixture.workers.Acquire(), std::ref(jacobian), .7, std::cref(oldTemperature));
         activeGhost.CancelUnmodified();
         const auto read = source.ReadOwned();
         const auto flow = read.Block("flow").owned, speciesValues = read.Block("species").owned;
@@ -744,12 +744,12 @@ TEST_CASE("Chemical source rejects output reservations and Jacobian aliases befo
     const auto jacobianVersion = jacobian.Version(), sourceVersion = source.PhysicalField(0).Owned().Version();
     {
         const auto occupied = source.PhysicalField(1).Owned().Read();
-        CHECK_THROWS(C::EvaluateChemicalSource(fixture.equation, state, source, fixture.workers.Acquire(), &jacobian));
+        CHECK_THROWS(C::EvaluateChemicalSource(fixture.equation, state, source, fixture.workers.Acquire(), std::ref(jacobian)));
     }
     CHECK(jacobian.Version() == jacobianVersion);
     CHECK(source.PhysicalField(0).Owned().Version() == sourceVersion);
     auto aliasedJacobian = R::Array<double>::FromStorage(R::RowLayout::Dense(2, fixture.components * fixture.components), state.PhysicalField(0).Owned().Storage());
-    CHECK_THROWS(C::EvaluateChemicalSource(fixture.equation, state, source, fixture.workers.Acquire(), &aliasedJacobian));
+    CHECK_THROWS(C::EvaluateChemicalSource(fixture.equation, state, source, fixture.workers.Acquire(), std::ref(aliasedJacobian)));
     const auto read = source.ReadOwned();
     CHECK(read.Block("flow")(0, 0) == 17);
     CHECK(read.Block("species")(1, 3) == 17);
@@ -808,7 +808,7 @@ TEST_CASE("Actual conservative chemical sources advance a separate-field implici
             const auto right = get(source);
             for (int iteration = 0; iteration < 15; ++iteration)
             {
-                C::EvaluateChemicalSource(fixture.equation, state, rates, fixture.workers.Acquire(), &jacobian);
+                C::EvaluateChemicalSource(fixture.equation, state, rates, fixture.workers.Acquire(), std::ref(jacobian));
                 const auto u = get(state), rate = get(rates);
                 Eigen::MatrixXd matrix = mass * Eigen::MatrixXd::Identity(fixture.components, fixture.components);
                 {

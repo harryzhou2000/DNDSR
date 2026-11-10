@@ -366,10 +366,11 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::PrepareJacobian(const EquationDofs &state, const AuxiliaryValues &auxiliary, const R::Array<real> &inversePseudoTime,
                                        LinearProblemContext &output, JacobianPreparation controls, real time, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
-                                       const Workspace *sourceReconstruction) const
+                                       std::optional<JacobianContext> context) const
     {
+        const auto *sourceWorkspace = context ? &context->workspace.get() : nullptr;
         ValidateAuxValues(state, auxiliary, time);
-        if (controls.roeDissipation && sourceReconstruction && HasRoeJacobianKernel(*sourceReconstruction))
+        if (controls.roeDissipation && sourceWorkspace && HasRoeJacobianKernel(*sourceWorkspace))
         {
             DNDS_check_throw_info(!workers && state.ComponentNumber() == 5 && state.PhysicalFieldNumber() == 1,
                                   "flow5 Roe Jacobian specialization received an extended physical state");
@@ -407,10 +408,10 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(_data->settings.equation.source == "none" || (chemical && _data->equation.HasMixture()), "unsupported equation Jacobian source");
         if (chemical || rans)
         {
-            DNDS_check_throw_info(sourceReconstruction || (!rans && (_data->settings.numerics.reconstruction == "constant" || _data->equation.Mixture().SpeciesNumber() == 1)),
+            DNDS_check_throw_info(sourceWorkspace || (!rans && (_data->settings.numerics.reconstruction == "constant" || _data->equation.Mixture().SpeciesNumber() == 1)),
                                   "RANS or nonconstant chemical Jacobian requires current RHS source reconstruction");
-            if (sourceReconstruction)
-                ValidateEquationSourceJacobian(state, *sourceReconstruction, time);
+            if (sourceWorkspace)
+                ValidateEquationSourceJacobian(state, *context, time);
         }
         auto evaluator = _data->equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {rans, false, true, chemical, chemical});
         auto snapshot = std::make_shared<EquationJacobian>(*this, state, output, controls, time);
@@ -486,8 +487,10 @@ namespace DNDS::Cauchy
             const EquationFVDetail::MeanLinearizationOutput linearization{snapshot->flowFirst, snapshot->speciesFirst,
                                                                           snapshot->pressureDerivative, snapshot->pressure, output.HasAssembledOffDiagonal() ? nullptr : &snapshot->means};
             bool ownedPropertiesPrepared = false;
-            if ((chemical || rans) && sourceReconstruction)
-                ownedPropertiesPrepared = AddEquationSourceJacobian(state, *sourceReconstruction, *diagonal, output.DiagonalMode(), controls.residualScale, evaluator, &linearization);
+            if ((chemical || rans) && sourceWorkspace)
+                ownedPropertiesPrepared = AddEquationSourceJacobian(state, *context, *diagonal,
+                                                                    output.DiagonalMode(), controls.residualScale,
+                                                                    evaluator, &linearization);
             // Only O(N) scalar thermodynamic linearization data are frozen per
             // cell. Never cache a complete N*N flux matrix per cell/face.
             // A source-free/no-sampling workspace returns false: its owned EOS
@@ -495,7 +498,7 @@ namespace DNDS::Cauchy
             for (index iCell = ownedPropertiesPrepared ? owned : 0; iCell < all; ++iCell)
             {
                 EquationFVDetail::Gather(blocks, iCell, point, false);
-                const bool source = chemical && !sourceReconstruction && iCell < owned && snapshot->independent > 0;
+                const bool source = chemical && !sourceWorkspace && iCell < owned && snapshot->independent > 0;
                 const auto properties = evaluator.Evaluate(point.Flow(snapshot->flowFirst), point.Species(snapshot->speciesFirst, snapshot->independent), 0, {false, false, true, source, source});
                 linearization.Publish(iCell, point, properties);
                 if (source)

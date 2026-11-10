@@ -68,6 +68,7 @@ namespace DNDS::Cauchy
             using Operations = EquationFASOperations;
             using Solver = NonlinearSolver;
             using Workspace = FiniteVolume::Workspace;
+            using ReconstructionState = FiniteVolume::ReconstructionState;
             using Report = EquationNonlinearIterationReport;
             static Algebra::DofBundle Bundle(const State &state) { return state.Fields(); }
             static State BindScratch(const State &prototype, const Algebra::DofBundle &fields) { return prototype.RebindFields(fields); }
@@ -92,12 +93,13 @@ namespace DNDS::Cauchy
             {
                 return fv.BuildWorkspace(state, workers);
             }
-            static auto BuildSolver(const FiniteVolume &fv, State &state, std::shared_ptr<Workspace> workspace,
+            static auto BuildSolver(const FiniteVolume &fv, State &state, std::shared_ptr<ReconstructionState> reconstruction,
+                                    std::shared_ptr<Workspace> workspace,
                                     R::EagerEngine &engine, const R::ExecutionStream &stream, const DomainSettings &settings,
                                     const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers)
             {
                 const Algebra::ComponentSelection selection(state.ComponentNumber(), state.Schema().ResolveComponents(settings.implicit.residualComponents));
-                return std::make_unique<Solver>(fv, state, std::move(workspace), engine, stream, settings, selection, workers);
+                return std::make_unique<Solver>(fv, state, std::move(reconstruction), std::move(workspace), engine, stream, settings, selection, workers);
             }
             static void CheckTransfer(const State &a, const State &b)
             {
@@ -169,6 +171,7 @@ namespace DNDS::Cauchy
             {
                 FiniteVolume discrete;
                 State state;
+                std::shared_ptr<typename Profile::ReconstructionState> reconstruction;
                 std::shared_ptr<typename Profile::Workspace> workspace;
                 std::unique_ptr<Solver> solver;
                 Coarse(ssp<Geom::UnstructuredMesh> mesh, DomainSettings settings, const FiniteVolume &fine,
@@ -182,8 +185,9 @@ namespace DNDS::Cauchy
                     // construction. Restriction has not run yet: seed the
                     // owned state explicitly instead of exposing zero means.
                     IdentityTransfer(prototype, state, MPIInfo(discrete.Metrics().Communicator()));
+                    reconstruction = discrete.BuildReconstructionState(state);
                     workspace = Profile::BuildWorkspace(discrete, state, workers);
-                    solver = Profile::BuildSolver(discrete, state, workspace, engine, stream, settings, workers);
+                    solver = Profile::BuildSolver(discrete, state, reconstruction, workspace, engine, stream, settings, workers);
                 }
             };
             FiniteVolume fine;
@@ -239,19 +243,22 @@ namespace DNDS::Cauchy
                 {
                     for (index correction = 0; correction < count; ++correction)
                     {
-                        const State *rate = nullptr;
+                        std::optional<std::reference_wrapper<const State>> rate;
                         if (cached && cached->stateStamp)
                         {
                             cached->stateStamp->Check(u, true);
                             DNDS_check_throw_info(cached->time == time && cached->scale == rhsScale,
                                                   "FAS spatial rate belongs to another time/equation scale");
-                            rate = &cached->rate;
+                            rate = std::cref(cached->rate);
                             if (profileEnabled)
                                 ++cachedRateUses[level];
                         }
                         NonlinearProfile timing;
+                        NonlinearSolveControl control{1, smootherCFL[level], std::nullopt, components};
+                        if (profileEnabled)
+                            control.profile = std::ref(timing);
                         const auto step = relax->CorrectOnce(u, source, mass, rhsScale, time, stage,
-                                                             {1, smootherCFL[level], profileEnabled ? &timing : nullptr, components}, rate);
+                                                             std::move(control), rate);
                         if (cached)
                             cached->stateStamp.reset();
                         if (profileEnabled)
@@ -284,7 +291,9 @@ namespace DNDS::Cauchy
             void TimedOperator(Solver &solver, State &input, State &output, real equationMass, index level, SpatialRate *cached = nullptr)
             {
                 const real start = profileEnabled ? MPI_Wtime() : 0;
-                solver.EvaluateEquation(input, output, equationMass, rhsScale, time, cached ? &cached->rate : nullptr);
+                solver.EvaluateEquation(input, output, equationMass, rhsScale, time,
+                                        cached ? std::optional<std::reference_wrapper<State>>(std::ref(cached->rate))
+                                               : std::nullopt);
                 if (cached)
                 {
                     cached->stateStamp.emplace(input);
@@ -433,7 +442,8 @@ namespace DNDS::Cauchy
                 }
                 return norms;
             }
-            Report ApplyCycle(const State &source, real mass, real rhsScale, real time, int stage, real pseudoCFL, const State *rate = nullptr)
+            Report ApplyCycle(const State &source, real mass, real rhsScale, real time, int stage, real pseudoCFL,
+                              std::optional<std::reference_wrapper<const State>> rate = std::nullopt)
             {
                 BindEquation(source, mass, rhsScale, time, stage, pseudoCFL);
                 if (!cycle)
@@ -443,8 +453,8 @@ namespace DNDS::Cauchy
                     // Same contract as CorrectOnce: an external method owns
                     // time/stage/VR provenance. Internal Solve passes only the
                     // immediately preceding measured state, checked below.
-                    if (rate != &fineRate->rate)
-                        Operations::Copy(fineRate->rate, *rate);
+                    if (&rate->get() != &fineRate->rate)
+                        Operations::Copy(fineRate->rate, rate->get());
                     fineRate->stateStamp.emplace(state);
                     fineRate->time = time;
                     fineRate->scale = rhsScale;
@@ -487,7 +497,7 @@ namespace DNDS::Cauchy
                                                              { return fineSolver.ReconstructionStats(); }, [&](auto &total)
                                                              {
                                                     fineRate->stateStamp->Check(state, true);
-                                                    NonlinearDetail::AccumulateWork(total, ApplyCycle(source, mass, rhsScale, time, stage, total.pseudoCFL, &fineRate->rate)); });
+                                                    NonlinearDetail::AccumulateWork(total, ApplyCycle(source, mass, rhsScale, time, stage, total.pseudoCFL, std::cref(fineRate->rate))); });
                 if (profileEnabled && (!mpi.rank || profileAllRanks))
                 {
                     Json levels = Json::array();
@@ -547,7 +557,9 @@ namespace DNDS::Cauchy
         auto session = _data->fineSolver.ReserveForMultigrid();
         return _data->Solve(source, mass, rhsScale, time, stage, std::move(control));
     }
-    EquationNonlinearIterationReport PolynomialMultigrid::ApplyCycle(const EquationDofs &source, real mass, real rhsScale, real time, int stage, real pseudoCFL, const EquationDofs *rate)
+    EquationNonlinearIterationReport PolynomialMultigrid::ApplyCycle(
+        const EquationDofs &source, real mass, real rhsScale, real time, int stage, real pseudoCFL,
+        std::optional<std::reference_wrapper<const EquationDofs>> rate)
     {
         auto session = _data->fineSolver.ReserveForMultigrid();
         return _data->ApplyCycle(source, mass, rhsScale, time, stage, pseudoCFL, rate);

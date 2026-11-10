@@ -19,11 +19,16 @@ namespace DNDS::CFV
         void CheckWorkspace(const Detail::ReconstructionData *data, const ReconstructionWorkspace &work)
         {
             DNDS_check_throw_info(work.plan.get() == data && work.components > 0, "reconstruction workspace belongs to another plan");
-            data->metrics.ValidateField(work.coefficients, data->n * work.components);
             data->metrics.ValidateField(work.temporary, data->n * work.components);
-            DNDS_check_throw_info(!Algebra::Detail::Overlaps(work.coefficients.Owned().Storage(), work.temporary.Owned().Storage()),
-                                  "reconstruction input and temporary storage overlap");
             CheckArray(work.scratch, 6, data->n * work.components);
+        }
+        void CheckWorkspace(const Detail::ReconstructionData *data, const ReconstructionWorkspace &work,
+                            const FVField &coefficients)
+        {
+            CheckWorkspace(data, work);
+            data->metrics.ValidateField(coefficients, data->n * work.components);
+            DNDS_check_throw_info(!Algebra::Detail::Overlaps(coefficients.Owned().Storage(), work.temporary.Owned().Storage()),
+                                  "reconstruction input and temporary storage overlap");
         }
         void AddScheduledAccess(std::vector<R::ScheduledBufferAccess> &accesses, const R::Buffer &buffer, R::AccessMode mode)
         {
@@ -158,7 +163,7 @@ namespace DNDS::CFV
         if (_device)
             return BuildDeviceWorkspace(components, R::RowLayout::Dense(Metrics().NumCell(), _data->n * components),
                                         std::move(periodicVectorStarts));
-        return {Metrics().BuildField(_data->n * components), Metrics().BuildField(_data->n * components),
+        return {Metrics().BuildField(_data->n * components),
                 R::Array<real>(R::RowLayout::Dense(6, _data->n * components)), components, _data, std::move(periodicVectorStarts)};
     }
     ReconstructionWorkspace VariationalReconstructionPlan::BuildWorkspace(index components, R::RowLayout prototype,
@@ -171,8 +176,22 @@ namespace DNDS::CFV
         Detail::ValidateVectorBlocks(components, periodicVectorStarts);
         if (_device)
             return BuildDeviceWorkspace(components, std::move(prototype), std::move(periodicVectorStarts));
-        return {Metrics().BuildField(prototype), Metrics().BuildField(prototype),
+        return {Metrics().BuildField(prototype),
                 R::Array<real>(R::RowLayout::Dense(6, _data->n * components)), components, _data, std::move(periodicVectorStarts)};
+    }
+    FVField VariationalReconstructionPlan::BuildCoefficients(index components) const
+    {
+        Validate();
+        DNDS_check_throw_info(components > 0 && components <= INT_MAX / _data->n, "invalid reconstruction component count");
+        return Metrics().BuildField(R::RowLayout::Dense(Metrics().NumCell(), _data->n * components), Device());
+    }
+    FVField VariationalReconstructionPlan::BuildCoefficients(index components, R::RowLayout prototype) const
+    {
+        Validate();
+        DNDS_check_throw_info(components > 0 && components <= INT_MAX / _data->n && !prototype.IsVariable() &&
+                                  prototype.Width() == _data->n * components,
+                              "reconstruction physical prototype width mismatch");
+        return Metrics().BuildField(std::move(prototype), Device());
     }
     ReconstructionBoundaryValues VariationalReconstructionPlan::BuildBoundaryValues(index components) const
     {
@@ -364,7 +383,7 @@ namespace DNDS::CFV
         Require(ReconstructionOperation::Sweep);
         auto meshRead = Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         Validate();
-        CheckWorkspace(_data.get(), work);
+        CheckWorkspace(_data.get(), work, input);
         const index nv = work.components, n = _data->n;
         Detail::ValidateVectorBlocks(nv, work.periodicVectorStarts);
         Metrics().ValidateField(mean, nv);
@@ -495,7 +514,8 @@ namespace DNDS::CFV
             for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
                 compute(iCell);
     }
-    void VariationalReconstructionPlan::DoReconstructionIter(const FVField &mean, ReconstructionWorkspace &work,
+    void VariationalReconstructionPlan::DoReconstructionIter(const FVField &mean, FVField &coefficients,
+                                                             ReconstructionWorkspace &work,
                                                              const ReconstructionBoundaryValues &boundary,
                                                              ReconstructionDeviceKernel kernel) const
     {
@@ -503,58 +523,62 @@ namespace DNDS::CFV
         {
             R::EagerEngine engine;
             const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(Device().ordinal));
-            SubmitDeviceReconstructionIterTo(engine, stream, mean, work.coefficients, work, boundary,
+            SubmitDeviceReconstructionIterTo(engine, stream, mean, coefficients, work, boundary,
                                              ReconstructionRegion::All, kernel);
-            SubmitDeviceCommitReconstruction(engine, stream, work);
+            SubmitDeviceCommitReconstruction(engine, stream, coefficients, work);
             engine.Synchronize();
             CheckStatus(work);
             return;
         }
-        DoReconstructionIterTo(mean, work.coefficients, work, boundary);
-        CommitReconstruction(work);
+        DoReconstructionIterTo(mean, coefficients, work, boundary);
+        CommitReconstruction(coefficients, work);
     }
-    void VariationalReconstructionPlan::CommitReconstruction(ReconstructionWorkspace &work) const
+    void VariationalReconstructionPlan::CommitReconstruction(FVField &coefficients, ReconstructionWorkspace &work) const
     {
         if (_device)
         {
             R::EagerEngine engine;
             const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(Device().ordinal));
-            SubmitDeviceCommitReconstruction(engine, stream, work);
+            SubmitDeviceCommitReconstruction(engine, stream, coefficients, work);
             engine.Synchronize();
             CheckStatus(work);
             return;
         }
         auto meshRead = Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
-        CheckWorkspace(_data.get(), work);
+        CheckWorkspace(_data.get(), work, coefficients);
         auto source = work.temporary.Owned().Read();
-        auto destination = work.coefficients.Owned().Write();
+        auto destination = coefficients.Owned().Write();
         const auto src = source.View<R::UniformTableRows>();
         const auto dst = destination.View<R::UniformTableRows>();
         for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
             std::copy(src[iCell].begin(), src[iCell].end(), dst[iCell].begin());
     }
     void VariationalReconstructionPlan::SubmitCommitReconstruction(
-        R::EagerEngine &engine, const R::ExecutionStream &stream, ReconstructionWorkspace &work) const
+        R::EagerEngine &engine, const R::ExecutionStream &stream, FVField &coefficients,
+        ReconstructionWorkspace &work) const
     {
         if (_device)
         {
-            SubmitDeviceCommitReconstruction(engine, stream, work);
+            SubmitDeviceCommitReconstruction(engine, stream, coefficients, work);
             return;
         }
         DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == R::Device::Host(),
                               "CPU reconstruction commit needs a matching host stream");
         std::vector<R::ScheduledBufferAccess> accesses;
         AddScheduledAccess(accesses, work.temporary.Owned(), R::AccessMode::Read);
-        AddScheduledAccess(accesses, work.coefficients.Owned(), R::AccessMode::Write);
+        AddScheduledAccess(accesses, coefficients.Owned(), R::AccessMode::Write);
         auto plan = *this;
         auto retainedWork = work;
+        auto retainedCoefficients = coefficients;
         engine.SubmitOperation(
             stream,
-            [plan = std::move(plan), retainedWork = std::move(retainedWork)](R::ExecutionContext) mutable
-            { plan.CommitReconstruction(retainedWork); },
+            [plan = std::move(plan), retainedCoefficients = std::move(retainedCoefficients),
+             retainedWork = std::move(retainedWork)](R::ExecutionContext) mutable
+            { plan.CommitReconstruction(retainedCoefficients, retainedWork); },
             [](std::exception_ptr) noexcept {}, std::move(accesses));
     }
-    void VariationalReconstructionPlan::DoLimiterWBAP_3OrderTo(ReconstructionWorkspace &work, int order,
+    void VariationalReconstructionPlan::DoLimiterWBAP_3OrderTo(const FVField &coefficients,
+                                                               ReconstructionWorkspace &work, int order,
                                                                FaceCharacteristicTransformRef transform, ReconstructionRegion region,
                                                                const R::Array<real> *indicator, real threshold) const
     {
@@ -562,7 +586,7 @@ namespace DNDS::CFV
         {
             R::EagerEngine engine;
             const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(Device().ordinal));
-            SubmitDeviceLimiterWBAP_3OrderTo(engine, stream, work, order, transform, region, indicator, threshold);
+            SubmitDeviceLimiterWBAP_3OrderTo(engine, stream, coefficients, work, order, transform, region, indicator, threshold);
             engine.Synchronize();
             CheckStatus(work);
             return;
@@ -570,7 +594,7 @@ namespace DNDS::CFV
         Require(ReconstructionOperation::WBAP);
         auto meshRead = Metrics()._data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         Validate();
-        CheckWorkspace(_data.get(), work);
+        CheckWorkspace(_data.get(), work, coefficients);
         DNDS_check_throw_info(order >= 1 && order <= Settings().maxOrder, "invalid WBAP polynomial order");
         const index n = NRecDOF(), nv = work.components;
         Detail::ValidateVectorBlocks(nv, work.periodicVectorStarts);
@@ -608,10 +632,10 @@ namespace DNDS::CFV
         const int begin = order == 1 ? 0 : Math::PolynomialSize(Metrics().Dimension(), order - 1) - 1;
         const int end = Math::PolynomialSize(Metrics().Dimension(), order) - 1, modes = end - begin;
         {
-            auto owned = work.coefficients.Owned().Read();
+            auto owned = coefficients.Owned().Read();
             std::optional<R::Array<real>::ReadLease> ghostRead;
             if (region != ReconstructionRegion::Core)
-                ghostRead.emplace(work.coefficients.Ghost().Read());
+                ghostRead.emplace(coefficients.Ghost().Read());
             R::PairReadView<real, R::AccessBoundsChecks, R::UniformTableRows> rec{owned.View<R::UniformTableRows>(), ghostRead ? ghostRead->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{}};
             auto outputWrite = work.temporary.Owned().Write(), scratchWrite = work.scratch.Write();
             const auto output = outputWrite.View<R::UniformTableRows>();
@@ -701,13 +725,14 @@ namespace DNDS::CFV
         }
     }
     void VariationalReconstructionPlan::SubmitLimiterWBAP_3OrderTo(
-        R::EagerEngine &engine, const R::ExecutionStream &stream, ReconstructionWorkspace &work, int order,
+        R::EagerEngine &engine, const R::ExecutionStream &stream, const FVField &coefficients,
+        ReconstructionWorkspace &work, int order,
         FaceCharacteristicTransformRef transform, ReconstructionRegion region,
         const R::Array<real> *indicator, real threshold) const
     {
         if (_device)
         {
-            SubmitDeviceLimiterWBAP_3OrderTo(engine, stream, work, order, transform, region, indicator, threshold);
+            SubmitDeviceLimiterWBAP_3OrderTo(engine, stream, coefficients, work, order, transform, region, indicator, threshold);
             return;
         }
         Require(ReconstructionOperation::WBAP);
@@ -716,9 +741,9 @@ namespace DNDS::CFV
         std::vector<R::ScheduledBufferAccess> accesses;
         const auto add = [&](const auto &array, R::AccessMode mode)
         { AddScheduledAccess(accesses, array, mode); };
-        add(work.coefficients.Owned(), R::AccessMode::Read);
+        add(coefficients.Owned(), R::AccessMode::Read);
         if (region != ReconstructionRegion::Core)
-            add(work.coefficients.Ghost(), R::AccessMode::Read);
+            add(coefficients.Ghost(), R::AccessMode::Read);
         add(work.temporary.Owned(), R::AccessMode::Write);
         add(work.scratch, R::AccessMode::Write);
         add(_data->offsets, R::AccessMode::Read);
@@ -744,25 +769,28 @@ namespace DNDS::CFV
         }
         auto plan = *this;
         auto retainedWork = work;
+        auto retainedCoefficients = coefficients;
         engine.SubmitOperation(
             stream,
-            [plan = std::move(plan), retainedWork = std::move(retainedWork), order,
+            [plan = std::move(plan), retainedCoefficients = std::move(retainedCoefficients),
+             retainedWork = std::move(retainedWork), order,
              retainedTransform = std::move(retainedTransform), region,
              retainedIndicator = std::move(retainedIndicator), threshold](R::ExecutionContext) mutable
             {
                 const FaceCharacteristicTransformRef selected = retainedTransform
                                                                     ? FaceCharacteristicTransformRef(std::cref(*retainedTransform))
                                                                     : std::nullopt;
-                plan.DoLimiterWBAP_3OrderTo(retainedWork, order, selected, region,
+                plan.DoLimiterWBAP_3OrderTo(retainedCoefficients, retainedWork, order, selected, region,
                                             retainedIndicator ? &*retainedIndicator : nullptr, threshold);
             },
             [](std::exception_ptr) noexcept {}, std::move(accesses));
     }
-    void VariationalReconstructionPlan::DoLimiterWBAP_3Order(ReconstructionWorkspace &work, int order,
+    void VariationalReconstructionPlan::DoLimiterWBAP_3Order(FVField &coefficients,
+                                                             ReconstructionWorkspace &work, int order,
                                                              FaceCharacteristicTransformRef transform) const
     {
-        DoLimiterWBAP_3OrderTo(work, order, transform);
-        CommitReconstruction(work);
+        DoLimiterWBAP_3OrderTo(coefficients, work, order, transform);
+        CommitReconstruction(coefficients, work);
     }
     void VariationalReconstructionPlan::Evaluate(const FVField &mean, const FVField &coefficients,
                                                  const R::Array<index> &cells, const R::Array<real> &points, R::Array<real> &values) const

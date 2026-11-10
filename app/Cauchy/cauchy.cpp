@@ -1,10 +1,12 @@
 #include "Cauchy/Core/Simulation.hpp"
 #include "Cauchy/Core/StepResult.hpp"
+#include "Cauchy/IO/OutputPlan.hpp"
 #include "Cauchy/IO/ProgressOutput.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "argparse.hpp"
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -13,33 +15,43 @@
 #include <limits>
 #include <optional>
 #include <sstream>
+#include <vector>
 
 namespace
 {
-    std::string TimeToken(DNDS::real time)
+    DNDS::Cauchy::Json GatherJsonArrays(const DNDS::MPIInfo &mpi, const DNDS::Cauchy::Json &local)
     {
-        std::ostringstream stream;
-        stream << std::scientific << std::setprecision(std::numeric_limits<DNDS::real>::max_digits10) << time;
-        return "-T" + stream.str();
+        const auto encoded = local.dump();
+        DNDS_check_throw_info(encoded.size() <= size_t(INT_MAX), "Cauchy manifest contribution is too large");
+        const int count = int(encoded.size());
+        std::vector<int> counts(mpi.rank == 0 ? size_t(mpi.size) : 0);
+        MPI_Gather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, 0, mpi.comm);
+        std::vector<int> offsets;
+        std::vector<char> bytes;
+        if (mpi.rank == 0)
+        {
+            offsets.resize(size_t(mpi.size));
+            int total = 0;
+            for (int rank = 0; rank < mpi.size; ++rank)
+            {
+                offsets[rank] = total;
+                DNDS_check_throw_info(counts[rank] <= INT_MAX - total, "Cauchy manifest gather is too large");
+                total += counts[rank];
+            }
+            bytes.resize(size_t(total));
+        }
+        MPI_Gatherv(encoded.data(), count, MPI_CHAR, bytes.data(), counts.data(), offsets.data(), MPI_CHAR, 0, mpi.comm);
+        DNDS::Cauchy::Json result = DNDS::Cauchy::Json::array();
+        if (mpi.rank == 0)
+            for (int rank = 0; rank < mpi.size; ++rank)
+            {
+                const auto contribution = DNDS::Cauchy::Json::parse(bytes.data() + offsets[rank],
+                                                                    bytes.data() + offsets[rank] + counts[rank]);
+                for (const auto &entry : contribution)
+                    result.push_back(entry);
+            }
+        return result;
     }
-
-    std::string StepToken(uint64_t step) { return "-S" + std::to_string(step); }
-
-    uint64_t NextTimeOrdinal(DNDS::real time, DNDS::real interval)
-    {
-        if (!(interval > 0))
-            return 0;
-        const auto completed = std::floor(time / interval);
-        DNDS_check_throw_info(completed >= 0 && completed < DNDS::real(std::numeric_limits<uint64_t>::max() - 1),
-                              "Cauchy output-time ordinal overflow");
-        return uint64_t(completed) + 1;
-    }
-
-    DNDS::real TimeAt(uint64_t ordinal, DNDS::real interval)
-    {
-        return DNDS::real(ordinal) * interval;
-    }
-
 }
 
 /// Keep every MPI-owning solver object inside this scope, before DNDS Finalize.
@@ -100,6 +112,7 @@ static int Run(int argc, char **argv, double started)
             const auto &output = config.Output();
             const auto &time = config.Time();
             const auto domainCount = DNDS::index(config.Domains().size());
+            const DNDS::Cauchy::OutputPlan outputPlan(output, domainCount);
             // Actions may enter domain collectives. Propagate unexpected errors
             // to the fatal boundary; never try a control reduction after a
             // rank-local failure while its peers may still be in that action.
@@ -110,7 +123,7 @@ static int Run(int argc, char **argv, double started)
                         action(iDomain, simulation.GetDomain(iDomain));
             };
             const auto domainPrefix = [&](DNDS::index iDomain)
-            { return output.prefix + "-D" + std::to_string(iDomain); };
+            { return outputPlan.DomainPrefix(iDomain); };
             auto logger = std::make_shared<DNDS::Cauchy::OperationalLogger>(output, mpi.rank);
             std::vector<std::unique_ptr<DNDS::Cauchy::ProgressOutputController>> progress(static_cast<size_t>(domainCount));
             DNDS::MPI::LocalStage(mpi, [&]
@@ -119,7 +132,7 @@ static int Run(int argc, char **argv, double started)
                 {
                     const auto parent = std::filesystem::path(output.prefix).parent_path();
                     if (!parent.empty()) std::filesystem::create_directories(parent);
-                    std::ofstream resolved(output.prefix + "-resolved.json");
+                    std::ofstream resolved(outputPlan.ResolvedPath());
                     resolved << config.Root().dump(2) << '\n';
                     DNDS_check_throw_info(bool(resolved), "cannot write resolved Cauchy configuration");
                 } });
@@ -128,10 +141,32 @@ static int Run(int argc, char **argv, double started)
                 DNDS::MPI::LocalStage(DNDS::MPIInfo(domain.Discretization().Metrics().Communicator()), [&]
                                       {
                     progress[iDomain] = std::make_unique<DNDS::Cauchy::ProgressOutputController>(
-                        domain.Equation().Schema(), output, domain.Name(), domainPrefix(iDomain) + "-history",
+                        domain.Equation().Schema(), output, domain.Name(), outputPlan.HistoryBare(iDomain),
                         simulation.Placement().DomainRank(iDomain) == 0, logger); });
                 domain.SetProgressObserver([&, iDomain](const DNDS::Cauchy::NonlinearProgress &entry)
                                            { progress[iDomain]->CaptureIteration(entry); }); });
+            DNDS::Cauchy::Json localDomains = DNDS::Cauchy::Json::array();
+            for (DNDS::index iDomain = 0; iDomain < domainCount; ++iDomain)
+                if (simulation.Local(iDomain) && simulation.Placement().DomainRank(iDomain) == 0)
+                {
+                    const auto &domain = simulation.GetDomain(iDomain);
+                    localDomains.push_back({{"index", iDomain}, {"name", domain.Name()}, {"history", outputPlan.HistoryBare(iDomain) + ".csv"}, {"components", DNDS::Cauchy::EquationComponentNames(domain.Equation().Schema())}});
+                }
+            const auto manifestDomains = GatherJsonArrays(mpi, localDomains);
+            DNDS::MPI::LocalStage(mpi, [&]
+                                  {
+                if (mpi.rank == 0)
+                {
+                    const DNDS::Cauchy::Json manifest{
+                        {"schema", "dndsr.cauchy.run-output.v1"},
+                        {"resolvedConfig", outputPlan.ResolvedPath()},
+                        {"historySchema", "dndsr.cauchy.detailed-history.v1"},
+                        {"progressStatus", {{"nonlinearIteration", 0}, {"implicitStageEnd", 1}, {"acceptedStepEnd", 2}}},
+                        {"domains", manifestDomains}};
+                    std::ofstream file(outputPlan.RunManifestPath());
+                    file << manifest.dump(2) << '\n';
+                    DNDS_check_throw_info(bool(file), "cannot write Cauchy run manifest");
+                } });
             const auto flushPending = [&]
             {
                 visitDomains([&](DNDS::index iDomain, auto &domain)
@@ -197,19 +232,51 @@ static int Run(int argc, char **argv, double started)
             // The initial state remains in the CSV history, but console
             // iteration labels begin with the first completed physical step.
             record(0, 0, false, false, true);
-            const DNDS::index visualizationInterval = output.visualizationInterval < 0 ? output.checkpointInterval : output.visualizationInterval;
-            const DNDS::real visualizationTimeInterval = output.visualizationTimeInterval < 0 ? output.checkpointTimeInterval : output.visualizationTimeInterval;
-            uint64_t nextCheckpointTime = NextTimeOrdinal(simulation.Time(), output.checkpointTimeInterval);
-            uint64_t nextVisualizationTime = NextTimeOrdinal(simulation.Time(), visualizationTimeInterval);
+            const DNDS::index visualizationInterval = outputPlan.VisualizationInterval();
+            const DNDS::real visualizationTimeInterval = outputPlan.VisualizationTimeInterval();
+            uint64_t nextCheckpointTime = DNDS::Cauchy::OutputPlan::NextTimeOrdinal(simulation.Time(), output.checkpointTimeInterval);
+            uint64_t nextVisualizationTime = DNDS::Cauchy::OutputPlan::NextTimeOrdinal(simulation.Time(), visualizationTimeInterval);
             const auto writeCheckpoint = [&](const std::string &token)
             {
-                simulation.WriteCheckpoint(output.prefix + (domainCount == 1 ? "-D0" : "") + token + ".h5",
-                                           output.checkpointReconstruction);
+                simulation.WriteCheckpoint(outputPlan.CheckpointPath(token), output.checkpointReconstruction);
             };
             const auto writeVisualization = [&](const std::string &token)
             {
                 visitDomains([&](DNDS::index iDomain, auto &domain)
-                             { domain.WriteVisualization(domainPrefix(iDomain) + token, output.hdfDeflateLevel); });
+                             { domain.WriteVisualization(outputPlan.VisualizationPrefix(iDomain, token), output.hdfDeflateLevel); });
+            };
+            const auto writeSnapshot = [&](const std::string &token, bool checkpoint, bool visualization)
+            {
+                if (checkpoint)
+                    writeCheckpoint(token);
+                if (visualization)
+                    writeVisualization(token);
+                DNDS::MPI::LocalStage(mpi, [&]
+                                      {
+                    if (mpi.rank != 0)
+                        return;
+                    DNDS::Cauchy::Json artifacts = DNDS::Cauchy::Json::array();
+                    if (checkpoint)
+                        artifacts.push_back({{"kind", "checkpoint"}, {"path", outputPlan.CheckpointPath(token)},
+                                             {"schema", "dndsr.cauchy.checkpoint.v3"}});
+                    if (visualization)
+                        for (DNDS::index iDomain = 0; iDomain < domainCount; ++iDomain)
+                        {
+                            const auto prefix = outputPlan.VisualizationPrefix(iDomain, token);
+                            artifacts.push_back({{"kind", "volume"}, {"domain", iDomain}, {"path", prefix + ".vtkhdf"},
+                                                 {"schema", "dndsr.cauchy.visualization.v1"}});
+                            DNDS::Cauchy::Json shards = DNDS::Cauchy::Json::array();
+                            for (int rank = 0; rank < int(config.Domains()[iDomain].placement.ranks.size()); ++rank)
+                                shards.push_back(prefix + "_surface_rank" + std::to_string(rank) + ".csv");
+                            artifacts.push_back({{"kind", "surface"}, {"domain", iDomain}, {"paths", std::move(shards)},
+                                                 {"schema", "dndsr.cauchy.surface-samples.v1"}});
+                        }
+                    const DNDS::Cauchy::Json manifest{{"schema", "dndsr.cauchy.snapshot.v1"},
+                                                       {"step", simulation.Step()}, {"time", simulation.Time()},
+                                                       {"token", token}, {"artifacts", std::move(artifacts)}};
+                    std::ofstream file(outputPlan.SnapshotManifestPath(token));
+                    file << manifest.dump(2) << '\n';
+                    DNDS_check_throw_info(bool(file), "cannot write Cauchy snapshot manifest"); });
             };
             for (DNDS::index step = 0; time.tEnd > 0 ? !DNDS::Cauchy::EquationTimeStepper::ReachedTimeTarget(simulation.Time(), time.tEnd) : step < time.steps; ++step)
             {
@@ -237,20 +304,10 @@ static int Run(int argc, char **argv, double started)
                 std::optional<DNDS::real> exactTarget;
                 if (!time.steady)
                 {
-                    DNDS::real target = std::numeric_limits<DNDS::real>::infinity();
-                    if (time.tEnd > 0)
-                        target = std::min(target, time.tEnd);
-                    if (output.checkpointTimeInterval > 0)
-                        target = std::min(target, TimeAt(nextCheckpointTime, output.checkpointTimeInterval));
-                    if (visualizationTimeInterval > 0)
-                        target = std::min(target, TimeAt(nextVisualizationTime, visualizationTimeInterval));
-                    const DNDS::real remaining = target - simulation.Time();
-                    const DNDS::real tolerance = output.endpointSnapRelativeTolerance * dt;
-                    if (std::isfinite(target) && remaining > 0 && remaining <= dt + tolerance)
-                    {
-                        dt = remaining;
-                        exactTarget = target;
-                    }
+                    const auto adjusted = outputPlan.SnapStep(simulation.Time(), dt, time.tEnd,
+                                                              nextCheckpointTime, nextVisualizationTime);
+                    dt = adjusted.dt;
+                    exactTarget = adjusted.exactTime;
                 }
                 int retries = 0;
                 for (;;)
@@ -273,28 +330,32 @@ static int Run(int argc, char **argv, double started)
                 reached = record(time.steady ? 0 : dt, retries, time.positivity.enabled, printStep) || reached;
                 bool checkpointTimeDue = false, visualizationTimeDue = false;
                 if (!time.steady && output.checkpointTimeInterval > 0)
-                    while (TimeAt(nextCheckpointTime, output.checkpointTimeInterval) <= simulation.Time())
+                    while (DNDS::Cauchy::OutputPlan::TimeAt(nextCheckpointTime, output.checkpointTimeInterval) <= simulation.Time())
                     {
                         checkpointTimeDue = true;
                         ++nextCheckpointTime;
                     }
                 if (!time.steady && visualizationTimeInterval > 0)
-                    while (TimeAt(nextVisualizationTime, visualizationTimeInterval) <= simulation.Time())
+                    while (DNDS::Cauchy::OutputPlan::TimeAt(nextVisualizationTime, visualizationTimeInterval) <= simulation.Time())
                     {
                         visualizationTimeDue = true;
                         ++nextVisualizationTime;
                     }
                 const bool checkpointStepDue = output.checkpointInterval > 0 && simulation.Step() % uint64_t(output.checkpointInterval) == 0;
                 const bool visualizationStepDue = visualizationInterval > 0 && simulation.Step() % uint64_t(visualizationInterval) == 0;
-                if (checkpointTimeDue || checkpointStepDue)
-                    writeCheckpoint(checkpointTimeDue ? TimeToken(simulation.Time()) : StepToken(simulation.Step()));
-                if (visualizationTimeDue || visualizationStepDue)
-                    writeVisualization(visualizationTimeDue ? TimeToken(simulation.Time()) : StepToken(simulation.Step()));
+                const bool checkpointDue = checkpointTimeDue || checkpointStepDue;
+                const bool visualizationDue = visualizationTimeDue || visualizationStepDue;
+                if (checkpointDue || visualizationDue)
+                {
+                    const auto token = checkpointTimeDue || visualizationTimeDue
+                                           ? DNDS::Cauchy::OutputPlan::TimeToken(simulation.Time())
+                                           : DNDS::Cauchy::OutputPlan::StepToken(simulation.Step());
+                    writeSnapshot(token, checkpointDue, visualizationDue);
+                }
                 if (reached)
                     break;
             }
-            writeCheckpoint("-final");
-            writeVisualization("-final");
+            writeSnapshot("-final", true, true);
             visitDomains([&](DNDS::index iDomain, auto &)
                          { progress[iDomain]->Flush(); });
             logger->Flush();
@@ -311,7 +372,7 @@ static int Run(int argc, char **argv, double started)
                                           {"steadyMode", time.steady},
                                           {"physicalTimeTarget", time.tEnd},
                                           {"steadyTolerance", time.steadyTolerance}};
-                std::ofstream summary(output.prefix + "-summary.json");
+                std::ofstream summary(outputPlan.SummaryPath());
                 summary << result.dump(2) << '\n';
                 DNDS_check_throw_info(bool(summary), "cannot write Cauchy summary");
             } });

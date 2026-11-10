@@ -22,20 +22,21 @@ namespace PublicationProbe
     thread_local double seconds = 0;
     thread_local I calls = 0, logicalBytes = 0;
 }
-extern "C" void RealCommit(const F::VariationalReconstructionPlan *, F::ReconstructionWorkspace &) asm("__real__ZNK4DNDS3CFV29VariationalReconstructionPlan20CommitReconstructionERNS0_23ReconstructionWorkspaceE");
-extern "C" void WrappedCommit(const F::VariationalReconstructionPlan *, F::ReconstructionWorkspace &) asm("__wrap__ZNK4DNDS3CFV29VariationalReconstructionPlan20CommitReconstructionERNS0_23ReconstructionWorkspaceE");
-extern "C" void WrappedCommit(const F::VariationalReconstructionPlan *plan, F::ReconstructionWorkspace &work)
+extern "C" void RealCommit(const F::VariationalReconstructionPlan *, F::FVField &, F::ReconstructionWorkspace &) asm("__real__ZNK4DNDS3CFV29VariationalReconstructionPlan20CommitReconstructionERNS_7Algebra8DofFieldIdLm18446744073709551615EEERNS0_23ReconstructionWorkspaceE");
+extern "C" void WrappedCommit(const F::VariationalReconstructionPlan *, F::FVField &, F::ReconstructionWorkspace &) asm("__wrap__ZNK4DNDS3CFV29VariationalReconstructionPlan20CommitReconstructionERNS_7Algebra8DofFieldIdLm18446744073709551615EEERNS0_23ReconstructionWorkspaceE");
+extern "C" void WrappedCommit(const F::VariationalReconstructionPlan *plan, F::FVField &coefficients,
+                              F::ReconstructionWorkspace &work)
 {
     if (!PublicationProbe::active)
     {
-        RealCommit(plan, work);
+        RealCommit(plan, coefficients, work);
         return;
     }
     const auto start = std::chrono::steady_clock::now();
-    RealCommit(plan, work);
+    RealCommit(plan, coefficients, work);
     PublicationProbe::seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     ++PublicationProbe::calls;
-    PublicationProbe::logicalBytes += 16 * work.coefficients.Owned().RowCount() * work.coefficients.Width();
+    PublicationProbe::logicalBytes += 16 * coefficients.Owned().RowCount() * coefficients.Width();
 }
 
 namespace
@@ -84,6 +85,7 @@ namespace
         C::FiniteVolume fv(mesh, settings, equation);
         std::optional<C::EquationDofs> equationMean, equationResidual;
         std::shared_ptr<C::FiniteVolume::Workspace> equationWorkspace;
+        std::shared_ptr<C::FiniteVolume::ReconstructionState> equationReconstruction;
         I components = 5, fields = 1;
         std::vector<uint64_t> generations;
         R::EagerEngine engine(0);
@@ -106,8 +108,9 @@ namespace
             generations.push_back(equationMean->PhysicalField(0).Owned().Version());
             equationResidual.emplace(C::EquationDofOperations::NewVector(*equationMean));
             equationWorkspace = fv.BuildWorkspace(*equationMean);
+            equationReconstruction = fv.BuildReconstructionState(*equationMean);
             evaluate = [&]
-            { fv.Evaluate(*equationMean, *equationResidual, *equationWorkspace, engine, stream); };
+            { fv.Evaluate(*equationMean, *equationResidual, *equationReconstruction, *equationWorkspace, engine, stream); };
             validate = [&]
             {
                 DNDS_check_throw_info(equationMean->PhysicalField(0).Owned().Version() == generations[0], "composed RHS mutated means");
@@ -155,8 +158,9 @@ namespace
                 generations.push_back(equationMean->PhysicalField(iField).Owned().Version());
             equationResidual.emplace(C::EquationDofOperations::NewVector(*equationMean));
             equationWorkspace = fv.BuildWorkspace(*equationMean, physical.workers);
+            equationReconstruction = fv.BuildReconstructionState(*equationMean);
             evaluate = [&]
-            { fv.Evaluate(*equationMean, *equationResidual, *equationWorkspace, engine, stream); };
+            { fv.Evaluate(*equationMean, *equationResidual, *equationReconstruction, *equationWorkspace, engine, stream); };
             validate = [&]
             {
                 for (I iField = 0; iField < fields; ++iField)

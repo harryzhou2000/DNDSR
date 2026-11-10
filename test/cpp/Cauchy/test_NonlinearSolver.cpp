@@ -30,9 +30,47 @@ static C::NonlinearSolver MakeSolver(const C::FiniteVolume &fv, C::EquationDofs 
                                      R::EagerEngine &engine, const R::ExecutionStream &stream,
                                      const C::DomainSettings &settings)
 {
-    return {fv, state, fv.BuildWorkspace(state), engine, stream, settings,
+    return {fv, state, fv.BuildReconstructionState(state), fv.BuildWorkspace(state), engine, stream, settings,
             A::ComponentSelection(state.ComponentNumber(),
                                   state.Schema().ResolveComponents(settings.implicit.residualComponents))};
+}
+TEST_CASE("Nonlinear controller state has a versioned JSON round trip")
+{
+    C::NonlinearSolveState source;
+    source.attempt = 3;
+    source.iteration = 7;
+    source.stage = 2;
+    source.coupledStage = 1;
+    source.converged = true;
+    source.residual = {1e-4, 2e-5};
+    source.initialResidual = {1, 2};
+    source.referenceResidual = {3, 4};
+    source.convergenceComponents = {"rho", "rhoE"};
+    source.pseudoCFL = 12.5;
+    source.levelCorrections = {4, 2};
+    source.reconstructionIterations = 5;
+    source.reconstructionRelativeUpdate = 1e-7;
+
+    const auto encoded = source.ToJson();
+    const auto restored = C::NonlinearSolveState::FromJson(encoded);
+    CHECK(restored.schemaVersion == source.schemaVersion);
+    CHECK(restored.attempt == source.attempt);
+    CHECK(restored.iteration == source.iteration);
+    CHECK(restored.stage == source.stage);
+    CHECK(restored.coupledStage == source.coupledStage);
+    CHECK(restored.converged == source.converged);
+    CHECK(restored.residual == source.residual);
+    CHECK(restored.initialResidual == source.initialResidual);
+    CHECK(restored.referenceResidual == source.referenceResidual);
+    CHECK(restored.convergenceComponents == source.convergenceComponents);
+    CHECK(restored.pseudoCFL == source.pseudoCFL);
+    CHECK(restored.levelCorrections == source.levelCorrections);
+    CHECK(restored.reconstructionIterations == source.reconstructionIterations);
+    CHECK(restored.reconstructionRelativeUpdate == source.reconstructionRelativeUpdate);
+
+    auto unsupported = encoded;
+    unsupported["schema_version"] = source.schemaVersion + 1;
+    CHECK_THROWS(C::NonlinearSolveState::FromJson(unsupported));
 }
 TEST_CASE("Mean-state Krylov scaling uses volume averages and one common momentum scale")
 {
@@ -69,7 +107,7 @@ TEST_CASE("Shared nonlinear controller observes coupled updates once and advance
     std::vector<int> visits;
     std::vector<double> cfl;
     double value = 1;
-    const auto report = C::NonlinearDetail::Iterate(settings, schema, mpi.rank, 0, {}, C::NonlinearIterationReport{}, 0, [&]
+    const auto report = C::NonlinearDetail::Iterate(settings, schema, mpi.rank, 0, {}, C::EquationNonlinearIterationReport{}, 0, [&]
                                                     { visits.push_back(2); }, [&](auto &norms)
                                                     { norms[0] = value; visits.push_back(3); }, []
                                                     { return std::make_pair(0, 0.); }, [&](auto &current)
@@ -99,7 +137,7 @@ TEST_CASE("Cauchy nonlinear progress reports completed iterations and zero-based
     C::NonlinearSolveControl control;
     control.progress = [&](const auto &progress)
     { captured.push_back(progress); };
-    const auto report = C::NonlinearDetail::Iterate(settings, schema, mpi.rank, 0, control, C::NonlinearIterationReport{}, 0, [] {}, [](auto &norms)
+    const auto report = C::NonlinearDetail::Iterate(settings, schema, mpi.rank, 0, control, C::EquationNonlinearIterationReport{}, 0, [] {}, [](auto &norms)
                                                     { norms[0] = 1; }, []
                                                     { return std::make_pair(0, 0.); }, [](auto &) {});
     CHECK(report.converged);
@@ -261,7 +299,7 @@ TEST_CASE("One correction reuses the ordinary solve update without a stopping lo
     const auto version = source.Owned().Version();
     const auto solved = full.Solve(referenceState, right, 20, 1, .1);
     C::NonlinearProfile profile;
-    const auto corrected = one.CorrectOnce(singleState, right, 20, 1, .1, 0, {-1, 0, &profile});
+    const auto corrected = one.CorrectOnce(singleState, right, 20, 1, .1, 0, {-1, 0, std::ref(profile)});
     CHECK(corrected.iterations == 1);
     CHECK_FALSE(corrected.converged);
     CHECK(profile.residualEvaluations == 1);
@@ -484,6 +522,7 @@ TEST_CASE("Implicit bad corrections reject without poisoning state and nonlinear
     C::AuxiliaryRequest request;
     request.faceSpectralRadius = request.cellSpectralSum = true;
     auto logical = Bind(fv, state), right = Bind(fv, source);
+    auto reconstruction = fv.BuildReconstructionState(logical);
     auto workspace = fv.BuildWorkspace(logical);
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
@@ -492,12 +531,12 @@ TEST_CASE("Implicit bad corrections reject without poisoning state and nonlinear
         auto mismatched = settings;
         mismatched.implicit.positivity.compressionPower += mpi.rank;
         CHECK_THROWS(C::NonlinearSolver(
-            fv, logical, workspace, engine, stream, mismatched,
+            fv, logical, reconstruction, workspace, engine, stream, mismatched,
             A::ComponentSelection(logical.ComponentNumber(),
                                   logical.Schema().ResolveComponents(mismatched.implicit.residualComponents))));
     }
     C::NonlinearSolver solver(
-        fv, logical, workspace, engine, stream, settings,
+        fv, logical, reconstruction, workspace, engine, stream, settings,
         A::ComponentSelection(logical.ComponentNumber(),
                               logical.Schema().ResolveComponents(settings.implicit.residualComponents)));
     const auto generation = state.Owned().Version();
@@ -612,7 +651,7 @@ TEST_CASE("Optional nonlinear phase output preserves exact corrections and recor
     C::NonlinearProfile profile;
     profile.seconds.fill(-1);
     profile.residualEvaluations = 777;
-    const auto b = profiledSolver.Solve(profiledState, right, 20, 1, 0, 0, {1, 0, &profile});
+    const auto b = profiledSolver.Solve(profiledState, right, 20, 1, 0, 0, {1, 0, std::ref(profile)});
     CHECK(a.iterations == 1);
     CHECK(b.iterations == a.iterations);
     CHECK(b.linearIterations == a.linearIterations);
@@ -633,7 +672,7 @@ TEST_CASE("Optional nonlinear phase output preserves exact corrections and recor
             for (int j = 0; j < 5; ++j)
                 CHECK(x.View<R::UniformTableRows>()(iCell, j) == y.View<R::UniformTableRows>()(iCell, j));
     }
-    CHECK_THROWS(profiledSolver.Solve(profiledState, right, std::numeric_limits<double>::quiet_NaN(), 1, 0, 0, {1, 0, &profile}));
+    CHECK_THROWS(profiledSolver.Solve(profiledState, right, std::numeric_limits<double>::quiet_NaN(), 1, 0, 0, {1, 0, std::ref(profile)}));
     CHECK(profile.residualEvaluations == 0);
     CHECK(profile.seconds[C::NonlinearProfile::Entry] > 0);
     CHECK(profile.seconds[C::NonlinearProfile::Total] >= profile.seconds[C::NonlinearProfile::Entry]);

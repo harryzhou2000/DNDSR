@@ -4,6 +4,7 @@
 // trial/guess data outside nonlinear timers and check actual numerical work.
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
+#include "Cauchy/Physics/EquationPositivity.hpp"
 #include "Solver/FieldTimeStepper.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 
@@ -11,6 +12,7 @@ namespace CauchyBenchmark
 {
     template <class Measure>
     DNDS::Cauchy::Json ControllerPhases(DNDS::Cauchy::FiniteVolume &fv, DNDS::Cauchy::EquationDofs &frozenState,
+                                        DNDS::Cauchy::FiniteVolume::ReconstructionState &reconstruction,
                                         DNDS::Cauchy::FiniteVolume::Workspace &workspace, DNDS::Runtime::EagerEngine &engine,
                                         const DNDS::Runtime::ExecutionStream &stream, DNDS::Cauchy::DomainSettings settings,
                                         bool checked, int repetitions, Measure &measure)
@@ -27,6 +29,12 @@ namespace CauchyBenchmark
         MPI_Allreduce(MPI_IN_PLACE, &globalRows, 1, MPI_INT64_T, MPI_SUM, mpi.comm);
         const auto bounds = fv.ThermalConstraints();
         auto increment = metrics.BuildField(5), integrated = metrics.BuildField(5), corrected = metrics.BuildField(5);
+        auto integratedState = frozenState.RebindCoupled(integrated);
+        auto correctedState = frozenState.RebindCoupled(corrected);
+        const C::EquationThermalPolicy thermalPolicy(fv.Equation(), settings.numerics.densityFloor,
+                                                     settings.numerics.temperatureFloor,
+                                                     settings.numerics.sensibleEnergyFloor,
+                                                     settings.numerics.pressureFloor);
         R::Array<double> fractions(R::RowLayout::Dense(rows, 1));
         I expectedActive = 0;
         double expectedAlpha = 1;
@@ -107,7 +115,7 @@ namespace CauchyBenchmark
                 change = C::FixFlowIncrement(mean, change, bounds);
                 for (int j = 0; j < 5; ++j) result(iCell, j) = mean[j] + change[j];
             } }, repetitions);
-        DNDS_check_throw_info(fv.Admissible(corrected), "benchmark PP final update is not admissible");
+        DNDS_check_throw_info(fv.Admissible(correctedState), "benchmark PP final update is not admissible");
         {
             const auto original = frozen.Owned().Read(), changes = increment.Owned().Read(), result = corrected.Owned().Read();
             const auto u = original.View<R::UniformTableRows>(), d = changes.View<R::UniformTableRows>(), y = result.View<R::UniformTableRows>();
@@ -118,12 +126,12 @@ namespace CauchyBenchmark
         }
         C::PhysicalStepLimit limit;
         output["pp_physical_step"] = measure([&]
-                                             { limit = fv.LimitPhysicalStep(frozen, integrated, 1, 1, 1); }, repetitions);
+                                             { limit = fv.LimitPhysicalStep(frozenState, integratedState, thermalPolicy.View(), 1, 1, 1); }, repetitions);
         DNDS_check_throw_info(limit.limitedCells == expectedActive && std::abs(limit.dt - expectedAlpha) < 2e-12,
                               "physical PP benchmark differs from its affine-energy oracle");
         output["pp_active_cells"] = expectedActive;
         output["pp_physical_dt"] = limit.dt;
-        const auto &guess = fv.ReconstructionGuess(workspace);
+        const auto &guess = fv.ReconstructionGuess(reconstruction);
         auto saved = guess.Clone(), synthetic = guess.Clone();
         auto &syntheticArray = synthetic.CoupledField().Owned();
         {
@@ -146,15 +154,15 @@ namespace CauchyBenchmark
                 r(iCell, 4 * (r.Width() / 5)) = 4 * energy;
             }
         }
-        fv.RestoreReconstructionGuess(workspace, synthetic);
+        fv.RestoreReconstructionGuess(reconstruction, synthetic);
         output["pp_quadrature"] = measure([&]
-                                          { fv.LimitReconstructionPP(frozenState, workspace); }, repetitions);
+                                          { fv.LimitReconstructionPP(frozenState, reconstruction, workspace); }, repetitions);
         const auto [limited, beta] = fv.PositivityReconstructionStats(workspace);
         DNDS_check_throw_info(limited == globalRows && beta > 0 && beta < 1,
                               "quadrature PP benchmark did not exercise active limiting: cells=" + std::to_string(limited) + "/" + std::to_string(globalRows) + " beta=" + std::to_string(beta));
         output["pp_quadrature_cells"] = limited;
         output["pp_quadrature_beta"] = beta;
-        fv.RestoreReconstructionGuess(workspace, saved);
+        fv.RestoreReconstructionGuess(reconstruction, saved);
         const auto local = [mpi, checked](const std::function<void()> &run)
         {
             if (checked)
@@ -206,8 +214,9 @@ namespace CauchyBenchmark
         auto trialState = C::EquationDofs::Coupled(fv.Equation().Schema(), trial);
         auto sourceState = C::EquationDofs::Coupled(fv.Equation().Schema(), source);
         auto work = fv.BuildWorkspace(trialState);
+        auto trialReconstruction = fv.BuildReconstructionState(trialState);
         C::NonlinearSolver solver(
-            fv, trialState, work, engine, stream, settings,
+            fv, trialState, trialReconstruction, work, engine, stream, settings,
             A::ComponentSelection(trialState.ComponentNumber(),
                                   trialState.Schema().ResolveComponents(settings.implicit.residualComponents)));
         solver.EvaluateEquation(trialState, sourceState, 1e5, 1, 0);
@@ -215,7 +224,7 @@ namespace CauchyBenchmark
         for (int repetition = 0; repetition < repetitions; ++repetition)
         {
             A::Copy(trial, frozen);
-            fv.ResetReconstruction(*work);
+            fv.ResetReconstruction(*trialReconstruction, *work);
             {
                 auto write = trial.Owned().Write();
                 const auto value = write.View<R::UniformTableRows>();
@@ -224,7 +233,7 @@ namespace CauchyBenchmark
             }
             MPI_Barrier(mpi.comm);
             C::NonlinearProfile profile;
-            const auto report = solver.Solve(trialState, sourceState, 1e5, 1, 0, 0, {1, 0, &profile});
+            const auto report = solver.Solve(trialState, sourceState, 1e5, 1, 0, 0, {1, 0, std::ref(profile)});
             DNDS_check_throw_info(report.iterations == 1 && report.linearIterations == 5 && profile.residualEvaluations == 2 &&
                                       report.residual[4] < report.initialResidual[4],
                                   "nonlinear benchmark did not perform the declared correction or reduce its defect");

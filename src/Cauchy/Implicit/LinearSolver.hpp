@@ -71,7 +71,8 @@ namespace DNDS::Cauchy
         /// Caller supplies agreed scales across ranks. Their width and
         /// positivity are checked once per solve;
         /// no physics or mean-state reduction occurs inside the linear solver.
-        Linear::LinearIterationReport Solve(const Field &rhs, const Field *initialGuess = nullptr,
+        Linear::LinearIterationReport Solve(const Field &rhs,
+                                            std::optional<std::reference_wrapper<const Field>> initialGuess = std::nullopt,
                                             const std::vector<real> &componentScales = {});
         /// Sharing result handle; storage survives session destruction but may be
         /// overwritten by the next Solve. Copy values explicitly for history. Always inspect its
@@ -106,7 +107,8 @@ namespace DNDS::Cauchy
         EquationLinearSolver(EquationLinearSolver &&) noexcept = default;
         EquationLinearSolver &operator=(EquationLinearSolver &&) noexcept = default;
         /// Same optional frozen component-scale metric as LinearSolver.
-        Linear::LinearIterationReport Solve(const EquationDofs &rhs, const EquationDofs *initialGuess = nullptr,
+        Linear::LinearIterationReport Solve(const EquationDofs &rhs,
+                                            std::optional<std::reference_wrapper<const EquationDofs>> initialGuess = std::nullopt,
                                             const std::vector<real> &componentScales = {});
         EquationDofs Solution() const;
     };

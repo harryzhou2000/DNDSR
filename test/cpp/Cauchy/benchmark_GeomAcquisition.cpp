@@ -107,33 +107,34 @@ namespace
         auto mean = metrics.BuildField(5);
         auto logicalMean = C::EquationDofs::Coupled(equation.Schema(), mean);
         auto work = reconstruction.BuildWorkspace(5);
+        auto coefficients = reconstruction.BuildCoefficients(5);
         auto boundary = reconstruction.BuildBoundaryValues(5);
         {
             auto values = mean.Owned().Write();
-            auto coefficients = work.coefficients.Owned().Write();
+            auto coefficientWrite = coefficients.Owned().Write();
             for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
             {
                 const auto point = metrics.GetCellCent(iCell);
                 const auto value = equation.Gas().Conservative({1 + .01 * std::sin(6.28 * point[0]), 1, .1, 0, 1});
                 for (I component = 0; component < 5; ++component)
                     values.View()(iCell, component) = value[component];
-                for (I component = 0; component < work.coefficients.Width(); ++component)
-                    coefficients.View()(iCell, component) = .001 * std::sin(.13 * component + .01 * iCell);
+                for (I component = 0; component < coefficients.Width(); ++component)
+                    coefficientWrite.View()(iCell, component) = .001 * std::sin(.13 * component + .01 * iCell);
             }
         }
         metrics.BindHalo(mean).Begin().Wait();
-        metrics.BindHalo(work.coefficients).Begin().Wait();
-        const auto meanVersion = mean.Owned().Version(), coefficientVersion = work.coefficients.Owned().Version();
+        metrics.BindHalo(coefficients).Begin().Wait();
+        const auto meanVersion = mean.Owned().Version(), coefficientVersion = coefficients.Owned().Version();
         C::AuxiliaryRequest request;
         request.meanThermodynamics = request.faceSpectralRadius = request.cellSpectralSum = true;
         auto auxiliary = fv.BuildAuxiliaryValues(request);
         fv.PrepareAuxValues(logicalMean, auxiliary);
-        reconstruction.DoReconstructionIterTo(mean, work.coefficients, work, boundary);
+        reconstruction.DoReconstructionIterTo(mean, coefficients, work, boundary);
         std::vector<double> reference;
         {
             auto read = work.temporary.Owned().Read();
             for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
-                for (I component = 0; component < work.coefficients.Width(); ++component)
+                for (I component = 0; component < coefficients.Width(); ++component)
                     reference.push_back(read.View()(iCell, component));
         }
         volatile I observedRows = 0;
@@ -160,11 +161,11 @@ namespace
             {"auxiliary_complete", kernels, [&]
              { fv.PrepareAuxValues(logicalMean, auxiliary); }},
             {"reconstruction_all", kernels, [&]
-             { reconstruction.DoReconstructionIterTo(mean, work.coefficients, work, boundary); }},
+             { reconstruction.DoReconstructionIterTo(mean, coefficients, work, boundary); }},
             {"reconstruction_core", kernels, [&]
-             { reconstruction.DoReconstructionIterTo(mean, work.coefficients, work, boundary, F::ReconstructionRegion::Core); }},
+             { reconstruction.DoReconstructionIterTo(mean, coefficients, work, boundary, F::ReconstructionRegion::Core); }},
             {"reconstruction_dependent", kernels, [&]
-             { reconstruction.DoReconstructionIterTo(mean, work.coefficients, work, boundary, F::ReconstructionRegion::HaloDependent); }}};
+             { reconstruction.DoReconstructionIterTo(mean, coefficients, work, boundary, F::ReconstructionRegion::HaloDependent); }}};
         for (int trial = 0; trial < trials; ++trial)
         {
             J measurements;
@@ -178,16 +179,16 @@ namespace
             // before validating; the benchmark never consumes those outputs.
             fv.PrepareAuxValues(logicalMean, auxiliary);
             fv.ValidateAuxValues(logicalMean, auxiliary);
-            reconstruction.DoReconstructionIterTo(mean, work.coefficients, work, boundary, F::ReconstructionRegion::Core);
-            reconstruction.DoReconstructionIterTo(mean, work.coefficients, work, boundary, F::ReconstructionRegion::HaloDependent);
+            reconstruction.DoReconstructionIterTo(mean, coefficients, work, boundary, F::ReconstructionRegion::Core);
+            reconstruction.DoReconstructionIterTo(mean, coefficients, work, boundary, F::ReconstructionRegion::HaloDependent);
             {
                 auto read = work.temporary.Owned().Read();
                 for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
-                    for (I component = 0; component < work.coefficients.Width(); ++component)
-                        DNDS_check_throw_info(std::isfinite(read.View()(iCell, component)) && read.View()(iCell, component) == reference[size_t(iCell * work.coefficients.Width() + component)],
+                    for (I component = 0; component < coefficients.Width(); ++component)
+                        DNDS_check_throw_info(std::isfinite(read.View()(iCell, component)) && read.View()(iCell, component) == reference[size_t(iCell * coefficients.Width() + component)],
                                               "split reconstruction differs from unsplit frozen output");
             }
-            DNDS_check_throw_info(mean.Owned().Version() == meanVersion && work.coefficients.Owned().Version() == coefficientVersion,
+            DNDS_check_throw_info(mean.Owned().Version() == meanVersion && coefficients.Owned().Version() == coefficientVersion,
                                   "read/auxiliary/reconstruction probe mutated its inputs");
             I local[2]{metrics.NumCell(), I(metrics.CellWorkPartition().Core().size())}, low[2], high[2];
             MPI_Allreduce(local, low, 2, MPI_INT64_T, MPI_MIN, mpi.comm);

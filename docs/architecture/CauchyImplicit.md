@@ -1173,11 +1173,13 @@ when limiting is necessary. A good polynomial remains bitwise unchanged.
 sampled again and checked against the strict density/thermal constraints.
 
 These synchronous CPU projections allocate their scratch once in the FV
-workspace. They use explicit input/output coefficients and owned means only,
+workspace. Durable coefficients belong to the solver's `ReconstructionState`;
+the projections use those explicit input/output coefficients and owned means only,
 so a mean halo transfer can be active. Callers must complete coefficient
 transfers and conflicting accesses before projection; use the exact state
 storage bound by `BuildWorkspace`. No time advancement, reconstruction solve,
-halo communication or mean mutation is hidden in this method. Diagnostics
+halo communication or mean mutation is hidden in this method. The workspace
+does not retain either coefficient publication. Diagnostics
 report this call's count and minimum *applied* beta (zero after cutoff).
 
 `positivityReconstruction="Segment"` explicitly reproduces the earlier Cauchy

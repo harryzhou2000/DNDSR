@@ -123,11 +123,6 @@ PYBIND11_MODULE(cauchy_pybind11, m)
     }),
             py::arg("mesh"), py::arg("config_json") = "{}", py::arg("name") = "fluid",
             py::call_guard<py::gil_scoped_release>())
-        .def_property_readonly("flow",
-                               [](C::Domain &domain)
-    {
-        return R::PythonArray::Share(domain.Flow().Owned());
-    }, "Shared owned flow Array; follows normal retained-view/access contracts.")
         .def_property_readonly("dofs",
                                [](const C::Domain &domain)
     {
@@ -141,7 +136,7 @@ PYBIND11_MODULE(cauchy_pybind11, m)
         for (DNDS::index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             result.emplace(state.Fields().Name(iField), R::PythonArray::Share(state.PhysicalField(iField).Owned()));
         return result;
-    }, "Shared physical owned fields, including species. Retained views follow the same lease/publication rules as flow.")
+    }, "Shared physical owned fields, including flow, RANS and species. Retained views follow normal lease/publication rules.")
         .def(
             "make_derived_fields",
             [](const C::Domain &domain, const std::vector<C::DerivedQuantity> &quantities, bool ghost)
@@ -182,29 +177,19 @@ PYBIND11_MODULE(cauchy_pybind11, m)
         .def_property_readonly(
             "positivity", &C::Domain::LastPositivity,
             "Last accepted trial: reconstruction cell-stage activations, minimum beta, stage activations, minimum alpha, componentwise characteristic fallbacks.")
-        .def("residual",
-             [](C::Domain &domain)
-    {
-        const DNDS::CFV::FVField *value;
-        {
-            py::gil_scoped_release release;
-            value = &domain.Residual();
-        }
-        return R::PythonArray::Share(value->Owned());
-    }, "Collective integrated residual; returned Array aliases overwriteable workspace. Invalidates any prepared candidate.")
         .def("residual_fields",
              [](C::Domain &domain)
     {
-        const C::EquationDofs *value;
+        std::optional<C::EquationDofs> value;
         {
             py::gil_scoped_release release;
-            value = &domain.ResidualState();
+            value.emplace(domain.Residual().NumericAlias());
         }
         std::map<std::string, R::PythonArray> result;
         for (DNDS::index iField = 0; iField < value->PhysicalFieldNumber(); ++iField)
             result.emplace(value->Fields().Name(iField), R::PythonArray::Share(value->PhysicalField(iField).Owned()));
         return result;
-    }, "Collective full-equation integrated residual fields; shared overwriteable scratch, with the same candidate-invalidating and view-release rules as residual.")
+    }, "Collective integrated residual fields; shared overwriteable scratch. Invalidates any prepared candidate; release views before the next collective operation.")
         .def(
             "advance", &C::Domain::Advance, py::arg("dt"), py::call_guard<py::gil_scoped_release>(),
             "Collective configured time method. A rejected StepResult certifies a domain-wide numerical rejection: discard_step and retry with smaller dt. Other exceptions must terminate the MPI run immediately (for example MPI.COMM_WORLD.Abort(1)); do not catch locally and continue to MPI/finalization. SSPRK keeps raw flow5/species increments and separate RANS repair. maxRetries belongs to the C++ frontend.")

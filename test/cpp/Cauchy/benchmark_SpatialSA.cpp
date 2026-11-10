@@ -60,6 +60,7 @@ int main(int argc, char **argv)
         auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(6));
         auto result = C::EquationDofOperations::NewVector(state);
         auto workspace = fv.BuildWorkspace(state);
+        auto reconstruction = fv.BuildReconstructionState(state);
         R::EagerEngine engine;
         const auto stream = engine.CreateCPUStream();
 
@@ -150,7 +151,7 @@ int main(int argc, char **argv)
         const auto native = [&]
         {
             if (operation == "spatial")
-                fv.Evaluate(state, result, *workspace, engine, stream);
+                fv.Evaluate(state, result, *reconstruction, *workspace, engine, stream);
             else if (operation == "halo")
             {
                 meanHalo.Begin().Wait();

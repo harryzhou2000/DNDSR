@@ -16,6 +16,7 @@
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
 #include "../CFV/RotatedSectorFixture.hpp"
+#include <tuple>
 #include <cstdlib>
 #include <numeric>
 #include <limits>
@@ -141,32 +142,35 @@ TEST_CASE("Equation FV uses the established P3/gradient/WBAP flow5 kernels acros
         auto generic = C::EquationDofs::Coupled(equation.Schema(), raw);
         auto expected = C::EquationDofOperations::NewVector(generic);
         auto result = C::EquationDofOperations::NewVector(state);
+        auto genericReconstruction = fv.BuildReconstructionState(generic);
+        auto reconstruction = fv.BuildReconstructionState(state);
         auto genericWork = fv.BuildWorkspace(
             generic, std::nullopt,
             C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic});
         auto work = fv.BuildWorkspace(state);
         R::EagerEngine engine(variant == 0 ? 0 : 2);
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(generic, expected, *genericWork, engine, stream);
-        fv.Evaluate(state, result, *work, engine, stream);
+        fv.Evaluate(generic, expected, *genericReconstruction, *genericWork, engine, stream);
+        fv.Evaluate(state, result, *reconstruction, *work, engine, stream);
         Compare(result, expected, 2e-12);
         auto separate = C::EquationDofOperations::NewVector(state);
         auto faceFlux = fv.BuildFaceFluxBuffer(state.ComponentNumber());
-        fv.EvaluateFlux(state, separate, *work, DNDS::CFV::ReconstructionRegion::All, 0, &faceFlux);
-        fv.AddSource(state, separate, *work);
+        fv.EvaluateFlux(state, separate, *reconstruction, *work, DNDS::CFV::ReconstructionRegion::All, 0, std::ref(faceFlux));
+        fv.AddSource(state, separate, *reconstruction, *work);
         Compare(result, separate, 2e-12);
         if (variant == 0)
         {
+            auto preparedReconstruction = fv.BuildReconstructionState(state);
             auto prepared = fv.BuildWorkspace(state);
-            fv.PrepareReconstruction(state, *prepared, engine, stream);
-            fv.EvaluateFlux(state, separate, *prepared);
-            fv.AddSource(state, separate, *prepared);
+            fv.PrepareReconstruction(state, *preparedReconstruction, *prepared, engine, stream);
+            fv.EvaluateFlux(state, separate, *preparedReconstruction, *prepared);
+            fv.AddSource(state, separate, *preparedReconstruction, *prepared);
             Compare(result, separate, 2e-12);
         }
         ConservativeIntegral(result);
         if (variant == 1)
         {
-            const auto &coefficients = fv.ReconstructionGuess(*work);
+            const auto &coefficients = fv.ReconstructionGuess(*reconstruction);
             auto snapshot = C::EquationDofOperations::NewVector(coefficients);
             auto replacement = C::EquationDofOperations::NewVector(coefficients);
             C::EquationDofOperations::Copy(snapshot, coefficients);
@@ -174,7 +178,7 @@ TEST_CASE("Equation FV uses the established P3/gradient/WBAP flow5 kernels acros
             std::optional<C::EquationDofs::ReadScope> retained;
             if (mpi.rank == 0)
                 retained.emplace(coefficients.ReadOwned());
-            CHECK_THROWS(fv.RestoreReconstructionGuess(*work, replacement));
+            CHECK_THROWS(fv.RestoreReconstructionGuess(*reconstruction, replacement));
             retained.reset();
             Compare(coefficients, snapshot, 1e-15);
             if (mpi.rank == 0)
@@ -182,10 +186,10 @@ TEST_CASE("Equation FV uses the established P3/gradient/WBAP flow5 kernels acros
                 auto write = replacement.WriteOwned();
                 write.Block(0)(0, 0) = std::numeric_limits<double>::quiet_NaN();
             }
-            CHECK_THROWS(fv.RestoreReconstructionGuess(*work, replacement));
+            CHECK_THROWS(fv.RestoreReconstructionGuess(*reconstruction, replacement));
             Compare(coefficients, snapshot, 1e-15);
             C::EquationDofOperations::Fill(replacement, .125);
-            fv.RestoreReconstructionGuess(*work, replacement);
+            fv.RestoreReconstructionGuess(*reconstruction, replacement);
             Compare(coefficients, replacement, 1e-15);
         }
     }
@@ -224,6 +228,7 @@ TEST_CASE("Equation FV local stages and physical-field halos inherit the agreed 
             }
         }
         auto result = C::EquationDofOperations::NewVector(state);
+        auto reconstruction = fv.BuildReconstructionState(state);
         auto work = fv.BuildWorkspace(state);
         R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
@@ -238,7 +243,7 @@ TEST_CASE("Equation FV local stages and physical-field halos inherit the agreed 
         };
         {
             CountingScope count;
-            fv.Evaluate(state, result, *work, engine, stream);
+            fv.Evaluate(state, result, *reconstruction, *work, engine, stream);
         }
         if (checks)
         {
@@ -290,11 +295,13 @@ TEST_CASE("Canonical equation face flux agrees with cell incidence on rotated an
         auto genericWork = fv.BuildWorkspace(
             generic, std::nullopt,
             C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic});
+        auto genericReconstruction = fv.BuildReconstructionState(generic);
+        auto reconstruction = fv.BuildReconstructionState(state);
         auto work = fv.BuildWorkspace(state);
         R::EagerEngine engine;
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(generic, expected, *genericWork, engine, stream);
-        fv.Evaluate(state, result, *work, engine, stream);
+        fv.Evaluate(generic, expected, *genericReconstruction, *genericWork, engine, stream);
+        fv.Evaluate(state, result, *reconstruction, *work, engine, stream);
         Compare(result, expected, 2e-12);
     }
 }
@@ -337,11 +344,12 @@ TEST_CASE("Logical nonlinear flow5 retains native finite-sweep stage mathematics
         C::AuxiliaryRequest request;
         request.faceSpectralRadius = request.cellSpectralSum = true;
         C::NonlinearSolver reference(fv, generic,
+                                     fv.BuildReconstructionState(generic),
                                      fv.BuildWorkspace(
                                          generic, std::nullopt,
                                          C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic}),
                                      engine, stream, settings, A::ComponentSelection(5));
-        C::NonlinearSolver solver(fv, state, fv.BuildWorkspace(state), engine, stream, settings, A::ComponentSelection(5));
+        C::NonlinearSolver solver(fv, state, fv.BuildReconstructionState(state), fv.BuildWorkspace(state), engine, stream, settings, A::ComponentSelection(5));
         const auto expected = reference.Solve(generic, right, 20, .5, .1, 0, {2});
         const auto actual = solver.Solve(state, right, 20, .5, .1, 0, {2});
         CHECK(actual.iterations == expected.iterations);
@@ -398,11 +406,13 @@ TEST_CASE("Equation wall values preserve internal energy and support empty owner
         auto genericWork = fv.BuildWorkspace(
             generic, std::nullopt,
             C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic});
+        auto genericReconstruction = fv.BuildReconstructionState(generic);
+        auto reconstruction = fv.BuildReconstructionState(state);
         auto work = fv.BuildWorkspace(state);
         R::EagerEngine engine(2);
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(generic, expected, *genericWork, engine, stream);
-        fv.Evaluate(state, result, *work, engine, stream);
+        fv.Evaluate(generic, expected, *genericReconstruction, *genericWork, engine, stream);
+        fv.Evaluate(state, result, *reconstruction, *work, engine, stream);
         Compare(result, expected, 2e-12);
         C::AuxiliaryRequest request;
         request.meanThermodynamics = request.faceSpectralRadius = request.cellSpectralSum = true;
@@ -549,10 +559,11 @@ TEST_CASE("A single-species material uses empty independent composition and no c
             }
         }
         auto residual = C::EquationDofOperations::NewVector(state);
+        auto reconstruction = fv.BuildReconstructionState(state);
         auto work = fv.BuildWorkspace(state, workers);
         R::EagerEngine engine;
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(state, residual, *work, engine, stream);
+        fv.Evaluate(state, residual, *reconstruction, *work, engine, stream);
         {
             const auto read = residual.ReadOwned();
             const auto r = read.Block("flow");
@@ -561,7 +572,7 @@ TEST_CASE("A single-species material uses empty independent composition and no c
                     CHECK(std::abs(r(iCell, j)) < 1e-12);
         }
         R::Array<double> jacobian(R::RowLayout::Dense(I(state.Space().OwnedRows()), 25));
-        C::EvaluateChemicalSource(equation, state, residual, workers.Acquire(), &jacobian);
+        C::EvaluateChemicalSource(equation, state, residual, workers.Acquire(), std::ref(jacobian));
         const auto read = residual.ReadOwned();
         const auto matrix = jacobian.Read();
         for (I iCell = 0; iCell < I(state.Space().OwnedRows()); ++iCell)
@@ -679,10 +690,11 @@ TEST_CASE("Distributed prescribed mixture boundaries match independent nonconsta
         }
         mixture.Fill(state, fv.Metrics(), false);
         auto result = C::EquationDofOperations::NewVector(state);
+        auto reconstruction = fv.BuildReconstructionState(state);
         auto work = fv.BuildWorkspace(state, mixture.workers);
         R::EagerEngine engine(scenario ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(state, result, *work, engine, stream);
+        fv.Evaluate(state, result, *reconstruction, *work, engine, stream);
         C::AuxiliaryRequest request;
         request.faceSpectralRadius = request.cellSpectralSum = true;
         auto auxiliary = fv.BuildAuxiliaryValues(request);
@@ -814,10 +826,11 @@ TEST_CASE("Mixture isothermal wall conducts the independent Fourier flux without
     for (int k = 0; k < mixture.species; ++k)
         composition[mixture.material.SpeciesNames()[k]] = Y[k];
     fv.InitializeConstant(state, {.8, 0, 0, 0, 1}, composition, 1400 / mixture.scales.T0, mixture.workers);
+    auto reconstruction = fv.BuildReconstructionState(state);
     auto work = fv.BuildWorkspace(state, mixture.workers);
     R::EagerEngine engine(2);
     const auto stream = engine.CreateCPUStream();
-    fv.Evaluate(state, result, *work, engine, stream);
+    fv.Evaluate(state, result, *reconstruction, *work, engine, stream);
     const P::Chemistry::ConstSpeciesBufferView fractions{Y.data(), mixture.species};
     const double r1 = .8, r2 = r1 * 1400 / 600;
     const double p = r1 * mixture.scales.rho0 * mixture.prototype.mixtureR(fractions) * 1400;
@@ -965,7 +978,7 @@ TEST_CASE("Explicit mixture rejects inadmissible raw flow or species and retries
     const C::EquationDofOperations::Binding accepted(domain.Dofs());
     double criticalDt = std::numeric_limits<double>::infinity();
     {
-        const auto &rhs = domain.ResidualState();
+        const auto &rhs = domain.Residual();
         const auto initial = original.ReadOwned(), residual = rhs.ReadOwned();
         const auto values = initial.Block(reactive ? "species" : "flow"), rate = residual.Block(reactive ? "species" : "flow");
         for (I iCell = 0; iCell < values.RowCount(); ++iCell)
@@ -1018,13 +1031,14 @@ TEST_CASE("Explicit mixture rejects inadmissible raw flow or species and retries
     auto oracle = original.Clone();
     auto rhs = C::EquationDofOperations::NewVector(oracle);
     const auto &fv = domain.Discretization();
+    auto reconstruction = fv.BuildReconstructionState(oracle);
     auto work = fv.BuildWorkspace(oracle, domain.ChemicalWorkers());
     R::EagerEngine engine(2);
     const auto stream = engine.CreateCPUStream();
     const double history[3]{0, .75, 1. / 3}, weight[3]{1, .25, 2. / 3}, stageTime[3]{0, dt, .5 * dt};
     for (int stage = 0; stage < 3; ++stage)
     {
-        fv.Evaluate(oracle, rhs, *work, engine, stream, stageTime[stage]);
+        fv.Evaluate(oracle, rhs, *reconstruction, *work, engine, stream, stageTime[stage]);
         const auto base = original.ReadOwned(), residual = rhs.ReadOwned();
         auto output = oracle.WriteOwned();
         for (I iBlock = 0; iBlock < oracle.BlockNumber(); ++iBlock)
@@ -1117,7 +1131,7 @@ TEST_CASE("Configured mixture Domains advance every block through production tim
         const auto dt = domain.StableStep(.5);
         CHECK(std::isfinite(dt));
         CHECK(dt > 0);
-        CHECK(domain.ResidualState().ComponentNumber() == mixture.species + 4);
+        CHECK(domain.Residual().ComponentNumber() == mixture.species + 4);
         int firstStep = 0;
         if (scenario == 1)
         {
@@ -1378,10 +1392,11 @@ TEST_CASE("Actual mixture FV residual preserves separate/permuted fields and cor
     auto referenceState = mixture.State(baseline.Metrics().Space(), 0);
     mixture.Fill(referenceState, baseline.Metrics(), false);
     auto expected = C::EquationDofOperations::NewVector(referenceState);
+    auto baseReconstruction = baseline.BuildReconstructionState(referenceState);
     auto baseWork = baseline.BuildWorkspace(referenceState, mixture.workers);
     R::EagerEngine engine(2);
     const auto stream = engine.CreateCPUStream();
-    baseline.Evaluate(referenceState, expected, *baseWork, engine, stream);
+    baseline.Evaluate(referenceState, expected, *baseReconstruction, *baseWork, engine, stream);
     ConservativeIntegral(expected);
     const C::AuxiliaryRequest all{true, true, true, true, true, true, true};
     auto referenceAuxiliary = baseline.BuildAuxiliaryValues(all);
@@ -1393,9 +1408,10 @@ TEST_CASE("Actual mixture FV residual preserves separate/permuted fields and cor
         auto state = mixture.State(fv.Metrics().Space(), layout);
         mixture.Fill(state, fv.Metrics(), false);
         auto result = C::EquationDofOperations::NewVector(state);
+        auto reconstruction = fv.BuildReconstructionState(state);
         auto work = fv.BuildWorkspace(state, mixture.workers);
         const auto before = state.PhysicalField(0).Owned().Version();
-        fv.Evaluate(state, result, *work, engine, stream);
+        fv.Evaluate(state, result, *reconstruction, *work, engine, stream);
         Compare(expected, result, 5e-11);
         CHECK(state.PhysicalField(0).Owned().Version() == before);
         auto request = all;
@@ -1422,7 +1438,7 @@ TEST_CASE("Actual mixture FV residual preserves separate/permuted fields and cor
         std::optional<R::Array<double>::ReadLease> pin;
         if (mpi.rank == 0)
             pin.emplace(result.PhysicalField(result.PhysicalFieldNumber() - 1).Owned().Read());
-        CHECK_THROWS(fv.Evaluate(state, result, *work, engine, stream));
+        CHECK_THROWS(fv.Evaluate(state, result, *reconstruction, *work, engine, stream));
         CHECK(result.PhysicalField(0).Owned().Version() == version);
         // A species-only mutation invalidates the property publication too.
         {
@@ -1457,10 +1473,11 @@ TEST_CASE("Mixture volume quadrature adds the conservative chemical rate and lea
     auto state = mixture.State(fv.Metrics().Space(), 1);
     mixture.Fill(state, fv.Metrics(), true);
     auto result = C::EquationDofOperations::NewVector(state);
+    auto reconstruction = fv.BuildReconstructionState(state);
     auto work = fv.BuildWorkspace(state, mixture.workers);
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
-    fv.Evaluate(state, result, *work, engine, stream);
+    fv.Evaluate(state, result, *reconstruction, *work, engine, stream);
     auto evaluator = mixture.equation.MakePointEvaluator(mixture.workers.Acquire(), {false, false, false, true, false});
     const auto read = state.ReadOwned(), residual = result.ReadOwned();
     const auto flow = read.Block("flow"), species = read.Block("species"), rhsFlow = residual.Block("flow"), rhsSpecies = residual.Block("species");
@@ -1504,12 +1521,13 @@ TEST_CASE("Nonconstant assembled mixture diffusion matches an independent face i
     auto b = C::EquationDofs::Coupled(mixture.equation.Schema(), diffusion.Metrics().BuildField(mixture.species + 4));
     mixture.Fill(a, noDiffusion.Metrics(), false);
     mixture.Fill(b, diffusion.Metrics(), false);
+    auto reconstructionA = noDiffusion.BuildReconstructionState(a), reconstructionB = diffusion.BuildReconstructionState(b);
     auto wa = noDiffusion.BuildWorkspace(a, mixture.workers), wb = diffusion.BuildWorkspace(b, mixture.workers);
     auto ra = C::EquationDofOperations::NewVector(a), rb = C::EquationDofOperations::NewVector(b);
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
-    noDiffusion.Evaluate(a, ra, *wa, engine, stream);
-    diffusion.Evaluate(b, rb, *wb, engine, stream);
+    noDiffusion.Evaluate(a, ra, *reconstructionA, *wa, engine, stream);
+    diffusion.Evaluate(b, rb, *reconstructionB, *wb, engine, stream);
     struct FacePoint
     {
         I cell;
@@ -1559,7 +1577,7 @@ TEST_CASE("Nonconstant assembled mixture diffusion matches an independent face i
     for (int derivative = 0; derivative < 3; ++derivative)
     {
         samples.emplace_back(R::RowLayout::Dense(count, components));
-        sampling.Evaluate(b.PhysicalField(0), diffusion.FluxReconstruction(*wb).PhysicalField(0), samples.back(), derivative);
+        sampling.Evaluate(b.PhysicalField(0), diffusion.FluxReconstruction(*reconstructionB, *wb).PhysicalField(0), samples.back(), derivative);
     }
     const auto valueRead = samples[0].Read(), dxRead = samples[1].Read(), dyRead = samples[2].Read();
     const auto values = valueRead.View<R::UniformTableRows>();
@@ -1643,12 +1661,16 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
     mixture.Fill(a, withoutSource.Metrics(), true);
     mixture.Fill(b, withSource.Metrics(), true);
     mixture.Fill(bq, withSourceQuadrature.Metrics(), true);
+    auto reconstructionA = withoutSource.BuildReconstructionState(a), reconstructionB = withSource.BuildReconstructionState(b),
+         reconstructionBq = withSourceQuadrature.BuildReconstructionState(bq);
     auto wa = withoutSource.BuildWorkspace(a, mixture.workers), wb = withSource.BuildWorkspace(b, mixture.workers),
          wbq = withSourceQuadrature.BuildWorkspace(bq, mixture.workers);
-    for (const auto &[fv, work] : std::vector<std::pair<const C::FiniteVolume *, std::shared_ptr<C::FiniteVolume::Workspace>>>{
-             {&withoutSource, wa}, {&withSource, wb}, {&withSourceQuadrature, wbq}})
+    for (const auto &[fv, reconstruction, work] :
+         std::vector<std::tuple<const C::FiniteVolume *, std::shared_ptr<C::FiniteVolume::ReconstructionState>,
+                                std::shared_ptr<C::FiniteVolume::Workspace>>>{
+             {&withoutSource, reconstructionA, wa}, {&withSource, reconstructionB, wb}, {&withSourceQuadrature, reconstructionBq, wbq}})
     {
-        auto coefficients = fv->ReconstructionGuess(*work);
+        auto coefficients = fv->ReconstructionGuess(*reconstruction);
         C::EquationDofOperations::Fill(coefficients, 0);
         auto write = coefficients.WriteOwned();
         const auto flow = write.Block("flow");
@@ -1659,14 +1681,14 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
     auto ra = C::EquationDofOperations::NewVector(a), rb = C::EquationDofOperations::NewVector(b);
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
-    withoutSource.Evaluate(a, ra, *wa, engine, stream);
-    withSource.Evaluate(b, rb, *wb, engine, stream);
+    withoutSource.Evaluate(a, ra, *reconstructionA, *wa, engine, stream);
+    withSource.Evaluate(b, rb, *reconstructionB, *wb, engine, stream);
     const I rows = withSource.Metrics().NumCell(), count = rows * 9;
     auto auxiliaryA = withoutSource.BuildAuxiliaryValues({false, true}), auxiliaryB = withSource.BuildAuxiliaryValues({false, true}),
          auxiliaryBq = withSourceQuadrature.BuildAuxiliaryValues({false, true});
     withoutSource.PrepareAuxValues(a, auxiliaryA, 0, mixture.workers);
     withSource.PrepareAuxValues(b, auxiliaryB, 0, mixture.workers);
-    withSourceQuadrature.PrepareCorrectionAux(bq, *wbq, auxiliaryBq, engine, stream, 0);
+    withSourceQuadrature.PrepareCorrectionAux(bq, *reconstructionBq, *wbq, auxiliaryBq, engine, stream, 0);
     R::Array<double> inverseTau(R::RowLayout::Dense(rows, 1));
     {
         auto write = inverseTau.Write();
@@ -1680,14 +1702,17 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
     const auto unpreparedVersion = matrixB->Diagonal().Version();
     CHECK_THROWS(withSource.PrepareJacobian(b, auxiliaryB, inverseTau, *matrixB, controls, 0, mixture.workers));
     CHECK(matrixB->Diagonal().Version() == unpreparedVersion);
-    withSource.PrepareJacobian(b, auxiliaryB, inverseTau, *matrixB, controls, 0, mixture.workers, wb.get());
-    withSourceQuadrature.PrepareJacobian(bq, auxiliaryBq, inverseTau, *matrixBq, controls, 0, mixture.workers, wbq.get());
+    withSource.PrepareJacobian(b, auxiliaryB, inverseTau, *matrixB, controls, 0, mixture.workers,
+                               C::FiniteVolume::JacobianContext{*reconstructionB, *wb});
+    withSourceQuadrature.PrepareJacobian(bq, auxiliaryBq, inverseTau, *matrixBq, controls, 0, mixture.workers,
+                                         C::FiniteVolume::JacobianContext{*reconstructionBq, *wbq});
 
     // The fused mean-source producer also freezes the mean snapshot required
     // by evaluated off-diagonal actions. Exercise a nonzero physical vector,
     // while the independent chemical mean-source oracle below checks values.
     auto evaluated = withSource.BuildLinearProblem(b, C::DiagonalStorage::Block, C::OffDiagonalStorage::SemiMatrixFree);
-    withSource.PrepareJacobian(b, auxiliaryB, inverseTau, *evaluated, controls, 0, mixture.workers, wb.get());
+    withSource.PrepareJacobian(b, auxiliaryB, inverseTau, *evaluated, controls, 0, mixture.workers,
+                               C::FiniteVolume::JacobianContext{*reconstructionB, *wb});
     auto assembledAction = C::EquationDofOperations::NewVector(b), evaluatedAction = C::EquationDofOperations::NewVector(b);
     matrixB->Apply(b, assembledAction);
     evaluated->Apply(b, evaluatedAction);
@@ -1713,7 +1738,7 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
     }
     DNDS::CFV::PolynomialSamplingPlan sampling(withSource.Reconstruction(), cells, points, false);
     R::Array<double> sampled(R::RowLayout::Dense(count, mixture.species + 4));
-    sampling.Evaluate(b.PhysicalField(0), withSource.FluxReconstruction(*wb).PhysicalField(0), sampled);
+    sampling.Evaluate(b.PhysicalField(0), withSource.FluxReconstruction(*reconstructionB, *wb).PhysicalField(0), sampled);
     const auto sampledRead = sampled.Read(), meanRead = b.PhysicalField(0).Owned().Read();
     const auto values = sampledRead.View<R::UniformTableRows>(), means = meanRead.View<R::UniformTableRows>();
     const auto lhs = ra.ReadOwned(), rhs = rb.ReadOwned();
@@ -1797,13 +1822,15 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
     CHECK(quadratureError <= 2e-7 * quadratureMagnitude + 1e-10);
     const auto version = matrixB->Diagonal().Version();
     {
-        auto changed = withSource.FluxReconstruction(*wb).PhysicalField(0).Owned();
+        auto changed = withSource.FluxReconstruction(*reconstructionB, *wb).PhysicalField(0).Owned();
         auto write = changed.Write();
         const auto coefficients = write.View<R::UniformTableRows>();
         if (coefficients.RowCount())
             coefficients(0, 4 * withSource.Reconstruction().NRecDOF()) += 1e-8;
     }
-    CHECK_THROWS(withSource.PrepareJacobian(b, auxiliaryB, inverseTau, *matrixB, controls, 0, mixture.workers, wb.get()));
+    CHECK_THROWS(withSource.PrepareJacobian(
+        b, auxiliaryB, inverseTau, *matrixB, controls, 0, mixture.workers,
+        C::FiniteVolume::JacobianContext{*reconstructionB, *wb}));
     CHECK(matrixB->Diagonal().Version() == version);
 }
 TEST_CASE("Equation P3 positivity protects actual EOS samples and preserves unlimited guesses in split and permuted layouts")
@@ -1826,8 +1853,9 @@ TEST_CASE("Equation P3 positivity protects actual EOS samples and preserves unli
         C::FiniteVolume fv(mesh, settings, mixture.equation);
         auto state = mixture.State(fv.Metrics().Space(), scenario + 1);
         mixture.Fill(state, fv.Metrics(), true);
+        auto reconstruction = fv.BuildReconstructionState(state);
         auto work = fv.BuildWorkspace(state, mixture.workers);
-        auto guess = fv.ReconstructionGuess(*work);
+        auto guess = fv.ReconstructionGuess(*reconstruction);
         const int modes = fv.Reconstruction().NRecDOF();
         {
             auto write = guess.WriteOwned();
@@ -1843,14 +1871,14 @@ TEST_CASE("Equation P3 positivity protects actual EOS samples and preserves unli
             }
         }
         const C::EquationDofOperations::Binding meansBefore(state), guessBefore(guess);
-        fv.LimitReconstructionPP(state, *work);
+        fv.LimitReconstructionPP(state, *reconstruction, *work);
         CHECK_NOTHROW(meansBefore.Check(state, true));
         CHECK_NOTHROW(guessBefore.Check(guess, true));
         const auto statistics = fv.PositivityReconstructionStats(*work);
         CHECK(statistics.first > 0);
         CHECK(statistics.second == 0);
         {
-            const auto read = fv.FluxReconstruction(*work).ReadOwned();
+            const auto read = fv.FluxReconstruction(*reconstruction, *work).ReadOwned();
             const auto flow = read.Block("flow");
             for (I iCell = 0; iCell < flow.owned.RowCount(); ++iCell)
             {
@@ -1887,7 +1915,7 @@ TEST_CASE("Equation P3 positivity protects actual EOS samples and preserves unli
         for (I f = 0; f < state.PhysicalFieldNumber(); ++f)
         {
             values.emplace_back(R::RowLayout::Dense(count, I(state.PhysicalField(f).Width())));
-            sampler.Evaluate(state.PhysicalField(f), fv.FluxReconstruction(*work).PhysicalField(f), values.back());
+            sampler.Evaluate(state.PhysicalField(f), fv.FluxReconstruction(*reconstruction, *work).PhysicalField(f), values.back());
         }
         std::vector<R::Array<double>::ReadLease> leases;
         for (const auto &value : values)
@@ -1913,7 +1941,7 @@ TEST_CASE("Equation P3 positivity protects actual EOS samples and preserves unli
         auto residual = C::EquationDofOperations::NewVector(state), rates = C::EquationDofOperations::NewVector(state);
         R::EagerEngine engine(2);
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(state, residual, *work, engine, stream);
+        fv.Evaluate(state, residual, *reconstruction, *work, engine, stream);
         C::EvaluateChemicalSource(mixture.equation, state, rates, mixture.workers.Acquire());
         const auto rr = residual.ReadOwned(), sr = rates.ReadOwned();
         const auto rl = rr.ComponentLayout(), sl = sr.ComponentLayout();
@@ -1971,7 +1999,7 @@ TEST_CASE("Equation implicit PP compresses RHS or pseudo-time and repairs specie
         }
         R::EagerEngine engine(2);
         const auto stream = engine.CreateCPUStream();
-        C::NonlinearSolver solver(fv, state, fv.BuildWorkspace(state, mixture.workers), engine, stream,
+        C::NonlinearSolver solver(fv, state, fv.BuildReconstructionState(state), fv.BuildWorkspace(state, mixture.workers), engine, stream,
                                   settings, A::ComponentSelection(state.ComponentNumber()), mixture.workers);
         const auto report = solver.Solve(state, source, 20, 1, .1);
         CHECK(report.iterations == 1);
@@ -2072,8 +2100,9 @@ TEST_CASE("Coupled mixture nonlinear stage recovers a manufactured target throug
         C::EquationDofOperations::Scale(source, 20);
         R::EagerEngine engine(scenario ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
+        auto reconstruction = fv.BuildReconstructionState(state);
         auto work = fv.BuildWorkspace(state, mixture.workers);
-        C::NonlinearSolver solver(fv, state, work, engine, stream, settings, A::ComponentSelection(state.ComponentNumber()), mixture.workers);
+        C::NonlinearSolver solver(fv, state, reconstruction, work, engine, stream, settings, A::ComponentSelection(state.ComponentNumber()), mixture.workers);
         const auto report = solver.Solve(state, source, 20, .5, .1);
         CAPTURE(scenario);
         CAPTURE(report.iterations);
@@ -2152,12 +2181,13 @@ TEST_CASE("Production equation nonlinear stages advance a distributed reacting F
         C::EquationDofOperations::Copy(trial, initial);
         R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
+        auto reconstruction = fv.BuildReconstructionState(trial);
         auto work = fv.BuildWorkspace(trial, mixture.workers);
-        C::NonlinearSolver nonlinear(fv, trial, work, engine, stream, settings, A::ComponentSelection(trial.ComponentNumber()), mixture.workers);
+        C::NonlinearSolver nonlinear(fv, trial, reconstruction, work, engine, stream, settings, A::ComponentSelection(trial.ComponentNumber()), mixture.workers);
         C::EquationTimeStepper stepper(accepted, "bdf1");
         const auto evaluate = [&](auto &state, auto &rate, double time, int)
         {
-            fv.Evaluate(state, rate, *work, engine, stream, time);
+            fv.Evaluate(state, rate, *reconstruction, *work, engine, stream, time);
             const auto geometry = fv.Metrics().AcquireRead();
             const auto metric = geometry.HostView();
             auto write = rate.WriteOwned();

@@ -23,7 +23,7 @@ namespace
                 const auto &settings = config.Domains()[iDomain].settings;
                 const auto geometry = domain.Discretization().Metrics().AcquireRead();
                 const auto metric = geometry.HostView();
-                const auto read = domain.Flow().Owned().Read();
+                const auto read = domain.Dofs().CoupledField().Owned().Read();
                 const auto u = read.View<R::UniformTableRows>();
                 double volume = 0;
                 for (I iCell = 0; iCell < u.RowCount(); ++iCell)
@@ -186,7 +186,7 @@ int main(int argc, char **argv)
                         const auto native=domain.Discretization().Mesh().CurrentNativeState();
                         DNDS_check_throw_info(native&&native->Entities(DNDS::Geom::EntityKind::Cell).SameOrder(domain.Discretization().Metrics().Cells()),
                                               "final field and persistent cell IDs have different row order");
-                        const auto read=domain.Flow().Owned().Read();
+                        const auto read=domain.Dofs().CoupledField().Owned().Read();
                         const auto values=read.View<R::UniformTableRows>();
                         for(I iCell=0;iCell<values.RowCount();++iCell)
                         {

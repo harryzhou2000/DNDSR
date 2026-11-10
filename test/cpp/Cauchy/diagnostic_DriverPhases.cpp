@@ -130,6 +130,7 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
                 values(iCell, j) = solver.getU()[iCell][j];
     }
     C::EquationDofOperations::Copy(initial, state);
+    auto reconstruction = fv.BuildReconstructionState(state);
     auto work = fv.BuildWorkspace(state);
     double wallDifference = 0;
     {
@@ -159,7 +160,7 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
     MPI_Allreduce(MPI_IN_PLACE, &wallDifference, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
     R::EagerEngine engine;
     auto stream = engine.CreateCPUStream();
-    C::NonlinearSolver nonlinear(fv, state, work, engine, stream, settings,
+    C::NonlinearSolver nonlinear(fv, state, reconstruction, work, engine, stream, settings,
                                  DNDS::Algebra::ComponentSelection(6, {0}));
     std::unique_ptr<C::PolynomialMultigrid> multigrid;
     if (levels)
@@ -167,7 +168,7 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
     const auto reset = [&]
     {
         C::EquationDofOperations::Copy(state, initial);
-        fv.ResetReconstruction(*work);
+        fv.ResetReconstruction(*reconstruction, *work);
     };
     const auto composed = [&]
     {
@@ -292,7 +293,7 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
         DiagnosticTiming::Sample audit;
         DiagnosticTiming::active = &audit;
         auto auxiliary = fv.BuildAuxiliaryValues({true, true});
-        fv.PrepareCorrectionAux(state, *work, auxiliary, engine, stream, 0.);
+        fv.PrepareCorrectionAux(state, *reconstruction, *work, auxiliary, engine, stream, 0.);
         DiagnosticTiming::active = nullptr;
         DNDS_check_throw_info(std::accumulate(audit.correctionSourceCalls.begin(), audit.correctionSourceCalls.end(), DNDS::index(0)) == 1 &&
                                   std::accumulate(audit.correctionSourcePoints.begin(), audit.correctionSourcePoints.end(), DNDS::index(0)) == work->sourceOffsets.back(),

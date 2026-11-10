@@ -225,7 +225,7 @@ TEST_CASE("Jacobi matches independent frozen-remote local-sweep oracle")
                         expected = std::move(next);
                     }
                 }
-                const auto report = solver.Solve(fixture.rhs, warm ? &fixture.rhs : nullptr);
+                const auto report = solver.Solve(fixture.rhs, warm ? std::optional(std::cref(fixture.rhs)) : std::nullopt);
                 REQUIRE(report.usable);
                 CHECK(report.jacobiSweeps == 2 * localSweeps);
                 CHECK(report.jacobiInputExchanges == (warm ? 2 : 1));
@@ -251,7 +251,7 @@ TEST_CASE("Jacobi matches independent frozen-remote local-sweep oracle")
                 }
                 C::EquationLinearSolver splitSolver(fixture.problem, split, [&](Field &field)
                                                     { return fixture.Bind(field); }, settings, {false, true});
-                REQUIRE(splitSolver.Solve(split, warm ? &split : nullptr).usable);
+                REQUIRE(splitSolver.Solve(split, warm ? std::optional(std::cref(split)) : std::nullopt).usable);
                 const auto splitRead = splitSolver.Solution().ReadOwned();
                 const auto splitLayout = splitRead.ComponentLayout();
                 const auto result = solver.Solution().Owned().Read();
@@ -409,7 +409,7 @@ TEST_CASE("Cauchy coupled linear solvers match a global dense oracle with real p
                     CHECK(values(iCell, j) == first[5 * iCell + j]);
         }
         const auto warmGuess = solver.Solution();
-        const auto warm = solver.Solve(fixture.rhs, &warmGuess);
+        const auto warm = solver.Solve(fixture.rhs, std::cref(warmGuess));
         CHECK(warm.converged);
         CHECK(warm.iterations == 0);
         const auto solutionVersion = solver.Solution().Owned().Version();
@@ -525,7 +525,7 @@ TEST_CASE("GMRES fixed ILU corrections match one Arnoldi step of the distributed
             for (int i = 0; i < count; ++i)
                 weightedZ[i] /= scales[i % 5], weightedAction[i] /= scales[i % 5];
         const Eigen::VectorXd expected = z * (weightedAction.dot(weightedZ) / weightedAction.squaredNorm());
-        const auto first = physical.Solve(fixture.rhs, nullptr, scales), second = logical.Solve(logicalRHS, nullptr, scales);
+        const auto first = physical.Solve(fixture.rhs, std::nullopt, scales), second = logical.Solve(logicalRHS, std::nullopt, scales);
         REQUIRE(first.usable);
         REQUIRE(second.usable);
         CHECK(first.iterations == 1);
@@ -607,12 +607,12 @@ TEST_CASE("Fixed-count stationary corrections preserve iterates without diagnost
         const auto rhsVersion = fixture.rhs.Owned().Version();
         for (bool warm : {false, true})
         {
-            const auto checked = reference.Solve(fixture.rhs, warm ? &fixture.rhs : nullptr);
-            const auto checkedLogical = logicalReference.Solve(logicalRHS, warm ? &logicalRHS : nullptr);
+            const auto checked = reference.Solve(fixture.rhs, warm ? std::optional(std::cref(fixture.rhs)) : std::nullopt);
+            const auto checkedLogical = logicalReference.Solve(logicalRHS, warm ? std::optional(std::cref(logicalRHS)) : std::nullopt);
             REQUIRE(checked.iterations == 2);
             REQUIRE(checkedLogical.iterations == 2);
-            const auto report = fixed.Solve(fixture.rhs, warm ? &fixture.rhs : nullptr);
-            const auto equationReport = logical.Solve(logicalRHS, warm ? &logicalRHS : nullptr);
+            const auto report = fixed.Solve(fixture.rhs, warm ? std::optional(std::cref(fixture.rhs)) : std::nullopt);
+            const auto equationReport = logical.Solve(logicalRHS, warm ? std::optional(std::cref(logicalRHS)) : std::nullopt);
             for (const auto *value : {&report, &equationReport})
             {
                 CHECK(value->stop == DNDS::Linear::LinearStop::FixedCount);
@@ -697,7 +697,7 @@ TEST_CASE("Fixed-count final finite check agrees on a rank-local nonfinite updat
     const bool fatalLocal = std::getenv("DNDS_TEST_LINEAR_FATAL_LOCAL") != nullptr;
     C::LinearSolver solver(fixture.problem, fixture.rhs, [&](Field &field)
                            { return fixture.Bind(field); }, settings, {false, !fatalLocal});
-    const auto report = solver.Solve(fixture.rhs, &guess);
+    const auto report = solver.Solve(fixture.rhs, std::cref(guess));
     if (fatalLocal)
     {
         // This subprocess tests termination on the invalid rank. Valid

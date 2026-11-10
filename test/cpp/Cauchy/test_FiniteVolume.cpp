@@ -63,6 +63,72 @@ TEST_CASE("Finite-volume workspace identity follows its shared plan and rejects 
     C::FiniteVolume replacement(mesh, settings, equation);
     CHECK_THROWS_WITH_AS(replacement.ValidateWorkspace(*bound, *saved), doctest::Contains("foreign"), std::exception);
 }
+TEST_CASE("One finite-volume scratch workspace serves independent durable reconstruction states")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    C::DomainSettings settings;
+    settings.numerics.reconstruction = "variational";
+    settings.numerics.cfv.maxOrder = 1;
+    settings.numerics.reconstructionIterations = 0;
+    settings.numerics.limiter = "none";
+    settings.numerics.positivity = false;
+    const auto equation = C::EquationSystem::Resolve(settings.equation);
+    C::FiniteVolume fv(mesh, settings, equation);
+    auto fieldA = fv.Metrics().BuildField(5), fieldB = fv.Metrics().BuildField(5);
+    auto residualA = fv.Metrics().BuildField(5), residualB = fv.Metrics().BuildField(5);
+    for (auto *field : {&fieldA, &fieldB})
+    {
+        auto write = field->Owned().Write();
+        for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+        {
+            const auto point = fv.Metrics().GetCellCent(iCell);
+            const auto value = equation.Gas().Conservative({1 + .03 * point[0], .2, -.1, .05, 1});
+            for (int j = 0; j < 5; ++j)
+                write.View()(iCell, j) = value[j];
+        }
+    }
+    auto stateA = Bind(fv, fieldA), stateB = Bind(fv, fieldB);
+    auto outputA = Bind(fv, residualA), outputB = Bind(fv, residualB);
+    auto reconstructionA = fv.BuildReconstructionState(stateA);
+    auto reconstructionB = fv.BuildReconstructionState(stateB);
+    auto workspace = fv.BuildWorkspace(stateA);
+    auto seedA = C::EquationDofOperations::NewVector(fv.ReconstructionGuess(*reconstructionA));
+    auto seedB = C::EquationDofOperations::NewVector(fv.ReconstructionGuess(*reconstructionB));
+    C::EquationDofOperations::Fill(seedA, .01);
+    C::EquationDofOperations::Fill(seedB, .02);
+    fv.RestoreReconstructionGuess(*reconstructionA, seedA);
+    fv.RestoreReconstructionGuess(*reconstructionB, seedB);
+    const C::EquationDofOperations::Binding retainedA(fv.ReconstructionGuess(*reconstructionA));
+    const C::EquationDofOperations::Binding retainedB(fv.ReconstructionGuess(*reconstructionB));
+    R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
+    const auto stream = engine.CreateCPUStream();
+    fv.Evaluate(stateA, outputA, *reconstructionA, *workspace, engine, stream);
+    const C::EquationDofOperations::Binding finalizedA(
+        fv.FluxReconstruction(*reconstructionA, *workspace));
+    CHECK_NOTHROW(retainedA.Check(fv.ReconstructionGuess(*reconstructionA), true));
+    fv.Evaluate(stateB, outputB, *reconstructionB, *workspace, engine, stream);
+    CHECK_NOTHROW(retainedA.Check(fv.ReconstructionGuess(*reconstructionA), true));
+    CHECK_NOTHROW(retainedB.Check(fv.ReconstructionGuess(*reconstructionB), true));
+    CHECK_NOTHROW(finalizedA.Check(fv.FluxReconstruction(*reconstructionA, *workspace), true));
+    A::Axpy(residualB, -1., residualA);
+    CHECK(A::NormGlobal(residualB) > 1e-8);
+    // This is the DITR new-step contract: midpoint gets both the accepted
+    // warm guess and finalized polynomial; the shared scratch stays untouched.
+    fv.CopyReconstructionState(*reconstructionB, *reconstructionA);
+    const auto equal = [](const C::EquationDofs &a, const C::EquationDofs &b)
+    {
+        const auto ar = a.ReadOwned(), br = b.ReadOwned();
+        const auto al = ar.ComponentLayout(), bl = br.ComponentLayout();
+        const auto av = al.View(), bv = bl.View();
+        for (DNDS::index iCell = 0; iCell < av.RowCount(); ++iCell)
+            for (DNDS::index j = 0; j < av.ComponentNumber(); ++j)
+                CHECK(av(iCell, j) == bv(iCell, j));
+    };
+    equal(fv.ReconstructionGuess(*reconstructionA),
+          fv.ReconstructionGuess(*reconstructionB));
+    equal(fv.FluxReconstruction(*reconstructionA, *workspace),
+          fv.FluxReconstruction(*reconstructionB, *workspace));
+}
 TEST_CASE("Default Cauchy CGNS loader propagates the configured preflight policy")
 {
     const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
@@ -83,7 +149,7 @@ TEST_CASE("Default Cauchy CGNS loader propagates the configured preflight policy
         for (auto kind : {DNDS::Geom::EntityKind::Cell, DNDS::Geom::EntityKind::Node, DNDS::Geom::EntityKind::Face, DNDS::Geom::EntityKind::Bnd})
             CHECK(domain.Discretization().Mesh().Entities(kind).ChecksCollectivePreflight() == checks);
         REQUIRE(simulation.Advance(1e-4).accepted);
-        auto read = domain.Flow().Owned().Read();
+        auto read = domain.Dofs().CoupledField().Owned().Read();
         for (DNDS::index iCell = 0; iCell < domain.Discretization().Metrics().NumCell(); ++iCell)
             for (int j = 0; j < 5; ++j)
             {
@@ -144,13 +210,14 @@ TEST_CASE("Cauchy collective switch reaches prepared halos without changing the 
             CHECK(tracked == ordinary); // Same required protocols; no safety-only reduction.
         }
         auto logical = Bind(fv, state), output = Bind(fv, result);
+        auto reconstruction = fv.BuildReconstructionState(logical);
         auto workspace = fv.BuildWorkspace(logical);
         R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
         reductions = 0;
         {
             CountingScope count;
-            fv.Evaluate(logical, output, *workspace, engine, stream);
+            fv.Evaluate(logical, output, *reconstruction, *workspace, engine, stream);
         }
         if (checks)
             checkedReductions = reductions;
@@ -206,14 +273,16 @@ TEST_CASE("Semantic finite-volume dispatch preserves the trusted flow kernel and
         A::Copy(semantic.CoupledField(), raw);
         auto rawResult = fv.Metrics().BuildField(shape), semanticResult = fv.Metrics().BuildField(shape);
         auto generic = Bind(fv, raw), genericResult = Bind(fv, rawResult), semanticOutput = Bind(fv, semanticResult);
+        auto genericReconstruction = fv.BuildReconstructionState(generic);
+        auto semanticReconstruction = fv.BuildReconstructionState(semantic);
         auto rawWork = fv.BuildWorkspace(
             generic, std::nullopt,
             C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic});
         auto semanticWork = fv.BuildWorkspace(semantic);
         R::EagerEngine engine(2);
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(generic, genericResult, *rawWork, engine, stream);
-        fv.Evaluate(semantic, semanticOutput, *semanticWork, engine, stream);
+        fv.Evaluate(generic, genericResult, *genericReconstruction, *rawWork, engine, stream);
+        fv.Evaluate(semantic, semanticOutput, *semanticReconstruction, *semanticWork, engine, stream);
         {
             const auto a = rawResult.Owned().Read(), b = semanticResult.Owned().Read();
             const auto x = a.View<R::UniformTableRows>(), y = b.View<R::UniformTableRows>();
@@ -238,7 +307,7 @@ TEST_CASE("Semantic finite-volume dispatch preserves the trusted flow kernel and
         const auto resultVersion = semanticResult.Owned().Version();
         const auto stateVersion = semantic.CoupledField().Owned().Version();
         CHECK_THROWS(fv.BuildWorkspace(wrong));
-        CHECK_THROWS(fv.Evaluate(wrong, semanticOutput, *semanticWork, engine, stream));
+        CHECK_THROWS(fv.Evaluate(wrong, semanticOutput, *semanticReconstruction, *semanticWork, engine, stream));
         CHECK(semanticResult.Owned().Version() == resultVersion);
         CHECK(semantic.CoupledField().Owned().Version() == stateVersion);
     }
@@ -268,8 +337,9 @@ TEST_CASE("Euler reconstruction PP selects a mean or progressively truncated ref
                             write.View<R::UniformTableRows>()(iCell, j) = mean[j];
                 }
                 auto logical = Bind(fv, state);
+                auto reconstruction = fv.BuildReconstructionState(logical);
                 auto work = fv.BuildWorkspace(logical);
-                const auto &rec = fv.ReconstructionGuess(*work);
+                const auto &rec = fv.ReconstructionGuess(*reconstruction);
                 const DNDS::index modes = rec.CoupledField().Width() / 5;
                 REQUIRE(modes == 9);
                 auto input = rec.Clone();
@@ -288,16 +358,16 @@ TEST_CASE("Euler reconstruction PP selects a mean or progressively truncated ref
                 // A good polynomial must remain exactly unchanged, even while
                 // the state ghost buffer is held by a real MPI transfer.
                 fill(1e-3, -1e-3);
-                fv.RestoreReconstructionGuess(*work, input);
+                fv.RestoreReconstructionGuess(*reconstruction, input);
                 auto halo = fv.Metrics().BindHalo(state);
                 auto operation = halo.Begin();
                 const auto meanVersion = state.Owned().Version();
-                fv.LimitReconstructionPP(logical, *work);
+                fv.LimitReconstructionPP(logical, *reconstruction, *work);
                 operation.Wait();
                 CHECK(state.Owned().Version() == meanVersion);
                 CHECK(fv.PositivityReconstructionStats(*work) == std::pair<DNDS::index, DNDS::real>{0, 1});
                 {
-                    auto expected = inputArray.Read(), actual = fv.FluxReconstruction(*work).CoupledField().Owned().Read();
+                    auto expected = inputArray.Read(), actual = fv.FluxReconstruction(*reconstruction, *work).CoupledField().Owned().Read();
                     for (DNDS::index iCell = 0; iCell < inputArray.RowCount(); ++iCell)
                         for (DNDS::index j = 0; j < rec.CoupledField().Width(); ++j)
                             CHECK(actual.View<R::UniformTableRows>()(iCell, j) == expected.View()(iCell, j));
@@ -306,9 +376,9 @@ TEST_CASE("Euler reconstruction PP selects a mean or progressively truncated ref
                 // discard P3 before scaling P1 toward the mean; mean-reference
                 // compression must retain a nonzero, uniformly scaled P3 mode.
                 fill(4, -1000);
-                fv.RestoreReconstructionGuess(*work, input);
+                fv.RestoreReconstructionGuess(*reconstruction, input);
                 auto active = halo.Begin();
-                fv.LimitReconstructionPP(logical, *work);
+                fv.LimitReconstructionPP(logical, *reconstruction, *work);
                 active.Wait();
                 const auto [limited, beta] = fv.PositivityReconstructionStats(*work);
                 CHECK(limited == 16);
@@ -316,7 +386,7 @@ TEST_CASE("Euler reconstruction PP selects a mean or progressively truncated ref
                 CHECK(beta < 1);
                 CHECK(state.Owned().Version() == meanVersion);
                 {
-                    auto coefficients = fv.FluxReconstruction(*work).CoupledField().Owned().Read(), means = state.Owned().Read();
+                    auto coefficients = fv.FluxReconstruction(*reconstruction, *work).CoupledField().Owned().Read(), means = state.Owned().Read();
                     for (DNDS::index iCell = 0; iCell < inputArray.RowCount(); ++iCell)
                     {
                         CHECK(coefficients.View<R::UniformTableRows>()(iCell, 0) > 0);
@@ -342,9 +412,9 @@ TEST_CASE("Euler reconstruction PP selects a mean or progressively truncated ref
                         values(iCell, 4) = 1e9;
                     }
                 }
-                fv.LimitReconstructionPP(logical, *work);
+                fv.LimitReconstructionPP(logical, *reconstruction, *work);
                 CHECK(fv.PositivityReconstructionStats(*work) == std::pair<DNDS::index, DNDS::real>{0, 1});
-                auto expected = inputArray.Read(), actual = fv.FluxReconstruction(*work).CoupledField().Owned().Read();
+                auto expected = inputArray.Read(), actual = fv.FluxReconstruction(*reconstruction, *work).CoupledField().Owned().Read();
                 for (DNDS::index iCell = 0; iCell < inputArray.RowCount(); ++iCell)
                     for (DNDS::index j = 0; j < rec.CoupledField().Width(); ++j)
                         CHECK(actual.View<R::UniformTableRows>()(iCell, j) == expected.View()(iCell, j));
@@ -381,9 +451,11 @@ TEST_CASE("WBAP and PP flux filtering do not overwrite the unlimited VR warm gue
                 }
             }
             auto referenceState = Bind(reference, mean), filteredState = Bind(filtered, filteredMean);
+            auto referenceReconstruction = reference.BuildReconstructionState(referenceState);
+            auto filteredReconstruction = filtered.BuildReconstructionState(filteredState);
             auto plain = reference.BuildWorkspace(referenceState), limited = filtered.BuildWorkspace(filteredState);
-            auto referenceSeed = reference.ReconstructionGuess(*plain).Clone();
-            auto filteredSeed = filtered.ReconstructionGuess(*limited).Clone();
+            auto referenceSeed = reference.ReconstructionGuess(*referenceReconstruction).Clone();
+            auto filteredSeed = filtered.ReconstructionGuess(*filteredReconstruction).Clone();
             auto &seedArray = referenceSeed.CoupledField().Owned();
             {
                 auto referenceWrite = seedArray.Write();
@@ -405,8 +477,8 @@ TEST_CASE("WBAP and PP flux filtering do not overwrite the unlimited VR warm gue
                     }
                 }
             }
-            reference.RestoreReconstructionGuess(*plain, referenceSeed);
-            filtered.RestoreReconstructionGuess(*limited, filteredSeed);
+            reference.RestoreReconstructionGuess(*referenceReconstruction, referenceSeed);
+            filtered.RestoreReconstructionGuess(*filteredReconstruction, filteredSeed);
             auto a = reference.Metrics().BuildField(5), b = filtered.Metrics().BuildField(5);
             auto outputA = Bind(reference, a), outputB = Bind(filtered, b);
             R::EagerEngine engine(scenario == 2 ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
@@ -414,11 +486,11 @@ TEST_CASE("WBAP and PP flux filtering do not overwrite the unlimited VR warm gue
             const auto meanVersion = filteredMean.Owned().Version();
             for (int evaluation = 0; evaluation < 2; ++evaluation)
             {
-                reference.Evaluate(referenceState, outputA, *plain, engine, stream);
-                filtered.Evaluate(filteredState, outputB, *limited, engine, stream);
-                const auto expected = reference.ReconstructionGuess(*plain).CoupledField().Owned().Read();
-                const auto actual = filtered.ReconstructionGuess(*limited).CoupledField().Owned().Read();
-                const auto flux = filtered.FluxReconstruction(*limited).CoupledField().Owned().Read();
+                reference.Evaluate(referenceState, outputA, *referenceReconstruction, *plain, engine, stream);
+                filtered.Evaluate(filteredState, outputB, *filteredReconstruction, *limited, engine, stream);
+                const auto expected = reference.ReconstructionGuess(*referenceReconstruction).CoupledField().Owned().Read();
+                const auto actual = filtered.ReconstructionGuess(*filteredReconstruction).CoupledField().Owned().Read();
+                const auto flux = filtered.FluxReconstruction(*filteredReconstruction, *limited).CoupledField().Owned().Read();
                 double difference = 0, residualDifference = 0;
                 for (DNDS::index iCell = 0; iCell < seedArray.RowCount(); ++iCell)
                     for (int j = 0; j < 45; ++j)
@@ -442,7 +514,7 @@ TEST_CASE("WBAP and PP flux filtering do not overwrite the unlimited VR warm gue
                 if (pp && evaluation == 0)
                     CHECK(filtered.PositivityReconstructionStats(*limited).first > 0);
             }
-            filtered.ResetReconstruction(*limited);
+            filtered.ResetReconstruction(*filteredReconstruction, *limited);
         }
 }
 TEST_CASE("Auxiliary provenance and persistent workspaces reject a different row view of the same allocation")
@@ -483,13 +555,14 @@ TEST_CASE("Auxiliary provenance and persistent workspaces reject a different row
     request.meanThermodynamics = true;
     auto values = fv.BuildAuxiliaryValues(request);
     fv.PrepareAuxValues(logical, values);
+    auto reconstruction = fv.BuildReconstructionState(logical);
     auto workspace = fv.BuildWorkspace(logical);
     state.Owned() = second;
     auto other = Bind(fv, state);
     CHECK_THROWS(fv.ValidateAuxValues(other, values));
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
-    CHECK_THROWS(fv.Evaluate(other, output, *workspace, engine, stream));
+    CHECK_THROWS(fv.Evaluate(other, output, *reconstruction, *workspace, engine, stream));
     fv.PrepareAuxValues(other, values);
     CHECK_NOTHROW(fv.ValidateAuxValues(other, values));
     const auto auxLayout = values.meanThermodynamics->Layout();
@@ -533,10 +606,11 @@ TEST_CASE("Cauchy communication worker preserves nonconstant P3 RHS")
             }
         }
         auto logical = Bind(fv, state), output = Bind(fv, result);
+        auto reconstruction = fv.BuildReconstructionState(logical);
         auto workspace = fv.BuildWorkspace(logical);
         R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(logical, output, *workspace, engine, stream);
+        fv.Evaluate(logical, output, *reconstruction, *workspace, engine, stream);
         engine.Synchronize();
         const auto read = result.Owned().Read();
         for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
@@ -576,12 +650,13 @@ TEST_CASE("Native Cauchy flow5 residual preserves constant state across layouts 
                         write.View<R::UniformTableRows>()(iCell, j) = exact[j];
             }
             auto logical = Bind(fv, state), output = Bind(fv, residual);
+            auto reconstruction = fv.BuildReconstructionState(logical);
             auto workspace = fv.BuildWorkspace(logical);
             for (int workers : {0, 2})
             {
                 R::EagerEngine engine(workers, std::make_shared<R::AccessTrackingContext>());
                 const auto stream = engine.CreateCPUStream();
-                fv.Evaluate(logical, output, *workspace, engine, stream);
+                fv.Evaluate(logical, output, *reconstruction, *workspace, engine, stream);
                 engine.Synchronize();
                 CHECK(A::NormGlobal(residual) < 2e-14);
             }
@@ -615,6 +690,7 @@ TEST_CASE("Native viscous Cauchy residual reproduces linear Couette heat product
         }
     }
     auto logical = Bind(fv, state), output = Bind(fv, residual);
+    auto reconstruction = fv.BuildReconstructionState(logical);
     auto work = fv.BuildWorkspace(logical);
     auto inviscidSettings = settings;
     inviscidSettings.equation.transport = "inviscid";
@@ -629,11 +705,12 @@ TEST_CASE("Native viscous Cauchy residual reproduces linear Couette heat product
                 target.View()(iCell, j) = source.View()(iCell, j);
     }
     auto inviscidLogical = Bind(inviscid, inviscidState), inviscidOutput = Bind(inviscid, inviscidResidual);
+    auto inviscidReconstruction = inviscid.BuildReconstructionState(inviscidLogical);
     auto inviscidWork = inviscid.BuildWorkspace(inviscidLogical);
     R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
     const auto stream = engine.CreateCPUStream();
-    fv.Evaluate(logical, output, *work, engine, stream);
-    inviscid.Evaluate(inviscidLogical, inviscidOutput, *inviscidWork, engine, stream);
+    fv.Evaluate(logical, output, *reconstruction, *work, engine, stream);
+    inviscid.Evaluate(inviscidLogical, inviscidOutput, *inviscidReconstruction, *inviscidWork, engine, stream);
     const auto read = residual.Owned().Read();
     const auto base = inviscidResidual.Owned().Read();
     DNDS::index tested = 0;
@@ -668,7 +745,7 @@ TEST_CASE("Cauchy SSPRK3 preserves periodic constants and rolls back rejected tr
     CHECK(domain.Epoch().acceptedStep == 3);
     CHECK(domain.LastFaceFallbacks() == 0);
     {
-        const auto read = domain.Flow().Owned().Read();
+        const auto read = domain.Dofs().CoupledField().Owned().Read();
         for (DNDS::index iCell = 0; iCell < domain.Discretization().Metrics().NumCell(); ++iCell)
             for (int j = 0; j < 5; ++j)
                 CHECK(read.View()(iCell, j) == doctest::Approx(exact[j]).epsilon(2e-13));
@@ -676,7 +753,7 @@ TEST_CASE("Cauchy SSPRK3 preserves periodic constants and rolls back rejected tr
     REQUIRE(domain.PrepareStep(.001).accepted);
     std::optional<R::Array<double>::ReadLease> held;
     if (mpi.rank == 0)
-        held.emplace(domain.Flow().Owned().Read());
+        held.emplace(domain.Dofs().CoupledField().Owned().Read());
     CHECK_THROWS(domain.CommitStep());
     CHECK(domain.Time() == doctest::Approx(.003));
     held.reset();
@@ -698,7 +775,7 @@ TEST_CASE("Cauchy periodic density transport has independently measured second-o
         const auto &fv = domain.Discretization().Metrics();
         const double averageFactor = std::sin(pi / width) / (pi / width);
         {
-            auto write = domain.Flow().Owned().Write();
+            auto write = domain.Dofs().CoupledField().Owned().Write();
             for (DNDS::index iCell = 0; iCell < fv.NumCell(); ++iCell)
             {
                 const auto x = fv.GetCellCent(iCell);
@@ -708,7 +785,7 @@ TEST_CASE("Cauchy periodic density transport has independently measured second-o
                     write.View()(iCell, j) = value[j];
             }
         }
-        const auto &rhs = domain.Residual();
+        const auto &rhs = domain.Residual().CoupledField();
         auto read = rhs.Owned().Read();
         double error = 0, total = 0;
         for (DNDS::index iCell = 0; iCell < fv.NumCell(); ++iCell)
@@ -740,7 +817,7 @@ TEST_CASE("Cauchy periodic transport SSPRK3 advances a smooth physical state and
     const auto &fv = domain.Discretization().Metrics();
     const double averageFactor = std::sin(pi / width) / (pi / width);
     {
-        auto write = domain.Flow().Owned().Write();
+        auto write = domain.Dofs().CoupledField().Owned().Write();
         for (DNDS::index iCell = 0; iCell < fv.NumCell(); ++iCell)
         {
             const auto point = fv.GetCellCent(iCell);
@@ -753,7 +830,7 @@ TEST_CASE("Cauchy periodic transport SSPRK3 advances a smooth physical state and
     for (int step = 0; step < 10; ++step)
         REQUIRE(domain.Advance(.001).accepted);
     double error = 0, mass = 0;
-    const auto read = domain.Flow().Owned().Read();
+    const auto read = domain.Dofs().CoupledField().Owned().Read();
     for (DNDS::index iCell = 0; iCell < fv.NumCell(); ++iCell)
     {
         const auto point = fv.GetCellCent(iCell);
@@ -782,7 +859,7 @@ TEST_CASE("Every Cauchy Riemann selection is integrated into periodic SSPRK3")
         C::Domain domain("flow", mesh, settings);
         REQUIRE(domain.Advance(.001).accepted);
         const auto exact = domain.Equation().Gas().Conservative(settings.initialPrimitive);
-        const auto read = domain.Flow().Owned().Read();
+        const auto read = domain.Dofs().CoupledField().Owned().Read();
         for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
             for (int j = 0; j < 5; ++j)
                 CHECK(read.View()(iCell, j) == doctest::Approx(exact[j]).epsilon(3e-13));
@@ -799,7 +876,7 @@ TEST_CASE("Cauchy variational reconstruction with WBAP advances a nonconstant co
     settings.execution.hostThreads = 2;
     C::Domain domain("limited", mesh, settings);
     {
-        auto write = domain.Flow().Owned().Write();
+        auto write = domain.Dofs().CoupledField().Owned().Write();
         for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
         {
             const auto point = domain.Discretization().Metrics().GetCellCent(iCell);
@@ -811,7 +888,7 @@ TEST_CASE("Cauchy variational reconstruction with WBAP advances a nonconstant co
     for (int step = 0; step < 3; ++step)
         REQUIRE(domain.Advance(.001).accepted);
     double mass = 0;
-    const auto read = domain.Flow().Owned().Read();
+    const auto read = domain.Dofs().CoupledField().Owned().Read();
     for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
     {
         C::FlowState value;
@@ -835,7 +912,7 @@ TEST_CASE("Cauchy physical execution includes ranks with empty owned cells")
     REQUIRE(domain.Advance(.001).accepted);
     CHECK(domain.Epoch().acceptedStep == 1);
     CHECK(domain.Time() == .001);
-    CHECK(A::NormGlobal(domain.Residual()) < 1e-13);
+    CHECK(A::NormGlobal(domain.Residual().CoupledField()) < 1e-13);
 }
 TEST_CASE("Cauchy rejects inadmissible trial collectively and retries without accepted-state corruption")
 {
@@ -844,7 +921,7 @@ TEST_CASE("Cauchy rejects inadmissible trial collectively and retries without ac
     settings.numerics.cfv.maxOrder = 1;
     C::Domain domain("rejection", mesh, settings);
     {
-        auto write = domain.Flow().Owned().Write();
+        auto write = domain.Dofs().CoupledField().Owned().Write();
         for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
         {
             const auto x = domain.Discretization().Metrics().GetCellCent(iCell);
@@ -853,25 +930,25 @@ TEST_CASE("Cauchy rejects inadmissible trial collectively and retries without ac
                 write.View()(iCell, j) = value[j];
         }
     }
-    const auto before = domain.State().Clone();
+    const auto before = domain.Dofs().Fields().Clone();
     CHECK_FALSE(domain.Advance(1e4).accepted);
     CHECK(domain.Time() == 0);
     CHECK(domain.Epoch().acceptedStep == 0);
     {
-        auto saved = before.Block("flow").Owned().Read(), actual = domain.Flow().Owned().Read();
+        auto saved = before.Block("flow").Owned().Read(), actual = domain.Dofs().CoupledField().Owned().Read();
         for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
             for (int j = 0; j < 5; ++j)
                 CHECK(actual.View()(iCell, j) == saved.View()(iCell, j));
     }
     REQUIRE(domain.Advance(.0001).accepted);
     CHECK(domain.Epoch().acceptedStep == 1);
-    const auto &rhs = domain.Residual();
+    const auto &rhs = domain.Residual().CoupledField();
     std::optional<R::Array<double>::ReadLease> held;
     if (mpi.rank == 0)
         held.emplace(rhs.Owned().Read());
-    CHECK_THROWS(domain.Residual());
+    CHECK_THROWS(domain.Residual().CoupledField());
     held.reset();
-    CHECK_NOTHROW(domain.Residual());
+    CHECK_NOTHROW(domain.Residual().CoupledField());
 }
 TEST_CASE("Cauchy matching-partition restart preserves layouts continuation and guards mesh identity")
 {
@@ -890,7 +967,7 @@ TEST_CASE("Cauchy matching-partition restart preserves layouts continuation and 
         // Preserve a non-constant state, so a restart that silently restores
         // only the initial condition cannot pass continuation equivalence.
         {
-            auto write = source.Flow().Owned().Write();
+            auto write = source.Dofs().CoupledField().Owned().Write();
             for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
             {
                 auto primitive = settings.initialPrimitive;
@@ -908,19 +985,19 @@ TEST_CASE("Cauchy matching-partition restart preserves layouts continuation and 
         CHECK_THROWS(restored.ReadCheckpoint(file, C::Json{{"test", "wrong"}}));
         CHECK(restored.Time() == 0);
         restored.ReadCheckpoint(file, resolved);
-        CHECK(restored.Flow().Owned().Layout().Kind() == source.Flow().Owned().Layout().Kind());
+        CHECK(restored.Dofs().CoupledField().Owned().Layout().Kind() == source.Dofs().CoupledField().Owned().Layout().Kind());
         REQUIRE(source.Advance(.001).accepted);
         REQUIRE(restored.Advance(.001).accepted);
         CHECK(restored.Time() == source.Time());
         CHECK(restored.Epoch().acceptedStep == source.Epoch().acceptedStep);
         {
-            auto left = source.Flow().Owned().Read(), right = restored.Flow().Owned().Read();
+            auto left = source.Dofs().CoupledField().Owned().Read(), right = restored.Dofs().CoupledField().Owned().Read();
             for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
                 for (int j = 0; j < 5; ++j)
                     CHECK(left.View()(iCell, j) == right.View()(iCell, j));
         }
         REQUIRE(restored.PrepareStep(.001).accepted);
-        restored.Residual();
+        restored.Residual().CoupledField();
         CHECK_THROWS(restored.CommitStep());
         const auto shifted = CauchyTest::PeriodicQuads(mpi, 4);
         shifted->ApplyAffineGeometryTransform(Eigen::Matrix3d::Identity(), DNDS::Geom::tPoint{.01, 0, 0});
@@ -943,7 +1020,7 @@ TEST_CASE("Cauchy real single-domain Simulation owns its accepted clock and rest
     CHECK(simulation.Time() == simulation.GetDomain(0).Time());
     std::optional<R::Array<double>::ReadLease> held;
     if (mpi.rank == 0)
-        held.emplace(simulation.GetDomain(0).Flow().Owned().Read());
+        held.emplace(simulation.GetDomain(0).Dofs().CoupledField().Owned().Read());
     CHECK_THROWS(simulation.Advance(.001));
     CHECK(simulation.Step() == 1);
     held.reset();
@@ -1011,7 +1088,7 @@ TEST_CASE("Cauchy P3 characteristic 3WBAP advances shock data with inline and wo
         C::Domain domain("shock", CauchyTest::PeriodicQuads(mpi, 8), settings);
         {
             auto meshRead = domain.Discretization().Metrics().AcquireRead();
-            auto write = domain.Flow().Owned().Write();
+            auto write = domain.Dofs().CoupledField().Owned().Write();
             for (DNDS::index iCell = 0; iCell < domain.Discretization().Metrics().NumCell(); ++iCell)
             {
                 const auto center = meshRead.HostView().GetCellBary(iCell);
@@ -1055,7 +1132,7 @@ TEST_CASE("Cauchy observation cadence leaves a fixed-sweep P3 trajectory unchang
     CHECK(observed.Diagnostics(settings, {}) == accepted);
     REQUIRE(observed.Advance(.001).accepted);
     REQUIRE(control.Advance(.001).accepted);
-    auto a = observed.Flow().Owned().Read(), b = control.Flow().Owned().Read();
+    auto a = observed.Dofs().CoupledField().Owned().Read(), b = control.Dofs().CoupledField().Owned().Read();
     for (DNDS::index iCell = 0; iCell < observed.Discretization().Metrics().NumCell(); ++iCell)
         for (int j = 0; j < 5; ++j)
             CHECK(a.View()(iCell, j) == b.View()(iCell, j));
@@ -1086,10 +1163,11 @@ TEST_CASE("Cauchy P3 boundary polynomial projection preserves an exact linear ex
         }
     }
     auto logical = Bind(fv, state), output = Bind(fv, residual);
+    auto reconstruction = fv.BuildReconstructionState(logical);
     auto workspace = fv.BuildWorkspace(logical);
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
-    fv.Evaluate(logical, output, *workspace, engine, stream);
+    fv.Evaluate(logical, output, *reconstruction, *workspace, engine, stream);
     INFO("boundary iteration sweeps=" << fv.LastReconstructionIterations(*workspace) << " update=" << fv.LastReconstructionUpdate(*workspace));
     CHECK(fv.LastReconstructionUpdate(*workspace) < 1e-10);
     auto geometry = fv.Metrics().AcquireRead();
@@ -1112,7 +1190,7 @@ TEST_CASE("Cauchy P3 thermal PP preserves means and global conservation with for
     C::Domain domain("thermal", CauchyTest::PeriodicQuads(mpi, 8), settings);
     {
         auto geometry = domain.Discretization().Metrics().AcquireRead();
-        auto write = domain.Flow().Owned().Write();
+        auto write = domain.Dofs().CoupledField().Owned().Write();
         for (DNDS::index iCell = 0; iCell < domain.Discretization().Metrics().NumCell(); ++iCell)
         {
             const auto center = geometry.HostView().GetCellBary(iCell);
@@ -1134,7 +1212,7 @@ TEST_CASE("Cauchy P3 thermal PP preserves means and global conservation with for
     const auto after = domain.Diagnostics(settings, {});
     CHECK(std::abs(after[0] - before[0]) < 1e-12);
     CHECK(std::abs(after[1] - before[1]) < 1e-11);
-    auto read = domain.Flow().Owned().Read();
+    auto read = domain.Dofs().CoupledField().Owned().Read();
     for (DNDS::index iCell = 0; iCell < domain.Discretization().Metrics().NumCell(); ++iCell)
     {
         C::FlowState state;
@@ -1176,7 +1254,7 @@ TEST_CASE("Inactive Cauchy P3 thermal PP leaves the full numerical trajectory bi
                 CHECK(factors[2] == 0);
                 CHECK(factors[3] == 1);
             }
-            auto expected = reference.Flow().Owned().Read(), actual = protectedFlow.Flow().Owned().Read();
+            auto expected = reference.Dofs().CoupledField().Owned().Read(), actual = protectedFlow.Dofs().CoupledField().Owned().Read();
             for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
                 for (int j = 0; j < 5; ++j)
                     CHECK(actual.View()(iCell, j) == expected.View()(iCell, j));
@@ -1217,7 +1295,7 @@ TEST_CASE("Cauchy P3 fixed-sweep restart preserves the polynomial warm start and
                 REQUIRE(uninterrupted.Advance(.001).accepted);
                 REQUIRE(restored.Advance(.001).accepted);
                 CHECK(uninterrupted.LastPositivity() == restored.LastPositivity());
-                auto expected = uninterrupted.Flow().Owned().Read(), actual = restored.Flow().Owned().Read();
+                auto expected = uninterrupted.Dofs().CoupledField().Owned().Read(), actual = restored.Dofs().CoupledField().Owned().Read();
                 for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
                     for (int j = 0; j < 5; ++j)
                         CHECK(actual.View()(iCell, j) == expected.View()(iCell, j));
@@ -1240,7 +1318,7 @@ TEST_CASE("Cauchy thermal PP rejects invalid low-order stages collectively witho
     settings.execution.hostThreads = 2;
     C::Domain domain("pp-rejection", CauchyTest::PeriodicQuads(mpi, 8), settings);
     {
-        auto write = domain.Flow().Owned().Write();
+        auto write = domain.Dofs().CoupledField().Owned().Write();
         for (DNDS::index iCell = 0; iCell < domain.Discretization().Metrics().NumCell(); ++iCell)
         {
             const auto x = domain.Discretization().Metrics().GetCellCent(iCell);
@@ -1249,14 +1327,14 @@ TEST_CASE("Cauchy thermal PP rejects invalid low-order stages collectively witho
                 write.View()(iCell, j) = value[j];
         }
     }
-    const auto saved = domain.State().Clone();
+    const auto saved = domain.Dofs().Fields().Clone();
     const auto rejected = domain.Advance(1e4);
     CHECK_FALSE(rejected.accepted);
     CHECK(rejected.reason.find("admissible low-order stage") != std::string::npos);
     CHECK(domain.Time() == 0);
     CHECK(domain.Epoch().acceptedStep == 0);
     {
-        auto expected = saved.Block("flow").Owned().Read(), actual = domain.Flow().Owned().Read();
+        auto expected = saved.Block("flow").Owned().Read(), actual = domain.Dofs().CoupledField().Owned().Read();
         for (DNDS::index iCell = 0; iCell < domain.Discretization().Metrics().NumCell(); ++iCell)
             for (int j = 0; j < 5; ++j)
                 CHECK(actual.View()(iCell, j) == expected.View()(iCell, j));
@@ -1292,14 +1370,16 @@ TEST_CASE("Canonical flow5 positivity workspace produces the established high an
         }
     }
     auto genericState = Bind(fv, genericField), genericResidual = Bind(fv, genericResidualField);
+    auto genericReconstruction = fv.BuildReconstructionState(genericState);
+    auto nativeReconstruction = fv.BuildReconstructionState(nativeState);
     auto genericWork = fv.BuildWorkspace(
         genericState, std::nullopt,
         C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic});
     auto nativeWork = fv.BuildWorkspace(nativeState);
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
-    fv.Evaluate(genericState, genericResidual, *genericWork, engine, stream);
-    fv.Evaluate(nativeState, nativeResidual, *nativeWork, engine, stream);
+    fv.Evaluate(genericState, genericResidual, *genericReconstruction, *genericWork, engine, stream);
+    fv.Evaluate(nativeState, nativeResidual, *nativeReconstruction, *nativeWork, engine, stream);
     const auto legacyHigh = genericResidualField.Owned().Read();
     const auto nativeHigh = nativeResidual.CoupledField().Owned().Read();
     const auto legacyLow = fv.LowOrderResidual(*genericWork).CoupledField().Owned().Read();
@@ -1325,7 +1405,7 @@ TEST_CASE("Cauchy repeated parallel VTKHDF output preserves topology and noncons
     settings.numerics.cfv.maxOrder = 1;
     C::Domain domain("output", mesh, settings);
     {
-        auto write = domain.Flow().Owned().Write();
+        auto write = domain.Dofs().CoupledField().Owned().Write();
         const auto cells = mesh->Entities(DNDS::Geom::EntityKind::Cell);
         for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
         {
@@ -1407,13 +1487,14 @@ TEST_CASE("Riemann spatial stencils are computed by owners and exchanged across 
             }
         }
         auto logical = Bind(fv, state), output = Bind(fv, residual);
+        auto reconstruction = fv.BuildReconstructionState(logical);
         auto workspace = fv.BuildWorkspace(logical);
         const auto rhsRequest = fv.CompleteRHSAuxiliaryRequest();
         auto used = fv.BuildAuxiliaryValues(rhsRequest);
         CHECK_THROWS(fv.ValidateAuxValues(logical, used));
         R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(logical, output, *workspace, used, engine, stream);
+        fv.Evaluate(logical, output, *reconstruction, *workspace, used, engine, stream);
         CHECK(bool(used.cellWaveJump) == (std::string(flux) == "Roe_M9"));
         CHECK(bool(used.cellPressureMinimum) == (std::string(flux) == "AUSMPWPlus"));
         CHECK_FALSE(used.cellSpectralSum);
@@ -1482,8 +1563,9 @@ TEST_CASE("Riemann spatial stencils are computed by owners and exchanged across 
                     write.View()(iCell, j) = read.View()(iCell, j);
         }
         auto manualLogical = Bind(manual, manualState), manualOutput = Bind(manual, manualResidual);
+        auto manualReconstruction = manual.BuildReconstructionState(manualLogical);
         auto manualWork = manual.BuildWorkspace(manualLogical);
-        manual.Evaluate(manualLogical, manualOutput, *manualWork, engine, stream);
+        manual.Evaluate(manualLogical, manualOutput, *manualReconstruction, *manualWork, engine, stream);
         const auto manualRequest = manual.CompleteRHSAuxiliaryRequest();
         CHECK_FALSE(manualRequest.cellWaveJump);
         CHECK_FALSE(manualRequest.cellPressureMinimum);
@@ -1713,12 +1795,13 @@ TEST_CASE("Mean boundary spectra use stage kinematics while analytic RHS uses bo
     // whose analytic exterior must still be evaluated at the physical stage.
     auto earlier = fv.Metrics().BuildField(5), later = fv.Metrics().BuildField(5);
     auto earlierState = Bind(fv, earlier), laterState = Bind(fv, later);
+    auto reconstruction = fv.BuildReconstructionState(logical);
     auto workspace = fv.BuildWorkspace(logical);
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
     const auto meanVersion = state.Owned().Version();
-    fv.Evaluate(logical, earlierState, *workspace, engine, stream, 0);
-    fv.Evaluate(logical, laterState, *workspace, engine, stream, .6);
+    fv.Evaluate(logical, earlierState, *reconstruction, *workspace, engine, stream, 0);
+    fv.Evaluate(logical, laterState, *reconstruction, *workspace, engine, stream, .6);
     A::Axpy(later, -1., earlier);
     CHECK(A::NormGlobal(later) > 1e-3);
     CHECK(state.Owned().Version() == meanVersion);
@@ -1740,7 +1823,7 @@ TEST_CASE("A checkpoint predating spatial Riemann options retains explicit manua
     CHECK(restored.Time() == source.Time());
     CHECK(restored.Epoch().acceptedStep == source.Epoch().acceptedStep);
     {
-        const auto expected = source.Flow().Owned().Read(), actual = restored.Flow().Owned().Read();
+        const auto expected = source.Dofs().CoupledField().Owned().Read(), actual = restored.Dofs().CoupledField().Owned().Read();
         for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
             for (int j = 0; j < 5; ++j)
                 CHECK(actual.View()(iCell, j) == expected.View()(iCell, j));
@@ -1788,7 +1871,7 @@ TEST_CASE("Checkpoint PP policy preserves pre-Euler archives without silently ch
             CHECK_NOTHROW(changed.ReadCheckpoint(path, euler.Root()));
             CHECK(changed.Epoch().acceptedStep == 1);
         }
-        auto expected = source.Flow().Owned().Read(), actual = restored.Flow().Owned().Read();
+        auto expected = source.Dofs().CoupledField().Owned().Read(), actual = restored.Dofs().CoupledField().Owned().Read();
         for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
             for (int j = 0; j < 5; ++j)
                 CHECK(actual.View()(iCell, j) == expected.View()(iCell, j));
@@ -1834,10 +1917,11 @@ TEST_CASE("Optional derived auxiliaries refresh owned rows during halo exchange 
         }
     }
     auto typed = Bind(fv, state), baselineOutput = Bind(fv, baseline);
+    auto reconstruction = fv.BuildReconstructionState(typed);
     auto work = fv.BuildWorkspace(typed);
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
-    fv.Evaluate(typed, baselineOutput, *work, engine, stream);
+    fv.Evaluate(typed, baselineOutput, *reconstruction, *work, engine, stream);
     C::AuxiliaryRequest request;
     request.meanThermodynamics = true;
     request.faceSpectralRadius = true;
@@ -1858,7 +1942,7 @@ TEST_CASE("Optional derived auxiliaries refresh owned rows during halo exchange 
     CHECK_NOTHROW(fv.ValidateAuxValues(typed, aux));
     auto owned = aux.derivedOwned->ReadCurrent(typed, equation), ghost = aux.derivedGhost->ReadCurrent(typed, equation);
     auto meanRead = state.Owned().Read(), meanGhost = state.Ghost().Read();
-    const auto &coefficients = fv.FluxReconstruction(*work).CoupledField();
+    const auto &coefficients = fv.FluxReconstruction(*reconstruction, *work).CoupledField();
     auto recRead = coefficients.Owned().Read(), recGhost = coefficients.Ghost().Read();
     C::RHSReadViews input;
     input.mean = {meanRead.View<R::UniformTableRows>(), meanGhost.View<R::UniformTableRows>()};
@@ -1867,7 +1951,7 @@ TEST_CASE("Optional derived auxiliaries refresh owned rows during halo exchange 
     C::RHSLocalDiagnostics diagnostics;
     {
         auto write = result.Owned().Write();
-        diagnostics.Merge(fv.AcquireRHSOperator().Apply(input, {write.View<R::UniformTableRows>()}));
+        diagnostics.Merge(fv.AcquireRHSOperator().ApplyBorrowedChecked(input, {write.View<R::UniformTableRows>()}));
     }
     auto actual = result.Owned().Read(), expected = baseline.Owned().Read();
     const auto a = actual.View<R::UniformTableRows>(), b = expected.View<R::UniformTableRows>();
@@ -1909,10 +1993,11 @@ TEST_CASE("Cauchy P3 viscous WBAP agrees with shared first-order, full and uncac
             }
         }
         auto logical = Bind(fv, state), output = Bind(fv, residual);
+        auto reconstruction = fv.BuildReconstructionState(logical);
         auto work = fv.BuildWorkspace(logical);
         R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(logical, output, *work, engine, stream);
+        fv.Evaluate(logical, output, *reconstruction, *work, engine, stream);
         auto read = residual.Owned().Read();
         const auto values = read.View<R::UniformTableRows>();
         std::vector<DNDS::real> actual;
@@ -1970,19 +2055,20 @@ TEST_CASE("Cauchy overlap and unsplit orchestration agree across CPU launchers")
                 }
                 const auto version = state.Owned().Version();
                 auto logical = Bind(fv, state), output = Bind(fv, residual);
+                auto reconstruction = fv.BuildReconstructionState(logical);
                 auto work = fv.BuildWorkspace(logical);
                 R::EagerEngine engine(workers, std::make_shared<R::AccessTrackingContext>());
                 const auto stream = engine.CreateCPUStream();
                 // A second evaluation also exercises the retained VR guess.
                 for (int iteration = 0; iteration < 2; ++iteration)
-                    fv.Evaluate(logical, output, *work, engine, stream);
+                    fv.Evaluate(logical, output, *reconstruction, *work, engine, stream);
                 CHECK(state.Owned().Version() == version);
                 CHECK(fv.LastFaceFallbacks(*work) == 0);
                 std::vector<DNDS::real> values;
                 const std::array<const R::Array<DNDS::real> *, 3> outputs{
                     &residual.Owned(),
-                    &fv.ReconstructionGuess(*work).CoupledField().Owned(),
-                    &fv.FluxReconstruction(*work).CoupledField().Owned()};
+                    &fv.ReconstructionGuess(*reconstruction).CoupledField().Owned(),
+                    &fv.FluxReconstruction(*reconstruction, *work).CoupledField().Owned()};
                 for (const auto *array : outputs)
                 {
                     auto read = array->Read();
@@ -2046,20 +2132,21 @@ TEST_CASE("Primitive gradient overlap preserves conservative reconstruction acro
                     }
                     const auto version = state.Owned().Version();
                     auto logical = Bind(fv, state), output = Bind(fv, residual);
+                    auto reconstructionState = fv.BuildReconstructionState(logical);
                     auto work = fv.BuildWorkspace(logical);
                     // Both checked and caller-ordered eager MPI bridges occur
                     // in the matrix; every row includes inline and worker CPU.
                     R::EagerEngine engine(workers, layout == 1 ? nullptr : std::make_shared<R::AccessTrackingContext>());
                     const auto stream = engine.CreateCPUStream();
                     for (int iteration = 0; iteration < 2; ++iteration)
-                        fv.Evaluate(logical, output, *work, engine, stream);
+                        fv.Evaluate(logical, output, *reconstructionState, *work, engine, stream);
                     CHECK(state.Owned().Version() == version);
                     CHECK(fv.LastFaceFallbacks(*work) == 0);
                     std::vector<DNDS::real> values;
                     const std::array<const R::Array<DNDS::real> *, 3> outputs{
                         &residual.Owned(),
-                        &fv.ReconstructionGuess(*work).CoupledField().Owned(),
-                        &fv.FluxReconstruction(*work).CoupledField().Owned()};
+                        &fv.ReconstructionGuess(*reconstructionState).CoupledField().Owned(),
+                        &fv.FluxReconstruction(*reconstructionState, *work).CoupledField().Owned()};
                     for (const auto *array : outputs)
                     {
                         auto read = array->Read();
@@ -2106,14 +2193,15 @@ TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen in
             }
         }
         auto logical = Bind(fv, state), referenceOutput = Bind(fv, reference);
+        const auto reconstruction = fv.BuildReconstructionState(logical);
         const auto work = fv.BuildWorkspace(logical);
         auto request = fv.CompleteRHSAuxiliaryRequest();
         request.meanThermodynamics = true;
         auto auxiliary = fv.BuildAuxiliaryValues(request);
         R::EagerEngine engine;
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(logical, referenceOutput, *work, auxiliary, engine, stream);
-        auto coefficients = fv.FluxReconstruction(*work).CoupledField();
+        fv.Evaluate(logical, referenceOutput, *reconstruction, *work, auxiliary, engine, stream);
+        auto coefficients = fv.FluxReconstruction(*reconstruction, *work).CoupledField();
         auto rhs = fv.AcquireRHSOperator();
         const auto meanVersion = state.Owned().Version(), coefficientVersion = coefficients.Owned().Version();
         auto mean = state.Owned().Read(), meanGhost = state.Ghost().Read(), rec = coefficients.Owned().Read();
@@ -2138,21 +2226,21 @@ TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen in
             auto ghost = coefficients.Ghost().Read();
             input.coefficients.ghost = ghost.View<R::UniformTableRows>();
             auto output = full.Owned().Write();
-            diagnostics.Merge(rhs.Apply(input, {output.View<R::UniformTableRows>()}));
+            diagnostics.Merge(rhs.ApplyBorrowedChecked(input, {output.View<R::UniformTableRows>()}));
             auto uncached = input;
             uncached.auxiliary.meanThermodynamics.reset();
-            diagnostics.Merge(rhs.Apply(uncached, {output.View<R::UniformTableRows>()}));
+            diagnostics.Merge(rhs.ApplyBorrowedChecked(uncached, {output.View<R::UniformTableRows>()}));
             auto missing = input;
             if (auxiliary.cellWaveJump)
             {
                 missing.auxiliary.cellWaveJump.reset();
-                CHECK_THROWS(rhs.Apply(missing, {output.View<R::UniformTableRows>()}));
+                CHECK_THROWS(rhs.ApplyBorrowedChecked(missing, {output.View<R::UniformTableRows>()}));
             }
             if (auxiliary.cellPressureMinimum)
             {
                 missing = input;
                 missing.auxiliary.cellPressureMinimum.reset();
-                CHECK_THROWS(rhs.Apply(missing, {output.View<R::UniformTableRows>()}));
+                CHECK_THROWS(rhs.ApplyBorrowedChecked(missing, {output.View<R::UniformTableRows>()}));
             }
         }
         {
@@ -2165,11 +2253,11 @@ TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen in
             if (core.auxiliary.cellPressureMinimum)
                 core.auxiliary.cellPressureMinimum->ghost = {};
             auto transfer = fv.Metrics().BindHalo(coefficients).Begin();
-            diagnostics.Merge(rhs.Apply(core, {output.View<R::UniformTableRows>()}, DNDS::CFV::ReconstructionRegion::Core));
+            diagnostics.Merge(rhs.ApplyBorrowedChecked(core, {output.View<R::UniformTableRows>()}, DNDS::CFV::ReconstructionRegion::Core));
             transfer.Wait();
             auto ghost = coefficients.Ghost().Read();
             input.coefficients.ghost = ghost.View<R::UniformTableRows>();
-            diagnostics.Merge(rhs.Apply(input, {output.View<R::UniformTableRows>()}, DNDS::CFV::ReconstructionRegion::HaloDependent));
+            diagnostics.Merge(rhs.ApplyBorrowedChecked(input, {output.View<R::UniformTableRows>()}, DNDS::CFV::ReconstructionRegion::HaloDependent));
         }
         auto a = reference.Owned().Read(), b = full.Owned().Read(), c = split.Owned().Read();
         for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
@@ -2204,7 +2292,7 @@ TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen in
                 modified.auxiliary.cellPressureMinimum = replacement;
             {
                 auto output = changed.Owned().Write();
-                diagnostics.Merge(rhs.Apply(modified, {output.View<R::UniformTableRows>()}));
+                diagnostics.Merge(rhs.ApplyBorrowedChecked(modified, {output.View<R::UniformTableRows>()}));
             }
             auto changedRead = changed.Owned().Read();
             int differs = 0;
@@ -2269,7 +2357,7 @@ TEST_CASE("Direct FV consumes physical gradients without coefficients and splits
         {
             auto a = combined.Owned().Write(), b = split.Owned().Write(), face = faces.Write();
             C::RHSWriteViews out{a.View<R::UniformTableRows>()};
-            diagnostics.Merge(op.Apply(input, out, DNDS::CFV::ReconstructionRegion::All, .3));
+            diagnostics.Merge(op.ApplyBorrowedChecked(input, out, DNDS::CFV::ReconstructionRegion::All, .3));
             out.residual = b.View<R::UniformTableRows>();
             out.faceFlux = face.View<R::UniformTableRows>();
             diagnostics.Merge(op.ApplyFlux(input, out, DNDS::CFV::ReconstructionRegion::All, .3));

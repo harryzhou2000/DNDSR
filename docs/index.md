@@ -39,6 +39,9 @@ Euler exterior targets, conservative gradient traces, viscous wall laws,
 farfield switching and approximate implicit boundary derivatives.
 The [Cauchy positivity policy](architecture/CauchyPositivity.md) specifies
 thermal constraints, component scopes and preserved Euler repair ordering.
+The [Cauchy output contract](architecture/CauchyOutput.md) defines centralized
+history, console, manifest, checkpoint/visualization naming and exact-time
+snapping, including the explicit internal-checkpoint limitation.
 The [Cauchy audit fix record](dev/cauchy_audit_fix.md) tracks the shared SST
 blend correction and independent RANS reconstruction positivity policy.
 The [plan 53 execution ledger](dev/plan53_audit_execution.md) reconciles those

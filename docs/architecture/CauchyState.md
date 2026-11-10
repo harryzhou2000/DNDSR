@@ -100,7 +100,7 @@ flowchart TD
     FieldsA --> GhostA[ghost Runtime Array]
     FieldsB --> OwnedB[distinct owned Runtime Array]
     FieldsB --> GhostB[distinct ghost Runtime Array]
-    Python[Python domain.flow] --> OwnedA
+    Python[Python domain.fields flow entry] --> OwnedA
     Scope[read/write scope] --> Allocation[retained allocation and shape buffers]
     OwnedA --> Allocation
 ```
@@ -121,11 +121,12 @@ field handles without copying or flattening their payload. Physical stage-solve
 and Jacobian preparation use their equation-aware adapters; rebinding alone
 does not enable a missing numerical/physical profile.
 
-`Domain::Dofs()` exposes the accepted semantic binding read-only. The existing
-`State()` physical-bundle access and `Flow()` flow5 field access remain available.
-Python `domain.flow` still shares the accepted owned Runtime Array: retaining
-that Python handle or a valid leased view retains storage after Domain is gone.
-There is no new Python-owned shadow allocation.
+`Domain::Dofs()` is the only accepted-state binding. Its mutable overload is a
+coarse debugging/input boundary: release writers before a trial, and release
+all views before publication. Python exposes the same physical allocations
+through `domain.fields`, keyed by field name. Retaining an entry or a valid
+leased view retains storage after Domain is gone; there is no Python-owned
+shadow allocation or dedicated flow5 frontend.
 
 ## Logical segments and physical layouts
 
@@ -308,8 +309,12 @@ synchronous CPU driver, with no implicit accelerator fallback.
 owned/ghost layout, space and semantic binding. `Clone` additionally copies
 owned values. History Commit uses nonthrowing handle swaps after accepted-state
 publication; Discard preserves accepted history. Callback exceptions can leave
-scratch partial. DITR Begin restores the intermediate means and rate guesses;
-Domain resets its intermediate reconstruction before a retry. The flow5 checkpoint keeps its existing `history_flow` representation
+scratch partial. At the beginning of each DITR coupled step, the endpoint keeps
+the accepted endpoint reconstruction state; the midpoint mean is initialized
+from U0 and receives a full copy of that endpoint reconstruction state.
+Midpoint and endpoint then advance independently while sharing only serialized
+temporary workspace. A rejected attempt restores the accepted endpoint and
+repeats this initialization. The flow5 checkpoint keeps its existing `history_flow` representation
 through an explicit adapter; extended physical fields use the format-5 block
 archive described below.
 Layout-independent time equations do not by themselves complete extended
@@ -317,10 +322,12 @@ production BC, PP, physical Jacobian assembly or RANS/species validation.
 
 ## Equation-state finite volume
 
-`FiniteVolume::BuildWorkspace(state, optionalWorkers)` owns the canonical
-immutable metrics, geometry, face incidences, work partition, basis provider and
-CFV plans. Each physical input field gets
-its own reconstruction buffers and halo bindings; logical flow/species views
+`FiniteVolume` owns the canonical immutable metrics, geometry, face incidences,
+work partition, basis provider and CFV plans. `BuildReconstructionState(state)`
+allocates solver-owned warm coefficients, finalized flux coefficients and their
+mean/coefficient halo publications. `BuildWorkspace(state, optionalWorkers)`
+allocates only serialized temporary boundary, limiter, sampling and operator
+scratch. Each physical input field gets its own scratch adapters; logical flow/species views
 retain their parent strides and physical offsets. No distributed state is
 flattened into a coupled temporary array. Coefficient block widths and physical
 offsets are multiplied by the number of nonconstant basis modes. Boundary
@@ -329,7 +336,8 @@ values remain small local arrays in the canonical boundary-quadrature order.
 ```text
 EquationDofs (logical flow + species)
   -> physical fields (coupled, split or component-permuted)
-  -> per-field mean/coefficient halo + CFV workspace
+  -> solver-owned ReconstructionState (warm + finalized coefficients + halos)
+  -> scratch-only reusable FV/CFV Workspace
   -> ready point values/gradients in logical order
   -> actual EOS acoustics / Newtonian-Fourier + species diffusion / chemistry
   -> each logical residual block in the caller's output fields
@@ -374,8 +382,9 @@ descending-degree pass. Input coefficients stay immutable through direct MPI
 sends. CPU inline and worker launchers follow the same sequence; return joins
 only that lane. Worker resources are retained through exceptional exits too.
 
-The caller serializes each workspace and its bound handles, supplies distinct
-output storage, completes external producers before entry, and uses matching
+The caller serializes each workspace, retains each reconstruction state for as
+long as its numerical state is needed, supplies distinct output storage,
+completes external producers before entry, and uses matching
 physics/units/numerical controls and the same collective schedule on every rank.
 The descriptor agreement proves the field map, numerical schedule controls and
 physical scalar parameters, not equality of separately loaded mechanism contents.
@@ -707,9 +716,10 @@ those source gradients. Chemical derivatives use the explicit chemistry worker
 and are inserted with the negative residual-derivative sign in logical order.
 The empty independent-species case has no chemical derivative.
 
-For RANS or nonconstant chemistry, pass the `sourceReconstruction` workspace
-from current spatial/correction preparation. Its mean/coefficient binding,
-generations and time must match; missing or stale input fails before matrix
+For RANS or nonconstant chemistry, pass a `JacobianContext` containing the
+solver-owned `ReconstructionState` and the scratch `Workspace` used by current
+spatial/correction preparation. Their mean/coefficient binding, generations
+and time must match; missing or stale input fails before matrix
 writes. This provenance validates the frozen reconstruction inputs, not a
 high-order integration policy for the approximate matrix. Constant chemical
 reconstruction may omit the workspace and use the equivalent mean/volume term.
@@ -885,8 +895,8 @@ Domain stepping uses the same EquationTimeStepper for every logical component;
 implicit stages use NonlinearSolver and explicit SSPRK uses full-state
 updates. Shared/split physical arrays remain unflattened, and publication reserves
 all destination fields before any accepted value changes. A species-only retained
-view blocks the entire publication. ResidualState returns every residual block;
-the historical Residual convenience still returns the flow residual. Observation
+view blocks the entire publication. `Domain::Residual()` returns the complete
+logical residual state; callers select a physical or logical block explicitly. Observation
 has independent reconstruction scratch and restores the accepted warm guess, so
 diagnostics do not advance numerical state. Mixture diagnostics report actual EOS
 pressure/temperature and full-state residual norms. The equation RHS also

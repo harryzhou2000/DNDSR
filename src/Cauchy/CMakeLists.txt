@@ -2,7 +2,7 @@ set(CPPS Core/DomainPlacement.cpp Core/Domain.cpp Core/ImplicitStep.cpp Core/Sim
     Boundary/BoundarySystem.cpp Boundary/EquationBoundary.cpp Physics/EquationSource.cpp Discretization/FiniteVolume.cpp Discretization/EquationReconstruction.cpp Discretization/EquationAuxValues.cpp Discretization/LimitedVR.cpp Discretization/PrepareAuxValues.cpp Discretization/RHS.cpp Discretization/TimeStep.cpp Core/TimeStep.cpp Implicit/LinearProblem.cpp Implicit/EquationLinearProblem.cpp Implicit/SGS.cpp Implicit/EquationSGS.cpp Implicit/ILU.cpp Implicit/LinearSolver.cpp Implicit/NonlinearSolver.cpp Implicit/PrepareJacobian.cpp Implicit/EquationJacobian.cpp Multigrid/PolynomialMultigrid.cpp IO/Checkpoint.cpp IO/EquationArchive.cpp IO/EquationOutput.cpp Riemann/RiemannFlux.cpp)
 list(APPEND CPPS Discretization/WallDistanceSamples.cpp Physics/EquationRANS.cpp Physics/StateInput.cpp Physics/InitialField.cpp Discretization/InitializeField.cpp IO/SimulationCheckpoint.cpp)
 list(APPEND CPPS Implicit/EquationJacobianKernels.cpp)
-list(APPEND CPPS IO/ProgressOutput.cpp)
+list(APPEND CPPS IO/ProgressOutput.cpp IO/OutputPlan.cpp)
 dnds_add_lib(cauchy "${CPPS}" "physics;cfv;geom;dnds;${DNDS_EXTERNAL_LIBS}" "${DNDS_PCH_TARGETS_FAST}" OFF ON ON)
 dnds_add_lib(cauchy_shared "${CPPS}" "physics_shared;cfv_shared;geom_shared;dnds_shared;${DNDS_EXTERNAL_LIBS}" "${DNDS_PCH_TARGETS_FAST}" ON ON ON)
 install(TARGETS cauchy_shared LIBRARY DESTINATION "DNDSR/lib" COMPONENT py OPTIONAL)

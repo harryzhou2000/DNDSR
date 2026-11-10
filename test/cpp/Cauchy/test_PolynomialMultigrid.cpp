@@ -22,7 +22,7 @@ namespace
                                   R::EagerEngine &engine, const R::ExecutionStream &stream,
                                   const C::DomainSettings &settings)
     {
-        return {fv, state, fv.BuildWorkspace(state), engine, stream, settings,
+        return {fv, state, fv.BuildReconstructionState(state), fv.BuildWorkspace(state), engine, stream, settings,
                 A::ComponentSelection(state.ComponentNumber(),
                                       state.Schema().ResolveComponents(settings.implicit.residualComponents))};
     }
@@ -48,6 +48,20 @@ namespace
         {
             const auto global = fv.Metrics().Cells().LocalToGlobal(iCell);
             const auto mean = equation.Gas().Conservative({1 + .05 * std::sin(global * .7), .2 + .02 * std::cos(global), -.1, .03, 1.1});
+            for (int j = 0; j < 5; ++j)
+                values(iCell, j) = mean[j] * (1 + perturbation * std::cos(global + j));
+        }
+    }
+    void Fill(C::FiniteVolume const &fv, C::EquationSystem const &equation,
+              C::EquationDofs &state, double perturbation)
+    {
+        auto write = state.WriteOwned();
+        const auto values = write.Block("flow");
+        for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+        {
+            const auto global = fv.Metrics().Cells().LocalToGlobal(iCell);
+            const auto mean = equation.Gas().Conservative(
+                {1 + .05 * std::sin(global * .7), .2 + .02 * std::cos(global), -.1, .03, 1.1});
             for (int j = 0; j < 5; ++j)
                 values(iCell, j) = mean[j] * (1 + perturbation * std::cos(global + j));
         }
@@ -92,12 +106,13 @@ TEST_CASE("Bottom pMG uses mean convection and jump-only face viscosity in both 
                 R::EagerEngine engine;
                 const auto stream = engine.CreateCPUStream();
                 auto input = Bind(fv, state), output = Bind(fv, residual);
+                auto reconstruction = fv.BuildReconstructionState(input);
                 auto workspace = logical
                                      ? fv.BuildWorkspace(input)
                                      : fv.BuildWorkspace(
                                            input, std::nullopt,
                                            C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic});
-                fv.Evaluate(input, output, *workspace, engine, stream);
+                fv.Evaluate(input, output, *reconstruction, *workspace, engine, stream);
                 const auto read = residual.Owned().Read();
                 const auto values = read.View<R::UniformTableRows>();
                 for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
@@ -302,21 +317,22 @@ TEST_CASE("FAS consumes the measured finest VR rate once for field and logical e
             R::EagerEngine engine;
             const auto stream = engine.CreateCPUStream();
             auto input = Bind(fine, state), forcing = Bind(fine, source);
+            const auto reconstruction = fine.BuildReconstructionState(input);
             const auto workspace = logical
                                        ? fine.BuildWorkspace(input)
                                        : fine.BuildWorkspace(
                                              input, std::nullopt,
                                              C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic});
             C::NonlinearSolver smoother(
-                fine, input, workspace, engine, stream, settings,
+                fine, input, reconstruction, workspace, engine, stream, settings,
                 A::ComponentSelection(input.ComponentNumber(),
                                       input.Schema().ResolveComponents(settings.implicit.residualComponents)));
             C::PolynomialMultigrid solver(mesh, fine, input, smoother, engine, stream, settings);
             if (manual)
             {
                 auto value = C::EquationDofOperations::NewVector(input), rate = C::EquationDofOperations::NewVector(input);
-                smoother.EvaluateEquation(input, value, 20, .5, .1, &rate);
-                solver.ApplyCycle(forcing, 20, .5, .1, 0, 0, &rate);
+                smoother.EvaluateEquation(input, value, 20, .5, .1, std::ref(rate));
+                solver.ApplyCycle(forcing, 20, .5, .1, 0, 0, std::cref(rate));
             }
             else
                 CHECK(solver.Solve(forcing, 20, .5, .1).multigridCycles == 1);
@@ -414,9 +430,10 @@ TEST_CASE("Polynomial FAS fixed points and preflight errors preserve fine means"
     A::Scale(source, 10.);
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
+    auto reconstruction = fine.BuildReconstructionState(input);
     auto workspace = fine.BuildWorkspace(input);
     C::NonlinearSolver smoother(
-        fine, input, workspace, engine, stream, settings,
+        fine, input, reconstruction, workspace, engine, stream, settings,
         A::ComponentSelection(input.ComponentNumber(),
                               input.Schema().ResolveComponents(settings.implicit.residualComponents)));
     C::PolynomialMultigrid solver(mesh, fine, input, smoother, engine, stream, settings);
@@ -437,7 +454,7 @@ TEST_CASE("Polynomial FAS fixed points and preflight errors preserve fine means"
     A::Copy(source, state);
     A::Scale(source, 10.);
     Fill(fine, equation, state, .01);
-    fine.ResetReconstruction(*workspace);
+    fine.ResetReconstruction(*reconstruction, *workspace);
     CHECK(solver.Solve(forcing, 10, .5, 0).converged);
 }
 TEST_CASE("Selected pMG recovers nonconstant principal equations while preserving frozen means and full residual reporting")
@@ -471,9 +488,10 @@ TEST_CASE("Selected pMG recovers nonconstant principal equations while preservin
         const auto stream = engine.CreateCPUStream();
         auto input = Bind(fine, state), forcing = Bind(fine, source), measured = Bind(fine, value);
         Fill(fine, equation, state, 0);
+        auto reconstruction = fine.BuildReconstructionState(input);
         auto workspace = fine.BuildWorkspace(input);
         C::NonlinearSolver smoother(
-            fine, input, workspace, engine, stream, settings,
+            fine, input, reconstruction, workspace, engine, stream, settings,
             A::ComponentSelection(input.ComponentNumber(),
                                   input.Schema().ResolveComponents(settings.implicit.residualComponents)));
         A::Copy(exact, state);
@@ -521,9 +539,9 @@ TEST_CASE("Selected pMG recovers nonconstant principal equations while preservin
         // Compare the initial equation with the same cold VR guess on both
         // evaluations; otherwise finite VR stopping changes the operator by
         // a few tolerance units before any mean correction has occurred.
-        fine.ResetReconstruction(*workspace);
+        fine.ResetReconstruction(*reconstruction, *workspace);
         const auto initialNorm = measure();
-        fine.ResetReconstruction(*workspace);
+        fine.ResetReconstruction(*reconstruction, *workspace);
         C::PolynomialMultigrid solver(mesh, fine, input, smoother, engine, stream, settings);
         const auto report = solver.Solve(forcing, 30, .5, .1);
         CAPTURE(scenario);
@@ -577,8 +595,8 @@ TEST_CASE("Cauchy pMG physical discard and reprepare retain the fine reconstruct
         C::TimeSettings time;
         time.method = method;
         C::Domain reference("reference", mesh, settings, time), retry("retry", mesh, settings, time);
-        Fill(reference.Discretization(), equation, reference.Flow(), 0);
-        Fill(retry.Discretization(), equation, retry.Flow(), 0);
+        Fill(reference.Discretization(), equation, reference.Dofs().CoupledField(), 0);
+        Fill(retry.Discretization(), equation, retry.Dofs().CoupledField(), 0);
         REQUIRE(reference.Advance(.001).accepted);
         REQUIRE(retry.PrepareStep(.001).accepted);
         retry.DiscardStep();
@@ -586,13 +604,13 @@ TEST_CASE("Cauchy pMG physical discard and reprepare retain the fine reconstruct
         {
             std::optional<R::Array<double>::ReadLease> retained;
             if (mpi.rank == 0)
-                retained.emplace(retry.Flow().Owned().Read());
+                retained.emplace(retry.Dofs().CoupledField().Owned().Read());
             CHECK_THROWS(retry.CommitStep());
         }
         retry.CommitStep();
         CHECK(retry.Time() == .001);
         CHECK(retry.Epoch().acceptedStep == 1);
-        const auto first = reference.Flow().Owned().Read(), second = retry.Flow().Owned().Read();
+        const auto first = reference.Dofs().CoupledField().Owned().Read(), second = retry.Dofs().CoupledField().Owned().Read();
         const auto a = first.View<R::UniformTableRows>(), b = second.View<R::UniformTableRows>();
         for (DNDS::index iCell = 0; iCell < a.RowCount(); ++iCell)
             for (int j = 0; j < 5; ++j)
@@ -700,10 +718,11 @@ TEST_CASE("Logical polynomial FAS recovers nonconstant RANS and reacting mixture
         }
         auto exact = C::EquationDofOperations::NewVector(state), source = C::EquationDofOperations::NewVector(state);
         C::EquationDofOperations::Copy(exact, state);
+        auto reconstruction = fine.BuildReconstructionState(state);
         auto work = fine.BuildWorkspace(state, setup.workers);
         R::EagerEngine engine(scenario ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
-        C::NonlinearSolver smoother(fine, state, work, engine, stream, settings,
+        C::NonlinearSolver smoother(fine, state, reconstruction, work, engine, stream, settings,
                                     A::ComponentSelection(state.ComponentNumber(), state.Schema().ResolveComponents(settings.implicit.residualComponents)), setup.workers);
         constexpr double mass = 10000, scale = .5;
         smoother.EvaluateEquation(state, source, mass, scale, .1);
@@ -804,8 +823,8 @@ TEST_CASE("Equation Domain performs one spatial FAS update per DITR coupled stag
     time.ditr.relativeTolerance = 1e-7;
     C::Domain reference("reference", mesh, settings, time), retry("retry", mesh, settings, time);
     const auto equation = C::EquationSetup::Resolve(settings.equation).equation;
-    Fill(reference.Discretization(), equation, reference.Flow(), 0);
-    Fill(retry.Discretization(), equation, retry.Flow(), 0);
+    Fill(reference.Discretization(), equation, reference.Dofs(), 0);
+    Fill(retry.Discretization(), equation, retry.Dofs(), 0);
     REQUIRE(reference.Advance(.001).accepted);
     REQUIRE(retry.PrepareStep(.001).accepted);
     retry.DiscardStep();

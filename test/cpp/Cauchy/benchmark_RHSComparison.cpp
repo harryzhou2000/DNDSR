@@ -107,7 +107,7 @@ int main(int argc, char **argv)
             C::RHSLocalDiagnostics diagnostics;
             C::RHSWriteViews output;
             output.residual = write.View<R::UniformTableRows>();
-            diagnostics.Merge(op.Apply(input, output));
+            diagnostics.Merge(op.ApplyBorrowedChecked(input, output));
             DNDS_check_throw_info(diagnostics.FaceFallbacks() == 0, "unexpected RHS face fallback");
         };
         const auto legacyRHS = [&]

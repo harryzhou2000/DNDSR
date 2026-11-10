@@ -15,9 +15,11 @@ flowchart TD
     mesh[UnstructuredMesh] --> metric[FiniteVolumePlan: shared immutable metrics]
     metric --> plan[VariationalReconstructionPlan: moments and local systems]
     metric --> field[DNDS Algebra DofField: owned and ghost Runtime arrays]
-    plan --> workspace[ReconstructionWorkspace: coefficients and temporary scratch]
+    plan --> coefficients[Caller-owned durable coefficients]
+    plan --> workspace[ReconstructionWorkspace: temporary scratch only]
     boundary[Explicit boundary quadrature values] --> sweep[Reconstruction sweep]
     field --> sweep
+    coefficients --> sweep
     workspace --> sweep
     plan --> sweep
     transforms[Per-face characteristic matrices] --> limiter[WBAP order pass]
@@ -27,7 +29,10 @@ flowchart TD
 ```
 
 Copies of plans retain immutable publications and mesh identity. Copies of
-fields/Runtime handles share storage. Python `FVField` is an alias for the
+fields/Runtime handles share storage. `BuildCoefficients` allocates durable
+state independently of `BuildWorkspace`; a serialized workspace can therefore
+serve different solver-owned coefficient publications without retaining them.
+Python `FVField` is an alias for the
 existing DNDS `Runtime.Algebra.DoubleDofField`, not a second algebra implementation.
 Its `owned`/`ghost` properties and boundary/transform arrays share the C++
 allocations. Retained arrays remain alive after deleting their Python parent.
@@ -268,10 +273,10 @@ leases; its work set uses conservative cell–node–cell adjacency. Commit is a
 explicit copy into owned coefficients and must wait for old sends to finish.
 No regional lease or per-access ownership test is introduced inside cell loops.
 
-For SOR, `workspace.coefficients` is the owned working iterate; `input.Ghost()`
-is the frozen remote iterate. Initialize the working iterate from the desired
-old iterate yourself. If sends overlap, exchange a **separate snapshot** so SOR
-can write the working iterate without modifying live send buffers. `coreFirst`
+For SOR, the explicit caller-owned coefficient field is the working iterate;
+`input.Ghost()` is the frozen remote iterate. Initialize the working iterate
+from the desired old iterate yourself. If sends overlap, exchange a **separate
+snapshot** so SOR can write the working iterate without modifying live send buffers. `coreFirst`
 selects stable core-first SOR order. Split versus unsplit results must use that
 same logical order; changing SOR order can change the result.
 
@@ -336,32 +341,34 @@ view access does not reacquire ownership or check generations per element. The
 initial pointers are host pointers even though their simple accessors are
 device-callable; this does not imply a device metric publication exists yet.
 
-These are synchronous CPU operators. They retain their leases until return.
-A future CUDA launcher can consume the same explicit table/offset/BC/transform
-contracts; there are **no CUDA VR kernels** or asynchronous CFV launchers in this
-implementation. Do not call a CPU operator before its eager-engine producer or
-MPI halo is complete. CPU workspaces are private to one concurrent invocation.
+The synchronous CPU operators retain their leases until return. The same public
+plan/workspace API dispatches prepared CUDA Jacobi and WBAP kernels through the
+eager engine when the selected placement supports them; unsupported SOR/backend
+combinations fail explicitly. Do not call a CPU operator before its eager-engine
+producer or MPI halo is complete. Every workspace is private to one concurrent
+invocation on either backend.
 
 ```cpp
 auto metrics = CFV::FiniteVolumePlan::ConstructMetrics(mesh, 5); // collective
 CFV::ReconstructionSettings settings;
 auto rec = CFV::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
 auto mean = metrics.BuildField(6);
+auto coefficients = rec.BuildCoefficients(6); // durable solver state
 auto work = rec.BuildWorkspace(6);
 auto boundary = rec.BuildBoundaryValues(6);
 // Fill mean.Owned() and boundary.values through scoped Runtime write leases.
 auto meanHalo = metrics.BindHalo(mean);                 // collective, persistent
-auto coefficientHalo = metrics.BindHalo(work.coefficients);
+auto coefficientHalo = metrics.BindHalo(coefficients);
 meanHalo.Begin().Wait();
 for (int iteration = 0; iteration < 20; ++iteration)
 {
     coefficientHalo.Begin().Wait();
-    rec.DoReconstructionIter(mean, work, boundary);
+    rec.DoReconstructionIter(mean, coefficients, work, boundary);
 }
 coefficientHalo.Begin().Wait();
 for (int order = settings.maxOrder; order >= 1; --order)
 {
-    rec.DoLimiterWBAP_3Order(work, order); // optional finalized transform argument
+    rec.DoLimiterWBAP_3Order(coefficients, work, order); // optional finalized transform argument
     coefficientHalo.Begin().Wait();
 }
 ```

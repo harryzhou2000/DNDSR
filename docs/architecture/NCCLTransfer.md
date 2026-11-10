@@ -33,7 +33,8 @@ runtime or an equivalent loader path.
 auto provider = Runtime::NCCLTransferProvider::Create(mpi.comm, device);
 Runtime::TransferOptions options;
 options.provider = provider;
-auto halo = resident.BindHalo(work.coefficients,
+auto coefficients = resident.BuildCoefficients(components);
+auto halo = resident.BindHalo(coefficients,
                              Runtime::TransferTransport::DevicePacked, options);
 ```
 
@@ -72,12 +73,12 @@ The caller owns every producer/consumer edge. A typical split iteration is:
 ```cpp
 comm.WaitFor(compute.Record()); // last owned producer/previous ghost consumer
 halo.Enqueue(engine, comm);    // pack -> NCCL -> unpack, in this stream
-resident.SubmitReconstructionIterTo(engine, compute, mean, work.coefficients,
+resident.SubmitReconstructionIterTo(engine, compute, mean, coefficients,
                                     work, boundary, ReconstructionRegion::Core);
 compute.WaitFor(comm.Record()); // logical ghost values ready after unpack
-resident.SubmitReconstructionIterTo(engine, compute, mean, work.coefficients,
+resident.SubmitReconstructionIterTo(engine, compute, mean, coefficients,
                                     work, boundary, ReconstructionRegion::HaloDependent);
-resident.SubmitCommitReconstruction(engine, compute, work);
+resident.SubmitCommitReconstruction(engine, compute, coefficients, work);
 // Further correctly ordered iterations may be queued before observation.
 engine.Synchronize();
 provider->CheckAsyncError();

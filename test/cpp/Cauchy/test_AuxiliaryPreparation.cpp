@@ -418,13 +418,15 @@ TEST_CASE("Synchronous residual completes its queued core before dependent rejec
     auto logical = C::EquationDofs::Coupled(equation.Schema(), state);
     auto referenceLogical = C::EquationDofs::Coupled(equation.Schema(), reference);
     auto resultLogical = C::EquationDofs::Coupled(equation.Schema(), result);
+    auto reconstruction = fv.BuildReconstructionState(logical);
+    auto referenceReconstruction = fv.BuildReconstructionState(logical);
     auto work = fv.BuildWorkspace(logical), referenceWork = fv.BuildWorkspace(logical);
     R::EagerEngine baseline;
-    fv.Evaluate(logical, referenceLogical, *referenceWork, baseline, baseline.CreateCPUStream());
+    fv.Evaluate(logical, referenceLogical, *referenceReconstruction, *referenceWork, baseline, baseline.CreateCPUStream());
     auto launcher = std::make_shared<RejectAuxiliaryDependent>();
     R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
     const auto stream = engine.CreateStream(launcher);
-    CHECK_THROWS(fv.Evaluate(logical, resultLogical, *work, engine, stream));
+    CHECK_THROWS(fv.Evaluate(logical, resultLogical, *reconstruction, *work, engine, stream));
     CHECK(launcher->rejected);
     CHECK(launcher->ObservedJoin());
     CHECK(launcher->coreCompleted);
@@ -433,10 +435,13 @@ TEST_CASE("Synchronous residual completes its queued core before dependent rejec
         released.CancelUnmodified();
     }
     // The failed operation may poison whichever numerical outputs it had
-    // already reserved. Replace the workspace before retrying; the accepted
-    // input and engine remain reusable once the queued command is joined.
+    // already reserved. Durable reconstruction publications are solver-owned
+    // outputs now, while the workspace is scratch; discard both before this
+    // UT-only recovery. The accepted input and engine remain reusable once the
+    // queued command is joined. Production collective paths abort instead.
+    reconstruction = fv.BuildReconstructionState(logical);
     work = fv.BuildWorkspace(logical);
-    REQUIRE_NOTHROW(fv.Evaluate(logical, resultLogical, *work, engine, stream));
+    REQUIRE_NOTHROW(fv.Evaluate(logical, resultLogical, *reconstruction, *work, engine, stream));
     const auto expected = reference.Owned().Read(), actual = result.Owned().Read();
     for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
         for (int j = 0; j < 5; ++j)

@@ -153,12 +153,12 @@ The safe direct MPI overlap shape is:
 ```cpp
 // All previous producers of coefficients have completed or been joined.
 auto transfer = halo.Begin(deviceContext); // owned read, separate ghost write
-resident.SubmitReconstructionIterTo(engine, compute, mean, work.coefficients,
+resident.SubmitReconstructionIterTo(engine, compute, mean, coefficients,
                                     work, boundary, ReconstructionRegion::Core);
 transfer.Wait(); // CUDA-aware MPI is a host-managed readiness boundary
-resident.SubmitReconstructionIterTo(engine, compute, mean, work.coefficients,
+resident.SubmitReconstructionIterTo(engine, compute, mean, coefficients,
                                     work, boundary, ReconstructionRegion::HaloDependent);
-resident.SubmitCommitReconstruction(engine, compute, work);
+resident.SubmitCommitReconstruction(engine, compute, coefficients, work);
 engine.Synchronize(); // observation/next MPI producer boundary
 resident.CheckStatus(work);
 ```

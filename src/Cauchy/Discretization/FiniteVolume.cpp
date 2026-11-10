@@ -525,6 +525,79 @@ namespace DNDS::Cauchy
         MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, Metrics().Communicator());
         return valid;
     }
+    struct FiniteVolume::ReconstructionState
+    {
+        R::SessionAccess session;
+        std::shared_ptr<const Data> owner;
+        EquationDofOperations::Binding binding;
+        /// Durable warm/unlimited coefficients advanced by the reconstruction
+        /// iteration. They are solver state, never workspace scratch.
+        EquationDofs coefficients;
+        /// Durable finalized polynomial consumed by flux/source/Jacobian
+        /// operators after limiter and PP. DITR stages need independent copies
+        /// even while serially sharing every temporary workspace allocation.
+        EquationDofs fluxCoefficients;
+        /// Provenance of the finalized owned polynomial. Limiter/PP profiles
+        /// require an Evaluate/PrepareReconstruction after the warm guess
+        /// changes; unfiltered profiles can republish by a direct owned copy.
+        std::optional<EquationDofOperations::Binding> finalizedFrom;
+        std::vector<Algebra::DofHalo<>> meanHalo;
+        uint64_t meanEpoch = 0;
+        std::vector<R::TransferBinding> coefficientHalo, fluxHalo;
+        std::optional<R::Array<real>> limitedVRHistory;
+
+        bool FinalizedCurrent() const
+        {
+            if (!finalizedFrom || finalizedFrom->snapshot.PhysicalFieldNumber() != coefficients.PhysicalFieldNumber())
+                return false;
+            for (index iField = 0; iField < coefficients.PhysicalFieldNumber(); ++iField)
+            {
+                const auto &saved = finalizedFrom->snapshot.PhysicalField(iField).Owned();
+                const auto &current = coefficients.PhysicalField(iField).Owned();
+                if (saved.SharedStorage() != current.SharedStorage() ||
+                    finalizedFrom->versions[size_t(iField)] != current.Version())
+                    return false;
+            }
+            return true;
+        }
+        void PublishFinalized() { finalizedFrom.emplace(coefficients); }
+
+        static EquationDofs BuildCoefficients(const Data &data, const EquationDofs &state)
+        {
+            Algebra::DofBundle fields(state.Space());
+            for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+            {
+                const auto &physical = state.PhysicalField(iField);
+                fields.Add(state.Fields().Name(iField), data.reconstruction.BuildCoefficients(
+                                                            index(physical.Width()),
+                                                            FiniteVolumeDetail::FieldLayout(physical.Owned().Layout(), data.metrics.NumCell(),
+                                                                                            index(physical.Width()) * data.reconstruction.NRecDOF())));
+            }
+            return BindFields(state, std::move(fields), data.reconstruction.NRecDOF());
+        }
+        ReconstructionState(std::shared_ptr<const Data> data, EquationDofs &state)
+            : owner(std::move(data)), binding(state), coefficients(BuildCoefficients(*owner, state)),
+              fluxCoefficients(BuildCoefficients(*owner, state))
+        {
+            for (index iField = 0; iField < coefficients.PhysicalFieldNumber(); ++iField)
+            {
+                Algebra::Fill(coefficients.PhysicalField(iField), 0.);
+                Algebra::Fill(fluxCoefficients.PhysicalField(iField), 0.);
+                meanHalo.push_back(owner->BindTrackedHalo(state.PhysicalField(iField)));
+                coefficientHalo.push_back(owner->BindHalo(coefficients.PhysicalField(iField)));
+                fluxHalo.push_back(owner->BindHalo(fluxCoefficients.PhysicalField(iField)));
+            }
+            if (owner->limitedVRGeometry)
+            {
+                limitedVRHistory.emplace(R::RowLayout::Dense(owner->metrics.NumCell(), 2));
+                auto write = limitedVRHistory->Write();
+                const auto values = write.View<R::FixedRows<2>>();
+                for (index iCell = 0; iCell < values.RowCount(); ++iCell)
+                    values(iCell, 0) = values(iCell, 1) = 0;
+            }
+            finalizedFrom.emplace(coefficients);
+        }
+    };
     struct FiniteVolume::Workspace
     {
         R::SessionAccess session;
@@ -578,16 +651,16 @@ namespace DNDS::Cauchy
             }
         };
         const bool meanOnly;
-        EquationDofs prototype;
-        EquationDofOperations::Binding binding;
-        std::vector<Field> fields, limited;
-        EquationDofs coefficients, fluxCoefficients, boundary;
-        std::vector<Algebra::DofHalo<>> meanHalo;
-        uint64_t meanEpoch = 0;
-        std::vector<R::TransferBinding> coefficientHalo, fluxHalo;
+        index componentNumber = 0, physicalFieldNumber = 0;
+        std::vector<Field> fields;
+        EquationDofs boundary;
+        /// Operation-scoped retained binding. It is installed by the
+        /// orchestration call and cleared on every exit; the workspace never
+        /// becomes the durable coefficient owner.
+        std::optional<EquationDofs> activeCoefficients, activeFluxCoefficients;
         // Accepted direct-FV physical gradients, separate from source sampling.
-        // WBAP/PP may still use an explicit coefficient compatibility bridge;
-        // the direct RHS never reads that bridge or evaluates a Taylor basis.
+        // WBAP/PP consume their explicit polynomial projection; the direct RHS
+        // reads only these physical gradients and never evaluates a Taylor basis.
         std::vector<CFV::FVField> directGradients, directViscousGradients;
         /// Legacy-compatible primitive-gradient viscosity is prepared inside
         /// this workspace but consumed by the same fixed-flow RHS leaf.
@@ -648,12 +721,92 @@ namespace DNDS::Cauchy
         bool chemical;
         int iterations = 0;
         real relativeUpdate = 0;
-        std::optional<EquationDofOperations::Binding> sourceState, sourceCoefficients;
+        struct WeakPublication
+        {
+            std::vector<std::weak_ptr<const R::ArrayStorage>> storage;
+            std::vector<uint64_t> shapes, versions;
+            explicit WeakPublication(const EquationDofs &values)
+            {
+                storage.reserve(size_t(values.PhysicalFieldNumber()));
+                shapes.reserve(storage.capacity());
+                versions.reserve(storage.capacity());
+                for (index iField = 0; iField < values.PhysicalFieldNumber(); ++iField)
+                {
+                    const auto &array = values.PhysicalField(iField).Owned();
+                    storage.push_back(array.SharedStorage());
+                    shapes.push_back(array.ShapeVersion());
+                    versions.push_back(array.Version());
+                }
+            }
+            bool Current(const EquationDofs &values) const
+            {
+                if (storage.size() != size_t(values.PhysicalFieldNumber()))
+                    return false;
+                for (index iField = 0; iField < values.PhysicalFieldNumber(); ++iField)
+                {
+                    const auto &array = values.PhysicalField(iField).Owned();
+                    if (storage[size_t(iField)].lock() != array.SharedStorage() ||
+                        shapes[size_t(iField)] != array.ShapeVersion() ||
+                        versions[size_t(iField)] != array.Version())
+                        return false;
+                }
+                return true;
+            }
+        };
+        std::optional<EquationDofOperations::Binding> sourceState;
+        std::optional<WeakPublication> sourceCoefficients;
         real sourceTime = 0;
-        std::optional<EquationDofOperations::Binding> rhsState, rhsCoefficients;
+        std::optional<EquationDofOperations::Binding> rhsState;
+        std::optional<WeakPublication> rhsCoefficients;
         real rhsTime = 0;
         // Keep auxiliary cache metadata after the existing numerical fields.
         std::vector<std::array<DirectGradientPublication, 2>> directGradientPublications;
+
+        class ActiveReconstruction
+        {
+            Workspace *_work = nullptr;
+
+        public:
+            ActiveReconstruction(Workspace &work, const EquationDofs &coefficients,
+                                 const EquationDofs &fluxCoefficients) : _work(&work)
+            {
+                DNDS_check_throw_info(!work.activeCoefficients && !work.activeFluxCoefficients,
+                                      "workspace already has an active reconstruction binding");
+                work.activeCoefficients.emplace(coefficients);
+                work.activeFluxCoefficients.emplace(fluxCoefficients);
+            }
+            ActiveReconstruction(const ActiveReconstruction &) = delete;
+            ActiveReconstruction &operator=(const ActiveReconstruction &) = delete;
+            ActiveReconstruction(ActiveReconstruction &&other) noexcept : _work(other._work) { other._work = nullptr; }
+            ~ActiveReconstruction()
+            {
+                if (_work)
+                {
+                    _work->activeCoefficients.reset();
+                    _work->activeFluxCoefficients.reset();
+                }
+            }
+        };
+        ActiveReconstruction BindReconstruction(const EquationDofs &coefficients,
+                                                const EquationDofs &fluxCoefficients)
+        {
+            return ActiveReconstruction(*this, coefficients, fluxCoefficients);
+        }
+        const EquationDofs &Coefficients() const
+        {
+            DNDS_check_throw_info(activeCoefficients, "workspace has no active reconstruction binding");
+            return *activeCoefficients;
+        }
+        const EquationDofs &FluxCoefficients() const
+        {
+            DNDS_check_throw_info(activeFluxCoefficients, "workspace has no active finalized reconstruction binding");
+            return *activeFluxCoefficients;
+        }
+        EquationDofs &FluxCoefficients()
+        {
+            DNDS_check_throw_info(activeFluxCoefficients, "workspace has no active finalized reconstruction binding");
+            return *activeFluxCoefficients;
+        }
 
         static std::vector<Field> BuildFields(const Data &data, const EquationDofs &state, bool meanOnly)
         {
@@ -677,7 +830,6 @@ namespace DNDS::Cauchy
                             {},
                             {},
                             vectors};
-                Algebra::Fill(field.reconstruction.coefficients, 0.);
                 Algebra::Fill(field.reconstruction.temporary, 0.);
                 if (!meanOnly && (data.settings.numerics.reconstruction == "gradient" ||
                                   (data.equation.HasRANS() && data.settings.numerics.reconstruction == "constant")))
@@ -691,7 +843,7 @@ namespace DNDS::Cauchy
             }
             return result;
         }
-        void BuildSourceSampling()
+        void BuildSourceSampling(const EquationDofs &state)
         {
             if (!owner->equation.HasRANS() && (!chemical || owner->equation.Mixture().SpeciesNumber() == 1))
                 return;
@@ -738,16 +890,12 @@ namespace DNDS::Cauchy
             sourceValuesAreMeans = owner->settings.numerics.reconstruction != "variational" && count == owner->metrics.NumCell();
             for (index iCell = 0; sourceValuesAreMeans && iCell < owner->metrics.NumCell(); ++iCell)
                 sourceValuesAreMeans = sourceOffsets[iCell] == iCell && sourceOffsets[iCell + 1] == iCell + 1;
-            for (index iField = 0; iField < prototype.PhysicalFieldNumber(); ++iField)
+            for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             {
-                // Direct FV midpoint values are exactly the cell means. Pin
-                // their Array storage instead of copying the whole field per
-                // RHS. Workspace binding checks reject later state rebinding.
-                if (sourceValuesAreMeans)
-                    sourceValues.push_back(prototype.PhysicalField(iField).Owned());
-                else
-                    sourceValues.emplace_back(FiniteVolumeDetail::FieldLayout(prototype.PhysicalField(iField).Owned().Layout(), count,
-                                                                              index(prototype.PhysicalField(iField).Width())));
+                // Keep source sampling scratch independent of any particular
+                // mean allocation so serialized stage states can reuse it.
+                sourceValues.emplace_back(FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), count,
+                                                                          index(state.PhysicalField(iField).Width())));
                 if (owner->equation.HasRANS())
                 {
                     sourceGradients.emplace_back();
@@ -775,20 +923,13 @@ namespace DNDS::Cauchy
                     }
                 }
                 sourceJacobianSampling.emplace(owner->reconstruction, centerCells, centers);
-                for (index iField = 0; iField < prototype.PhysicalFieldNumber(); ++iField)
+                for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                 {
                     sourceJacobianGradients.emplace_back();
                     for (int d = 0; d < owner->metrics.Dimension(); ++d)
-                        sourceJacobianGradients.back()[d] = R::Array<real>(FiniteVolumeDetail::FieldLayout(prototype.PhysicalField(iField).Owned().Layout(), owned, prototype.PhysicalField(iField).Width()));
+                        sourceJacobianGradients.back()[d] = R::Array<real>(FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owned, state.PhysicalField(iField).Width()));
                 }
             }
-        }
-        static EquationDofs BindCoefficients(const EquationDofs &state, const std::vector<Field> &fields, index modes)
-        {
-            Algebra::DofBundle bundle(state.Space());
-            for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
-                bundle.Add(state.Fields().Name(iField), fields[iField].reconstruction.coefficients);
-            return BindFields(state, std::move(bundle), modes);
         }
         static EquationDofs BindBoundary(const EquationDofs &state, const std::vector<Field> &fields, index rows)
         {
@@ -801,8 +942,8 @@ namespace DNDS::Cauchy
         }
         Workspace(std::shared_ptr<const Data> data, EquationDofs &state,
                   std::optional<Physics::Chemistry::ChemicalWorkerPool> pool, bool meanTrial)
-            : owner(std::move(data)), meanOnly(meanTrial), prototype(state), binding(state), fields(BuildFields(*owner, state, meanOnly)),
-              coefficients(BindCoefficients(state, fields, owner->reconstruction.NRecDOF())), fluxCoefficients(coefficients),
+            : owner(std::move(data)), meanOnly(meanTrial), componentNumber(state.ComponentNumber()), physicalFieldNumber(state.PhysicalFieldNumber()),
+              fields(BuildFields(*owner, state, meanOnly)),
               boundary(BindBoundary(state, fields, owner->reconstruction.NumBoundaryQuadrature())),
               thermal(owner->equation, owner->settings.numerics.densityFloor, owner->settings.numerics.temperatureFloor,
                       owner->settings.numerics.sensibleEnergyFloor, owner->settings.numerics.pressureFloor,
@@ -827,16 +968,13 @@ namespace DNDS::Cauchy
                     vectorStarts.push_back(first + vector);
                 first += index(block.components.size());
             }
-            if (!meanOnly && (owner->settings.numerics.limiter == "WBAP" || owner->settings.numerics.positivity))
-            {
-                limited = fields;
-                for (auto &field : limited)
-                    field.reconstruction.coefficients = owner->metrics.BuildField(field.reconstruction.coefficients.Owned().Layout());
-                fluxCoefficients = BindCoefficients(state, limited, owner->reconstruction.NRecDOF());
-            }
             if (!meanOnly && owner->settings.numerics.positivity)
             {
-                positivity = std::make_shared<EquationPositivityWorkspace>(owner, state, fluxCoefficients, workers);
+                // Positivity retains only its own reference/sample buffers.
+                // This construction prototype is discarded immediately; the
+                // actual finalized coefficients belong to ReconstructionState.
+                auto coefficientPrototype = ReconstructionState::BuildCoefficients(*owner, state);
+                positivity = std::make_shared<EquationPositivityWorkspace>(owner, state, coefficientPrototype, workers);
                 // Conservative explicit flux blending is currently the
                 // established pure-flow policy. Extended RANS/species stages
                 // reject and retry their raw update instead of constructing a
@@ -885,25 +1023,19 @@ namespace DNDS::Cauchy
                 primitiveBoundary.emplace(owner->gradient.BuildBoundaryValues(5));
                 primitiveGradientHalo.emplace(owner->BindHalo(*primitiveGradient, "cauchy-primitive-gradient"));
             }
-            BuildSourceSampling();
+            BuildSourceSampling(state);
             if (ransFirst >= 0)
                 directGradientPublications.resize(directGradients.size());
         }
         void BindHalos(EquationDofs &state)
         {
-            for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
-            {
-                meanHalo.push_back(owner->BindTrackedHalo(state.PhysicalField(iField)));
-                coefficientHalo.push_back(owner->BindHalo(fields[iField].reconstruction.coefficients));
-                if (!limited.empty())
-                    fluxHalo.push_back(owner->BindHalo(limited[iField].reconstruction.coefficients));
-            }
+            (void)state;
         }
         void RefreshDirectGradients(bool ghost)
         {
             if (owner->settings.numerics.reconstruction == "variational")
                 return;
-            for (index iField = 0; iField < prototype.PhysicalFieldNumber(); ++iField)
+            for (index iField = 0; iField < index(fields.size()); ++iField)
             {
                 const bool fromGradientField = owner->settings.numerics.reconstruction == "constant" && fields[iField].gradient;
                 // Constant face fluxes never read remote source gradients.
@@ -922,7 +1054,7 @@ namespace DNDS::Cauchy
                         engine.Synchronize();
                     }
                     else
-                        owner->gradient.ExtractLinearGradients(fluxCoefficients.PhysicalField(iField), owner->reconstruction,
+                        owner->gradient.ExtractLinearGradients(FluxCoefficients().PhysicalField(iField), owner->reconstruction,
                                                                directGradients[iField], ghost);
                 };
                 // Only RANS source sampling repeats this pass. Flow-only and
@@ -933,8 +1065,8 @@ namespace DNDS::Cauchy
                     continue;
                 }
                 const auto &source = fromGradientField ? fields[iField].gradient->Owned()
-                                     : ghost           ? fluxCoefficients.PhysicalField(iField).Ghost()
-                                                       : fluxCoefficients.PhysicalField(iField).Owned();
+                                     : ghost           ? FluxCoefficients().PhysicalField(iField).Ghost()
+                                                       : FluxCoefficients().PhysicalField(iField).Owned();
                 const auto &destination = ghost ? directGradients[iField].Ghost() : directGradients[iField].Owned();
                 // Pin the input through both the check and a possible refresh:
                 // an unfinished writer has not published its next generation.
@@ -961,10 +1093,10 @@ namespace DNDS::Cauchy
             }
             if (!directViscousGradients.empty())
             {
-                DNDS_check_throw_info(directViscousGradients.size() == size_t(prototype.PhysicalFieldNumber()),
+                DNDS_check_throw_info(directViscousGradients.size() == fields.size(),
                                       "unlimited direct viscous-gradient fields are incomplete");
-                for (index iField = 0; iField < prototype.PhysicalFieldNumber(); ++iField)
-                    owner->gradient.ExtractLinearGradients(coefficients.PhysicalField(iField), owner->reconstruction,
+                for (index iField = 0; iField < index(fields.size()); ++iField)
+                    owner->gradient.ExtractLinearGradients(Coefficients().PhysicalField(iField), owner->reconstruction,
                                                            directViscousGradients[iField], ghost);
             }
         }
@@ -1003,8 +1135,8 @@ namespace DNDS::Cauchy
                           RHSScalarView incoming = {})
         {
             const PhaseTime timing(*this, BoundaryPhase);
-            const auto mean = state.ReadOwned(), rec = coefficients.ReadOwned();
-            const auto meanBlocks = BlockViews(state, mean), recBlocks = BlockViews(coefficients, rec);
+            const auto mean = state.ReadOwned(), rec = Coefficients().ReadOwned();
+            const auto meanBlocks = BlockViews(state, mean), recBlocks = BlockViews(Coefficients(), rec);
             std::optional<CFV::ReconstructionBasisRead> basisRead;
             const bool direct = owner->settings.numerics.reconstruction != "variational";
             if (!direct)
@@ -1090,7 +1222,8 @@ namespace DNDS::Cauchy
             }
         }
         void ApplyFixedFlowRHS(const EquationDofs &state, EquationDofs &result, CFV::ReconstructionRegion region,
-                               real time, const AuxiliaryValues *auxiliary, R::Array<real> *faceOutput,
+                               real time, std::optional<std::reference_wrapper<const AuxiliaryValues>> auxiliary,
+                               std::optional<std::reference_wrapper<R::Array<real>>> faceOutput,
                                RHSScalarView incoming)
         {
             DNDS_assert_info(fixedFlowRHS && state.PhysicalFieldNumber() == 1 && result.PhysicalFieldNumber() == 1 &&
@@ -1113,17 +1246,18 @@ namespace DNDS::Cauchy
             input.includeViscosity = !meanOnly;
             input.meanOnly = meanOnly;
             if (owner->settings.numerics.reconstruction == "variational")
-                input.coefficients = readField(fluxCoefficients.PhysicalField(0));
+                input.coefficients = readField(FluxCoefficients().PhysicalField(0));
             else if (!meanOnly && !owner->settings.numerics.firstOrderConvection &&
                      owner->settings.numerics.reconstruction == "gradient")
             {
                 DNDS_assert_info(directGradients.size() == 1, "fixed-flow direct gradient is unavailable");
                 input.conservativeGradient = readField(directGradients.front());
             }
-            if (!owner->settings.numerics.viscousLimited && !limited.empty())
+            if (!owner->settings.numerics.viscousLimited &&
+                (owner->settings.numerics.limiter == "WBAP" || limitedVR || owner->settings.numerics.positivity))
             {
                 if (owner->settings.numerics.reconstruction == "variational")
-                    input.viscousCoefficients = readField(coefficients.PhysicalField(0));
+                    input.viscousCoefficients = readField(Coefficients().PhysicalField(0));
                 else if (!directViscousGradients.empty())
                     input.viscousConservativeGradient = readField(directViscousGradients.front());
             }
@@ -1133,24 +1267,25 @@ namespace DNDS::Cauchy
             std::optional<DerivedFields::ReadScope> derivedOwned, derivedGhost;
             if (auxiliary)
             {
-                if (auxiliary->meanThermodynamics)
+                const auto &values = auxiliary->get();
+                if (values.meanThermodynamics)
                 {
-                    thermodynamics.emplace(auxiliary->meanThermodynamics->Read());
+                    thermodynamics.emplace(values.meanThermodynamics->Read());
                     input.auxiliary.meanThermodynamics.emplace(thermodynamics->View<R::UniformTableRows>());
                 }
-                else if (auxiliary->derivedOwned)
+                else if (values.derivedOwned)
                 {
                     const auto typed = EquationDofs::Coupled(owner->equation.Schema(), state.PhysicalField(0));
-                    derivedOwned.emplace(auxiliary->derivedOwned->ReadCurrent(typed, owner->equation));
-                    if (ghosts && auxiliary->derivedGhost)
-                        derivedGhost.emplace(auxiliary->derivedGhost->ReadCurrent(typed, owner->equation));
+                    derivedOwned.emplace(values.derivedOwned->ReadCurrent(typed, owner->equation));
+                    if (ghosts && values.derivedGhost)
+                        derivedGhost.emplace(values.derivedGhost->ReadCurrent(typed, owner->equation));
                     input.auxiliary.meanThermodynamics.emplace(
                         MeanThermodynamicView::Derived(*derivedOwned, derivedGhost ? &*derivedGhost : nullptr));
                 }
-                if (auxiliary->cellWaveJump)
-                    input.auxiliary.cellWaveJump = readField(*auxiliary->cellWaveJump);
-                if (auxiliary->cellPressureMinimum)
-                    input.auxiliary.cellPressureMinimum = readField(*auxiliary->cellPressureMinimum);
+                if (values.cellWaveJump)
+                    input.auxiliary.cellWaveJump = readField(*values.cellWaveJump);
+                if (values.cellPressureMinimum)
+                    input.auxiliary.cellPressureMinimum = readField(*values.cellPressureMinimum);
             }
             if (incoming.data)
                 input.boundary = incoming;
@@ -1164,14 +1299,16 @@ namespace DNDS::Cauchy
             }
             if (faceOutput)
             {
-                faceWrite.emplace(faceOutput->Write());
+                faceWrite.emplace(faceOutput->get().Write());
                 output.faceFlux = faceWrite->View<R::UniformTableRows>();
             }
             diagnostics.Merge(fixedFlowRHS->ApplyFluxBorrowedFatal(input, output, region, time));
         }
         void ApplyRHS(const EquationDofs &state, EquationDofs &result, CFV::ReconstructionRegion region,
-                      EquationPointEvaluator &evaluator, real time, const AuxiliaryValues *auxiliary = nullptr,
-                      R::Array<real> *faceOutput = nullptr, RHSScalarView incoming = {})
+                      EquationPointEvaluator &evaluator, real time,
+                      std::optional<std::reference_wrapper<const AuxiliaryValues>> auxiliary = std::nullopt,
+                      std::optional<std::reference_wrapper<R::Array<real>>> faceOutput = std::nullopt,
+                      RHSScalarView incoming = {})
         {
             const PhaseTime timing(*this, RHSPhase);
             if (fixedFlowRHS)
@@ -1211,9 +1348,11 @@ namespace DNDS::Cauchy
         }
         template <class Input, class Output>
         void ApplyRHSRows(const EquationDofs &state, CFV::ReconstructionRegion region,
-                          EquationPointEvaluator &evaluator, real time, const AuxiliaryValues *auxiliary,
+                          EquationPointEvaluator &evaluator, real time,
+                          std::optional<std::reference_wrapper<const AuxiliaryValues>> auxiliary,
                           const EquationDofs::ReadScope &mean, Input owned, Input remote, Output destination,
-                          Output lowDestination, bool produceLow, R::Array<real> *faceOutput, RHSScalarView incoming)
+                          Output lowDestination, bool produceLow,
+                          std::optional<std::reference_wrapper<R::Array<real>>> faceOutput, RHSScalarView incoming)
         {
             index localFallbacks = 0;
             auto geometry = owner->metrics.AcquireRead();
@@ -1227,9 +1366,9 @@ namespace DNDS::Cauchy
             // read views. These means are not reconstructed thermodynamics.
             std::optional<R::Array<real>::ReadLease> meanProperties;
             std::optional<RHSScalarView> preparedMean;
-            if (auxiliary && auxiliary->meanThermodynamics)
+            if (auxiliary && auxiliary->get().meanThermodynamics)
             {
-                meanProperties.emplace(auxiliary->meanThermodynamics->Read());
+                meanProperties.emplace(auxiliary->get().meanThermodynamics->Read());
                 preparedMean.emplace(meanProperties->View<R::UniformTableRows>());
             }
             std::array<std::optional<R::Array<real>::ReadLease>, 4> stencilReads;
@@ -1246,19 +1385,20 @@ namespace DNDS::Cauchy
             };
             if (auxiliary)
             {
-                readStencil(auxiliary->cellWaveJump, 0, waveJump);
-                readStencil(auxiliary->cellPressureMinimum, 2, pressureMinimum);
+                readStencil(auxiliary->get().cellWaveJump, 0, waveJump);
+                readStencil(auxiliary->get().cellPressureMinimum, 2, pressureMinimum);
             }
             std::optional<EquationDofs::ReadScope> rec, viscousRec;
             std::vector<EquationBlockReadView> recBlocks, viscousRecBlocks;
             if (!direct)
             {
-                rec.emplace(ghosts ? fluxCoefficients.ReadWithGhost() : fluxCoefficients.ReadOwned());
-                recBlocks = BlockViews(fluxCoefficients, *rec);
-                if (owner->equation.Viscous() && !owner->settings.numerics.viscousLimited && !limited.empty())
+                rec.emplace(ghosts ? FluxCoefficients().ReadWithGhost() : FluxCoefficients().ReadOwned());
+                recBlocks = BlockViews(FluxCoefficients(), *rec);
+                if (owner->equation.Viscous() && !owner->settings.numerics.viscousLimited &&
+                    (owner->settings.numerics.limiter == "WBAP" || limitedVR || owner->settings.numerics.positivity))
                 {
-                    viscousRec.emplace(ghosts ? coefficients.ReadWithGhost() : coefficients.ReadOwned());
-                    viscousRecBlocks = BlockViews(coefficients, *viscousRec);
+                    viscousRec.emplace(ghosts ? Coefficients().ReadWithGhost() : Coefficients().ReadOwned());
+                    viscousRecBlocks = BlockViews(Coefficients(), *viscousRec);
                 }
             }
             const auto meanBlocks = BlockViews(state, mean);
@@ -1298,7 +1438,7 @@ namespace DNDS::Cauchy
             }
             auto boundaryWrite = boundaryMomentumFlux.Write();
             const auto wallFlux = boundaryWrite.View<R::FixedRows<3>>();
-            auto faceWrite = (faceOutput ? *faceOutput : faceFlux).Write();
+            auto faceWrite = (faceOutput ? faceOutput->get() : faceFlux).Write();
             const auto faceValues = faceWrite.View<R::UniformTableRows>();
             std::optional<R::Array<real>::WriteLease> lowFaceWrite;
             decltype(faceWrite.View<R::UniformTableRows>()) lowFaceValues;
@@ -1797,12 +1937,12 @@ namespace DNDS::Cauchy
                     outputs.values = &sourceValues[iField];
                     for (int d = 0; d < owner->metrics.Dimension(); ++d)
                         outputs.gradients[d] = &sourceGradients[iField][d];
-                    sourceSampling->EvaluateValueGradient(state.PhysicalField(iField), fluxCoefficients.PhysicalField(iField), outputs);
+                    sourceSampling->EvaluateValueGradient(state.PhysicalField(iField), FluxCoefficients().PhysicalField(iField), outputs);
                     continue;
                 }
                 if (owner->settings.numerics.reconstruction == "variational")
-                    sourceSampling->Evaluate(state.PhysicalField(iField), fluxCoefficients.PhysicalField(iField), sourceValues[iField]);
-                else if (!sourceValuesAreMeans)
+                    sourceSampling->Evaluate(state.PhysicalField(iField), FluxCoefficients().PhysicalField(iField), sourceValues[iField]);
+                else
                 {
                     // Euler's direct FV source uses the cell mean at its
                     // center, together with the direct gradient. In a curved
@@ -1821,7 +1961,7 @@ namespace DNDS::Cauchy
                 {
                     for (int d = 0; d < owner->metrics.Dimension(); ++d)
                         if (owner->settings.numerics.reconstruction == "variational")
-                            sourceSampling->Evaluate(state.PhysicalField(iField), fluxCoefficients.PhysicalField(iField), sourceGradients[iField][d], 1 + d);
+                            sourceSampling->Evaluate(state.PhysicalField(iField), FluxCoefficients().PhysicalField(iField), sourceGradients[iField][d], 1 + d);
                         else if (!sourceValuesAreMeans)
                         {
                             const auto read = directGradients[iField].Owned().Read();
@@ -2033,7 +2173,7 @@ namespace DNDS::Cauchy
                     // One center, gradients only. The sampling facility owns
                     // bounded layout specialization and generic fallback; no
                     // unused sampled-value field is allocated for the matrix.
-                    sourceJacobianSampling->EvaluateValueGradient(state.PhysicalField(iField), fluxCoefficients.PhysicalField(iField), outputs);
+                    sourceJacobianSampling->EvaluateValueGradient(state.PhysicalField(iField), FluxCoefficients().PhysicalField(iField), outputs);
                     for (int d = 0; d < owner->metrics.Dimension(); ++d)
                     {
                         gradientReads[iField][d].emplace(sourceJacobianGradients[iField][d].Read());
@@ -2111,7 +2251,7 @@ namespace DNDS::Cauchy
             if (!sourceSampling)
                 return;
             sourceState.emplace(state.NumericAlias());
-            sourceCoefficients.emplace(fluxCoefficients.NumericAlias());
+            sourceCoefficients.emplace(FluxCoefficients());
             sourceTime = time;
         }
         /// ValidateWorkspace has already fixed schema, binding and geometry.
@@ -2125,7 +2265,7 @@ namespace DNDS::Cauchy
                 return true;
             if (!sourceState || !sourceCoefficients || sourceTime != time)
                 return false;
-            const auto means = state.ReadOwned(), coefficients = fluxCoefficients.ReadOwned();
+            const auto means = state.ReadOwned(), coefficients = FluxCoefficients().ReadOwned();
             const auto unchanged = [](const EquationDofOperations::Binding &publication, const EquationDofs &values)
             {
                 if (publication.snapshot.PhysicalFieldNumber() != values.PhysicalFieldNumber())
@@ -2140,13 +2280,15 @@ namespace DNDS::Cauchy
                 }
                 return true;
             };
-            return unchanged(*sourceState, state) && unchanged(*sourceCoefficients, fluxCoefficients);
+            return unchanged(*sourceState, state) && sourceCoefficients->Current(FluxCoefficients());
         }
         /// High-order RHS source sampling supplies the opt-in quadrature
         /// source Jacobian or refreshes publication provenance only. The
         /// default Jacobian continues to sample its own center gradients.
-        void PrepareVolumeSource(const EquationDofs &state, EquationDofs *result, EquationPointEvaluator &evaluator,
-                                 real time = 0, EquationDofs *lowOrder = nullptr)
+        void PrepareVolumeSource(const EquationDofs &state,
+                                 std::optional<std::reference_wrapper<EquationDofs>> result,
+                                 EquationPointEvaluator &evaluator, real time = 0,
+                                 std::optional<std::reference_wrapper<EquationDofs>> lowOrder = std::nullopt)
         {
             const PhaseTime timing(*this, SourcePhase);
             // Kinematic and constitutive sources share this additive entrance;
@@ -2155,13 +2297,13 @@ namespace DNDS::Cauchy
             if (result && frame.moving)
             {
                 const auto read = state.ReadOwned();
-                auto write = result->WriteOwned();
+                auto write = result->get().WriteOwned();
                 std::optional<EquationDofs::WriteScope> lowWrite;
                 if (lowOrder)
                 {
-                    state.RequireCompatible(*lowOrder);
-                    EquationDofOperations::RequireDistinct(*result, *lowOrder);
-                    lowWrite.emplace(lowOrder->WriteOwned());
+                    state.RequireCompatible(lowOrder->get());
+                    EquationDofOperations::RequireDistinct(result->get(), lowOrder->get());
+                    lowWrite.emplace(lowOrder->get().WriteOwned());
                 }
                 const auto flow = read.Block("flow");
                 const auto output = write.Block("flow");
@@ -2229,7 +2371,7 @@ namespace DNDS::Cauchy
             const auto lengths = lengthRead ? lengthRead->View<R::FixedRows<1>>() : R::ArrayView<const real, R::AccessBoundsChecks, R::FixedRows<1>>{};
             std::optional<EquationDofs::WriteScope> output;
             if (result)
-                output.emplace(result->WriteOwned());
+                output.emplace(result->get().WriteOwned());
             const auto speciesOutput = result && speciesFirst >= 0 ? output->Block("species") : EquationBlockArrayView<real>{};
             const auto ransOutput = result && ransFirst >= 0 ? output->Block("rans") : EquationBlockArrayView<real>{};
             const int independent = owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() - 1 : 0;
@@ -2287,17 +2429,35 @@ namespace DNDS::Cauchy
 
     struct FiniteVolume::MeanWorkspace
     {
+        /// Zero-polynomial probe storage is temporary by definition; it is not
+        /// the solver's warm reconstruction publication.
+        std::shared_ptr<ReconstructionState> reconstruction;
         std::shared_ptr<Workspace> work;
     };
 
-    void FiniteVolume::PrepareCorrectionAux(EquationDofs &state, Workspace &work, AuxiliaryValues &auxiliary,
+    void FiniteVolume::PrepareCorrectionAux(EquationDofs &state, ReconstructionState &reconstruction,
+                                            Workspace &work, AuxiliaryValues &auxiliary,
                                             R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
+        auto reconstructionSession = reconstruction.session.Acquire();
+        auto workspaceSession = work.session.Acquire();
+        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, reconstruction.fluxCoefficients);
         const MPIInfo mpi(Metrics().Communicator());
+        reconstruction.binding.Check(state);
         const auto local = [&](auto &&action)
         {
             Metrics().Communication()->LocalStage(std::forward<decltype(action)>(action));
         };
+        local([&]
+              {
+            ValidateWorkspace(state, work);
+            if (reconstruction.FinalizedCurrent()) return;
+            const bool filtered = _data->settings.numerics.limiter == "WBAP" ||
+                                  bool(work.limitedVR) || _data->settings.numerics.positivity;
+            DNDS_check_throw_info(!filtered,
+                                  "correction source sampling requires a current limited/PP reconstruction publication");
+            EquationDofOperations::Copy(reconstruction.fluxCoefficients, reconstruction.coefficients);
+            reconstruction.PublishFinalized(); });
         if (work.meanGradients)
         {
             ValidateWorkspace(state, work);
@@ -2309,7 +2469,7 @@ namespace DNDS::Cauchy
                   {
                 if (work.SourceSamplesCurrent(state, time)) return;
                 auto evaluator = _data->equation.MakePointEvaluator(work.workers ? work.workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {true});
-                work.PrepareVolumeSource(state, nullptr, evaluator);
+                work.PrepareVolumeSource(state, std::nullopt, evaluator);
                 work.PublishSourceState(state, time); });
             return;
         }
@@ -2325,10 +2485,10 @@ namespace DNDS::Cauchy
             preparation.emplace(BeginAuxValues(state, auxiliary, time, work.workers, inputs)); });
         OperatorSchedule schedule(engine, stream, _data->settings.execution.overlap);
         std::vector<Algebra::DofHalo<>::Operation> transfers;
-        transfers.reserve(work.meanHalo.size());
-        ++work.meanEpoch;
-        for (auto &halo : work.meanHalo)
-            transfers.push_back(halo.Begin(work.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));
+        transfers.reserve(reconstruction.meanHalo.size());
+        ++reconstruction.meanEpoch;
+        for (auto &halo : reconstruction.meanHalo)
+            transfers.push_back(halo.Begin(reconstruction.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));
         if (_data->settings.execution.overlap)
             schedule.Submit([&]
                             { preparation->Apply(CFV::ReconstructionRegion::Core); });
@@ -2338,7 +2498,7 @@ namespace DNDS::Cauchy
               {
             if (_data->settings.CheckHaloFreshness())
                 for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
-                    work.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), work.meanEpoch);
+                    reconstruction.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), reconstruction.meanEpoch);
             schedule.Submit([&, rest]
             {
                 preparation->Apply(rest);
@@ -2351,12 +2511,47 @@ namespace DNDS::Cauchy
                 {
                     auto evaluator = _data->equation.MakePointEvaluator(work.workers ? work.workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{},
                                                                         {true, false, false, false, false});
-                    work.PrepareVolumeSource(state, nullptr, evaluator);
+                    work.PrepareVolumeSource(state, std::nullopt, evaluator);
                 }
                 else work.SampleSourceState(state);
                 work.PublishSourceState(state, time);
             });
             schedule.Join(); });
+    }
+    void FiniteVolume::RefreshCorrectionSource(EquationDofs &state,
+                                               ReconstructionState &reconstruction,
+                                               Workspace &work, real time) const
+    {
+        auto reconstructionSession = reconstruction.session.Acquire();
+        auto workspaceSession = work.session.Acquire();
+        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients,
+                                                            reconstruction.fluxCoefficients);
+        Metrics().Communication()->LocalStage([&]
+                                              {
+            ValidateWorkspace(state, work);
+            reconstruction.binding.Check(state);
+            if (!reconstruction.FinalizedCurrent())
+            {
+                const bool filtered = _data->settings.numerics.limiter == "WBAP" ||
+                                      bool(work.limitedVR) || _data->settings.numerics.positivity;
+                DNDS_check_throw_info(!filtered,
+                                      "source refresh requires a current limited/PP reconstruction publication");
+                EquationDofOperations::Copy(reconstruction.fluxCoefficients,
+                                            reconstruction.coefficients);
+                reconstruction.PublishFinalized();
+            }
+            if (work.SourceSamplesCurrent(state, time)) return;
+            if (_data->equation.HasRANS())
+            {
+                auto evaluator = _data->equation.MakePointEvaluator(
+                    work.workers ? work.workers->Acquire()
+                                 : Physics::Chemistry::ChemicalWorkerPool::Lease{},
+                    {true, false, false, false, false});
+                work.PrepareVolumeSource(state, std::nullopt, evaluator);
+            }
+            else
+                work.SampleSourceState(state);
+            work.PublishSourceState(state, time); });
     }
     void FiniteVolume::InitializeConservative(EquationDofs &state, const std::vector<real> &values) const
     {
@@ -2426,13 +2621,24 @@ namespace DNDS::Cauchy
     {
         return BuildWorkspaceImpl(state, std::move(workers), false, options);
     }
+    std::shared_ptr<FiniteVolume::ReconstructionState> FiniteVolume::BuildReconstructionState(EquationDofs &state) const
+    {
+        std::shared_ptr<ReconstructionState> result;
+        Metrics().Communication()->LocalStage([&]
+                                              {
+            _data->equation.ValidateStateSchema(state);
+            DNDS_check_throw_info(state.Space().Same(Metrics().Space()), "reconstruction state belongs to another row space");
+            result = std::make_shared<ReconstructionState>(_data, state); });
+        return result;
+    }
     std::shared_ptr<FiniteVolume::MeanWorkspace> FiniteVolume::BuildMeanWorkspace(EquationDofs &state,
                                                                                   std::optional<Physics::Chemistry::ChemicalWorkerPool> workers) const
     {
         auto inner = BuildWorkspaceImpl(state, std::move(workers), true);
+        auto reconstruction = BuildReconstructionState(state);
         std::shared_ptr<MeanWorkspace> result;
         Metrics().Communication()->LocalStage([&]
-                                              { result = std::make_shared<MeanWorkspace>(MeanWorkspace{std::move(inner)}); });
+                                              { result = std::make_shared<MeanWorkspace>(MeanWorkspace{std::move(reconstruction), std::move(inner)}); });
         return result;
     }
     std::shared_ptr<FiniteVolume::Workspace> FiniteVolume::BuildWorkspaceImpl(EquationDofs &state,
@@ -2441,11 +2647,9 @@ namespace DNDS::Cauchy
     {
         const MPIInfo mpi(Metrics().Communicator());
         const auto &n = _data->settings.numerics;
-        // Temporary parity bridge while established flow5-only leaf operators
-        // are moved into this workspace. Callers do not select a second FV
-        // frontend: setup resolves the bridge only for capabilities that the
-        // generic operator set cannot yet supply. Once those leaves migrate,
-        // this predicate and the compatibility workspace disappear together.
+        // Resolve an operator-local fixed-width leaf without changing the one
+        // EquationDofs workspace or outer schedule. Unsupported layouts and
+        // physics retain the generic equation kernel.
         const bool flow5Profile = !_data->equation.HasMixture() && !_data->equation.HasRANS() &&
                                   state.ComponentNumber() == 5 && state.PhysicalFieldNumber() == 1;
         std::string operationControls;
@@ -2502,15 +2706,22 @@ namespace DNDS::Cauchy
             result->meanGradients.emplace(BuildMeanGradients(state));
         return result;
     }
-    const EquationDofs &FiniteVolume::ReconstructionGuess(const Workspace &work) const
+    const EquationDofs &FiniteVolume::ReconstructionGuess(const ReconstructionState &state) const
     {
-        DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
-        return work.coefficients;
+        DNDS_check_throw_info(state.owner == _data, "foreign equation reconstruction state");
+        return state.coefficients;
     }
     void FiniteVolume::ValidateWorkspace(const EquationDofs &state, const Workspace &work) const
     {
         DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
-        work.binding.Check(state);
+        _data->equation.ValidateStateSchema(state);
+        DNDS_check_throw_info(state.Space().Same(Metrics().Space()) &&
+                                  state.ComponentNumber() == work.componentNumber &&
+                                  state.PhysicalFieldNumber() == work.physicalFieldNumber,
+                              "equation workspace schema or row space differs");
+        for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+            DNDS_check_throw_info(state.PhysicalField(iField).Width() == work.fields[iField].reconstruction.components,
+                                  "equation workspace physical field width differs");
     }
     bool FiniteVolume::HasRoeJacobianKernel(const Workspace &work) const
     {
@@ -2519,7 +2730,7 @@ namespace DNDS::Cauchy
         // canonical state/auxiliary views directly and does not require the
         // archived whole-flow reconstruction workspace.
         return !_data->equation.HasMixture() && !_data->equation.HasRANS() &&
-               work.prototype.ComponentNumber() == 5 && work.prototype.PhysicalFieldNumber() == 1;
+               work.componentNumber == 5 && work.physicalFieldNumber == 1;
     }
     index FiniteVolume::PrepareFaceCharacteristics(const CFV::FVField &state, CFV::FaceCharacteristicTransform &transform,
                                                    index firstComponent) const
@@ -2563,42 +2774,64 @@ namespace DNDS::Cauchy
         _data->reconstruction.FinalizeFaceTransform(transform);
         return fallbacks;
     }
-    const EquationDofs &FiniteVolume::FluxReconstruction(const Workspace &work) const
+    const EquationDofs &FiniteVolume::FluxReconstruction(const ReconstructionState &state, const Workspace &work) const
     {
-        DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
-        return work.fluxCoefficients;
+        DNDS_check_throw_info(state.owner == _data && work.owner == _data, "foreign equation reconstruction state or workspace");
+        return state.fluxCoefficients;
     }
-    void FiniteVolume::RestoreReconstructionGuess(Workspace &work, const EquationDofs &guess,
-                                                  const Runtime::Array<real> *limitedVRHistory) const
+    void FiniteVolume::RestoreReconstructionGuess(ReconstructionState &state, const EquationDofs &guess,
+                                                  std::optional<std::reference_wrapper<const Runtime::Array<real>>> limitedVRHistory) const
     {
-        auto restore = ReserveReconstructionRestoreImpl(work, guess, limitedVRHistory, {});
+        auto restore = ReserveReconstructionRestoreImpl(state, guess, limitedVRHistory, {});
         restore.Commit();
+        if (_data->settings.numerics.limiter == "WBAP" || _data->limitedVRGeometry ||
+            _data->settings.numerics.positivity)
+            state.finalizedFrom.reset();
+        else
+            state.PublishFinalized();
     }
-    std::optional<Runtime::Array<real>> FiniteVolume::LimitedVRHistory(const Workspace &work) const
+    void FiniteVolume::CopyReconstructionState(ReconstructionState &destination,
+                                               const ReconstructionState &source) const
     {
-        DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
-        return work.limitedVR ? std::optional<R::Array<real>>(work.limitedVR->previous) : std::nullopt;
+        DNDS_check_throw_info(&destination != &source && destination.owner == _data && source.owner == _data,
+                              "reconstruction state copy requires distinct states from this finite-volume plan");
+        DNDS_check_throw_info(source.FinalizedCurrent(),
+                              "source reconstruction has no current finalized polynomial");
+        const auto history = source.limitedVRHistory
+                                 ? std::optional(std::cref(*source.limitedVRHistory))
+                                 : std::nullopt;
+        auto restore = ReserveReconstructionRestoreImpl(destination, source.coefficients, history, {}, true,
+                                                        std::cref(source.fluxCoefficients));
+        restore.Commit();
+        destination.PublishFinalized();
+    }
+    std::optional<Runtime::Array<real>> FiniteVolume::LimitedVRHistory(const ReconstructionState &state) const
+    {
+        DNDS_check_throw_info(state.owner == _data, "foreign equation reconstruction state");
+        return state.limitedVRHistory;
     }
     std::optional<Runtime::Array<real>> FiniteVolume::LimitedVRAlpha(const Workspace &work) const
     {
         DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
         return work.limitedVR ? std::optional<R::Array<real>>(work.limitedVR->alpha) : std::nullopt;
     }
-    FiniteVolume::ReconstructionRestore FiniteVolume::ReserveReconstructionRestore(std::shared_ptr<Workspace> work, const EquationDofs &guess,
-                                                                                   const Runtime::Array<real> *limitedVRHistory,
+    FiniteVolume::ReconstructionRestore FiniteVolume::ReserveReconstructionRestore(std::shared_ptr<ReconstructionState> state, const EquationDofs &guess,
+                                                                                   std::optional<std::reference_wrapper<const Runtime::Array<real>>> limitedVRHistory,
                                                                                    bool collectiveChecks) const
     {
         const auto validate = [&]
-        { DNDS_check_throw_info(bool(work), "null equation reconstruction workspace"); };
+        { DNDS_check_throw_info(bool(state), "null equation reconstruction state"); };
         R::CommunicationDetail::LocalStage(Metrics().Communicator(), collectiveChecks && _data->settings.implicit.collectiveChecks,
                                            validate, "reconstruction workspace validation failed");
-        auto &reference = *work;
-        return ReserveReconstructionRestoreImpl(reference, guess, limitedVRHistory, std::move(work), collectiveChecks);
+        auto &reference = *state;
+        return ReserveReconstructionRestoreImpl(reference, guess, limitedVRHistory, std::move(state), collectiveChecks);
     }
-    FiniteVolume::ReconstructionRestore FiniteVolume::ReserveReconstructionRestoreImpl(Workspace &work, const EquationDofs &guess,
-                                                                                       const Runtime::Array<real> *limitedVRHistory,
-                                                                                       std::shared_ptr<Workspace> retained, bool collectiveChecks) const
+    FiniteVolume::ReconstructionRestore FiniteVolume::ReserveReconstructionRestoreImpl(ReconstructionState &state, const EquationDofs &guess,
+                                                                                       std::optional<std::reference_wrapper<const Runtime::Array<real>>> limitedVRHistory,
+                                                                                       std::shared_ptr<ReconstructionState> retained, bool collectiveChecks,
+                                                                                       std::optional<std::reference_wrapper<const EquationDofs>> finalized) const
     {
+        const auto *historyInput = limitedVRHistory ? &limitedVRHistory->get() : nullptr;
         const auto stage = [&](const auto &run)
         {
             R::CommunicationDetail::LocalStage(Metrics().Communicator(), collectiveChecks && _data->settings.implicit.collectiveChecks,
@@ -2606,19 +2839,21 @@ namespace DNDS::Cauchy
         };
         struct Reservation
         {
-            std::shared_ptr<Workspace> owner;
+            std::shared_ptr<ReconstructionState> owner;
             R::SessionAccess::Lease session;
-            std::optional<EquationDofs::ReadScope> source;
-            std::optional<EquationDofs::WriteScope> destination;
+            std::optional<EquationDofs::ReadScope> source, fluxSource;
+            std::optional<EquationDofs::WriteScope> destination, fluxDestination;
             std::optional<R::Array<real>::ReadLease> historySource;
             std::optional<R::Array<real>::WriteLease> historyDestination;
-            std::vector<EquationBlockArrayView<const real>> input;
-            std::vector<EquationBlockArrayView<real>> output;
+            std::vector<EquationBlockArrayView<const real>> input, fluxInput;
+            std::vector<EquationBlockArrayView<real>> output, fluxOutput;
             bool started = false;
             ~Reservation()
             {
                 if (!started && destination)
                     destination->CancelUnmodified();
+                if (!started && fluxDestination)
+                    fluxDestination->CancelUnmodified();
                 if (!started && historyDestination)
                     historyDestination->CancelUnmodified();
             }
@@ -2628,26 +2863,37 @@ namespace DNDS::Cauchy
               {
                 reservation = std::make_shared<Reservation>();
                 reservation->owner = std::move(retained);
-                reservation->session = work.session.Acquire();
-                DNDS_check_throw_info(work.owner == _data, "foreign equation reconstruction workspace");
-                work.coefficients.RequireCompatible(guess);
-                EquationDofOperations::RequireDistinct(work.coefficients, guess);
-                DNDS_check_throw_info(work.limitedVR || !limitedVRHistory,
-                                      "LVR history requires an active matching equation workspace");
-                if (limitedVRHistory)
+                reservation->session = state.session.Acquire();
+                DNDS_check_throw_info(state.owner == _data, "foreign equation reconstruction state");
+                state.coefficients.RequireCompatible(guess);
+                state.fluxCoefficients.RequireCompatible(guess);
+                EquationDofOperations::RequireDistinct(state.coefficients, guess);
+                EquationDofOperations::RequireDistinct(state.fluxCoefficients, guess);
+                const auto &finalInput = finalized ? finalized->get() : guess;
+                state.fluxCoefficients.RequireCompatible(finalInput);
+                EquationDofOperations::RequireDistinct(state.coefficients, finalInput);
+                EquationDofOperations::RequireDistinct(state.fluxCoefficients, finalInput);
+                DNDS_check_throw_info(state.limitedVRHistory || !historyInput,
+                                      "LVR history requires an active matching reconstruction state");
+                if (historyInput)
                 {
-                    DNDS_check_throw_info(limitedVRHistory->GetDevice() == R::Device::Host() &&
-                                              !limitedVRHistory->Layout().IsVariable() &&
-                                              limitedVRHistory->RowCount() == Metrics().NumCell() &&
-                                              limitedVRHistory->Layout().Width() == 2,
+                    DNDS_check_throw_info(historyInput->GetDevice() == R::Device::Host() &&
+                                              !historyInput->Layout().IsVariable() &&
+                                              historyInput->RowCount() == Metrics().NumCell() &&
+                                              historyInput->Layout().Width() == 2,
                                           "LVR history shape or placement differs");
                     for (index iField = 0; iField < guess.PhysicalFieldNumber(); ++iField)
-                        DNDS_check_throw_info(!Algebra::Detail::Overlaps(limitedVRHistory->Storage(),
-                                                                         work.coefficients.PhysicalField(iField).Owned().Storage()),
+                    {
+                        DNDS_check_throw_info(!Algebra::Detail::Overlaps(historyInput->Storage(),
+                                                                         state.coefficients.PhysicalField(iField).Owned().Storage()),
                                               "LVR history aliases reconstruction output");
-                    DNDS_check_throw_info(!Algebra::Detail::Overlaps(limitedVRHistory->Storage(), work.limitedVR->previous.Storage()),
+                        DNDS_check_throw_info(!Algebra::Detail::Overlaps(historyInput->Storage(),
+                                                                         state.fluxCoefficients.PhysicalField(iField).Owned().Storage()),
+                                              "LVR history aliases finalized reconstruction output");
+                    }
+                    DNDS_check_throw_info(!Algebra::Detail::Overlaps(historyInput->Storage(), state.limitedVRHistory->Storage()),
                                           "LVR history aliases its destination");
-                    const auto history = limitedVRHistory->Read();
+                    const auto history = historyInput->Read();
                     const auto values = history.View<R::UniformTableRows>();
                     const std::array<real, 2> caps{_data->settings.numerics.limitedVR.alphaMax,
                                                    _data->settings.numerics.limitedVR.contactAlphaMax};
@@ -2657,6 +2903,8 @@ namespace DNDS::Cauchy
                                                   "LVR history exceeds its valid branch cap");
                 }
                 reservation->source.emplace(guess.ReadOwned());
+                if (finalized)
+                    reservation->fluxSource.emplace(finalized->get().ReadOwned());
                 for (index iBlock = 0; iBlock < guess.BlockNumber(); ++iBlock)
                 {
                     const auto input = reservation->source->Block(iBlock);
@@ -2664,26 +2912,41 @@ namespace DNDS::Cauchy
                         for (index j = 0; j < input.ComponentNumber(); ++j)
                             DNDS_check_throw_info(std::isfinite(input(iCell, j)), "nonfinite equation reconstruction guess");
                     reservation->input.push_back(input.owned);
+                    const auto fluxInput = finalized ? reservation->fluxSource->Block(iBlock) : input;
+                    for (index iCell = 0; iCell < fluxInput.owned.RowCount(); ++iCell)
+                        for (index j = 0; j < fluxInput.ComponentNumber(); ++j)
+                            DNDS_check_throw_info(std::isfinite(fluxInput(iCell, j)),
+                                                  "nonfinite finalized equation reconstruction");
+                    reservation->fluxInput.push_back(fluxInput.owned);
                 }
-                reservation->destination.emplace(work.coefficients.WriteOwned());
+                reservation->destination.emplace(state.coefficients.WriteOwned());
+                reservation->fluxDestination.emplace(state.fluxCoefficients.WriteOwned());
                 for (index iBlock = 0; iBlock < guess.BlockNumber(); ++iBlock)
+                {
                     reservation->output.push_back(reservation->destination->Block(iBlock));
-                if (limitedVRHistory)
-                    reservation->historySource.emplace(limitedVRHistory->Read());
-                if (work.limitedVR)
-                    reservation->historyDestination.emplace(work.limitedVR->previous.Write()); });
+                    reservation->fluxOutput.push_back(reservation->fluxDestination->Block(iBlock));
+                }
+                if (historyInput)
+                    reservation->historySource.emplace(historyInput->Read());
+                if (state.limitedVRHistory)
+                    reservation->historyDestination.emplace(state.limitedVRHistory->Write()); });
         std::optional<ReconstructionRestore> restore;
         stage([&]
-              { restore.emplace(ReconstructionRestore([reservation, &work]() noexcept
+              { restore.emplace(ReconstructionRestore([reservation]() noexcept
                                                       {
             reservation->started = true;
             for (index iBlock = 0; iBlock < index(reservation->input.size()); ++iBlock)
             {
                 const auto input = reservation->input[iBlock];
                 const auto output = reservation->output[iBlock];
+                const auto fluxInput = reservation->fluxInput[iBlock];
+                const auto fluxOutput = reservation->fluxOutput[iBlock];
                 for (index iCell = 0; iCell < output.RowCount(); ++iCell)
                     for (index j = 0; j < output.ComponentNumber(); ++j)
+                    {
                         output(iCell, j) = input(iCell, j);
+                        fluxOutput(iCell, j) = fluxInput(iCell, j);
+                    }
             }
             if (reservation->historyDestination)
             {
@@ -2699,32 +2962,30 @@ namespace DNDS::Cauchy
                     for (index iCell = 0; iCell < output.RowCount(); ++iCell)
                         for (int j = 0; j < 2; ++j)
                             output(iCell, j) = 0;
-            }
-            work.sourceState.reset();
-            work.sourceCoefficients.reset();
-            work.rhsState.reset();
-            work.rhsCoefficients.reset(); })); });
+            } })); });
         return std::move(*restore);
     }
-    void FiniteVolume::ResetReconstruction(Workspace &work) const
+    void FiniteVolume::ResetReconstruction(ReconstructionState &state, Workspace &work) const
     {
+        auto stateSession = state.session.Acquire();
         auto session = work.session.Acquire();
-        DNDS_check_throw_info(work.owner == _data, "foreign equation reconstruction workspace");
+        DNDS_check_throw_info(state.owner == _data && work.owner == _data, "foreign equation reconstruction state or workspace");
         // Reserve every destination before changing any value. In particular,
         // a retained LVR history reader must not allow coefficients to be
         // cleared first and only then report the conflict.
-        std::optional<EquationDofs::WriteScope> coefficients;
+        std::optional<EquationDofs::WriteScope> coefficients, fluxCoefficients;
         std::vector<R::Array<real>::WriteLease> temporary;
         std::optional<R::Array<real>::WriteLease> previous, alpha;
         try
         {
-            coefficients.emplace(work.coefficients.WriteOwned());
+            coefficients.emplace(state.coefficients.WriteOwned());
+            fluxCoefficients.emplace(state.fluxCoefficients.WriteOwned());
             temporary.reserve(work.fields.size());
             for (auto &field : work.fields)
                 temporary.emplace_back(field.reconstruction.temporary.Owned().Write());
             if (work.limitedVR)
             {
-                previous.emplace(work.limitedVR->previous.Write());
+                previous.emplace(state.limitedVRHistory->Write());
                 alpha.emplace(work.limitedVR->alpha.Write());
             }
         }
@@ -2732,6 +2993,8 @@ namespace DNDS::Cauchy
         {
             if (coefficients)
                 coefficients->CancelUnmodified();
+            if (fluxCoefficients)
+                fluxCoefficients->CancelUnmodified();
             for (auto &write : temporary)
                 write.CancelUnmodified();
             if (previous)
@@ -2742,6 +3005,13 @@ namespace DNDS::Cauchy
         }
         {
             const auto layout = coefficients->ComponentLayout();
+            const auto values = layout.View();
+            for (index iCell = 0; iCell < values.RowCount(); ++iCell)
+                for (index j = 0; j < values.ComponentNumber(); ++j)
+                    values(iCell, j) = 0;
+        }
+        {
+            const auto layout = fluxCoefficients->ComponentLayout();
             const auto values = layout.View();
             for (index iCell = 0; iCell < values.RowCount(); ++iCell)
                 for (index j = 0; j < values.ComponentNumber(); ++j)
@@ -2766,6 +3036,7 @@ namespace DNDS::Cauchy
         work.sourceCoefficients.reset();
         work.rhsState.reset();
         work.rhsCoefficients.reset();
+        state.finalizedFrom.reset();
     }
     int FiniteVolume::LastReconstructionIterations(const Workspace &work) const
     {
@@ -2777,13 +3048,17 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
         return work.relativeUpdate;
     }
-    void FiniteVolume::LimitReconstructionPP(const EquationDofs &state, Workspace &work) const
+    void FiniteVolume::LimitReconstructionPP(const EquationDofs &state, ReconstructionState &reconstruction, Workspace &work) const
     {
+        auto reconstructionSession = reconstruction.session.Acquire();
+        auto workspaceSession = work.session.Acquire();
         Metrics().Communication()->LocalStage([&]
                                               {
             ValidateWorkspace(state, work);
             DNDS_check_throw_info(work.positivity, "equation reconstruction PP was not requested");
-            work.positivity->Apply(state, work.coefficients, work.fluxCoefficients, true); });
+            DNDS_check_throw_info(reconstruction.owner == _data, "foreign equation reconstruction state");
+            work.positivity->Apply(state, reconstruction.coefficients, reconstruction.fluxCoefficients, true);
+            reconstruction.PublishFinalized(); });
     }
     std::pair<index, real> FiniteVolume::PositivityReconstructionStats(const Workspace &work) const
     {
@@ -2794,46 +3069,48 @@ namespace DNDS::Cauchy
         return result;
     }
 
-    void FiniteVolume::Evaluate(EquationDofs &state, EquationDofs &residual, Workspace &work,
+    void FiniteVolume::Evaluate(EquationDofs &state, EquationDofs &residual, ReconstructionState &reconstruction, Workspace &work,
                                 R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
-        EvaluateImpl(state, &residual, work, engine, stream, time);
+        EvaluateImpl(state, std::ref(residual), reconstruction, work, engine, stream, time);
     }
-    void FiniteVolume::Evaluate(EquationDofs &state, EquationDofs &residual, Workspace &work,
+    void FiniteVolume::Evaluate(EquationDofs &state, EquationDofs &residual, ReconstructionState &reconstruction, Workspace &work,
                                 AuxiliaryValues &auxiliary, R::EagerEngine &engine,
                                 const R::ExecutionStream &stream, real time) const
     {
-        EvaluateImpl(state, &residual, work, engine, stream, time, &auxiliary);
+        EvaluateImpl(state, std::ref(residual), reconstruction, work, engine, stream, time, std::ref(auxiliary));
     }
-    void FiniteVolume::PrepareReconstruction(EquationDofs &state, Workspace &work, R::EagerEngine &engine,
+    void FiniteVolume::PrepareReconstruction(EquationDofs &state, ReconstructionState &reconstruction, Workspace &work, R::EagerEngine &engine,
                                              const R::ExecutionStream &stream, real time) const
     {
-        EvaluateImpl(state, nullptr, work, engine, stream, time);
+        EvaluateImpl(state, std::nullopt, reconstruction, work, engine, stream, time);
     }
-    void FiniteVolume::RefreshSamplingInputs(EquationDofs &state, Workspace &work, R::EagerEngine &engine,
+    void FiniteVolume::RefreshSamplingInputs(EquationDofs &state, ReconstructionState &reconstruction, Workspace &work, R::EagerEngine &engine,
                                              const R::ExecutionStream &stream) const
     {
         ValidateWorkspace(state, work);
+        auto reconstructionSession = reconstruction.session.Acquire();
         auto session = work.session.Acquire();
+        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, reconstruction.fluxCoefficients);
         Metrics().Communication()->LocalStage([&]
                                               {
             DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == R::Device::Host(),
                                   "sampling refresh requires the workspace CPU engine");
             PreflightHalo(state);
-            PreflightHalo(work.coefficients); });
-        ++work.meanEpoch;
+            PreflightHalo(reconstruction.fluxCoefficients); });
+        ++reconstruction.meanEpoch;
         std::vector<Algebra::DofHalo<>::Operation> means;
-        means.reserve(work.meanHalo.size());
-        for (auto &halo : work.meanHalo)
-            means.push_back(halo.Begin(work.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));
+        means.reserve(reconstruction.meanHalo.size());
+        for (auto &halo : reconstruction.meanHalo)
+            means.push_back(halo.Begin(reconstruction.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));
         for (auto &operation : means)
             operation.Wait();
         if (_data->settings.CheckHaloFreshness())
             Metrics().Communication()->LocalStage([&]
                                                   {
                 for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
-                    work.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), work.meanEpoch); });
-        for (auto &binding : work.coefficientHalo)
+                    reconstruction.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), reconstruction.meanEpoch); });
+        for (auto &binding : reconstruction.fluxHalo)
         {
             auto operation = engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream);
             operation.Wait();
@@ -2842,15 +3119,19 @@ namespace DNDS::Cauchy
     void FiniteVolume::EvaluateMean(EquationDofs &state, EquationDofs &residual, MeanWorkspace &work,
                                     R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
-        EvaluateImpl(state, &residual, *work.work, engine, stream, time);
+        EvaluateImpl(state, std::ref(residual), *work.reconstruction, *work.work, engine, stream, time);
     }
-    void FiniteVolume::EvaluateImpl(EquationDofs &state, EquationDofs *residual, Workspace &work,
-                                    R::EagerEngine &engine, const R::ExecutionStream &stream, real time,
-                                    AuxiliaryValues *auxiliary) const
+    void FiniteVolume::EvaluateImpl(EquationDofs &state,
+                                    std::optional<std::reference_wrapper<EquationDofs>> residual,
+                                    ReconstructionState &reconstruction, Workspace &work, R::EagerEngine &engine,
+                                    const R::ExecutionStream &stream, real time,
+                                    std::optional<std::reference_wrapper<AuxiliaryValues>> auxiliary) const
     {
         if (!auxiliary && work.rhsAuxiliary)
-            auxiliary = &*work.rhsAuxiliary;
+            auxiliary = std::ref(*work.rhsAuxiliary);
+        auto reconstructionSession = reconstruction.session.Acquire();
         auto session = work.session.Acquire();
+        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, reconstruction.fluxCoefficients);
         const Workspace::PhaseTime timing(work, Workspace::TotalPhase);
         work.sourceState.reset();
         work.sourceCoefficients.reset();
@@ -2889,20 +3170,21 @@ namespace DNDS::Cauchy
         };
         local([&]
               {
-            DNDS_check_throw_info(work.owner == _data && std::isfinite(time) && stream.Context().device == R::Device::Host(),
-                                  "foreign equation workspace, invalid time or missing CPU backend");
+            DNDS_check_throw_info(work.owner == _data && reconstruction.owner == _data && std::isfinite(time) && stream.Context().device == R::Device::Host(),
+                                  "foreign equation workspace/state, invalid time or missing CPU backend");
             ValidateWorkspace(state, work);
+            reconstruction.binding.Check(state);
             if (residual)
             {
-                _data->equation.ValidateStateSchema(*residual);
-                state.RequireCompatible(*residual);
-                EquationDofOperations::RequireDistinct(state, *residual);
-                EquationDofOperations::RequireDistinct(work.coefficients, *residual);
-                if (!work.limited.empty()) EquationDofOperations::RequireDistinct(work.fluxCoefficients, *residual);
-                auto write = residual->WriteOwned(); write.CancelUnmodified();
+                auto &output = residual->get();
+                _data->equation.ValidateStateSchema(output);
+                state.RequireCompatible(output);
+                EquationDofOperations::RequireDistinct(state, output);
+                EquationDofOperations::RequireDistinct(reconstruction.coefficients, output);
+                EquationDofOperations::RequireDistinct(reconstruction.fluxCoefficients, output);
+                auto write = output.WriteOwned(); write.CancelUnmodified();
             }
-            PreflightHalo(state); PreflightHalo(work.coefficients);
-            if (!work.limited.empty()) PreflightHalo(work.fluxCoefficients);
+            PreflightHalo(state); PreflightHalo(reconstruction.coefficients); PreflightHalo(reconstruction.fluxCoefficients);
             DNDS_check_throw_info(!HasInterfaces() || work.incoming,
                                   "FV evaluation needs a ready interface packet");
             if (work.incoming)
@@ -2920,7 +3202,7 @@ namespace DNDS::Cauchy
                       EquationAuxiliaryInputs inputs;
                       if (work.incoming)
                           inputs.boundary = std::cref(*work.incoming);
-                      auxiliaryPreparation.emplace(BeginAuxValues(state, *auxiliary, time, work.workers, inputs)); });
+                      auxiliaryPreparation.emplace(BeginAuxValues(state, auxiliary->get(), time, work.workers, inputs)); });
         const bool overlap = _data->settings.execution.overlap;
         OperatorSchedule schedule(engine, stream, overlap);
         const auto rest = schedule.DependentRegion();
@@ -2930,8 +3212,8 @@ namespace DNDS::Cauchy
             {
                 auto &field = work.fields.front();
                 _data->reconstruction.SubmitReconstructionIterLimitedTo(
-                    engine, stream, state.CoupledField(), field.reconstruction.coefficients,
-                    field.reconstruction, field.boundary, work.limitedVR->target.coefficients,
+                    engine, stream, state.CoupledField(), reconstruction.coefficients.CoupledField(),
+                    field.reconstruction, field.boundary, work.limitedVR->targetCoefficients,
                     work.limitedVR->alpha, region);
                 return;
             }
@@ -2939,7 +3221,7 @@ namespace DNDS::Cauchy
             {
                 auto &field = work.fields[iField];
                 _data->reconstruction.SubmitReconstructionIterTo(
-                    engine, stream, state.PhysicalField(iField), field.reconstruction.coefficients,
+                    engine, stream, state.PhysicalField(iField), reconstruction.coefficients.PhysicalField(iField),
                     field.reconstruction, field.boundary, region);
             }
         };
@@ -2960,16 +3242,16 @@ namespace DNDS::Cauchy
         };
         // Locals captured by worker commands remain alive even on exceptions.
         std::vector<Algebra::DofHalo<>::Operation> meanOperations;
-        meanOperations.reserve(work.meanHalo.size());
-        ++work.meanEpoch;
-        for (auto &halo : work.meanHalo)
-            meanOperations.push_back(halo.Begin(work.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));
+        meanOperations.reserve(reconstruction.meanHalo.size());
+        ++reconstruction.meanEpoch;
+        for (auto &halo : reconstruction.meanHalo)
+            meanOperations.push_back(halo.Begin(reconstruction.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));
         std::vector<R::TransferOperation> firstCoefficients;
         const auto &numerics = _data->settings.numerics;
         const bool variational = !work.meanOnly && numerics.reconstruction == "variational";
         const bool firstSweep = overlap && variational && !work.limitedVR && numerics.reconstructionIterations > 0 && !deferredEvaluator;
         if (firstSweep)
-            firstCoefficients = schedule.Begin(work.coefficientHalo);
+            firstCoefficients = schedule.Begin(reconstruction.coefficientHalo);
         // Post both transfers before queueing core work. A CPU-visible MPI
         // bridge may otherwise join that work while checking producer readiness.
         if (auxiliaryPreparation && overlap)
@@ -2993,7 +3275,7 @@ namespace DNDS::Cauchy
             schedule.Submit([&]
                             {
                 auxiliaryPreparation->Apply(rest);
-                auxiliaryPreparation->Finish(*auxiliary); });
+                auxiliaryPreparation->Finish(auxiliary->get()); });
             local([&]
                   { schedule.Join(); });
         }
@@ -3004,7 +3286,7 @@ namespace DNDS::Cauchy
             EquationAuxiliaryInputs inputs;
             if (work.incoming)
                 inputs.boundary = std::cref(*work.incoming);
-            PrepareAuxValues(state, *auxiliary, *work.meanGradients, engine, stream, time, work.workers, inputs);
+            PrepareAuxValues(state, auxiliary->get(), *work.meanGradients, engine, stream, time, work.workers, inputs);
         }
         if (deferredEvaluator)
         {
@@ -3017,7 +3299,7 @@ namespace DNDS::Cauchy
             local([&]
                   {
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
-                work.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), work.meanEpoch); });
+                reconstruction.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), reconstruction.meanEpoch); });
         if (gradientWork)
         {
             schedule.Submit([&, rest]
@@ -3025,11 +3307,15 @@ namespace DNDS::Cauchy
             if (directGradientWork)
                 schedule.Submit([&]
                                 {
-                for (auto &field : work.fields)
+                for (index iField = 0; iField < index(work.fields.size()); ++iField)
+                {
+                    auto &field = work.fields[iField];
                     if (numerics.reconstruction == "gradient")
-                        _data->gradient.ConvertToCoefficients(*field.gradient, _data->reconstruction, field.reconstruction.coefficients);
+                        _data->gradient.ConvertToCoefficients(*field.gradient, _data->reconstruction,
+                                                             reconstruction.coefficients.PhysicalField(iField));
                     else
-                        Algebra::Fill(field.reconstruction.coefficients, 0.); });
+                        Algebra::Fill(reconstruction.coefficients.PhysicalField(iField), 0.);
+                } });
             local([&]
                   { schedule.Join(); });
         }
@@ -3044,7 +3330,8 @@ namespace DNDS::Cauchy
                 const auto flow = state.LocateBlock("flow");
                 work.characteristicFallbacks = PrepareFaceCharacteristics(
                     state.PhysicalField(flow.physicalField), *work.flowCharacteristic, flow.firstComponent); });
-            work.limitedVR->Build(*_data, state.CoupledField(),
+            DNDS_check_throw_info(reconstruction.limitedVRHistory, "LVR reconstruction state has no history");
+            work.limitedVR->Build(*_data, state.CoupledField(), *reconstruction.limitedVRHistory,
                                   work.flowCharacteristic ? CFV::FaceCharacteristicTransformRef(std::cref(*work.flowCharacteristic))
                                                           : std::nullopt,
                                   engine, stream);
@@ -3063,7 +3350,7 @@ namespace DNDS::Cauchy
                     if (numerics.reconstructionBoundaryFromPolynomial)
                         local([&]
                               { work.FillBoundary(state, true, time, *evaluator, incoming); });
-                    operations = schedule.Begin(work.coefficientHalo);
+                    operations = schedule.Begin(reconstruction.coefficientHalo);
                     if (overlap)
                         sweep(CFV::ReconstructionRegion::Core);
                 }
@@ -3077,9 +3364,10 @@ namespace DNDS::Cauchy
                     real norms[2]{};
                     local([&]
                           {
-                        for (const auto &field : work.fields)
+                        for (index iField = 0; iField < index(work.fields.size()); ++iField)
                         {
-                            const auto aRead = field.reconstruction.coefficients.Owned().Read(), bRead = field.reconstruction.temporary.Owned().Read();
+                            const auto aRead = reconstruction.coefficients.PhysicalField(iField).Owned().Read();
+                            const auto bRead = work.fields[iField].reconstruction.temporary.Owned().Read();
                             const auto a = aRead.View<R::UniformTableRows>(), b = bRead.View<R::UniformTableRows>();
                             for (index iCell = 0; iCell < a.RowCount(); ++iCell)
                                 for (index j = 0; j < a.Width(); ++j)
@@ -3092,8 +3380,10 @@ namespace DNDS::Cauchy
                     work.relativeUpdate = std::sqrt(norms[0] / std::max(norms[1], real(1e-300)));
                     converged = work.relativeUpdate <= numerics.reconstructionTolerance;
                 }
-                for (auto &field : work.fields)
-                    _data->reconstruction.SubmitCommitReconstruction(engine, stream, field.reconstruction);
+                for (index iField = 0; iField < index(work.fields.size()); ++iField)
+                    _data->reconstruction.SubmitCommitReconstruction(engine, stream,
+                                                                     reconstruction.coefficients.PhysicalField(iField),
+                                                                     work.fields[iField].reconstruction);
                 local([&]
                       { schedule.Join(); });
                 work.iterations = iteration + 1;
@@ -3105,8 +3395,12 @@ namespace DNDS::Cauchy
             local([&]
                   {
                 schedule.Join();
-                for (auto &field : work.fields) Algebra::Fill(field.reconstruction.coefficients, 0.); });
-        if (!work.limited.empty())
+                for (index iField = 0; iField < index(work.fields.size()); ++iField)
+                    Algebra::Fill(reconstruction.coefficients.PhysicalField(iField), 0.); });
+        const bool useFluxScratch = numerics.limiter == "WBAP" || bool(work.limitedVR) || bool(work.positivity);
+        local([&]
+              { EquationDofOperations::Copy(reconstruction.fluxCoefficients, reconstruction.coefficients); });
+        if (numerics.limiter == "WBAP")
         {
             if (work.flowCharacteristic && !work.limitedVR)
                 local([&]
@@ -3116,50 +3410,52 @@ namespace DNDS::Cauchy
                                                 "characteristic flow allocation changed after workspace setup");
                           work.characteristicFallbacks = PrepareFaceCharacteristics(
                               state.PhysicalField(flow.physicalField), *work.flowCharacteristic, flow.firstComponent); });
-            local([&]
-                  { EquationDofOperations::Copy(work.fluxCoefficients, work.coefficients); });
-            if (numerics.limiter == "WBAP")
-                for (int order = numerics.cfv.maxOrder; order >= 1; --order)
+            for (int order = numerics.cfv.maxOrder; order >= 1; --order)
+            {
+                auto operations = schedule.Begin(reconstruction.fluxHalo);
+                const auto limit = [&, order](CFV::ReconstructionRegion region)
                 {
-                    auto operations = schedule.Begin(work.fluxHalo);
-                    const auto limit = [&, order](CFV::ReconstructionRegion region)
-                    {
-                        for (size_t iField = 0; iField < work.limited.size(); ++iField)
-                            _data->reconstruction.SubmitLimiterWBAP_3OrderTo(
-                                engine, stream, work.limited[iField].reconstruction, order,
-                                index(iField) == work.flowCharacteristicField && work.flowCharacteristic
-                                    ? CFV::FaceCharacteristicTransformRef(std::cref(*work.flowCharacteristic))
-                                    : std::nullopt,
-                                region);
-                    };
-                    if (overlap)
-                        limit(CFV::ReconstructionRegion::Core);
-                    OperatorSchedule::Wait(operations);
-                    limit(rest);
-                    local([&]
-                          { schedule.Join(); });
-                    for (auto &field : work.limited)
-                        _data->reconstruction.SubmitCommitReconstruction(engine, stream, field.reconstruction);
-                    local([&]
-                          { schedule.Join(); });
-                }
+                    for (index iField = 0; iField < index(work.fields.size()); ++iField)
+                        _data->reconstruction.SubmitLimiterWBAP_3OrderTo(
+                            engine, stream, reconstruction.fluxCoefficients.PhysicalField(iField), work.fields[iField].reconstruction, order,
+                            iField == work.flowCharacteristicField && work.flowCharacteristic
+                                ? CFV::FaceCharacteristicTransformRef(std::cref(*work.flowCharacteristic))
+                                : std::nullopt,
+                            region);
+                };
+                if (overlap)
+                    limit(CFV::ReconstructionRegion::Core);
+                OperatorSchedule::Wait(operations);
+                limit(rest);
+                local([&]
+                      { schedule.Join(); });
+                for (index iField = 0; iField < index(work.fields.size()); ++iField)
+                    _data->reconstruction.SubmitCommitReconstruction(engine, stream,
+                                                                     reconstruction.fluxCoefficients.PhysicalField(iField),
+                                                                     work.fields[iField].reconstruction);
+                local([&]
+                      { schedule.Join(); });
+            }
         }
         if (work.positivity)
             local([&]
                   { const Workspace::PhaseTime timing(work, Workspace::PPPhase);
-                    work.positivity->Apply(state, work.coefficients, work.fluxCoefficients, false); });
-        auto operations = schedule.Begin(work.limited.empty() ? work.coefficientHalo : work.fluxHalo);
+                    work.positivity->Apply(state, reconstruction.coefficients, reconstruction.fluxCoefficients, false); });
+        local([&]
+              { reconstruction.PublishFinalized(); });
+        auto operations = schedule.Begin(reconstruction.fluxHalo);
         std::vector<R::TransferOperation> unlimitedViscousOperations;
-        if (!work.limited.empty() && _data->equation.Viscous() && numerics.viscousGradient == "polynomial" && !numerics.viscousLimited)
-            unlimitedViscousOperations = schedule.Begin(work.coefficientHalo);
-        // Explicit compatibility conversion after limiter/PP, once per row.
+        if (useFluxScratch && _data->equation.Viscous() && numerics.viscousGradient == "polynomial" && !numerics.viscousLimited)
+            unlimitedViscousOperations = schedule.Begin(reconstruction.coefficientHalo);
+        // Publish the direct physical gradients after limiter/PP, once per row.
         // The physical-gradient RHS itself never interprets coefficient data.
         schedule.Submit([&]
                         { work.RefreshDirectGradients(false); });
         if (overlap && residual)
             schedule.Submit([&]
-                            { work.ApplyRHS(state, *residual, CFV::ReconstructionRegion::Core, *evaluator, time,
-                                            auxiliary, nullptr, incoming); });
+                            { work.ApplyRHS(state, residual->get(), CFV::ReconstructionRegion::Core, *evaluator, time,
+                                            auxiliary ? std::optional(std::cref(auxiliary->get())) : std::nullopt,
+                                            std::nullopt, incoming); });
         OperatorSchedule::Wait(operations);
         OperatorSchedule::Wait(unlimitedViscousOperations);
         if (primitiveGradientOperation)
@@ -3169,10 +3465,15 @@ namespace DNDS::Cauchy
         if (residual)
         {
             schedule.Submit([&, rest]
-                            { work.ApplyRHS(state, *residual, rest, *evaluator, time, auxiliary, nullptr, incoming); });
+                            { work.ApplyRHS(state, residual->get(), rest, *evaluator, time,
+                                            auxiliary ? std::optional(std::cref(auxiliary->get())) : std::nullopt,
+                                            std::nullopt, incoming); });
             schedule.Submit([&]
-                            { work.PrepareVolumeSource(state, residual, *evaluator, time,
-                                                       work.lowOrderResidual ? &*work.lowOrderResidual : nullptr); });
+                            { work.PrepareVolumeSource(
+                                  state, std::ref(residual->get()), *evaluator, time,
+                                  work.lowOrderResidual
+                                      ? std::optional<std::reference_wrapper<EquationDofs>>(std::ref(*work.lowOrderResidual))
+                                      : std::nullopt); });
         }
         local([&]
               { schedule.Join(); });
@@ -3181,7 +3482,7 @@ namespace DNDS::Cauchy
                   { work.PublishSourceState(state, time); });
         work.boundaryMomentumCurrent = bool(residual);
         work.rhsState.emplace(state.NumericAlias());
-        work.rhsCoefficients.emplace(work.fluxCoefficients.NumericAlias());
+        work.rhsCoefficients.emplace(reconstruction.fluxCoefficients);
         work.rhsTime = time;
     }
 
@@ -3191,32 +3492,41 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(components > 0, "face flux requires positive component count");
         return R::Array<real>(R::RowLayout::Dense(index(_data->stencilFaces.size()), components));
     }
-    void FiniteVolume::EvaluateFlux(const EquationDofs &state, EquationDofs &residual, Workspace &work,
-                                    CFV::ReconstructionRegion region, real time, R::Array<real> *faceOutput, const AuxiliaryValues *auxiliary) const
+    void FiniteVolume::EvaluateFlux(const EquationDofs &state, EquationDofs &residual,
+                                    const ReconstructionState &reconstruction, Workspace &work,
+                                    CFV::ReconstructionRegion region, real time,
+                                    std::optional<std::reference_wrapper<R::Array<real>>> faceOutput,
+                                    std::optional<std::reference_wrapper<const AuxiliaryValues>> auxiliary) const
     {
         ValidateWorkspace(state, work);
+        DNDS_check_throw_info(reconstruction.owner == _data, "foreign equation reconstruction state");
+        auto reconstructionSession = reconstruction.session.Acquire();
+        auto workspaceSession = work.session.Acquire();
+        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, reconstruction.fluxCoefficients);
         state.RequireCompatible(residual);
         EquationDofOperations::RequireDistinct(state, residual);
-        EquationDofOperations::RequireDistinct(work.fluxCoefficients, residual);
+        EquationDofOperations::RequireDistinct(reconstruction.fluxCoefficients, residual);
         DNDS_check_throw_info(work.rhsState && work.rhsCoefficients && work.rhsTime == time, "flux needs a completed spatial preparation at this time");
         work.rhsState->Check(state, true);
-        work.rhsCoefficients->Check(work.fluxCoefficients, true);
+        DNDS_check_throw_info(work.rhsCoefficients->Current(reconstruction.fluxCoefficients),
+                              "flux reconstruction changed after spatial preparation");
         DNDS_check_throw_info(region == CFV::ReconstructionRegion::All || region == CFV::ReconstructionRegion::Core ||
                                   region == CFV::ReconstructionRegion::HaloDependent,
                               "unknown flux region");
         if (faceOutput)
         {
-            DNDS_check_throw_info(faceOutput->GetDevice() == R::Device::Host() && !faceOutput->Layout().IsVariable() &&
-                                      faceOutput->RowCount() == index(_data->stencilFaces.size()) && faceOutput->Layout().Width() == state.ComponentNumber(),
+            const auto &output = faceOutput->get();
+            DNDS_check_throw_info(output.GetDevice() == R::Device::Host() && !output.Layout().IsVariable() &&
+                                      output.RowCount() == index(_data->stencilFaces.size()) && output.Layout().Width() == state.ComponentNumber(),
                                   "equation face output shape/device differs");
-            for (const auto *fields : std::array<const EquationDofs *, 3>{&state, &residual, &work.fluxCoefficients})
+            for (const auto *fields : std::array<const EquationDofs *, 3>{&state, &residual, &reconstruction.fluxCoefficients})
                 for (index iField = 0; iField < fields->PhysicalFieldNumber(); ++iField)
-                    DNDS_check_throw_info(!Algebra::Detail::Overlaps(faceOutput->Storage(), fields->PhysicalField(iField).Owned().Storage()) &&
-                                              !Algebra::Detail::Overlaps(faceOutput->Storage(), fields->PhysicalField(iField).Ghost().Storage()),
+                    DNDS_check_throw_info(!Algebra::Detail::Overlaps(output.Storage(), fields->PhysicalField(iField).Owned().Storage()) &&
+                                              !Algebra::Detail::Overlaps(output.Storage(), fields->PhysicalField(iField).Ghost().Storage()),
                                           "face output aliases equation fields");
         }
         if (auxiliary)
-            ValidateAuxValues(state, *auxiliary, time);
+            ValidateAuxValues(state, auxiliary->get(), time);
         std::optional<R::Array<real>::ReadLease> incomingRead;
         RHSScalarView incoming;
         DNDS_check_throw_info(!HasInterfaces() || work.incoming,
@@ -3232,18 +3542,24 @@ namespace DNDS::Cauchy
         work.ApplyRHS(state, residual, region, evaluator, time, auxiliary, faceOutput, incoming);
         work.boundaryMomentumCurrent = region == CFV::ReconstructionRegion::All;
     }
-    void FiniteVolume::AddSource(const EquationDofs &state, EquationDofs &residual, Workspace &work, real time) const
+    void FiniteVolume::AddSource(const EquationDofs &state, EquationDofs &residual,
+                                 const ReconstructionState &reconstruction, Workspace &work, real time) const
     {
         ValidateWorkspace(state, work);
+        DNDS_check_throw_info(reconstruction.owner == _data, "foreign equation reconstruction state");
+        auto reconstructionSession = reconstruction.session.Acquire();
+        auto workspaceSession = work.session.Acquire();
+        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, reconstruction.fluxCoefficients);
         state.RequireCompatible(residual);
         EquationDofOperations::RequireDistinct(state, residual);
-        EquationDofOperations::RequireDistinct(work.fluxCoefficients, residual);
+        EquationDofOperations::RequireDistinct(reconstruction.fluxCoefficients, residual);
         DNDS_check_throw_info(work.rhsState && work.rhsCoefficients && work.rhsTime == time, "source needs a completed spatial preparation at this time");
         work.rhsState->Check(state, true);
-        work.rhsCoefficients->Check(work.fluxCoefficients, true);
+        DNDS_check_throw_info(work.rhsCoefficients->Current(reconstruction.fluxCoefficients),
+                              "source reconstruction changed after spatial preparation");
         auto evaluator = _data->equation.MakePointEvaluator(work.workers ? work.workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{},
                                                             {true, false, false, work.chemical, false});
-        work.PrepareVolumeSource(state, &residual, evaluator, time);
+        work.PrepareVolumeSource(state, std::ref(residual), evaluator, time);
         work.PublishSourceState(state, time);
     }
 
@@ -3314,19 +3630,38 @@ namespace DNDS::Cauchy
         return *work.lowOrderResidual;
     }
 
-    void FiniteVolume::ValidateEquationSourceJacobian(const EquationDofs &state, const Workspace &work, real time) const
+    void FiniteVolume::ValidateEquationSourceJacobian(
+        const EquationDofs &state, const JacobianContext &context, real time) const
     {
+        DNDS_check_throw_info(context.reconstruction,
+                              "source Jacobian context has no reconstruction publication");
+        const auto &reconstruction = context.reconstruction->get();
+        auto &work = context.workspace.get();
+        auto reconstructionSession = reconstruction.session.Acquire();
+        auto workspaceSession = work.session.Acquire();
+        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients,
+                                                            reconstruction.fluxCoefficients);
         DNDS_check_throw_info(work.owner == _data && (work.chemical || work.ransFirst >= 0), "foreign or source-free reconstruction");
         if (!work.sourceSampling)
             return;
         DNDS_check_throw_info(work.sourceState && work.sourceCoefficients && work.sourceTime == time, "source quadrature requires a current completed sample publication");
         work.sourceState->Check(state, true);
-        work.sourceCoefficients->Check(work.fluxCoefficients, true);
+        DNDS_check_throw_info(work.sourceCoefficients->Current(reconstruction.fluxCoefficients),
+                              "source reconstruction changed after sample publication");
     }
-    bool FiniteVolume::AddEquationSourceJacobian(const EquationDofs &state, const Workspace &work,
+    bool FiniteVolume::AddEquationSourceJacobian(const EquationDofs &state,
+                                                 const JacobianContext &context,
                                                  const R::Array<real>::WriteLease &diagonal, DiagonalStorage storage, real scale, EquationPointEvaluator &evaluator,
                                                  const EquationFVDetail::MeanLinearizationOutput *linearization) const
     {
+        DNDS_check_throw_info(context.reconstruction,
+                              "source Jacobian context has no reconstruction publication");
+        const auto &reconstruction = context.reconstruction->get();
+        auto &work = context.workspace.get();
+        auto reconstructionSession = reconstruction.session.Acquire();
+        auto workspaceSession = work.session.Acquire();
+        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients,
+                                                            reconstruction.fluxCoefficients);
         return work.AddMeanSourceJacobian(state, diagonal, storage, scale, evaluator, linearization);
     }
 }

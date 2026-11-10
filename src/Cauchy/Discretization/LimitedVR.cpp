@@ -73,27 +73,28 @@ namespace DNDS::Cauchy
         }
     }
     FiniteVolume::LimitedVRWorkspace::LimitedVRWorkspace(const Data &data, const CFV::ReconstructionWorkspace &prototype)
-        : target(data.reconstruction.BuildWorkspace(prototype.components, prototype.coefficients.Owned().Layout(), prototype.periodicVectorStarts)),
+        : target(data.reconstruction.BuildWorkspace(prototype.components, prototype.temporary.Owned().Layout(), prototype.periodicVectorStarts)),
+          targetCoefficients(data.reconstruction.BuildCoefficients(prototype.components, prototype.temporary.Owned().Layout())),
           gradients(data.metrics.BuildField(prototype.components * data.metrics.Dimension())), scalars(data.metrics.BuildField(2)),
           branches(data.metrics.BuildField(3)), seeds(data.metrics.BuildField(3)), temporary(data.metrics.BuildField(3)),
-          previous(R::RowLayout::Dense(data.metrics.NumCell(), 2)), base(R::RowLayout::Dense(data.metrics.NumCell(), 2)),
+          base(R::RowLayout::Dense(data.metrics.NumCell(), 2)),
           alpha(R::RowLayout::Dense(data.metrics.NumCell(), 1)), sampledFaces(R::RowLayout::Dense(data.limitedVRGeometry ? 2 * index(data.limitedVRGeometry->faces.size()) : 0, prototype.components)),
-          sampledPP(R::RowLayout::Dense(data.positivitySamples ? data.positivitySamples->Size() : 0, prototype.components)), targetHalo(data.BindHalo(target.coefficients)),
+          sampledPP(R::RowLayout::Dense(data.positivitySamples ? data.positivitySamples->Size() : 0, prototype.components)), targetHalo(data.BindHalo(targetCoefficients)),
           branchHalo(data.BindHalo(branches)), seedHalo(data.BindHalo(seeds))
     {
         // Current physical adapter dispatches only compressible flow5. Generic
         // CFV penalties/targets and scalar stencils do not assume this width.
         DNDS_check_throw_info(prototype.components == 5 && data.limitedVRGeometry && data.positivitySamples, "LVR compressible target setup is incomplete");
-        Algebra::Fill(target.coefficients, 0.);
+        Algebra::Fill(targetCoefficients, 0.);
         Algebra::Fill(target.temporary, 0.);
-        auto history = previous.Write(), penalty = alpha.Write();
+        auto penalty = alpha.Write();
         for (index iCell = 0; iCell < data.metrics.NumCell(); ++iCell)
         {
-            history.View()(iCell, 0) = history.View()(iCell, 1) = 0;
             penalty.View()(iCell, 0) = 0;
         }
     }
     void FiniteVolume::LimitedVRWorkspace::Build(const Data &data, const CFV::FVField &mean,
+                                                 R::Array<real> &previous,
                                                  CFV::FaceCharacteristicTransformRef transform,
                                                  R::EagerEngine &engine, const R::ExecutionStream &stream)
     {
@@ -106,17 +107,17 @@ namespace DNDS::Cauchy
         const auto begin = [&](R::TransferBinding &binding)
         { return engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream); };
         MPI::LocalStage(mpi, [&]
-                        { geometry.gradient.ConvertToCoefficients(gradients, data.reconstruction, target.coefficients); });
+                        { geometry.gradient.ConvertToCoefficients(gradients, data.reconstruction, targetCoefficients); });
         {
             auto transfer = begin(targetHalo);
             if (overlap)
-                data.reconstruction.SubmitLimiterWBAP_3OrderTo(engine, stream, target, 1, transform,
+                data.reconstruction.SubmitLimiterWBAP_3OrderTo(engine, stream, targetCoefficients, target, 1, transform,
                                                                CFV::ReconstructionRegion::Core);
             transfer.Wait();
             data.reconstruction.SubmitLimiterWBAP_3OrderTo(
-                engine, stream, target, 1, transform,
+                engine, stream, targetCoefficients, target, 1, transform,
                 overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
-            data.reconstruction.SubmitCommitReconstruction(engine, stream, target);
+            data.reconstruction.SubmitCommitReconstruction(engine, stream, targetCoefficients, target);
             stream.Record().WaitHost();
         }
         // Reuse the Euler common-beta mathematics on a mean-based O2 target,
@@ -124,13 +125,13 @@ namespace DNDS::Cauchy
         // or mean clipping is introduced. All PP samples belong to owned cells.
         MPI::LocalStage(mpi, [&]
                         {
-            data.positivitySamples->Evaluate(mean, target.coefficients, sampledPP);
+            data.positivitySamples->Evaluate(mean, targetCoefficients, sampledPP);
             auto meanRead = mean.Owned().Read(), pointsRead = sampledPP.Read();
             const auto u = meanRead.View<R::UniformTableRows>(), points = pointsRead.View<R::UniformTableRows>();
             for (index iPoint = 0; iPoint < points.RowCount(); ++iPoint)
                 for (int j = 0; j < 5; ++j)
                     DNDS_check_throw_info(std::isfinite(points(iPoint, j)), "nonfinite LVR O2 target sample");
-            auto write = target.coefficients.Owned().Write();
+            auto write = targetCoefficients.Owned().Write();
             const auto coefficients = write.View<R::UniformTableRows>();
             for (index iCell = 0; iCell < data.metrics.NumCell(); ++iCell)
             {
@@ -170,7 +171,7 @@ namespace DNDS::Cauchy
         }
         MPI::LocalStage(mpi, [&]
                         {
-            geometry.sampling->Evaluate(mean, target.coefficients, sampledFaces);
+            geometry.sampling->Evaluate(mean, targetCoefficients, sampledFaces);
             auto values = sampledFaces.Read(), own = mean.Owned().Read(), ghost = mean.Ghost().Read();
             const auto samples = values.View<R::UniformTableRows>();
             const R::PairReadView<real, R::AccessBoundsChecks, R::UniformTableRows> means{own.View<R::UniformTableRows>(), ghost.View<R::UniformTableRows>()};

@@ -128,6 +128,7 @@ TEST_CASE("Runtime FV matches legacy VR sweeps and reproduces cell-average polyn
             auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
             auto u = metrics.BuildField(1);
             auto workspace = plan.BuildWorkspace(1);
+            auto coefficients = plan.BuildCoefficients(1);
             auto boundary = plan.BuildBoundaryValues(1);
             C::VariationalReconstruction<2> legacy(mpi, mesh);
             C::VRSettings old(2);
@@ -179,7 +180,7 @@ TEST_CASE("Runtime FV matches legacy VR sweeps and reproduces cell-average polyn
                 for (DNDS::index i = 0; i < plan.NumBoundaryQuadrature(); ++i)
                     write.View<R::FixedRows<1>>()(i, 0) = Polynomial(plan.GetBoundaryQuadrature(i).point, degree);
             }
-            auto meanHalo = metrics.BindHalo(u), recHalo = metrics.BindHalo(workspace.coefficients);
+            auto meanHalo = metrics.BindHalo(u), recHalo = metrics.BindHalo(coefficients);
             meanHalo.Begin().Wait();
             oldMean.trans.startPersistentPull(), oldMean.trans.waitPersistentPull();
             C::VariationalReconstruction<2>::TFBoundary<1> bc = [degree](const auto &, const auto &, DNDS::index, DNDS::index, int, const tPoint &, const tPoint &p, t_index)
@@ -188,10 +189,10 @@ TEST_CASE("Runtime FV matches legacy VR sweeps and reproduces cell-average polyn
             {
                 recHalo.Begin().Wait();
                 oldRec.trans.startPersistentPull(), oldRec.trans.waitPersistentPull();
-                plan.DoReconstructionIter(u, workspace, boundary);
+                plan.DoReconstructionIter(u, coefficients, workspace, boundary);
                 legacy.DoReconstructionIter<1>(oldRec, oldNext, oldMean, bc, true);
                 std::swap(oldRec, oldNext);
-                auto read = workspace.coefficients.Owned().Read();
+                auto read = coefficients.Owned().Read();
                 const auto values = read.View<R::TableRows>();
                 for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
                     for (int mode = 0; mode < plan.NRecDOF(); ++mode)
@@ -200,7 +201,7 @@ TEST_CASE("Runtime FV matches legacy VR sweeps and reproduces cell-average polyn
             for (int iteration = 0; iteration < 800; ++iteration)
             {
                 recHalo.Begin().Wait();
-                plan.DoReconstructionIter(u, workspace, boundary);
+                plan.DoReconstructionIter(u, coefficients, workspace, boundary);
             }
             R::Array<DNDS::index> ids(R::RowLayout::Dense(mesh->NumCell(), 1));
             R::Array<DNDS::real> points(R::RowLayout::Dense(mesh->NumCell(), 3)), result(R::RowLayout::Dense(mesh->NumCell(), 1));
@@ -215,17 +216,17 @@ TEST_CASE("Runtime FV matches legacy VR sweeps and reproduces cell-average polyn
                         pointWrite.View()(iCell, d) = p[d];
                 }
             }
-            plan.Evaluate(u, workspace.coefficients, ids, points, result);
+            plan.Evaluate(u, coefficients, ids, points, result);
             {
                 C::PolynomialSamplingPlan valueOnly(plan, ids, points, false);
                 R::Array<DNDS::real> cached(R::RowLayout::Dense(mesh->NumCell(), 1));
-                valueOnly.Evaluate(u, workspace.coefficients, cached);
+                valueOnly.Evaluate(u, coefficients, cached);
                 {
                     auto a = result.Read(), b = cached.Read();
                     for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
                         CHECK(a.View()(iCell, 0) == doctest::Approx(b.View()(iCell, 0)).epsilon(2e-14));
                 }
-                CHECK_THROWS(valueOnly.Evaluate(u, workspace.coefficients, cached, 1));
+                CHECK_THROWS(valueOnly.Evaluate(u, coefficients, cached, 1));
             }
             auto pointRead = points.Read(), resultRead = result.Read();
             for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
@@ -257,7 +258,7 @@ TEST_CASE("Runtime FV matches legacy VR sweeps and reproduces cell-average polyn
                 }
                 auto correspondence = InterfacePointMap::Match(patch, queryPoints, queryIds);
                 C::InterfaceSamplingPlan sampling(plan, correspondence);
-                sampling.Evaluate(u, workspace.coefficients, sampled);
+                sampling.Evaluate(u, coefficients, sampled);
                 auto read = sampled.Read();
                 for (DNDS::index i = 0; i < patch.Size(); ++i)
                     CHECK(read.View()(i, 0) == doctest::Approx(Polynomial(correspondence.Get(i).donorPoint, degree)).epsilon(2e-7));
@@ -298,6 +299,7 @@ TEST_CASE("Independent functional weights and all-order boundary penalties match
             f.scaleType = F::LengthScale::MeanAACBB, f.scaleMultiplier = .8;
         auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
         auto work = plan.BuildWorkspace(1);
+        auto coefficients = plan.BuildCoefficients(1);
         auto mean = metrics.BuildField(1);
         auto boundary = plan.BuildBoundaryValues(1);
         C::VariationalReconstruction<2> legacy(mpi, mesh);
@@ -334,7 +336,7 @@ TEST_CASE("Independent functional weights and all-order boundary penalties match
                 b.View()(iPoint, 0) = 1 + p[0] * p[1];
             }
         }
-        auto halo = metrics.BindHalo(work.coefficients);
+        auto halo = metrics.BindHalo(coefficients);
         metrics.BindHalo(mean).Begin().Wait();
         oldMean.trans.startPersistentPull();
         oldMean.trans.waitPersistentPull();
@@ -345,10 +347,10 @@ TEST_CASE("Independent functional weights and all-order boundary penalties match
             halo.Begin().Wait();
             oldRec.trans.startPersistentPull();
             oldRec.trans.waitPersistentPull();
-            plan.DoReconstructionIter(mean, work, boundary);
+            plan.DoReconstructionIter(mean, coefficients, work, boundary);
             legacy.DoReconstructionIter<1>(oldRec, oldNext, oldMean, bc, true);
             std::swap(oldRec, oldNext);
-            auto read = work.coefficients.Owned().Read();
+            auto read = coefficients.Owned().Read();
             for (DNDS::index iCell = 0; iCell < metrics.NumCell(); ++iCell)
                 for (int mode = 0; mode < plan.NRecDOF(); ++mode)
                     CHECK(read.View()(iCell, mode) == doctest::Approx(oldRec[iCell](mode, 0)).epsilon(2e-9).scale(1));
@@ -379,15 +381,17 @@ TEST_CASE("WBAP explicit five-component face transforms match legacy and preserv
     auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh, settings.intOrder);
     auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
     auto work = plan.BuildWorkspace(6);
+    auto coefficients = plan.BuildCoefficients(6);
     auto disabled = plan.BuildFaceTransform(3, 0);
     CHECK(disabled.count == 0);
     CHECK(disabled.forward.RowCount() == 0);
     CHECK(disabled.inverse.RowCount() == 0);
     CHECK_NOTHROW(plan.FinalizeFaceTransform(disabled));
     auto disabledWork = plan.BuildWorkspace(6);
-    DNDS::Algebra::Fill(disabledWork.coefficients, 0.);
-    metrics.BindHalo(disabledWork.coefficients).Begin().Wait();
-    CHECK_NOTHROW(plan.DoLimiterWBAP_3Order(disabledWork, 2, std::cref(disabled)));
+    auto disabledCoefficients = plan.BuildCoefficients(6);
+    DNDS::Algebra::Fill(disabledCoefficients, 0.);
+    metrics.BindHalo(disabledCoefficients).Begin().Wait();
+    CHECK_NOTHROW(plan.DoLimiterWBAP_3Order(disabledCoefficients, disabledWork, 2, std::cref(disabled)));
     auto characteristic = plan.BuildFaceTransform(0, 5);
     Eigen::Matrix<DNDS::real, 5, 5> L = Eigen::Matrix<DNDS::real, 5, 5>::Identity();
     L(0, 0) = .8, L(0, 1) = -.6, L(1, 0) = .6, L(1, 1) = .8;
@@ -399,7 +403,7 @@ TEST_CASE("WBAP explicit five-component face transforms match legacy and preserv
             Eigen::Map<Eigen::MatrixXd>(right.View()[iFace].data(), 5, 5) = L.transpose();
         }
     }
-    CHECK_THROWS(plan.DoLimiterWBAP_3Order(work, 2, std::cref(characteristic)));
+    CHECK_THROWS(plan.DoLimiterWBAP_3Order(coefficients, work, 2, std::cref(characteristic)));
     plan.FinalizeFaceTransform(characteristic);
     C::VariationalReconstruction<2> legacy(mpi, mesh);
     C::VRSettings old(2);
@@ -420,7 +424,7 @@ TEST_CASE("WBAP explicit five-component face transforms match legacy and preserv
     for (DNDS::index iCell = 0; iCell < mesh->NumCellProc(); ++iCell)
         indicator(iCell, 0) = 1;
     {
-        auto write = work.coefficients.Owned().Write();
+        auto write = coefficients.Owned().Write();
         for (DNDS::index iCell = 0; iCell < metrics.NumCell(); ++iCell)
             for (int v = 0; v < 6; ++v)
                 for (int mode = 0; mode < plan.NRecDOF(); ++mode)
@@ -430,7 +434,7 @@ TEST_CASE("WBAP explicit five-component face transforms match legacy and preserv
                     write.View()(iCell, v * plan.NRecDOF() + mode) = rec[iCell](mode, v) = value;
                 }
     }
-    auto halo = metrics.BindHalo(work.coefficients);
+    auto halo = metrics.BindHalo(coefficients);
     halo.Begin().Wait();
     rec.trans.startPersistentPull(), rec.trans.waitPersistentPull();
     mean.trans.startPersistentPull(), mean.trans.waitPersistentPull();
@@ -452,17 +456,17 @@ TEST_CASE("WBAP explicit five-component face transforms match legacy and preserv
     legacy.DoLimiterWBAP_3<6>(mean, rec, output, temporary, indicator, true, forward, inverse, true);
     for (int order = 2; order >= 1; --order)
     {
-        plan.DoLimiterWBAP_3Order(work, order, std::cref(characteristic));
+        plan.DoLimiterWBAP_3Order(coefficients, work, order, std::cref(characteristic));
         halo.Begin().Wait();
     }
-    auto read = work.coefficients.Owned().Read();
+    auto read = coefficients.Owned().Read();
     for (DNDS::index iCell = 0; iCell < metrics.NumCell(); ++iCell)
         for (int v = 0; v < 6; ++v)
             for (int mode = 0; mode < plan.NRecDOF(); ++mode)
                 CHECK(read.View()(iCell, v * plan.NRecDOF() + mode) == doctest::Approx(output[iCell](mode, v)).epsilon(1e-9).scale(1));
     auto bad = characteristic;
     bad.first = 2;
-    CHECK_THROWS(plan.DoLimiterWBAP_3Order(work, 2, std::cref(bad)));
+    CHECK_THROWS(plan.DoLimiterWBAP_3Order(coefficients, work, 2, std::cref(bad)));
     {
         auto write = characteristic.inverse.Write();
         if (metrics.NumFaceProc())
@@ -495,19 +499,22 @@ TEST_CASE("FV rejects wrong association and invalid shapes before writes")
         CHECK_THROWS(mesh->versions.BeginMutation(R::Change::Geometry));
     }
     auto work = plan.BuildWorkspace(1);
+    auto coefficients = plan.BuildCoefficients(1);
     auto boundary = plan.BuildBoundaryValues(1);
     auto wrong = other.BuildField(1);
-    CHECK_THROWS(plan.DoReconstructionIter(wrong, work, boundary));
+    CHECK_THROWS(plan.DoReconstructionIter(wrong, coefficients, work, boundary));
     auto malformed = plan.BuildBoundaryValues(2);
     auto mean = metrics.BuildField(1);
-    CHECK_THROWS(plan.DoReconstructionIter(mean, work, malformed));
-    CHECK_THROWS(plan.DoLimiterWBAP_3Order(work, 0));
+    CHECK_THROWS(plan.DoReconstructionIter(mean, coefficients, work, malformed));
+    CHECK_THROWS(plan.DoLimiterWBAP_3Order(coefficients, work, 0));
     auto invalid = plan.Settings();
     invalid.maxOrder = 4;
     CHECK_THROWS(C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, invalid));
     // Same-size storage from another plan must not be accepted by row count.
-    auto wrongWork = C::VariationalReconstructionPlan::ConstructRecCoeff(other).BuildWorkspace(1);
-    CHECK_THROWS(plan.DoReconstructionIter(mean, wrongWork, boundary));
+    auto wrongPlan = C::VariationalReconstructionPlan::ConstructRecCoeff(other);
+    auto wrongWork = wrongPlan.BuildWorkspace(1);
+    auto wrongCoefficients = wrongPlan.BuildCoefficients(1);
+    CHECK_THROWS(plan.DoReconstructionIter(mean, wrongCoefficients, wrongWork, boundary));
     {
         auto mutation = mesh->versions.BeginMutation(R::Change::Geometry);
         mutation.Commit();
@@ -537,6 +544,7 @@ TEST_CASE("Periodic quad and triangle reconstruction matches relaxed legacy Jaco
             auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
             auto mean = metrics.BuildField(1);
             auto work = plan.BuildWorkspace(1);
+            auto coefficients = plan.BuildCoefficients(1);
             auto boundary = plan.BuildBoundaryValues(1);
             CHECK(plan.NumBoundaryQuadrature() == 0);
             C::VariationalReconstruction<2> legacy(mpi, mesh);
@@ -559,7 +567,7 @@ TEST_CASE("Periodic quad and triangle reconstruction matches relaxed legacy Jaco
                 for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
                     write.View()(iCell, 0) = oldMean[iCell](0) = std::sin(.71 * mesh->OriginalEntityId(EntityKind::Cell, iCell));
             }
-            auto halo = metrics.BindHalo(work.coefficients);
+            auto halo = metrics.BindHalo(coefficients);
             metrics.BindHalo(mean).Begin().Wait();
             oldMean.trans.startPersistentPull(), oldMean.trans.waitPersistentPull();
             C::VariationalReconstruction<2>::TFBoundary<1> bc = [](const auto &, const auto &, DNDS::index, DNDS::index, int, const tPoint &, const tPoint &, t_index)
@@ -568,12 +576,12 @@ TEST_CASE("Periodic quad and triangle reconstruction matches relaxed legacy Jaco
             {
                 halo.Begin().Wait();
                 oldRec.trans.startPersistentPull(), oldRec.trans.waitPersistentPull();
-                plan.DoReconstructionIter(mean, work, boundary);
+                plan.DoReconstructionIter(mean, coefficients, work, boundary);
                 legacy.DoReconstructionIter<1>(oldRec, next, oldMean, bc, true);
                 // putIntoNew=true publishes next for both schedules; legacy
                 // internally swaps its SOR working rows at the end of a sweep.
                 std::swap(oldRec, next);
-                auto read = work.coefficients.Owned().Read();
+                auto read = coefficients.Owned().Read();
                 for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
                     for (int mode = 0; mode < plan.NRecDOF(); ++mode)
                         CHECK(read.View()(iCell, mode) == doctest::Approx(oldRec[iCell](mode, 0)).epsilon(2e-9).scale(1));
@@ -595,6 +603,7 @@ TEST_CASE("Three-dimensional FV reproduces cubic cell-average polynomials on tet
         auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
         auto mean = metrics.BuildField(1);
         auto work = plan.BuildWorkspace(1);
+        auto coefficients = plan.BuildCoefficients(1);
         auto boundary = plan.BuildBoundaryValues(1);
         {
             auto read = mesh->AcquireRead(MeshReadRequirements::CellFlux());
@@ -617,8 +626,8 @@ TEST_CASE("Three-dimensional FV reproduces cubic cell-average polynomials on tet
                 write.View()(i, 0) = function(plan.GetBoundaryQuadrature(i).point);
         }
         metrics.BindHalo(mean).Begin().Wait();
-        metrics.BindHalo(work.coefficients).Begin().Wait();
-        plan.DoReconstructionIter(mean, work, boundary);
+        metrics.BindHalo(coefficients).Begin().Wait();
+        plan.DoReconstructionIter(mean, coefficients, work, boundary);
         R::Array<DNDS::index> ids(R::RowLayout::Dense(metrics.NumCell(), 1));
         R::Array<double> points(R::RowLayout::Dense(metrics.NumCell(), 3)), result(R::RowLayout::Dense(metrics.NumCell(), 1));
         {
@@ -630,7 +639,7 @@ TEST_CASE("Three-dimensional FV reproduces cubic cell-average polynomials on tet
                 pointWrite.View()(i, 0) = .2, pointWrite.View()(i, 1) = .1, pointWrite.View()(i, 2) = .3;
             }
         }
-        plan.Evaluate(mean, work.coefficients, ids, points, result);
+        plan.Evaluate(mean, coefficients, ids, points, result);
         auto read = result.Read();
         for (DNDS::index i = 0; i < metrics.NumCell(); ++i)
             CHECK(read.View()(i, 0) == doctest::Approx(function({.2, .1, .3})).epsilon(1e-9));
@@ -663,18 +672,19 @@ TEST_CASE("SVD removes unconstrained modes and invalid settings fail collectivel
     CHECK_THROWS(zero.GetCellInverseDiagnostics(-1));
     auto mean = metrics.BuildField(1);
     auto work = zero.BuildWorkspace(1);
+    auto coefficients = zero.BuildCoefficients(1);
     auto boundary = zero.BuildBoundaryValues(1);
     {
         auto values = boundary.values.Write();
         for (DNDS::index iRow = 0; iRow < values.View().RowCount(); ++iRow)
             values.View()(iRow, 0) = 3;
-        auto coefficients = work.coefficients.Owned().Write();
+        auto coefficientWrite = coefficients.Owned().Write();
         for (DNDS::index iCell = 0; iCell < metrics.NumCell(); ++iCell)
-            std::fill(coefficients.View()[iCell].begin(), coefficients.View()[iCell].end(), 2);
+            std::fill(coefficientWrite.View()[iCell].begin(), coefficientWrite.View()[iCell].end(), 2);
     }
     // Zero is the minimum-norm solution when the entire functional is zero.
-    zero.DoReconstructionIter(mean, work, boundary);
-    auto read = work.coefficients.Owned().Read();
+    zero.DoReconstructionIter(mean, coefficients, work, boundary);
+    auto read = coefficients.Owned().Read();
     for (DNDS::index iCell = 0; iCell < metrics.NumCell(); ++iCell)
         for (auto value : read.View()[iCell])
             CHECK(value == 0);
@@ -718,10 +728,11 @@ TEST_CASE("Two-buffer SOR preserves its MPI input and split automatically select
                                       : shape.Kind() == R::RowLayoutKind::ColMajorTable ? R::RowLayout::ColMajor(0, 5 * split.NRecDOF(), {8, 1})
                                                                                         : R::RowLayout::TiledColMajor(0, 5 * split.NRecDOF(), 32);
         auto a = split.BuildWorkspace(5, coefficientShape), b = full.BuildWorkspace(5, coefficientShape);
+        auto coefficientsA = split.BuildCoefficients(5, coefficientShape), coefficientsB = full.BuildCoefficients(5, coefficientShape);
         const auto boundaryA = split.BuildBoundaryValues(5), boundaryB = full.BuildBoundaryValues(5);
         CHECK(split.NumBoundaryQuadrature() == 0);
         {
-            auto u = mean.Owned().Write(), x = a.coefficients.Owned().Write(), y = b.coefficients.Owned().Write();
+            auto u = mean.Owned().Write(), x = coefficientsA.Owned().Write(), y = coefficientsB.Owned().Write();
             const auto uv = u.View<R::UniformTableRows>(), xv = x.View<R::UniformTableRows>(), yv = y.View<R::UniformTableRows>();
             for (DNDS::index iCell = 0; iCell < metrics.NumCell(); ++iCell)
             {
@@ -733,30 +744,30 @@ TEST_CASE("Two-buffer SOR preserves its MPI input and split automatically select
             }
         }
         metrics.BindHalo(mean).Begin().Wait();
-        auto haloA = metrics.BindHalo(a.coefficients), haloB = metrics.BindHalo(b.coefficients);
+        auto haloA = metrics.BindHalo(coefficientsA), haloB = metrics.BindHalo(coefficientsB);
         for (int iteration = 0; iteration < 3; ++iteration)
         {
             haloB.Begin().Wait();
-            full.DoReconstructionIter(mean, b, boundaryB);
-            const auto version = a.coefficients.Owned().Version();
+            full.DoReconstructionIter(mean, coefficientsB, b, boundaryB);
+            const auto version = coefficientsA.Owned().Version();
             // A real direct transfer retains input reads and ghost writes.
             // Core must neither write that input nor acquire its ghost half.
             auto transfer = haloA.Begin();
-            split.DoReconstructionIterTo(mean, a.coefficients, a, boundaryA, C::ReconstructionRegion::Core);
-            CHECK(a.coefficients.Owned().Version() == version);
+            split.DoReconstructionIterTo(mean, coefficientsA, a, boundaryA, C::ReconstructionRegion::Core);
+            CHECK(coefficientsA.Owned().Version() == version);
             transfer.Wait();
-            split.DoReconstructionIterTo(mean, a.coefficients, a, boundaryA, C::ReconstructionRegion::HaloDependent);
-            CHECK(a.coefficients.Owned().Version() == version);
-            split.CommitReconstruction(a);
-            auto x = a.coefficients.Owned().Read(), y = b.coefficients.Owned().Read();
+            split.DoReconstructionIterTo(mean, coefficientsA, a, boundaryA, C::ReconstructionRegion::HaloDependent);
+            CHECK(coefficientsA.Owned().Version() == version);
+            split.CommitReconstruction(coefficientsA, a);
+            auto x = coefficientsA.Owned().Read(), y = coefficientsB.Owned().Read();
             const auto xv = x.View<R::UniformTableRows>(), yv = y.View<R::UniformTableRows>();
             for (DNDS::index iCell = 0; iCell < metrics.NumCell(); ++iCell)
                 for (DNDS::index j = 0; j < xv.RowSize(iCell); ++j)
                     CHECK(xv(iCell, j) == yv(iCell, j));
         }
         auto alias = a;
-        alias.temporary = alias.coefficients;
-        CHECK_THROWS(split.DoReconstructionIterTo(mean, alias.coefficients, alias, boundaryA, C::ReconstructionRegion::Core));
+        alias.temporary = coefficientsA;
+        CHECK_THROWS(split.DoReconstructionIterTo(mean, coefficientsA, alias, boundaryA, C::ReconstructionRegion::Core));
     }
 }
 
