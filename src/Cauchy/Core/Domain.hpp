@@ -33,7 +33,7 @@ namespace DNDS::Cauchy
         EquationDofs _initial;
         std::shared_ptr<FiniteVolume::ReconstructionState> _reconstruction, _observationReconstruction;
         std::shared_ptr<FiniteVolume::Workspace> _workspace, _observationWorkspace;
-        std::optional<EquationDofs> _reconstructionBackup, _observationState;
+        std::optional<EquationDofs> _reconstructionBackup, _observationInput, _observationState;
         std::optional<Runtime::Array<real>> _limitedVRBackup;
         std::optional<EquationThermalPolicy> _thermal;
         std::optional<RANSStateView> _ransState;
@@ -76,6 +76,7 @@ namespace DNDS::Cauchy
         uint64_t _nextTrial = 0;
         real _time = 0, _trialTime = 0, _trialDt = 0, _lastAcceptedDt = 0, _progressTime = 0;
         bool _trialReady = false;
+        bool _internalResume = false;
         index _lastFallbacks = 0;
         bool _positivity = false, _steady = false, _rejectUnconvergedStages = false;
         bool _sourceStrang = false;
@@ -91,6 +92,8 @@ namespace DNDS::Cauchy
         void InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh);
         void ConfigureTimeStep(const TimeSettings &time, int compressionPower);
         StepResult PrepareImplicitStep(real dt);
+        StepResult ResumeImplicitStep();
+        bool SolveCoupledImplicit(EquationTimeStepper::DITR &method, EquationDofs &endpoint, bool resume);
         NonlinearSolveControl ProgressControl() const;
         void SetTimeStage(int stage);
         void PreserveReconstructionGuess();
@@ -136,9 +139,23 @@ namespace DNDS::Cauchy
                     destination->CancelUnmodified();
             }
         };
+        struct InternalCheckpointRead
+        {
+            EquationTimeStepper::ActiveCheckpoint time;
+            NonlinearSolveState nonlinear;
+            StateEpoch trialEpoch;
+            real trialDt = 0, progressTime = 0;
+            std::optional<EquationDofs> endpointWarm, endpointFinal;
+            std::optional<Runtime::Array<real>> endpointHistory;
+            std::optional<EquationDofs> middleWarm, middleFinal;
+            std::optional<Runtime::Array<real>> middleHistory;
+            bool ditr = false;
+        };
         std::unique_ptr<CheckpointRead> PrepareCheckpointRead(const std::string &path, const Json &resolved);
         void ReserveCheckpointRead(CheckpointRead &checkpoint, bool collectiveChecks = true);
         void CommitCheckpointRead(CheckpointRead &checkpoint);
+        std::unique_ptr<InternalCheckpointRead> PrepareInternalCheckpointRead(const std::string &path, const Json &resolved);
+        void CommitInternalCheckpointRead(InternalCheckpointRead &checkpoint);
 
     public:
         Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time = {});
@@ -214,6 +231,7 @@ namespace DNDS::Cauchy
         void DiscardStep() noexcept
         {
             _trialReady = false;
+            _internalResume = false;
             _coordinatedPrepared = false;
             _stageEquation.reset();
             if (_timeStepper)
@@ -243,7 +261,7 @@ namespace DNDS::Cauchy
         /// Observe the current nonlinear trial at a synchronous progress
         /// boundary. This uses the stage's already-finalized reconstruction and
         /// never rebuilds or mutates the accepted observation workspace.
-        void WriteInternalVisualization(const std::string &prefix, int hdfDeflateLevel = 0) const;
+        void WriteInternalVisualization(const std::string &prefix, int hdfDeflateLevel = 0);
         /// Native parallel restart with persistent cell IDs and per-cell mesh
         /// validation. Default omits reconstruction; opt in for compatible
         /// fixed-sweep continuation. BDF history is stored when applicable.
@@ -257,6 +275,11 @@ namespace DNDS::Cauchy
         /// preserved on write and converted on read. Derived fields are omitted.
         void WriteCheckpoint(const std::string &path, const Json &resolved, bool includeReconstruction = false,
                              const Json &outputController = Json()) const;
+        /// Exact nonlinear-iteration snapshot. The caller invokes this only at
+        /// the quiescent callback published by the nonlinear controller.
+        void WriteInternalCheckpoint(const std::string &path, const Json &resolved,
+                                     const NonlinearSolveState &state,
+                                     const Json &outputController = Json()) const;
         void ReadCheckpoint(const std::string &path, const Json &resolved);
     };
 }

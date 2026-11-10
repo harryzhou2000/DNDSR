@@ -485,6 +485,7 @@ namespace DNDS::Cauchy
             Report Solve(const State &source, real mass, real rhsScale, real time, int stage, NonlinearSolveControl solveControl)
             {
                 BindEquation(source, mass, rhsScale, time, stage, 0);
+                fineSolver.BindControllerState(solveControl);
                 auto iterationSettings = settings;
                 iterationSettings.iterations = settings.multigrid.cycles;
                 auto residual = Profile::Norms(state);

@@ -827,6 +827,55 @@ TEST_CASE("Rigid motion restart retains absolute-state convention and BDF histor
             CHECK(u(iCell, j) == v(iCell, j));
     Remove({path});
 }
+TEST_CASE("Exact internal checkpoints resume BDF DIRK and DITR nonlinear iterations")
+{
+    const auto metadata = C::Json{{"test", "exact internal nonlinear continuation"}};
+    for (const std::string method : {"bdf2", "esdirk4", "ditr"})
+    {
+        CAPTURE(method);
+        const auto path = Path("cauchy-internal-" + method + "-");
+        C::DomainSettings settings;
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 2;
+        settings.numerics.reconstructionIterations = 3;
+        settings.numerics.faceFallback = false;
+        settings.implicit.iterations = settings.implicit.minIterations = 3;
+        settings.implicit.relativeTolerance = 1;
+        settings.implicit.absoluteTolerance = 0;
+        C::TimeSettings time;
+        time.method = method;
+        const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+        C::Domain uninterrupted("flow", mesh, settings, time);
+        Initialize(uninterrupted);
+        bool written = false;
+        uninterrupted.SetQuiescentObserver([&](const C::NonlinearSolveState &state)
+                                           {
+            if (!written && !state.terminal)
+            {
+                uninterrupted.WriteInternalCheckpoint(path, metadata, state);
+                written = true;
+            } });
+        REQUIRE(uninterrupted.Advance(.002).accepted);
+        REQUIRE(written);
+
+        C::Domain resumed("flow", mesh, settings, time);
+        resumed.ReadCheckpoint(path, metadata);
+        REQUIRE(resumed.Advance(.002).accepted);
+        const auto compare = [&](const C::Domain &a, const C::Domain &b)
+        {
+            const auto left = a.Dofs().ReadOwned(), right = b.Dofs().ReadOwned();
+            for (DNDS::index iBlock = 0; iBlock < a.Dofs().BlockNumber(); ++iBlock)
+                for (DNDS::index iCell = 0; iCell < left.Block(iBlock).owned.RowCount(); ++iCell)
+                    for (DNDS::index j = 0; j < left.Block(iBlock).ComponentNumber(); ++j)
+                        CHECK(left.Block(iBlock)(iCell, j) == right.Block(iBlock)(iCell, j));
+        };
+        compare(uninterrupted, resumed);
+        REQUIRE(uninterrupted.Advance(.0015).accepted);
+        REQUIRE(resumed.Advance(.0015).accepted);
+        compare(uninterrupted, resumed);
+        Remove({path});
+    }
+}
 int main(int argc, char **argv)
 {
     if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)

@@ -420,6 +420,19 @@ namespace DNDS::Cauchy
     StepResult Domain::PrepareStep(real dt)
     {
         DNDS_check_throw_info(!_fv.HasInterfaces(), "interface domains must advance through their coordinated Simulation");
+        if (_internalResume)
+        {
+            int valid = _steady || dt == _trialDt;
+            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _fv.Metrics().Communicator());
+            DNDS_check_throw_info(valid, "resumed exact internal step requires its stored physical dt");
+            if (auto result = ResumeImplicitStep(); !result)
+                return result;
+            FinishChemicalStep();
+            _trialTime = _steady ? _time : _time + _trialDt;
+            _trialReady = true;
+            _internalResume = false;
+            return {};
+        }
         BeginTrial(dt);
         if (_timeStepper)
         {
@@ -680,27 +693,50 @@ namespace DNDS::Cauchy
     void Domain::WriteVisualization(const std::string &prefix, int hdfDeflateLevel)
     {
         EvaluateObservation();
-        _fv.WriteVisualization(_accepted, *_observationReconstruction, *_observationWorkspace, prefix, _time, hdfDeflateLevel, _workers);
+        _fv.WriteVisualization(*_observationInput, *_observationReconstruction, *_observationWorkspace, prefix, _time, hdfDeflateLevel, _workers);
     }
-    void Domain::WriteInternalVisualization(const std::string &prefix, int hdfDeflateLevel) const
+    void Domain::WriteInternalVisualization(const std::string &prefix, int hdfDeflateLevel)
     {
         const MPIInfo mpi(_fv.Metrics().Communicator());
         MPI::LocalStage(mpi, [&]
                         { DNDS_check_throw_info(_timeStepper && _trialEpoch.trial && _restoreReconstruction &&
                                                     std::isfinite(_progressTime),
                                                 "Cauchy internal visualization has no active implicit trial"); });
-        _fv.WriteVisualization(_trial, *_reconstruction, *_workspace, prefix, _progressTime,
+        if (!_observationWorkspace)
+        {
+            MPI::LocalStage(mpi, [&]
+                            {
+                _observationInput.emplace(EquationDofOperations::NewVector(_trial));
+                _observationState.emplace(EquationDofOperations::NewVector(_trial)); });
+            _observationWorkspace = _fv.BuildWorkspace(*_observationInput, _workers);
+            _observationReconstruction = _fv.BuildReconstructionState(*_observationInput);
+            if (_interfaceInputs)
+                _fv.SetBoundaryInputs(*_observationWorkspace, *_interfaceInputs);
+        }
+        MPI::LocalStage(mpi, [&]
+                        {
+            _stream.Record().WaitHost();
+            EquationDofOperations::Copy(*_observationInput, _trial); });
+        _fv.RestoreReconstructionGuess(*_observationReconstruction,
+                                       _fv.ReconstructionGuess(*_reconstruction));
+        _fv.Evaluate(*_observationInput, *_observationState, *_observationReconstruction,
+                     *_observationWorkspace, _engine, _stream, _progressTime);
+        _fv.WriteVisualization(*_observationInput, *_observationReconstruction, *_observationWorkspace, prefix, _progressTime,
                                hdfDeflateLevel, _workers);
     }
     void Domain::EvaluateObservation()
     {
         if (!_observationWorkspace)
         {
+            std::optional<EquationDofs> input;
             std::optional<EquationDofs> residual;
             MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
-                            { residual.emplace(EquationDofOperations::NewVector(_accepted)); });
-            auto workspace = _fv.BuildWorkspace(_accepted, _workers);
-            auto reconstruction = _fv.BuildReconstructionState(_accepted);
+                            {
+                input.emplace(EquationDofOperations::NewVector(_accepted));
+                residual.emplace(EquationDofOperations::NewVector(_accepted)); });
+            auto workspace = _fv.BuildWorkspace(*input, _workers);
+            auto reconstruction = _fv.BuildReconstructionState(*input);
+            _observationInput = std::move(input);
             _observationState = std::move(residual);
             _observationReconstruction = std::move(reconstruction);
             _observationWorkspace = std::move(workspace);
@@ -713,8 +749,12 @@ namespace DNDS::Cauchy
         // boundary reconstruction than the one used by the implicit stage.
         // A pending/rejected trial owns a different polynomial; its backup is
         // the accepted guess until publication, just as for checkpoint writing.
+        MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
+                        {
+            _stream.Record().WaitHost();
+            EquationDofOperations::Copy(*_observationInput, _accepted); });
         const auto &guess = _restoreReconstruction ? *_reconstructionBackup : _fv.ReconstructionGuess(*_reconstruction);
         _fv.RestoreReconstructionGuess(*_observationReconstruction, guess);
-        _fv.Evaluate(_accepted, *_observationState, *_observationReconstruction, *_observationWorkspace, _engine, _stream, _time);
+        _fv.Evaluate(*_observationInput, *_observationState, *_observationReconstruction, *_observationWorkspace, _engine, _stream, _time);
     }
 }

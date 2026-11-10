@@ -684,9 +684,11 @@ namespace DNDS::Cauchy
         const auto internalVisualization = data->output.implicit.visualizationInterval < 0
                                                ? data->output.implicit.checkpointInterval
                                                : data->output.implicit.visualizationInterval;
-        DNDS_check_throw_info(data->output.implicit.checkpointInterval == 0,
-                              "exact internal-iteration checkpoints are not available yet; use zero checkpoint cadence");
-        (void)internalVisualization; // Validated above; visualization is sink-only and restart independent.
+        DNDS_check_throw_info(data->output.implicit.checkpointInterval == 0 || data->domains.size() == 1,
+                              "exact internal checkpoints currently require one domain");
+        DNDS_check_throw_info((data->output.implicit.checkpointInterval == 0 && internalVisualization == 0) ||
+                                  data->time.steady || data->time.method != "ssprk3",
+                              "internal-iteration output requires an implicit method");
         return SimulationConfig(std::move(data));
     }
     std::vector<DomainRankGroup> SimulationConfig::RankGroups() const

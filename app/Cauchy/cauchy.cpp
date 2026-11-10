@@ -113,6 +113,7 @@ static int Run(int argc, char **argv, double started)
             const auto &time = config.Time();
             const auto domainCount = DNDS::index(config.Domains().size());
             const DNDS::Cauchy::OutputPlan outputPlan(output, domainCount);
+            const DNDS::index internalCheckpointInterval = output.implicit.checkpointInterval;
             const DNDS::index internalVisualizationInterval = output.implicit.visualizationInterval < 0
                                                                   ? output.implicit.checkpointInterval
                                                                   : output.implicit.visualizationInterval;
@@ -153,34 +154,7 @@ static int Run(int argc, char **argv, double started)
                         simulation.Placement().DomainRank(iDomain) == 0, logger,
                         continueOutput ? std::optional(outputState.history.at(size_t(iDomain))) : std::nullopt); });
                 domain.SetProgressObserver([&, iDomain](const DNDS::Cauchy::NonlinearProgress &entry)
-                                           {
-                    progress[iDomain]->CaptureIteration(entry);
-                    if (internalVisualizationInterval <= 0 || entry.iteration % internalVisualizationInterval)
-                        return;
-                    const auto token = DNDS::Cauchy::OutputPlan::InternalToken(simulation.Step() + 1, entry.stage, entry.iteration);
-                    const auto prefix = outputPlan.VisualizationPrefix(iDomain, token);
-                    domain.WriteInternalVisualization(prefix, output.hdfDeflateLevel);
-                    if (simulation.Placement().DomainRank(iDomain) == 0)
-                    {
-                        DNDS::Cauchy::Json surfaces = DNDS::Cauchy::Json::array();
-                        for (int rank = 0; rank < int(config.Domains()[iDomain].placement.ranks.size()); ++rank)
-                            surfaces.push_back(prefix + "_surface_rank" + std::to_string(rank) + ".csv");
-                        const DNDS::Cauchy::Json manifest{
-                            {"schema", "dndsr.cauchy.internal-snapshot.v1"},
-                            {"restartScope", "visualization_only"},
-                            {"domain", iDomain},
-                            {"step", simulation.Step() + 1},
-                            {"stage", entry.stage},
-                            {"coupledStage", entry.coupledStage},
-                            {"iteration", entry.iteration},
-                            {"time", domain.InternalObservationTime()},
-                            {"volume", prefix + ".vtkhdf"},
-                            {"surface", std::move(surfaces)}};
-                        std::ofstream file(outputPlan.InternalSnapshotManifestPath(iDomain, token));
-                        file << manifest.dump(2) << '\n';
-                        DNDS_check_throw_info(bool(file), "cannot write Cauchy internal snapshot manifest");
-                    }
-                }); });
+                                           { progress[iDomain]->CaptureIteration(entry); }); });
             DNDS::Cauchy::Json localDomains = DNDS::Cauchy::Json::array();
             for (DNDS::index iDomain = 0; iDomain < domainCount; ++iDomain)
                 if (simulation.Local(iDomain) && simulation.Placement().DomainRank(iDomain) == 0)
@@ -301,6 +275,61 @@ static int Run(int argc, char **argv, double started)
                 }
                 return outputState.ToJson();
             };
+            visitDomains([&](DNDS::index iDomain, auto &domain)
+                         { domain.SetQuiescentObserver([&, iDomain](const DNDS::Cauchy::NonlinearSolveState &state)
+                                                       {
+                    const bool ditr = time.method == "ditr";
+                    const DNDS::index completedIteration = ditr || state.terminal
+                                                               ? state.iteration
+                                                               : state.iteration + 1;
+                    if (completedIteration <= 0)
+                        return;
+                    const bool checkpoint = internalCheckpointInterval > 0 &&
+                                            completedIteration % internalCheckpointInterval == 0;
+                    const bool visualization = internalVisualizationInterval > 0 &&
+                                               completedIteration % internalVisualizationInterval == 0;
+                    if (!checkpoint && !visualization)
+                        return;
+                    const auto token = DNDS::Cauchy::OutputPlan::InternalToken(
+                        simulation.Step() + 1, state.stage, completedIteration);
+                    const auto prefix = outputPlan.VisualizationPrefix(iDomain, token);
+                    if (visualization)
+                        domain.WriteInternalVisualization(prefix, output.hdfDeflateLevel);
+                    if (checkpoint)
+                        domain.WriteInternalCheckpoint(outputPlan.CheckpointPath(token), config.Root(), state,
+                                                       captureOutputState());
+                    if (simulation.Placement().DomainRank(iDomain) == 0)
+                    {
+                        DNDS::Cauchy::Json surfaces = DNDS::Cauchy::Json::array();
+                        if (visualization)
+                            for (int rank = 0; rank < int(config.Domains()[iDomain].placement.ranks.size()); ++rank)
+                                surfaces.push_back(prefix + "_surface_rank" + std::to_string(rank) + ".csv");
+                        DNDS::Cauchy::Json artifacts = DNDS::Cauchy::Json::array();
+                        if (checkpoint)
+                            artifacts.push_back({{"kind", "checkpoint"},
+                                                 {"path", outputPlan.CheckpointPath(token)},
+                                                 {"schema", "dndsr.cauchy.checkpoint.internal.v1"}});
+                        if (visualization)
+                        {
+                            artifacts.push_back({{"kind", "volume"}, {"path", prefix + ".vtkhdf"},
+                                                 {"schema", "dndsr.cauchy.visualization.v1"}});
+                            artifacts.push_back({{"kind", "surface"}, {"paths", std::move(surfaces)},
+                                                 {"schema", "dndsr.cauchy.surface-samples.v1"}});
+                        }
+                        const DNDS::Cauchy::Json manifest{
+                            {"schema", "dndsr.cauchy.internal-snapshot.v1"},
+                            {"restartScope", checkpoint ? "exact_internal" : "visualization_only"},
+                            {"domain", iDomain},
+                            {"step", simulation.Step() + 1},
+                            {"stage", state.stage},
+                            {"coupledStage", state.coupledStage},
+                            {"iteration", completedIteration},
+                            {"time", domain.InternalObservationTime()},
+                            {"artifacts", std::move(artifacts)}};
+                        std::ofstream file(outputPlan.InternalSnapshotManifestPath(iDomain, token));
+                        file << manifest.dump(2) << '\n';
+                        DNDS_check_throw_info(bool(file), "cannot write Cauchy internal snapshot manifest");
+                    } }); });
             const auto writeCheckpoint = [&](const std::string &token)
             {
                 simulation.WriteCheckpoint(outputPlan.CheckpointPath(token), output.checkpointReconstruction,

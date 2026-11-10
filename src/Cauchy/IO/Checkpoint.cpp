@@ -7,6 +7,7 @@
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "DNDS/Runtime/Communication/IdRowTransfer.hpp"
 #include <limits>
+#include <set>
 
 namespace DNDS::Cauchy
 {
@@ -469,11 +470,142 @@ namespace DNDS::Cauchy
         }
         serializer->CloseFile();
     }
+    void Domain::WriteInternalCheckpoint(const std::string &path, const Json &resolved,
+                                         const NonlinearSolveState &state,
+                                         const Json &outputController) const
+    {
+        const MPIInfo mpi(_fv.Metrics().Communicator());
+        std::optional<EquationTimeStepper::ActiveCheckpoint> active;
+        MPI::LocalStage(mpi, [&]
+                        {
+            DNDS_check_throw_info(_timeStepper && _restoreReconstruction && _reconstructionBackup &&
+                                      _trialEpoch.trial && state.stage >= 0 && state.iteration >= 0,
+                                  "exact internal checkpoint has no active implicit trial");
+            active.emplace(_timeStepper->CaptureActive(_trial)); });
+        const bool ditr = _timeStepper->Method() == "ditr";
+        MPI::LocalStage(mpi, [&]
+                        { DNDS_check_throw_info(!ditr || (_coupledMiddle && _coupledMiddle->state),
+                                                "DITR internal checkpoint lacks its midpoint reconstruction"); });
+        const bool acceptedHistory = _timeStepper->Method() == "bdf2" && _timeStepper->HasHistory();
+        const bool acceptedLimitedVR = bool(_limitedVRBackup);
+        const bool endpointLimitedVR = bool(_fv.LimitedVRHistory(*_reconstruction));
+        const bool middleLimitedVR = ditr && bool(_fv.LimitedVRHistory(*_coupledMiddle->state));
+        Json timePayloads = Json::array();
+        for (index i = 0; i < index(active->fields.size()); ++i)
+            timePayloads.push_back({{"name", active->names[size_t(i)]},
+                                    {"storage", DescribeEquationStorage(active->fields[size_t(i)])}});
+        Json timeState{{"schema_version", active->schemaVersion},
+                       {"method", active->method},
+                       {"pending_dt", active->pendingDt},
+                       {"start_time", active->startTime},
+                       {"pending_steady", active->pendingSteady},
+                       {"stages_active", active->stagesActive},
+                       {"stage_prepared", active->stagePrepared},
+                       {"next_stage", active->nextStage},
+                       {"equation", {{"inverse_dt", active->equation.inverseDt}, {"rhs_scale", active->equation.rhsScale}, {"time", active->equation.time}}},
+                       {"bdf_history", active->bdfHistory},
+                       {"bdf_previous_dt", active->bdfPreviousDt},
+                       {"ditr_time", active->ditrTime},
+                       {"ditr_dt", active->ditrDt},
+                       {"payloads", std::move(timePayloads)}};
+        const Json trialEpoch{{"accepted_step", _trialEpoch.acceptedStep},
+                              {"trial", _trialEpoch.trial},
+                              {"stage", _trialEpoch.stage},
+                              {"coupled_stage", _trialEpoch.coupledStage},
+                              {"coupling_iteration", _trialEpoch.couplingIteration},
+                              {"geometry", _trialEpoch.geometry},
+                              {"schema", _trialEpoch.schema}};
+        Json metadata{{"schema_version", 1},
+                      {"mesh_envelope", 2},
+                      {"flow", EquationMetadata(_equation)},
+                      {"reconstruction", _fv.ReconstructionMetadata()},
+                      {"time_method", _timeStepper->Method()},
+                      {"history", acceptedHistory},
+                      {"limited_vr_history", acceptedLimitedVR},
+                      {"limited_vr_history_schema", 1},
+                      {"frame", FrameMetadata(_fv, _time)},
+                      {"restart_scope", "exact_internal"},
+                      {"nonlinear_state", state.ToJson()},
+                      {"trial_epoch", trialEpoch},
+                      {"trial_dt", _trialDt},
+                      {"progress_time", _progressTime},
+                      {"time_state", timeState},
+                      {"state_storage", DescribeEquationStorage(_accepted)},
+                      {"reconstruction_storage", DescribeEquationStorage(*_reconstructionBackup)},
+                      {"endpoint_warm_storage", DescribeEquationStorage(_fv.ReconstructionGuess(*_reconstruction))},
+                      {"endpoint_final_storage", DescribeEquationStorage(_fv.FluxReconstruction(*_reconstruction, *_workspace))},
+                      {"endpoint_limited_vr_history", endpointLimitedVR},
+                      {"middle_limited_vr_history", middleLimitedVR},
+                      {"source_integration", _sourceStrang ? "strang" : "coupled"}};
+        if (ditr)
+        {
+            metadata["middle_warm_storage"] = DescribeEquationStorage(_fv.ReconstructionGuess(*_coupledMiddle->state));
+            metadata["middle_final_storage"] = DescribeEquationStorage(_fv.FluxReconstruction(*_coupledMiddle->state, *_workspace));
+        }
+        auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
+        serializer->OpenFile(path, false);
+        serializer->WriteInt("cauchy_format", 5);
+        serializer->WriteInt("cauchy_internal_format", 1);
+        serializer->WriteString("resolved_config", resolved.dump());
+        serializer->WriteString("metadata_json", metadata.dump());
+        if (!outputController.is_null())
+            serializer->WriteString("output_controller_json", outputController.dump());
+        serializer->WriteString("domain_name", _name);
+        serializer->WriteReal("accepted_time", _time);
+        serializer->WriteReal("last_accepted_dt", _lastAcceptedDt);
+        serializer->WriteIndex("accepted_step", index(_epoch.acceptedStep));
+        Runtime::WriteArray(CellIds(*this), serializer, "cell_ids", mpi);
+        std::optional<MeshEnvelope> envelope;
+        MPI::LocalStage(mpi, [&]
+                        { envelope.emplace(DescribeMesh(*this)); });
+        Runtime::WriteArray(envelope->topology, serializer, "mesh_topology", mpi);
+        Runtime::WriteArray(envelope->coordinates, serializer, "mesh_coordinates", mpi);
+        Runtime::WriteArray(envelope->periodicTransforms, serializer, "periodic_transforms", mpi);
+        WriteEquationArrays(_accepted, serializer, "state_field_", mpi);
+        WriteEquationArrays(*_reconstructionBackup, serializer, "reconstruction_field_", mpi);
+        if (acceptedLimitedVR)
+            Runtime::WriteArray(*_limitedVRBackup, serializer, "limited_vr_history", mpi);
+        if (acceptedHistory)
+        {
+            serializer->WriteReal("history_dt", _timeStepper->PreviousDt());
+            WriteEquationArrays(_timeStepper->PreviousState(), serializer, "history_field_", mpi);
+        }
+        for (index i = 0; i < index(active->fields.size()); ++i)
+            WriteEquationArrays(active->fields[size_t(i)], serializer,
+                                "internal_time_" + std::to_string(i) + "_field_", mpi);
+        WriteEquationArrays(_fv.ReconstructionGuess(*_reconstruction), serializer,
+                            "internal_endpoint_warm_field_", mpi);
+        WriteEquationArrays(_fv.FluxReconstruction(*_reconstruction, *_workspace), serializer,
+                            "internal_endpoint_final_field_", mpi);
+        if (const auto history = _fv.LimitedVRHistory(*_reconstruction))
+            Runtime::WriteArray(*history, serializer, "internal_endpoint_limited_vr_history", mpi);
+        if (ditr)
+        {
+            WriteEquationArrays(_fv.ReconstructionGuess(*_coupledMiddle->state), serializer,
+                                "internal_middle_warm_field_", mpi);
+            WriteEquationArrays(_fv.FluxReconstruction(*_coupledMiddle->state, *_workspace), serializer,
+                                "internal_middle_final_field_", mpi);
+            if (const auto history = _fv.LimitedVRHistory(*_coupledMiddle->state))
+                Runtime::WriteArray(*history, serializer, "internal_middle_limited_vr_history", mpi);
+        }
+        serializer->CloseFile();
+    }
     void Domain::ReadCheckpoint(const std::string &path, const Json &resolved)
     {
+        const MPIInfo mpi(_fv.Metrics().Communicator());
+        bool internal = false;
+        {
+            auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
+            serializer->OpenFile(path, true);
+            internal = serializer->ListCurrentPath().count("cauchy_internal_format");
+            serializer->CloseFile();
+        }
         auto checkpoint = PrepareCheckpointRead(path, resolved);
+        auto active = internal ? PrepareInternalCheckpointRead(path, resolved) : nullptr;
         ReserveCheckpointRead(*checkpoint);
         CommitCheckpointRead(*checkpoint);
+        if (active)
+            CommitInternalCheckpointRead(*active);
     }
     std::unique_ptr<Domain::CheckpointRead> Domain::PrepareCheckpointRead(const std::string &path, const Json &resolved)
     {
@@ -714,6 +846,136 @@ namespace DNDS::Cauchy
         checkpoint->limitedVRHistory = std::move(mappedLimitedVRHistory);
         return checkpoint;
     }
+    std::unique_ptr<Domain::InternalCheckpointRead> Domain::PrepareInternalCheckpointRead(const std::string &path, const Json &resolved)
+    {
+        const MPIInfo mpi(_fv.Metrics().Communicator());
+        auto result = std::make_unique<InternalCheckpointRead>();
+        auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
+        serializer->OpenFile(path, true);
+        int format = 0;
+        serializer->ReadInt("cauchy_internal_format", format);
+        std::string serializedMetadata, serializedConfig;
+        serializer->ReadString("metadata_json", serializedMetadata);
+        serializer->ReadString("resolved_config", serializedConfig);
+        const auto metadata = Json::parse(serializedMetadata, nullptr, false);
+        const auto storedConfig = Json::parse(serializedConfig, nullptr, false);
+        int valid = format == 1 && metadata.is_object() && storedConfig.is_object() &&
+                    metadata.value("restart_scope", std::string{}) == "exact_internal" &&
+                    CompatibleConfig(storedConfig) == CompatibleConfig(resolved) && _timeStepper &&
+                    metadata.value("time_method", std::string{}) == _timeStepper->Method() &&
+                    metadata.value("reconstruction", Json()) == _fv.ReconstructionMetadata();
+        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+        DNDS_check_throw_info(valid, "Cauchy exact internal checkpoint metadata differs");
+        const auto rowCount = StoredRows(serializer, "cell_ids");
+        const auto range = EvenSplitRange(mpi.rank, mpi.size, rowCount);
+        const Serializer::ArrayGlobalOffset shard{range.second - range.first, range.first};
+        auto ids = Runtime::ReadArray<index, Runtime::FixedRows<1>>(serializer, "cell_ids", mpi, shard);
+        auto context = std::make_shared<Runtime::CommunicationContext>(mpi.comm);
+        const auto route = Runtime::BuildRowTransferById(context, ids, CellIds(*this), true);
+        const auto transfer = [&](const auto &source, auto &destination)
+        {
+            using T = typename std::decay_t<decltype(source)>::value_type;
+            Runtime::PayloadPlan(route, source.Layout(), destination.Layout(), Runtime::ElementSchema::For<T>())
+                .Bind(source, destination, Runtime::TransferTransport::Direct,
+                      {Runtime::TransferMode::Transient, context, 0})
+                .Begin()
+                .Wait();
+        };
+        const auto &time = metadata.at("time_state");
+        result->time.schemaVersion = time.at("schema_version").get<int>();
+        result->time.method = time.at("method").get<std::string>();
+        result->time.pendingDt = time.at("pending_dt").get<real>();
+        result->time.startTime = time.at("start_time").get<real>();
+        result->time.pendingSteady = time.at("pending_steady").get<bool>();
+        result->time.stagesActive = time.at("stages_active").get<bool>();
+        result->time.stagePrepared = time.at("stage_prepared").get<bool>();
+        result->time.nextStage = time.at("next_stage").get<int>();
+        result->time.equation = {time.at("equation").at("inverse_dt").get<real>(),
+                                 time.at("equation").at("rhs_scale").get<real>(),
+                                 time.at("equation").at("time").get<real>()};
+        result->time.bdfHistory = time.at("bdf_history").get<bool>();
+        result->time.bdfPreviousDt = time.at("bdf_previous_dt").get<real>();
+        result->time.ditrTime = time.at("ditr_time").get<real>();
+        result->time.ditrDt = time.at("ditr_dt").get<real>();
+        std::set<std::string> payloadNames;
+        index payloadOrdinal = 0;
+        for (const auto &payload : time.at("payloads"))
+        {
+            const auto name = payload.at("name").get<std::string>();
+            DNDS_check_throw_info(!name.empty() && payloadNames.insert(name).second,
+                                  "duplicate exact time-checkpoint payload");
+            auto archive = EquationArchive::Read(serializer,
+                                                 "internal_time_" + std::to_string(payloadOrdinal) + "_field_",
+                                                 payload.at("storage"), mpi, shard);
+            std::optional<EquationDofs> field;
+            MPI::LocalStage(mpi, [&]
+                            {
+                field.emplace(EquationDofOperations::NewVector(_trial));
+                DNDS_check_throw_info(archive.Compatible(*field), "time-checkpoint equation payload differs"); });
+            archive.Restore(*field, route, context);
+            result->time.names.push_back(name);
+            result->time.fields.push_back(std::move(*field));
+            ++payloadOrdinal;
+        }
+        const auto restoreReconstruction = [&](const char *prefix, const Json &description)
+        {
+            auto archive = EquationArchive::Read(serializer, prefix, description, mpi, shard);
+            std::optional<EquationDofs> field;
+            MPI::LocalStage(mpi, [&]
+                            {
+                field.emplace(EquationDofOperations::NewVector(_fv.ReconstructionGuess(*_reconstruction)));
+                DNDS_check_throw_info(archive.Compatible(*field), "internal reconstruction payload differs"); });
+            archive.Restore(*field, route, context);
+            return std::move(*field);
+        };
+        result->endpointWarm.emplace(restoreReconstruction("internal_endpoint_warm_field_", metadata.at("endpoint_warm_storage")));
+        result->endpointFinal.emplace(restoreReconstruction("internal_endpoint_final_field_", metadata.at("endpoint_final_storage")));
+        const auto entries = serializer->ListCurrentPath();
+        const auto restoreHistory = [&](const std::string &name) -> std::optional<Runtime::Array<real>>
+        {
+            if (!entries.count(name))
+                return std::nullopt;
+            auto source = Runtime::ReadArray<real>(serializer, name, mpi, shard);
+            std::optional<Runtime::Array<real>> destination;
+            MPI::LocalStage(mpi, [&]
+                            { destination.emplace(Runtime::RowLayout::Dense(_fv.Metrics().NumCell(), 2)); });
+            transfer(source, *destination);
+            return destination;
+        };
+        result->endpointHistory = restoreHistory("internal_endpoint_limited_vr_history");
+        result->ditr = result->time.method == "ditr";
+        if (result->ditr)
+        {
+            result->middleWarm.emplace(restoreReconstruction("internal_middle_warm_field_", metadata.at("middle_warm_storage")));
+            result->middleFinal.emplace(restoreReconstruction("internal_middle_final_field_", metadata.at("middle_final_storage")));
+            result->middleHistory = restoreHistory("internal_middle_limited_vr_history");
+        }
+        result->nonlinear = NonlinearSolveState::FromJson(metadata.at("nonlinear_state"));
+        const auto &epoch = metadata.at("trial_epoch");
+        result->trialEpoch.acceptedStep = epoch.at("accepted_step").get<uint64_t>();
+        result->trialEpoch.trial = epoch.at("trial").get<uint64_t>();
+        result->trialEpoch.stage = epoch.at("stage").get<uint64_t>();
+        result->trialEpoch.coupledStage = epoch.at("coupled_stage").get<uint64_t>();
+        result->trialEpoch.couplingIteration = epoch.at("coupling_iteration").get<uint64_t>();
+        result->trialEpoch.geometry = epoch.at("geometry").get<uint64_t>();
+        result->trialEpoch.schema = epoch.at("schema").get<uint64_t>();
+        result->trialDt = metadata.at("trial_dt").get<real>();
+        result->progressTime = metadata.at("progress_time").get<real>();
+        serializer->CloseFile();
+        MPI::LocalStage(mpi, [&]
+                        {
+            DNDS_check_throw_info(result->trialEpoch.trial > 0 && std::isfinite(result->trialDt) &&
+                                      result->trialDt >= 0 && std::isfinite(result->progressTime),
+                                  "invalid exact internal checkpoint cursor");
+            const auto found = std::find(result->time.names.begin(), result->time.names.end(), "trial");
+            DNDS_check_throw_info(found != result->time.names.end() &&
+                                      Admissible(result->time.fields[size_t(found - result->time.names.begin())]),
+                                  "exact internal checkpoint trial is inadmissible");
+            auto validationTrial = EquationDofOperations::NewVector(_trial);
+            auto validationStepper = _timeStepper->Fresh();
+            validationStepper->RestoreActive(result->time, validationTrial); });
+        return result;
+    }
     void Domain::ReserveCheckpointRead(CheckpointRead &checkpoint, bool collectiveChecks)
     {
         const auto reserve = [&]
@@ -751,6 +1013,11 @@ namespace DNDS::Cauchy
                 for (index j = 0; j < output.ComponentNumber(); ++j)
                     output(iCell, j) = input(iCell, j);
         }
+        checkpoint.input.clear();
+        checkpoint.output.clear();
+        checkpoint.source.reset();
+        checkpoint.destination.reset();
+        checkpoint.reconstruction.reset();
         _time = checkpoint.time;
         _epoch = checkpoint.epoch;
         _trialReady = _restoreReconstruction = _coordinatedPrepared = false;
@@ -759,5 +1026,53 @@ namespace DNDS::Cauchy
             _timeStepper.swap(checkpoint.stepper);
         _lastAcceptedDt = checkpoint.lastDt;
         _nextTrial = 0;
+    }
+    void Domain::CommitInternalCheckpointRead(InternalCheckpointRead &checkpoint)
+    {
+        DNDS_check_throw_info(_timeStepper && checkpoint.endpointWarm && checkpoint.endpointFinal &&
+                                  checkpoint.trialEpoch.acceptedStep == _epoch.acceptedStep,
+                              "internal checkpoint cannot follow the restored accepted state");
+        const auto &acceptedGuess = _fv.ReconstructionGuess(*_reconstruction);
+        if (!_reconstructionBackup)
+            _reconstructionBackup.emplace(EquationDofOperations::NewVector(acceptedGuess));
+        EquationDofOperations::Copy(*_reconstructionBackup, acceptedGuess);
+        if (const auto history = _fv.LimitedVRHistory(*_reconstruction))
+        {
+            if (!_limitedVRBackup)
+                _limitedVRBackup.emplace(history->Layout());
+            _limitedVRBackup->CopyFrom(*history).Wait();
+        }
+        else
+            _limitedVRBackup.reset();
+        _timeStepper->RestoreActive(checkpoint.time, _trial);
+        _fv.RestoreReconstructionState(*_reconstruction, *checkpoint.endpointWarm,
+                                       *checkpoint.endpointFinal,
+                                       checkpoint.endpointHistory ? std::optional(std::cref(*checkpoint.endpointHistory)) : std::nullopt);
+        if (checkpoint.ditr)
+        {
+            DNDS_check_throw_info(checkpoint.middleWarm && checkpoint.middleFinal,
+                                  "DITR internal checkpoint lacks midpoint reconstruction");
+            auto &middle = _timeStepper->CoupledMethod().IntermediateState();
+            _coupledMiddle = _coupledFactory(middle);
+            _coupledMiddleOwner = middle.PhysicalField(0).Owned().SharedStorage();
+            _fv.RestoreReconstructionState(*_coupledMiddle->state, *checkpoint.middleWarm,
+                                           *checkpoint.middleFinal,
+                                           checkpoint.middleHistory ? std::optional(std::cref(*checkpoint.middleHistory)) : std::nullopt);
+            _coupledNonlinearState = checkpoint.nonlinear;
+        }
+        else
+            _implicit->RestoreState(checkpoint.nonlinear);
+        _trialEpoch = checkpoint.trialEpoch;
+        _trialDt = checkpoint.trialDt;
+        _progressTime = checkpoint.progressTime;
+        _trialReady = false;
+        _restoreReconstruction = true;
+        _internalResume = true;
+        _coordinatedPrepared = false;
+        _stageEquation.reset();
+        _nextTrial = std::max(_nextTrial, _trialEpoch.trial);
+        _lastImplicit.clear();
+        _lastCoupledIterations = 0;
+        _lastCoupledTargetRatio = 0;
     }
 }

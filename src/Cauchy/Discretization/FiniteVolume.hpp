@@ -353,6 +353,12 @@ namespace DNDS::Cauchy
         /// both stages continue to share scratch.
         void CopyReconstructionState(ReconstructionState &destination,
                                      const ReconstructionState &source) const;
+        /// Exact checkpoint restore of both warm and finalized coefficient
+        /// publications. Unlike RestoreReconstructionGuess this never infers or
+        /// recomputes limiter/PP output from the warm state.
+        void RestoreReconstructionState(ReconstructionState &state,
+                                        const EquationDofs &warm, const EquationDofs &finalized,
+                                        std::optional<std::reference_wrapper<const Runtime::Array<real>>> limitedVRHistory = std::nullopt) const;
         std::optional<Runtime::Array<real>> LimitedVRHistory(const ReconstructionState &state) const;
         std::optional<Runtime::Array<real>> LimitedVRAlpha(const Workspace &workspace) const;
         /// Local reset; caller coordinates failures and joins workspace work.

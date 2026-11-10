@@ -40,7 +40,8 @@ namespace DNDS::Cauchy
                      {"minimum_rhs_alpha", state.minimumRHSAlpha},
                      {"minimum_increment_alpha", state.minimumIncrementAlpha},
                      {"reconstruction_iterations", state.reconstructionIterations},
-                     {"reconstruction_relative_update", state.reconstructionRelativeUpdate}};
+                     {"reconstruction_relative_update", state.reconstructionRelativeUpdate},
+                     {"reconstruction_update_measured", state.reconstructionUpdateMeasured}};
     }
     void from_json(const Json &value, NonlinearSolveState &state)
     {
@@ -70,6 +71,7 @@ namespace DNDS::Cauchy
         state.minimumIncrementAlpha = value.at("minimum_increment_alpha").get<real>();
         state.reconstructionIterations = value.at("reconstruction_iterations").get<int>();
         state.reconstructionRelativeUpdate = value.at("reconstruction_relative_update").get<real>();
+        state.reconstructionUpdateMeasured = value.value("reconstruction_update_measured", true);
         DNDS_check_throw_info(state.attempt >= 0 && state.iteration >= 0 && std::isfinite(state.pseudoCFL) &&
                                   std::isfinite(state.residualTargetRatio) && std::isfinite(state.minimumRHSAlpha) &&
                                   std::isfinite(state.minimumIncrementAlpha) && std::isfinite(state.reconstructionRelativeUpdate),
@@ -365,15 +367,7 @@ namespace DNDS::Cauchy
         }
         EquationNonlinearIterationReport initial;
         initial.residual.resize(size_t(nv));
-        if (!control.resume)
-        {
-            ++data.nonlinearState.attempt;
-            data.nonlinearState.convergenceComponents = data.settings.residualComponents;
-        }
-        else
-            DNDS_check_throw_info(data.nonlinearState.convergenceComponents == data.settings.residualComponents,
-                                  "restored nonlinear convergence components differ from current controls");
-        control.state = std::ref(data.nonlinearState);
+        BindControllerState(control);
         auto geometry = data.discrete.Metrics().AcquireRead();
         const auto metric = geometry.HostView();
         const auto evaluate = [&]
@@ -533,6 +527,9 @@ namespace DNDS::Cauchy
             }
             measure(report.residual);
             std::tie(report.reconstructionIterations, report.reconstructionRelativeUpdate) = reconstruction();
+            report.reconstructionUpdateMeasured = std::isfinite(report.reconstructionRelativeUpdate);
+            if (!report.reconstructionUpdateMeasured)
+                report.reconstructionRelativeUpdate = 0;
             advance(report);
             report.iterations = 1;
             auto &stateSnapshot = data.nonlinearState;
@@ -557,6 +554,7 @@ namespace DNDS::Cauchy
             stateSnapshot.minimumIncrementAlpha = report.minimumIncrementAlpha;
             stateSnapshot.reconstructionIterations = report.reconstructionIterations;
             stateSnapshot.reconstructionRelativeUpdate = report.reconstructionRelativeUpdate;
+            stateSnapshot.reconstructionUpdateMeasured = report.reconstructionUpdateMeasured;
             return report;
         }
         return NonlinearDetail::Iterate(data.settings, state.Schema(), data.mpi.rank, stage, control, std::move(initial), data.reconstructionTolerance, evaluate, measure, reconstruction, advance);
@@ -577,6 +575,19 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(validated.convergenceComponents == _data->settings.residualComponents,
                               "restored nonlinear convergence components differ from current solver");
         _data->nonlinearState = validated;
+    }
+    void NonlinearSolver::BindControllerState(NonlinearSolveControl &control)
+    {
+        DNDS_check_throw_info(_data, "nonlinear session was moved");
+        if (!control.resume)
+        {
+            ++_data->nonlinearState.attempt;
+            _data->nonlinearState.convergenceComponents = _data->settings.residualComponents;
+        }
+        else
+            DNDS_check_throw_info(_data->nonlinearState.convergenceComponents == _data->settings.residualComponents,
+                                  "restored nonlinear convergence components differ from current controls");
+        control.state = std::ref(_data->nonlinearState);
     }
     bool NonlinearSolver::ReconstructionConverged() const
     {

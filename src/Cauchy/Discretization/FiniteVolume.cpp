@@ -2805,6 +2805,15 @@ namespace DNDS::Cauchy
         restore.Commit();
         destination.PublishFinalized();
     }
+    void FiniteVolume::RestoreReconstructionState(ReconstructionState &state,
+                                                  const EquationDofs &warm, const EquationDofs &finalized,
+                                                  std::optional<std::reference_wrapper<const Runtime::Array<real>>> limitedVRHistory) const
+    {
+        auto restore = ReserveReconstructionRestoreImpl(state, warm, limitedVRHistory, {}, true,
+                                                        std::cref(finalized));
+        restore.Commit();
+        state.PublishFinalized();
+    }
     std::optional<Runtime::Array<real>> FiniteVolume::LimitedVRHistory(const ReconstructionState &state) const
     {
         DNDS_check_throw_info(state.owner == _data, "foreign equation reconstruction state");

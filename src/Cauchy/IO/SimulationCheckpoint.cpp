@@ -128,6 +128,7 @@ namespace DNDS::Cauchy
         serializer.OpenFile(path, true);
         const auto keys = serializer.ListCurrentPath();
         direct = keys.count("cauchy_format");
+        const bool internal = keys.count("cauchy_internal_format");
         MPI::LocalStage(control, [&]
                         { DNDS_check_throw_info(keys.count("accepted_time") && keys.count("accepted_step") &&
                                                     (direct || (keys.count("cauchy_simulation_format") && keys.count("domains_json"))),
@@ -135,6 +136,8 @@ namespace DNDS::Cauchy
         if (direct)
         {
             DNDS_check_throw_info(DirectArchive(_placement), "a single-domain checkpoint cannot restore a multi-domain simulation");
+            DNDS_check_throw_info(!internal || _placement.DomainNumber() == 1,
+                                  "exact internal checkpoint currently requires one simulation domain");
             serializer.ReadReal("accepted_time", time);
             serializer.ReadIndex("accepted_step", step);
             if (keys.count("output_controller_json"))
@@ -176,6 +179,7 @@ namespace DNDS::Cauchy
         }
         serializer.CloseFile();
         std::vector<std::unique_ptr<Domain::CheckpointRead>> checkpoints;
+        std::unique_ptr<Domain::InternalCheckpointRead> internalCheckpoint;
         MPI::LocalStage(control, [&]
                         {
             DNDS_check_throw_info(std::isfinite(time) && time >= 0 && step >= 0, "invalid Cauchy simulation archive clock");
@@ -188,6 +192,13 @@ namespace DNDS::Cauchy
             MPI::LocalStage(MPIInfo(_placement.Context(iDomain)->Communicator()), [&]
                             { DNDS_check_throw_info(checkpoints[iDomain]->time == time && checkpoints[iDomain]->epoch.acceptedStep == uint64_t(step),
                                                     "domain checkpoint clock differs from its simulation manifest"); }); });
+        if (internal)
+        {
+            internalCheckpoint = GetDomain(0).PrepareInternalCheckpointRead(path, _config.Root());
+            MPI::LocalStage(control, [&]
+                            { DNDS_check_throw_info(internalCheckpoint->trialEpoch.acceptedStep == uint64_t(step),
+                                                    "internal checkpoint trial belongs to another accepted step"); });
+        }
         if (_interfaces)
         {
             // Prepare separate donor coefficients and complete their halos.
@@ -247,6 +258,8 @@ namespace DNDS::Cauchy
         for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
             if (_domains[iDomain])
                 _domains[iDomain]->CommitCheckpointRead(*checkpoints[iDomain]);
+        if (internalCheckpoint)
+            GetDomain(0).CommitInternalCheckpointRead(*internalCheckpoint);
         if (_interfaces)
             _interfaces->Commit();
         _time = time;

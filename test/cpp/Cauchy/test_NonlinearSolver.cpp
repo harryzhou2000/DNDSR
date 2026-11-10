@@ -50,6 +50,7 @@ TEST_CASE("Nonlinear controller state has a versioned JSON round trip")
     source.levelCorrections = {4, 2};
     source.reconstructionIterations = 5;
     source.reconstructionRelativeUpdate = 1e-7;
+    source.reconstructionUpdateMeasured = true;
 
     const auto encoded = source.ToJson();
     const auto restored = C::NonlinearSolveState::FromJson(encoded);
@@ -67,6 +68,7 @@ TEST_CASE("Nonlinear controller state has a versioned JSON round trip")
     CHECK(restored.levelCorrections == source.levelCorrections);
     CHECK(restored.reconstructionIterations == source.reconstructionIterations);
     CHECK(restored.reconstructionRelativeUpdate == source.reconstructionRelativeUpdate);
+    CHECK(restored.reconstructionUpdateMeasured == source.reconstructionUpdateMeasured);
 
     auto unsupported = encoded;
     unsupported["schema_version"] = source.schemaVersion + 1;

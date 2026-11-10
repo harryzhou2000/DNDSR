@@ -179,6 +179,11 @@ TEST_CASE("Deprecated time and output aliases are exclusive with their canonical
                       doctest::Contains("only output.checkpointInterval"));
     CHECK_THROWS_WITH(C::SimulationConfig::Resolve({{"output", {{"implicit", {{"checkpointInterval", 2}}}}}}, 1),
                       doctest::Contains("internal-iteration"));
+    const C::Json multiDomain{{"domains", C::Json::array({{{"name", "a"}}, {{"name", "b"}}})},
+                              {"time", {{"method", "bdf1"}}},
+                              {"output", {{"implicit", {{"checkpointInterval", 2}}}}}};
+    CHECK_THROWS_WITH(C::SimulationConfig::Resolve(multiDomain, 2),
+                      doctest::Contains("exact internal checkpoints currently require one domain"));
 }
 TEST_CASE("Reconstruction PP controls are explicit and reject unsupported compatibility combinations")
 {

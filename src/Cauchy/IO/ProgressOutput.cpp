@@ -187,7 +187,8 @@ namespace DNDS::Cauchy
         row.Set("residual_target_ratio", progress.residualTargetRatio);
         row.Set("linear_iterations", progress.linearIterations);
         row.Set("vr_sweeps", index(progress.reconstructionIterations));
-        row.Set("vr_relative_update", progress.reconstructionRelativeUpdate);
+        if (progress.reconstructionUpdateMeasured)
+            row.Set("vr_relative_update", progress.reconstructionRelativeUpdate);
         row.Set("rhs_limited", progress.rhsLimited);
         row.Set("rhs_alpha_min", progress.minimumRHSAlpha);
         row.Set("increment_limited", progress.incrementLimited);
@@ -206,8 +207,13 @@ namespace DNDS::Cauchy
             message << " iteration " << location.iteration;
         message << " residual " << Json(progress.residual).dump()
                 << " target " << progress.residualTargetRatio << " CFL " << progress.pseudoCFL
-                << " VR " << progress.reconstructionIterations << ':' << progress.reconstructionRelativeUpdate
-                << " linear " << progress.linearIterations;
+                << " VR " << progress.reconstructionIterations << ':';
+        if (progress.reconstructionUpdateMeasured)
+            message << progress.reconstructionRelativeUpdate;
+        else
+            message << "unmeasured";
+        message
+            << " linear " << progress.linearIterations;
         if (progress.terminal)
             message << (progress.converged ? " converged" : " capped");
         _logger->Info(message.str());
@@ -266,6 +272,7 @@ namespace DNDS::Cauchy
         progress.minimumIncrementAlpha = report.minimumIncrementAlpha;
         progress.reconstructionIterations = report.reconstructionIterations;
         progress.reconstructionRelativeUpdate = report.reconstructionRelativeUpdate;
+        progress.reconstructionUpdateMeasured = report.reconstructionUpdateMeasured;
         FillNonlinear(row, progress);
         _history->Write(row);
         if (_settings.implicit.consoleInterval > 0)

@@ -23,6 +23,7 @@ namespace DNDS::Cauchy
         real minimumRHSAlpha = 1, minimumIncrementAlpha = 1;
         int reconstructionIterations = 0;
         real reconstructionRelativeUpdate = 0;
+        bool reconstructionUpdateMeasured = false;
 
         Json ToJson() const;
         static NonlinearSolveState FromJson(const Json &value);
@@ -44,6 +45,7 @@ namespace DNDS::Cauchy
         real minimumRHSAlpha = 1, minimumIncrementAlpha = 1;
         int reconstructionIterations = 0;
         real reconstructionRelativeUpdate = 0;
+        bool reconstructionUpdateMeasured = false;
     };
     /// Optional synchronous CPU profile. Values are local wall seconds, not
     /// reduced across ranks. Total encloses the disjoint named sections;
@@ -109,6 +111,7 @@ namespace DNDS::Cauchy
         /// workspace or a sum/max over every inner reconstruction evaluation.
         int reconstructionIterations = 0;
         real reconstructionRelativeUpdate = 0;
+        bool reconstructionUpdateMeasured = false;
         Linear::LinearIterationReport lastLinear;
     };
     using EquationNonlinearIterationReport = BasicNonlinearIterationReport<std::vector<real>>;
@@ -189,6 +192,9 @@ namespace DNDS::Cauchy
         std::pair<int, real> ReconstructionStats() const;
         const NonlinearSolveState &State() const;
         void RestoreState(const NonlinearSolveState &state);
+        /// Bind the shared live controller to an outer nonlinear policy such as
+        /// pMG, applying the same new-attempt versus resume semantics as Solve.
+        void BindControllerState(NonlinearSolveControl &control);
         Json StateJson() const { return State().ToJson(); }
         bool ReconstructionConverged() const;
         real ReconstructionTolerance() const;

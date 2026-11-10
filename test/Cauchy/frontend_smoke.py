@@ -87,6 +87,24 @@ def main():
         resumed = json.loads((folder / "resumed-summary.json").read_text())
         assert resumed["steps"] == 3 and math.isclose(resumed["time"], 3e-5)
         assert resumed["status"] == "target-reached"
+        exact = json.loads(config.read_text())
+        exact["time"].update({"method": "bdf2", "steps": 1})
+        exact["output"].update({
+            "prefix": str(folder / "exact"),
+            "implicit": {"checkpointInterval": 1, "visualizationInterval": 1},
+        })
+        exact_config = folder / "exact.json"
+        exact_config.write_text(json.dumps(exact))
+        run(exact_config)
+        internal = sorted(folder.glob("exact-D0-S1_0_*.h5"))
+        assert internal
+        assert all(path.with_name(path.stem + "-manifest.json").is_file()
+                   for path in internal)
+        run(exact_config, "--restart", internal[0], "-k", "/output/prefix", "-v",
+            json.dumps(str(folder / "exact_resumed")))
+        exact_resumed = json.loads((folder / "exact_resumed-summary.json").read_text())
+        assert exact_resumed["steps"] == 1 and math.isclose(exact_resumed["time"], 1e-5)
+        assert exact_resumed["status"] == "target-reached"
         # Exercise the same physical frontend with all-rank sharing followed by
         # disjoint rank groups. The existing single-domain files remain valid.
         multi = json.loads(config.read_text())

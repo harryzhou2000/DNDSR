@@ -143,6 +143,7 @@ namespace DNDS::Cauchy::NonlinearDetail
             report.minimumIncrementAlpha = state.minimumIncrementAlpha;
             report.reconstructionIterations = state.reconstructionIterations;
             report.reconstructionRelativeUpdate = state.reconstructionRelativeUpdate;
+            report.reconstructionUpdateMeasured = state.reconstructionUpdateMeasured;
             convergence.Restore(report.initialResidual, report.referenceResidual);
             firstIteration = state.iteration + 1;
             DNDS_check_throw_info(state.terminal || firstIteration <= limit,
@@ -179,6 +180,9 @@ namespace DNDS::Cauchy::NonlinearDetail
                     ++control.profile->get().residualEvaluations;
             }
             std::tie(report.reconstructionIterations, report.reconstructionRelativeUpdate) = reconstruction();
+            report.reconstructionUpdateMeasured = std::isfinite(report.reconstructionRelativeUpdate);
+            if (!report.reconstructionUpdateMeasured)
+                report.reconstructionRelativeUpdate = 0;
             {
                 const PhaseTimer timer(control.profile, NonlinearProfile::Convergence);
                 measure(report.residual);
@@ -188,7 +192,7 @@ namespace DNDS::Cauchy::NonlinearDetail
                 report.residualTargetRatio = convergence.TargetRatio();
                 report.iterations = iteration;
                 const bool converged = iteration >= std::min(settings.minIterations, limit) &&
-                                       (reconstructionTolerance <= 0 || report.reconstructionRelativeUpdate <= reconstructionTolerance) && convergence.Accepted();
+                                       (reconstructionTolerance <= 0 || (report.reconstructionUpdateMeasured && report.reconstructionRelativeUpdate <= reconstructionTolerance)) && convergence.Accepted();
                 // Console iteration numbers are one-based. Before-update mode
                 // observes the initial residual at internal index zero; omit
                 // that pre-iteration line so the first reported nonlinear
@@ -213,7 +217,8 @@ namespace DNDS::Cauchy::NonlinearDetail
                                                  report.minimumRHSAlpha,
                                                  report.minimumIncrementAlpha,
                                                  report.reconstructionIterations,
-                                                 report.reconstructionRelativeUpdate};
+                                                 report.reconstructionRelativeUpdate,
+                                                 report.reconstructionUpdateMeasured};
                 if (control.state)
                 {
                     auto &state = control.state->get();
@@ -235,6 +240,7 @@ namespace DNDS::Cauchy::NonlinearDetail
                     state.minimumIncrementAlpha = progress.minimumIncrementAlpha;
                     state.reconstructionIterations = progress.reconstructionIterations;
                     state.reconstructionRelativeUpdate = progress.reconstructionRelativeUpdate;
+                    state.reconstructionUpdateMeasured = progress.reconstructionUpdateMeasured;
                 }
                 if (control.progress && !initialBeforeUpdate)
                     control.progress(progress);

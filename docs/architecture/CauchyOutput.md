@@ -18,6 +18,8 @@ run-D<domain>-history_1.csv ...
 run-D<domain>-S<step>.vtkhdf
 run-D<domain>-T<round-trip-time>.vtkhdf
 run-D<domain>-S<step>_surface_rank<domain-rank>.csv
+run-D<domain>-S<step>_<stage>_<iteration>.vtkhdf
+run-D0-S<step>_<stage>_<iteration>.h5  # exact internal, single domain
 run-S<step>.h5                 # multi-domain simulation archive
 run-D0-S<step>.h5              # single-domain archive
 run-S<step>-manifest.json
@@ -81,16 +83,35 @@ triggers at the same accepted state are coalesced into one snapshot bundle.
 
 Iteration and stage progress are fully represented in the detailed history and
 console. A positive `output.implicit.visualizationInterval` writes the current
-trial and its already-finalized reconstruction at the quiescent nonlinear
-observation boundary. It does not rerun reconstruction and therefore cannot
-change the numerical trajectory. Each per-domain product has an
-`internal-snapshot.v1` manifest whose `restartScope` is
-`visualization_only`.
+trial at a quiescent nonlinear observation boundary. The observer copies the
+trial mean and the current warm reconstruction into detached storage, then
+prepares output fields with a separate workspace. Its halo publication,
+reconstruction iterations and diagnostics therefore cannot rebind or mutate
+the active time-stepper state. Each per-domain product has an
+`internal-snapshot.v1` manifest whose `restartScope` is `visualization_only`
+when no checkpoint is written at that boundary.
 
-Exact internal checkpoints remain rejected during configuration rather than
-being mislabeled as accepted-state archives. Their implementation must archive
-the active ODE stage/coupled-stage, nonlinear state, pseudo-time controls,
-history fields and both DITR reconstruction publications needed to resume that
-exact solve. Keep `output.implicit.checkpointInterval=0` until that state is
-available.
+A positive `output.implicit.checkpointInterval` enables exact internal
+checkpoints for a single implicit domain. The archive stores the accepted state
+and history, active ODE method payloads and cursor, current nonlinear controller
+JSON, trial state, endpoint reconstruction publications and limited-VR history.
+DITR additionally stores its midpoint state/rates and independent midpoint
+reconstruction publications. BDF2, serialized ESDIRK and DITR restore the
+active solve at that boundary rather than restarting its stage; continuation
+tests compare the following nonlinear result and accepted step with an
+uninterrupted run.
+
+Exact internal output is rejected for SSPRK3 and, currently, for multi-domain
+simulations. A domain callback cannot publish a truthful simulation-wide exact
+snapshot while another colocated or dislocated domain is at a different
+nonlinear boundary. Multi-domain exact restart therefore requires a future
+simulation-level coordinated quiescent boundary; Cauchy fails configuration
+instead of emitting a partial archive. Internal visualization remains
+available independently for every implicit domain.
+
+Checkpoint controller metadata includes exact-time event ordinals, resolved
+cadence and typed CSV segment cursors. Continuing with the same output prefix
+validates and appends at those cursors without duplicating the initial/accepted
+row. Choosing a new prefix starts a new output bundle from the restored
+numerical state.
 
