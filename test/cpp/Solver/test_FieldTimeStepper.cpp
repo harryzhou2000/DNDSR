@@ -276,6 +276,48 @@ TEST_CASE("External controller interleaves coherent stages without changing nati
         }
     }
 }
+TEST_CASE("Serialized BDF and DIRK stages restore their trial source and completed rate prefix")
+{
+    const A::DofSpace space(1);
+    for (const std::string method : {"bdf2", "esdirk4"})
+    {
+        CAPTURE(method);
+        Field initial(space, 1), trial(space, 1), restoredTrial(space, 1);
+        A::Fill(initial, .8);
+        O::FieldTimeStepper original(initial, method), restored(initial, method);
+        original.BeginStages(initial, trial, .2, .1);
+        std::optional<decltype(original.PrepareStage(trial))> active;
+        while (!active)
+        {
+            auto equation = original.PrepareStage(trial);
+            if (equation.implicit)
+                active.emplace(equation);
+            else
+                original.CompleteStage(trial, Evaluate());
+        }
+        A::Fill(trial, .73); // a nonlinear iterate, not the stage initial guess
+        const auto checkpoint = original.CaptureActive(trial);
+        restored.RestoreActive(checkpoint, restoredTrial);
+        CHECK(Value(restoredTrial) == Value(trial));
+
+        const auto complete = [&](auto &stepper, auto &state, auto equation)
+        {
+            REQUIRE(stepper.SolvePreparedStage(equation, state, Solve()));
+            stepper.CompleteStage(state, Evaluate());
+            for (int stage = equation.stage + 1; stage < stepper.StageNumber(); ++stage)
+            {
+                const auto next = stepper.PrepareStage(state);
+                if (next.implicit)
+                    REQUIRE(stepper.SolvePreparedStage(next, state, Solve()));
+                stepper.CompleteStage(state, Evaluate());
+            }
+            REQUIRE(stepper.HasPendingTrial());
+        };
+        complete(original, trial, *active);
+        complete(restored, restoredTrial, restored.RestoredStageEquation());
+        CHECK(Value(restoredTrial) == Value(trial));
+    }
+}
 TEST_CASE("Native BDF1 steady limit has zero physical mass and history source at a frozen time")
 {
     const A::DofSpace space(2);
@@ -416,6 +458,19 @@ namespace
         }
         return {false, limit};
     }
+    void AdvanceDITROnce(O::FieldDITR &method, Field &endpoint)
+    {
+        auto defect = O::FieldTimeOperations::NewVector(endpoint);
+        for (int coupledStage = 0; coupledStage < 2; ++coupledStage)
+        {
+            const auto equation = method.PrepareCoupledStage(endpoint, coupledStage);
+            const auto &c = equation.coefficients;
+            c.AssembleResidual<O::FieldTimeOperations>(defect, equation.resOther, equation.state, method.CurrentRate());
+            A::Fill(equation.state, Value(equation.state) + Value(defect) / (c.inverseDt + 2 * c.rhsScale));
+            method.CompleteCoupledStage(endpoint, Evaluate());
+        }
+        method.AssembleStoppingResidual(endpoint, defect);
+    }
 }
 TEST_CASE("Public DITR converges to the independent original two-equation dense oracle")
 {
@@ -553,4 +608,21 @@ TEST_CASE("Time facade reserves DITR publication while the external controller o
                                { return false; }));
     CHECK_FALSE(fresh->HasPendingTrial());
     CHECK(Value(state) == expected);
+}
+TEST_CASE("Time facade restores DITR coupled state at a completed iteration boundary")
+{
+    const A::DofSpace space(1);
+    Field initial(space, 1), trial(space, 1), restoredTrial(space, 1);
+    A::Fill(initial, .7);
+    O::FieldTimeStepper original(initial, "ditr"), restored(initial, "ditr");
+    original.CoupledMethod().Begin(initial, trial, .3, .2, Evaluate());
+    AdvanceDITROnce(original.CoupledMethod(), trial);
+    const auto checkpoint = original.CaptureActive(trial);
+    restored.RestoreActive(checkpoint, restoredTrial);
+    CHECK(Value(restoredTrial) == Value(trial));
+    const auto solve = [](auto &method, auto &endpoint)
+    { return SolveDITR(method, endpoint).converged; };
+    REQUIRE(original.ResumeCoupled(trial, solve));
+    REQUIRE(restored.ResumeCoupled(restoredTrial, solve));
+    CHECK(Value(restoredTrial) == Value(trial));
 }

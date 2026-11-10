@@ -4,6 +4,7 @@
 #include "Solver/TimeIntegration/DITRMethod.hpp"
 #include "Solver/TimeIntegration/SerializedMethods.hpp"
 #include <functional>
+#include <algorithm>
 #include <optional>
 #include <limits>
 #include <type_traits>
@@ -50,6 +51,23 @@ namespace DNDS::ODE
             const int stage;
             const bool implicit;
         };
+        /// Deep, backend-agnostic payload captured only at a nonlinear
+        /// iteration boundary. Runtime handles/leases are deliberately absent;
+        /// restore recreates bindings against the caller-provided trial.
+        struct ActiveCheckpoint
+        {
+            int schemaVersion = 1;
+            std::string method;
+            real pendingDt = 0, startTime = 0;
+            bool pendingSteady = false, stagesActive = false, stagePrepared = false;
+            int nextStage = 0;
+            TimeEquationCoefficients equation;
+            bool bdfHistory = false;
+            real bdfPreviousDt = 0;
+            real ditrTime = 0, ditrDt = 0;
+            std::vector<std::string> names;
+            std::vector<Field> fields;
+        };
 
     private:
         std::shared_ptr<const uint8_t> _session = std::make_shared<const uint8_t>(0);
@@ -63,6 +81,7 @@ namespace DNDS::ODE
         DITRSettings _ditrSettings;
         std::unique_ptr<DITR> _ditr;
         bool _stagesActive = false, _stagePrepared = false;
+        std::optional<TimeEquationCoefficients> _preparedEquation;
         using Binding = typename Operations::Binding;
         std::optional<Binding> _preparedSource, _preparedState;
         int _nextStage = 0;
@@ -103,6 +122,12 @@ namespace DNDS::ODE
                 DNDS_check_throw_info(_preparedState, "time stage has no reserved state binding");
                 _preparedState->Check(trial);
                 if (_preparedSource) _preparedSource->Check(Source(), true); });
+        }
+        static Field Clone(const Field &source)
+        {
+            auto result = Operations::NewVector(source);
+            Operations::Copy(result, source);
+            return result;
         }
 
     public:
@@ -184,6 +209,7 @@ namespace DNDS::ODE
                 _preparedState.emplace(trial);
                 if (implicit) _preparedSource.emplace(Source()); else _preparedSource.reset(); });
             _stagePrepared = true;
+            _preparedEquation = coefficients;
             return StageEquation(_session, ++_stageGeneration, coefficients.inverseDt, coefficients.rhsScale, coefficients.time, stage, implicit);
         }
         /// Synchronous source borrow, validated before and after the solver.
@@ -218,6 +244,7 @@ namespace DNDS::ODE
             }
             _preparedSource.reset();
             _preparedState.reset();
+            _preparedEquation.reset();
             _stagePrepared = false;
             if (++_nextStage == StageNumber())
             {
@@ -299,6 +326,7 @@ namespace DNDS::ODE
                 _ditr->Discard();
             _preparedSource.reset();
             _preparedState.reset();
+            _preparedEquation.reset();
         }
         /// After an externally replaced state or incompatible restart, take a
         /// BDF1 startup step rather than silently consuming stale history.
@@ -314,6 +342,124 @@ namespace DNDS::ODE
             DNDS_check_throw_info(_bdf, "this time method cannot restore BDF history");
             Discard();
             _bdf->RestoreHistory(previous, dt);
+        }
+
+        ActiveCheckpoint CaptureActive(const Field &trial) const
+        {
+            ActiveCheckpoint checkpoint;
+            checkpoint.method = _method;
+            checkpoint.pendingDt = _pendingDt;
+            checkpoint.startTime = _startTime;
+            checkpoint.pendingSteady = _pendingSteady;
+            const auto append = [&](const std::string &name, const Field &field)
+            {
+                checkpoint.names.push_back(name);
+                checkpoint.fields.push_back(Clone(field));
+            };
+            RunLocal([&]
+                     {
+                Check(trial);
+                append("trial", trial);
+                if (_ditr)
+                {
+                    const auto control = _ditr->CheckpointControl();
+                    checkpoint.ditrTime = control.time;
+                    checkpoint.ditrDt = control.dt;
+                    append("ditr_initial", _ditr->InitialState());
+                    append("ditr_middle", _ditr->IntermediateState());
+                    append("ditr_initial_rate", _ditr->InitialRate());
+                    append("ditr_middle_rate", _ditr->IntermediateRate());
+                    append("ditr_end_rate", _ditr->EndpointRate());
+                    append("ditr_res_other", _ditr->ResidualOther());
+                    return;
+                }
+                DNDS_check_throw_info(_stagesActive && _stagePrepared && _preparedEquation,
+                                      "serialized time checkpoint needs an active prepared stage");
+                checkpoint.stagesActive = _stagesActive;
+                checkpoint.stagePrepared = _stagePrepared;
+                checkpoint.nextStage = _nextStage;
+                checkpoint.equation = *_preparedEquation;
+                if (_bdf)
+                {
+                    checkpoint.bdfHistory = _bdf->HasHistory();
+                    checkpoint.bdfPreviousDt = _bdf->PreviousDt();
+                    append("time_initial", _bdf->InitialState());
+                    append("time_source", _bdf->PreparedSource());
+                    append("bdf_previous", _bdf->PreviousStorage());
+                }
+                else
+                {
+                    append("time_initial", _dirk->InitialState());
+                    append("time_source", _dirk->Source());
+                    for (index stage = 0; stage < index(_dirk->Rates().size()); ++stage)
+                        append("dirk_rate_" + std::to_string(stage), _dirk->Rates()[size_t(stage)]);
+                } });
+            return checkpoint;
+        }
+
+        void RestoreActive(const ActiveCheckpoint &checkpoint, Field &trial)
+        {
+            RunLocal([&]
+                     {
+                DNDS_check_throw_info(checkpoint.schemaVersion == 1 && checkpoint.method == _method &&
+                                          checkpoint.names.size() == checkpoint.fields.size(),
+                                      "time checkpoint method or payload schema differs");
+                const auto payload = [&](const std::string &name) -> const Field &
+                {
+                    const auto found = std::find(checkpoint.names.begin(), checkpoint.names.end(), name);
+                    DNDS_check_throw_info(found != checkpoint.names.end(), "time checkpoint payload is missing: " + name);
+                    return checkpoint.fields[size_t(found - checkpoint.names.begin())];
+                };
+                Operations::Copy(trial, payload("trial"));
+                Discard();
+                _pendingDt = checkpoint.pendingDt;
+                _startTime = checkpoint.startTime;
+                _pendingSteady = checkpoint.pendingSteady;
+                if (_ditr)
+                {
+                    _ditr->RestoreActive(trial, {checkpoint.ditrTime, checkpoint.ditrDt},
+                                         payload("ditr_initial"), payload("ditr_middle"),
+                                         payload("ditr_initial_rate"), payload("ditr_middle_rate"),
+                                         payload("ditr_end_rate"), payload("ditr_res_other"));
+                    return;
+                }
+                DNDS_check_throw_info(checkpoint.stagesActive && checkpoint.stagePrepared &&
+                                          checkpoint.nextStage >= 0 && checkpoint.nextStage < StageNumber(),
+                                      "serialized time checkpoint has no prepared stage");
+                checkpoint.equation.Validate();
+                if (_bdf)
+                    _bdf->RestoreActive(payload("time_initial"), payload("bdf_previous"), payload("time_source"),
+                                        checkpoint.bdfHistory, checkpoint.bdfPreviousDt);
+                else
+                {
+                    std::vector<std::reference_wrapper<const Field>> rates;
+                    for (index stage = 0; stage < index(_dirk->Rates().size()); ++stage)
+                        rates.push_back(std::cref(payload("dirk_rate_" + std::to_string(stage))));
+                    _dirk->RestoreActive(payload("time_initial"), payload("time_source"), rates);
+                }
+                _stagesActive = true;
+                _stagePrepared = true;
+                _nextStage = checkpoint.nextStage;
+                _preparedEquation = checkpoint.equation;
+                _preparedState.emplace(trial);
+                _preparedSource.emplace(Source());
+                _session = std::make_shared<const uint8_t>(0);
+                ++_stageGeneration; });
+        }
+
+        StageEquation RestoredStageEquation() const
+        {
+            DNDS_check_throw_info(!_ditr && _stagesActive && _stagePrepared && _preparedEquation,
+                                  "time stepper has no restored serialized stage");
+            return StageEquation(_session, _stageGeneration, _preparedEquation->inverseDt,
+                                 _preparedEquation->rhsScale, _preparedEquation->time,
+                                 _nextStage, true);
+        }
+        bool ResumeCoupled(Field &trial, const SolveCoupled &coupled)
+        {
+            DNDS_check_throw_info(_ditr && coupled && !_pending, "time stepper has no restorable coupled solve");
+            _pending = coupled(*_ditr, trial);
+            return _pending;
         }
     };
 }

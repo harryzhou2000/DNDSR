@@ -25,6 +25,10 @@ namespace DNDS::ODE
     class DITRMethod
     {
     public:
+        struct ActiveControl
+        {
+            real time = 0, dt = 0;
+        };
         using Evaluate = std::function<void(State &, State &, real, int)>;
         using LocalAction = std::function<void(const std::function<void()> &)>;
 
@@ -76,6 +80,18 @@ namespace DNDS::ODE
         /// Stable storage for binding an independent physical-stage workspace.
         /// Caller may write its owned values only through a prepared equation.
         State &IntermediateState() { return _middle; }
+        const State &IntermediateState() const { return _middle; }
+        const State &InitialState() const { return _initial; }
+        const State &InitialRate() const { return _initialRate; }
+        const State &IntermediateRate() const { return _middleRate; }
+        const State &EndpointRate() const { return _endRate; }
+        const State &ResidualOther() const { return _resOther; }
+        ActiveControl CheckpointControl() const
+        {
+            DNDS_check_throw_info(_active && !_prepared && _nextCoupledStage == 0,
+                                  "DITR checkpoint needs a completed coupled-iteration boundary");
+            return {_time, _dt};
+        }
         /// The physical RHS selected by this method for its prepared equation.
         /// In the first iteration this is the initial-time guess; subsequently
         /// it is the refreshed rate of this stage from the preceding update.
@@ -178,6 +194,34 @@ namespace DNDS::ODE
                 Operations::Axpy(residual, w[0] + c[2], _initialRate);
                 Operations::Axpy(residual, w[1], _middleRate);
                 Operations::Axpy(residual, w[2] + c[3], _endRate); });
+            _nextCoupledStage = 0;
+        }
+        void RestoreActive(State &endpoint, ActiveControl control,
+                           const State &initial, const State &middle,
+                           const State &initialRate, const State &middleRate,
+                           const State &endRate, const State &resOther)
+        {
+            Discard();
+            Local([&]
+                  {
+                DNDS_check_throw_info(std::isfinite(control.time) && std::isfinite(control.dt) &&
+                                          control.dt > 0 && std::isfinite(1 / control.dt) &&
+                                          std::isfinite(control.time + control.dt) && control.time + control.dt > control.time,
+                                      "invalid restored DITR control");
+                Operations::CheckCompatible(_initial, endpoint);
+                Operations::RequireDistinct(_middle, endpoint);
+                Operations::Copy(_initial, initial);
+                Operations::Copy(_middle, middle);
+                Operations::Copy(_initialRate, initialRate);
+                Operations::Copy(_middleRate, middleRate);
+                Operations::Copy(_endRate, endRate);
+                Operations::Copy(_resOther, resOther);
+                _endpointBinding.emplace(endpoint); });
+            _time = control.time;
+            _dt = control.dt;
+            _inverseDt = 1 / control.dt;
+            _active = true;
+            _prepared = false;
             _nextCoupledStage = 0;
         }
         /// Caller commits its endpoint only after acceptance/publication. No

@@ -35,7 +35,11 @@ namespace DNDS::ODE
             return coefficients.equation;
         }
         bool HasHistory() const { return _history; }
+        int Order() const { return _order; }
         real PreviousDt() const { return _previousDt; }
+        const State &InitialState() const { return _initial; }
+        const State &PreparedSource() const { return _source; }
+        const State &PreviousStorage() const { return _previous; }
         const State &PreviousState() const
         {
             DNDS_check_throw_info(_history, "no accepted BDF history");
@@ -64,6 +68,17 @@ namespace DNDS::ODE
             _previousDt = dt;
             _history = true;
         }
+        void RestoreActive(const State &initial, const State &previous, const State &source,
+                           bool history, real previousDt)
+        {
+            DNDS_check_throw_info(!history || (std::isfinite(previousDt) && previousDt > 0),
+                                  "invalid active BDF history");
+            Operations::Copy(_initial, initial);
+            Operations::Copy(_previous, previous);
+            Operations::Copy(_source, source);
+            _history = history;
+            _previousDt = history ? previousDt : 0;
+        }
     };
 
     /// DIRK-owned initial state, resOther and completed-stage RHS cache. No
@@ -88,6 +103,8 @@ namespace DNDS::ODE
         bool Implicit(int stage) const { return _tableau.a.at(stage).at(stage) != 0; }
         real StageTime(int stage, real time, real dt) const { return time + _tableau.c.at(stage) * dt; }
         const State &Source() const { return _source; }
+        const State &InitialState() const { return _initial; }
+        const std::vector<State> &Rates() const { return _rates; }
         State &Rate(int stage) { return _rates.at(stage); }
         void Begin(const State &initial) { Operations::Copy(_initial, initial); }
         TimeEquationCoefficients Prepare(State &trial, int stage, real time, real dt)
@@ -107,6 +124,15 @@ namespace DNDS::ODE
                         Operations::Axpy(_source, _tableau.a[stage][previous], _rates[previous]);
             }
             return {implicit ? inverseDt : 0, _tableau.a[stage][stage], StageTime(stage, time, dt)};
+        }
+        void RestoreActive(const State &initial, const State &source,
+                           const std::vector<std::reference_wrapper<const State>> &rates)
+        {
+            DNDS_check_throw_info(rates.size() == _rates.size(), "DIRK checkpoint rate count differs");
+            Operations::Copy(_initial, initial);
+            Operations::Copy(_source, source);
+            for (index stage = 0; stage < index(_rates.size()); ++stage)
+                Operations::Copy(_rates[size_t(stage)], rates[size_t(stage)].get());
         }
     };
 }
