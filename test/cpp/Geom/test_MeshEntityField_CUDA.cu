@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "MeshFacadeOverlapFixture.hpp"
 #include "Geom/Access/EntityField.hpp"
+#include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include <cuda_runtime.h>
 #include <atomic>
 #include <cstdlib>
@@ -188,6 +189,8 @@ TEST_CASE("Native EntityField CUDA scopes and direct multi-GPU halo retain check
     mpi.setWorld();
     REQUIRE(mpi.size >= 2);
     const int ordinal = SelectGPU(mpi);
+    R::EagerEngine engine;
+    auto migration = engine.CreateStream(std::make_shared<R::CUDALauncher>(ordinal));
     Stream compute, communication;
     REQUIRE(cudaStreamCreateWithFlags(&compute.value, cudaStreamNonBlocking) == cudaSuccess);
     REQUIRE(cudaStreamCreateWithFlags(&communication.value, cudaStreamNonBlocking) == cudaSuccess);
@@ -249,7 +252,7 @@ TEST_CASE("Native EntityField CUDA scopes and direct multi-GPU halo retain check
     G::ReorderInput input;
     input.explicitMaps.push_back({G::EntityKind::Cell,
                                   std::vector<DNDS::MPI_int>(size_t(space.NumOwned()), (mpi.rank + 1) % mpi.size)});
-    auto registration = field.Register("cuda.entity.state");
+    auto registration = field.Register("cuda.entity.state", {}, migration);
     auto prepared = G::PreparedMeshTransition::Prepare(handle, input, {registration});
     CHECK_THROWS(field.Write(space, context)); // Prepared values retain the source read.
     prepared.Publish();

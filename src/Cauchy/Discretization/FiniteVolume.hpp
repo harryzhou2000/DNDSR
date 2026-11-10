@@ -432,6 +432,7 @@ namespace DNDS::Cauchy
                              std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
                              const EquationWorkspace *sourceReconstruction = nullptr) const;
         FiniteVolume(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const EquationSystem &equation);
+        bool SharesPlan(const FiniteVolume &other) const { return _data && _data == other._data; }
         const CFV::FiniteVolumePlan &Metrics() const;
         /// Bind through the metric space with this domain's explicit MPI
         /// launch policy. Setup remains collective in either policy.
@@ -567,11 +568,11 @@ namespace DNDS::Cauchy
         /// Release views before Evaluate.
         /// Domain rollback/observations/warm restart preserve this with the VR
         /// guess. RestoreReconstructionGuess restores both or cold-starts history.
-        const Runtime::Array<real> *LimitedVRHistory(const Workspace &workspace) const;
+        std::optional<Runtime::Array<real>> LimitedVRHistory(const Workspace &workspace) const;
         /// Most recent RHS's frozen alpha, not persistent restart state. It is
         /// overwritten by Evaluate and cleared by ResetReconstruction; a warm
         /// history restore does not prepare a new alpha. Same borrowing rules.
-        const Runtime::Array<real> *LimitedVRAlpha(const Workspace &workspace) const;
+        std::optional<Runtime::Array<real>> LimitedVRAlpha(const Workspace &workspace) const;
         /// Integrated d(V*U)/dt, owned rows only. Mean/rec/gradient exchanges are
         /// explicit inside this domain-level routine; numerical kernels use
         /// owned-only core inputs while ghost transfers are active. The caller
@@ -648,7 +649,7 @@ namespace DNDS::Cauchy
         /// Explicit mean/face/cell outputs of this workspace's last Evaluate.
         /// Only flux-required stencil channels are present. Cell ghosts are
         /// refreshed from owners using the field's canonical mapping.
-        const AuxiliaryValues &PreparedAuxValues(const Workspace &workspace) const;
+        AuxiliaryValues PreparedAuxValues(const Workspace &workspace) const;
         /// Synchronous correction preparation when the time method already
         /// supplies a physical RHS cache. Refresh means and auxiliary values,
         /// without advancing reconstruction, limiter history or evaluating RHS.

@@ -653,6 +653,12 @@ treat a failed partial packet as a valid cache. A controlled worker/rejection te
 checks joining, explicit failed-buffer reuse rejection and recovery with fresh
 scratch, without intentionally executing a dangling reference.
 
+Flow5 workspaces retain a weak reference to their actual discretization plan
+for identity validation. Managed entry points lock and compare it against their
+own retained plan before use; a copied plan handle remains compatible, while a
+foreign or expired plan is rejected. Raw address reuse cannot make stale scratch
+belong to a new plan. These checks stay outside numerical row loops.
+
 `ValidateAuxValues` checks source allocation/value/shape generations, the
 prepared geometry plan, boundary time, and output presence/owned generations.
 Cell outputs must also retain the plan's DOF row identity, even when their owned

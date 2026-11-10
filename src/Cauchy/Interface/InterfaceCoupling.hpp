@@ -2,17 +2,15 @@
 
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Interface/InterfaceDiagnostics.hpp"
+#include "CFV/Plans/DistributedInterfaceSamplingPlan.hpp"
 
 namespace DNDS::Cauchy
 {
-    /// Borrowed synchronous sampling inputs. Nonmembers provide null pointers;
-    /// participating domains provide native fields with completed halos. The
-    /// caller retains their owners and releases conflicting writers throughout
-    /// Refresh. Kernels never follow these host pointers on a device.
+    /// Optional sharing donor bundle. Nonmembers leave values empty; all
+    /// coupling ranks still enter the same matching schedule.
     struct InterfaceDomainInput
     {
-        const FiniteVolume *discrete = nullptr;
-        const CFV::FVField *mean = nullptr, *coefficients = nullptr;
+        std::optional<CFV::DonorInputs> values;
     };
 
     /// Physical adapter over Geom matching and CFV point interpolation. It owns
@@ -26,14 +24,18 @@ namespace DNDS::Cauchy
         std::shared_ptr<Data> _data;
 
     public:
-        InterfaceCoupling(const SimulationConfig &config, MPI_Comm coupling,
-                          const std::vector<const FiniteVolume *> &localDomains);
+        InterfaceCoupling(const InterfaceCoupling &) = delete;
+        InterfaceCoupling &operator=(const InterfaceCoupling &) = delete;
+        InterfaceCoupling(InterfaceCoupling &&) noexcept = default;
+        InterfaceCoupling &operator=(InterfaceCoupling &&) noexcept = default;
+        InterfaceCoupling(const SimulationConfig &config, std::shared_ptr<Runtime::CommunicationContext> coupling,
+                          const std::vector<std::optional<FiniteVolume>> &localDomains);
         /// Rebuild maps only when stage-time poses change. Two refreshes at one
         /// time reuse the exact map, sampling workspace and persistent return
         /// binding. Source inputs are frozen for the complete round before any
         /// receiver packet is published, preserving block-Jacobi semantics.
         void Refresh(const std::vector<InterfaceDomainInput> &domains, real time, StateEpoch epoch);
-        const BoundaryInputs *Inputs(index domain) const;
+        std::optional<BoundaryInputs> Inputs(index domain) const;
         /// Collective diagnostic reduction on the coupling communicator.
         /// Does not refresh traces, synchronize kernels or mutate trajectories.
         InterfaceDiagnostics Diagnostics() const;

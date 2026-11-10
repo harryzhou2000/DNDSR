@@ -36,13 +36,16 @@ operation.WaitDestinationReady();
 operation.Wait();
 ```
 
-CommunicationContext collectively duplicates a communicator once. Reusing it
-for routes/bindings avoids per-binding duplication. Tags are explicit matched
-protocol IDs, reserved until a binding and its active operation retire. Two
-live bindings cannot reserve the same tag in one context. There is no automatic
-rank-local tag sequence. All collective preparation and Begin preflights must
-occur in matching participant order, including for independent fields.
-Default options preserve an isolated communicator and persistent requests.
+CommunicationContext explicitly adopts or duplicates a communicator once.
+Default bindings inherit the route's actual context and persistent requests.
+During setup they agree `TransferOptions::channel`, then reserve a tag unused on
+every participating rank. This handles differences in old-binding retirement
+timing without a rank-local counter deciding matching. The tag stays fixed through
+binding/request retirement. Callers must still construct named protocol instances
+in matching order; repeated names are legal and get separate live reservations.
+Explicit `context`/`tag` retains the fixed-tag API. `isolatedNamespace=true`
+deliberately duplicates at setup and cannot also select a shared context.
+No tag negotiation or new collective is added to Begin or steady halo exchange.
 
 Launch validation is independent of persistent/transient request lifetime.
 `TransferOptions::preflight` defaults to `TransferPreflight::Inherit`, which

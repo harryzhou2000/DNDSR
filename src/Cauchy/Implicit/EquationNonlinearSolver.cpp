@@ -16,9 +16,9 @@ namespace DNDS::Cauchy
     namespace R = Runtime;
     struct EquationNonlinearSolver::Data
     {
+        R::SessionAccess session;
         FiniteVolume discrete;
         std::shared_ptr<FiniteVolume::EquationWorkspace> workspace;
-        R::EagerEngine *engine;
         R::ExecutionStream stream;
         ImplicitSettings settings;
         MPIInfo mpi;
@@ -43,7 +43,7 @@ namespace DNDS::Cauchy
         Data(const FiniteVolume &fv, EquationDofs &state, std::shared_ptr<FiniteVolume::EquationWorkspace> work,
              R::EagerEngine &executor, R::ExecutionStream lane, const DomainSettings &controls, ImplicitSettings implicit,
              std::optional<Physics::Chemistry::ChemicalWorkerPool> pool)
-            : discrete(fv), workspace(std::move(work)), engine(&executor), stream(std::move(lane)), settings(std::move(implicit)),
+            : discrete(fv), workspace(std::move(work)), stream(std::move(lane)), settings(std::move(implicit)),
               mpi(fv.Metrics().Communicator()), binding(state), spatial(EquationDofOperations::NewVector(state)),
               defect(EquationDofOperations::NewVector(state)), candidate(EquationDofOperations::NewVector(state)),
               inversePseudoTime(R::RowLayout::Dense(fv.Metrics().NumCell(), 1)), workers(std::move(pool)),
@@ -64,6 +64,7 @@ namespace DNDS::Cauchy
                                 workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{});
             if (fv.Equation().HasRANS())
                 rans.emplace(ResolveRANSStatePolicy(fv.Equation(), controls.numerics.ransState));
+            DNDS_check_throw_info(executor.Owns(stream), "nonlinear solver stream belongs to another runtime");
             rhsFPPReduction = settings.positivity.rhsFPPReduction == "cell" ? AlphaReduction::Cell : settings.positivity.rhsFPPReduction == "minimumLimited" ? AlphaReduction::MinimumLimited
                                                                                                                                                              : AlphaReduction::MinimumAll;
             if (positivity && settings.positivity.rhsFPPMode != "none" && rhsFPPReduction != AlphaReduction::Cell)
@@ -213,7 +214,10 @@ namespace DNDS::Cauchy
     }
     void EquationNonlinearSolver::EvaluateRate(EquationDofs &state, EquationDofs &rate, real time)
     {
+        DNDS_check_throw_info(_data, "nonlinear session was moved");
+        auto session = _data->session.Acquire(_nestedSession.lock());
         auto &data = *_data;
+        auto engine = data.stream.LockEngine();
         data.Stage([&]
                    {
             data.binding.Check(state);
@@ -221,7 +225,7 @@ namespace DNDS::Cauchy
             for (const auto *input : {&state, &data.spatial})
                 EquationDofOperations::RequireDistinct(*input, rate);
             auto write = rate.WriteOwned(); write.CancelUnmodified(); });
-        data.discrete.Evaluate(state, data.spatial, *data.workspace, data.auxiliary, *data.engine, data.stream, time);
+        data.discrete.Evaluate(state, data.spatial, *data.workspace, data.auxiliary, engine, data.stream, time);
         data.PublishAuxiliary(state, time);
         data.Stage([&]
                    {
@@ -237,7 +241,7 @@ namespace DNDS::Cauchy
                 for (index j = 0; j < input.ComponentNumber(); ++j)
                     output(iCell, j) = input(iCell, j) / metric.GetCellVol(iCell); });
     }
-    const AuxiliaryValues &EquationNonlinearSolver::PreparedAuxValues() const
+    AuxiliaryValues EquationNonlinearSolver::PreparedAuxValues() const
     {
         DNDS_check_throw_info(_data->auxiliaryState, "equation auxiliary values have not been prepared");
         return _data->auxiliary;
@@ -245,7 +249,10 @@ namespace DNDS::Cauchy
     EquationNonlinearIterationReport EquationNonlinearSolver::Execute(EquationDofs &state, const EquationDofs &source,
                                                                       real mass, real rhsScale, real time, int stage, NonlinearSolveControl control, bool singleCorrection, const EquationDofs *cachedRate)
     {
+        DNDS_check_throw_info(_data, "nonlinear session was moved");
+        auto session = _data->session.Acquire(_nestedSession.lock());
         auto &data = *_data;
+        auto engine = data.stream.LockEngine();
         if (control.profile)
             *control.profile = {};
         const NonlinearDetail::PhaseTimer total(control.profile, NonlinearProfile::Total);
@@ -289,7 +296,7 @@ namespace DNDS::Cauchy
         {
             if (!cachedRate)
             {
-                data.discrete.Evaluate(state, data.spatial, *data.workspace, data.auxiliary, *data.engine, data.stream, time);
+                data.discrete.Evaluate(state, data.spatial, *data.workspace, data.auxiliary, engine, data.stream, time);
                 data.PublishAuxiliary(state, time);
                 return;
             }
@@ -299,7 +306,7 @@ namespace DNDS::Cauchy
             // Collective callers must make this cache choice consistently.
             if (!data.AuxiliaryCurrent(state, time))
             {
-                data.discrete.PrepareCorrectionAux(state, *data.workspace, data.auxiliary, *data.engine, data.stream, time);
+                data.discrete.PrepareCorrectionAux(state, *data.workspace, data.auxiliary, engine, data.stream, time);
                 data.PublishAuxiliary(state, time);
             }
             data.Stage([&]
@@ -431,7 +438,7 @@ namespace DNDS::Cauchy
                     DNDS_check_throw_info(report.lastLinear.usable, "equation implicit linear correction is unusable");
                 }
                 const NonlinearDetail::PhaseTimer timer(control.profile, NonlinearProfile::Correction);
-                const auto result = ApplyCorrection(state, data.linear->Solution(), data.settings.relaxation, selection.Indices());
+                const auto result = ApplyCorrectionImpl(state, data.linear->Solution(), data.settings.relaxation, selection.Indices());
                 if (data.positivity)
                 {
                     report.rhsLimited += rhsLimited; report.minimumRHSAlpha = std::min(report.minimumRHSAlpha, rhsAlpha);
@@ -467,9 +474,10 @@ namespace DNDS::Cauchy
     {
         return _data->reconstructionTolerance;
     }
-    std::pair<index, real> EquationNonlinearSolver::ApplyCorrection(EquationDofs &state, const EquationDofs &increment, real scale,
-                                                                    const std::vector<index> &updateComponents)
+    std::pair<index, real> EquationNonlinearSolver::ApplyCorrectionImpl(EquationDofs &state, const EquationDofs &increment, real scale,
+                                                                        const std::vector<index> &updateComponents)
     {
+        DNDS_check_throw_info(_data, "nonlinear session was moved");
         auto &data = *_data;
         index limited = 0;
         real minimum = 1;
@@ -611,7 +619,10 @@ namespace DNDS::Cauchy
     }
     void EquationNonlinearSolver::EvaluateEquation(EquationDofs &state, EquationDofs &value, real mass, real rhsScale, real time, EquationDofs *rate)
     {
+        DNDS_check_throw_info(_data, "nonlinear session was moved");
+        auto session = _data->session.Acquire(_nestedSession.lock());
         auto &data = *_data;
+        auto engine = data.stream.LockEngine();
         data.Stage([&]
                    {
             data.binding.Check(state);
@@ -626,7 +637,7 @@ namespace DNDS::Cauchy
                     EquationDofOperations::RequireDistinct(*input, *rate);
                 auto rateWrite = rate->WriteOwned(); rateWrite.CancelUnmodified();
             } });
-        data.discrete.Evaluate(state, data.spatial, *data.workspace, data.auxiliary, *data.engine, data.stream, time);
+        data.discrete.Evaluate(state, data.spatial, *data.workspace, data.auxiliary, engine, data.stream, time);
         data.PublishAuxiliary(state, time);
         data.Stage([&]
                    {
@@ -647,4 +658,18 @@ namespace DNDS::Cauchy
                     if (rate) spatialRate(iCell, j) = rateValue;
                 } });
     }
+    R::SessionAccess::Lease EquationNonlinearSolver::ReserveForMultigrid()
+    {
+        DNDS_check_throw_info(_data, "nonlinear session was moved");
+        auto lease = _data->session.Acquire();
+        _nestedSession = lease;
+        return lease;
+    }
+    std::pair<index, real> EquationNonlinearSolver::ApplyCorrection(EquationDofs &state, const EquationDofs &increment, real scale, const std::vector<index> &components)
+    {
+        DNDS_check_throw_info(_data, "nonlinear session was moved");
+        auto lease = _data->session.Acquire(_nestedSession.lock());
+        return ApplyCorrectionImpl(state, increment, scale, components);
+    }
+
 }

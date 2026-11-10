@@ -4,6 +4,7 @@
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "Cauchy/Core/LocalStage.hpp"
 #include "DNDS/MPI/Failure.hpp"
+#include "DNDS/Runtime/Execution/SessionAccess.hpp"
 #include <array>
 #include <optional>
 #include <utility>
@@ -663,10 +664,12 @@ namespace DNDS::Cauchy
     }
     struct LinearSolver::Data : StateLinearSolverData<FieldLinearOperations>
     {
+        Runtime::SessionAccess session;
         using StateLinearSolverData::StateLinearSolverData;
     };
     struct EquationLinearSolver::Data : StateLinearSolverData<EquationLinearOperations>
     {
+        Runtime::SessionAccess session;
         using StateLinearSolverData::StateLinearSolverData;
     };
     LinearSolver::LinearSolver(std::shared_ptr<LinearProblemContext> problem, const Field &prototype, const HaloBinder &bindHalo,
@@ -675,12 +678,12 @@ namespace DNDS::Cauchy
     EquationLinearSolver::EquationLinearSolver(std::shared_ptr<LinearProblemContext> problem, const EquationDofs &prototype, const HaloBinder &bindHalo,
                                                LinearSolveSettings settings, LinearExecution execution)
         : _data(PrepareSolver<Data>(std::move(problem), prototype, bindHalo, std::move(settings), execution)) {}
-    const LinearSolver::Field &LinearSolver::Solution() const
+    LinearSolver::Field LinearSolver::Solution() const
     {
         DNDS_check_throw_info(_data, "linear solver was moved");
         return _data->Solution();
     }
-    const EquationDofs &EquationLinearSolver::Solution() const
+    EquationDofs EquationLinearSolver::Solution() const
     {
         DNDS_check_throw_info(_data, "linear solver was moved");
         return _data->Solution();
@@ -688,11 +691,13 @@ namespace DNDS::Cauchy
     Linear::LinearIterationReport LinearSolver::Solve(const Field &rhs, const Field *initialGuess, const std::vector<real> &componentScales)
     {
         DNDS_check_throw_info(_data, "linear solver was moved");
+        auto session = _data->session.Acquire();
         return _data->Solve(rhs, initialGuess, componentScales);
     }
     Linear::LinearIterationReport EquationLinearSolver::Solve(const EquationDofs &rhs, const EquationDofs *initialGuess, const std::vector<real> &componentScales)
     {
         DNDS_check_throw_info(_data, "linear solver was moved");
+        auto session = _data->session.Acquire();
         return _data->Solve(rhs, initialGuess, componentScales);
     }
 }

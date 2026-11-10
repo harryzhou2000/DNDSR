@@ -1,6 +1,7 @@
 #include "Cauchy/Interface/InterfaceCoupling.hpp"
 #include "CFV/Plans/DistributedInterfaceSamplingPlan.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include <mutex>
 
 namespace DNDS::Cauchy
 {
@@ -28,6 +29,19 @@ namespace DNDS::Cauchy
             std::optional<R::TransferBinding> result;
             std::vector<index> lastDonors;
         };
+        mutable std::mutex operationMutex;
+        // One controller operation at a time; do not wait behind an MPI path.
+        // Commit/discard remain allocation-free, nonthrowing publication.
+        std::unique_lock<std::mutex> Enter(bool publication = false) const
+        {
+            std::unique_lock<std::mutex> lock(operationMutex, std::try_to_lock);
+            if (publication)
+                DNDS_assert_info(lock.owns_lock(), "concurrent interface publication");
+            else
+                DNDS_check_throw_info(lock.owns_lock(), "interface coupling already has an active operation");
+            return lock;
+        }
+        std::shared_ptr<R::CommunicationContext> control;
         MPIInfo mpi;
         std::vector<std::optional<FiniteVolume>> discrete;
         std::vector<RigidMotion> motion;
@@ -38,13 +52,18 @@ namespace DNDS::Cauchy
         index changedDonors = 0;
         uint64_t mapBuilds = 0;
         real maximumGap = 0;
-        explicit Data(MPI_Comm comm) : mpi(comm) {}
+        explicit Data(std::shared_ptr<R::CommunicationContext> owner) : control(std::move(owner))
+        {
+            DNDS_check_throw_info(control, "interface coupling requires an owning communication context");
+            mpi = MPIInfo(control->Communicator());
+        }
     };
-    InterfaceCoupling::InterfaceCoupling(const SimulationConfig &config, MPI_Comm coupling,
-                                         const std::vector<const FiniteVolume *> &localDomains)
-        : _data(std::make_shared<Data>(coupling))
+    InterfaceCoupling::InterfaceCoupling(const SimulationConfig &config, std::shared_ptr<R::CommunicationContext> context,
+                                         const std::vector<std::optional<FiniteVolume>> &localDomains)
+        : _data(std::make_shared<Data>(std::move(context)))
     {
         auto &data = *_data;
+        const auto coupling = data.mpi.comm;
         MPI::LocalStage(data.mpi, [&]
                         {
             DNDS_check_throw_info(localDomains.size()==config.Domains().size(),"interface domain descriptor count differs");
@@ -70,7 +89,9 @@ namespace DNDS::Cauchy
             };
             connection.donor = domainIndex(settings.donor);
             connection.receiver = domainIndex(settings.receiver);
-            connection.context = std::make_shared<R::CommunicationContext>(coupling);
+            // Independent connection protocols intentionally isolate their
+            // query/result namespaces; this is not a lifetime-only duplication.
+            connection.context = R::CommunicationContext::Duplicate(coupling);
             // Patch construction is domain-collective. A local exception must
             // propagate to the fatal boundary, not to a coupling reduction
             // while another donor rank is still constructing the patch.
@@ -95,20 +116,27 @@ namespace DNDS::Cauchy
             data.connections.push_back(std::move(connection));
         }
     }
-    const BoundaryInputs *InterfaceCoupling::Inputs(index domain) const
+    std::optional<BoundaryInputs> InterfaceCoupling::Inputs(index domain) const
     {
+        auto session = _data->Enter();
         DNDS_check_throw_info(domain >= 0 && domain < index(_data->incoming.size()), "invalid interface receiver domain");
         const auto &packets = _data->useAccepted ? _data->accepted : _data->incoming;
-        return packets[domain] ? &*packets[domain] : nullptr;
+        return packets[domain];
     }
     void InterfaceCoupling::Commit() noexcept
     {
+        auto session = _data->Enter(true);
         _data->incoming.swap(_data->accepted);
         _data->useAccepted = true;
     }
-    void InterfaceCoupling::Discard() noexcept { _data->useAccepted = true; }
+    void InterfaceCoupling::Discard() noexcept
+    {
+        auto session = _data->Enter(true);
+        _data->useAccepted = true;
+    }
     InterfaceDiagnostics InterfaceCoupling::Diagnostics() const
     {
+        auto session = _data->Enter();
         InterfaceDiagnostics result;
         for (const auto &connection : _data->connections)
             result.queryPoints += index(connection.receiverRows.size());
@@ -124,6 +152,7 @@ namespace DNDS::Cauchy
     }
     void InterfaceCoupling::Refresh(const std::vector<InterfaceDomainInput> &domains, real time, StateEpoch epoch)
     {
+        auto session = _data->Enter();
         auto &data = *_data;
         data.useAccepted = false;
         MPI::LocalStage(data.mpi, [&]
@@ -132,10 +161,8 @@ namespace DNDS::Cauchy
             for(index iDomain=0;iDomain<index(domains.size());++iDomain)
             {
                 const auto &input=domains[iDomain];
-                DNDS_check_throw_info(bool(input.discrete)==bool(data.discrete[iDomain])&&bool(input.mean)==bool(input.discrete)&&bool(input.coefficients)==bool(input.discrete),
+                DNDS_check_throw_info(bool(input.values)==bool(data.discrete[iDomain]),
                                       "interface refresh has incomplete or changed domain participation");
-                if(input.discrete)
-                    DNDS_check_throw_info(&input.discrete->Mesh()==&data.discrete[iDomain]->Mesh(),"interface refresh replaced its prepared reference mesh");
                 if(data.discrete[iDomain]&&data.discrete[iDomain]->HasInterfaces())
                 {
                     if(!data.incoming[iDomain]) data.incoming[iDomain]=data.discrete[iDomain]->BuildBoundaryInputs();
@@ -206,7 +233,7 @@ namespace DNDS::Cauchy
             }
             const auto &input = domains[connection.donor];
             MPI::LocalStage(data.mpi, [&]
-                            { connection.sampling->EvaluateDonors(input.mean, input.coefficients, *connection.workspace); });
+                            { connection.sampling->EvaluateDonors(input.values, *connection.workspace); });
             connection.result->Begin().Wait();
             MPI::LocalStage(data.mpi, [&]
                             {

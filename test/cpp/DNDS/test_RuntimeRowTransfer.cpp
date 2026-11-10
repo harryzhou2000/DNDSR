@@ -305,6 +305,48 @@ TEST_CASE("Managed MPI requests survive dropped handles and progress worker cons
     }
 }
 
+TEST_CASE("Inherited named channels share a communicator and preserve concurrent payloads")
+{
+    int rank = 0, size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    auto context = std::make_shared<CommunicationContext>(MPI_COMM_WORLD);
+    auto unevenReservation = context->Reserve(1 + rank % 2);
+    RowTransferPlan route(context, 3, 3, {{(rank + 1) % size, 2, 0}, {(rank + 1) % size, 0, 1}, {(rank + 1) % size, 1, 2}});
+    Array<double> a(RowLayout::Dense(3, 5)), b(a.Layout()), x(a.Layout()), y(a.Layout());
+    {
+        auto aw = a.Write(), bw = b.Write();
+        for (DNDS::index iRow = 0; iRow < 3; ++iRow)
+            for (DNDS::index j = 0; j < 5; ++j)
+            {
+                aw.View()(iRow, j) = 1000 * rank + 10 * iRow + j;
+                bw.View()(iRow, j) = -aw.View()(iRow, j) - 7;
+            }
+    }
+    PayloadPlan payload(route, a.Layout(), x.Layout(), ElementSchema::For<double>());
+    TransferOptions first, second;
+    first.channel = "mean";
+    second.channel = "coefficients";
+    auto left = payload.Bind(a, x, TransferTransport::Direct, first);
+    auto right = payload.Bind(b, y, TransferTransport::Direct, second);
+    // Group compatibility proves both default bindings use this exact context.
+    TransferGroup group(context, {left, right});
+    auto operations = group.Begin();
+    for (auto &operation : operations)
+        operation.Wait();
+    const auto xr = x.Read(), yr = y.Read();
+    const DNDS::index rows[]{2, 0, 1};
+    for (DNDS::index iRow = 0; iRow < 3; ++iRow)
+        for (DNDS::index j = 0; j < 5; ++j)
+        {
+            CHECK(xr.View()(iRow, j) == 1000 * ((rank + 1) % size) + 10 * rows[iRow] + j);
+            CHECK(yr.View()(iRow, j) == -xr.View()(iRow, j) - 7);
+        }
+    TransferOptions isolated;
+    isolated.isolatedNamespace = true;
+    auto independent = payload.Bind(a, y, TransferTransport::Direct, isolated);
+    CHECK_THROWS(TransferGroup(context, {independent}));
+}
 TEST_CASE("Communication context adoption and policy aliases retain one resource and tag namespace")
 {
     MPI_Comm raw = MPI_COMM_NULL;

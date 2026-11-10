@@ -275,10 +275,10 @@ TEST_CASE("Coupling participants without a donor mesh sample a reversed donor su
             for (int repetition = 0; repetition < 2; ++repetition)
             {
                 if (repetition == 0)
-                    sampler.EvaluateCoupled(mean ? &*mean : nullptr, coefficients ? &*coefficients : nullptr, workspace, values);
+                    sampler.EvaluateCoupled(mean ? std::make_optional(DNDS::CFV::DonorInputs(*mean, *coefficients)) : std::nullopt, workspace, values);
                 else
                 {
-                    sampler.EvaluateDonors(mean ? &*mean : nullptr, coefficients ? &*coefficients : nullptr, workspace);
+                    sampler.EvaluateDonors(mean ? std::make_optional(DNDS::CFV::DonorInputs(*mean, *coefficients)) : std::nullopt, workspace);
                     binding.Begin().Wait();
                 }
                 const auto read = values.Read();

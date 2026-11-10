@@ -28,6 +28,32 @@ extern "C" int MPI_Allreduce(const void *send, void *receive, int count, MPI_Dat
         ++reductions;
     return PMPI_Allreduce(send, receive, count, type, operation, comm);
 }
+TEST_CASE("Flow workspace identity follows its shared plan and rejects foreign or expired plans")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 3);
+    C::DomainSettings settings;
+    settings.numerics.reconstruction = "constant";
+    settings.numerics.positivity = false;
+    settings.numerics.limiter = "none";
+    const auto equation = C::EquationSystem::Resolve(settings.equation);
+    std::shared_ptr<C::FiniteVolume::Workspace> saved;
+    {
+        C::FiniteVolume original(mesh, settings, equation);
+        auto state = original.Metrics().BuildField(5);
+        saved = original.BuildWorkspace(state);
+        auto sharedPlan = original;
+        CHECK_NOTHROW(sharedPlan.RequireWorkspaceChannels(*saved, {}));
+        const auto movedPlan = std::move(sharedPlan);
+        CHECK_THROWS_WITH_AS(sharedPlan.RequireWorkspaceChannels(*saved, {}), doctest::Contains("foreign"), std::exception);
+        CHECK_NOTHROW(movedPlan.RequireWorkspaceChannels(*saved, {}));
+        C::FiniteVolume independent(mesh, settings, equation);
+        CHECK_THROWS_WITH_AS(independent.RequireWorkspaceChannels(*saved, {}), doctest::Contains("foreign"), std::exception);
+    }
+    // A retained scratch handle cannot acquire the identity of a later plan,
+    // even if an allocator reuses the old Data address.
+    C::FiniteVolume replacement(mesh, settings, equation);
+    CHECK_THROWS_WITH_AS(replacement.RequireWorkspaceChannels(*saved, {}), doctest::Contains("foreign"), std::exception);
+}
 TEST_CASE("Default Cauchy CGNS loader propagates the configured preflight policy")
 {
     const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();

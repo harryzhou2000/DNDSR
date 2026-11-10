@@ -194,24 +194,27 @@ namespace DNDS::Geom
         }
     }
 
-    MeshTransitionHandle::MeshTransitionHandle(std::shared_ptr<UnstructuredMesh> mesh) : _mesh(std::move(mesh))
+    MeshTransitionHandle::MeshTransitionHandle(std::shared_ptr<UnstructuredMesh> mesh) : _slot(std::make_shared<Slot>(std::move(mesh)))
     {
-        DNDS_check_throw_info(_mesh, "transition handle requires a mesh");
+        DNDS_check_throw_info(_slot->mesh, "transition handle requires a mesh");
     }
 
     std::shared_ptr<UnstructuredMesh> MeshTransitionHandle::Get() const
     {
-        std::lock_guard<std::mutex> lock(_mutex);
-        return _mesh;
+        DNDS_check_throw_info(_slot, "transition handle was moved");
+        std::lock_guard<std::mutex> lock(_slot->mutex);
+        return _slot->mesh;
     }
 
     PreparedMeshTransition PreparedMeshTransition::Prepare(
         MeshTransitionHandle &handle, const ReorderInput &input, const std::vector<CompanionEntry> &fields,
         const std::function<void(const char *)> &checkpoint, int ghostLayers, TransitionCachePolicy caches)
     {
-        std::lock_guard<std::mutex> lock(handle._mutex);
+        auto destination = handle._slot;
+        DNDS_check_throw_info(destination, "transition handle was moved");
+        std::lock_guard<std::mutex> lock(destination->mutex);
         PreparedMeshTransition result(handle);
-        result._source = handle._mesh;
+        result._source = destination->mesh;
         auto &source = *result._source;
         const auto &mpi = source.mpi;
         const auto communication = source.PreparationCommunication();
@@ -340,11 +343,14 @@ namespace DNDS::Geom
 
     void PreparedMeshTransition::Publish()
     {
-        DNDS_check_throw_info(_source && _handle, "invalid moved-from mesh transition");
-        std::lock_guard<std::mutex> lock(_handle->_mutex);
+        DNDS_check_throw_info(_source, "invalid moved-from mesh transition");
+        auto destination = _destination.lock();
+        std::unique_lock<std::mutex> lock;
         FieldTransferDetail::LocalStage(_source->mpi, _source->PreparationCommunication(), [&]
                                         {
-            DNDS_check_throw_info(!_published && _next && _handle->_mesh == _source && _sourceStamp.Valid(),
+            DNDS_check_throw_info(destination, "transition publication target expired");
+            lock = std::unique_lock<std::mutex>(destination->mutex);
+            DNDS_check_throw_info(!_published && _next && destination->mesh == _source && _sourceStamp.Valid(),
                                   "transition source handle/order changed or transition already published");
             for (const auto &space : _sourceSpaces)
                 DNDS_check_throw_info(space.SameOrder(_source->Entities(space.Kind())),
@@ -353,7 +359,7 @@ namespace DNDS::Geom
                 DNDS_check_throw_info(SameAttachment(_attachments[i].attachment(), _attachmentStamps[i]),
                                       "transition field attachment changed before publication"); });
         _fields.Publish();
-        _handle->_mesh.swap(_next);
+        destination->mesh.swap(_next);
         _published = true;
         _sourceRead.reset();
     }

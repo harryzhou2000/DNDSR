@@ -58,6 +58,20 @@ proof or inferred cross-stream joins.
 
 ## Ownership and errors
 
+`stream.BorrowContext()` guards an immediate, unsubmitted use. Explicit Close
+rejects outstanding guards; destroying the owning engine with one still open is
+a fatal contract violation. Release the scope after its actual use/completion,
+before closing the engine. Geom managed mesh/entity read/write overloads retain
+this guard outside their plain views. Scheduled command captures use the normal
+operation-retirement path instead.
+
+`stream.LockEngine()` supplies a call-scoped facade over the same runtime for
+bound operators. It validates the real weak runtime owner, adds no scheduler or
+stream, and does not own shutdown. The facade prevents closure while in use and
+cannot itself Close the runtime. Cauchy sessions use this instead of retaining
+the address of an external EagerEngine. Caller serialization with shutdown still
+applies; this is not permission for concurrent controller calls.
+
 ```mermaid
 classDiagram
     class EagerEngine

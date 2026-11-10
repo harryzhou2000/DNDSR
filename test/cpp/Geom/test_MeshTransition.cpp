@@ -121,14 +121,37 @@ static void CheckTransitionCellRows(UnstructuredMesh &mesh,
     }
 }
 
+TEST_CASE("Prepared transition uses a stable destination slot across moves and rejects expiry")
+{
+    auto mpi = TransitionMPI();
+    auto source = TransitionFixture(mpi);
+    const auto before = source->versions.Stamp();
+    auto handle = std::make_unique<MeshTransitionHandle>(source);
+    auto prepared = PreparedMeshTransition::Prepare(*handle, TransitionInput(*source));
+    SUBCASE("move preserves slot")
+    {
+        MeshTransitionHandle moved(std::move(*handle));
+        handle.reset();
+        prepared.Publish();
+        CHECK(moved.Get() != source);
+    }
+    SUBCASE("expired target rejects before publication")
+    {
+        handle.reset();
+        CHECK_THROWS(prepared.Publish());
+        CHECK(before.Valid());
+    }
+}
 TEST_CASE("Detached transition retains source scopes and publishes matching native fields")
 {
     auto mpi = TransitionMPI();
     auto source = TransitionFixture(mpi);
     MeshTransitionHandle handle(source);
     auto count = size_t(source->NumCell());
-    R::Field<int64_t> ids({count, 1, 1}, {37, 4, count, 0}, "cell");
-    R::Field<int64_t> history({count, 1, 1}, {37, 4, count, 0}, "cell");
+    auto idsSlot = std::make_shared<R::Field<int64_t>>(R::Field<int64_t>({count, 1, 1}, {37, 4, count, 0}, "cell"));
+    auto &ids = *idsSlot;
+    auto historySlot = std::make_shared<R::Field<int64_t>>(R::Field<int64_t>({count, 1, 1}, {37, 4, count, 0}, "cell"));
+    auto &history = *historySlot;
     {
         auto a = ids.Write();
         auto b = history.Write();
@@ -147,7 +170,7 @@ TEST_CASE("Detached transition retains source scopes and publishes matching nati
     SUBCASE("preserved faces") {}
     SUBCASE("reconstructed faces") { input.destroyKinds.insert(EntityKind::Face); }
     auto prepared = PreparedMeshTransition::Prepare(handle, input,
-                                                    {RegisterField(ids, EntityKind::Cell, "ids"), RegisterField(history, EntityKind::Cell, "history")});
+                                                    {RegisterField(idsSlot, EntityKind::Cell, "ids"), RegisterField(historySlot, EntityKind::Cell, "history")});
     CHECK(handle.Get() == source);
     CHECK(ids.Values().Identity() == oldIdentity);
     CHECK(oldStamp.Valid());
@@ -194,7 +217,8 @@ TEST_CASE("Detached periodic transition retains geometry and relation companion 
     std::optional<MeshReadAccess> oldRead{source->AcquireRead(MeshReadRequirements::CellFlux())};
     auto oldStamp = source->versions.Stamp();
     auto expectedRows = TransitionCellRows(*source);
-    R::Array<int64_t> cellBits(R::RowLayout::Dense(size_t(source->NumCell()), 1));
+    auto cellBitsSlot = std::make_shared<R::Array<int64_t>>(R::Array<int64_t>(R::RowLayout::Dense(size_t(source->NumCell()), 1)));
+    auto &cellBits = *cellBitsSlot;
     {
         auto write = cellBits.Write();
         const auto &view = oldRead->HostView();
@@ -210,7 +234,7 @@ TEST_CASE("Detached periodic transition retains geometry and relation companion 
     SUBCASE("preserved periodic faces") {}
     SUBCASE("reconstructed periodic faces") { input.destroyKinds.insert(EntityKind::Face); }
     auto prepared = PreparedMeshTransition::Prepare(handle, input,
-                                                    {RegisterArray(cellBits, EntityKind::Cell, "cell-periodic-bits")});
+                                                    {RegisterArray(cellBitsSlot, EntityKind::Cell, "cell-periodic-bits")});
     prepared.Publish();
     auto next = handle.Get();
     CHECK(next->IsPeriodic());
@@ -266,8 +290,10 @@ TEST_CASE("Detached preparation failures retain mesh and every field source")
     auto source = TransitionFixture(mpi);
     MeshTransitionHandle handle(source);
     const auto count = size_t(source->NumCell());
-    R::Field<int64_t> first({count, 1, 1}, {37, 4, count, 0}, "cell");
-    R::Field<int64_t> second({count, 1, 1}, {37, 4, count, 0}, "cell");
+    auto firstSlot = std::make_shared<R::Field<int64_t>>(R::Field<int64_t>({count, 1, 1}, {37, 4, count, 0}, "cell"));
+    auto &first = *firstSlot;
+    auto secondSlot = std::make_shared<R::Field<int64_t>>(R::Field<int64_t>({count, 1, 1}, {37, 4, count, 0}, "cell"));
+    auto &second = *secondSlot;
     {
         auto a = first.Write();
         auto b = second.Write();
@@ -277,8 +303,8 @@ TEST_CASE("Detached preparation failures retain mesh and every field source")
             b.View<int64_t>()[i] = int64_t(i) + 1000;
         }
     }
-    auto a = RegisterField(first, EntityKind::Cell, "first");
-    auto b = RegisterField(second, EntityKind::Cell, "second");
+    auto a = RegisterField(firstSlot, EntityKind::Cell, "first");
+    auto b = RegisterField(secondSlot, EntityKind::Cell, "second");
     const auto oldFirst = first.Values().Identity(), oldSecond = second.Values().Identity();
     const auto oldStamp = source->versions.Stamp();
     std::string failure;
@@ -289,9 +315,13 @@ TEST_CASE("Detached preparation failures retain mesh and every field source")
     {
         b.prepare = [&](const auto &, const auto &m) -> std::unique_ptr<PreparedCompanion>
         {
-            if (m.rank == 0)
-                throw std::runtime_error("injected second-field failure");
-            return std::make_unique<FieldTransferDetail::Prepared<R::Field<int64_t>>>(second, second);
+            // The callback may be collective: coordinate this deliberately
+            // rank-local UT fault before returning to the publication pipeline.
+            MPI::LocalStage(m, [&]
+                            {
+                if (m.rank == 0)
+                    throw std::runtime_error("injected second-field failure"); });
+            return std::make_unique<FieldTransferDetail::Prepared<R::Field<int64_t>>>(secondSlot, second);
         };
     }
     CHECK_THROWS(PreparedMeshTransition::Prepare(handle, TransitionInput(*source), {a, b}, [&](const char *stage)
@@ -332,8 +362,10 @@ TEST_CASE("Inactive registered fields still require exact owned source rows")
     auto source = TransitionFixture(mpi);
     MeshTransitionHandle handle(source);
     auto count = size_t(source->NumFace());
-    R::Field<int64_t> field({count, 1, 1}, {71, 3, count, 0}, "face");
-    R::Array<int64_t> array(R::RowLayout::Dense(count, 1));
+    auto fieldSlot = std::make_shared<R::Field<int64_t>>(R::Field<int64_t>({count, 1, 1}, {71, 3, count, 0}, "face"));
+    auto &field = *fieldSlot;
+    auto arraySlot = std::make_shared<R::Array<int64_t>>(R::Array<int64_t>(R::RowLayout::Dense(count, 1)));
+    auto &array = *arraySlot;
     bool valid = false;
     SUBCASE("valid owned face values retain identity") { valid = true; }
     SUBCASE("rank-local inactive field ghosts")
@@ -354,8 +386,8 @@ TEST_CASE("Inactive registered fields still require exact owned source rows")
     auto input = TransitionInput(*source); // Face family is deliberately inactive.
     const auto fieldIdentity = field.Values().Identity(), arrayIdentity = array.Identity();
     auto stamp = source->versions.Stamp();
-    auto fields = std::vector<CompanionEntry>{RegisterField(field, EntityKind::Face, "inactive-field"),
-                                              RegisterArray(array, EntityKind::Face, "inactive-array")};
+    auto fields = std::vector<CompanionEntry>{RegisterField(fieldSlot, EntityKind::Face, "inactive-field"),
+                                              RegisterArray(arraySlot, EntityKind::Face, "inactive-array")};
     if (valid)
     {
         auto prepared = PreparedMeshTransition::Prepare(handle, input, fields);
@@ -401,10 +433,12 @@ TEST_CASE("Delayed publication rejects rank-local native field edits and replace
     auto source = TransitionFixture(mpi);
     MeshTransitionHandle handle(source);
     auto count = size_t(source->NumCell());
-    R::Field<int64_t> field({count, 1, 1}, {37, 4, count, 0}, "cell");
-    R::Array<int64_t> array(R::RowLayout::Dense(count, 1));
+    auto fieldSlot = std::make_shared<R::Field<int64_t>>(R::Field<int64_t>({count, 1, 1}, {37, 4, count, 0}, "cell"));
+    auto &field = *fieldSlot;
+    auto arraySlot = std::make_shared<R::Array<int64_t>>(R::Array<int64_t>(R::RowLayout::Dense(count, 1)));
+    auto &array = *arraySlot;
     auto prepared = PreparedMeshTransition::Prepare(handle, TransitionInput(*source),
-                                                    {RegisterField(field, EntityKind::Cell, "field"), RegisterArray(array, EntityKind::Cell, "array")});
+                                                    {RegisterField(fieldSlot, EntityKind::Cell, "field"), RegisterArray(arraySlot, EntityKind::Cell, "array")});
     SUBCASE("field values changed")
     {
         if (mpi.rank == 0 && count)
@@ -555,14 +589,16 @@ TEST_CASE("Detached transition preserves independently placed edges with exact n
     const auto &sourceView = source->CurrentNativeState()->BorrowHostView();
     const auto edgeSpace = source->Entities(EntityKind::Edge);
     auto owned = size_t(edgeSpace.NumOwned());
-    R::Field<int64_t> ids({owned, 1, 1}, {92, 7, owned, 0}, "edge");
+    auto idsSlot = std::make_shared<R::Field<int64_t>>(R::Field<int64_t>({owned, 1, 1}, {92, 7, owned, 0}, "edge"));
+    auto &ids = *idsSlot;
     // Exact source edge rows travel beside the IDs, preserving endpoint and
     // incident-cell order plus every endpoint's periodic companion bits.
     std::vector<size_t> widths(owned);
     for (size_t edge = 0; edge < owned; ++edge)
         widths[edge] = size_t(sourceView.EdgeNodes(DNDS::index(edge)).size()) * 2 +
                        size_t(sourceView.EdgeCells(DNDS::index(edge)).size()) + 2;
-    R::Array<int64_t> exact(R::RowLayout::Ragged(widths));
+    auto exactSlot = std::make_shared<R::Array<int64_t>>(R::Array<int64_t>(R::RowLayout::Ragged(widths)));
+    auto &exact = *exactSlot;
     {
         auto id = ids.Write();
         auto row = exact.Write();
@@ -585,7 +621,8 @@ TEST_CASE("Detached transition preserves independently placed edges with exact n
     std::vector<size_t> cellWidths(size_t(source->NumCell()));
     for (DNDS::index cell = 0; cell < source->NumCell(); ++cell)
         cellWidths[size_t(cell)] = size_t(sourceView.CellEdges(cell).size()) * 2;
-    R::Array<int64_t> exactCells(R::RowLayout::Ragged(cellWidths));
+    auto exactCellsSlot = std::make_shared<R::Array<int64_t>>(R::Array<int64_t>(R::RowLayout::Ragged(cellWidths)));
+    auto &exactCells = *exactCellsSlot;
     {
         auto rows = exactCells.Write();
         for (DNDS::index cell = 0; cell < source->NumCell(); ++cell)
@@ -606,8 +643,8 @@ TEST_CASE("Detached transition preserves independently placed edges with exact n
         r.edges = true;
         return r; }());
     auto prepared = PreparedMeshTransition::Prepare(handle, input,
-                                                    {RegisterField(ids, EntityKind::Edge, "edge-original-id"), RegisterArray(exact, EntityKind::Edge, "edge-source-row"),
-                                                     RegisterArray(exactCells, EntityKind::Cell, "cell-edge-source-row")});
+                                                    {RegisterField(idsSlot, EntityKind::Edge, "edge-original-id"), RegisterArray(exactSlot, EntityKind::Edge, "edge-source-row"),
+                                                     RegisterArray(exactCellsSlot, EntityKind::Cell, "cell-edge-source-row")});
     CHECK(handle.Get() == source);
     CHECK(stamp.Valid());
     prepared.Publish();

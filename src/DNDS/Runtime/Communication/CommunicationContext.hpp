@@ -121,6 +121,47 @@ namespace DNDS::Runtime
             _state->tags.emplace(tag, owner);
             return owner;
         }
+        /// Collective setup reservation over all live rank-local bindings.
+        /// Agree an unused tag even when completion retires old bindings at
+        /// different times on different ranks. No local counter decides matching.
+        std::shared_ptr<const int> ReserveAgreed() const
+        {
+            int64_t tag = 1;
+            for (;;)
+            {
+                int64_t candidate = tag;
+                {
+                    std::lock_guard<std::mutex> lock(_state->mutex);
+                    while (candidate <= _state->tagLimit)
+                    {
+                        const auto it = _state->tags.find(int(candidate));
+                        if (it == _state->tags.end() || it->second.expired())
+                            break;
+                        ++candidate;
+                    }
+                }
+                // Agree the common bound in this existing reservation phase,
+                // not through an extra reduction at context construction.
+                int64_t agreed[]{candidate, -int64_t(_state->tagLimit)};
+                MPI_Allreduce(MPI_IN_PLACE, agreed, 2, MPI_INT64_T, MPI_MAX, _state->comm);
+                candidate = agreed[0];
+                const auto commonLimit = -agreed[1];
+                if (candidate > commonLimit)
+                {
+                    tag = -1;
+                    break;
+                }
+                if (candidate == tag)
+                    break;
+                tag = candidate;
+            }
+            std::shared_ptr<const int> result;
+            LocalStage([&]
+                       {
+                DNDS_check_throw_info(tag >= 0 && tag <= _state->tagLimit, "communication tag namespace exhausted");
+                result = Reserve(int(tag)); }, "shared communication tag reservation failed");
+            return result;
+        }
     };
 
     enum class TransferMode
@@ -143,8 +184,8 @@ namespace DNDS::Runtime
     struct TransferOptions
     {
         TransferMode mode = TransferMode::Persistent;
-        /// Null preserves legacy independent-communicator bindings. Supplying
-        /// a context avoids communicator duplication for each binding.
+        /// Null inherits the route owner and agrees an unused channel tag.
+        /// An explicit context/tag retains the fixed-tag protocol API.
         std::shared_ptr<CommunicationContext> context;
         int tag = 0;
         /// Explicit non-MPI payload provider; MPI remains setup/control only.
@@ -159,5 +200,10 @@ namespace DNDS::Runtime
         /// Optional CPU Direct/HostPacked execution owner. Null keeps caller
         /// execution. Worker requires MPI_THREAD_MULTIPLE; not stream-native.
         std::shared_ptr<CommunicationWorker> communicationWorker;
+        /// Matched protocol name at collective binding setup; not a rank-local
+        /// construction counter. Repeated instances receive distinct agreed tags.
+        std::string channel = "row-transfer";
+        /// Explicit setup-only namespace isolation. Incompatible with context.
+        bool isolatedNamespace = false;
     };
 }

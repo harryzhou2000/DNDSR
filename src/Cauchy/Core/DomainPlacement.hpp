@@ -25,6 +25,7 @@ namespace DNDS::Cauchy
     public:
         DomainPlacement(MPI_Comm simulation, std::vector<DomainRankGroup> groups);
         MPI_Comm Control() const;
+        std::shared_ptr<Runtime::CommunicationContext> ControlContext() const;
         int Rank() const;
         int Size() const;
         index DomainNumber() const;

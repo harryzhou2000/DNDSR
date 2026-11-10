@@ -67,6 +67,27 @@ that must survive cache/placement-handle replacement. Mathematical changes use t
 
 ## Fields and compatibility names
 
+`MeshTransitionHandle` owns a stable publication slot. A prepared transition
+weakly identifies that slot, so moving the handle is safe and destroying its
+last owner rejects publication before any destination changes. The retained
+source supplies the communicator and validation state even after target expiry.
+Publication pins the destination through validation and its nonthrowing swap.
+
+Generic `RegisterArray`/`RegisterField` take an owning `shared_ptr<Array/Field>`
+publication slot. Registration and prepared values retain that slot; assignments
+publish into it, never into an externally borrowed C++ variable. Use `*slot` to
+access the current field. Ordinary Array copies still share their old storage,
+not the publication slot. `EntityField` reuses its existing stable slot and
+retains source reads through detached preparation. All field attachments and
+source versions are validated before publishing the complete bundle.
+
+EntityField stores device placement, not a native stream. No-argument access is
+host-only. Device access supplies a stream/context at the call; managed stream
+overloads retain an immediate borrow that prevents engine closure until the
+scope ends. Device field registration takes an explicit managed stream and keeps
+that borrow through prepared publication. Raw execution descriptors remain
+low-level caller-managed interop; they do not imply a runtime owner.
+
 Persistent identity is `(namespace, kind, ID)`; rank-offset globals describe
 current addressing. EntitySpace descriptors retain immutable canonical maps but
 do not lock the mesh. Numbering changes stale their mapping operations. The

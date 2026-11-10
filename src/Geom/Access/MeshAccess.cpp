@@ -6,7 +6,7 @@
 namespace DNDS::Geom
 {
     MeshReadAccess::MeshReadAccess(MeshReadAccess &&other) noexcept
-        : _meshRead(std::move(other._meshRead)), _sourceRead(std::move(other._sourceRead)),
+        : _execution(std::move(other._execution)), _meshRead(std::move(other._meshRead)), _sourceRead(std::move(other._sourceRead)),
           _nativeOwner(std::move(other._nativeOwner)), _stamp(std::move(other._stamp)),
           _context(other._context), _storage(other._storage), _holds(std::move(other._holds)),
           _completion(std::move(other._completion)), _completed(other._completed), _active(other._active)
@@ -302,6 +302,13 @@ namespace DNDS::Geom
         }
     }
 
+    MeshReadAccess UnstructuredMesh::AcquireRead(MeshReadRequirements requirements, const Runtime::ExecutionStream &stream)
+    {
+        auto execution = stream.BorrowContext();
+        auto result = AcquireRead(requirements, execution.Context());
+        result._execution.emplace(std::move(execution));
+        return result;
+    }
     MeshReadAccess UnstructuredMesh::AcquireRead(MeshReadRequirements requirements, Runtime::ExecutionContext context)
     {
         DNDS_check_throw_info(_nativeState, "mesh read requires native authority");

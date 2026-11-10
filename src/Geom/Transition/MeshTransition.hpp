@@ -22,13 +22,20 @@ namespace DNDS::Geom
     class MeshTransitionHandle
     {
         friend class PreparedMeshTransition;
-        mutable std::mutex _mutex;
-        std::shared_ptr<UnstructuredMesh> _mesh;
+        struct Slot
+        {
+            mutable std::mutex mutex;
+            std::shared_ptr<UnstructuredMesh> mesh;
+            explicit Slot(std::shared_ptr<UnstructuredMesh> value) : mesh(std::move(value)) {}
+        };
+        std::shared_ptr<Slot> _slot;
 
     public:
         explicit MeshTransitionHandle(std::shared_ptr<UnstructuredMesh> mesh);
         MeshTransitionHandle(const MeshTransitionHandle &) = delete;
         MeshTransitionHandle &operator=(const MeshTransitionHandle &) = delete;
+        MeshTransitionHandle(MeshTransitionHandle &&) noexcept = default;
+        MeshTransitionHandle &operator=(MeshTransitionHandle &&) noexcept = default;
         std::shared_ptr<UnstructuredMesh> Get() const;
     };
 
@@ -43,11 +50,12 @@ namespace DNDS::Geom
     /// durable ancestry follow native row transfers. Setup-only parent/extraction
     /// row caches are invalidated on the new facade; the source is unchanged.
     ///
-    /// The handle and registered field objects must outlive this object. Caller
-    /// orchestration and external field writes remain serialized through Publish.
+    /// Publication targets a weak stable slot, not the handle's address. An
+    /// expired destination rejects collectively before any publication. Caller
+    /// orchestration and field writes remain serialized through Publish.
     class PreparedMeshTransition
     {
-        MeshTransitionHandle *_handle;
+        std::weak_ptr<MeshTransitionHandle::Slot> _destination;
         std::shared_ptr<UnstructuredMesh> _source, _next;
         std::unique_ptr<MeshReadAccess> _sourceRead;
         Runtime::VersionStamp _sourceStamp;
@@ -60,7 +68,7 @@ namespace DNDS::Geom
         bool _published = false;
         std::shared_ptr<const NativeMeshOutput> _output;
 
-        explicit PreparedMeshTransition(MeshTransitionHandle &handle) : _handle(&handle) {}
+        explicit PreparedMeshTransition(MeshTransitionHandle &handle) : _destination(handle._slot) {}
 
     public:
         PreparedMeshTransition(const PreparedMeshTransition &) = delete;

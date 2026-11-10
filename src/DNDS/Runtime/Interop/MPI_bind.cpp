@@ -63,6 +63,8 @@ namespace DNDS::Runtime
             .def_readwrite("mode", &TransferOptions::mode)
             .def_readwrite("context", &TransferOptions::context)
             .def_readwrite("tag", &TransferOptions::tag)
+            .def_readwrite("channel", &TransferOptions::channel)
+            .def_readwrite("isolated_namespace", &TransferOptions::isolatedNamespace)
             .def_readwrite("provider", &TransferOptions::provider)
             .def_readwrite("allow_stream_ordered_device_memory", &TransferOptions::allowStreamOrderedDeviceMemory)
             .def_readwrite("preflight", &TransferOptions::preflight, "Inherit by default. Collective/AbortOnFailure explicitly override the context. Both retain local checks. Collective reports a rejection before posting; AbortOnFailure omits that agreement and aborts on a local launch failure. Does not make unmatched rank-local launch ordering safe.");

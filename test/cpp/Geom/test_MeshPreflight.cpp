@@ -249,7 +249,8 @@ TEST_CASE("CGNS owned import partition refinement reorder and publication inheri
             CHECK(space.NumGhost() == 0);
             CHECK(space.ChecksCollectivePreflight() == enabled);
         }
-        R::Array<I> companion(R::RowLayout::Dense(owned.spaces.at(G::EntityKind::Cell).NumOwned(), 2));
+        auto companionSlot = std::make_shared<R::Array<I>>(R::Array<I>(R::RowLayout::Dense(owned.spaces.at(G::EntityKind::Cell).NumOwned(), 2)));
+        auto &companion = *companionSlot;
         {
             auto ids = owned.ids.at(G::EntityKind::Cell).Read();
             auto write = companion.Write();
@@ -258,7 +259,7 @@ TEST_CASE("CGNS owned import partition refinement reorder and publication inheri
                     write.View()(iCell, j) = 31 * ids.View()(iCell, 0) + j;
         }
         auto reordered = G::NativeMeshTransition::ReorderOwnedCells(owned, mpi, 2, 1);
-        auto entry = G::RegisterArray(companion, G::EntityKind::Cell, "id-based companion",
+        auto entry = G::RegisterArray(companionSlot, G::EntityKind::Cell, "id-based companion",
                                       R::ElementSchema::For<I>(), R::ExecutionContext::Host(),
                                       G::CompanionDisposition::TransferIfReordered, {}, context);
         entry.fn(reordered.transfers.at(G::EntityKind::Cell), mpi);

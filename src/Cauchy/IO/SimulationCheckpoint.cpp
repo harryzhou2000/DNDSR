@@ -177,12 +177,12 @@ namespace DNDS::Cauchy
                 auto &means = domain._trial.CoupledField();
                 domain._fv.BindHalo(means).Begin().Wait();
                 domain._fv.BindHalo(*coefficients[iDomain]).Begin().Wait();
-                ports[iDomain] = {&domain._fv, &means, &*coefficients[iDomain]}; });
+                ports[iDomain] = {CFV::DonorInputs(means, *coefficients[iDomain])}; });
             StateEpoch epoch;
             epoch.acceptedStep = uint64_t(step);
             _interfaces->Refresh(ports, time, epoch);
             LocalDomains(_placement, [&](index iDomain)
-                         { if (const auto *input = _interfaces->Inputs(iDomain)) GetDomain(iDomain).BindInterfaceInputs(*input); });
+                         { if (const auto input = _interfaces->Inputs(iDomain)) GetDomain(iDomain).BindInterfaceInputs(*input); });
         }
         try
         {
@@ -204,7 +204,7 @@ namespace DNDS::Cauchy
                 // Already validated accepted-packet aliases. Binding is local
                 // and does not perform I/O, search, transfer or MPI agreement.
                 LocalDomains(_placement, [&](index iDomain)
-                             { if (const auto *input = _interfaces->Inputs(iDomain)) GetDomain(iDomain).BindInterfaceInputs(*input); });
+                             { if (const auto input = _interfaces->Inputs(iDomain)) GetDomain(iDomain).BindInterfaceInputs(*input); });
             }
             throw;
         }

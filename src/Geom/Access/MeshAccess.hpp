@@ -3,6 +3,7 @@
 #include "Geom/Access/MeshView.hpp"
 #include "Geom/Unstructured/UnstructuredMeshFwd.hpp"
 #include "DNDS/Runtime/Storage/Version.hpp"
+#include "DNDS/Runtime/Execution/EagerEngine.hpp"
 #include <memory>
 #include <vector>
 #include <optional>
@@ -75,6 +76,7 @@ namespace DNDS::Geom
             void Complete(const Runtime::Completion &completion) override { read.Complete(completion); }
         };
 
+        std::optional<Runtime::ExecutionBorrow> _execution;
         Runtime::VersionTracker::ReadLease _meshRead;
         std::optional<Runtime::VersionTracker::ReadLease> _sourceRead;
         std::shared_ptr<const UnstructuredMeshState> _nativeOwner;

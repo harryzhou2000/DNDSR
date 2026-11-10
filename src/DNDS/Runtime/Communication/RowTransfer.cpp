@@ -629,7 +629,7 @@ namespace DNDS::Runtime
         const int64_t controls[]{int(state->options.mode), bool(state->options.context), state->options.tag,
                                  bool(state->reducer), int(transport),
                                  state->reducer ? int(state->reducer->initialization) : 0, bool(state->options.provider), state->options.allowStreamOrderedDeviceMemory,
-                                 state->collectivePreflight, int(state->options.preflight), bool(state->options.communicationWorker)};
+                                 state->collectivePreflight, int(state->options.preflight), bool(state->options.communicationWorker), state->options.isolatedNamespace};
         constexpr index controlNumber = sizeof(controls) / sizeof(controls[0]);
         int64_t agreed[2 * controlNumber + 1];
         for (index i = 0; i < controlNumber; ++i)
@@ -669,6 +669,18 @@ namespace DNDS::Runtime
                                        routeComm, state->collectivePreflight,
                                        "Direct MPI pool/VMM memory requires verified allowStreamOrderedDeviceMemory; CUDA awareness alone is insufficient. Select explicit packing or ordinary preallocated device storage.");
         bool valid = true;
+        const bool inherited = !state->options.context && !state->options.isolatedNamespace;
+        if (inherited)
+        {
+            CommunicationDetail::Preflight(state->options.tag == 0 && !state->options.channel.empty(), routeComm,
+                                           state->collectivePreflight, "inherited transfer needs a named channel and no explicit tag");
+            Agree(state->options.channel, routeComm);
+            state->options.context = state->plan->route.Context();
+            state->tag = state->options.context->ReserveAgreed();
+            state->options.tag = *state->tag;
+        }
+        CommunicationDetail::Preflight(!state->options.isolatedNamespace || !state->options.context, routeComm,
+                                       state->collectivePreflight, "isolated transfer cannot also share a context");
         if (state->options.context)
         {
             int comparison = MPI_UNEQUAL;
@@ -677,7 +689,7 @@ namespace DNDS::Runtime
             state->comm = state->options.context->Communicator();
             try
             {
-                if (valid)
+                if (valid && !inherited)
                     state->tag = state->options.context->Reserve(state->options.tag);
             }
             catch (...)

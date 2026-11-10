@@ -245,7 +245,7 @@ TEST_CASE("Coarse FAS rate reuse and fail-fast halos preserve distributed viscou
         C::NonlinearSolver smoother(fine, state, work, engine, stream, settings);
         auto solver = [&]
         {
-            auto original = smoother;
+            auto original = smoother.RetainForMultigrid();
             C::PolynomialMultigrid hierarchy(mesh, fine, state, original, engine, stream, settings);
             auto moved = std::move(original);
             return hierarchy;
@@ -731,7 +731,7 @@ TEST_CASE("Logical polynomial FAS recovers nonconstant RANS and reacting mixture
         }
         auto solver = [&]
         {
-            auto original = smoother;
+            auto original = smoother.RetainForMultigrid();
             C::PolynomialMultigrid hierarchy(mesh, fine, state, original, engine, stream, settings, setup.workers);
             auto moved = std::move(original);
             return hierarchy;

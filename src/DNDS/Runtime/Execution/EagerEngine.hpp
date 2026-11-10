@@ -9,6 +9,25 @@
 namespace DNDS::Runtime
 {
     struct ExecutionRuntime;
+    class EagerEngine;
+    /// Immediate, unsubmitted use of a runtime's native context. Keep this
+    /// guard outside the raw kernel view and destroy it after its access scope.
+    /// Close rejects live guards; queued operations use retained commands instead.
+    class ExecutionBorrow
+    {
+        std::shared_ptr<ExecutionRuntime> _runtime;
+        ExecutionContext _context;
+        friend class ExecutionStream;
+        ExecutionBorrow(std::shared_ptr<ExecutionRuntime>, ExecutionContext);
+
+    public:
+        ExecutionBorrow(const ExecutionBorrow &) = delete;
+        ExecutionBorrow &operator=(const ExecutionBorrow &) = delete;
+        ExecutionBorrow(ExecutionBorrow &&) noexcept;
+        ExecutionBorrow &operator=(ExecutionBorrow &&) noexcept;
+        ~ExecutionBorrow();
+        ExecutionContext Context() const;
+    };
     /// Controller-progressed accepted work. Register before initiating external
     /// activity. Poll must not block: other streams/operations may enable it.
     /// Return true only after access publication and request retirement. A
@@ -143,6 +162,11 @@ namespace DNDS::Runtime
     public:
         ExecutionStream() = default;
         ExecutionContext Context() const;
+        ExecutionBorrow BorrowContext() const;
+        /// Lock the actual runtime for one synchronous operator call. The
+        /// returned facade shares queues but does not own shutdown. Closed or
+        /// expired contexts reject; no borrowed EagerEngine address is retained.
+        EagerEngine LockEngine() const;
         /// Caller supplies every cross-stream dependency; waiting is not inferred
         /// from Array aliases. CUDA rejects an unfinished portable MPI/CPU event.
         void WaitFor(StreamEvent event) const;
@@ -168,6 +192,9 @@ namespace DNDS::Runtime
     class EagerEngine
     {
         std::shared_ptr<ExecutionRuntime> _state;
+        bool _shutdownOwner = true;
+        friend class ExecutionStream;
+        explicit EagerEngine(std::shared_ptr<ExecutionRuntime> state);
         void Drain(bool closing);
 
     public:
@@ -178,6 +205,7 @@ namespace DNDS::Runtime
         ExecutionStream CreateCPUStream();
         ExecutionStream CreateStream(std::shared_ptr<StreamLauncher> launcher);
         bool ChecksAccess() const;
+        bool Owns(const ExecutionStream &stream) const { return stream._runtime.lock() == _state; }
         /// CPU allocation is ready immediately; CUDA allocation/zeroing follows
         /// this stream. Record/Wait exports readiness when another stream needs it.
         Buffer AllocateBuffer(const ExecutionStream &stream, size_t bytes, AllocationOptions options = {});

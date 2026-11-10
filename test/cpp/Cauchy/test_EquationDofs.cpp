@@ -819,7 +819,8 @@ TEST_CASE("Coupled matrix action ILU SGS and left GMRES preserve separate and pe
                 const auto again = solver.Solve(rhs);
                 CHECK(again.converged);
                 CHECK(again.iterations == report.iterations);
-                const auto warm = solver.Solve(rhs, &solver.Solution());
+                const auto warmGuess = solver.Solution();
+                const auto warm = solver.Solve(rhs, &warmGuess);
                 CHECK(warm.converged);
                 CHECK(warm.iterations == 0);
             }

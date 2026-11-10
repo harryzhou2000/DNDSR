@@ -2,6 +2,7 @@
 
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Implicit/LinearSolver.hpp"
+#include "DNDS/Runtime/Execution/SessionAccess.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -65,10 +66,11 @@ namespace DNDS::Cauchy
     /// source/mass/RHS coefficients; physics/discretization, sparse algebra and
     /// physical history remain separate. Each instance binds to one stable trial
     /// state/workspace. Caller serializes all accesses and coordinates retries.
-    /// Copies share mutable implementation/workspace state; they are not
-    /// independent solvers. The engine is borrowed: it must remain alive at its
-    /// original address through all solver/hierarchy copies and queued work.
-    /// Drain work before destroying the final owner; do not move a bound engine.
+    /// Mutable sessions are move-only. The explicit pMG alias shares one
+    /// exclusion controller and uses a retained nested ticket during a cycle.
+    /// The bound stream weakly identifies the actual execution runtime; each
+    /// operator locks it for the call and rejects closure/expiry. No engine
+    /// object address is retained.
     /// Optional local phases omit successful safety agreement when checks are
     /// disabled and abort on failure. Solve-entry, numerical norms and candidate
     /// acceptance remain coordinated; off mode does not permit rank-local retry.
@@ -76,11 +78,21 @@ namespace DNDS::Cauchy
     {
         struct Data;
         std::shared_ptr<Data> _data;
+        std::weak_ptr<const Runtime::SessionAccess::Ticket> _nestedSession;
+        explicit NonlinearSolver(std::shared_ptr<Data> data) : _data(std::move(data)) {}
+        std::pair<index, real> ApplyCorrectionImpl(CFV::FVField &state, const CFV::FVField &increment, real scale, const std::vector<index> &components);
         NonlinearIterationReport Execute(CFV::FVField &state, const CFV::FVField &source,
                                          real mass, real rhsScale, real time, int stage,
                                          NonlinearSolveControl control, bool singleCorrection, const CFV::FVField *cachedRate);
 
     public:
+        NonlinearSolver(const NonlinearSolver &) = delete;
+        NonlinearSolver &operator=(const NonlinearSolver &) = delete;
+        NonlinearSolver(NonlinearSolver &&) noexcept = default;
+        NonlinearSolver &operator=(NonlinearSolver &&) noexcept = default;
+        /// Explicit internal hierarchy alias; ordinary session copies are forbidden.
+        NonlinearSolver RetainForMultigrid() const { return NonlinearSolver(_data); }
+        Runtime::SessionAccess::Lease ReserveForMultigrid();
         NonlinearSolver(const FiniteVolume &discrete, CFV::FVField &state, std::shared_ptr<FiniteVolume::Workspace> workspace,
                         Runtime::EagerEngine &engine, Runtime::ExecutionStream stream, const DomainSettings &settings);
         /// Solve mass*U-rhsScale*(R(U)/V)=source. Source is owned and immutable;
@@ -142,20 +154,30 @@ namespace DNDS::Cauchy
     /// remains unconverged and leaves acceptance to the time orchestrator.
     /// Callers serialize bound state/workspace/engine access, coordinate all
     /// domain ranks and keep owners on the controller through worker joins.
-    /// Copies share mutable implementation/workspace state. The borrowed engine
-    /// must outlive every solver/hierarchy copy and queued operation at a stable
-    /// address. Drain work before destroying the final owner; do not move it.
+    /// Move-only session; explicit pMG aliases share exclusion tickets.
+    /// Each execution call locks the bound stream's actual runtime and rejects
+    /// closed/expired execution. No EagerEngine object address is retained.
     /// Optional local-phase failures follow the flow5 adapter's same policy:
     /// off mode aborts; candidate acceptance and solve-entry remain coordinated.
     class EquationNonlinearSolver
     {
         struct Data;
         std::shared_ptr<Data> _data;
+        std::weak_ptr<const Runtime::SessionAccess::Ticket> _nestedSession;
+        explicit EquationNonlinearSolver(std::shared_ptr<Data> data) : _data(std::move(data)) {}
+        std::pair<index, real> ApplyCorrectionImpl(EquationDofs &state, const EquationDofs &increment, real scale, const std::vector<index> &components);
         EquationNonlinearIterationReport Execute(EquationDofs &state, const EquationDofs &source,
                                                  real mass, real rhsScale, real time, int stage,
                                                  NonlinearSolveControl control, bool singleCorrection, const EquationDofs *cachedRate);
 
     public:
+        EquationNonlinearSolver(const EquationNonlinearSolver &) = delete;
+        EquationNonlinearSolver &operator=(const EquationNonlinearSolver &) = delete;
+        EquationNonlinearSolver(EquationNonlinearSolver &&) noexcept = default;
+        EquationNonlinearSolver &operator=(EquationNonlinearSolver &&) noexcept = default;
+        /// Explicit internal hierarchy alias; ordinary session copies are forbidden.
+        EquationNonlinearSolver RetainForMultigrid() const { return EquationNonlinearSolver(_data); }
+        Runtime::SessionAccess::Lease ReserveForMultigrid();
         EquationNonlinearSolver(const FiniteVolume &discrete, EquationDofs &state, std::shared_ptr<FiniteVolume::EquationWorkspace> workspace,
                                 Runtime::EagerEngine &engine, Runtime::ExecutionStream stream, const DomainSettings &settings,
                                 const Algebra::ComponentSelection &residualSelection,
@@ -175,7 +197,7 @@ namespace DNDS::Cauchy
         /// A subsequent cached correction preserves it; after a mean update it
         /// describes the previous linearization, not the updated state. Read-only
         /// diagnostics may inspect its buffers/generations after joining work.
-        const AuxiliaryValues &PreparedAuxValues() const;
+        AuxiliaryValues PreparedAuxValues() const;
         /// Same normalized stage operator as the field adapter, without
         /// changing owned means. Polynomial FAS uses this same operator.
         /// Optional rate follows the field adapter's distinct-output contract.

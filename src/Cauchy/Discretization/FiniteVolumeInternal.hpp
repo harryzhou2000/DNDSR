@@ -187,18 +187,19 @@ namespace DNDS::Cauchy
         std::optional<ThermalBounds> thermalBounds;
         std::optional<WallDistanceSamples> wallDistance;
         Runtime::Array<real> ransCellLength;
-        Runtime::TransferBinding BindHalo(CFV::FVField &field) const
+        Runtime::TransferBinding BindHalo(CFV::FVField &field, const char *channel = "cauchy-field") const
         {
-            return metrics.BindHalo(field, HaloTransferOptions());
+            return metrics.BindHalo(field, HaloTransferOptions(channel));
         }
-        Algebra::DofHalo<> BindTrackedHalo(CFV::FVField &field) const
+        Algebra::DofHalo<> BindTrackedHalo(CFV::FVField &field, const char *channel = "cauchy-mean") const
         {
-            return metrics.BindTrackedHalo(field, HaloTransferOptions());
+            return metrics.BindTrackedHalo(field, HaloTransferOptions(channel));
         }
-        Runtime::TransferOptions HaloTransferOptions() const
+        Runtime::TransferOptions HaloTransferOptions(const char *channel) const
         {
             Runtime::TransferOptions options;
             options.communicationWorker = communicationWorker;
+            options.channel = channel;
             DNDS_check_throw_info(settings.execution.transferPreflight == "collective" || settings.execution.transferPreflight == "abortOnFailure", "invalid Cauchy transfer preflight policy");
             if (!settings.implicit.collectiveChecks || settings.execution.transferPreflight == "abortOnFailure")
                 options.preflight = Runtime::TransferPreflight::AbortOnFailure;

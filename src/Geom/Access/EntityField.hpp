@@ -2,6 +2,7 @@
 
 #include "Geom/Access/EntitySpace.hpp"
 #include "Geom/Transition/FieldTransfer.hpp"
+#include "DNDS/Runtime/Execution/EagerEngine.hpp"
 
 namespace DNDS::Geom
 {
@@ -17,17 +18,21 @@ namespace DNDS::Geom
             EntitySpace space;
             Runtime::Array<T> values;
             Runtime::ElementSchema schema;
-            Runtime::ExecutionContext context;
+            Runtime::Device device;
             uint64_t allocation, shape;
             State(EntitySpace entity, Runtime::Array<T> array, Runtime::ElementSchema elementSchema, Runtime::ExecutionContext execution)
-                : space(std::move(entity)), values(std::move(array)), schema(std::move(elementSchema)), context(execution),
+                : space(std::move(entity)), values(std::move(array)), schema(std::move(elementSchema)), device(execution.device),
                   allocation(values.Identity()), shape(values.ShapeVersion())
             {
                 space.Validate();
                 DNDS_check_throw_info(values.IsValid() && values.RowCount() == size_t(space.NumOwned()) && schema.Extent() == sizeof(T) &&
-                                          schema.Compatible(Runtime::ElementSchema::TypeIdentity<T>()) && context.device == values.GetDevice() &&
-                                          (context.device != Runtime::Device::Host() || !context.stream),
+                                          schema.Compatible(Runtime::ElementSchema::TypeIdentity<T>()) && device == values.GetDevice(),
                                       "entity field requires exact owned rows and matching schema/context");
+            }
+            Runtime::ExecutionContext HostContext() const
+            {
+                DNDS_check_throw_info(device == Runtime::Device::Host(), "device entity field needs an explicit execution stream/context");
+                return Runtime::ExecutionContext::Host();
             }
             void Validate(const EntitySpace &expected) const
             {
@@ -45,18 +50,19 @@ namespace DNDS::Geom
 
         struct Prepared final : PreparedCompanion
         {
+            std::shared_ptr<Runtime::ExecutionBorrow> execution;
             std::shared_ptr<Slot> destination;
             Runtime::Array<T> values;
             Runtime::ElementSchema schema;
-            Runtime::ExecutionContext context;
+            Runtime::Device device;
             std::shared_ptr<typename Runtime::Array<T>::ReadLease> sourceRead;
             std::shared_ptr<State> next;
             Prepared(std::shared_ptr<Slot> target, Runtime::Array<T> array, Runtime::ElementSchema elementSchema, Runtime::ExecutionContext execution,
-                     std::shared_ptr<typename Runtime::Array<T>::ReadLease> retained)
-                : destination(std::move(target)), values(std::move(array)), schema(std::move(elementSchema)), context(execution), sourceRead(std::move(retained)) {}
+                     std::shared_ptr<typename Runtime::Array<T>::ReadLease> retained, std::shared_ptr<Runtime::ExecutionBorrow> borrow)
+                : execution(std::move(borrow)), destination(std::move(target)), values(std::move(array)), schema(std::move(elementSchema)), device(execution.device), sourceRead(std::move(retained)) {}
             void BindEntitySpace(const EntitySpace &space) override
             {
-                next = std::make_shared<State>(space, std::move(values), schema, context);
+                next = std::make_shared<State>(space, std::move(values), schema, Runtime::ExecutionContext{device, nullptr});
             }
             void Publish() noexcept override { destination->current.swap(next); }
         };
@@ -64,6 +70,7 @@ namespace DNDS::Geom
     public:
         class ReadScope
         {
+            std::optional<Runtime::ExecutionBorrow> _borrow;
             std::shared_ptr<State> _state;
             Runtime::VersionTracker::ReadLease _mesh;
             typename Runtime::Array<T>::ReadLease _read;
@@ -104,6 +111,7 @@ namespace DNDS::Geom
         /// uses an explicit scoped writer; structural edits stay outside this API.
         class WriteScope
         {
+            std::optional<Runtime::ExecutionBorrow> _borrow;
             std::shared_ptr<State> _state;
             Runtime::VersionTracker::ReadLease _mesh;
             typename Runtime::Array<T>::WriteLease _write;
@@ -126,10 +134,17 @@ namespace DNDS::Geom
                 _sealed = true;
             }
         };
+        WriteScope Write(const EntitySpace &space, const Runtime::ExecutionStream &stream)
+        {
+            auto borrow = stream.BorrowContext();
+            auto result = Write(space, borrow.Context());
+            result._borrow.emplace(std::move(borrow));
+            return result;
+        }
         WriteScope Write(const EntitySpace &space)
         {
             Validate(space);
-            return Write(space, _slot->current->context);
+            return Write(space, _slot->current->HostContext());
         }
         WriteScope Write(const EntitySpace &space, Runtime::ExecutionContext context)
         {
@@ -186,7 +201,7 @@ namespace DNDS::Geom
                 Operation Begin()
                 {
                     ValidateCurrent();
-                    return Operation(_expected, _binding, _expected->context, false);
+                    return Operation(_expected, _binding, _expected->HostContext(), false);
                 }
                 Operation Begin(Runtime::ExecutionContext context, bool scheduled = false)
                 {
@@ -223,10 +238,17 @@ namespace DNDS::Geom
             DNDS_check_throw_info(_slot && _slot->current, "entity field was moved");
             _slot->current->Validate(space);
         }
+        ReadScope Read(const EntitySpace &space, const Runtime::ExecutionStream &stream) const
+        {
+            auto borrow = stream.BorrowContext();
+            auto result = Read(space, borrow.Context());
+            result._borrow.emplace(std::move(borrow));
+            return result;
+        }
         ReadScope Read(const EntitySpace &space) const
         {
             Validate(space);
-            return Read(space, _slot->current->context);
+            return Read(space, _slot->current->HostContext());
         }
         ReadScope Read(const EntitySpace &space, Runtime::ExecutionContext context) const
         {
@@ -250,26 +272,29 @@ namespace DNDS::Geom
         /// Register this association for detached migration. Compact CSR is the
         /// default; request PreserveStorage or an explicit table/padded shape
         /// when physical stride/capacity matters to subsequent accessors.
-        CompanionEntry Register(std::string name, Runtime::TransferLayout destinationLayout = {})
+        CompanionEntry Register(std::string name, Runtime::TransferLayout destinationLayout = {},
+                                std::optional<Runtime::ExecutionStream> stream = std::nullopt)
         {
             DNDS_check_throw_info(_slot && _slot->current, "entity field registration requires a live field");
             auto slot = _slot;
             auto state = slot->current;
+            auto execution = stream ? std::make_shared<Runtime::ExecutionBorrow>(stream->BorrowContext()) : nullptr;
+            const auto context = execution ? execution->Context() : state->HostContext();
             // Descriptor construction is local. Defer semantic checks to the
             // collectively guarded preparation stages, before any payload.
-            auto entry = RegisterArray<T>(state->values, state->space.Kind(), std::move(name), state->schema, state->context,
+            auto entry = RegisterArray<T>(std::shared_ptr<Runtime::Array<T>>(state, &state->values), state->space.Kind(), std::move(name), state->schema, context,
                                           CompanionDisposition::TransferIfReordered, destinationLayout, state->space.Communication());
-            entry.preflight = [state](const PermutationTransfer &transfer)
+            entry.preflight = [state, execution, context](const PermutationTransfer &transfer)
             {
                 state->Validate(state->space);
                 DNDS_check_throw_info(state->values.RowCount() == size_t(transfer.size()), "entity field migration requires owned rows");
-                auto read = state->values.Read(state->context);
+                auto read = state->values.Read(context);
             };
-            entry.attachment = [slot, state]
+            entry.attachment = [slot, state, execution, context]
             {
                 DNDS_check_throw_info(slot->current == state, "entity field registration predates publication");
                 state->Validate(state->space);
-                auto read = state->values.Read(state->context);
+                auto read = state->values.Read(context);
                 return CompanionAttachment{state->schema.Identity() + ":" + Runtime::ElementSchema::TypeIdentity<T>() + ":entity-bound:" +
                                                std::to_string(int(state->values.GetDevice().space)),
                                            {},
@@ -285,15 +310,15 @@ namespace DNDS::Geom
                                            0};
             };
             auto prepare = entry.prepare;
-            entry.prepare = [slot, state, prepare](const PermutationTransfer &transfer, const MPIInfo &mpi)
+            entry.prepare = [slot, state, prepare, execution, context](const PermutationTransfer &transfer, const MPIInfo &mpi)
             {
                 std::shared_ptr<typename Runtime::Array<T>::ReadLease> retained;
                 state->space.LocalStage([&]
-                                        { retained = std::make_shared<typename Runtime::Array<T>::ReadLease>(state->values.Read(state->context)); });
+                                        { retained = std::make_shared<typename Runtime::Array<T>::ReadLease>(state->values.Read(context)); });
                 auto old = prepare(transfer, mpi);
                 auto *array = dynamic_cast<FieldTransferDetail::Prepared<Runtime::Array<T>> *>(old.get());
                 DNDS_check_throw_info(array, "entity field adapter preparation type mismatch");
-                return std::make_unique<Prepared>(slot, std::move(array->next), state->schema, state->context, std::move(retained));
+                return std::make_unique<Prepared>(slot, std::move(array->next), state->schema, context, std::move(retained), execution);
             };
             entry.requiresEntityBinding = true;
             entry.validateSourceSpace = [slot, state](const EntitySpace &space)
@@ -301,10 +326,10 @@ namespace DNDS::Geom
                 DNDS_check_throw_info(slot->current == state, "entity field registration changed");
                 state->Validate(space);
             };
-            entry.prepareUnchanged = [slot, state]
+            entry.prepareUnchanged = [slot, state, execution, context]
             {
-                auto retained = std::make_shared<typename Runtime::Array<T>::ReadLease>(state->values.Read(state->context));
-                return std::make_unique<Prepared>(slot, state->values, state->schema, state->context, std::move(retained));
+                auto retained = std::make_shared<typename Runtime::Array<T>::ReadLease>(state->values.Read(context));
+                return std::make_unique<Prepared>(slot, state->values, state->schema, context, std::move(retained), execution);
             };
             entry.fn = [](const PermutationTransfer &, const MPIInfo &)
             { DNDS_check_throw_info(false, "entity-bound fields require detached PreparedMeshTransition"); };

@@ -51,11 +51,11 @@ namespace DNDS::Cauchy
         }
         if (!_config.Interfaces().empty())
         {
-            std::vector<const FiniteVolume *> local(_domains.size(), nullptr);
+            std::vector<std::optional<FiniteVolume>> local(_domains.size());
             for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                 if (_domains[iDomain])
-                    local[iDomain] = &_domains[iDomain]->_fv;
-            _interfaces = std::make_unique<InterfaceCoupling>(_config, _placement.Control(), local);
+                    local[iDomain] = _domains[iDomain]->_fv;
+            _interfaces = std::make_unique<InterfaceCoupling>(_config, _placement.ControlContext(), local);
             // Establish accepted-time traces before CFL/diagnostics or the
             // first trial. Domain trial fields initially equal accepted means.
             // Separate packet allocations preserve these traces on rejection.
@@ -72,13 +72,12 @@ namespace DNDS::Cauchy
                 std::vector<InterfaceDomainInput> ports(_domains.size());
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                     if (auto &domain = _domains[iDomain])
-                        ports[iDomain] = {&domain->_fv, &domain->_trial.CoupledField(),
-                                          prepared ? &domain->_fv.FluxReconstruction(*domain->_workspace) : &domain->_fv.ReconstructionGuess(*domain->_workspace)};
+                        ports[iDomain] = {CFV::DonorInputs(domain->_trial.CoupledField(), prepared ? domain->_fv.FluxReconstruction(*domain->_workspace) : domain->_fv.ReconstructionGuess(*domain->_workspace))};
                 _interfaces->Refresh(ports, 0, {});
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                     if (_domains[iDomain])
                     {
-                        if (const auto *input = _interfaces->Inputs(iDomain))
+                        if (const auto input = _interfaces->Inputs(iDomain))
                             _domains[iDomain]->BindInterfaceInputs(*input);
                     }
             };
@@ -148,8 +147,7 @@ namespace DNDS::Cauchy
                 std::vector<InterfaceDomainInput> inputs(_domains.size());
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                     if (auto &domain = _domains[iDomain])
-                        inputs[iDomain] = {&domain->_fv, &domain->_trial.CoupledField(),
-                                           prepared ? &domain->_fv.FluxReconstruction(*domain->_workspace) : &domain->_fv.ReconstructionGuess(*domain->_workspace)};
+                        inputs[iDomain] = {CFV::DonorInputs(domain->_trial.CoupledField(), prepared ? domain->_fv.FluxReconstruction(*domain->_workspace) : domain->_fv.ReconstructionGuess(*domain->_workspace))};
                 return inputs;
             };
             const auto refresh = [&](real time, int stage, bool prepared, bool acceptedSnapshot = false)
@@ -162,7 +160,7 @@ namespace DNDS::Cauchy
                 _interfaces->Refresh(ports(prepared), time, epoch);
                 localPhase([&](index iDomain, Domain &domain)
                            {
-                    if(const auto *input=_interfaces->Inputs(iDomain)) domain.BindInterfaceInputs(*input); }, "interface binding");
+                    if(const auto input=_interfaces->Inputs(iDomain)) domain.BindInterfaceInputs(*input); }, "interface binding");
             };
             std::vector<std::optional<EquationDofs::WriteScope>> destinations(_domains.size());
             std::vector<std::optional<EquationDofs::ReadScope>> sources(_domains.size());
@@ -246,7 +244,7 @@ namespace DNDS::Cauchy
                         _interfaces->Discard();
                         for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                             if (_domains[iDomain])
-                                if (const auto *input = _interfaces->Inputs(iDomain))
+                                if (const auto input = _interfaces->Inputs(iDomain))
                                     _domains[iDomain]->BindInterfaceInputs(*input);
                     }
                     throw;
@@ -275,7 +273,7 @@ namespace DNDS::Cauchy
                     // payload transfer or physical recomputation is needed.
                     for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                         if (_domains[iDomain])
-                            if (const auto *input = _interfaces->Inputs(iDomain))
+                            if (const auto input = _interfaces->Inputs(iDomain))
                                 _domains[iDomain]->BindInterfaceInputs(*input);
                 }
                 return result;

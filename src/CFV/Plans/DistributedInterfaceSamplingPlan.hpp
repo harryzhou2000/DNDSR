@@ -7,6 +7,13 @@
 
 namespace DNDS::CFV
 {
+    /// Sharing donor bundle: participation always supplies both fields.
+    struct DonorInputs
+    {
+        FVField mean, coefficients;
+        DonorInputs(const FVField &u, const FVField &rec) : mean(u), coefficients(rec) {}
+    };
+
     /// Explicit reusable donor-side output. Private to one active evaluation;
     /// no hidden mutable solver state belongs to the sampling plan.
     struct DistributedSamplingWorkspace
@@ -112,17 +119,17 @@ namespace DNDS::CFV
         /// lease contract. Every rank validates local geometry before transfer.
         void EvaluateDonors(const FVField &mean, const FVField &coefficients, DistributedSamplingWorkspace &workspace) const
         {
-            EvaluateDonors(&mean, &coefficients, workspace);
+            EvaluateDonors(DonorInputs(mean, coefficients), workspace);
         }
-        /// Null input pointers are required on nonmembers of the donor domain.
-        /// Pointer values are resolved at this wrapper boundary, not in kernels.
-        void EvaluateDonors(const FVField *mean, const FVField *coefficients, DistributedSamplingWorkspace &workspace) const
+        /// An empty bundle denotes nonmembership; owned field handles retain
+        /// both inputs throughout synchronous evaluation.
+        void EvaluateDonors(const std::optional<DonorInputs> &input, DistributedSamplingWorkspace &workspace) const
         {
             Validate();
             DNDS_check_throw_info(workspace.plan == _data, "sampling workspace belongs to another plan");
-            DNDS_check_throw_info(bool(mean) == bool(_data->sampling) && bool(coefficients) == bool(_data->sampling), "sampling inputs differ from donor-domain participation");
+            DNDS_check_throw_info(bool(input) == bool(_data->sampling), "sampling inputs differ from donor-domain participation");
             if (_data->sampling)
-                _data->sampling->Evaluate(*mean, *coefficients, workspace.donorValues);
+                _data->sampling->Evaluate(input->mean, input->coefficients, workspace.donorValues);
         }
         /// Collective setup. Reuse this binding for repeated fixed-buffer
         /// sampling; wait for donors before Begin and before reading receivers.
@@ -146,15 +153,15 @@ namespace DNDS::CFV
         void Evaluate(const FVField &mean, const FVField &coefficients, DistributedSamplingWorkspace &workspace,
                       Runtime::Array<real> &values) const
         {
-            EvaluateCoupled(&mean, &coefficients, workspace, values);
+            EvaluateCoupled(DonorInputs(mean, coefficients), workspace, values);
         }
-        /// Coupling-participant convenience. Pass null inputs when this rank
+        /// Coupling-participant convenience. Pass an empty bundle when this rank
         /// has no donor-domain reconstruction; every rank still enters MPI.
-        void EvaluateCoupled(const FVField *mean, const FVField *coefficients, DistributedSamplingWorkspace &workspace,
+        void EvaluateCoupled(const std::optional<DonorInputs> &input, DistributedSamplingWorkspace &workspace,
                              Runtime::Array<real> &values) const
         {
             _data->returnRoute.Context()->LocalStage([&]
-                                                     { EvaluateDonors(mean, coefficients, workspace); });
+                                                     { EvaluateDonors(input, workspace); });
             auto binding = BindResult(workspace, values, Runtime::TransferMode::Transient);
             binding.Begin().Wait();
         }

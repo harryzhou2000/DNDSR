@@ -13,9 +13,10 @@ namespace DNDS::Cauchy
     /// Unselected means remain frozen; all finest residuals stay observable.
     /// Fine state/workspace remain bound. The hierarchy retains a copy of the
     /// finest solver's shared implementation; its original facade may move or
-    /// expire. Caller keeps the engine alive at a stable address through every
-    /// hierarchy/solver copy and queued operation, serializes calls and owns
-    /// physical trial rollback. Copies share mutable solver/workspace state.
+    /// expire. Each cycle reserves that session explicitly; original solver
+    /// calls reject while the hierarchy uses it. The hierarchy is move-only.
+    /// Its solvers lock the weak runtime at operation entry. Caller owns physical
+    /// trial rollback and still coordinates rank schedules.
     class PolynomialMultigrid
     {
         struct Data;
@@ -24,6 +25,10 @@ namespace DNDS::Cauchy
         std::shared_ptr<EquationData> _equationData;
 
     public:
+        PolynomialMultigrid(const PolynomialMultigrid &) = delete;
+        PolynomialMultigrid &operator=(const PolynomialMultigrid &) = delete;
+        PolynomialMultigrid(PolynomialMultigrid &&) noexcept = default;
+        PolynomialMultigrid &operator=(PolynomialMultigrid &&) noexcept = default;
         /// Zero-based coarse-level controls, also usable to reproduce a level
         /// operator independently. Level 0 uses direct-gradient O2 convection;
         /// subsequent levels use mean convection with the same gradients for

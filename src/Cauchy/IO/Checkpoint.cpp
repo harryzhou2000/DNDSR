@@ -656,7 +656,7 @@ namespace DNDS::Cauchy
         MPI::LocalStage(mpi, [&]
                         { guess = Runtime::Array<real>(_fv.ReconstructionGuess(*_workspace).Owned().Layout()); });
         int compatibleReconstruction = bool(reconstruction) && (version < 4 || metadata.value("reconstruction", Json()) == _fv.ReconstructionMetadata());
-        const bool needsLimitedVRHistory = _fv.LimitedVRHistory(*_workspace) != nullptr;
+        const bool needsLimitedVRHistory = _fv.LimitedVRHistory(*_workspace).has_value();
         compatibleReconstruction = compatibleReconstruction && (!needsLimitedVRHistory || limitedVRHistory);
         if (reconstruction)
             for (index iRow = 0; iRow < reconstruction->RowCount(); ++iRow)

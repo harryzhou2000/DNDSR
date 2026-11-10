@@ -9,6 +9,8 @@
 #include <limits>
 #include <cstring>
 #include <sstream>
+#include <atomic>
+#include <thread>
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
 
 namespace C = DNDS::Cauchy;
@@ -417,7 +419,7 @@ TEST_CASE("Implicit stage cap reports unconverged and auxiliary requirements fai
     auto state = fv.Metrics().BuildField(5), source = fv.Metrics().BuildField(5);
     fv.Initialize(state, {}, {1, .1, 0, 0, 1});
     A::Fill(source, 0.);
-    R::EagerEngine engine;
+    R::EagerEngine engine(2);
     const auto stream = engine.CreateCPUStream();
     CHECK_THROWS(C::NonlinearSolver(fv, state, fv.BuildWorkspace(state), engine, stream, settings));
     C::AuxiliaryRequest request;
@@ -427,6 +429,21 @@ TEST_CASE("Implicit stage cap reports unconverged and auxiliary requirements fai
     CHECK_FALSE(report.converged);
     CHECK(report.iterations == 1);
     CHECK(fv.Admissible(state));
+    auto hierarchyAlias = solver.RetainForMultigrid();
+    auto lease = hierarchyAlias.ReserveForMultigrid();
+    std::atomic<bool> entered{false}, release{false};
+    engine.Submit(stream, [lease, &entered, &release](R::ExecutionContext)
+                  { entered = true; while (!release.load()) std::this_thread::yield(); });
+    lease.reset();
+    while (!entered.load())
+        std::this_thread::yield();
+    // The worker owns the explicit nested-session ticket. The independent
+    // public facade must reject before entering any numerical collective.
+    CHECK_THROWS_WITH_AS(solver.Solve(state, source, 1, 1, .1), doctest::Contains("active operation"), std::exception);
+    release = true;
+    engine.Synchronize();
+    engine.Close();
+    CHECK_THROWS_WITH_AS(solver.Solve(state, source, 1, 1, .1), doctest::Contains("closed"), std::exception);
 }
 TEST_CASE("Implicit bad corrections reject without poisoning state and nonlinear controls agree before allocation")
 {

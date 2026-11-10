@@ -40,9 +40,9 @@ namespace DNDS::Geom
         template <class Value>
         struct Prepared final : PreparedCompanion
         {
-            Value *destination;
+            std::shared_ptr<Value> destination;
             Value next;
-            Prepared(Value &source, Value value) : destination(&source), next(std::move(value)) {}
+            Prepared(std::shared_ptr<Value> source, Value value) : destination(std::move(source)), next(std::move(value)) {}
             void Publish() noexcept override
             {
                 static_assert(std::is_nothrow_move_assignable_v<Value>, "field publication must not throw");
@@ -140,31 +140,34 @@ namespace DNDS::Geom
 
     /// Register owned rows for detached preparation and publication. The default
     /// policy preserves the source storage family and stride/capacity. Registration
-    /// does not itself move data; the caller must keep the referenced handle alive.
+    /// retains an owning publication slot; ordinary Array aliases remain storage aliases.
     /// The destination storage policy is explicit and never inferred from a
     /// static accessor. Padding is not copied. Failed preparation retains source.
     /// Arrays have no mesh communication policy: pass the mesh's context to
     /// inherit its preflight mode. Null retains enabled compatibility behavior.
     template <class T>
-    CompanionEntry RegisterArray(Runtime::Array<T> &array, EntityKind kind, std::string name,
+    CompanionEntry RegisterArray(std::shared_ptr<Runtime::Array<T>> slot, EntityKind kind, std::string name,
                                  Runtime::ElementSchema schema = Runtime::ElementSchema::Arithmetic<T>(),
                                  Runtime::ExecutionContext context = Runtime::ExecutionContext::Host(),
                                  CompanionDisposition disposition = CompanionDisposition::TransferIfReordered,
                                  Runtime::TransferLayout destinationLayout = {},
                                  std::shared_ptr<Runtime::CommunicationContext> communication = {})
     {
+        DNDS_check_throw_info(slot, "field publication requires an owning slot");
         CompanionEntry entry{kind, {}, std::move(name)};
         entry.disposition = disposition;
-        entry.preflight = [&array, schema, context](const PermutationTransfer &transfer)
+        entry.preflight = [slot, schema, context](const PermutationTransfer &transfer)
         {
+            const auto &array = *slot;
             DNDS_check_throw_info(array.RowCount() == size_t(transfer.size()) && array.Storage().IsIdle() && array.IsValid() &&
                                       schema.Extent() == sizeof(T) && schema.Compatible(Runtime::ElementSchema::TypeIdentity<T>()) &&
                                       context.device == array.GetDevice() &&
                                       (context.device != Runtime::Device::Host() || !context.stream),
                                   "native Array migration requires idle valid compatible owned rows/context");
         };
-        entry.attachment = [&array, schema]()
+        entry.attachment = [slot, schema]()
         {
+            const auto &array = *slot;
             DNDS_check_throw_info(array.IsValid() && array.Storage().IsIdle(), "native Array attachment requires valid idle storage");
             return CompanionAttachment{schema.Identity() + ":" + Runtime::ElementSchema::TypeIdentity<T>() + ":" +
                                            std::to_string(static_cast<int>(array.GetDevice().space)),
@@ -172,7 +175,7 @@ namespace DNDS::Geom
                                        false,
                                        0,
                                        0,
-                                       &array,
+                                       slot.get(),
                                        array.Identity(),
                                        array.Version(),
                                        array.ShapeVersion(),
@@ -180,13 +183,14 @@ namespace DNDS::Geom
                                        size_t(array.RowCount()),
                                        0};
         };
-        entry.prepare = [&array, schema, context, destinationLayout, communication](const PermutationTransfer &transfer, const MPIInfo &mpi)
+        entry.prepare = [slot, schema, context, destinationLayout, communication](const PermutationTransfer &transfer, const MPIInfo &mpi)
         {
+            auto &array = *slot;
             auto route = NativeRowTransfer(transfer, mpi, communication);
             Runtime::PayloadPlan payload(route, array.Layout(), schema, destinationLayout);
             std::unique_ptr<FieldTransferDetail::Prepared<Runtime::Array<T>>> next;
             FieldTransferDetail::LocalStage(mpi, communication, [&]
-                                            { next = std::make_unique<FieldTransferDetail::Prepared<Runtime::Array<T>>>(array,
+                                            { next = std::make_unique<FieldTransferDetail::Prepared<Runtime::Array<T>>>(slot,
                                                                                                                         Runtime::Array<T>(payload.DestinationLayout(), array.GetDevice())); });
             payload.Bind(array, next->next).Begin(context).Wait();
             return next;
@@ -208,18 +212,20 @@ namespace DNDS::Geom
     /// Adapt an owned native field to the existing mesh permutation machinery.
     /// Stable IDs, states and time histories are ordinary registered fields.
     /// The initial implementation is host-only; ghosts are rebuilt separately.
-    /// The field reference must outlive the synchronous reorder call.
+    /// Registration retains the supplied owning field slot through publication.
     /// Pass the agreed mesh communication context explicitly; a null context
     /// keeps collective preflight enabled, independently of array execution.
     template <class T>
-    CompanionEntry RegisterField(Runtime::Field<T> &field, EntityKind kind, std::string name,
+    CompanionEntry RegisterField(std::shared_ptr<Runtime::Field<T>> slot, EntityKind kind, std::string name,
                                  CompanionDisposition disposition = CompanionDisposition::TransferIfReordered,
                                  std::shared_ptr<Runtime::CommunicationContext> communication = {})
     {
+        DNDS_check_throw_info(slot, "field publication requires an owning slot");
         CompanionEntry entry{kind, {}, std::move(name)};
         entry.disposition = disposition;
-        entry.preflight = [&field, kind](const PermutationTransfer &transfer)
+        entry.preflight = [slot, kind](const PermutationTransfer &transfer)
         {
+            const auto &field = *slot;
             std::string expected = entityKindName(kind);
             std::transform(expected.begin(), expected.end(), expected.begin(), [](unsigned char c)
                            { return char(std::tolower(c)); });
@@ -231,8 +237,9 @@ namespace DNDS::Geom
                                       field.Values().IsValid() && field.Association() == expected,
                                   "native field migration requires idle valid host owned rows with matching entity association");
         };
-        entry.attachment = [&field, kind]()
+        entry.attachment = [slot, kind]()
         {
+            const auto &field = *slot;
             std::string expected = entityKindName(kind);
             std::transform(expected.begin(), expected.end(), expected.begin(), [](unsigned char c)
                            { return char(std::tolower(c)); });
@@ -241,12 +248,13 @@ namespace DNDS::Geom
             return CompanionAttachment{Runtime::ElementSchema::TypeIdentity<T>() + ":" + std::to_string(field.Layout().components) + ":" +
                                            std::to_string(field.Layout().stride),
                                        field.Association(), true,
-                                       field.GetDistribution().domain, field.GetDistribution().epoch, &field,
+                                       field.GetDistribution().domain, field.GetDistribution().epoch, slot.get(),
                                        field.Values().Identity(), field.Values().Version(), 0, field.Layout().rows,
                                        field.GetDistribution().owned, field.GetDistribution().ghosts};
         };
-        entry.prepare = [&field, communication](const PermutationTransfer &transfer, const MPIInfo &mpi)
+        entry.prepare = [slot, communication](const PermutationTransfer &transfer, const MPIInfo &mpi)
         {
+            auto &field = *slot;
             // Move source addresses with the mesh's exact correspondence,
             // including local permutation and distributed receive order.
             auto route = NativeRowTransfer(transfer, mpi, communication);
@@ -257,7 +265,7 @@ namespace DNDS::Geom
             ++distribution.epoch;
             std::unique_ptr<FieldTransferDetail::Prepared<Runtime::Field<T>>> next;
             FieldTransferDetail::LocalStage(mpi, communication, [&]
-                                            { next = std::make_unique<FieldTransferDetail::Prepared<Runtime::Field<T>>>(field,
+                                            { next = std::make_unique<FieldTransferDetail::Prepared<Runtime::Field<T>>>(slot,
                                                                                                                         Runtime::Field<T>(layout, distribution, field.Association())); });
             // Dense Field includes stride padding in its exact row
             // history. Byte schema retains compatibility for POD fields.

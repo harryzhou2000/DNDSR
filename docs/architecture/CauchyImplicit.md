@@ -120,6 +120,24 @@ claim convergence. Input halos may be stale; the physical evaluation handles
 its exchanges. Output guarantees owned values only. Calls remain synchronous
 and serialized against the bound state/workspace/engine.
 
+Nonlinear, linear and pMG sessions are move-only. Their mutable implementations
+reserve an operation-level exclusion ticket, outside numerical loops. The finest
+pMG session is an explicit retained alias; a cycle holds its ticket while nested
+smoothers reuse that same permission. Independent calls through the original
+solver reject while the cycle is active. Frozen plans remain sharing handles.
+Bound nonlinear operators retain a weak managed stream and lock the actual
+runtime for each call, rejecting expired/closed execution without an engine
+pointer. Python stage adapters retain native plan/state handles and preserve the
+existing argument shapes and keep-alive relationships.
+
+Linear solutions, optional LVR arrays, auxiliary bundles and interface packets
+return sharing handles. They survive destruction of the enclosing facade, but
+are not historical snapshots: another solve, limiter refresh or packet update
+may overwrite the same allocation. Copy values explicitly when history is needed.
+Version/provenance checks still determine whether a retained packet is a current
+operator input. Donor participation supplies one optional mean/coefficient
+bundle; nonmembers supply none and still enter the collective coupling schedule.
+
 `PolynomialMultigrid::ApplyCycle` is one finest update. Its bounded smoothers
 call `CorrectOnce`; they do not restart convergence policy or pseudo-CFL growth.
 The compatibility `Solve` frontend uses the same `NonlinearDetail::Iterate`
@@ -963,10 +981,11 @@ input to the intended entity ghost mapping. Checked execution coordinates local
 kernel errors before more MPI; disabling those checks is caller-ordered eager
 execution and transfers distributed failure handling to the caller. Setup
 agreement stays collective; repeated solve-entry agreement follows that switch.
-A preflight rejection is reusable; a
-failure after iteration starts invalidates that workspace for reuse. Reports
-distinguish convergence, finite iteration limits and unusable breakdowns. The
-borrowed solution changes at the next solve; it cannot serve as that solve's RHS.
+Coordinated unit tests may catch a preflight rejection before mutation. Solver
+collective paths abort on exceptions; they never recover an iteration from one.
+Explicit numerical reports distinguish convergence, finite iteration limits
+and unusable breakdowns. The sharing solution handle changes at the next solve;
+it cannot serve as that solve's RHS.
 
 Distributed tests solve an independently assembled global block matrix, using
 real persistent ring transfers, both overlap policies, both SGS middle modes,

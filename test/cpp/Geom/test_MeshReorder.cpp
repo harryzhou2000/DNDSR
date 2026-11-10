@@ -455,14 +455,15 @@ TEST_CASE("Native field uses exact local permutation and preserves old aliases")
     entity.father->Resize(3);
     entity.father->createGlobalMapping();
     auto permutation = PermutationTransfer::fromLocalPermutation({2, 0, 1}, entity.father->pLGlobalMapping, mpi);
-    Runtime::Field<int64_t> ids({3, 1, 1}, {9, 3, 3, 0}, "cell");
+    auto idsSlot = std::make_shared<Runtime::Field<int64_t>>(Runtime::Field<int64_t>({3, 1, 1}, {9, 3, 3, 0}, "cell"));
+    auto &ids = *idsSlot;
     {
         auto edit = ids.Write();
         for (size_t i = 0; i < 3; ++i)
             edit.View<int64_t>()[i] = 100 * mpi.rank + int64_t(i);
     }
     auto old = ids;
-    RegisterField(ids, EntityKind::Cell, "ids").fn(permutation, mpi);
+    RegisterField(idsSlot, EntityKind::Cell, "ids").fn(permutation, mpi);
     CHECK(ids.GetDistribution().epoch == 4);
     CHECK(old.GetDistribution().epoch == 3);
     CHECK(ids.Read().View<int64_t>()[0] == 100 * mpi.rank + 1);
@@ -481,7 +482,8 @@ TEST_CASE("Explicit transfer layout preserves static stride and rejects one-rank
     {
         auto transfer = distributed ? PermutationTransfer::fromPartition(std::vector<MPI_int>(3, (mpi.rank + 1) % mpi.size), mapping, mpi)
                                     : PermutationTransfer::fromLocalPermutation({2, 0, 1}, mapping, mpi);
-        R::Array<double> field(R::RowLayout::Dense(3, 3, 5));
+        auto fieldSlot = std::make_shared<R::Array<double>>(R::Array<double>(R::RowLayout::Dense(3, 3, 5)));
+        auto &field = *fieldSlot;
         {
             auto write = field.Write();
             for (DNDS::index iRow = 0; iRow < 3; ++iRow)
@@ -489,13 +491,13 @@ TEST_CASE("Explicit transfer layout preserves static stride and rejects one-rank
                     write.View<R::FixedRows<3, 5>>()(iRow, j) = 1000 * mpi.rank + 10 * iRow + j;
         }
         const auto identity = field.Identity();
-        auto bad = RegisterArray(field, EntityKind::Cell, "bad-capacity", R::ElementSchema::Arithmetic<double>(),
+        auto bad = RegisterArray(fieldSlot, EntityKind::Cell, "bad-capacity", R::ElementSchema::Arithmetic<double>(),
                                  R::ExecutionContext::Host(), CompanionDisposition::TransferIfReordered,
                                  R::TransferLayout::Padded(mpi.rank == 0 ? 2 : 5));
         CHECK_THROWS(bad.fn(transfer, mpi));
         CHECK(field.Identity() == identity);
         CHECK(field.Read().View()(1, 2) == 1000 * mpi.rank + 12);
-        auto good = RegisterArray(field, EntityKind::Cell, "strided-state", R::ElementSchema::Arithmetic<double>(),
+        auto good = RegisterArray(fieldSlot, EntityKind::Cell, "strided-state", R::ElementSchema::Arithmetic<double>(),
                                   R::ExecutionContext::Host(), CompanionDisposition::TransferIfReordered,
                                   R::TransferLayout::Table(3, 5));
         good.fn(transfer, mpi);
@@ -519,8 +521,10 @@ TEST_CASE("Staged field bundle preserves every source when a later preparation f
     entity.father->Resize(3);
     entity.father->createGlobalMapping();
     auto transfer = PermutationTransfer::fromLocalPermutation({2, 0, 1}, entity.father->pLGlobalMapping, mpi);
-    Runtime::Field<int64_t> history({3, 1, 1}, {17, 5, 3, 0}, "cell");
-    Runtime::Array<int64_t> stages(Runtime::RowLayout::Dense(3, 1));
+    auto historySlot = std::make_shared<Runtime::Field<int64_t>>(Runtime::Field<int64_t>({3, 1, 1}, {17, 5, 3, 0}, "cell"));
+    auto &history = *historySlot;
+    auto stagesSlot = std::make_shared<Runtime::Array<int64_t>>(Runtime::Array<int64_t>(Runtime::RowLayout::Dense(3, 1)));
+    auto &stages = *stagesSlot;
     for (size_t i = 0; i < 3; ++i)
     {
         history.Write().View<int64_t>()[i] = 100 * mpi.rank + int64_t(i);
@@ -528,8 +532,8 @@ TEST_CASE("Staged field bundle preserves every source when a later preparation f
     }
     const auto historyIdentity = history.Values().Identity();
     const auto stageIdentity = stages.Identity();
-    auto first = RegisterField(history, EntityKind::Cell, "history");
-    auto second = RegisterArray(stages, EntityKind::Cell, "stages");
+    auto first = RegisterField(historySlot, EntityKind::Cell, "history");
+    auto second = RegisterArray(stagesSlot, EntityKind::Cell, "stages");
     int preparedFirst = 0;
     auto prepareFirst = first.prepare;
     first.prepare = [&](const auto &permutation, const auto &m)
@@ -545,7 +549,7 @@ TEST_CASE("Staged field bundle preserves every source when a later preparation f
                               {
             if (m.rank == 0)
                 throw std::runtime_error("injected second-field prepare failure"); });
-        return std::make_unique<FieldTransferDetail::Prepared<Runtime::Array<int64_t>>>(stages, stages);
+        return std::make_unique<FieldTransferDetail::Prepared<Runtime::Array<int64_t>>>(stagesSlot, stages);
     };
     ReorderRegistry registry;
     registry.companions = {first, second};
@@ -575,22 +579,26 @@ TEST_CASE("Staged Array registration rejects duplicate destinations and permits 
     plan.reorderedKinds.insert(EntityKind::Cell);
     plan.transfers.emplace(EntityKind::Cell,
                            PermutationTransfer::fromLocalPermutation({1, 0}, entity.father->pLGlobalMapping, mpi));
-    Runtime::Array<int64_t> values(Runtime::RowLayout::Dense(2, 1));
+    auto valuesSlot = std::make_shared<Runtime::Array<int64_t>>(Runtime::Array<int64_t>(Runtime::RowLayout::Dense(2, 1)));
+    auto &values = *valuesSlot;
     values.Write().At(0, 0) = 11;
     values.Write().At(1, 0) = 22;
-    auto &sameObject = values;
+    auto sameObjectSlot = valuesSlot;
+    auto &sameObject = *sameObjectSlot;
     ReorderRegistry duplicate;
-    duplicate.companions = {RegisterArray(values, EntityKind::Cell, "first"),
-                            RegisterArray(sameObject, EntityKind::Cell, "second")};
+    duplicate.companions = {RegisterArray(valuesSlot, EntityKind::Cell, "first"),
+                            RegisterArray(sameObjectSlot, EntityKind::Cell, "second")};
     const auto oldIdentity = values.Identity();
     CHECK_THROWS(plan.apply(duplicate, mpi));
     CHECK(values.Identity() == oldIdentity);
     CHECK(values.Read().At(0, 0) == 11);
 
-    auto distinctHandle = values;
+    auto distinctHandleSlot = std::make_shared<std::decay_t<decltype(values)>>(values);
+
+    auto &distinctHandle = *distinctHandleSlot;
     ReorderRegistry aliases;
-    aliases.companions = {RegisterArray(values, EntityKind::Cell, "first"),
-                          RegisterArray(distinctHandle, EntityKind::Cell, "second")};
+    aliases.companions = {RegisterArray(valuesSlot, EntityKind::Cell, "first"),
+                          RegisterArray(distinctHandleSlot, EntityKind::Cell, "second")};
     plan.apply(aliases, mpi);
     CHECK(values.Identity() != oldIdentity);
     CHECK(distinctHandle.Identity() != oldIdentity);
@@ -840,13 +848,17 @@ TEST_CASE("ReorderEntities with external companion array (solver-like)")
     auto source = T::Fixture(mpi);
     auto mesh = UnstructuredMesh::FromNative(mpi, source);
     const auto count = size_t(mesh->NumCell());
-    Runtime::Array<int64_t> solverDOF(Runtime::RowLayout::Dense(count, 3, 5));
-    Runtime::Field<int64_t> stableIds({count, 1, 1}, {7, 0, count, 0}, "cell");
-    Runtime::Field<double> history({count, 2, 2}, {7, 0, count, 0}, "cell");
+    auto solverDOFSlot = std::make_shared<Runtime::Array<int64_t>>(Runtime::Array<int64_t>(Runtime::RowLayout::Dense(count, 3, 5)));
+    auto &solverDOF = *solverDOFSlot;
+    auto stableIdsSlot = std::make_shared<Runtime::Field<int64_t>>(Runtime::Field<int64_t>({count, 1, 1}, {7, 0, count, 0}, "cell"));
+    auto &stableIds = *stableIdsSlot;
+    auto historySlot = std::make_shared<Runtime::Field<double>>(Runtime::Field<double>({count, 2, 2}, {7, 0, count, 0}, "cell"));
+    auto &history = *historySlot;
     std::vector<size_t> widths(count);
     for (size_t row = 0; row < count; ++row)
         widths[row] = size_t(source->OriginalEntityId(EntityKind::Cell, DNDS::index(row)) % 3);
-    Runtime::Array<int64_t> ragged(Runtime::RowLayout::Ragged(widths));
+    auto raggedSlot = std::make_shared<Runtime::Array<int64_t>>(Runtime::Array<int64_t>(Runtime::RowLayout::Ragged(widths)));
+    auto &ragged = *raggedSlot;
     {
         auto dof = solverDOF.Write();
         auto ids = stableIds.Write();
@@ -867,9 +879,9 @@ TEST_CASE("ReorderEntities with external companion array (solver-like)")
     const auto oldDof = solverDOF, oldRagged = ragged;
     const auto oldDofIdentity = solverDOF.Identity(), oldRaggedIdentity = ragged.Identity();
     const auto oldHistory = history;
-    std::vector<CompanionEntry> fields{RegisterArray(solverDOF, EntityKind::Cell, "solverDOF"),
-                                       RegisterField(stableIds, EntityKind::Cell, "stableIds"), RegisterField(history, EntityKind::Cell, "history"),
-                                       RegisterArray(ragged, EntityKind::Cell, "nativeRagged")};
+    std::vector<CompanionEntry> fields{RegisterArray(solverDOFSlot, EntityKind::Cell, "solverDOF"),
+                                       RegisterField(stableIdsSlot, EntityKind::Cell, "stableIds"), RegisterField(historySlot, EntityKind::Cell, "history"),
+                                       RegisterArray(raggedSlot, EntityKind::Cell, "nativeRagged")};
     MeshTransitionHandle handle(mesh);
     auto input = T::Place(source, EntityKind::Cell, mpi, 3);
     if (mpi.size > 1)
@@ -915,14 +927,16 @@ TEST_CASE("Staged field attachment rejection precedes mesh mutation")
     auto mpi = worldMPI();
     auto mesh = UnstructuredMesh::FromNative(mpi, T::Fixture(mpi));
     const auto count = size_t(mesh->NumCell());
-    Runtime::Field<int64_t> first({count, 1, 1}, {7, 2, count, 0}, "cell");
-    Runtime::Field<int64_t> second({count, 1, 1}, {7, 2, count, 0}, "cell");
-    auto a = RegisterField(first, EntityKind::Cell, "first");
-    auto b = RegisterField(second, EntityKind::Cell, "second");
+    auto firstSlot = std::make_shared<Runtime::Field<int64_t>>(Runtime::Field<int64_t>({count, 1, 1}, {7, 2, count, 0}, "cell"));
+    auto &first = *firstSlot;
+    auto secondSlot = std::make_shared<Runtime::Field<int64_t>>(Runtime::Field<int64_t>({count, 1, 1}, {7, 2, count, 0}, "cell"));
+    auto &second = *secondSlot;
+    auto a = RegisterField(firstSlot, EntityKind::Cell, "first");
+    auto b = RegisterField(secondSlot, EntityKind::Cell, "second");
     SUBCASE("rank-local association mismatch")
     {
         if (mpi.rank == 0)
-            b = RegisterField(second, EntityKind::Node, "second");
+            b = RegisterField(secondSlot, EntityKind::Node, "second");
     }
     SUBCASE("rank-local disposition mismatch")
     {
@@ -931,8 +945,9 @@ TEST_CASE("Staged field attachment rejection precedes mesh mutation")
     }
     SUBCASE("same destination handle with different names")
     {
-        auto &alias = first;
-        b = RegisterField(alias, EntityKind::Cell, "second");
+        auto aliasSlot = firstSlot;
+        auto &alias = *aliasSlot;
+        b = RegisterField(aliasSlot, EntityKind::Cell, "second");
     }
     SUBCASE("same entity domain mismatch")
     {
@@ -952,7 +967,7 @@ TEST_CASE("Staged field attachment rejection precedes mesh mutation")
                                   {
                 if (m.rank == 0)
                     throw std::runtime_error("second preparation rejected"); });
-            return std::make_unique<FieldTransferDetail::Prepared<Runtime::Field<int64_t>>>(second, second);
+            return std::make_unique<FieldTransferDetail::Prepared<Runtime::Field<int64_t>>>(secondSlot, second);
         };
     }
     const auto identity = first.Values().Identity();

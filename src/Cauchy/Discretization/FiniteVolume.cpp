@@ -1,3 +1,4 @@
+#include "DNDS/Runtime/Execution/SessionAccess.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "DNDS/Algebra/DofHalo.hpp"
 #include "Cauchy/Discretization/LimitedVRInternal.hpp"
@@ -147,6 +148,7 @@ namespace DNDS::Cauchy
     }
     struct FiniteVolume::Workspace
     {
+        R::SessionAccess session;
         const bool meanOnly;
         CFV::ReconstructionWorkspace reconstruction;
         std::optional<CFV::ReconstructionWorkspace> fluxReconstruction;
@@ -176,7 +178,7 @@ namespace DNDS::Cauchy
         AuxiliaryValues auxiliary;
         std::optional<BoundaryInputs> incoming;
         std::optional<R::TransferBinding> waveHalo, pressureHalo;
-        const Data *owner;
+        std::weak_ptr<const Data> owner; // Actual plan identity, never a reusable address.
         R::ArrayStorage::Shared ownedStorage, ghostStorage;
         std::atomic<index> fallbacks{0};
         int iterations = 0;
@@ -185,12 +187,12 @@ namespace DNDS::Cauchy
         // Only a handful of physical boundary zones. Kernels accumulate into
         // disjoint atomic counters; no mutable mesh or reconstruction policy.
         std::map<int, std::array<std::atomic<real>, 3>> forces;
-        Workspace(const Data &data, CFV::FVField &state, bool meanTrial)
+        Workspace(const Data &data, std::weak_ptr<const Data> identity, CFV::FVField &state, bool meanTrial)
             : meanOnly(meanTrial), reconstruction(data.reconstruction.BuildWorkspace(5, FieldLayout(state.Owned().Layout(), data.metrics.NumCell(), data.reconstruction.NRecDOF() * 5), {1})),
               gradient(data.metrics.BuildField(5 * data.metrics.Dimension())), primitive(data.metrics.BuildField(5)),
               positivityValues(R::RowLayout::Dense(!meanOnly && data.positivitySamples ? data.positivitySamples->Size() : 0, 5)), boundary(data.reconstruction.BuildBoundaryValues(5)),
               gradientBoundary(data.gradient.BuildBoundaryValues(5)), meanHalo(data.BindTrackedHalo(state)),
-              coefficientHalo(data.BindHalo(reconstruction.coefficients)), gradientHalo(data.BindHalo(gradient)), owner(&data),
+              coefficientHalo(data.BindHalo(reconstruction.coefficients, "cauchy-reconstruction")), gradientHalo(data.BindHalo(gradient, "cauchy-gradient")), owner(std::move(identity)),
               ownedStorage(state.Owned().SharedStorage()), ghostStorage(state.Ghost().SharedStorage())
         {
             Algebra::Fill(reconstruction.coefficients, 0.);
@@ -218,7 +220,7 @@ namespace DNDS::Cauchy
                 // are shared: reconstruction, WBAP and PP run in serial phases.
                 fluxReconstruction.emplace(reconstruction);
                 fluxReconstruction->coefficients = data.metrics.BuildField(reconstruction.coefficients.Owned().Layout());
-                fluxHalo.emplace(data.BindHalo(fluxReconstruction->coefficients));
+                fluxHalo.emplace(data.BindHalo(fluxReconstruction->coefficients, "cauchy-filtered-reconstruction"));
             }
             if (!meanOnly && data.settings.numerics.positivity && !data.settings.numerics.positivityCompressToMean)
             {
@@ -229,6 +231,7 @@ namespace DNDS::Cauchy
             for (const auto &[zone, condition] : data.settings.boundaries)
                 forces.try_emplace(std::stoi(zone));
         }
+        bool BelongsTo(const std::shared_ptr<const Data> &plan) const { return plan && owner.lock() == plan; }
         CFV::ReconstructionWorkspace &Flux() { return fluxReconstruction ? *fluxReconstruction : reconstruction; }
         const CFV::ReconstructionWorkspace &Flux() const { return fluxReconstruction ? *fluxReconstruction : reconstruction; }
         R::TransferBinding &FluxHalo() { return fluxHalo ? *fluxHalo : coefficientHalo; }
@@ -558,7 +561,8 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::SetBoundaryInputs(Workspace &workspace, const BoundaryInputs &input) const
     {
-        DNDS_check_throw_info(workspace.owner == _data.get(), "boundary input belongs to a foreign workspace");
+        auto session = workspace.session.Acquire();
+        DNDS_check_throw_info(workspace.BelongsTo(_data), "boundary input belongs to a foreign workspace");
         workspace.incoming = AliasBoundaryInputs(input);
     }
     void FiniteVolume::SetBoundaryInputs(MeanWorkspace &workspace, const BoundaryInputs &input) const
@@ -623,7 +627,7 @@ namespace DNDS::Cauchy
             MPI_Allreduce(MPI_IN_PLACE, &agree, 1, MPI_INT, MPI_MIN, mpi.comm);
             DNDS_check_throw_info(agree, "LVR configuration differs between domain ranks");
         }
-        auto work = std::make_shared<Workspace>(*_data, state, meanOnly);
+        auto work = std::make_shared<Workspace>(*_data, _data, state, meanOnly);
         work->auxiliary = BuildAuxiliaryValues(request);
         if (work->auxiliary.cellWaveJump)
             work->waveHalo.emplace(BindHalo(*work->auxiliary.cellWaveJump));
@@ -633,7 +637,7 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::RequireWorkspaceChannels(const Workspace &work, AuxiliaryRequest required) const
     {
-        DNDS_check_throw_info(work.owner == _data.get(), "foreign finite-volume workspace");
+        DNDS_check_throw_info(work.BelongsTo(_data), "foreign finite-volume workspace");
         const auto &values = work.auxiliary;
         DNDS_check_throw_info((!required.meanThermodynamics || values.meanThermodynamics || values._derivedThermodynamics) &&
                                   (!required.faceSpectralRadius || values.faceSpectralRadius) &&
@@ -653,7 +657,8 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::ResetReconstruction(Workspace &workspace) const
     {
-        DNDS_check_throw_info(workspace.owner == _data.get(), "foreign FV workspace");
+        auto session = workspace.session.Acquire();
+        DNDS_check_throw_info(workspace.BelongsTo(_data), "foreign FV workspace");
         // DITR's midpoint workspace is trial-local. Its retained limiter gates
         // must be cold with its polynomial, including after restart/retry.
         // Reserve every destination before changing any local warm state.
@@ -696,12 +701,12 @@ namespace DNDS::Cauchy
     }
     const CFV::FVField &FiniteVolume::ReconstructionGuess(const Workspace &workspace) const
     {
-        DNDS_check_throw_info(workspace.owner == _data.get(), "foreign reconstruction workspace");
+        DNDS_check_throw_info(workspace.BelongsTo(_data), "foreign reconstruction workspace");
         return workspace.reconstruction.coefficients;
     }
     const CFV::FVField &FiniteVolume::FluxReconstruction(const Workspace &workspace) const
     {
-        DNDS_check_throw_info(workspace.owner == _data.get() && (!workspace.fluxReconstruction || workspace.fluxReady),
+        DNDS_check_throw_info(workspace.BelongsTo(_data) && (!workspace.fluxReconstruction || workspace.fluxReady),
                               "flux reconstruction requires this plan's prepared workspace");
         return workspace.Flux().coefficients;
     }
@@ -731,7 +736,7 @@ namespace DNDS::Cauchy
         };
         stage([&]
               {
-            DNDS_check_throw_info(workspace.owner == _data.get() && coefficients.GetDevice() == R::Device::Host() &&
+            DNDS_check_throw_info(workspace.BelongsTo(_data) && coefficients.GetDevice() == R::Device::Host() &&
                                       !coefficients.Layout().IsVariable() && coefficients.RowCount() == Metrics().NumCell() &&
                                       coefficients.Layout().Width() == workspace.reconstruction.coefficients.Width(),
                                   "restart reconstruction guess schema mismatch");
@@ -758,6 +763,7 @@ namespace DNDS::Cauchy
         struct Reservation
         {
             std::shared_ptr<Workspace> owner;
+            R::SessionAccess::Lease session;
             std::optional<R::Array<real>::ReadLease> source, historySource;
             std::optional<R::Array<real>::WriteLease> destination, historyDestination;
             bool started = false;
@@ -777,6 +783,7 @@ namespace DNDS::Cauchy
               {
             reservation = std::make_shared<Reservation>();
             reservation->owner = std::move(retained);
+            reservation->session = workspace.session.Acquire();
             reservation->source.emplace(coefficients.Read());
             if (limitedVRHistory) reservation->historySource.emplace(limitedVRHistory->Read());
             reservation->destination.emplace(workspace.reconstruction.coefficients.Owned().Write());
@@ -817,15 +824,15 @@ namespace DNDS::Cauchy
         Metrics().Communication()->LocalStage(validate);
         EvaluateImpl(*field, &residual, work, engine, stream, time);
     }
-    const R::Array<real> *FiniteVolume::LimitedVRHistory(const Workspace &work) const
+    std::optional<R::Array<real>> FiniteVolume::LimitedVRHistory(const Workspace &work) const
     {
-        DNDS_check_throw_info(work.owner == _data.get(), "foreign LVR workspace");
-        return work.limitedVR ? &work.limitedVR->previous : nullptr;
+        DNDS_check_throw_info(work.BelongsTo(_data), "foreign LVR workspace");
+        return work.limitedVR ? std::optional<R::Array<real>>(work.limitedVR->previous) : std::nullopt;
     }
-    const R::Array<real> *FiniteVolume::LimitedVRAlpha(const Workspace &work) const
+    std::optional<R::Array<real>> FiniteVolume::LimitedVRAlpha(const Workspace &work) const
     {
-        DNDS_check_throw_info(work.owner == _data.get(), "foreign LVR workspace");
-        return work.limitedVR ? &work.limitedVR->alpha : nullptr;
+        DNDS_check_throw_info(work.BelongsTo(_data), "foreign LVR workspace");
+        return work.limitedVR ? std::optional<R::Array<real>>(work.limitedVR->alpha) : std::nullopt;
     }
     index FiniteVolume::PrepareFaceCharacteristics(const CFV::FVField &state, CFV::FaceCharacteristicTransform &transform) const
     {
@@ -871,10 +878,11 @@ namespace DNDS::Cauchy
     void FiniteVolume::RefreshSamplingInputs(CFV::FVField &state, Workspace &work, R::EagerEngine &engine,
                                              const R::ExecutionStream &stream) const
     {
+        auto session = work.session.Acquire();
         Metrics().Communication()->LocalStage([&]
                                               {
             Metrics().ValidateField(state,5);
-            DNDS_check_throw_info(work.owner==_data.get()&&state.Owned().SharedStorage()==work.ownedStorage&&
+            DNDS_check_throw_info(work.BelongsTo(_data)&&state.Owned().SharedStorage()==work.ownedStorage&&
                                   state.Ghost().SharedStorage()==work.ghostStorage,"sampling workspace/state binding differs"); });
         work.meanHalo.Begin(++work.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()).Wait();
         if (_data->settings.CheckHaloFreshness())
@@ -886,6 +894,7 @@ namespace DNDS::Cauchy
     void FiniteVolume::EvaluateImpl(CFV::FVField &state, CFV::FVField *residual, Workspace &work,
                                     R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
+        auto session = work.session.Acquire();
         FVProfileScope profile(_data->settings.numerics.firstOrderConvection ? 2 : _data->settings.numerics.reconstruction == "variational" ? 0
                                                                                                                                             : 1,
                                Metrics().Communicator());
@@ -903,7 +912,7 @@ namespace DNDS::Cauchy
             incomingRead.emplace(work.incoming->flow.Read());
             incomingView=incomingRead->View<R::UniformTableRows>();
         }
-        DNDS_check_throw_info(work.owner == _data.get() && stream.Context().device == R::Device::Host() &&
+        DNDS_check_throw_info(work.BelongsTo(_data) && stream.Context().device == R::Device::Host() &&
                                   state.Owned().SharedStorage() == work.ownedStorage && state.Ghost().SharedStorage() == work.ghostStorage,
                               "foreign FV workspace, rebound field, or unavailable execution backend");
         if(residual)
@@ -1463,23 +1472,24 @@ namespace DNDS::Cauchy
     int FiniteVolume::LastReconstructionIterations(const Workspace &work) const { return work.iterations; }
     const CFV::FVField &FiniteVolume::LowOrderResidual(const Workspace &work) const
     {
-        DNDS_check_throw_info(work.owner == _data.get() && work.lowResidual, "low-order residual requires this plan's PP workspace");
+        DNDS_check_throw_info(work.BelongsTo(_data) && work.lowResidual, "low-order residual requires this plan's PP workspace");
         return *work.lowResidual;
     }
-    const AuxiliaryValues &FiniteVolume::PreparedAuxValues(const Workspace &work) const
+    AuxiliaryValues FiniteVolume::PreparedAuxValues(const Workspace &work) const
     {
-        DNDS_check_throw_info(work.owner == _data.get() && work.auxiliary._origin, "auxiliary values require a completed preparation for this workspace");
+        DNDS_check_throw_info(work.BelongsTo(_data) && work.auxiliary._origin, "auxiliary values require a completed preparation for this workspace");
         return work.auxiliary;
     }
     void FiniteVolume::PrepareCorrectionAux(CFV::FVField &state, Workspace &work, R::EagerEngine &engine,
                                             const R::ExecutionStream &stream, real time) const
     {
+        auto session = work.session.Acquire();
         const MPIInfo mpi(Metrics().Communicator());
         std::optional<AuxiliaryPreparation> preparation;
         Metrics().Communication()->LocalStage([&]
                                               {
             Metrics().ValidateField(state, 5);
-            DNDS_check_throw_info(work.owner == _data.get() && state.Owned().SharedStorage() == work.ownedStorage &&
+            DNDS_check_throw_info(work.BelongsTo(_data) && state.Owned().SharedStorage() == work.ownedStorage &&
                                       state.Ghost().SharedStorage() == work.ghostStorage && stream.Context().device == R::Device::Host(),
                                   "correction auxiliary workspace/state/backend mismatch");
             DNDS_check_throw_info(!HasInterfaces() || work.incoming, "correction preparation needs interface values");
@@ -1505,6 +1515,7 @@ namespace DNDS::Cauchy
     const ThermalBounds &FiniteVolume::ThermalConstraints() const { return _data->PerfectGasBounds(); }
     void FiniteVolume::LimitReconstructionPP(const CFV::FVField &state, Workspace &work) const
     {
+        auto session = work.session.Acquire();
         LimitReconstructionPPImpl(state, work, true);
     }
     void FiniteVolume::LimitReconstructionPPImpl(const CFV::FVField &state, Workspace &work, bool refresh) const
@@ -1514,7 +1525,7 @@ namespace DNDS::Cauchy
         bool unchanged = false;
         Metrics().Communication()->LocalStage([&]
                                               {
-            DNDS_check_throw_info(work.owner == _data.get() && controls.positivity && _data->positivitySamples &&
+            DNDS_check_throw_info(work.BelongsTo(_data) && controls.positivity && _data->positivitySamples &&
                                   work.ownedStorage == state.Owned().SharedStorage() && work.ghostStorage == state.Ghost().SharedStorage(),
                                   "reconstruction PP requires this plan's bound state and enabled workspace");
             if (refresh) work.fluxReady = false;
@@ -1671,7 +1682,7 @@ namespace DNDS::Cauchy
     }
     std::pair<index, real> FiniteVolume::PositivityReconstructionStats(const Workspace &work) const
     {
-        DNDS_check_throw_info(work.owner == _data.get(), "foreign positivity workspace");
+        DNDS_check_throw_info(work.BelongsTo(_data), "foreign positivity workspace");
         auto count = work.betaLimited;
         auto beta = work.betaMin;
         MPI_Allreduce(MPI_IN_PLACE, &count, 1, MPI_INT64_T, MPI_SUM, Metrics().Communicator());
@@ -1767,7 +1778,7 @@ namespace DNDS::Cauchy
     }
     index FiniteVolume::LastFaceFallbacks(const Workspace &workspace) const
     {
-        DNDS_check_throw_info(workspace.owner == _data.get(), "foreign FV diagnostics workspace");
+        DNDS_check_throw_info(workspace.BelongsTo(_data), "foreign FV diagnostics workspace");
         index count = workspace.fallbacks.load();
         MPI_Allreduce(MPI_IN_PLACE, &count, 1, MPI_INT64_T, MPI_SUM, Metrics().Communicator());
         return count;

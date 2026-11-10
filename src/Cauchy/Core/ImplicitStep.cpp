@@ -198,7 +198,7 @@ namespace DNDS::Cauchy
                 const auto &guess = _fv.ReconstructionGuess(*_workspace).Owned();
                 if (!_reconstructionBackup) _reconstructionBackup.emplace(guess.Layout());
                 guessRead.emplace(guess.Read());
-                if (const auto *history = _fv.LimitedVRHistory(*_workspace))
+                if (const auto history = _fv.LimitedVRHistory(*_workspace))
                 {
                     if (!_limitedVRBackup) _limitedVRBackup.emplace(history->Layout());
                     historyRead.emplace(history->Read());

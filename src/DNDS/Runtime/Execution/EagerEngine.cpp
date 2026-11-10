@@ -278,6 +278,7 @@ namespace DNDS::Runtime
         std::shared_ptr<AccessTrackingContext> tracking;
         std::mutex mutex;
         bool draining = false;
+        std::atomic<size_t> openBorrows{0};
         explicit ExecutionRuntime(size_t threads) : host(std::make_shared<CPUExecutor>(threads)) {}
         void CheckOpen() const
         {
@@ -322,12 +323,55 @@ namespace DNDS::Runtime
             draining = false;
         }
     };
+    ExecutionBorrow::ExecutionBorrow(std::shared_ptr<ExecutionRuntime> runtime, ExecutionContext context)
+        : _runtime(std::move(runtime)), _context(context)
+    {
+        DNDS_check_throw_info(_runtime, "execution context no longer exists");
+        _runtime->CheckOpen();
+        ++_runtime->openBorrows;
+    }
+    ExecutionBorrow::ExecutionBorrow(ExecutionBorrow &&other) noexcept
+        : _runtime(std::move(other._runtime)), _context(other._context) {}
+    ExecutionBorrow &ExecutionBorrow::operator=(ExecutionBorrow &&other) noexcept
+    {
+        if (this != &other)
+        {
+            if (_runtime)
+                --_runtime->openBorrows;
+            _runtime = std::move(other._runtime);
+            _context = other._context;
+        }
+        return *this;
+    }
+    ExecutionBorrow::~ExecutionBorrow()
+    {
+        if (_runtime)
+            --_runtime->openBorrows;
+    }
+    ExecutionContext ExecutionBorrow::Context() const
+    {
+        DNDS_check_throw_info(_runtime, "execution borrow was moved");
+        _runtime->CheckOpen();
+        return _context;
+    }
     EagerEngine::EagerEngine(size_t threads, std::shared_ptr<AccessTrackingContext> tracking) : _state(std::make_shared<ExecutionRuntime>(threads))
     {
         _state->tracking = std::move(tracking);
     }
+    EagerEngine::EagerEngine(std::shared_ptr<ExecutionRuntime> state) : _state(std::move(state)), _shutdownOwner(false)
+    {
+        _state->CheckOpen();
+        ++_state->openBorrows;
+    }
     EagerEngine::~EagerEngine()
     {
+        if (!_shutdownOwner)
+        {
+            --_state->openBorrows;
+            return;
+        }
+        if (_state->openBorrows.load())
+            std::terminate();
         if (std::this_thread::get_id() != _state->controller)
             std::terminate();
         if (std::uncaught_exceptions())
@@ -415,7 +459,11 @@ namespace DNDS::Runtime
     void EagerEngine::RegisterProgress(std::shared_ptr<ExecutionProgress> operation) { _state->Register(std::move(operation)); }
     bool EagerEngine::IsClosed() const { return _state->phase.load() == ExecutionRuntime::Phase::Closed; }
     void EagerEngine::Synchronize() { Drain(false); }
-    void EagerEngine::Close() { Drain(true); }
+    void EagerEngine::Close()
+    {
+        DNDS_check_throw_info(_shutdownOwner, "only the owning engine may close the execution runtime");
+        Drain(true);
+    }
     void EagerEngine::Drain(bool closing)
     {
         _state->CheckController();
@@ -424,6 +472,7 @@ namespace DNDS::Runtime
             std::lock_guard<std::mutex> lock(_state->mutex);
             if (IsClosed())
                 return;
+            DNDS_check_throw_info(!closing || !_state->openBorrows.load(), "cannot close execution context with open immediate borrows");
             DNDS_check_throw_info(!_state->draining, "recursive execution synchronization");
             streams = _state->streams; // Allocate before changing lifecycle state.
             if (closing)
@@ -557,6 +606,18 @@ namespace DNDS::Runtime
     ExecutionContext ExecutionStream::Context() const
     {
         return LockLauncher()->Context();
+    }
+    ExecutionBorrow ExecutionStream::BorrowContext() const
+    {
+        const auto launcher = LockLauncher();
+        return ExecutionBorrow(_runtime.lock(), launcher->Context());
+    }
+    EagerEngine ExecutionStream::LockEngine() const
+    {
+        const auto runtime = _runtime.lock();
+        DNDS_check_throw_info(runtime, "execution context no longer exists");
+        runtime->CheckOpen();
+        return EagerEngine(runtime);
     }
     void ExecutionStream::WaitFor(StreamEvent event) const
     {

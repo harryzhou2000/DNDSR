@@ -33,6 +33,27 @@ static void Await(const std::atomic<bool> &flag)
     }
 }
 
+TEST_CASE("Immediate context borrows prevent closure and weak runtime handles reject expiry")
+{
+    R::ExecutionStream saved;
+    {
+        R::EagerEngine engine(2);
+        saved = engine.CreateCPUStream();
+        {
+            auto borrow = saved.BorrowContext();
+            CHECK_THROWS(engine.Close());
+            CHECK_FALSE(engine.IsClosed());
+            auto call = saved.LockEngine();
+            CHECK(call.Owns(saved));
+            CHECK_THROWS(call.Close());
+            call.Submit(saved, [](R::ExecutionContext) {});
+            call.Synchronize();
+        }
+        engine.Close();
+        CHECK_THROWS(saved.LockEngine());
+    }
+    CHECK_THROWS(saved.BorrowContext());
+}
 TEST_CASE("Context shutdown progresses controller transport and CPU lanes before releasing owners")
 {
     for (const size_t workers : {size_t(0), size_t(2)})

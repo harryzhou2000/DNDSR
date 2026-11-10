@@ -34,13 +34,13 @@ namespace DNDS::Cauchy::Bindings
     {
         std::shared_ptr<FiniteVolume::EquationMeanWorkspace> value;
     };
-    /// Native correction controller plus its original bindings. Python keeps
-    /// the state/engine owners alive; the native stream value is copied.
+    /// Native correction controller with sharing plan/state bindings. Runtime
+    /// lifetime is checked through its managed stream, never an engine address.
+    /// Python keep_alive remains for compatibility with the frontend owner chain.
     struct EquationStageSolver
     {
-        const EquationOperators *owner = nullptr;
-        EquationDofs *state = nullptr;
-        R::EagerEngine *engine = nullptr;
+        std::optional<EquationOperators> owner;
+        std::optional<EquationDofs> state;
         R::ExecutionStream stream;
         DomainSettings settings;
         std::unique_ptr<EquationNonlinearSolver> value;
@@ -561,9 +561,8 @@ namespace DNDS::Cauchy::Bindings
                         .Domains()
                         .front()
                         .settings;
-                solver->owner = &operators;
-                solver->state = &state;
-                solver->engine = &engine;
+                solver->owner.emplace(operators);
+                solver->state.emplace(state);
                 solver->stream = stream;
                 selection.emplace(state.ComponentNumber(),
                                   state.Schema().ResolveComponents(solver->settings.implicit.residualComponents));
@@ -580,12 +579,13 @@ namespace DNDS::Cauchy::Bindings
         {
             MPI::LocalStage(MPIInfo(operators.fv.Metrics().Communicator()), [&]
             {
-                DNDS_check_throw_info(mesh && &operators.fv.Mesh() == mesh.get() && solver.owner == &operators,
+                DNDS_check_throw_info(mesh && &operators.fv.Mesh() == mesh.get() && solver.owner &&
+                                          solver.owner->fv.SharesPlan(operators.fv),
                                       "p-FAS requires its original mesh and finest operator owner");
             });
+            auto engine = solver.stream.LockEngine();
             return std::make_unique<PolynomialMultigrid>(std::move(mesh), operators.fv, *solver.state, *solver.value,
-                                                         *solver.engine, solver.stream, solver.settings,
-                                                         operators.workers);
+                                                         engine, solver.stream, solver.settings, operators.workers);
         }, py::arg("mesh"), py::arg("stage_solver"), py::keep_alive<0, 1>(), py::keep_alive<0, 2>(),
                  py::keep_alive<0, 3>(), py::call_guard<py::gil_scoped_release>(), Collective)
             .def("write_visualization",

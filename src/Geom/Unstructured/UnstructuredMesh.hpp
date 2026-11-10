@@ -137,6 +137,9 @@ namespace DNDS::Geom
         EntitySpace Entities(EntityKind kind) const;
         MeshReadAccess AcquireRead(MeshReadRequirements requirements = MeshReadRequirements::Primary(),
                                    Runtime::ExecutionContext context = Runtime::ExecutionContext::Host());
+        /// Immediate managed borrow. Release this scope before closing its
+        /// engine; plain views still require the enclosing read owner.
+        MeshReadAccess AcquireRead(MeshReadRequirements requirements, const Runtime::ExecutionStream &stream);
         UnstructuredMeshLegacyRead AcquireLegacyRead(MeshReadRequirements requirements = MeshReadRequirements::Primary(),
                                                      Runtime::ExecutionContext context = Runtime::ExecutionContext::Host())
         {

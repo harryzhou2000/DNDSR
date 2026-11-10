@@ -1,3 +1,4 @@
+#include "DNDS/Runtime/Execution/SessionAccess.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "DNDS/Algebra/DofHalo.hpp"
 #include "Cauchy/Discretization/EquationFiniteVolumeInternal.hpp"
@@ -88,6 +89,7 @@ namespace DNDS::Cauchy
 
     struct FiniteVolume::EquationWorkspace
     {
+        R::SessionAccess session;
         struct Field
         {
             CFV::ReconstructionWorkspace reconstruction;
@@ -1595,6 +1597,7 @@ namespace DNDS::Cauchy
         struct Reservation
         {
             std::shared_ptr<EquationWorkspace> owner;
+            R::SessionAccess::Lease session;
             std::optional<EquationDofs::ReadScope> source;
             std::optional<EquationDofs::WriteScope> destination;
             std::vector<EquationBlockArrayView<const real>> input;
@@ -1611,6 +1614,7 @@ namespace DNDS::Cauchy
               {
                 reservation = std::make_shared<Reservation>();
                 reservation->owner = std::move(retained);
+                reservation->session = work.session.Acquire();
                 DNDS_check_throw_info(work.owner == _data, "foreign equation reconstruction workspace");
                 work.coefficients.RequireCompatible(guess);
                 EquationDofOperations::RequireDistinct(work.coefficients, guess);
@@ -1647,6 +1651,7 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::ResetReconstruction(EquationWorkspace &work) const
     {
+        auto session = work.session.Acquire();
         DNDS_check_throw_info(work.owner == _data, "foreign equation reconstruction workspace");
         EquationDofOperations::Fill(work.coefficients, 0);
         for (auto &field : work.fields)
@@ -1708,6 +1713,7 @@ namespace DNDS::Cauchy
                                             R::EagerEngine &engine, const R::ExecutionStream &stream, real time,
                                             AuxiliaryValues *auxiliary) const
     {
+        auto session = work.session.Acquire();
         const EquationWorkspace::PhaseTime timing(work, EquationWorkspace::TotalPhase);
         work.sourceState.reset();
         work.sourceCoefficients.reset();

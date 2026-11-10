@@ -54,6 +54,7 @@ namespace DNDS::Cauchy
         _state = std::move(state);
     }
     MPI_Comm DomainPlacement::Control() const { return _state->control->Communicator(); }
+    std::shared_ptr<Runtime::CommunicationContext> DomainPlacement::ControlContext() const { return _state->control; }
     int DomainPlacement::Rank() const { return _state->rank; }
     int DomainPlacement::Size() const { return _state->size; }
     index DomainPlacement::DomainNumber() const { return index(_state->groups.size()); }

@@ -408,7 +408,8 @@ TEST_CASE("Cauchy coupled linear solvers match a global dense oracle with real p
                 for (int j = 0; j < 5; ++j)
                     CHECK(values(iCell, j) == first[5 * iCell + j]);
         }
-        const auto warm = solver.Solve(fixture.rhs, &solver.Solution());
+        const auto warmGuess = solver.Solution();
+        const auto warm = solver.Solve(fixture.rhs, &warmGuess);
         CHECK(warm.converged);
         CHECK(warm.iterations == 0);
         const auto solutionVersion = solver.Solution().Owned().Version();

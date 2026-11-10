@@ -790,8 +790,8 @@ namespace DNDS::Cauchy
         // A pending/rejected trial owns a different polynomial; its backup is
         // the accepted guess until publication, just as for checkpoint writing.
         const auto &guess = _restoreReconstruction ? *_reconstructionBackup : _fv.ReconstructionGuess(*_workspace).Owned();
-        const auto *history = _restoreReconstruction ? (_limitedVRBackup ? &*_limitedVRBackup : nullptr) : _fv.LimitedVRHistory(*_workspace);
-        _fv.RestoreReconstructionGuess(*_observationWorkspace, guess, history);
+        const auto history = _restoreReconstruction ? _limitedVRBackup : _fv.LimitedVRHistory(*_workspace);
+        _fv.RestoreReconstructionGuess(*_observationWorkspace, guess, history ? &*history : nullptr);
         _fv.Evaluate(_accepted, *_observationResidual, *_observationWorkspace, _engine, _stream, _time);
     }
 }

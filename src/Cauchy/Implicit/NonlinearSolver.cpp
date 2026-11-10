@@ -12,9 +12,9 @@ namespace DNDS::Cauchy
     using NonlinearPhaseTimer = NonlinearDetail::PhaseTimer;
     struct NonlinearSolver::Data
     {
+        R::SessionAccess session;
         FiniteVolume discrete;
         std::shared_ptr<FiniteVolume::Workspace> workspace;
-        R::EagerEngine *engine;
         R::ExecutionStream stream;
         ImplicitSettings settings;
         bool positivity;
@@ -29,7 +29,7 @@ namespace DNDS::Cauchy
         std::unique_ptr<LinearSolver> linear;
         Data(const FiniteVolume &fv, CFV::FVField &state, std::shared_ptr<FiniteVolume::Workspace> work,
              R::EagerEngine &executor, R::ExecutionStream lane, const DomainSettings &controls)
-            : discrete(fv), workspace(std::move(work)), engine(&executor), stream(std::move(lane)), settings(controls.implicit),
+            : discrete(fv), workspace(std::move(work)), stream(std::move(lane)), settings(controls.implicit),
               positivity(controls.numerics.positivity),
               reconstructionTolerance(controls.implicit.requireConvergedReconstruction && controls.numerics.reconstruction == "variational" ? controls.numerics.reconstructionTolerance : 0),
               mpi(fv.Metrics().Communicator()), stateOwned(state.Owned().SharedStorage()), stateGhost(state.Ghost().SharedStorage()),
@@ -38,6 +38,7 @@ namespace DNDS::Cauchy
               problem(fv.BuildLinearProblem(state, settings.diagonal == "block" ? DiagonalStorage::Block : DiagonalStorage::Entries,
                                             (settings.jacobianAction == "directEvaluated" || settings.jacobianAction == "semiMatrixFree") ? OffDiagonalStorage::DirectEvaluated : OffDiagonalStorage::Assembled))
         {
+            DNDS_check_throw_info(executor.Owns(stream), "nonlinear solver stream belongs to another runtime");
             rhsFPPReduction = settings.positivity.rhsFPPReduction == "cell" ? AlphaReduction::Cell : settings.positivity.rhsFPPReduction == "minimumLimited" ? AlphaReduction::MinimumLimited
                                                                                                                                                              : AlphaReduction::MinimumAll;
             if (positivity && settings.positivity.rhsFPPMode != "none" && rhsFPPReduction != AlphaReduction::Cell)
@@ -88,7 +89,10 @@ namespace DNDS::Cauchy
     }
     NonlinearIterationReport NonlinearSolver::Execute(CFV::FVField &state, const CFV::FVField &source, real mass, real rhsScale, real time, int stage, NonlinearSolveControl control, bool singleCorrection, const CFV::FVField *cachedRate)
     {
+        DNDS_check_throw_info(_data, "nonlinear session was moved");
+        auto session = _data->session.Acquire(_nestedSession.lock());
         auto &data = *_data;
+        auto engine = data.stream.LockEngine();
         if (control.profile)
             *control.profile = {};
         const NonlinearPhaseTimer totalTimer(control.profile, NonlinearProfile::Total);
@@ -136,10 +140,10 @@ namespace DNDS::Cauchy
         {
             if (!cachedRate)
             {
-                data.discrete.Evaluate(state, data.spatial, *data.workspace, *data.engine, data.stream, time);
+                data.discrete.Evaluate(state, data.spatial, *data.workspace, engine, data.stream, time);
                 return;
             }
-            data.discrete.PrepareCorrectionAux(state, *data.workspace, *data.engine, data.stream, time);
+            data.discrete.PrepareCorrectionAux(state, *data.workspace, engine, data.stream, time);
             data.Stage([&]
                        {
                 const auto read = cachedRate->Owned().Read(); auto write = data.spatial.Owned().Write();
@@ -249,7 +253,7 @@ namespace DNDS::Cauchy
             const auto [incrementLimited, incrementAlpha] = [&]
             {
                 const NonlinearPhaseTimer correctionTimer(control.profile, NonlinearProfile::Correction);
-                return ApplyCorrection(state, data.linear->Solution(), data.settings.relaxation, selection.Indices());
+                return ApplyCorrectionImpl(state, data.linear->Solution(), data.settings.relaxation, selection.Indices());
             }();
             if (data.positivity)
             {
@@ -278,7 +282,10 @@ namespace DNDS::Cauchy
     }
     void NonlinearSolver::EvaluateEquation(CFV::FVField &state, CFV::FVField &value, real mass, real rhsScale, real time, CFV::FVField *rate)
     {
+        DNDS_check_throw_info(_data, "nonlinear session was moved");
+        auto session = _data->session.Acquire(_nestedSession.lock());
         auto &data = *_data;
+        auto engine = data.stream.LockEngine();
         data.Stage([&]
                    {
             data.discrete.Metrics().ValidateField(value, 5);
@@ -293,7 +300,7 @@ namespace DNDS::Cauchy
                     DNDS_check_throw_info(!Algebra::Detail::Overlaps(rate->Owned().Storage(), input->Storage()), "FAS spatial rate aliases operator input/output");
                 auto rateCheck = rate->Owned().Write(); rateCheck.CancelUnmodified();
             } });
-        data.discrete.Evaluate(state, data.spatial, *data.workspace, *data.engine, data.stream, time);
+        data.discrete.Evaluate(state, data.spatial, *data.workspace, engine, data.stream, time);
         data.Stage([&]
                    {
             const auto geometry = data.discrete.Metrics().AcquireRead(); const auto metric = geometry.HostView();
@@ -322,9 +329,10 @@ namespace DNDS::Cauchy
     {
         return _data->reconstructionTolerance;
     }
-    std::pair<index, real> NonlinearSolver::ApplyCorrection(CFV::FVField &state, const CFV::FVField &increment, real scale,
-                                                            const std::vector<index> &updateComponents)
+    std::pair<index, real> NonlinearSolver::ApplyCorrectionImpl(CFV::FVField &state, const CFV::FVField &increment, real scale,
+                                                                const std::vector<index> &updateComponents)
     {
+        DNDS_check_throw_info(_data, "nonlinear session was moved");
         auto &data = *_data;
         std::array<bool, 5> active{};
         data.Stage([&]
@@ -373,4 +381,18 @@ namespace DNDS::Cauchy
         }
         return {limited, minimum};
     }
+    R::SessionAccess::Lease NonlinearSolver::ReserveForMultigrid()
+    {
+        DNDS_check_throw_info(_data, "nonlinear session was moved");
+        auto lease = _data->session.Acquire();
+        _nestedSession = lease;
+        return lease;
+    }
+    std::pair<index, real> NonlinearSolver::ApplyCorrection(CFV::FVField &state, const CFV::FVField &increment, real scale, const std::vector<index> &components)
+    {
+        DNDS_check_throw_info(_data, "nonlinear session was moved");
+        auto lease = _data->session.Acquire(_nestedSession.lock());
+        return ApplyCorrectionImpl(state, increment, scale, components);
+    }
+
 }

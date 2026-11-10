@@ -97,6 +97,17 @@ TEST_CASE("Entity-bound fields reject wrong domain/kind and retain field/mesh le
     R::Array<double> values(R::RowLayout::Dense(size_t(space.NumOwned()), 2));
     EntityField<double> field(space, std::move(values));
     {
+        R::EagerEngine engine;
+        const auto stream = engine.CreateCPUStream();
+        {
+            auto fieldRead = field.Read(space, stream);
+            auto meshRead = mesh->AcquireRead(MeshReadRequirements::Primary(), stream);
+            CHECK_THROWS(engine.Close());
+            CHECK(meshRead.HostView().NumCell() == space.NumOwned());
+        }
+        CHECK_NOTHROW(engine.Close());
+    }
+    {
         auto write = field.Write(space);
         auto view = write.View();
         for (DNDS::index row = 0; row < space.NumOwned(); ++row)

@@ -283,7 +283,8 @@ TEST_CASE("Native prepared transition stages field histories atomically and bind
     auto native = G::ConstructNativeMesh(input, options);
     auto source = G::UnstructuredMesh::FromNative(mpi, native);
     G::MeshTransitionHandle handle(source);
-    R::Field<int64_t> history({1, 4, 4}, {52, 7, 1, 0}, "cell");
+    auto historySlot = std::make_shared<R::Field<int64_t>>(R::Field<int64_t>({1, 4, 4}, {52, 7, 1, 0}, "cell"));
+    auto &history = *historySlot;
     {
         auto write = history.Write();
         for (size_t component = 0; component < 4; ++component)
@@ -299,7 +300,7 @@ TEST_CASE("Native prepared transition stages field histories atomically and bind
     for (const auto *failure : {"cloned", "reordered", "rebuilt"})
     {
         CHECK_THROWS(G::PreparedMeshTransition::Prepare(handle, reorder,
-                                                        {G::RegisterField(history, G::EntityKind::Cell, "history"), field.Register("bound")},
+                                                        {G::RegisterField(historySlot, G::EntityKind::Cell, "history"), field.Register("bound")},
                                                         [&](const char *stage)
                                                         {
                                                             if (mpi.rank == 0 && std::string(stage) == failure)
@@ -312,7 +313,7 @@ TEST_CASE("Native prepared transition stages field histories atomically and bind
         CHECK(source->OriginalEntityId(G::EntityKind::Cell, 0) == mpi.rank);
     }
     auto prepared = G::PreparedMeshTransition::Prepare(handle, reorder,
-                                                       {G::RegisterField(history, G::EntityKind::Cell, "history"), field.Register("bound")});
+                                                       {G::RegisterField(historySlot, G::EntityKind::Cell, "history"), field.Register("bound")});
     CHECK(handle.Get() == source);
     CHECK(history.Values().Identity() == historyAllocation);
     prepared.Publish();

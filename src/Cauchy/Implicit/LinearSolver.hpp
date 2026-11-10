@@ -73,10 +73,11 @@ namespace DNDS::Cauchy
         /// no physics or mean-state reduction occurs inside the linear solver.
         Linear::LinearIterationReport Solve(const Field &rhs, const Field *initialGuess = nullptr,
                                             const std::vector<real> &componentScales = {});
-        /// Borrowed result, overwritten by the next Solve. Always inspect its
+        /// Sharing result handle; storage survives session destruction but may be
+        /// overwritten by the next Solve. Copy values explicitly for history. Always inspect its
         /// report; finite fixed-count or iteration-limited results are usable
         /// without being certified converged. Unevaluated residual norms are NaN.
-        const Field &Solution() const;
+        Field Solution() const;
     };
 
     /// The same domain-local CPU solve policy on a complete logical equation
@@ -107,6 +108,6 @@ namespace DNDS::Cauchy
         /// Same optional frozen component-scale metric as LinearSolver.
         Linear::LinearIterationReport Solve(const EquationDofs &rhs, const EquationDofs *initialGuess = nullptr,
                                             const std::vector<real> &componentScales = {});
-        const EquationDofs &Solution() const;
+        EquationDofs Solution() const;
     };
 }

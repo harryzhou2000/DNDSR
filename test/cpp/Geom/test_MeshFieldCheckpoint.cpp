@@ -31,7 +31,8 @@ TEST_CASE("Retained mesh and multi-history field form a coherent matching-partit
     mpi.setWorld();
     auto source = CheckpointMesh(mpi);
     constexpr size_t histories = 4, components = 3, width = histories * components;
-    R::Array<double, R::FixedRows<width>> field(R::RowLayout::Dense(size_t(source->NumCell()), width));
+    auto fieldSlot = std::make_shared<R::Array<double, R::FixedRows<width>>>(R::Array<double, R::FixedRows<width>>(R::RowLayout::Dense(size_t(source->NumCell()), width)));
+    auto &field = *fieldSlot;
     {
         auto values = field.Write();
         for (DNDS::index cell = 0; cell < source->NumCell(); ++cell)
@@ -74,7 +75,7 @@ TEST_CASE("Retained mesh and multi-history field form a coherent matching-partit
     input.explicitMaps.push_back({EntityKind::Cell,
                                   std::vector<MPI_int>(size_t(source->NumCell()), (mpi.rank + 1) % mpi.size)});
     auto prepared = PreparedMeshTransition::Prepare(handle, input,
-                                                    {RegisterArray(field, EntityKind::Cell, "flow-four-histories")});
+                                                    {RegisterArray(fieldSlot, EntityKind::Cell, "flow-four-histories")});
     prepared.Publish();
     auto mesh = handle.Get();
     FieldTransferDetail::LocalStage(mpi, [&]

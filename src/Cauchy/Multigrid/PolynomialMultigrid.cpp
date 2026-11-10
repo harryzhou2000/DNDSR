@@ -271,7 +271,7 @@ namespace DNDS::Cauchy
             std::shared_ptr<SpatialRate> fineRate;
             std::vector<std::shared_ptr<SpatialRate>> cachedRates;
             PolynomialHierarchy(const FiniteVolume &discrete, State &input, Solver &solver, const DomainSettings &controls)
-                : fine(discrete), state(input), value(Operations::NewVector(input)), fineSolver(solver),
+                : fine(discrete), state(input), value(Operations::NewVector(input)), fineSolver(solver.RetainForMultigrid()),
                   settings(controls.implicit), mpi(discrete.Metrics().Communicator())
             {
                 settings.ValidateComponents(Operations::ComponentNumber(input));
@@ -612,29 +612,39 @@ namespace DNDS::Cauchy
     NonlinearIterationReport PolynomialMultigrid::Solve(const CFV::FVField &source, real mass, real rhsScale, real time, int stage)
     {
         DNDS_check_throw_info(_data, "field pMG call requires a field hierarchy");
+        auto session = _data->fineSolver.ReserveForMultigrid();
         return _data->Solve(source, mass, rhsScale, time, stage);
     }
     EquationNonlinearIterationReport PolynomialMultigrid::Solve(const EquationDofs &source, real mass, real rhsScale, real time, int stage)
     {
         DNDS_check_throw_info(_equationData, "logical pMG call requires an equation hierarchy");
+        auto session = _equationData->fineSolver.ReserveForMultigrid();
         return _equationData->Solve(source, mass, rhsScale, time, stage);
     }
     NonlinearIterationReport PolynomialMultigrid::ApplyCycle(const CFV::FVField &source, real mass, real rhsScale, real time, int stage, real pseudoCFL, const CFV::FVField *rate)
     {
         DNDS_check_throw_info(_data, "field pMG call requires a field hierarchy");
+        auto session = _data->fineSolver.ReserveForMultigrid();
         return _data->ApplyCycle(source, mass, rhsScale, time, stage, pseudoCFL, rate);
     }
     EquationNonlinearIterationReport PolynomialMultigrid::ApplyCycle(const EquationDofs &source, real mass, real rhsScale, real time, int stage, real pseudoCFL, const EquationDofs *rate)
     {
         DNDS_check_throw_info(_equationData, "logical pMG call requires an equation hierarchy");
+        auto session = _equationData->fineSolver.ReserveForMultigrid();
         return _equationData->ApplyCycle(source, mass, rhsScale, time, stage, pseudoCFL, rate);
     }
     void PolynomialMultigrid::SetBoundaryInputs(const BoundaryInputs &input)
     {
         if (_data)
+        {
+            auto session = _data->fineSolver.ReserveForMultigrid();
             _data->SetBoundaryInputs(input);
+        }
         else
+        {
+            auto session = _equationData->fineSolver.ReserveForMultigrid();
             _equationData->SetBoundaryInputs(input);
+        }
     }
     std::pair<size_t, index> PolynomialMultigrid::ScratchPoolStatistics() const
     {

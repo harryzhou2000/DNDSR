@@ -227,6 +227,9 @@ def test_equation_operator_frontend_composes_native_residual_and_linear_solve(mi
         engine.synchronize()
         retained = state.fields[state.field_names[0]].owned
         snapshot = retained.numpy()
+        engine.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            stage_solver.correct_once(source, inverse_dt=1e6, rhs_scale=1.)
         del state, prototype, operators, work, solver, problem, stage_solver, multigrid
         gc.collect()
         assert owner() is None
