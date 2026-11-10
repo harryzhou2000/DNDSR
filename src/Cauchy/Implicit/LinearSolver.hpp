@@ -93,19 +93,19 @@ namespace DNDS::Cauchy
     /// Callers serialize access, retain MPI owners on the controller, and release
     /// views before Solve. Results and fixed-preconditioner rules match
     /// LinearSolver. Numerical scopes and transfer requests remain separate.
-    class EquationLinearSolver
+    class DofLinearSolver
     {
         struct Data;
         std::shared_ptr<Data> _data;
 
     public:
         using HaloBinder = LinearSolver::HaloBinder;
-        EquationLinearSolver(std::shared_ptr<LinearProblemContext> problem, const EquationDofs &prototype,
-                             const HaloBinder &bindHalo, LinearSolveSettings settings = {}, LinearExecution execution = {});
-        EquationLinearSolver(const EquationLinearSolver &) = delete;
-        EquationLinearSolver &operator=(const EquationLinearSolver &) = delete;
-        EquationLinearSolver(EquationLinearSolver &&) noexcept = default;
-        EquationLinearSolver &operator=(EquationLinearSolver &&) noexcept = default;
+        DofLinearSolver(std::shared_ptr<LinearProblemContext> problem, const EquationDofs &prototype,
+                        const HaloBinder &bindHalo, LinearSolveSettings settings = {}, LinearExecution execution = {});
+        DofLinearSolver(const DofLinearSolver &) = delete;
+        DofLinearSolver &operator=(const DofLinearSolver &) = delete;
+        DofLinearSolver(DofLinearSolver &&) noexcept = default;
+        DofLinearSolver &operator=(DofLinearSolver &&) noexcept = default;
         /// Same optional frozen component-scale metric as LinearSolver.
         Linear::LinearIterationReport Solve(const EquationDofs &rhs,
                                             std::optional<std::reference_wrapper<const EquationDofs>> initialGuess = std::nullopt,

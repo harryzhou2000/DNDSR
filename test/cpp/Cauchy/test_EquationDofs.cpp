@@ -799,9 +799,9 @@ TEST_CASE("Coupled matrix action ILU SGS and left GMRES preserve separate and pe
             controls.maxIterations = 40;
             controls.relativeTolerance = 1e-12;
             controls.absoluteTolerance = 1e-10;
-            C::EquationLinearSolver solver(problem, state, [&](auto &field)
-                                           { return fixture.Bind(field); },
-                                           controls, {scenario != 0 && scenario != 3, scenario != 2});
+            C::DofLinearSolver solver(problem, state, [&](auto &field)
+                                      { return fixture.Bind(field); },
+                                      controls, {scenario != 0 && scenario != 3, scenario != 2});
             const auto report = solver.Solve(rhs);
             CHECK(report.converged);
             CHECK(report.usable);
@@ -857,12 +857,12 @@ TEST_CASE("Logical linear driver rejects inconsistent physical binding before an
     if (mpi.size > 1)
     {
         auto inconsistent = fixture.Build(schema, mpi.rank % 3, mpi.rank == 0);
-        CHECK_THROWS(C::EquationLinearSolver(problem, inconsistent, bind));
+        CHECK_THROWS(C::DofLinearSolver(problem, inconsistent, bind));
         CHECK(bindings == 0);
     }
     auto state = fixture.Build(schema, mpi.rank % 3, true);
     Fill(state);
-    C::EquationLinearSolver solver(problem, state, bind);
+    C::DofLinearSolver solver(problem, state, bind);
     // One critical runtime conflict: the last field is busy on one rank.
     // Entry rejection must leave every output reusable and unchanged.
     std::optional<R::Array<double>::WriteLease> writer;

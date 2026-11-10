@@ -249,8 +249,8 @@ TEST_CASE("Jacobi matches independent frozen-remote local-sweep oracle")
                         for (int j = 0; j < 5; ++j)
                             layout.View()(iCell, j) = RHS(fixture.rank, iCell, j);
                 }
-                C::EquationLinearSolver splitSolver(fixture.problem, split, [&](Field &field)
-                                                    { return fixture.Bind(field); }, settings, {false, true});
+                C::DofLinearSolver splitSolver(fixture.problem, split, [&](Field &field)
+                                               { return fixture.Bind(field); }, settings, {false, true});
                 REQUIRE(splitSolver.Solve(split, warm ? std::optional(std::cref(split)) : std::nullopt).usable);
                 const auto splitRead = splitSolver.Solution().ReadOwned();
                 const auto splitLayout = splitRead.ComponentLayout();
@@ -461,7 +461,7 @@ TEST_CASE("Logical coupled SGS retains physical-field scan values with remote mi
             const auto bind = [&](Field &field)
             { return fixture.Bind(field); };
             C::LinearSolver fieldSolver(problem, rhs, bind, settings, {true, false});
-            C::EquationLinearSolver logicalSolver(problem, logicalRHS, bind, settings, {true, false});
+            C::DofLinearSolver logicalSolver(problem, logicalRHS, bind, settings, {true, false});
             REQUIRE(fieldSolver.Solve(rhs).usable);
             REQUIRE(logicalSolver.Solve(logicalRHS).usable);
             const auto physical = fieldSolver.Solution().Owned().Read();
@@ -511,7 +511,7 @@ TEST_CASE("GMRES fixed ILU corrections match one Arnoldi step of the distributed
         const auto bind = [&](Field &field)
         { return fixture.Bind(field); };
         C::LinearSolver physical(fixture.problem, fixture.rhs, bind, settings, {true, false});
-        C::EquationLinearSolver logical(fixture.problem, logicalRHS, bind, settings, {true, false});
+        C::DofLinearSolver logical(fixture.problem, logicalRHS, bind, settings, {true, false});
         // The local rank block is tridiagonal: its ILU(0) is the exact local
         // inverse. Build B_c=sum_{k=0}^{c-1}(I-M^-1 A)^k M^-1 independently.
         Eigen::MatrixXd preconditioner = inverse;
@@ -599,11 +599,11 @@ TEST_CASE("Fixed-count stationary corrections preserve iterates without diagnost
         const C::LinearExecution execution{settings.method == "ilu", false};
         C::LinearSolver reference(fixture.problem, fixture.rhs, bind, settings, execution);
         auto logicalRHS = C::EquationDofs::Coupled(schema, fixture.rhs);
-        C::EquationLinearSolver logicalReference(fixture.problem, logicalRHS, bind, settings, execution);
+        C::DofLinearSolver logicalReference(fixture.problem, logicalRHS, bind, settings, execution);
         settings.stopping = "fixedCount";
         settings.relativeTolerance = 1e20; // Explicit fixed count ignores tolerance.
         C::LinearSolver fixed(fixture.problem, fixture.rhs, bind, settings, execution);
-        C::EquationLinearSolver logical(fixture.problem, logicalRHS, bind, settings, execution);
+        C::DofLinearSolver logical(fixture.problem, logicalRHS, bind, settings, execution);
         const auto rhsVersion = fixture.rhs.Owned().Version();
         for (bool warm : {false, true})
         {
@@ -657,7 +657,7 @@ TEST_CASE("Fixed-count zero-start ILU overwrites dirty solution and handles zero
         settings.method = "ilu";
         settings.stopping = "fixedCount";
         settings.maxIterations = count;
-        C::EquationLinearSolver solver(fixture.problem, rhs, bind, settings, {false, false});
+        C::DofLinearSolver solver(fixture.problem, rhs, bind, settings, {false, false});
         // Poison all owned output before each call; analytic zero must not
         // require clearing or reading it on the first triangular solve.
         for (int repeat = 0; repeat < 2; ++repeat)

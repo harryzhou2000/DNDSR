@@ -198,7 +198,7 @@ namespace DNDS::Cauchy
     }
     real Domain::StableStep(real cfl) const
     {
-        EquationAuxiliaryInputs inputs;
+        AuxiliaryInputs inputs;
         if (_interfaceInputs)
             inputs.boundary = std::cref(*_interfaceInputs);
         if (!_timeAuxiliary)

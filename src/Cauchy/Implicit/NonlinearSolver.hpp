@@ -114,7 +114,7 @@ namespace DNDS::Cauchy
         bool reconstructionUpdateMeasured = false;
         Linear::LinearIterationReport lastLinear;
     };
-    using EquationNonlinearIterationReport = BasicNonlinearIterationReport<std::vector<real>>;
+    using NonlinearIterationReport = BasicNonlinearIterationReport<std::vector<real>>;
     /// CPU whole-equation stage adapter over the shared nonlinear iteration
     /// policy, equation FV and coupled linear driver. The explicit residual
     /// selection is resolved by the equation frontend; it cannot silently use
@@ -138,10 +138,10 @@ namespace DNDS::Cauchy
         std::weak_ptr<const Runtime::SessionAccess::Ticket> _nestedSession;
         explicit NonlinearSolver(std::shared_ptr<Data> data) : _data(std::move(data)) {}
         std::pair<index, real> ApplyCorrectionImpl(EquationDofs &state, const EquationDofs &increment, real scale, const std::vector<index> &components);
-        EquationNonlinearIterationReport Execute(EquationDofs &state, const EquationDofs &source,
-                                                 real mass, real rhsScale, real time, int stage,
-                                                 NonlinearSolveControl control, bool singleCorrection,
-                                                 std::optional<std::reference_wrapper<const EquationDofs>> cachedRate);
+        NonlinearIterationReport Execute(EquationDofs &state, const EquationDofs &source,
+                                         real mass, real rhsScale, real time, int stage,
+                                         NonlinearSolveControl control, bool singleCorrection,
+                                         std::optional<std::reference_wrapper<const EquationDofs>> cachedRate);
 
     public:
         NonlinearSolver(const NonlinearSolver &) = delete;
@@ -157,13 +157,13 @@ namespace DNDS::Cauchy
                         Runtime::EagerEngine &engine, Runtime::ExecutionStream stream, const DomainSettings &settings,
                         const Algebra::ComponentSelection &residualSelection,
                         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt);
-        EquationNonlinearIterationReport Solve(EquationDofs &state, const EquationDofs &source, real mass, real rhsScale, real time,
-                                               int stage = 0, NonlinearSolveControl control = {});
+        NonlinearIterationReport Solve(EquationDofs &state, const EquationDofs &source, real mass, real rhsScale, real time,
+                                       int stage = 0, NonlinearSolveControl control = {});
         /// One bounded correction retaining split allocation/layout and
         /// EOS/source/PP dispatch. No nested solve.
-        EquationNonlinearIterationReport CorrectOnce(EquationDofs &state, const EquationDofs &source, real mass, real rhsScale, real time,
-                                                     int stage = 0, NonlinearSolveControl control = {},
-                                                     std::optional<std::reference_wrapper<const EquationDofs>> cachedRate = std::nullopt);
+        NonlinearIterationReport CorrectOnce(EquationDofs &state, const EquationDofs &source, real mass, real rhsScale, real time,
+                                             int stage = 0, NonlinearSolveControl control = {},
+                                             std::optional<std::reference_wrapper<const EquationDofs>> cachedRate = std::nullopt);
         /// Evaluate dU/dt with aux preparation before reconstruction/RHS and
         /// retain that publication for a subsequent cached CorrectOnce.
         /// Pointwise volume normalization writes owned values only. State/rate

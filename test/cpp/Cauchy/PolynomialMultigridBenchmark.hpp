@@ -85,7 +85,7 @@ namespace CauchyBenchmark
                 A::Copy(trial, frozen);
                 const double initial = norm();
                 fv.ResetReconstruction(*reconstruction, *workspace);
-                C::EquationNonlinearIterationReport report;
+                C::NonlinearIterationReport report;
                 const double elapsed = measure([&]
                                                { report = multigrid ? multigrid->Solve(sourceState, mass, 1, 0) : smoother->Solve(trialState, sourceState, mass, 1, 0, 0, {5}); });
                 const double final = norm();

@@ -652,7 +652,7 @@ remain usable after original field handles disappear; a focused worker test
 proves the communication context can already expire on the controller while
 numeric row reads remain valid and retire on a worker.
 
-`EquationLinearSolver` uses the same private controller implementation as
+`DofLinearSolver` uses the same private controller implementation as
 `LinearSolver`: SGS, left-GMRES with fixed SGS sweeps or local ILU, true residual
 checks, explicit warm guesses and the optional exposed middle SGS exchange.
 The prototype prepares every physical field's canonical halo binding; a grouped
@@ -674,7 +674,7 @@ CUDA implementation.
 
 ```text
 LinearSolver (one field) ------> shared private linear controller <field ops>
-EquationLinearSolver ---------> shared private linear controller <equation ops>
+DofLinearSolver ---------> shared private linear controller <equation ops>
                                   |-- StateGMRES / fixed SGS or local ILU
                                   |-- reusable state + per-field halo bindings
                                   `-- scoped active request slots
@@ -996,7 +996,7 @@ continue to qualify the supported flow5 frontend.
 
 ## Extended equation restart
 
-`Cauchy/IO/EquationArchive` separates storage mapping from model and mesh checks.
+`Cauchy/IO/StateArchive` separates storage mapping from model and mesh checks.
 It describes logical blocks by name, physical-field ordinal, first component
 and width. Each owned physical field is written directly with Runtime Array IO;
 there is no forced AoS copy or serialized ghost payload. Reads retain the stored
@@ -1281,7 +1281,7 @@ gradient halo ------------------------------------- wait
 The unsplit mode uses the same kernels after each exchange. Mean gradients
 are separate from reconstruction coefficients and are refreshed for the current
 mean state. The low-level `BeginAuxValues`/preparation scope consumes an explicit
-`EquationAuxiliaryInputs` bundle and never launches a gradient solve or MPI.
+`AuxiliaryInputs` bundle and never launches a gradient solve or MPI.
 Its core acquires only owned gradient views; the dependent phase acquires ghosts
 after their exchange. Boundary generation releases its chemistry worker before
 auxiliary preparation acquires one, so a single-worker pool remains valid.

@@ -1,7 +1,7 @@
-# Python Cauchy equation operators
+# Python Cauchy finite-volume operators
 
 Python and the C++ frontend use the same native CPU operators. `Domain` and
-`Simulation` remain the production time controllers. `EquationOperators`
+`Simulation` remain the production time controllers. `FiniteVolumeOperators`
 provides the existing lower-level FV and linear entrypoints for testing,
 tuning and custom orchestration; it does not implement another numerical loop.
 CUDA Cauchy kernels remain unavailable.
@@ -35,7 +35,7 @@ The C++ `PrepareStep` result must similarly be checked before `CommitStep`.
 ```text
 Python Simulation -> Domain -> accepted EquationDofs
                          ^                 |
-                 EquationOperators         +-> shared schema and row space
+                 FiniteVolumeOperators         +-> shared schema and row space
                          |                 +-> physical fields
                          +-> shared FV plans       +-> owned Runtime Array
                          +-> worker capacity       +-> ghost Runtime Array
@@ -63,10 +63,10 @@ retain their allocations and metadata independently. Bare native views still
 obey the ordinary lease lifetime contract; a NumPy snapshot is a copy.
 
 ```text
-EquationStageSolver -> EquationOperators -> Domain -> optional Simulation
+NonlinearStageSolver -> FiniteVolumeOperators -> Domain -> optional Simulation
                    -> original state + workspace + engine
                    -> copied native stream
-PolynomialMultigrid -> finest EquationStageSolver + original mesh
+PolynomialMultigrid -> finest NonlinearStageSolver + original mesh
 ```
 
 Release debug views before conflicting native work. Serialize workspace use,
@@ -78,10 +78,10 @@ accepted clocks and interface traces remain coordinated.
 ## Native residual and auxiliary preparation
 
 ```python
-from DNDSR.Cauchy import EquationOperators, AuxiliaryRequest
+from DNDSR.Cauchy import FiniteVolumeOperators, AuxiliaryRequest
 from DNDSR.DNDS import Runtime as R
 
-operators = EquationOperators(domain)
+operators = FiniteVolumeOperators(domain)
 state = domain.dofs.clone()
 residual = state.zeros_like()
 engine = R.EagerEngine(host_threads=2, tracking=R.AccessTrackingContext())

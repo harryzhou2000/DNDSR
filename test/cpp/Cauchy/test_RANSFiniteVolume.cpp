@@ -902,7 +902,7 @@ TEST_CASE("Explicit mean gradients exchange current values across layouts and CP
             if (fv.Metrics().NumCell())
                 write.Block("flow")(0, 2) += .01;
         }
-        C::EquationAuxiliaryInputs staleGradientInputs;
+        C::AuxiliaryInputs staleGradientInputs;
         staleGradientInputs.meanGradients = std::cref(gradients);
         CHECK_THROWS(fv.PrepareAuxValues(state, aux, 0, {}, staleGradientInputs));
         fv.PrepareAuxValues(state, aux, gradients, engine, stream);

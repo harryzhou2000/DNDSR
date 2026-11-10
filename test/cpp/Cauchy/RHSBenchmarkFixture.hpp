@@ -28,7 +28,7 @@ namespace Plan53
             s.numerics.limiter = limiter;
             s.numerics.positivity = false;
             s.numerics.viscousGradient = "polynomial";
-            // The logical-equation adapter's supported common CPU profile.
+            // The logical-DOF dispatch's supported common CPU profile.
             s.numerics.flux = "rusanov";
             s.numerics.faceFallback = false;
             s.numerics.characteristicLimiter = false;

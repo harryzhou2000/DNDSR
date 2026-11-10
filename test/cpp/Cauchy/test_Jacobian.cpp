@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
-#include "Cauchy/Implicit/EquationJacobianKernels.hpp"
+#include "Cauchy/Implicit/JacobianKernels.hpp"
 #include "Cauchy/Physics/EquationFlux.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "../CFV/ReconstructionFixture.hpp"

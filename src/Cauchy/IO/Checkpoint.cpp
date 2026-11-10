@@ -1,6 +1,6 @@
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Core/Domain.hpp"
-#include "Cauchy/IO/EquationArchive.hpp"
+#include "Cauchy/IO/StateArchive.hpp"
 #include "DNDS/Runtime/Array/ArrayIO.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
@@ -659,14 +659,14 @@ namespace DNDS::Cauchy
             if (version < 5)
                 history.emplace(Runtime::ReadArray<real, Runtime::FixedRows<5>>(serializer, "history_flow", mpi, shard));
         }
-        std::optional<EquationArchive> stateArchive, reconstructionArchive, historyArchive;
+        std::optional<StateArchive> stateArchive, reconstructionArchive, historyArchive;
         if (version == 5)
         {
-            stateArchive.emplace(EquationArchive::Read(serializer, "state_field_", metadata.at("state_storage"), mpi, shard));
+            stateArchive.emplace(StateArchive::Read(serializer, "state_field_", metadata.at("state_storage"), mpi, shard));
             if (metadata.contains("reconstruction_storage"))
-                reconstructionArchive.emplace(EquationArchive::Read(serializer, "reconstruction_field_", metadata.at("reconstruction_storage"), mpi, shard));
+                reconstructionArchive.emplace(StateArchive::Read(serializer, "reconstruction_field_", metadata.at("reconstruction_storage"), mpi, shard));
             if (metadata.value("history", false))
-                historyArchive.emplace(EquationArchive::Read(serializer, "history_field_", metadata.at("state_storage"), mpi, shard));
+                historyArchive.emplace(StateArchive::Read(serializer, "history_field_", metadata.at("state_storage"), mpi, shard));
         }
         serializer->CloseFile();
         // Older BDF2 files carry the last physical dt with their history.
@@ -904,9 +904,9 @@ namespace DNDS::Cauchy
             const auto name = payload.at("name").get<std::string>();
             DNDS_check_throw_info(!name.empty() && payloadNames.insert(name).second,
                                   "duplicate exact time-checkpoint payload");
-            auto archive = EquationArchive::Read(serializer,
-                                                 "internal_time_" + std::to_string(payloadOrdinal) + "_field_",
-                                                 payload.at("storage"), mpi, shard);
+            auto archive = StateArchive::Read(serializer,
+                                              "internal_time_" + std::to_string(payloadOrdinal) + "_field_",
+                                              payload.at("storage"), mpi, shard);
             std::optional<EquationDofs> field;
             MPI::LocalStage(mpi, [&]
                             {
@@ -919,7 +919,7 @@ namespace DNDS::Cauchy
         }
         const auto restoreReconstruction = [&](const char *prefix, const Json &description)
         {
-            auto archive = EquationArchive::Read(serializer, prefix, description, mpi, shard);
+            auto archive = StateArchive::Read(serializer, prefix, description, mpi, shard);
             std::optional<EquationDofs> field;
             MPI::LocalStage(mpi, [&]
                             {

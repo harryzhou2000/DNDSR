@@ -43,7 +43,7 @@ namespace DNDS::Cauchy
         std::unique_ptr<NonlinearSolver> _implicit;
         std::unique_ptr<PolynomialMultigrid> _multigrid;
         std::unique_ptr<EquationTimeStepper> _timeStepper;
-        std::vector<EquationNonlinearIterationReport> _lastImplicit;
+        std::vector<NonlinearIterationReport> _lastImplicit;
         NonlinearSolveState _coupledNonlinearState;
         std::function<void(const NonlinearProgress &)> _progressObserver;
         std::function<void(const NonlinearSolveState &)> _quiescentObserver;
@@ -55,7 +55,7 @@ namespace DNDS::Cauchy
         struct CoupledStageOperator
         {
             EquationTimeStepper::Evaluate evaluate;
-            std::function<EquationNonlinearIterationReport(const ODE::CoupledStageEquation<EquationDofs> &, const EquationDofs &, real)> correct;
+            std::function<NonlinearIterationReport(const ODE::CoupledStageEquation<EquationDofs> &, const EquationDofs &, real)> correct;
             std::function<std::pair<int, real>()> reconstruction;
             std::shared_ptr<FiniteVolume::ReconstructionState> state;
         };
@@ -65,7 +65,7 @@ namespace DNDS::Cauchy
         std::optional<EquationDofs> _coupledResidual;
         bool _restoreReconstruction = false;
         mutable std::optional<AuxiliaryValues> _timeAuxiliary;
-        mutable std::optional<EquationMeanGradients> _timeMeanGradients;
+        mutable std::optional<MeanGradients> _timeMeanGradients;
         mutable std::vector<Runtime::TransferBinding> _timeMeanHalo;
         PhysicalTimePositivitySettings _timePP;
         int _timeCompressionPower = 1;
@@ -99,7 +99,7 @@ namespace DNDS::Cauchy
         void PreserveReconstructionGuess();
         void EvaluateImplicitRate(EquationDofs &state, EquationDofs &rate, FiniteVolume::Workspace &workspace, real time, int stage);
         void NormalizeRate(EquationDofs &rate);
-        bool RecordImplicitStage(EquationNonlinearIterationReport report);
+        bool RecordImplicitStage(NonlinearIterationReport report);
         bool Admissible(const EquationDofs &state) const;
         Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time, EquationSetup setup);
         Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const ResolvedPhysicalInputs &inputs, const TimeSettings &time, EquationSetup setup);
@@ -181,7 +181,7 @@ namespace DNDS::Cauchy
         /// simulation selects Strang for its chemical domains.
         bool UsesStrangSource() const { return _sourceStrang; }
         const StateEpoch &Epoch() const { return _epoch; }
-        const std::vector<EquationNonlinearIterationReport> &LastImplicitStages() const { return _lastImplicit; }
+        const std::vector<NonlinearIterationReport> &LastImplicitStages() const { return _lastImplicit; }
         /// Synchronous sink-neutral nonlinear progress callback. The callback
         /// may buffer/report locally but must not enter unrelated collectives.
         void SetProgressObserver(std::function<void(const NonlinearProgress &)> observer)

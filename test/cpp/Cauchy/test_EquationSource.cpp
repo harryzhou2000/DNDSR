@@ -798,8 +798,8 @@ TEST_CASE("Actual conservative chemical sources advance a separate-field implici
         controls.maxIterations = 8;
         controls.relativeTolerance = 1e-12;
         controls.absoluteTolerance = 1e-15;
-        C::EquationLinearSolver linear(problem, accepted, [&](auto &field)
-                                       { return R::PayloadPlan(route, field.Owned().Layout(), field.Ghost().Layout(), R::ElementSchema::For<double>()).Bind(field.Owned(), field.Ghost()); }, controls);
+        C::DofLinearSolver linear(problem, accepted, [&](auto &field)
+                                  { return R::PayloadPlan(route, field.Owned().Layout(), field.Ghost().Layout(), R::ElementSchema::For<double>()).Bind(field.Owned(), field.Ghost()); }, controls);
         C::EquationTimeStepper stepper(accepted, "bdf1");
         const auto evaluate = [&](auto &state, auto &rate, double, int)
         { C::EvaluateChemicalSource(fixture.equation, state, rate, fixture.workers.Acquire()); };

@@ -331,25 +331,25 @@ namespace DNDS::Cauchy
         /// Same scan/order/communication contract for logical equation fields.
         /// Owns numeric aliases and leases, not an MPI context. The controller
         /// retains communication owners and completes each declared halo phase.
-        class EquationSGSIteration
+        class DofSGSIteration
         {
             struct State;
             std::unique_ptr<State> _state;
-            explicit EquationSGSIteration(std::unique_ptr<State> state);
+            explicit DofSGSIteration(std::unique_ptr<State> state);
             friend class LinearProblemContext;
 
         public:
-            EquationSGSIteration(const EquationSGSIteration &) = delete;
-            EquationSGSIteration &operator=(const EquationSGSIteration &) = delete;
-            EquationSGSIteration(EquationSGSIteration &&) noexcept;
-            EquationSGSIteration &operator=(EquationSGSIteration &&) noexcept;
-            ~EquationSGSIteration();
+            DofSGSIteration(const DofSGSIteration &) = delete;
+            DofSGSIteration &operator=(const DofSGSIteration &) = delete;
+            DofSGSIteration(DofSGSIteration &&) noexcept;
+            DofSGSIteration &operator=(DofSGSIteration &&) noexcept;
+            ~DofSGSIteration();
             void Lower(LinearRegion region = LinearRegion::All);
             void Upper(LinearRegion region = LinearRegion::All);
             void Finish();
         };
-        EquationSGSIteration BeginSGS(const EquationDofs &rhs, const EquationDofs &input, EquationDofs &forward, EquationDofs &output, bool middleExchange = false) const;
-        EquationSGSIteration BeginSGSZero(const EquationDofs &rhs, EquationDofs &forward, EquationDofs &output, bool middleExchange = false) const;
+        DofSGSIteration BeginSGS(const EquationDofs &rhs, const EquationDofs &input, EquationDofs &forward, EquationDofs &output, bool middleExchange = false) const;
+        DofSGSIteration BeginSGSZero(const EquationDofs &rhs, EquationDofs &forward, EquationDofs &output, bool middleExchange = false) const;
         /// Two-buffer local symmetric GS application with distinct forward
         /// scratch. Frozen remote inputs are used throughout both scans; there
         /// is no MPI between lower and upper. This unsplit convenience owns all

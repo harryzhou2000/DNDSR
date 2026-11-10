@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/Core/Domain.hpp"
-#include "Cauchy/IO/EquationArchive.hpp"
+#include "Cauchy/IO/StateArchive.hpp"
 #include "../Geom/NativeMeshOverlapFixture.hpp"
 #include "DNDS/Runtime/Array/ArrayIO.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
@@ -76,8 +76,8 @@ namespace
         std::string metadataText;
         serializer->ReadString("metadata_json", metadataText);
         const auto metadata = C::Json::parse(metadataText);
-        auto state = C::EquationArchive::Read(serializer, "state_field_", metadata.at("state_storage"), mpi, region);
-        auto reconstruction = C::EquationArchive::Read(serializer, "reconstruction_field_", metadata.at("reconstruction_storage"), mpi, region);
+        auto state = C::StateArchive::Read(serializer, "state_field_", metadata.at("state_storage"), mpi, region);
+        auto reconstruction = C::StateArchive::Read(serializer, "reconstruction_field_", metadata.at("reconstruction_storage"), mpi, region);
         REQUIRE(state.fields.size() == 1);
         REQUIRE(reconstruction.fields.size() == 1);
         auto flow = std::move(state.fields[0]);

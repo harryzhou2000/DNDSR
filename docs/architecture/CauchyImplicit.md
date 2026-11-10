@@ -1418,7 +1418,7 @@ flowchart TD
     Residual --> Norm[All-component norms; explicit stopping selection]
     Norm --> PseudoTime[Form pseudo-time from prepared spectral sums]
     PseudoTime --> Jacobian[Mean-state coupled approximate Jacobian]
-    Jacobian --> Linear[EquationLinearSolver: SGS or GMRES with SGS/ILU]
+    Jacobian --> Linear[DofLinearSolver: SGS or GMRES with SGS/ILU]
     Linear --> Candidate[Separate candidate; actual EOS and species validation]
     Candidate --> Commit[Agree admissibility, then copy owned means]
     Commit --> Residual
@@ -1568,7 +1568,7 @@ repair that would change a frozen component rejects. Limited-cell statistics
 count the original relaxed-alpha triggers; species-floor adjustments do not
 inflate that counter. PP disabled retains explicit rejection of bad candidates.
 
-`EquationReconstruction.cpp` composes owned-only polynomial sampling, reference
+`Reconstruction.cpp` composes owned-only polynomial sampling, reference
 selection and coefficient projection. Unlimited iteration guesses stay intact;
 filtered coefficients occupy distinct per-field arrays. Default reference is
 the mean. Progressive degree reduction is available when
@@ -1601,8 +1601,8 @@ outside point loops. Failure can leave scratch partial; retain the input means
 and discard the failed workspace outputs rather than publishing them.
 
 ```sh
-cmake --build build --target dnds_test_cauchy_equation_finite_volume dnds_test_cauchy_nonlinear -j8
-ctest --test-dir build -R '^dnds_cauchy_(equation_finite_volume|nonlinear)_np(1|2|4|8)$' --output-on-failure -j1
+cmake --build build --target dnds_test_cauchy_finite_volume_physics dnds_test_cauchy_nonlinear -j8
+ctest --test-dir build -R '^dnds_cauchy_(finite_volume_physics|nonlinear)_np(1|2|4|8)$' --output-on-failure -j1
 ```
 
 ## Frozen-state phase benchmark

@@ -1,4 +1,4 @@
-"""Thin Python composition over the same native CPU equation operators.
+"""Thin Python composition over the same native CPU finite-volume operators.
 
 These are frontend/ownership checks. Independent physical and matrix oracles
 remain in the C++ tests; matching wrappers alone are not physics validation.
@@ -35,7 +35,7 @@ def assert_state_equal(actual, expected, **tolerance):
 
 @pytest.mark.mpi
 @pytest.mark.parametrize("mixture", [False, True])
-def test_equation_operator_frontend_composes_native_residual_and_linear_solve(mixture):
+def test_finite_volume_operator_frontend_composes_native_residual_and_linear_solve(mixture):
     mpi = DNDS.MPIInfo()
     mpi.setWorld()
     root = Path(__file__).resolve().parents[2]
@@ -70,7 +70,7 @@ def test_equation_operator_frontend_composes_native_residual_and_linear_solve(mi
             config["defaults"]["numerics"].update({"viscousGradient": "polynomial", "ransState": {
                 "referenceConservative": {"rho": .8, "rhoNuTilde": .02}}})
         domain = C.Domain(mesh, json.dumps(config))
-        operators = C.EquationOperators(domain)
+        operators = C.FiniteVolumeOperators(domain)
         spatial = json.loads(operators.spatial_settings_json)
         assert spatial["numerics"]["reconstruction"] == "variational"
         assert spatial["numerics"]["cfv"]["maxOrder"] == 3

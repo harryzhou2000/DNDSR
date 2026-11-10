@@ -2,7 +2,7 @@
 #include "doctest.h"
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/Simulation.hpp"
-#include "Cauchy/IO/EquationArchive.hpp"
+#include "Cauchy/IO/StateArchive.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Physics/Thermodynamics/ConservativeConversion.hpp"
 #include "CartesianFixture.hpp"
@@ -79,7 +79,7 @@ TEST_CASE("Equation archive remaps coupled and split fields without confusing co
     for (DNDS::index iCell = 0; iCell < mesh->NumCell(); ++iCell)
         requests.push_back({mpi.rank, mesh->NumCell() - 1 - iCell, iCell});
     R::RowTransferPlan route(context, mesh->NumCell(), mesh->NumCell(), requests);
-    C::EquationArchive archive{C::DescribeEquationStorage(coupled), {coupled.PhysicalField(0).Owned()}};
+    C::StateArchive archive{C::DescribeEquationStorage(coupled), {coupled.PhysicalField(0).Owned()}};
     archive.Restore(split, route, context);
     {
         const auto read = split.ReadOwned();
@@ -88,7 +88,7 @@ TEST_CASE("Equation archive remaps coupled and split fields without confusing co
                 for (DNDS::index j = 0; j < read.Block(iBlock).ComponentNumber(); ++j)
                     CHECK(read.Block(iBlock)(iCell, j) == 1000 * mpi.rank + 100 * (mesh->NumCell() - 1 - iCell) + 10 * iBlock + j);
     }
-    C::EquationArchive splitArchive{C::DescribeEquationStorage(split), {split.PhysicalField(0).Owned(), split.PhysicalField(1).Owned()}};
+    C::StateArchive splitArchive{C::DescribeEquationStorage(split), {split.PhysicalField(0).Owned(), split.PhysicalField(1).Owned()}};
     splitArchive.Restore(coupled, route, context);
     const auto read = coupled.ReadOwned();
     for (DNDS::index iBlock = 0; iBlock < coupled.BlockNumber(); ++iBlock)
@@ -174,7 +174,7 @@ TEST_CASE("Mixture restart redistributes every block and cold starts changed pol
     file->ReadString("metadata_json", text);
     const auto description = C::Json::parse(text).at("reconstruction_storage");
     const auto range = DNDS::EvenSplitRange(mpi.rank, mpi.size, 16);
-    const auto coefficients = C::EquationArchive::Read(file, "reconstruction_field_", description, mpi, {range.second - range.first, range.first});
+    const auto coefficients = C::StateArchive::Read(file, "reconstruction_field_", description, mpi, {range.second - range.first, range.first});
     for (const auto &field : coefficients.fields)
     {
         const auto read = field.Read();
@@ -561,8 +561,8 @@ TEST_CASE("Checkpoint changes MPI partition and polynomial degree using persiste
             std::string metadataText;
             serializer->ReadString("metadata_json", metadataText);
             const auto descriptor = C::Json::parse(metadataText).at("reconstruction_storage");
-            const auto archive = C::EquationArchive::Read(serializer, "reconstruction_field_", descriptor, writers,
-                                                          DNDS::Serializer::ArrayGlobalOffset_Unknown);
+            const auto archive = C::StateArchive::Read(serializer, "reconstruction_field_", descriptor, writers,
+                                                       DNDS::Serializer::ArrayGlobalOffset_Unknown);
             REQUIRE(archive.fields.size() == 1);
             const auto &rec = archive.fields[0];
             serializer->CloseFile();
@@ -620,8 +620,8 @@ TEST_CASE("Checkpoint changes MPI partition and polynomial degree using persiste
     std::string metadataText;
     serializer->ReadString("metadata_json", metadataText);
     const auto descriptor = C::Json::parse(metadataText).at("reconstruction_storage");
-    const auto archive = C::EquationArchive::Read(serializer, "reconstruction_field_", descriptor, mpi,
-                                                  DNDS::Serializer::ArrayGlobalOffset_Unknown);
+    const auto archive = C::StateArchive::Read(serializer, "reconstruction_field_", descriptor, mpi,
+                                               DNDS::Serializer::ArrayGlobalOffset_Unknown);
     REQUIRE(archive.fields.size() == 1);
     const auto &coefficients = archive.fields[0];
     serializer->CloseFile();

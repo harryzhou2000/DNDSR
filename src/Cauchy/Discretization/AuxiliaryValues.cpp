@@ -8,7 +8,7 @@
 namespace DNDS::Cauchy
 {
     namespace R = Runtime;
-    struct EquationMeanGradients::Data
+    struct MeanGradients::Data
     {
         std::weak_ptr<const void> owner;
         EquationDofOperations::Binding binding;
@@ -39,15 +39,15 @@ namespace DNDS::Cauchy
             }
         }
     };
-    EquationMeanGradients FiniteVolume::BuildMeanGradients(EquationDofs &state) const
+    MeanGradients FiniteVolume::BuildMeanGradients(EquationDofs &state) const
     {
-        EquationMeanGradients result;
+        MeanGradients result;
         const MPIInfo mpi(Metrics().Communicator());
         Metrics().Communication()->LocalStage([&]
                                               {
             _data->equation.ValidateStateSchema(state);
             DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && state.Device() == R::Device::Host(), "mean gradient state space/backend differs");
-            result._data = std::make_shared<EquationMeanGradients::Data>(_data, state);
+            result._data = std::make_shared<MeanGradients::Data>(_data, state);
             auto &work = *result._data;
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             {
@@ -71,10 +71,10 @@ namespace DNDS::Cauchy
         }
         return result;
     }
-    void FiniteVolume::PrepareAuxValues(EquationDofs &state, AuxiliaryValues &output, EquationMeanGradients &gradients,
+    void FiniteVolume::PrepareAuxValues(EquationDofs &state, AuxiliaryValues &output, MeanGradients &gradients,
                                         R::EagerEngine &engine, const R::ExecutionStream &stream, real time,
                                         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
-                                        EquationAuxiliaryInputs inputs) const
+                                        AuxiliaryInputs inputs) const
     {
         using namespace EquationFVDetail;
         const MPIInfo mpi(Metrics().Communicator());
@@ -322,7 +322,7 @@ namespace DNDS::Cauchy
         CFV::FiniteVolumeRead geometry;
         EquationDofs::ReadScope owned;
         std::optional<EquationDofs::ReadScope> complete;
-        std::optional<EquationMeanGradients> gradients;
+        std::optional<MeanGradients> gradients;
         std::optional<BoundaryInputs> boundary;
         std::optional<R::Array<real>::ReadLease> boundaryRead;
         RHSScalarView incoming;
@@ -345,7 +345,7 @@ namespace DNDS::Cauchy
         bool started = false;
 
         State(std::shared_ptr<const Data> plan, const EquationDofs &state, const AuxiliaryValues &output, real atTime,
-              std::optional<Physics::Chemistry::ChemicalWorkerPool> pool, EquationAuxiliaryInputs inputs)
+              std::optional<Physics::Chemistry::ChemicalWorkerPool> pool, AuxiliaryInputs inputs)
             : data(std::move(plan)), source(state.NumericAlias()), buffers(output), workers(std::move(pool)),
               geometry(data->metrics.AcquireRead()), owned(source.ReadOwned()),
               independent(data->equation.HasMixture() ? data->equation.Mixture().SpeciesNumber() - 1 : 0),
@@ -681,7 +681,7 @@ namespace DNDS::Cauchy
         _state.reset();
     }
     FiniteVolume::AuxiliaryPreparation FiniteVolume::BeginAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time,
-                                                                    std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, EquationAuxiliaryInputs inputs) const
+                                                                    std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, AuxiliaryInputs inputs) const
     {
         Metrics().Validate();
         _data->partition.Validate();
@@ -744,7 +744,7 @@ namespace DNDS::Cauchy
         return AuxiliaryPreparation(std::move(prepared));
     }
     void FiniteVolume::PrepareAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time,
-                                        std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, EquationAuxiliaryInputs inputs) const
+                                        std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, AuxiliaryInputs inputs) const
     {
         auto scope = BeginAuxValues(state, output, time, std::move(workers), inputs);
         scope.Apply();

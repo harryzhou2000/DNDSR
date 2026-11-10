@@ -8,7 +8,7 @@
 
 namespace DNDS::Cauchy::Bindings
 {
-    void BindEquationOperators(pybind11::module_ &module);
+    void BindFiniteVolumeOperators(pybind11::module_ &module);
 }
 
 PYBIND11_MODULE(cauchy_pybind11, m)
@@ -80,23 +80,22 @@ PYBIND11_MODULE(cauchy_pybind11, m)
         .def_readonly("limited_cells", &C::PhysicalStepLimit::limitedCells)
         .def_readonly("minimum_alpha", &C::PhysicalStepLimit::minimumAlpha)
         .def_readonly("growth_limited", &C::PhysicalStepLimit::growthLimited);
-    py::class_<C::EquationNonlinearIterationReport>(
+    py::class_<C::NonlinearIterationReport>(
         m, "NonlinearIterationReport",
         "Read-only snapshot of one implicit stage; norms include every logical equation component.")
-        .def_readonly("converged", &C::EquationNonlinearIterationReport::converged)
-        .def_readonly("iterations", &C::EquationNonlinearIterationReport::iterations)
-        .def_readonly("linear_iterations", &C::EquationNonlinearIterationReport::linearIterations)
-        .def_readonly("reconstruction_iterations", &C::EquationNonlinearIterationReport::reconstructionIterations)
-        .def_readonly("reconstruction_relative_update",
-                      &C::EquationNonlinearIterationReport::reconstructionRelativeUpdate)
-        .def_readonly("multigrid_cycles", &C::EquationNonlinearIterationReport::multigridCycles)
-        .def_readonly("level_corrections", &C::EquationNonlinearIterationReport::levelCorrections)
-        .def_readonly("initial_residual", &C::EquationNonlinearIterationReport::initialResidual)
-        .def_readonly("reference_residual", &C::EquationNonlinearIterationReport::referenceResidual)
-        .def_readonly("residual_target_ratio", &C::EquationNonlinearIterationReport::residualTargetRatio)
-        .def_readonly("residual", &C::EquationNonlinearIterationReport::residual)
-        .def_readonly("rhs_limited", &C::EquationNonlinearIterationReport::rhsLimited)
-        .def_readonly("increment_limited", &C::EquationNonlinearIterationReport::incrementLimited);
+        .def_readonly("converged", &C::NonlinearIterationReport::converged)
+        .def_readonly("iterations", &C::NonlinearIterationReport::iterations)
+        .def_readonly("linear_iterations", &C::NonlinearIterationReport::linearIterations)
+        .def_readonly("reconstruction_iterations", &C::NonlinearIterationReport::reconstructionIterations)
+        .def_readonly("reconstruction_relative_update", &C::NonlinearIterationReport::reconstructionRelativeUpdate)
+        .def_readonly("multigrid_cycles", &C::NonlinearIterationReport::multigridCycles)
+        .def_readonly("level_corrections", &C::NonlinearIterationReport::levelCorrections)
+        .def_readonly("initial_residual", &C::NonlinearIterationReport::initialResidual)
+        .def_readonly("reference_residual", &C::NonlinearIterationReport::referenceResidual)
+        .def_readonly("residual_target_ratio", &C::NonlinearIterationReport::residualTargetRatio)
+        .def_readonly("residual", &C::NonlinearIterationReport::residual)
+        .def_readonly("rhs_limited", &C::NonlinearIterationReport::rhsLimited)
+        .def_readonly("increment_limited", &C::NonlinearIterationReport::incrementLimited);
     py::class_<C::Domain>(
         m, "Domain",
         "CPU perfect-gas or ideal-mixture domain with optional SA, Wilcox/SST or realizable k-epsilon. Collective methods use the mesh communicator. Missing RANS wall distance is built by Geom from no-slip zones. Release all debug views before construction/stepping; no CUDA fallback.")
@@ -312,5 +311,5 @@ PYBIND11_MODULE(cauchy_pybind11, m)
     {
         return simulation.Config().Root().dump();
     });
-    C::Bindings::BindEquationOperators(m);
+    C::Bindings::BindFiniteVolumeOperators(m);
 }

@@ -100,7 +100,7 @@ namespace DNDS::Cauchy
         real auxiliaryTime = 0;
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
         std::shared_ptr<LinearProblemContext> problem;
-        std::unique_ptr<EquationLinearSolver> linear;
+        std::unique_ptr<DofLinearSolver> linear;
         bool positivity;
         std::optional<EquationThermalPolicy> thermal;
         std::optional<RANSStateView> rans;
@@ -161,8 +161,8 @@ namespace DNDS::Cauchy
         }
         void PrepareLinear(EquationDofs &state, bool overlap)
         {
-            linear = std::make_unique<EquationLinearSolver>(problem, state, [&](auto &field)
-                                                            { return discrete.BindHalo(field); }, NonlinearDetail::ResolveLinear(settings), LinearExecution{overlap, settings.collectiveChecks});
+            linear = std::make_unique<DofLinearSolver>(problem, state, [&](auto &field)
+                                                       { return discrete.BindHalo(field); }, NonlinearDetail::ResolveLinear(settings), LinearExecution{overlap, settings.collectiveChecks});
         }
         void PublishAuxiliary(const EquationDofs &state, real time)
         {
@@ -274,15 +274,15 @@ namespace DNDS::Cauchy
         _data->PrepareLinear(state, settings.execution.overlap);
     }
 
-    EquationNonlinearIterationReport NonlinearSolver::Solve(EquationDofs &state, const EquationDofs &source,
-                                                            real mass, real rhsScale, real time, int stage, NonlinearSolveControl control)
+    NonlinearIterationReport NonlinearSolver::Solve(EquationDofs &state, const EquationDofs &source,
+                                                    real mass, real rhsScale, real time, int stage, NonlinearSolveControl control)
     {
         return Execute(state, source, mass, rhsScale, time, stage, std::move(control), false, std::nullopt);
     }
-    EquationNonlinearIterationReport NonlinearSolver::CorrectOnce(EquationDofs &state, const EquationDofs &source,
-                                                                  real mass, real rhsScale, real time, int stage,
-                                                                  NonlinearSolveControl control,
-                                                                  std::optional<std::reference_wrapper<const EquationDofs>> cachedRate)
+    NonlinearIterationReport NonlinearSolver::CorrectOnce(EquationDofs &state, const EquationDofs &source,
+                                                          real mass, real rhsScale, real time, int stage,
+                                                          NonlinearSolveControl control,
+                                                          std::optional<std::reference_wrapper<const EquationDofs>> cachedRate)
     {
         control.correctionLimit = 1;
         return Execute(state, source, mass, rhsScale, time, stage, std::move(control), true, cachedRate);
@@ -319,10 +319,10 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(_data->auxiliaryState, "equation auxiliary values have not been prepared");
         return _data->auxiliary;
     }
-    EquationNonlinearIterationReport NonlinearSolver::Execute(EquationDofs &state, const EquationDofs &source,
-                                                              real mass, real rhsScale, real time, int stage,
-                                                              NonlinearSolveControl control, bool singleCorrection,
-                                                              std::optional<std::reference_wrapper<const EquationDofs>> cachedRate)
+    NonlinearIterationReport NonlinearSolver::Execute(EquationDofs &state, const EquationDofs &source,
+                                                      real mass, real rhsScale, real time, int stage,
+                                                      NonlinearSolveControl control, bool singleCorrection,
+                                                      std::optional<std::reference_wrapper<const EquationDofs>> cachedRate)
     {
         DNDS_check_throw_info(_data, "nonlinear session was moved");
         auto session = _data->session.Acquire(_nestedSession.lock());
@@ -365,7 +365,7 @@ namespace DNDS::Cauchy
             if (data.settings.collectiveChecks)
                 NonlinearDetail::AgreeControls(data.mpi, serialized);
         }
-        EquationNonlinearIterationReport initial;
+        NonlinearIterationReport initial;
         initial.residual.resize(size_t(nv));
         BindControllerState(control);
         auto geometry = data.discrete.Metrics().AcquireRead();

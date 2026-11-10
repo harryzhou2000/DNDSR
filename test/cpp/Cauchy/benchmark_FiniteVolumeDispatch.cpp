@@ -1,4 +1,4 @@
-// Isolate the general equation adapter using the same physical flow5 arrays,
+// Isolate the logical-DOF dispatch using the same physical flow5 arrays,
 // perfect-gas model and composed constant-FV operation. Both paths include
 // their normal mean/coefficient halos. No nonlinear solve, PP, VR or sources.
 #include "Cauchy/Discretization/FiniteVolume.hpp"

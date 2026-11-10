@@ -1,4 +1,4 @@
-#include "Cauchy/Implicit/EquationJacobianKernels.hpp"
+#include "Cauchy/Implicit/JacobianKernels.hpp"
 
 namespace DNDS::Cauchy::Detail
 {

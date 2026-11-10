@@ -1357,8 +1357,8 @@ TEST_CASE("Physical mixture Jacobians match frozen-signal residual differences a
     linear.maxIterations = 100;
     linear.relativeTolerance = 1e-10;
     linear.absoluteTolerance = 1e-12;
-    C::EquationLinearSolver solver(evaluated, direction, [&](auto &field)
-                                   { return fv.Metrics().BindHalo(field); }, linear);
+    C::DofLinearSolver solver(evaluated, direction, [&](auto &field)
+                              { return fv.Metrics().BindHalo(field); }, linear);
     const auto report = solver.Solve(action);
     CHECK(report.converged);
     CHECK(report.usable);

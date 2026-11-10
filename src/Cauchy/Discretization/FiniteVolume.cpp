@@ -673,7 +673,7 @@ namespace DNDS::Cauchy
             std::weak_ptr<const R::ArrayStorage> input, output;
             uint64_t inputShape = 0, inputVersion = 0, outputShape = 0, outputVersion = 0;
         };
-        std::shared_ptr<EquationPositivityWorkspace> positivity;
+        std::shared_ptr<PositivityWorkspace> positivity;
         std::unique_ptr<LimitedVRWorkspace> limitedVR;
         EquationThermalPolicy thermal;
         /// Setup-resolved fixed-flow leaf. It owns immutable kernel reads; the
@@ -717,7 +717,7 @@ namespace DNDS::Cauchy
         std::optional<EquationDofs> lowOrderResidual;
         std::optional<R::Array<real>> lowOrderFaceFlux;
         bool boundaryMomentumCurrent = false;
-        std::optional<EquationMeanGradients> meanGradients;
+        std::optional<MeanGradients> meanGradients;
         bool chemical;
         int iterations = 0;
         real relativeUpdate = 0;
@@ -974,7 +974,7 @@ namespace DNDS::Cauchy
                 // This construction prototype is discarded immediately; the
                 // actual finalized coefficients belong to ReconstructionState.
                 auto coefficientPrototype = ReconstructionState::BuildCoefficients(*owner, state);
-                positivity = std::make_shared<EquationPositivityWorkspace>(owner, state, coefficientPrototype, workers);
+                positivity = std::make_shared<PositivityWorkspace>(owner, state, coefficientPrototype, workers);
                 // Conservative explicit flux blending is currently the
                 // established pure-flow policy. Extended RANS/species stages
                 // reject and retry their raw update instead of constructing a
@@ -2463,7 +2463,7 @@ namespace DNDS::Cauchy
         if (work.meanGradients)
         {
             ValidateWorkspace(state, work);
-            EquationAuxiliaryInputs inputs;
+            AuxiliaryInputs inputs;
             if (work.incoming)
                 inputs.boundary = std::cref(*work.incoming);
             PrepareAuxValues(state, auxiliary, *work.meanGradients, engine, stream, time, work.workers, inputs);
@@ -2481,7 +2481,7 @@ namespace DNDS::Cauchy
             ValidateWorkspace(state, work);
             DNDS_check_throw_info(stream.Context().device == R::Device::Host(), "equation correction requires a CPU stream");
             PreflightHalo(state);
-            EquationAuxiliaryInputs inputs;
+            AuxiliaryInputs inputs;
             if (work.incoming)
                 inputs.boundary = std::cref(*work.incoming);
             preparation.emplace(BeginAuxValues(state, auxiliary, time, work.workers, inputs)); });
@@ -3210,7 +3210,7 @@ namespace DNDS::Cauchy
         if (auxiliary && !work.meanGradients)
             local([&]
                   {
-                      EquationAuxiliaryInputs inputs;
+                      AuxiliaryInputs inputs;
                       if (work.incoming)
                           inputs.boundary = std::cref(*work.incoming);
                       auxiliaryPreparation.emplace(BeginAuxValues(state, auxiliary->get(), time, work.workers, inputs)); });
@@ -3294,7 +3294,7 @@ namespace DNDS::Cauchy
         {
             // Two-equation transport explicitly needs mean gradients; those
             // are independent of the reconstruction being computed below.
-            EquationAuxiliaryInputs inputs;
+            AuxiliaryInputs inputs;
             if (work.incoming)
                 inputs.boundary = std::cref(*work.incoming);
             PrepareAuxValues(state, auxiliary->get(), *work.meanGradients, engine, stream, time, work.workers, inputs);

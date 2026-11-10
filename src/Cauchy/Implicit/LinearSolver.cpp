@@ -128,9 +128,9 @@ namespace DNDS::Cauchy
                 return local;
             }
         };
-        struct EquationLinearOperations : EquationDofOperations
+        struct DofLinearOperations : EquationDofOperations
         {
-            using Iteration = LinearProblemContext::EquationSGSIteration;
+            using Iteration = LinearProblemContext::DofSGSIteration;
             static index Width(const State &state) { return state.ComponentNumber(); }
             static void Agree(const State &state, MPI_Comm communicator) { AgreeEquationBinding(state, communicator); }
             static bool LocalFinite(const State &state)
@@ -669,7 +669,7 @@ namespace DNDS::Cauchy
         Runtime::SessionAccess session;
         using StateLinearSolverData::StateLinearSolverData;
     };
-    struct EquationLinearSolver::Data : StateLinearSolverData<EquationLinearOperations>
+    struct DofLinearSolver::Data : StateLinearSolverData<DofLinearOperations>
     {
         Runtime::SessionAccess session;
         using StateLinearSolverData::StateLinearSolverData;
@@ -677,15 +677,15 @@ namespace DNDS::Cauchy
     LinearSolver::LinearSolver(std::shared_ptr<LinearProblemContext> problem, const Field &prototype, const HaloBinder &bindHalo,
                                LinearSolveSettings settings, LinearExecution execution)
         : _data(PrepareSolver<Data>(std::move(problem), prototype, bindHalo, std::move(settings), execution)) {}
-    EquationLinearSolver::EquationLinearSolver(std::shared_ptr<LinearProblemContext> problem, const EquationDofs &prototype, const HaloBinder &bindHalo,
-                                               LinearSolveSettings settings, LinearExecution execution)
+    DofLinearSolver::DofLinearSolver(std::shared_ptr<LinearProblemContext> problem, const EquationDofs &prototype, const HaloBinder &bindHalo,
+                                     LinearSolveSettings settings, LinearExecution execution)
         : _data(PrepareSolver<Data>(std::move(problem), prototype, bindHalo, std::move(settings), execution)) {}
     LinearSolver::Field LinearSolver::Solution() const
     {
         DNDS_check_throw_info(_data, "linear solver was moved");
         return _data->Solution();
     }
-    EquationDofs EquationLinearSolver::Solution() const
+    EquationDofs DofLinearSolver::Solution() const
     {
         DNDS_check_throw_info(_data, "linear solver was moved");
         return _data->Solution();
@@ -698,7 +698,7 @@ namespace DNDS::Cauchy
         auto session = _data->session.Acquire();
         return _data->Solve(rhs, initialGuess, componentScales);
     }
-    Linear::LinearIterationReport EquationLinearSolver::Solve(
+    Linear::LinearIterationReport DofLinearSolver::Solve(
         const EquationDofs &rhs, std::optional<std::reference_wrapper<const EquationDofs>> initialGuess,
         const std::vector<real> &componentScales)
     {

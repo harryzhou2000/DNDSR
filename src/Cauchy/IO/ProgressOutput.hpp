@@ -123,7 +123,7 @@ namespace DNDS::Cauchy
         void BeginAttempt(ProgressLocation location) { _attempt = location; }
         void CaptureIteration(const NonlinearProgress &progress);
         void FlushIterations();
-        void StageEnd(ProgressLocation location, const EquationNonlinearIterationReport &report);
+        void StageEnd(ProgressLocation location, const NonlinearIterationReport &report);
         void StepEnd(ProgressLocation location, const AcceptedStepProgress &progress, bool forceHistory = false,
                      bool printConsole = true);
         void Flush();

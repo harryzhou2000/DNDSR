@@ -1,5 +1,5 @@
 #include "DNDS/MPI/Failure.hpp"
-#include "Cauchy/IO/EquationArchive.hpp"
+#include "Cauchy/IO/StateArchive.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 
 namespace DNDS::Cauchy
@@ -24,11 +24,11 @@ namespace DNDS::Cauchy
         for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             Runtime::WriteArray(state.PhysicalField(iField).Owned(), serializer, prefix + std::to_string(iField), mpi);
     }
-    EquationArchive EquationArchive::Read(const Serializer::SerializerBaseSSP &serializer,
-                                          const std::string &prefix, Json descriptor, const MPIInfo &mpi,
-                                          Serializer::ArrayGlobalOffset shard)
+    StateArchive StateArchive::Read(const Serializer::SerializerBaseSSP &serializer,
+                                    const std::string &prefix, Json descriptor, const MPIInfo &mpi,
+                                    Serializer::ArrayGlobalOffset shard)
     {
-        EquationArchive result;
+        StateArchive result;
         result.storage = std::move(descriptor);
         MPI::LocalStage(mpi, [&]
                         { DNDS_check_throw_info(result.storage.is_object() && result.storage.value("version", 0) == 1 &&
@@ -39,7 +39,7 @@ namespace DNDS::Cauchy
             result.fields.push_back(Runtime::ReadArray<real>(serializer, prefix + std::to_string(iField), mpi, shard));
         return result;
     }
-    bool EquationArchive::Compatible(const EquationDofs &destination) const
+    bool StateArchive::Compatible(const EquationDofs &destination) const
     {
         try
         {
@@ -88,8 +88,8 @@ namespace DNDS::Cauchy
             return false;
         }
     }
-    void EquationArchive::Restore(EquationDofs &destination, const Runtime::RowTransferPlan &route,
-                                  const std::shared_ptr<Runtime::CommunicationContext> &context) const
+    void StateArchive::Restore(EquationDofs &destination, const Runtime::RowTransferPlan &route,
+                               const std::shared_ptr<Runtime::CommunicationContext> &context) const
     {
         const MPIInfo mpi(route.Communicator());
         MPI::LocalStage(mpi, [&]

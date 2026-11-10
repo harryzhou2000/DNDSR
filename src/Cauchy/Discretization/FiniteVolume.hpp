@@ -34,7 +34,7 @@ namespace DNDS::Cauchy
     /// Gradient values use the cell's mesh frame; periodic tensors are rotated
     /// at stencil consumption. Copies share buffers and must not execute at
     /// the same time. Build for the exact state binding used by the caller.
-    struct EquationMeanGradients
+    struct MeanGradients
     {
         std::vector<CFV::FVField> fields;
 
@@ -46,9 +46,9 @@ namespace DNDS::Cauchy
     /// Optional prepared inputs to the stateless auxiliary property kernels.
     /// Two-equation RANS requires meanGradients. No implicit gradient solve or
     /// exchange is performed by BeginAuxValues/AuxiliaryPreparation.
-    struct EquationAuxiliaryInputs
+    struct AuxiliaryInputs
     {
-        std::optional<std::reference_wrapper<const EquationMeanGradients>> meanGradients;
+        std::optional<std::reference_wrapper<const MeanGradients>> meanGradients;
         std::optional<std::reference_wrapper<const BoundaryInputs>> boundary;
     };
     /// Explicit result of physical-step selection. Alpha/count describe the PP
@@ -205,8 +205,8 @@ namespace DNDS::Cauchy
         struct LimitedVRGeometry;
         struct LimitedVRWorkspace;
         struct MatrixFreeJacobian;
-        struct EquationJacobian;
-        struct EquationPositivityWorkspace;
+        struct JacobianData;
+        struct PositivityWorkspace;
         std::shared_ptr<const Data> _data;
         void ValidateBoundaryLayout(const BoundaryInputs &input) const;
 
@@ -409,14 +409,14 @@ namespace DNDS::Cauchy
         /// explicit mean-gradient publication; neither overload exchanges data.
         AuxiliaryPreparation BeginAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time = 0,
                                             std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
-                                            EquationAuxiliaryInputs inputs = {}) const;
+                                            AuxiliaryInputs inputs = {}) const;
         void PrepareAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time = 0,
                               std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
-                              EquationAuxiliaryInputs inputs = {}) const;
+                              AuxiliaryInputs inputs = {}) const;
         /// Collective allocation/binding only, not a gradient evaluation. The
         /// returned workspace is tied to these physical allocations and row
         /// spaces; rebuild after rebinding/redistributing the equation state.
-        EquationMeanGradients BuildMeanGradients(EquationDofs &state) const;
+        MeanGradients BuildMeanGradients(EquationDofs &state) const;
         /// Collective CPU orchestration: mean halo + gradient core, dependent
         /// gradients, then gradient halo + auxiliary core, and auxiliary rest.
         /// Uses persistent scratch and explicit workers. No VR coefficients are
@@ -425,10 +425,10 @@ namespace DNDS::Cauchy
         /// physical grouping; no simultaneous use of shared workspace copies.
         /// Returns with CPU-visible outputs. Mutating state or gradients makes
         /// a retained auxiliary publication stale and validation rejects it.
-        void PrepareAuxValues(EquationDofs &state, AuxiliaryValues &output, EquationMeanGradients &gradients,
+        void PrepareAuxValues(EquationDofs &state, AuxiliaryValues &output, MeanGradients &gradients,
                               Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0,
                               std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
-                              EquationAuxiliaryInputs inputs = {}) const;
+                              AuxiliaryInputs inputs = {}) const;
         void ValidateAuxValues(const EquationDofs &state, const AuxiliaryValues &values, real time = 0) const;
         /// Copyable immutable read scope for RHS geometry/basis data. Apply is
         /// stateless: no MPI, reconstruction, cache update or hidden counters.

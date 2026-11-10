@@ -100,7 +100,7 @@ against the optimized parent and the prior audit plans.
 
 | Commit | Obligation | Disposition / proof |
 | --- | --- | --- |
-| `7f60eda6` | fix(cauchy): separate RANS reconstruction PP and correct SST blend | Adapted in EquationReconstruction/EquationRANS; flow exit proves independent scalar repair. RANS FV np2 and reduced SA passed; SST model oracle retained. |
+| `7f60eda6` | fix(cauchy): separate RANS reconstruction PP and correct SST blend | Adapted in Reconstruction/EquationRANS; flow exit proves independent scalar repair. RANS FV np2 and reduced SA passed; SST model oracle retained. |
 | `01803350` | fix(cauchy): validate worker capabilities and retain finest solver owners | Retained MPI startup status and ValidateMPIThreadSupport before engine setup; pMG owns facade, not engine. Config, moved-facade and frontend fixtures retained; pMG and frontend np2 passed. |
 | `de8d66e5` | refactor(audit): share private reductions and encapsulate buffer address queries | Retained AuxiliaryReduction, MeshAdjacencyBindings and Buffer metadata helpers; edits to callers preserve row order and borrow lifetimes. |
 | `88f21255` | test(audit): restore aggregate coverage and separate routine integration costs | Retained CMake aggregate dependency checker, committed split-SOR test, 3D routine/golden split and lazy Geom fixtures; paired configure passed. |
@@ -156,8 +156,8 @@ against the optimized parent and the prior audit plans.
 | `cde3087c` | docs: record bounded pMG outcomes and local preflight contract | 1 code/test paths match refactor tip; retained source, no new experiment inferred |
 | `a300d2ee` | feat(cauchy): configure independent polynomial multigrid smoothers | Retained independent coarse smoothers and defaults in PolynomialMultigrid/SimulationConfig; np2 pMG 11 cases passed. |
 | `826a7353` | fix(cauchy): match Euler reconstruction wall targets | Retained reflected reconstruction wall target in flow/equation paths; BoundaryInputs fixture retained. |
-| `878ecf22` | fix(cauchy): align wall and farfield protocols with Euler | Retained thermal wall and farfield protocols in BoundarySystem/EquationBoundary, separate trace and approximate-Jacobian inputs; equation FV np2 passed. |
-| `828b714a` | perf(cauchy): remove repeated FV and implicit preparation work | Retained unique-face flux/gather, cached auxiliary/rate path, midpoint and P0 gradients, small-block kernels and fixed-count controls. Scope-only changes in EquationFiniteVolume. |
+| `878ecf22` | fix(cauchy): align wall and farfield protocols with Euler | Retained thermal wall and farfield protocols in BoundarySystem/BoundaryOperators, separate trace and approximate-Jacobian inputs; equation FV np2 passed. |
+| `828b714a` | perf(cauchy): remove repeated FV and implicit preparation work | Retained unique-face flux/gather, cached auxiliary/rate path, midpoint and P0 gradients, small-block kernels and fixed-count controls. Scope-only changes in `FiniteVolume`. |
 | `310fdccf` | fix(cauchy): honor optional pMG residual preflight checks | pMG optional residual check adapted through RunLocalStage; numerical residual reductions remain. Focused pMG np2 passed. |
 | `480a6c64` | perf(cauchy): preserve static blocks and direct row access in CPU kernels | Retained EquationViews, bounded row dispatch, static block inverse, zero-start SGS and direct evaluation with generic fallback. Jacobian/linear/Equation FV np2 passed. |
 | `f4d6ddb9` | test(cauchy): distinguish candidate validation from collective waiting | 4 code/test paths match refactor tip; retained source, no new experiment inferred |
@@ -172,10 +172,10 @@ against the optimized parent and the prior audit plans.
 | `b25b01de` | test(cauchy): verify direct-gradient SA source Jacobian | Retained direct-gradient SA source oracle; RANS FV np2 passed. |
 | `26c3f799` | test(cauchy): audit correction source refresh work in phase diagnostics | 4 code/test paths match refactor tip; retained source, no new experiment inferred |
 | `c29b6677` | perf(cauchy): apply the first zero-start ILU correction directly | Retained first direct zero-start fixed ILU correction and original arithmetic in LinearSolver; linear np2 passed. |
-| `eb196cb1` | perf(cauchy): borrow direct gradients for source Jacobian preparation | Retained source Jacobian direct-gradient leases in EquationFiniteVolume; diff changes preparation policy only. |
+| `eb196cb1` | perf(cauchy): borrow direct gradients for source Jacobian preparation | Retained source Jacobian direct-gradient leases in `FiniteVolume`; diff changes preparation policy only. |
 | `27d48bce` | test(cauchy): check high-order SST auxiliary face bounds | Retained high-order SST auxiliary face oracle; RANS FV np2 passed. |
 | `98807307` | test(cauchy): keep auxiliary oracle ranks in collective order | Retained collective-order auxiliary oracle and empty-owner handling; RANS FV np2 passed. |
-| `c2dbe166` | perf(cauchy): borrow direct gradients for midpoint volume sources | Retained midpoint RHS borrowed physical-gradient views in EquationFiniteVolume, including P0 source gradient. |
+| `c2dbe166` | perf(cauchy): borrow direct gradients for midpoint volume sources | Retained midpoint RHS borrowed physical-gradient views in `FiniteVolume`, including P0 source gradient. |
 | `f17dbbb2` | perf(cauchy): skip exact identity-frame flux block transforms | Retained exact identity-frame equation Jacobian products and rotated fallback; both state types retain specialized paths. |
 | `69cf6264` | docs(cauchy): clarify borrowed source gradients and identity frames | Retained upstream documentation and gradient/frame contracts. |
 | `455284fc` | perf(cauchy): assemble block diagonals through borrowed output views | Retained output block-diagonal borrowed views and no row ownership change; Jacobian/Equation FV np2 passed. |
@@ -183,7 +183,7 @@ against the optimized parent and the prior audit plans.
 | `2afe198b` | docs(cauchy): explain untimed rank work diagnostic metadata | 1 code/test paths match refactor tip; retained source, no new experiment inferred |
 | `1c19cc58` | perf(cfv): isolate cached value sampling from derivative evaluation | Retained cached EvaluateValues dispatch for PP and unchanged value kernel tokens apart from formatting. Generic sampling remains. |
 | `a37c2593` | test(cauchy): preserve uncompressed SA reconstruction policy | Reduced-order SA oracle retained in separate macro target; np2 passed. |
-| `164810d9` | perf(cauchy): resolve source row spans before component loops | Retained source row spans outside component loops; scope-only changes to EquationFiniteVolume. |
+| `164810d9` | perf(cauchy): resolve source row spans before component loops | Retained source row spans outside component loops; scope-only changes to `FiniteVolume`. |
 | `e17a2084` | perf(cauchy): specialize six-component assembled face blocks | Retained bounded six-component assembly plus generic path. Repeated/rotated/selected tests retained; Jacobian and RANS np2 passed. |
 | `68b4cb10` | test(cauchy): cover repeated neighbor faces and dirty assembly buffers | Retained repeated neighbor faces and dirty assembly buffers in RANS FV; np2 passed. |
 | `7337156e` | perf(cfv): sample source values and gradients in one pass | Retained bundled value/gradient kernel and fallback; only terminal catch calls added to sampling source. |

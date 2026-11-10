@@ -35,7 +35,7 @@ namespace DNDS::Cauchy
             auto View() const { return layout->View(); }
         };
     }
-    struct FiniteVolume::EquationPositivityWorkspace::State
+    struct FiniteVolume::PositivityWorkspace::State
     {
         std::shared_ptr<const Data> owner;
         EquationDofs prototype;
@@ -88,12 +88,12 @@ namespace DNDS::Cauchy
             return bounds.Admissible(EquationPositivityDetail::PointRow<Values>{values, q});
         }
     };
-    FiniteVolume::EquationPositivityWorkspace::EquationPositivityWorkspace(std::shared_ptr<const Data> owner,
-                                                                           const EquationDofs &prototype, const EquationDofs &coefficients, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers)
+    FiniteVolume::PositivityWorkspace::PositivityWorkspace(std::shared_ptr<const Data> owner,
+                                                           const EquationDofs &prototype, const EquationDofs &coefficients, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers)
         : state(std::make_shared<State>(std::move(owner), prototype, coefficients, std::move(workers))) {}
-    std::pair<index, real> FiniteVolume::EquationPositivityWorkspace::LocalStatistics() const { return {state->limited, state->minimum}; }
+    std::pair<index, real> FiniteVolume::PositivityWorkspace::LocalStatistics() const { return {state->limited, state->minimum}; }
 
-    void FiniteVolume::EquationPositivityWorkspace::Apply(const EquationDofs &input, const EquationDofs &unlimited, EquationDofs &flux, bool refresh)
+    void FiniteVolume::PositivityWorkspace::Apply(const EquationDofs &input, const EquationDofs &unlimited, EquationDofs &flux, bool refresh)
     {
         auto &data = *state;
         const auto &n = data.owner->settings.numerics;

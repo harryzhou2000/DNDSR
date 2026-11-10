@@ -109,7 +109,7 @@ TEST_CASE("Shared nonlinear controller observes coupled updates once and advance
     std::vector<int> visits;
     std::vector<double> cfl;
     double value = 1;
-    const auto report = C::NonlinearDetail::Iterate(settings, schema, mpi.rank, 0, {}, C::EquationNonlinearIterationReport{}, 0, [&]
+    const auto report = C::NonlinearDetail::Iterate(settings, schema, mpi.rank, 0, {}, C::NonlinearIterationReport{}, 0, [&]
                                                     { visits.push_back(2); }, [&](auto &norms)
                                                     { norms[0] = value; visits.push_back(3); }, []
                                                     { return std::make_pair(0, 0.); }, [&](auto &current)
@@ -139,7 +139,7 @@ TEST_CASE("Nonlinear controller resumes after a completed correction without res
     const auto schema = C::EquationSystem::Resolve(C::EquationSettings{}).Schema();
     const auto run = [&](double &value, C::NonlinearSolveControl control)
     {
-        return C::NonlinearDetail::Iterate(settings, schema, mpi.rank, 0, control, C::EquationNonlinearIterationReport{}, 0, [] {}, [&](auto &norms)
+        return C::NonlinearDetail::Iterate(settings, schema, mpi.rank, 0, control, C::NonlinearIterationReport{}, 0, [] {}, [&](auto &norms)
                                            { std::fill(norms.begin(), norms.end(), value); }, []
                                            { return std::make_pair(0, 0.); }, [&](auto &)
                                            { value *= .5; });
@@ -190,7 +190,7 @@ TEST_CASE("Cauchy nonlinear progress reports completed iterations and zero-based
     C::NonlinearSolveControl control;
     control.progress = [&](const auto &progress)
     { captured.push_back(progress); };
-    const auto report = C::NonlinearDetail::Iterate(settings, schema, mpi.rank, 0, control, C::EquationNonlinearIterationReport{}, 0, [] {}, [](auto &norms)
+    const auto report = C::NonlinearDetail::Iterate(settings, schema, mpi.rank, 0, control, C::NonlinearIterationReport{}, 0, [] {}, [](auto &norms)
                                                     { norms[0] = 1; }, []
                                                     { return std::make_pair(0, 0.); }, [](auto &) {});
     CHECK(report.converged);

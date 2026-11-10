@@ -41,8 +41,8 @@ namespace DNDS::Cauchy
         /// Accept only the original finest uncompressed equation, never the
         /// coarse FAS forcing. Caps return unconverged. Coarse levels have no
         /// mutable VR warm guesses; they are reset by restriction every cycle.
-        EquationNonlinearIterationReport Solve(const EquationDofs &source, real mass, real rhsScale, real time, int stage = 0,
-                                               NonlinearSolveControl control = {});
+        NonlinearIterationReport Solve(const EquationDofs &source, real mass, real rhsScale, real time, int stage = 0,
+                                       NonlinearSolveControl control = {});
         /// One finest update, with bounded CorrectOnce smoothing at each level.
         /// No convergence loop/reference reset; pseudoCFL comes from the caller.
         /// Other-stage inputs in source must remain frozen throughout the cycle.
@@ -50,9 +50,9 @@ namespace DNDS::Cauchy
         /// CorrectOnce. Caller guarantees current owned means/time/stage and
         /// reconstruction provenance. It is consumed only by the first finest
         /// smoother; further corrections evaluate their updated states normally.
-        EquationNonlinearIterationReport ApplyCycle(const EquationDofs &source, real mass, real rhsScale, real time,
-                                                    int stage = 0, real pseudoCFL = 0,
-                                                    std::optional<std::reference_wrapper<const EquationDofs>> rate = std::nullopt);
+        NonlinearIterationReport ApplyCycle(const EquationDofs &source, real mass, real rhsScale, real time,
+                                            int stage = 0, real pseudoCFL = 0,
+                                            std::optional<std::reference_wrapper<const EquationDofs>> rate = std::nullopt);
         /// Frozen stage trace shared with coarse levels after checking their
         /// canonical boundary quadrature order. Local alias binding only; no MPI.
         void SetBoundaryInputs(const BoundaryInputs &input);

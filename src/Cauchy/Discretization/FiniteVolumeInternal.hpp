@@ -261,12 +261,12 @@ namespace DNDS::Cauchy
     /// Private owned-quadrature PP composition. Physical coefficient fields
     /// keep their layouts; numeric policy, samples and scratch are independent
     /// of nonlinear/time ownership. No communication is hidden in Apply.
-    struct FiniteVolume::EquationPositivityWorkspace
+    struct FiniteVolume::PositivityWorkspace
     {
         struct State;
         std::shared_ptr<State> state;
-        EquationPositivityWorkspace(std::shared_ptr<const Data> owner, const EquationDofs &prototype,
-                                    const EquationDofs &coefficients, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers);
+        PositivityWorkspace(std::shared_ptr<const Data> owner, const EquationDofs &prototype,
+                            const EquationDofs &coefficients, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers);
         void Apply(const EquationDofs &input, const EquationDofs &unlimited, EquationDofs &flux, bool refresh);
         std::pair<index, real> LocalStatistics() const;
     };

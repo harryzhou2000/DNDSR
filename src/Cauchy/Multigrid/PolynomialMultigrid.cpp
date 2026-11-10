@@ -69,7 +69,7 @@ namespace DNDS::Cauchy
             using Solver = NonlinearSolver;
             using Workspace = FiniteVolume::Workspace;
             using ReconstructionState = FiniteVolume::ReconstructionState;
-            using Report = EquationNonlinearIterationReport;
+            using Report = NonlinearIterationReport;
             static Algebra::DofBundle Bundle(const State &state) { return state.Fields(); }
             static State BindScratch(const State &prototype, const Algebra::DofBundle &fields) { return prototype.RebindFields(fields); }
             static std::vector<real> Norms(const State &state) { return std::vector<real>(size_t(state.ComponentNumber())); }
@@ -552,13 +552,13 @@ namespace DNDS::Cauchy
                         { _data = std::make_shared<Data>(fine, state, solver, settings); });
         _data->Build(mesh, engine, stream, settings, workers);
     }
-    EquationNonlinearIterationReport PolynomialMultigrid::Solve(const EquationDofs &source, real mass, real rhsScale, real time, int stage,
-                                                                NonlinearSolveControl control)
+    NonlinearIterationReport PolynomialMultigrid::Solve(const EquationDofs &source, real mass, real rhsScale, real time, int stage,
+                                                        NonlinearSolveControl control)
     {
         auto session = _data->fineSolver.ReserveForMultigrid();
         return _data->Solve(source, mass, rhsScale, time, stage, std::move(control));
     }
-    EquationNonlinearIterationReport PolynomialMultigrid::ApplyCycle(
+    NonlinearIterationReport PolynomialMultigrid::ApplyCycle(
         const EquationDofs &source, real mass, real rhsScale, real time, int stage, real pseudoCFL,
         std::optional<std::reference_wrapper<const EquationDofs>> rate)
     {

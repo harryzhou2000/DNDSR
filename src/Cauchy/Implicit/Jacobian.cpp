@@ -3,7 +3,7 @@
 #include "Cauchy/Discretization/FiniteVolumeKernels.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/Physics/EquationFlux.hpp"
-#include "Cauchy/Implicit/EquationJacobianKernels.hpp"
+#include "Cauchy/Implicit/JacobianKernels.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -18,7 +18,7 @@ namespace DNDS::Cauchy
     /// Keep coupled diagonals as an option, but compressed ILU factors then
     /// generally need projection (not algebraically equivalent). See the
     /// large-species TODO in docs/architecture/CauchyImplicit.md.
-    struct FiniteVolume::EquationJacobian final : OffDiagonalEvaluator
+    struct FiniteVolume::JacobianData final : OffDiagonalEvaluator
     {
         struct Point
         {
@@ -47,7 +47,7 @@ namespace DNDS::Cauchy
         std::vector<bool> active;
         bool allComponents = true;
         bool sixComponentProduct = false;
-        EquationJacobian(const FiniteVolume &fv, const EquationDofs &state, LinearProblemContext &output, JacobianPreparation controls, real time)
+        JacobianData(const FiniteVolume &fv, const EquationDofs &state, LinearProblemContext &output, JacobianPreparation controls, real time)
             : components(state.ComponentNumber()), independent(fv._data->equation.HasMixture() ? fv._data->equation.Mixture().SpeciesNumber() - 1 : 0),
               means(output.HasAssembledOffDiagonal() ? 0 : components, output.HasAssembledOffDiagonal() ? 0 : fv.Metrics().NumCellProc()), pressureDerivative(components, fv.Metrics().NumCellProc()),
               pressure(size_t(fv.Metrics().NumCellProc())), radius(fv._data->stencilFaces.size()), frame(fv._data->motion.At(time)), scale(controls.residualScale)
@@ -72,7 +72,7 @@ namespace DNDS::Cauchy
             sixComponentProduct = components == 6 && flowFirst == 0 && kineticFirst < 0 && allComponents;
             if (output.HasAssembledOffDiagonal())
                 return;
-            const auto old = std::dynamic_pointer_cast<const EquationJacobian>(output.PreparedOffDiagonalEvaluator());
+            const auto old = std::dynamic_pointer_cast<const JacobianData>(output.PreparedOffDiagonalEvaluator());
             if (old && old->geometry->owner.lock() == fv._data)
             {
                 geometry = old->geometry;
@@ -414,7 +414,7 @@ namespace DNDS::Cauchy
                 ValidateEquationSourceJacobian(state, *context, time);
         }
         auto evaluator = _data->equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {rans, false, true, chemical, chemical});
-        auto snapshot = std::make_shared<EquationJacobian>(*this, state, output, controls, time);
+        auto snapshot = std::make_shared<JacobianData>(*this, state, output, controls, time);
         const auto input = state.ReadWithGhost();
         const auto blocks = EquationFVDetail::BlockViews(state, input);
         const auto inputLayout = input.ComponentLayout();
@@ -534,7 +534,7 @@ namespace DNDS::Cauchy
                                                 {block.data(), 36});
                     return;
                 }
-                const EquationJacobian::Point point{sample.other, sample.auxiliaryFace, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, weight, sample.changesFrame};
+                const JacobianData::Point point{sample.other, sample.auxiliaryFace, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, sample.rotation, weight, sample.changesFrame};
                 snapshot->AddFrozenFluxBlock(point, block, inputValues);
             };
             const auto assembleFaceRow = [&](index iCell, auto &own)

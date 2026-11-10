@@ -246,11 +246,11 @@ if(TEST dnds_cauchy_finite_volume_np2)
     # FUNNELED test placements or relying on an MPI-vendor environment override.
     set_property(TEST dnds_cauchy_finite_volume_np2 APPEND PROPERTY ENVIRONMENT "DNDS_TEST_COMMUNICATION_WORKER=1")
 endif()
-dnds_add_mpi_test(cauchy_equation_finite_volume "Cauchy/test_EquationFiniteVolume.cpp" "cauchy;cfv;geom;dnds")
-target_compile_definitions(dnds_test_cauchy_equation_finite_volume PRIVATE DNDS_TEST_SOURCE_ROOT="${PROJECT_SOURCE_DIR}")
+dnds_add_mpi_test(cauchy_finite_volume_physics "Cauchy/test_FiniteVolumePhysics.cpp" "cauchy;cfv;geom;dnds")
+target_compile_definitions(dnds_test_cauchy_finite_volume_physics PRIVATE DNDS_TEST_SOURCE_ROOT="${PROJECT_SOURCE_DIR}")
 if(DNDS_USE_CANTERA)
     foreach(NP ${DNDS_TEST_NP_LIST})
-        set_property(TEST dnds_cauchy_equation_finite_volume_np${NP} APPEND PROPERTY ENVIRONMENT
+        set_property(TEST dnds_cauchy_finite_volume_physics_np${NP} APPEND PROPERTY ENVIRONMENT
             "DNDS_MECH_PATH=${DNDS_CANTERA_DATA_DIR}" "CANTERA_DATA=${DNDS_CANTERA_DATA_DIR}")
     endforeach()
 endif()
@@ -300,9 +300,9 @@ add_executable(cauchy_benchmark_implicit EXCLUDE_FROM_ALL Cauchy/benchmark_Impli
 add_executable(cauchy_benchmark_block_lu_comparison EXCLUDE_FROM_ALL Cauchy/benchmark_BlockLUComparison.cpp)
 target_include_directories(cauchy_benchmark_block_lu_comparison PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
 target_link_libraries(cauchy_benchmark_block_lu_comparison PRIVATE cfv geom dnds ${DNDS_EXTERNAL_LIBS})
-add_executable(cauchy_benchmark_equation_adapter EXCLUDE_FROM_ALL Cauchy/benchmark_EquationAdapter.cpp)
-target_include_directories(cauchy_benchmark_equation_adapter PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
-target_link_libraries(cauchy_benchmark_equation_adapter PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
+add_executable(cauchy_benchmark_finite_volume_dispatch EXCLUDE_FROM_ALL Cauchy/benchmark_FiniteVolumeDispatch.cpp)
+target_include_directories(cauchy_benchmark_finite_volume_dispatch PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+target_link_libraries(cauchy_benchmark_finite_volume_dispatch PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
 target_include_directories(cauchy_benchmark_implicit PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
 target_link_libraries(cauchy_benchmark_implicit PRIVATE cauchy cfv geom dnds ${DNDS_EXTERNAL_LIBS})
 add_executable(cauchy_benchmark_geom_acquisition EXCLUDE_FROM_ALL Cauchy/benchmark_GeomAcquisition.cpp)
@@ -350,7 +350,7 @@ endif()
 if(DNDS_USE_CANTERA)
     add_dependencies(cauchy_unit_tests dnds_test_cauchy_equation_source)
 endif()
-add_dependencies(cauchy_unit_tests dnds_test_cauchy_equation_dofs dnds_test_cauchy_equation_finite_volume)
+add_dependencies(cauchy_unit_tests dnds_test_cauchy_equation_dofs dnds_test_cauchy_finite_volume_physics)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_wall_distance)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_rans_state dnds_test_cauchy_state_input dnds_test_cauchy_rans_reconstruction_reduced)
 add_dependencies(cauchy_unit_tests dnds_test_cauchy_rans_fv)
@@ -948,21 +948,21 @@ if(Python_EXECUTABLE)
         VERBATIM)
     target_sources(cauchy_diagnostic_driver_phases PRIVATE "${_nonlinear_diagnostic_header}")
     set_source_files_properties("${_nonlinear_diagnostic_header}" PROPERTIES HEADER_FILE_ONLY TRUE)
-    set(_equation_nonlinear_diagnostic "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic/ExtractedEquationNonlinear.cpp")
-    add_custom_command(OUTPUT "${_equation_nonlinear_diagnostic}"
+    set(_nonlinear_diagnostic "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic/ExtractedNonlinear.cpp")
+    add_custom_command(OUTPUT "${_nonlinear_diagnostic}"
         COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy/extract_nonlinear_diagnostic.py"
-            "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/NonlinearSolver.cpp" "${_equation_nonlinear_diagnostic}"
+            "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/NonlinearSolver.cpp" "${_nonlinear_diagnostic}"
         DEPENDS Cauchy/extract_nonlinear_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/NonlinearSolver.cpp"
         VERBATIM)
-    target_sources(cauchy_diagnostic_driver_phases PRIVATE "${_equation_nonlinear_diagnostic}")
-    set_source_files_properties("${_equation_nonlinear_diagnostic}" PROPERTIES HEADER_FILE_ONLY FALSE)
-    set(_equation_jacobian_diagnostic "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic/ExtractedEquationJacobian.cpp")
-    add_custom_command(OUTPUT "${_equation_jacobian_diagnostic}"
+    target_sources(cauchy_diagnostic_driver_phases PRIVATE "${_nonlinear_diagnostic}")
+    set_source_files_properties("${_nonlinear_diagnostic}" PROPERTIES HEADER_FILE_ONLY FALSE)
+    set(_jacobian_diagnostic "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic/ExtractedJacobian.cpp")
+    add_custom_command(OUTPUT "${_jacobian_diagnostic}"
         COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy/extract_jacobian_diagnostic.py"
-            "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/EquationJacobian.cpp" "${_equation_jacobian_diagnostic}"
-        DEPENDS Cauchy/extract_jacobian_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/EquationJacobian.cpp"
+            "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/Jacobian.cpp" "${_jacobian_diagnostic}"
+        DEPENDS Cauchy/extract_jacobian_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/Jacobian.cpp"
         VERBATIM)
-    target_sources(cauchy_diagnostic_driver_phases PRIVATE "${_equation_jacobian_diagnostic}")
+    target_sources(cauchy_diagnostic_driver_phases PRIVATE "${_jacobian_diagnostic}")
     target_include_directories(cauchy_diagnostic_driver_phases PRIVATE
         "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic" "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy" ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
     target_link_libraries(cauchy_diagnostic_driver_phases PRIVATE

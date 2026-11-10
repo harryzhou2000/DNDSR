@@ -16,13 +16,13 @@ namespace DNDS::Cauchy
 
     /// Reader-owned shard, independent of accepted solver allocations. Restore
     /// uses a caller-provided persistent-ID route for redistribution.
-    struct EquationArchive
+    struct StateArchive
     {
         nlohmann::ordered_json storage;
         std::vector<Runtime::Array<real>> fields;
-        static EquationArchive Read(const Serializer::SerializerBaseSSP &serializer,
-                                    const std::string &prefix, nlohmann::ordered_json storage, const MPIInfo &mpi,
-                                    Serializer::ArrayGlobalOffset shard);
+        static StateArchive Read(const Serializer::SerializerBaseSSP &serializer,
+                                 const std::string &prefix, nlohmann::ordered_json storage, const MPIInfo &mpi,
+                                 Serializer::ArrayGlobalOffset shard);
         bool Compatible(const EquationDofs &destination) const;
         /// Collective. Destination must be unpublished scratch: failure may
         /// alter it. Matching grouping transfers directly into target layouts.

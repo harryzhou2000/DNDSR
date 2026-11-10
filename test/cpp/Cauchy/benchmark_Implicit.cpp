@@ -139,8 +139,8 @@ int main(int argc, char **argv)
         C::LinearSolveSettings linear;
         linear.maxIterations = 5;
         linear.relativeTolerance = linear.absoluteTolerance = 0;
-        C::EquationLinearSolver solver(problem, logicalState, [&](auto &field)
-                                       { return metrics.BindHalo(field); }, linear, {overlap, checked});
+        C::DofLinearSolver solver(problem, logicalState, [&](auto &field)
+                                  { return metrics.BindHalo(field); }, linear, {overlap, checked});
         for (int trial = 0; trial < trials; ++trial)
         {
             if (polynomial)

@@ -251,7 +251,7 @@ namespace DNDS::Cauchy
         }
         _captured.clear();
     }
-    void ProgressOutputController::StageEnd(ProgressLocation location, const EquationNonlinearIterationReport &report)
+    void ProgressOutputController::StageEnd(ProgressLocation location, const NonlinearIterationReport &report)
     {
         if (!_writer)
             return;

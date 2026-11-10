@@ -6,7 +6,7 @@
 namespace DNDS::Cauchy
 {
     namespace R = Runtime;
-    struct LinearProblemContext::EquationSGSIteration::State
+    struct LinearProblemContext::DofSGSIteration::State
     {
         std::shared_ptr<const Pattern> pattern;
         index components;
@@ -44,7 +44,7 @@ namespace DNDS::Cauchy
             }
             catch (...)
             {
-                MPI::AbortIfSolverFailure("Cauchy equation SGS failed");
+                MPI::AbortIfSolverFailure("Cauchy DOF SGS failed");
                 forwardWrite->CancelUnmodified();
                 forwardWrite.reset();
                 throw;
@@ -84,13 +84,13 @@ namespace DNDS::Cauchy
                 else scan(std::false_type{}); });
         }
     };
-    LinearProblemContext::EquationSGSIteration::EquationSGSIteration(std::unique_ptr<State> state) : _state(std::move(state)) {}
-    LinearProblemContext::EquationSGSIteration::EquationSGSIteration(EquationSGSIteration &&) noexcept = default;
-    LinearProblemContext::EquationSGSIteration &LinearProblemContext::EquationSGSIteration::operator=(EquationSGSIteration &&) noexcept = default;
-    LinearProblemContext::EquationSGSIteration::~EquationSGSIteration() = default;
+    LinearProblemContext::DofSGSIteration::DofSGSIteration(std::unique_ptr<State> state) : _state(std::move(state)) {}
+    LinearProblemContext::DofSGSIteration::DofSGSIteration(DofSGSIteration &&) noexcept = default;
+    LinearProblemContext::DofSGSIteration &LinearProblemContext::DofSGSIteration::operator=(DofSGSIteration &&) noexcept = default;
+    LinearProblemContext::DofSGSIteration::~DofSGSIteration() = default;
 
-    LinearProblemContext::EquationSGSIteration LinearProblemContext::BeginSGS(const EquationDofs &rhs, const EquationDofs &input,
-                                                                              EquationDofs &forward, EquationDofs &output, bool middleExchange) const
+    LinearProblemContext::DofSGSIteration LinearProblemContext::BeginSGS(const EquationDofs &rhs, const EquationDofs &input,
+                                                                         EquationDofs &forward, EquationDofs &output, bool middleExchange) const
     {
         ValidateMatrix();
         ValidateOutputs(input, forward);
@@ -98,18 +98,18 @@ namespace DNDS::Cauchy
         ValidateOutputs(rhs, forward);
         ValidateOutputs(rhs, output);
         ValidateOutputs(forward, output);
-        return EquationSGSIteration(std::make_unique<EquationSGSIteration::State>(*this, rhs, &input, forward, output, middleExchange));
+        return DofSGSIteration(std::make_unique<DofSGSIteration::State>(*this, rhs, &input, forward, output, middleExchange));
     }
-    LinearProblemContext::EquationSGSIteration LinearProblemContext::BeginSGSZero(const EquationDofs &rhs, EquationDofs &forward,
-                                                                                  EquationDofs &output, bool middleExchange) const
+    LinearProblemContext::DofSGSIteration LinearProblemContext::BeginSGSZero(const EquationDofs &rhs, EquationDofs &forward,
+                                                                             EquationDofs &output, bool middleExchange) const
     {
         ValidateMatrix();
         ValidateOutputs(rhs, forward);
         ValidateOutputs(rhs, output);
         ValidateOutputs(forward, output);
-        return EquationSGSIteration(std::make_unique<EquationSGSIteration::State>(*this, rhs, nullptr, forward, output, middleExchange));
+        return DofSGSIteration(std::make_unique<DofSGSIteration::State>(*this, rhs, nullptr, forward, output, middleExchange));
     }
-    void LinearProblemContext::EquationSGSIteration::Lower(LinearRegion region)
+    void LinearProblemContext::DofSGSIteration::Lower(LinearRegion region)
     {
         DNDS_check_throw_info(_state, "logical SGS iteration is finished or moved");
         auto &state = *_state;
@@ -132,7 +132,7 @@ namespace DNDS::Cauchy
             state.forwardRead.emplace(state.forward.ReadOwned());
         }
     }
-    void LinearProblemContext::EquationSGSIteration::Upper(LinearRegion region)
+    void LinearProblemContext::DofSGSIteration::Upper(LinearRegion region)
     {
         DNDS_check_throw_info(_state, "logical SGS iteration is finished or moved");
         auto &state = *_state;
@@ -159,7 +159,7 @@ namespace DNDS::Cauchy
         state.Scan<true>(forward.View(), target.View(), ghost ? ghost->View().GhostPart() : Algebra::DofComponentView<const real>{}, rows);
         state.upper = region == LinearRegion::HaloDependent ? 1 : 2;
     }
-    void LinearProblemContext::EquationSGSIteration::Finish()
+    void LinearProblemContext::DofSGSIteration::Finish()
     {
         DNDS_check_throw_info(_state && _state->lower == 2 && _state->upper == 2, "cannot publish an incomplete logical SGS iteration");
         _state->outputWrite.reset();

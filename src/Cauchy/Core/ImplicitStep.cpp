@@ -98,7 +98,7 @@ namespace DNDS::Cauchy
                     for (index j = 0; j < input.ComponentNumber(); ++j) output(iCell, j) = input(iCell, j) / metrics.GetCellVol(iCell);
             } });
     }
-    bool Domain::RecordImplicitStage(EquationNonlinearIterationReport report)
+    bool Domain::RecordImplicitStage(NonlinearIterationReport report)
     {
         _lastAlphaCells += report.incrementLimited;
         _lastAlpha = std::min(_lastAlpha, report.minimumIncrementAlpha);
@@ -152,7 +152,7 @@ namespace DNDS::Cauchy
                 EvaluateImplicitRate(state, rate, *_workspace, time, stage);
         };
         const auto &settings = _implicitControls;
-        EquationNonlinearIterationReport initial;
+        NonlinearIterationReport initial;
         initial.residual.resize(size_t(endpoint.ComponentNumber()));
         auto coupledControl = ProgressControl();
         coupledControl.state = std::ref(_coupledNonlinearState);
@@ -200,7 +200,7 @@ namespace DNDS::Cauchy
                 const auto &c = equation.coefficients;
                 _progressTime = c.time;
                 const auto &rate = method.CurrentRate();
-                EquationNonlinearIterationReport work;
+                NonlinearIterationReport work;
                 if (coupledStage == 0)
                     work = _coupledMiddle->correct(equation, rate, iteration.pseudoCFL);
                 else

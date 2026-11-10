@@ -55,7 +55,7 @@ counter before resetting the timed fixture. Zero counts then mean this specific
 path was unused by the observed workload; they do not show that all source work
 or source quadrature was absent. Euler has no corresponding instrumentation.
 
-The private `ExtractedEquationJacobian.cpp` copy observes four disjoint
+The private `ExtractedJacobian.cpp` copy observes four disjoint
 assembly batches: input validation/access/allocation setup, thermodynamic
 freezing and diagonal initialization, source Jacobian, and face-block filling.
 The extractor inserts only external scope declarations and checks exact

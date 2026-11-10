@@ -72,7 +72,7 @@ TEST_CASE("One progress controller constructs iteration stage and step CSV rows"
         output.CaptureIteration(progress);
         output.FlushIterations();
 
-        C::EquationNonlinearIterationReport stage;
+        C::NonlinearIterationReport stage;
         stage.residual = {1, 1.5};
         stage.initialResidual = {4, 5};
         stage.referenceResidual = {8, 10};
