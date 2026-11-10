@@ -232,11 +232,13 @@ local failures abort before dependent collective/payload work. Successful local
 stages add no safety agreement. This applies to whole-equation mean-gradient,
 auxiliary, reconstruction and restore stages too; it is not a promise of
 recoverable unchecked distributed exceptions.
-The explicitly named `Flow5KernelWorkspace` API remains only for frozen kernel
-comparisons while its fixed-width arithmetic moves behind prepared operators.
-Native Cauchy consumers do not call it or select it. The single `Workspace`
-still resolves an internal compatibility sub-workspace for the unmigrated
-features listed below; that temporary whole-loop bridge is not Plan 59 closure.
+There is no `Flow5KernelWorkspace`, flow5 evaluation loop, or equation-prefixed
+workspace in the native API. Frozen comparisons bind the same `EquationDofs`
+and `FiniteVolume::Workspace`, then select a fixed-flow or forced-generic leaf
+through `WorkspaceOptions::rhsKernel`; both selections execute the same
+`EvaluateImpl` schedule. Fixed-width flow5 code therefore remains an
+operator-local optimization rather than a compatibility sub-workspace or a
+second solver frontend.
 
 The Domain frontend always uses the semantic binding. Perfect gas may select
 established fixed-width arithmetic inside an operator. Configured ideal mixtures
