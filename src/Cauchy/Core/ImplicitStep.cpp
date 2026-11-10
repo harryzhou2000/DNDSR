@@ -19,6 +19,9 @@ namespace DNDS::Cauchy
         if (_progressObserver)
             control.progress = [observer = _progressObserver](const NonlinearProgress &progress)
             { observer(progress); };
+        if (_quiescentObserver)
+            control.quiescent = [observer = _quiescentObserver](const NonlinearSolveState &state)
+            { observer(state); };
         return control;
     }
     void Domain::InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh)

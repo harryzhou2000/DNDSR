@@ -124,6 +124,57 @@ TEST_CASE("Shared nonlinear controller observes coupled updates once and advance
     CHECK(cfl == std::vector<double>{1, 2});
     CHECK(report.pseudoCFL == 2);
 }
+TEST_CASE("Nonlinear controller resumes after a completed correction without resetting references or CFL")
+{
+    C::ImplicitSettings settings;
+    settings.iterations = 4;
+    settings.minIterations = 4;
+    settings.pseudoCFL = 1;
+    settings.pseudoGrowth = 2;
+    settings.maxPseudoCFL = 8;
+    settings.absoluteTolerance = .07;
+    settings.relativeTolerance = 0;
+    const auto schema = C::EquationSystem::Resolve(C::EquationSettings{}).Schema();
+    const auto run = [&](double &value, C::NonlinearSolveControl control)
+    {
+        return C::NonlinearDetail::Iterate(settings, schema, mpi.rank, 0, control, C::EquationNonlinearIterationReport{}, 0, [] {}, [&](auto &norms)
+                                           { std::fill(norms.begin(), norms.end(), value); }, []
+                                           { return std::make_pair(0, 0.); }, [&](auto &)
+                                           { value *= .5; });
+    };
+
+    double uninterruptedValue = 1;
+    C::NonlinearSolveState uninterruptedState;
+    C::NonlinearSolveControl uninterrupted;
+    uninterrupted.state = std::ref(uninterruptedState);
+    const auto expected = run(uninterruptedValue, uninterrupted);
+
+    double resumedValue = 1;
+    C::NonlinearSolveState saved;
+    C::NonlinearSolveControl interrupted;
+    interrupted.state = std::ref(saved);
+    interrupted.quiescent = [&](const auto &state)
+    {
+        if (state.iteration == 1)
+            throw std::runtime_error("test checkpoint stop");
+    };
+    CHECK_THROWS_WITH_AS(run(resumedValue, interrupted), "test checkpoint stop", std::runtime_error);
+    CHECK(saved.iteration == 1);
+    CHECK(saved.pseudoCFL == 4);
+    CHECK(resumedValue == .25);
+
+    C::NonlinearSolveControl resume;
+    resume.state = std::ref(saved);
+    resume.resume = true;
+    const auto actual = run(resumedValue, resume);
+    CHECK(actual.converged == expected.converged);
+    CHECK(actual.iterations == expected.iterations);
+    CHECK(actual.residual == expected.residual);
+    CHECK(actual.initialResidual == expected.initialResidual);
+    CHECK(actual.referenceResidual == expected.referenceResidual);
+    CHECK(actual.pseudoCFL == expected.pseudoCFL);
+    CHECK(resumedValue == uninterruptedValue);
+}
 TEST_CASE("Cauchy nonlinear progress reports completed iterations and zero-based stage identity")
 {
     C::ImplicitSettings settings;

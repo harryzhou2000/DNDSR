@@ -85,6 +85,13 @@ namespace DNDS::Cauchy
         /// Optional live controller publication. Iterate updates it before the
         /// progress observer, so checkpoint/console/CSV see one state source.
         std::optional<std::reference_wrapper<NonlinearSolveState>> state;
+        /// Called at a restart-safe boundary after the current correction (or
+        /// at a terminal observation) and after the next pseudo-CFL is
+        /// published. It may synchronously serialize the supplied small state.
+        std::function<void(const NonlinearSolveState &)> quiescent;
+        /// Continue from the live/restored `state` rather than initializing a
+        /// new residual reference and iteration cursor.
+        bool resume = false;
     };
     template <class Norms>
     struct BasicNonlinearIterationReport
@@ -181,6 +188,7 @@ namespace DNDS::Cauchy
                                                const std::vector<index> &updateComponents = {});
         std::pair<int, real> ReconstructionStats() const;
         const NonlinearSolveState &State() const;
+        void RestoreState(const NonlinearSolveState &state);
         Json StateJson() const { return State().ToJson(); }
         bool ReconstructionConverged() const;
         real ReconstructionTolerance() const;

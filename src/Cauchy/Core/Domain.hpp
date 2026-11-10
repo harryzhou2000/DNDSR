@@ -46,6 +46,7 @@ namespace DNDS::Cauchy
         std::vector<EquationNonlinearIterationReport> _lastImplicit;
         NonlinearSolveState _coupledNonlinearState;
         std::function<void(const NonlinearProgress &)> _progressObserver;
+        std::function<void(const NonlinearSolveState &)> _quiescentObserver;
         index _lastCoupledIterations = 0;
         real _lastCoupledTargetRatio = 0;
         std::vector<index> _ditrComponents;
@@ -169,6 +170,10 @@ namespace DNDS::Cauchy
         void SetProgressObserver(std::function<void(const NonlinearProgress &)> observer)
         {
             _progressObserver = std::move(observer);
+        }
+        void SetQuiescentObserver(std::function<void(const NonlinearSolveState &)> observer)
+        {
+            _quiescentObserver = std::move(observer);
         }
         index LastCoupledIterations() const { return _lastCoupledIterations; }
         /// Shared nonlinear policy's selected-component ratio for I+H after

@@ -350,6 +350,7 @@ namespace DNDS::Cauchy
                 selection = Algebra::ComponentSelection(nv, control.updateComponents);
                 DNDS_check_throw_info(std::isfinite(mass) && mass >= 0 && std::isfinite(rhsScale) && rhsScale > 0 && std::isfinite(time) &&
                     control.correctionLimit >= -1 && control.correctionLimit <= data.settings.iterations &&
+                    (!singleCorrection || !control.resume) &&
                     (control.initialPseudoCFL == 0 || (std::isfinite(control.initialPseudoCFL) && control.initialPseudoCFL >= data.settings.pseudoCFL && control.initialPseudoCFL <= data.settings.maxPseudoCFL)),
                     "invalid equation implicit stage coefficients");
                 if (data.settings.collectiveChecks)
@@ -364,8 +365,14 @@ namespace DNDS::Cauchy
         }
         EquationNonlinearIterationReport initial;
         initial.residual.resize(size_t(nv));
-        ++data.nonlinearState.attempt;
-        data.nonlinearState.convergenceComponents = data.settings.residualComponents;
+        if (!control.resume)
+        {
+            ++data.nonlinearState.attempt;
+            data.nonlinearState.convergenceComponents = data.settings.residualComponents;
+        }
+        else
+            DNDS_check_throw_info(data.nonlinearState.convergenceComponents == data.settings.residualComponents,
+                                  "restored nonlinear convergence components differ from current controls");
         control.state = std::ref(data.nonlinearState);
         auto geometry = data.discrete.Metrics().AcquireRead();
         const auto metric = geometry.HostView();
@@ -562,6 +569,14 @@ namespace DNDS::Cauchy
     {
         DNDS_check_throw_info(_data, "nonlinear session was moved");
         return _data->nonlinearState;
+    }
+    void NonlinearSolver::RestoreState(const NonlinearSolveState &state)
+    {
+        DNDS_check_throw_info(_data, "nonlinear session was moved");
+        const auto validated = NonlinearSolveState::FromJson(state.ToJson());
+        DNDS_check_throw_info(validated.convergenceComponents == _data->settings.residualComponents,
+                              "restored nonlinear convergence components differ from current solver");
+        _data->nonlinearState = validated;
     }
     bool NonlinearSolver::ReconstructionConverged() const
     {

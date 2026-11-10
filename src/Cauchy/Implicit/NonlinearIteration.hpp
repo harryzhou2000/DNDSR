@@ -113,20 +113,60 @@ namespace DNDS::Cauchy::NonlinearDetail
                 report.residual.assign(size_t(components), 0);
         }
         BasicResidualConvergence<decltype(report.residual)> convergence(settings, schema, report.residual);
-        report.pseudoCFL = control.initialPseudoCFL == 0 ? settings.pseudoCFL : control.initialPseudoCFL;
         const index limit = control.correctionLimit < 0 ? settings.iterations : control.correctionLimit;
         const bool afterUpdate = observation == ResidualObservation::AfterUpdate;
         DNDS_check_throw_info(!afterUpdate || limit > 0, "post-update residual observation requires at least one update");
-        if (control.state)
+        index firstIteration = afterUpdate ? 1 : 0;
+        if (control.resume)
         {
-            auto &state = control.state->get();
-            state.stage = stage;
-            state.coupledStage = -1;
-            state.iteration = 0;
-            state.converged = state.terminal = state.capped = state.rejected = false;
-            state.pseudoCFL = report.pseudoCFL;
+            DNDS_check_throw_info(control.state && control.state->get().schemaVersion == 1 &&
+                                      control.state->get().iteration >= 0 && !control.state->get().rejected,
+                                  "nonlinear resume needs a valid live controller state");
+            const auto &state = control.state->get();
+            DNDS_check_throw_info(state.stage == stage && state.residual.size() == report.residual.size() &&
+                                      state.initialResidual.size() == report.residual.size() &&
+                                      state.referenceResidual.size() == report.residual.size() &&
+                                      std::isfinite(state.pseudoCFL) && state.pseudoCFL > 0,
+                                  "nonlinear resume state differs from the active equation");
+            report.iterations = state.iteration;
+            report.residual = state.residual;
+            report.initialResidual = state.initialResidual;
+            report.referenceResidual = state.referenceResidual;
+            report.residualTargetRatio = state.residualTargetRatio;
+            report.pseudoCFL = state.pseudoCFL;
+            report.linearIterations = state.linearIterations;
+            report.multigridCycles = state.multigridCycles;
+            report.levelCorrections = state.levelCorrections;
+            report.rhsLimited = state.rhsLimited;
+            report.incrementLimited = state.incrementLimited;
+            report.minimumRHSAlpha = state.minimumRHSAlpha;
+            report.minimumIncrementAlpha = state.minimumIncrementAlpha;
+            report.reconstructionIterations = state.reconstructionIterations;
+            report.reconstructionRelativeUpdate = state.reconstructionRelativeUpdate;
+            convergence.Restore(report.initialResidual, report.referenceResidual);
+            firstIteration = state.iteration + 1;
+            DNDS_check_throw_info(state.terminal || firstIteration <= limit,
+                                  "restored nonlinear cursor exceeds its correction cap");
+            if (state.terminal)
+            {
+                report.converged = state.converged;
+                return report;
+            }
         }
-        for (index iteration = afterUpdate ? 1 : 0; iteration <= limit; ++iteration)
+        else
+        {
+            report.pseudoCFL = control.initialPseudoCFL == 0 ? settings.pseudoCFL : control.initialPseudoCFL;
+            if (control.state)
+            {
+                auto &state = control.state->get();
+                state.stage = stage;
+                state.coupledStage = -1;
+                state.iteration = 0;
+                state.converged = state.terminal = state.capped = state.rejected = false;
+                state.pseudoCFL = report.pseudoCFL;
+            }
+        }
+        for (index iteration = firstIteration; iteration <= limit; ++iteration)
         {
             // A time problem may update several coupledStages here, with one
             // shared CFL/reference/cap policy and one subsequent observation.
@@ -201,12 +241,24 @@ namespace DNDS::Cauchy::NonlinearDetail
                 if (converged || iteration == limit)
                 {
                     report.converged = converged;
+                    if (control.quiescent)
+                    {
+                        DNDS_check_throw_info(control.state, "quiescent nonlinear observer needs live controller state");
+                        control.quiescent(control.state->get());
+                    }
                     return report;
                 }
             }
             if (!afterUpdate)
                 advance(report);
             report.pseudoCFL = std::min(settings.maxPseudoCFL, report.pseudoCFL * settings.pseudoGrowth);
+            if (control.state)
+                control.state->get().pseudoCFL = report.pseudoCFL;
+            if (control.quiescent)
+            {
+                DNDS_check_throw_info(control.state, "quiescent nonlinear observer needs live controller state");
+                control.quiescent(control.state->get());
+            }
         }
         return report;
     }

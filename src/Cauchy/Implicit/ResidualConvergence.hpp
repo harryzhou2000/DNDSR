@@ -55,6 +55,20 @@ namespace DNDS::Cauchy
                 _ratio = std::max(_ratio, std::min(ratio, std::numeric_limits<real>::max()));
             }
         }
+        void Restore(const Norms &initial, const Norms &reference)
+        {
+            DNDS_check_throw_info(initial.size() == _initial.size() && reference.size() == _reference.size(),
+                                  "restored residual reference shape differs");
+            for (index j = 0; j < index(initial.size()); ++j)
+                DNDS_check_throw_info(std::isfinite(initial[j]) && initial[j] >= 0 &&
+                                          std::isfinite(reference[j]) && reference[j] >= initial[j],
+                                      "invalid restored residual reference");
+            _initial = initial;
+            _reference = reference;
+            _started = true;
+            _accepted = false;
+            _ratio = 0;
+        }
         const Norms &Initial() const { return _initial; }
         const Norms &Reference() const { return _reference; }
         bool Accepted() const { return _started && _accepted; }
