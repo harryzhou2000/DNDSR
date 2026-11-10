@@ -33,7 +33,7 @@ def main():
         ('void ValidateMeans(const EquationDofs &state) const\n        {', 'MeanValidation'),
         ('const auto measure = [&](auto &norms)\n        {', 'DefectAssembly'),
         ('const NonlinearDetail::PhaseTimer timer(control.profile, NonlinearProfile::PseudoTimePP);', 'PseudoTimePP'),
-        ('std::pair<index, real> EquationNonlinearSolver::ApplyCorrection(EquationDofs &state, const EquationDofs &increment, real scale,\n                                                                  const std::vector<index> &updateComponents)\n    {', 'CorrectionLocal')):
+        ('std::pair<index, real> NonlinearSolver::ApplyCorrection(EquationDofs &state, const EquationDofs &increment, real scale,\n                                                                  const std::vector<index> &updateComponents)\n    {', 'CorrectionLocal')):
         text = replace_once(text, anchor, anchor +
             f'\n        ::DiagnosticTiming::Scope detailScope(::DiagnosticTiming::Block::{block});')
     # End local correction at the existing publication boundary. Collective

@@ -62,69 +62,12 @@ namespace DNDS::Cauchy
             }
         };
 
-        struct FieldProfile
-        {
-            using State = CFV::FVField;
-            using Operations = Multigrid::FieldFASOperations;
-            using Solver = NonlinearSolver;
-            using Workspace = FiniteVolume::Workspace;
-            using Report = NonlinearIterationReport;
-            static Algebra::DofBundle Bundle(const State &state)
-            {
-                Algebra::DofBundle fields(state.Space());
-                fields.Add("state", state);
-                return fields;
-            }
-            static State BindScratch(const State &, const Algebra::DofBundle &fields) { return fields.Block("state"); }
-            static FlowState Norms(const State &) { return {}; }
-            static State NewState(const FiniteVolume &fv, const State &prototype)
-            {
-                return fv.Metrics().BuildField(prototype.Owned().Layout());
-            }
-            static auto BuildWorkspace(const FiniteVolume &fv, State &state, const std::optional<Physics::Chemistry::ChemicalWorkerPool> &)
-            {
-                AuxiliaryRequest channels;
-                channels.faceSpectralRadius = channels.cellSpectralSum = true;
-                return fv.BuildWorkspace(state, channels);
-            }
-            static auto BuildSolver(const FiniteVolume &fv, State &state, std::shared_ptr<Workspace> workspace,
-                                    R::EagerEngine &engine, const R::ExecutionStream &stream, const DomainSettings &settings,
-                                    const std::optional<Physics::Chemistry::ChemicalWorkerPool> &)
-            {
-                return std::make_unique<Solver>(fv, state, std::move(workspace), engine, stream, settings);
-            }
-            static void CheckTransfer(const State &a, const State &b)
-            {
-                a.Validate();
-                b.Validate();
-                DNDS_check_throw_info(a.Space().OwnedRows() == b.Space().OwnedRows() && a.Width() == b.Width(),
-                                      "polynomial FAS identity transfer shape mismatch");
-            }
-            template <class F>
-            static void ReadPair(const State &a, const State &b, F &&run)
-            {
-                const auto aRead = a.Owned().Read(), bRead = b.Owned().Read();
-                run(aRead.View<R::UniformTableRows>(), bRead.View<R::UniformTableRows>());
-            }
-            template <class F>
-            static void TransferRows(const State &input, State &output, F &&run)
-            {
-                const auto read = input.Owned().Read();
-                auto write = output.Owned().Write();
-                run(read.View<R::UniformTableRows>(), write.View<R::UniformTableRows>());
-            }
-            static void SetBoundaryInputs(const FiniteVolume &fv, Workspace &workspace, const BoundaryInputs &input)
-            {
-                fv.SetBoundaryInputs(workspace, input);
-            }
-        };
-
         struct EquationProfile
         {
             using State = EquationDofs;
             using Operations = EquationFASOperations;
-            using Solver = EquationNonlinearSolver;
-            using Workspace = FiniteVolume::EquationWorkspace;
+            using Solver = NonlinearSolver;
+            using Workspace = FiniteVolume::Workspace;
             using Report = EquationNonlinearIterationReport;
             static Algebra::DofBundle Bundle(const State &state) { return state.Fields(); }
             static State BindScratch(const State &prototype, const Algebra::DofBundle &fields) { return prototype.RebindFields(fields); }
@@ -147,7 +90,7 @@ namespace DNDS::Cauchy
             }
             static auto BuildWorkspace(const FiniteVolume &fv, State &state, const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers)
             {
-                return fv.BuildEquationWorkspace(state, workers);
+                return fv.BuildWorkspace(state, workers);
             }
             static auto BuildSolver(const FiniteVolume &fv, State &state, std::shared_ptr<Workspace> workspace,
                                     R::EagerEngine &engine, const R::ExecutionStream &stream, const DomainSettings &settings,
@@ -179,13 +122,13 @@ namespace DNDS::Cauchy
                 const auto destination = write.ComponentLayout();
                 run(source.View(), destination.View());
             }
-            static void SetBoundaryInputs(const FiniteVolume &, Workspace &, const BoundaryInputs &)
+            static void SetBoundaryInputs(const FiniteVolume &fv, Workspace &workspace, const BoundaryInputs &input)
             {
-                DNDS_check_throw_info(false, "extended equation interface packets are not connected yet");
+                fv.SetBoundaryInputs(workspace, input);
             }
         };
 
-        /// One p-hierarchy implementation for both physical-state adapters.
+        /// One p-hierarchy implementation for the canonical logical state.
         /// Physics, source quadrature and PP remain in the level stage solvers;
         /// time assembly and finest convergence remain outside the V-cycle.
         template <class Profile>
@@ -529,16 +472,16 @@ namespace DNDS::Cauchy
                 report = nullptr;
                 return work;
             }
-            Report Solve(const State &source, real mass, real rhsScale, real time, int stage)
+            Report Solve(const State &source, real mass, real rhsScale, real time, int stage, NonlinearSolveControl solveControl)
             {
                 BindEquation(source, mass, rhsScale, time, stage, 0);
-                auto control = settings;
-                control.iterations = settings.multigrid.cycles;
+                auto iterationSettings = settings;
+                iterationSettings.iterations = settings.multigrid.cycles;
                 auto residual = Profile::Norms(state);
                 Report initial;
                 initial.residual = residual;
                 const real start = profileEnabled ? MPI_Wtime() : 0;
-                const auto result = NonlinearDetail::Iterate(control, fine.Equation().Schema(), mpi.rank, stage, {}, std::move(initial), fineSolver.ReconstructionTolerance(), [&]
+                const auto result = NonlinearDetail::Iterate(iterationSettings, fine.Equation().Schema(), mpi.rank, stage, solveControl, std::move(initial), fineSolver.ReconstructionTolerance(), [&]
                                                              { residual = Measure(source); }, [&](auto &norms)
                                                              { norms = residual; }, [&]
                                                              { return fineSolver.ReconstructionStats(); }, [&](auto &total)
@@ -562,11 +505,7 @@ namespace DNDS::Cauchy
             }
         };
     }
-    struct PolynomialMultigrid::Data : PolynomialHierarchy<FieldProfile>
-    {
-        using PolynomialHierarchy::PolynomialHierarchy;
-    };
-    struct PolynomialMultigrid::EquationData : PolynomialHierarchy<EquationProfile>
+    struct PolynomialMultigrid::Data : PolynomialHierarchy<EquationProfile>
     {
         using PolynomialHierarchy::PolynomialHierarchy;
     };
@@ -594,61 +533,33 @@ namespace DNDS::Cauchy
         return lower;
     }
 
-    PolynomialMultigrid::PolynomialMultigrid(ssp<Geom::UnstructuredMesh> mesh, const FiniteVolume &fine, CFV::FVField &state,
-                                             NonlinearSolver &solver, R::EagerEngine &engine, R::ExecutionStream stream, const DomainSettings &settings)
-    {
-        MPI::LocalStage(MPIInfo(fine.Metrics().Communicator()), [&]
-                        { _data = std::make_shared<Data>(fine, state, solver, settings); });
-        _data->Build(mesh, engine, stream, settings);
-    }
     PolynomialMultigrid::PolynomialMultigrid(ssp<Geom::UnstructuredMesh> mesh, const FiniteVolume &fine, EquationDofs &state,
-                                             EquationNonlinearSolver &solver, R::EagerEngine &engine, R::ExecutionStream stream, const DomainSettings &settings,
+                                             NonlinearSolver &solver, R::EagerEngine &engine, R::ExecutionStream stream, const DomainSettings &settings,
                                              std::optional<Physics::Chemistry::ChemicalWorkerPool> workers)
     {
         MPI::LocalStage(MPIInfo(fine.Metrics().Communicator()), [&]
-                        { _equationData = std::make_shared<EquationData>(fine, state, solver, settings); });
-        _equationData->Build(mesh, engine, stream, settings, workers);
+                        { _data = std::make_shared<Data>(fine, state, solver, settings); });
+        _data->Build(mesh, engine, stream, settings, workers);
     }
-    NonlinearIterationReport PolynomialMultigrid::Solve(const CFV::FVField &source, real mass, real rhsScale, real time, int stage)
+    EquationNonlinearIterationReport PolynomialMultigrid::Solve(const EquationDofs &source, real mass, real rhsScale, real time, int stage,
+                                                                NonlinearSolveControl control)
     {
-        DNDS_check_throw_info(_data, "field pMG call requires a field hierarchy");
         auto session = _data->fineSolver.ReserveForMultigrid();
-        return _data->Solve(source, mass, rhsScale, time, stage);
-    }
-    EquationNonlinearIterationReport PolynomialMultigrid::Solve(const EquationDofs &source, real mass, real rhsScale, real time, int stage)
-    {
-        DNDS_check_throw_info(_equationData, "logical pMG call requires an equation hierarchy");
-        auto session = _equationData->fineSolver.ReserveForMultigrid();
-        return _equationData->Solve(source, mass, rhsScale, time, stage);
-    }
-    NonlinearIterationReport PolynomialMultigrid::ApplyCycle(const CFV::FVField &source, real mass, real rhsScale, real time, int stage, real pseudoCFL, const CFV::FVField *rate)
-    {
-        DNDS_check_throw_info(_data, "field pMG call requires a field hierarchy");
-        auto session = _data->fineSolver.ReserveForMultigrid();
-        return _data->ApplyCycle(source, mass, rhsScale, time, stage, pseudoCFL, rate);
+        return _data->Solve(source, mass, rhsScale, time, stage, std::move(control));
     }
     EquationNonlinearIterationReport PolynomialMultigrid::ApplyCycle(const EquationDofs &source, real mass, real rhsScale, real time, int stage, real pseudoCFL, const EquationDofs *rate)
     {
-        DNDS_check_throw_info(_equationData, "logical pMG call requires an equation hierarchy");
-        auto session = _equationData->fineSolver.ReserveForMultigrid();
-        return _equationData->ApplyCycle(source, mass, rhsScale, time, stage, pseudoCFL, rate);
+        auto session = _data->fineSolver.ReserveForMultigrid();
+        return _data->ApplyCycle(source, mass, rhsScale, time, stage, pseudoCFL, rate);
     }
     void PolynomialMultigrid::SetBoundaryInputs(const BoundaryInputs &input)
     {
-        if (_data)
-        {
-            auto session = _data->fineSolver.ReserveForMultigrid();
-            _data->SetBoundaryInputs(input);
-        }
-        else
-        {
-            auto session = _equationData->fineSolver.ReserveForMultigrid();
-            _equationData->SetBoundaryInputs(input);
-        }
+        auto session = _data->fineSolver.ReserveForMultigrid();
+        _data->SetBoundaryInputs(input);
     }
     std::pair<size_t, index> PolynomialMultigrid::ScratchPoolStatistics() const
     {
-        const auto *pool = _data ? _data->scratchPool.get() : _equationData->scratchPool.get();
+        const auto *pool = _data->scratchPool.get();
         return pool ? std::pair<size_t, index>{pool->RetainedBytes(), pool->PeakBorrows()} : std::pair<size_t, index>{0, 0};
     }
 }

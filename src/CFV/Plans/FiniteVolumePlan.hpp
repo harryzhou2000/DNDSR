@@ -3,6 +3,7 @@
 #include "DNDS/Algebra/DofField.hpp"
 #include "DNDS/Config/ConfigParam.hpp"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
+#include "DNDS/Runtime/Execution/EagerEngine.hpp"
 #include "Geom/Access/EntitySpace.hpp"
 #include "Geom/Access/EntityWorkPartition.hpp"
 #include "Geom/Geometry/Geometric.hpp"
@@ -11,11 +12,14 @@
 #include "CFV/Math/ReconstructionFunctional.hpp"
 #include "CFV/Math/TaylorBasis.hpp"
 #include "CFV/Plans/ReconstructionCapabilities.hpp"
+#include <functional>
 #include <map>
+#include <optional>
 
 namespace DNDS::Geom
 {
     class MeshReadAccess;
+    class UnstructuredMeshSnapshot;
 }
 namespace DNDS::Algebra
 {
@@ -82,6 +86,8 @@ namespace DNDS::CFV
     {
         struct FiniteVolumeData;
         struct ReconstructionData;
+        struct ReconstructionPlacementData;
+        struct ReconstructionDeviceView;
     }
     using FVField = Algebra::DofField<real>;
 
@@ -164,7 +170,6 @@ namespace DNDS::CFV
     /// identity. Mesh edits invalidate it. No solution or time-loop ownership.
     class FiniteVolumePlan
     {
-        friend class ReconstructionDevicePlan;
         std::shared_ptr<const Detail::FiniteVolumeData> _data;
         explicit FiniteVolumePlan(std::shared_ptr<const Detail::FiniteVolumeData> data) : _data(std::move(data)) {}
         friend class VariationalReconstructionPlan;
@@ -239,7 +244,9 @@ namespace DNDS::CFV
         Geom::tPoint point, normal;
     };
     /// Matrices act on column vectors in [first,first+count); all other fields
-    /// are limited componentwise. Fill forward/inverse from CELL MEANS once per
+    /// are limited componentwise. count==0 is an explicit disabled descriptor:
+    /// no matrix arrays are allocated or validated. Fill nonempty
+    /// forward/inverse from CELL MEANS once per
     /// field stage. Geometry periodic transforms and characteristic transforms
     /// are different operations. Declare vector triples in BuildWorkspace so
     /// the periodic component map precedes characteristic limiting.
@@ -250,6 +257,27 @@ namespace DNDS::CFV
         std::shared_ptr<const Detail::ReconstructionData> plan;
         uint64_t forwardVersion = 0, inverseVersion = 0;
         uint64_t forwardIdentity = 0, inverseIdentity = 0;
+    };
+    using FaceCharacteristicTransformRef = std::optional<std::reference_wrapper<const FaceCharacteristicTransform>>;
+
+    struct ReconstructionResidencyOptions
+    {
+        bool mesh = false, metrics = false, basis = false;
+    };
+    /// Explicit CUDA numerical kernel selection. CPU placement ignores this
+    /// choice; backend resolution occurs once per submitted CFV operation.
+    enum class ReconstructionDeviceKernel
+    {
+        FP64,
+        FP64TensorCore,
+        FP64TensorCoreShared,
+        FP64TensorCoreAsync
+    };
+    struct ResidentBufferInfo
+    {
+        std::string name;
+        size_t bytes = 0;
+        Runtime::Device device = Runtime::Device::Host();
     };
 
     /// Own iteration scratch once; kernels never grow per-cell vectors.
@@ -263,6 +291,13 @@ namespace DNDS::CFV
         /// are scalars. Periodic rotations act on these triples, independently
         /// of the geometric dimension (three-component flow on 2D geometry).
         std::vector<index> periodicVectorStarts;
+        /// CUDA-only execution resources. They remain empty for host plans;
+        /// Cauchy and other callers still own one public workspace type.
+        Runtime::Array<index> devicePeriodicVectorStarts;
+        Runtime::Array<int> deviceStatus;
+        index deviceBlocks = 0;
+        uint64_t devicePeriodicIdentity = 0, devicePeriodicVersion = 0;
+        std::shared_ptr<const Detail::ReconstructionPlacementData> devicePlan;
     };
 
     /// Borrowed cache pointers for owned-cell face stencils. All derivatives
@@ -308,17 +343,46 @@ namespace DNDS::CFV
                                                 int derivativeOrder, Math::SmallMatrix &scratch) const;
     };
 
+    /// Retained view of a placed reconstruction publication. This is a scoped
+    /// low-level view, not a second plan/workspace hierarchy. Its plain views
+    /// may be passed to backend kernels only while this owner remains alive.
+    class ReconstructionResidentRead
+    {
+        std::shared_ptr<const Detail::ReconstructionPlacementData> _data;
+        explicit ReconstructionResidentRead(std::shared_ptr<const Detail::ReconstructionPlacementData> data)
+            : _data(std::move(data)) {}
+        friend class VariationalReconstructionPlan;
+
+    public:
+        Detail::ReconstructionDeviceView DeviceView() const;
+        FiniteVolumeHostView MetricView() const;
+        ReconstructionBasisHostView BasisView() const;
+    };
+
     /// Composition of metrics, basis/moments and factored VR systems on Runtime
     /// storage. CPU kernels consume explicit arrays; no legacy VR owner exists.
     class VariationalReconstructionPlan
     {
-        friend class ReconstructionDevicePlan;
         friend class PolynomialSamplingPlan;
         std::shared_ptr<const Detail::ReconstructionData> _data;
-        explicit VariationalReconstructionPlan(std::shared_ptr<const Detail::ReconstructionData> data) : _data(std::move(data)) {}
+        std::shared_ptr<const Detail::ReconstructionPlacementData> _device;
+        explicit VariationalReconstructionPlan(std::shared_ptr<const Detail::ReconstructionData> data,
+                                               std::shared_ptr<const Detail::ReconstructionPlacementData> device = {})
+            : _data(std::move(data)), _device(std::move(device)) {}
         void DoReconstructionIterImpl(const FVField &mean, const FVField &input, ReconstructionWorkspace &work,
                                       const ReconstructionBoundaryValues &boundary, ReconstructionRegion region,
                                       const FVField *target, const Runtime::Array<real> *alpha) const;
+        ReconstructionWorkspace BuildDeviceWorkspace(index components, Runtime::RowLayout coefficientPrototype,
+                                                     std::vector<index> periodicVectorStarts) const;
+        void SubmitDeviceReconstructionIterTo(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                              const FVField &, const FVField &, ReconstructionWorkspace &,
+                                              const ReconstructionBoundaryValues &, ReconstructionRegion,
+                                              ReconstructionDeviceKernel) const;
+        void SubmitDeviceCommitReconstruction(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                              ReconstructionWorkspace &) const;
+        void SubmitDeviceLimiterWBAP_3OrderTo(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                              ReconstructionWorkspace &, int, FaceCharacteristicTransformRef,
+                                              ReconstructionRegion, const Runtime::Array<real> *, real) const;
 
     public:
         /// Collective CPU setup. The immutable capabilities must agree on all
@@ -326,6 +390,16 @@ namespace DNDS::CFV
         /// omit unused tables and fail explicitly on unprepared operations.
         static VariationalReconstructionPlan ConstructRecCoeff(FiniteVolumePlan metrics, ReconstructionSettings settings = {},
                                                                ReconstructionCapabilities capabilities = {});
+        /// Return the same public CFV plan placed on one backend. CUDA setup is
+        /// synchronous; hot submissions are stream ordered. The returned plan
+        /// never exposes a device-specific plan or workspace type to callers.
+        VariationalReconstructionPlan Place(Runtime::Device, Runtime::ExecutionContext,
+                                            ReconstructionResidencyOptions = {}) const;
+        Runtime::Device Device() const;
+        bool SupportsKernel(ReconstructionDeviceKernel) const;
+        std::vector<ResidentBufferInfo> ResidentBuffers() const;
+        ReconstructionResidentRead AcquireResidentRead() const;
+        const Geom::UnstructuredMeshSnapshot &MeshSnapshot() const;
         const FiniteVolumePlan &Metrics() const;
         const ReconstructionSettings &Settings() const;
         ReconstructionCapabilities Capabilities() const;
@@ -343,9 +417,11 @@ namespace DNDS::CFV
         ReconstructionWorkspace BuildWorkspace(index components, Runtime::RowLayout coefficientPrototype,
                                                std::vector<index> periodicVectorStarts = {}) const;
         ReconstructionBoundaryValues BuildBoundaryValues(index components) const;
+        ReconstructionBoundaryValues PlaceBoundaryValues(const ReconstructionBoundaryValues &) const;
         index NumBoundaryQuadrature() const;
         BoundaryQuadraturePoint GetBoundaryQuadrature(index iPoint) const;
         FaceCharacteristicTransform BuildFaceTransform(index first, index count) const;
+        FaceCharacteristicTransform PlaceFaceTransform(const FaceCharacteristicTransform &) const;
         /// Validate finite mutually inverse matrices once after filling. Later
         /// writes invalidate this publication; no matrix validation in hot loops.
         void FinalizeFaceTransform(FaceCharacteristicTransform &transform) const;
@@ -354,7 +430,8 @@ namespace DNDS::CFV
         /// logical cell order using new local predecessors and old other values.
         /// No implicit MPI, allocation in the cell loop, or callbacks.
         void DoReconstructionIter(const FVField &mean, ReconstructionWorkspace &work,
-                                  const ReconstructionBoundaryValues &boundary) const;
+                                  const ReconstructionBoundaryValues &boundary,
+                                  ReconstructionDeviceKernel kernel = ReconstructionDeviceKernel::FP64) const;
         /// Writes selected rows of temporary only; input is immutable for both
         /// methods. SOR reads already produced local predecessors from temporary.
         /// Split SOR automatically uses core-first logical ordering; All uses
@@ -376,20 +453,46 @@ namespace DNDS::CFV
                                            const ReconstructionBoundaryValues &boundary, const FVField &target,
                                            const Runtime::Array<real> &alpha,
                                            ReconstructionRegion region = ReconstructionRegion::All) const;
+        /// Managed backend submission variants. Each operation record retains its
+        /// shallow field/workspace owners and declares mutable and immutable
+        /// Array operands to the eager access graph before queueing. Numerical
+        /// semantics are identical to the synchronous kernels above.
+        void SubmitReconstructionIterTo(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                        const FVField &mean, const FVField &input, ReconstructionWorkspace &work,
+                                        const ReconstructionBoundaryValues &boundary,
+                                        ReconstructionRegion region = ReconstructionRegion::All,
+                                        ReconstructionDeviceKernel kernel = ReconstructionDeviceKernel::FP64) const;
+        void SubmitReconstructionIterLimitedTo(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                               const FVField &mean, const FVField &input, ReconstructionWorkspace &work,
+                                               const ReconstructionBoundaryValues &boundary, const FVField &target,
+                                               const Runtime::Array<real> &alpha,
+                                               ReconstructionRegion region = ReconstructionRegion::All) const;
         /// Copy the completed temporary into owned coefficients. The caller
         /// certifies every owned row was produced and all old sends completed.
         void CommitReconstruction(ReconstructionWorkspace &work) const;
+        void SubmitCommitReconstruction(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                        ReconstructionWorkspace &work) const;
         /// One descending-order 3WBAP pass. Call degree..1 and exchange the
         /// coefficient halo after EACH pass, matching the legacy schedule.
         void DoLimiterWBAP_3Order(ReconstructionWorkspace &work, int order,
-                                  const FaceCharacteristicTransform *transform = nullptr) const;
+                                  FaceCharacteristicTransformRef transform = std::nullopt) const;
         /// Out-of-place selected-row pass. Call Core and HaloDependent against
         /// the same immutable coefficients, then commit/exchange before the
         /// next descending order. Inactive rows copy input unchanged.
         void DoLimiterWBAP_3OrderTo(ReconstructionWorkspace &work, int order,
-                                    const FaceCharacteristicTransform *transform = nullptr,
+                                    FaceCharacteristicTransformRef transform = std::nullopt,
                                     ReconstructionRegion region = ReconstructionRegion::All,
                                     const Runtime::Array<real> *indicator = nullptr, real threshold = 0) const;
+        void SubmitLimiterWBAP_3OrderTo(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                        ReconstructionWorkspace &work, int order,
+                                        FaceCharacteristicTransformRef transform = std::nullopt,
+                                        ReconstructionRegion region = ReconstructionRegion::All,
+                                        const Runtime::Array<real> *indicator = nullptr, real threshold = 0) const;
+        Runtime::TransferBinding BindHalo(FVField &, Runtime::TransferTransport transport = Runtime::TransferTransport::Direct,
+                                          Runtime::TransferOptions options = {}) const;
+        /// Observe device validation status after the producing stream prefix
+        /// has completed. Host plans have no deferred device status.
+        void CheckStatus(const ReconstructionWorkspace &) const;
         /// Arbitrary physical point sampling from cell means plus zero-mean
         /// coefficients. Cell IDs are current local IDs, including ready ghosts.
         void Evaluate(const FVField &mean, const FVField &coefficients,

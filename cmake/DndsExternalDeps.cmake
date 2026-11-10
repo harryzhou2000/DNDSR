@@ -151,6 +151,12 @@ find_path(DNDS_EXTERNAL_INCLUDE_FMT fmt PATHS
     "${PROJECT_SOURCE_DIR}/external/fmt-10.1.1/include" 
     NO_DEFAULT_PATH REQUIRED)
 
+# cfd_externals_headeronlys v0.2.0 installs spdlog beside fmt/eigen/etc.
+# Do not fall back to a system copy: it may select an incompatible fmt mode.
+find_path(DNDS_EXTERNAL_INCLUDE_SPDLOG spdlog/spdlog.h PATHS
+    "${PROJECT_SOURCE_DIR}/external/spdlog/include"
+    NO_DEFAULT_PATH REQUIRED)
+
 find_path(DNDS_EXTERNAL_INCLUDE_SUPERLU superlu_dist.pc.in PATHS
     "${PROJECT_SOURCE_DIR}/external/superlu_dist-8.2.1" 
     NO_DEFAULT_PATH)
@@ -390,6 +396,7 @@ set(DNDS_EXTERNAL_INCLUDES
     ${DNDS_EXTERNAL_INCLUDE_PYBIND11}
     ${DNDS_EXTERNAL_INCLUDE_PYBIND11_JSON}
     ${DNDS_EXTERNAL_INCLUDE_FMT}
+    ${DNDS_EXTERNAL_INCLUDE_SPDLOG}
     CACHE INTERNAL "Project External Includes")
 
 if(DNDS_USE_CANTERA)
@@ -498,3 +505,4 @@ message(STATUS "DNDS_EXTERNAL_INCLUDES ${DNDS_EXTERNAL_INCLUDES}")
 add_library(dnds_external_deps INTERFACE)
 target_include_directories(dnds_external_deps INTERFACE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
 target_link_libraries(dnds_external_deps INTERFACE ${DNDS_EXTERNAL_LIBS})
+target_compile_definitions(dnds_external_deps INTERFACE SPDLOG_FMT_EXTERNAL)

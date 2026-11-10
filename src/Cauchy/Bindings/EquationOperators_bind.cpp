@@ -26,13 +26,13 @@ namespace DNDS::Cauchy::Bindings
     };
     // Numerical workspace definitions deliberately remain opaque. Complete
     // holders let pybind retain them without exposing their implementation.
-    struct EquationWorkspace
+    struct Workspace
     {
-        std::shared_ptr<FiniteVolume::EquationWorkspace> value;
+        std::shared_ptr<FiniteVolume::Workspace> value;
     };
     struct MeanWorkspace
     {
-        std::shared_ptr<FiniteVolume::EquationMeanWorkspace> value;
+        std::shared_ptr<FiniteVolume::MeanWorkspace> value;
     };
     /// Native correction controller with sharing plan/state bindings. Runtime
     /// lifetime is checked through its managed stream, never an engine address.
@@ -43,7 +43,7 @@ namespace DNDS::Cauchy::Bindings
         std::optional<EquationDofs> state;
         R::ExecutionStream stream;
         DomainSettings settings;
-        std::unique_ptr<EquationNonlinearSolver> value;
+        std::unique_ptr<NonlinearSolver> value;
     };
     py::object ShareOptional(const std::optional<R::Array<real>> &array)
     {
@@ -190,10 +190,10 @@ namespace DNDS::Cauchy::Bindings
         py::class_<EquationMeanGradients>(
             m, "MeanGradients", "Bound explicit gradient scratch; external writes invalidate auxiliary provenance.")
             .def_readonly("fields", &EquationMeanGradients::fields);
-        py::class_<EquationWorkspace>(
-            m, "EquationWorkspace",
+        py::class_<Workspace>(
+            m, "Workspace",
             "Native FV workspace tied to exact input allocations. Serialize use and drain work before release.");
-        py::class_<MeanWorkspace>(m, "EquationMeanWorkspace",
+        py::class_<MeanWorkspace>(m, "MeanWorkspace",
                                   "Separate zero-reconstruction physical-step scratch; never the ordinary VR guess.");
         py::enum_<DiagonalStorage>(m, "DiagonalStorage")
             .value("Entries", DiagonalStorage::Entries)
@@ -374,7 +374,12 @@ namespace DNDS::Cauchy::Bindings
             .def(
                 "scratch_pool_statistics", &PolynomialMultigrid::ScratchPoolStatistics,
                 "Reserved DoF payload bytes and peak simultaneous borrowed slots; excludes persistent/reconstruction workspaces.")
-            .def("solve", py::overload_cast<const EquationDofs &, real, real, real, int>(&PolynomialMultigrid::Solve),
+            .def("solve",
+                 [](PolynomialMultigrid &multigrid, const EquationDofs &source, real mass, real rhsScale, real time,
+                    int stage)
+        {
+            return multigrid.Solve(source, mass, rhsScale, time, stage);
+        },
                  py::arg("source"), py::arg("inverse_dt"), py::arg("rhs_scale"), py::arg("time") = 0,
                  py::arg("stage") = 0, py::call_guard<py::gil_scoped_release>(), Collective);
         py::class_<EquationOperators>(
@@ -394,18 +399,18 @@ namespace DNDS::Cauchy::Bindings
             .def("build_workspace",
                  [](const EquationOperators &op, EquationDofs &u)
         {
-            return EquationWorkspace{op.fv.BuildEquationWorkspace(u, op.workers)};
+            return Workspace{op.fv.BuildWorkspace(u, op.workers)};
         }, py::arg("state"), py::keep_alive<0, 1>(), py::keep_alive<0, 2>(), py::call_guard<py::gil_scoped_release>(),
                  Collective)
             .def("build_mean_workspace",
                  [](const EquationOperators &op, EquationDofs &u)
         {
-            return MeanWorkspace{op.fv.BuildEquationMeanWorkspace(u, op.workers)};
+            return MeanWorkspace{op.fv.BuildMeanWorkspace(u, op.workers)};
         }, py::arg("state"), py::keep_alive<0, 1>(), py::keep_alive<0, 2>(), py::call_guard<py::gil_scoped_release>(),
                  Collective)
             .def("evaluate",
-                 [](const EquationOperators &op, EquationDofs &u, EquationDofs &r, EquationWorkspace &w,
-                    R::EagerEngine &e, const R::ExecutionStream &s, real t)
+                 [](const EquationOperators &op, EquationDofs &u, EquationDofs &r, Workspace &w, R::EagerEngine &e,
+                    const R::ExecutionStream &s, real t)
         {
             op.fv.Evaluate(u, r, *w.value, e, s, t);
         },
@@ -419,7 +424,7 @@ namespace DNDS::Cauchy::Bindings
         }, py::arg("state"),
                 "Allocate caller-owned integrated negative outward face flux, in AuxiliaryFaces order and the local anchor cell frame. No source or halo.")
             .def("prepare_reconstruction",
-                 [](const EquationOperators &op, EquationDofs &u, EquationWorkspace &w, R::EagerEngine &e,
+                 [](const EquationOperators &op, EquationDofs &u, Workspace &w, R::EagerEngine &e,
                     const R::ExecutionStream &s, real t)
         {
             op.fv.PrepareReconstruction(u, *w.value, e, s, t);
@@ -428,7 +433,7 @@ namespace DNDS::Cauchy::Bindings
                  py::call_guard<py::gil_scoped_release>(), Collective)
             .def(
                 "evaluate_flux",
-                [](const EquationOperators &op, const EquationDofs &u, EquationDofs &r, EquationWorkspace &w,
+                [](const EquationOperators &op, const EquationDofs &u, EquationDofs &r, Workspace &w,
                    R::PythonArray *faces, real t)
         {
             std::optional<R::Array<real>> buffer;
@@ -442,7 +447,7 @@ namespace DNDS::Cauchy::Bindings
                 "Local flux-only overwrite using a completed evaluate publication at the same state/time. Input halos must be ready. Optional face array is shared and overwritten; release views first. No reconstruction or transfer. Caller coordinates failures.")
             .def(
                 "add_source",
-                [](const EquationOperators &op, const EquationDofs &u, EquationDofs &r, EquationWorkspace &w, real t)
+                [](const EquationOperators &op, const EquationDofs &u, EquationDofs &r, Workspace &w, real t)
         {
             op.fv.AddSource(u, r, *w.value, t);
         }, py::arg("state"), py::arg("residual"), py::arg("workspace"), py::arg("time") = 0,
@@ -457,22 +462,22 @@ namespace DNDS::Cauchy::Bindings
                  py::arg("state"), py::arg("residual"), py::arg("workspace"), py::arg("engine"), py::arg("stream"),
                  py::arg("time") = 0, py::call_guard<py::gil_scoped_release>(), Collective)
             .def("reconstruction_guess",
-                 [](const EquationOperators &op, const EquationWorkspace &w)
+                 [](const EquationOperators &op, const Workspace &w)
         {
             return op.fv.ReconstructionGuess(*w.value);
         }, py::arg("workspace"), "Shared unlimited coefficient fields. Do not write during workspace/transfer use.")
             .def("flux_reconstruction",
-                 [](const EquationOperators &op, const EquationWorkspace &w)
+                 [](const EquationOperators &op, const Workspace &w)
         {
             return op.fv.FluxReconstruction(*w.value);
         }, py::arg("workspace"))
             .def("reset_reconstruction",
-                 [](const EquationOperators &op, EquationWorkspace &w)
+                 [](const EquationOperators &op, Workspace &w)
         {
             op.fv.ResetReconstruction(*w.value);
         }, py::arg("workspace"), py::call_guard<py::gil_scoped_release>(), Local)
             .def("restore_reconstruction",
-                 [](const EquationOperators &op, EquationWorkspace &w, const EquationDofs &u)
+                 [](const EquationOperators &op, Workspace &w, const EquationDofs &u)
         {
             op.fv.RestoreReconstructionGuess(*w.value, u);
         }, py::arg("workspace"), py::arg("guess"), py::call_guard<py::gil_scoped_release>(), Collective)
@@ -495,8 +500,8 @@ namespace DNDS::Cauchy::Bindings
                  py::arg("state"), py::arg("output"), py::arg("gradients"), py::arg("engine"), py::arg("stream"),
                  py::arg("time") = 0, py::call_guard<py::gil_scoped_release>(), Collective)
             .def("prepare_correction_aux",
-                 [](const EquationOperators &op, EquationDofs &u, EquationWorkspace &w, AuxiliaryValues &a,
-                    R::EagerEngine &e, const R::ExecutionStream &s, real t)
+                 [](const EquationOperators &op, EquationDofs &u, Workspace &w, AuxiliaryValues &a, R::EagerEngine &e,
+                    const R::ExecutionStream &s, real t)
         {
             op.fv.PrepareCorrectionAux(u, *w.value, a, e, s, t);
         },
@@ -517,7 +522,7 @@ namespace DNDS::Cauchy::Bindings
             .def("prepare_jacobian",
                  [](const EquationOperators &op, const EquationDofs &u, const AuxiliaryValues &a,
                     const R::PythonArray &inverseDt, LinearProblemContext &p, JacobianPreparation c, real t,
-                    const EquationWorkspace *w)
+                    const Workspace *w)
         {
             // Dtype resolution uses Python. Freeze the native sharing
             // handle before releasing the GIL for numerical execution.
@@ -541,7 +546,7 @@ namespace DNDS::Cauchy::Bindings
                  py::arg("execution") = LinearExecution{}, py::keep_alive<0, 1>(),
                  py::call_guard<py::gil_scoped_release>(), Collective)
             .def("build_stage_solver",
-                 [](const EquationOperators &operators, EquationDofs &state, EquationWorkspace &workspace,
+                 [](const EquationOperators &operators, EquationDofs &state, Workspace &workspace,
                     R::EagerEngine &engine, const R::ExecutionStream &stream, const std::string &implicitJson)
         {
             auto solver = std::make_unique<EquationStageSolver>();
@@ -567,8 +572,8 @@ namespace DNDS::Cauchy::Bindings
                 selection.emplace(state.ComponentNumber(),
                                   state.Schema().ResolveComponents(solver->settings.implicit.residualComponents));
             });
-            solver->value = std::make_unique<EquationNonlinearSolver>(
-                operators.fv, state, workspace.value, engine, stream, solver->settings, *selection, operators.workers);
+            solver->value = std::make_unique<NonlinearSolver>(operators.fv, state, workspace.value, engine, stream,
+                                                              solver->settings, *selection, operators.workers);
             return solver;
         },
                  py::arg("state"), py::arg("workspace"), py::arg("engine"), py::arg("stream"),
@@ -589,8 +594,8 @@ namespace DNDS::Cauchy::Bindings
         }, py::arg("mesh"), py::arg("stage_solver"), py::keep_alive<0, 1>(), py::keep_alive<0, 2>(),
                  py::keep_alive<0, 3>(), py::call_guard<py::gil_scoped_release>(), Collective)
             .def("write_visualization",
-                 [](const EquationOperators &op, const EquationDofs &u, const EquationWorkspace &w,
-                    const std::string &prefix, real t, int deflate)
+                 [](const EquationOperators &op, const EquationDofs &u, const Workspace &w, const std::string &prefix,
+                    real t, int deflate)
         {
             op.fv.WriteVisualization(u, *w.value, prefix, t, deflate, op.workers);
         },

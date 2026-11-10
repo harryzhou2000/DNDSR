@@ -83,8 +83,8 @@ namespace DNDS::Cauchy
             auto primitive = settings.initialPrimitive;
             if (settings.initialTemperature > 0)
                 primitive[4] = primitive[0] * equation.Gas().gasConstant * settings.initialTemperature;
-            discrete.Initialize(field, settings.initialProfile, primitive);
             auto state = EquationDofs::Coupled(equation.Schema(), std::move(field));
+            discrete.Initialize(state, settings.initialProfile, primitive);
             discrete.InitializeField(state, workers);
             return state;
         }
@@ -104,12 +104,6 @@ namespace DNDS::Cauchy
                 setup->equation.Schema().ResolveComponents(settings.implicit.residualComponents); });
             return std::move(*setup);
         }
-        AuxiliaryRequest TimeAuxiliary(const TimeSettings &time)
-        {
-            AuxiliaryRequest request;
-            request.faceSpectralRadius = request.cellSpectralSum = time.steady || time.method != "ssprk3";
-            return request;
-        }
         ResolvedPhysicalInputs ResolveInputs(const DomainSettings &settings, const EquationSetup &setup, const MPIInfo &mpi)
         {
             std::optional<ResolvedPhysicalInputs> result;
@@ -128,8 +122,7 @@ namespace DNDS::Cauchy
         : _name(std::move(name)), _equation(std::move(setup.equation)), _workers(std::move(setup.workers)), _fv(PrepareWallField(mesh, _equation, inputs.settings), SpatialSettings(inputs.settings, time), _equation),
           _accepted(BuildState(_fv, _equation, inputs.settings, _workers, inputs.initialConservative)), _trial(_accepted.Clone()),
           _residualState(EquationDofOperations::NewVector(_accepted)), _initial(EquationDofOperations::NewVector(_accepted)),
-          _workspace(_equation.HasMixture() || _equation.HasRANS() ? nullptr : _fv.BuildWorkspace(_trial, TimeAuxiliary(time))),
-          _equationWorkspace(_equation.HasMixture() || _equation.HasRANS() ? _fv.BuildEquationWorkspace(_trial, _workers) : nullptr),
+          _workspace(_fv.BuildWorkspace(_trial, _workers)),
           _engine(size_t(inputs.settings.execution.hostThreads), inputs.settings.execution.checkAccess ? std::make_shared<R::AccessTrackingContext>() : nullptr),
           _stream(_engine.CreateCPUStream())
     {
@@ -142,12 +135,9 @@ namespace DNDS::Cauchy
         _positivity = settings.numerics.positivity;
         _equation.ValidateStateSchema(_accepted);
         DNDS_check_throw_info(_fv.Metrics().Dimension() == settings.mesh.dimension, "Cauchy config/mesh dimension differs");
-        if (_equationWorkspace)
-        {
-            const auto &n = settings.numerics;
-            _equationThermal.emplace(_equation, n.densityFloor, n.temperatureFloor, n.sensibleEnergyFloor, n.pressureFloor,
-                                     _workers ? _workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{});
-        }
+        const auto &n = settings.numerics;
+        _thermal.emplace(_equation, n.densityFloor, n.temperatureFloor, n.sensibleEnergyFloor, n.pressureFloor,
+                         _workers ? _workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{});
         if (_equation.HasRANS())
             _ransState.emplace(ResolveRANSStatePolicy(_equation, settings.numerics.ransState));
         DNDS_check_throw_info(Admissible(_accepted), "Cauchy initial means violate density or minimum-temperature internal-energy bounds");
@@ -170,8 +160,6 @@ namespace DNDS::Cauchy
     }
     bool Domain::Admissible(const EquationDofs &state) const
     {
-        if (!_equationWorkspace)
-            return _fv.Admissible(FlowField(state));
         int valid = 1;
         std::exception_ptr failure;
         try
@@ -180,7 +168,7 @@ namespace DNDS::Cauchy
             const auto read = state.ReadOwned();
             const auto layout = read.ComponentLayout();
             const auto values = layout.View();
-            const auto bounds = _equationThermal->View();
+            const auto bounds = _thermal->View();
             const auto scalars = _ransState ? read.Block("rans") : EquationBlockReadView{};
             auto rhoY = evaluator.SpeciesInput();
             for (index iCell = 0; iCell < values.RowCount(); ++iCell)
@@ -223,6 +211,9 @@ namespace DNDS::Cauchy
     }
     real Domain::StableStep(real cfl) const
     {
+        EquationAuxiliaryInputs inputs;
+        if (_interfaceInputs)
+            inputs.boundary = std::cref(*_interfaceInputs);
         if (!_timeAuxiliary)
         {
             AuxiliaryRequest request;
@@ -244,7 +235,7 @@ namespace DNDS::Cauchy
             auto state = _accepted.NumericAlias();
             if (!_timeMeanGradients)
                 _timeMeanGradients.emplace(_fv.BuildMeanGradients(state));
-            _fv.PrepareAuxValues(state, *_timeAuxiliary, *_timeMeanGradients, _engine, _stream, _time, _workers);
+            _fv.PrepareAuxValues(state, *_timeAuxiliary, *_timeMeanGradients, _engine, _stream, _time, _workers, inputs);
             return _fv.StableStep(state, *_timeAuxiliary, cfl, _time);
         }
         std::vector<R::TransferOperation> transfers;
@@ -253,15 +244,16 @@ namespace DNDS::Cauchy
         for (auto &transfer : transfers)
             transfer.Wait();
         MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
-                        { if (_equationWorkspace) _fv.PrepareAuxValues(_accepted, *_timeAuxiliary, _time, _workers);
-                          else _fv.PrepareAuxValues(Flow(), *_timeAuxiliary, _time, _interfaceInputs ? &*_interfaceInputs : nullptr); });
-        return _equationWorkspace ? _fv.StableStep(_accepted, *_timeAuxiliary, cfl, _time) : _fv.StableStep(Flow(), *_timeAuxiliary, cfl, _time);
+                        { _fv.PrepareAuxValues(_accepted, *_timeAuxiliary, _time, _workers, inputs); });
+        return _fv.StableStep(_accepted, *_timeAuxiliary, cfl, _time);
     }
     StepResult Domain::UpdateStage(real dt, real historyWeight, real stageWeight, real stageTime)
     {
-        if (_equationWorkspace)
+        _fv.Evaluate(_trial, _residualState, *_workspace, _engine, _stream, stageTime);
+        _lastFallbacks += _fv.LastFaceFallbacks(*_workspace);
+        _lastCharacteristicFallbacks += _fv.LastCharacteristicFallbacks(*_workspace);
+        if (_equation.HasMixture() || _equation.HasRANS())
         {
-            _fv.Evaluate(_trial, _residualState, *_equationWorkspace, _engine, _stream, stageTime);
             MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
                             {
                 const auto geometry = _fv.Metrics().AcquireRead(); const auto metric = geometry.HostView();
@@ -304,9 +296,6 @@ namespace DNDS::Cauchy
             return {};
         }
         auto &residual = _residualState.CoupledField();
-        _fv.Evaluate(_trial, residual, *_workspace, _engine, _stream, stageTime);
-        _lastFallbacks += _fv.LastFaceFallbacks(*_workspace);
-        _lastCharacteristicFallbacks += _fv.LastCharacteristicFallbacks(*_workspace);
         auto geometry = _fv.Metrics().AcquireRead();
         const auto metrics = geometry.HostView();
         real alpha = 1;
@@ -324,7 +313,7 @@ namespace DNDS::Cauchy
             MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
                             {
                 const auto initialRead = _initial.CoupledField().Owned().Read(), stateRead = _trial.CoupledField().Owned().Read();
-                const auto highRead = residual.Owned().Read(), lowRead = _fv.LowOrderResidual(*_workspace).Owned().Read();
+                const auto highRead = residual.Owned().Read(), lowRead = _fv.LowOrderResidual(*_workspace).CoupledField().Owned().Read();
                 const auto initial = initialRead.View<R::UniformTableRows>(), state = stateRead.View<R::UniformTableRows>();
                 const auto high = highRead.View<R::UniformTableRows>(), low = lowRead.View<R::UniformTableRows>();
                 for (index iCell = 0; iCell < _fv.Metrics().NumCell(); ++iCell)
@@ -366,7 +355,7 @@ namespace DNDS::Cauchy
         R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows> low;
         if (_positivity)
         {
-            lowRead.emplace(_fv.LowOrderResidual(*_workspace).Owned().Read());
+            lowRead.emplace(_fv.LowOrderResidual(*_workspace).CoupledField().Owned().Read());
             low = lowRead->View<R::UniformTableRows>();
         }
         R::SubmitArrays(_engine, _stream, [dt, historyWeight, stageWeight, metrics, alpha, low](auto, auto initial, auto rhs, auto stage)
@@ -378,7 +367,7 @@ namespace DNDS::Cauchy
                     stage(iCell, j) = historyWeight * initial(iCell, j) + stageWeight * (stage(iCell, j) + dt * residual / metrics.GetCellVol(iCell));
                 } }, R::ReadAs<R::UniformTableRows>(_initial.CoupledField().Owned()), R::ReadAs<R::UniformTableRows>(residual.Owned()), R::ReadWriteAs<R::UniformTableRows>(_trial.CoupledField().Owned()));
         _stream.Record().WaitHost();
-        if (!_fv.Admissible(_trial.CoupledField()))
+        if (!Admissible(_trial))
             return StepResult::Rejected("Cauchy SSPRK3 stage is inadmissible; accepted state unchanged");
         return {};
     }
@@ -520,10 +509,8 @@ namespace DNDS::Cauchy
                 const bool accepted = _timeStepper->SolvePreparedStage(equation, _trial,
                                                                        [&](EquationDofs &trial, const EquationDofs &source, real mass, real rhsScale, real time, int stage)
                                                                        {
-                                                                           return _equationImplicit ? RecordImplicitStage(_multigrid ? _multigrid->Solve(source, mass, rhsScale, time, stage)
-                                                                                                                                     : _equationImplicit->Solve(trial, source, mass, rhsScale, time, stage))
-                                                                                                    : RecordImplicitStage(_multigrid ? _multigrid->Solve(source.CoupledField(), mass, rhsScale, time, stage)
-                                                                                                                                     : _implicit->Solve(trial.CoupledField(), source.CoupledField(), mass, rhsScale, time, stage));
+                                                                           return RecordImplicitStage(_multigrid ? _multigrid->Solve(source, mass, rhsScale, time, stage, ProgressControl())
+                                                                                                                 : _implicit->Solve(trial, source, mass, rhsScale, time, stage, ProgressControl()));
                                                                        });
                 if (!accepted)
                     return StepResult::Rejected("coordinated implicit stage reached its correction cap");
@@ -541,8 +528,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(_coordinatedPrepared, "no coordinated stage to complete");
         if (_timeStepper)
             _timeStepper->CompleteStage(_trial, [this](auto &state, auto &rate, real time, int stage)
-                                        { if (_equationWorkspace) EvaluateImplicitRate(state, rate, *_equationWorkspace, time, stage);
-                                          else EvaluateImplicitRate(state, rate, *_workspace, time, stage); });
+                                        { EvaluateImplicitRate(state, rate, *_workspace, time, stage); });
         _coordinatedPrepared = false;
         _stageEquation.reset();
         if (++_coordinatedStage == CoordinatedStageNumber())
@@ -647,13 +633,9 @@ namespace DNDS::Cauchy
         MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
                         {
             _stream.Record().WaitHost(); EquationDofOperations::Copy(_trial, _accepted); });
-        if (_equationWorkspace)
-            _fv.Evaluate(_trial, _residualState, *_equationWorkspace, _engine, _stream, _time);
-        else
-        {
-            _fv.Evaluate(_trial, _residualState.CoupledField(), *_workspace, _engine, _stream, _time);
-            _lastFallbacks = _fv.LastFaceFallbacks(*_workspace);
-        }
+        _fv.Evaluate(_trial, _residualState, *_workspace, _engine, _stream, _time);
+        _lastFallbacks = _fv.LastFaceFallbacks(*_workspace);
+        _lastCharacteristicFallbacks = _fv.LastCharacteristicFallbacks(*_workspace);
         return _residualState;
     }
     std::array<real, 14> Domain::Diagnostics(const DomainSettings &settings, const std::vector<int> &forceZones)
@@ -662,11 +644,9 @@ namespace DNDS::Cauchy
         std::array<real, 14> result{};
         result[13] = std::numeric_limits<real>::max();
         result[2] = result[3] = std::numeric_limits<real>::max();
-        if (_equationWorkspace)
-        {
-            const MPIInfo mpi(_fv.Metrics().Communicator());
-            MPI::LocalStage(mpi, [&]
-                            {
+        const MPIInfo mpi(_fv.Metrics().Communicator());
+        MPI::LocalStage(mpi, [&]
+                        {
             auto evaluator = _equation.MakePointEvaluator(_workers ? _workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {});
             const auto geometry = _fv.Metrics().AcquireRead(); const auto metric = geometry.HostView();
             const auto read = _accepted.ReadOwned(), residual = _observationState->ReadOwned();
@@ -691,42 +671,7 @@ namespace DNDS::Cauchy
                 result[2] = std::min(result[2], value[0]); result[3] = std::min(result[3], point.thermo.pressure);
                 result[13] = std::min(result[13], point.thermo.temperature);
                 for (index j = 0; j < width; ++j) result[4] += rhs(iCell, j) * rhs(iCell, j) / volume;
-            } });
-            const auto comm = _fv.Metrics().Communicator();
-            MPI_Allreduce(MPI_IN_PLACE, result.data(), 2, MPI_DOUBLE, MPI_SUM, comm);
-            MPI_Allreduce(MPI_IN_PLACE, result.data() + 2, 2, MPI_DOUBLE, MPI_MIN, comm);
-            MPI_Allreduce(MPI_IN_PLACE, result.data() + 4, 1, MPI_DOUBLE, MPI_SUM, comm);
-            MPI_Allreduce(MPI_IN_PLACE, result.data() + 13, 1, MPI_DOUBLE, MPI_MIN, comm);
-            // Report the volume-integrated L2 defect. The per-cell division
-            // above forms V_c*r^2, but no global-volume normalization follows.
-            result[4] = std::sqrt(result[4]);
-            const auto force = _fv.LastBoundaryForce(*_equationObservationWorkspace, forceZones);
-            for (int d = 0; d < 3; ++d)
-                result[5 + d] = force[d];
-            result[8] = _fv.LastReconstructionIterations(*_equationObservationWorkspace);
-            result[9] = _fv.LastReconstructionUpdate(*_equationObservationWorkspace);
-            return result;
-        }
-        {
-            const auto geometry = _fv.Metrics().AcquireRead();
-            const auto metrics = geometry.HostView();
-            auto state = Flow().Owned().Read(), rhs = _observationResidual->Owned().Read();
-            auto u = state.View<R::UniformTableRows>(), r = rhs.View<R::UniformTableRows>();
-            for (index iCell = 0; iCell < u.RowCount(); ++iCell)
-            {
-                FlowState value{};
-                for (int j = 0; j < 5; ++j)
-                    value[j] = u(iCell, j);
-                const real volume = metrics.GetCellVol(iCell);
-                result[0] += volume * value[0];
-                result[1] += volume * value[4];
-                result[2] = std::min(result[2], value[0]);
-                result[3] = std::min(result[3], _equation.Gas().Pressure(value));
-                result[13] = std::min(result[13], _equation.Gas().Primitive(value).temperature);
-                for (int j = 0; j < 5; ++j)
-                    result[4] += r(iCell, j) * r(iCell, j) / volume;
-            }
-        }
+        } });
         const auto comm = _fv.Metrics().Communicator();
         MPI_Allreduce(MPI_IN_PLACE, result.data(), 2, MPI_DOUBLE, MPI_SUM, comm);
         MPI_Allreduce(MPI_IN_PLACE, result.data() + 2, 2, MPI_DOUBLE, MPI_MIN, comm);
@@ -740,9 +685,9 @@ namespace DNDS::Cauchy
             result[5 + d] = force[d];
         result[8] = _fv.LastReconstructionIterations(*_observationWorkspace);
         result[9] = _fv.LastReconstructionUpdate(*_observationWorkspace);
-        if (settings.initialProfile.kind == "isentropicVortex")
+        if (!_equation.HasMixture() && !_equation.HasRANS() && settings.initialProfile.kind == "isentropicVortex")
         {
-            const auto error = _fv.Error(Flow(), settings.initialProfile, settings.initialPrimitive, _time);
+            const auto error = _fv.Error(_accepted, settings.initialProfile, settings.initialPrimitive, _time);
             for (int i = 0; i < 3; ++i)
                 result[10 + i] = error[i][0];
         }
@@ -751,35 +696,18 @@ namespace DNDS::Cauchy
     void Domain::WriteVisualization(const std::string &prefix, int hdfDeflateLevel)
     {
         EvaluateObservation();
-        if (_equationWorkspace)
-            _fv.WriteVisualization(_accepted, *_equationObservationWorkspace, prefix, _time, hdfDeflateLevel, _workers);
-        else
-            _fv.WriteVisualization(Flow(), *_observationWorkspace, prefix, _time, hdfDeflateLevel);
+        _fv.WriteVisualization(_accepted, *_observationWorkspace, prefix, _time, hdfDeflateLevel, _workers);
     }
     void Domain::EvaluateObservation()
     {
-        if (_equationWorkspace)
-        {
-            if (!_equationObservationWorkspace)
-            {
-                std::optional<EquationDofs> residual;
-                MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
-                                { residual.emplace(EquationDofOperations::NewVector(_accepted)); });
-                auto workspace = _fv.BuildEquationWorkspace(_accepted, _workers);
-                _observationState = std::move(residual);
-                _equationObservationWorkspace = std::move(workspace);
-            }
-            const auto &guess = _restoreReconstruction ? *_equationBackup : _fv.ReconstructionGuess(*_equationWorkspace);
-            _fv.RestoreReconstructionGuess(*_equationObservationWorkspace, guess);
-            _fv.Evaluate(_accepted, *_observationState, *_equationObservationWorkspace, _engine, _stream, _time);
-            return;
-        }
-        // Output cadence must not change the warm-started numerical trajectory.
-        // Observation owns its own persistent reconstruction scratch and RHS.
         if (!_observationWorkspace)
         {
-            _observationWorkspace = _fv.BuildWorkspace(_accepted);
-            _observationResidual.emplace(_fv.Metrics().BuildField(Flow().Owned().Layout()));
+            std::optional<EquationDofs> residual;
+            MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
+                            { residual.emplace(EquationDofOperations::NewVector(_accepted)); });
+            auto workspace = _fv.BuildWorkspace(_accepted, _workers);
+            _observationState = std::move(residual);
+            _observationWorkspace = std::move(workspace);
             if (_interfaceInputs)
                 _fv.SetBoundaryInputs(*_observationWorkspace, *_interfaceInputs);
         }
@@ -789,9 +717,8 @@ namespace DNDS::Cauchy
         // boundary reconstruction than the one used by the implicit stage.
         // A pending/rejected trial owns a different polynomial; its backup is
         // the accepted guess until publication, just as for checkpoint writing.
-        const auto &guess = _restoreReconstruction ? *_reconstructionBackup : _fv.ReconstructionGuess(*_workspace).Owned();
-        const auto history = _restoreReconstruction ? _limitedVRBackup : _fv.LimitedVRHistory(*_workspace);
-        _fv.RestoreReconstructionGuess(*_observationWorkspace, guess, history ? &*history : nullptr);
-        _fv.Evaluate(_accepted, *_observationResidual, *_observationWorkspace, _engine, _stream, _time);
+        const auto &guess = _restoreReconstruction ? *_reconstructionBackup : _fv.ReconstructionGuess(*_workspace);
+        _fv.RestoreReconstructionGuess(*_observationWorkspace, guess);
+        _fv.Evaluate(_accepted, *_observationState, *_observationWorkspace, _engine, _stream, _time);
     }
 }

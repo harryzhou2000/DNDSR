@@ -57,6 +57,15 @@ namespace DNDS::Cauchy
             values._faceScratch.emplace(R::RowLayout::Dense(faces, 3));
         return values;
     }
+    AuxiliaryRequest FiniteVolume::CompleteRHSAuxiliaryRequest(AuxiliaryRequest request) const
+    {
+        if (_data->settings.numerics.riemann.useStencil)
+        {
+            request.cellWaveJump = request.cellWaveJump || _data->fluxPolicy.transverseSignal;
+            request.cellPressureMinimum = request.cellPressureMinimum || _data->fluxPolicy.pressureStencil;
+        }
+        return request;
+    }
     const std::vector<index> &FiniteVolume::AuxiliaryFaces() const { return _data->stencilFaces; }
     struct FiniteVolume::AuxiliaryPreparation::State
     {

@@ -1,5 +1,4 @@
 #include "CFV/Plans/FiniteVolumePlan.hpp"
-#include "CFV/Plans/ReconstructionDevicePlan.hpp"
 #include "CFV/Plans/InterfaceSamplingPlan.hpp"
 #include "CFV/Plans/DistributedInterfaceSamplingPlan.hpp"
 #include "CFV/Plans/GradientPlan.hpp"
@@ -165,49 +164,6 @@ namespace DNDS::CFV
             .def_readonly("name", &ResidentBufferInfo::name)
             .def_readonly("bytes", &ResidentBufferInfo::bytes)
             .def_readonly("device", &ResidentBufferInfo::device);
-        py::class_<DeviceFaceCharacteristicTransform>(m, "DeviceFaceCharacteristicTransform")
-            .def_readonly("first", &DeviceFaceCharacteristicTransform::first)
-            .def_readonly("count", &DeviceFaceCharacteristicTransform::count)
-            .def_property_readonly("forward", [](const DeviceFaceCharacteristicTransform &value)
-                                   { return Runtime::PythonArray::Share(value.forward); })
-            .def_property_readonly("inverse", [](const DeviceFaceCharacteristicTransform &value)
-                                   { return Runtime::PythonArray::Share(value.inverse); });
-        py::class_<ReconstructionDeviceWorkspace>(m, "ReconstructionDeviceWorkspace")
-            .def_readonly("coefficients", &ReconstructionDeviceWorkspace::coefficients)
-            .def_readonly("temporary", &ReconstructionDeviceWorkspace::temporary);
-        py::class_<ReconstructionDevicePlan>(m, "ReconstructionDevicePlan")
-            .def_static("Prepare", &ReconstructionDevicePlan::Prepare,
-                        py::arg("source"), py::arg("device"), py::arg("context"), py::arg("options") = ReconstructionResidencyOptions{},
-                        "Explicit synchronous CUDA publication. CPU-only builds and SOR fail before a usable publication is returned.")
-            .def("Validate", &ReconstructionDevicePlan::Validate)
-            .def("Device", &ReconstructionDevicePlan::Device)
-            .def("SupportsKernel", &ReconstructionDevicePlan::SupportsKernel)
-            .def("Buffers", &ReconstructionDevicePlan::Buffers)
-            .def("BuildField", &ReconstructionDevicePlan::BuildField)
-            .def("BuildWorkspace", &ReconstructionDevicePlan::BuildWorkspace,
-                 py::arg("components"), py::arg("prototype"), py::arg("periodicVectorStarts") = std::vector<index>{})
-            .def("BindHalo", &ReconstructionDevicePlan::BindHalo, py::arg("field"), py::arg("transport") = Runtime::TransferTransport::Direct,
-                 py::arg("options") = Runtime::TransferOptions{},
-                 "Collective payload binding. Null provider uses CUDA-aware MPI; options.provider selects NCCL. DevicePacked gathers/scatters; explicitly order consumers after transfer/unpack.")
-            .def("PrepareBoundary", &ReconstructionDevicePlan::PrepareBoundary)
-            .def("PrepareTransform", &ReconstructionDevicePlan::PrepareTransform)
-            .def("DoReconstructionIter", &ReconstructionDevicePlan::DoReconstructionIter,
-                 py::arg("mean"), py::arg("workspace"), py::arg("boundary"), py::arg("kernel") = ReconstructionDeviceKernel::FP64,
-                 "Synchronous CUDA Jacobi. Refresh mean/coefficient halos first; release all Python write/export aliases.")
-            .def("DoLimiterWBAP_3Order", &ReconstructionDevicePlan::DoLimiterWBAP_3Order,
-                 py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr,
-                 "Synchronous CUDA limiter. Exchange coefficients between descending orders.")
-            .def("DoReconstructionIterTo", &ReconstructionDevicePlan::DoReconstructionIterTo,
-                 py::arg("engine"), py::arg("stream"), py::arg("mean"), py::arg("input"), py::arg("workspace"), py::arg("boundary"),
-                 py::arg("region") = ReconstructionRegion::All, py::arg("kernel") = ReconstructionDeviceKernel::FP64,
-                 "Enqueue CUDA Jacobi into temporary output. Caller orders all stream/halo dependencies; no inferred dependency checks.")
-            .def("DoLimiterWBAP_3OrderTo", &ReconstructionDevicePlan::DoLimiterWBAP_3OrderTo,
-                 py::arg("engine"), py::arg("stream"), py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr,
-                 py::arg("region") = ReconstructionRegion::All, py::arg("indicator") = nullptr, py::arg("threshold") = 0,
-                 "Enqueue one limiter order. Reuse of scratch across streams needs an explicit join.")
-            .def("CommitReconstruction", &ReconstructionDevicePlan::CommitReconstruction,
-                 "Enqueue temporary-to-coefficient commit on the given stream; synchronize before a host/MPI observation.")
-            .def("CheckStatus", &ReconstructionDevicePlan::CheckStatus);
         py::class_<DistributedSamplingWorkspace>(m, "DistributedSamplingWorkspace")
             .def_property_readonly("donorValues", [](DistributedSamplingWorkspace &work)
                                    { return Runtime::PythonArray::Share(work.donorValues); });
@@ -227,41 +183,60 @@ namespace DNDS::CFV
             .def("GetInverseDiagnostics", &VariationalReconstructionPlan::GetInverseDiagnostics)
             .def("GetCellInverseDiagnostics", &VariationalReconstructionPlan::GetCellInverseDiagnostics)
             .def("Validate", &VariationalReconstructionPlan::Validate)
+            .def("Place", &VariationalReconstructionPlan::Place,
+                 py::arg("device"), py::arg("context"), py::arg("options") = ReconstructionResidencyOptions{},
+                 "Return the same logical CFV plan placed on the requested backend. CUDA setup is explicit and synchronous.")
+            .def("Device", &VariationalReconstructionPlan::Device)
+            .def("SupportsKernel", &VariationalReconstructionPlan::SupportsKernel)
+            .def("ResidentBuffers", &VariationalReconstructionPlan::ResidentBuffers)
             .def("BuildWorkspace", py::overload_cast<index, std::vector<index>>(&VariationalReconstructionPlan::BuildWorkspace, py::const_),
                  py::arg("components"), py::arg("periodicVectorStarts") = std::vector<index>{})
             .def("BuildWorkspaceWithLayout", py::overload_cast<index, Runtime::RowLayout, std::vector<index>>(&VariationalReconstructionPlan::BuildWorkspace, py::const_),
                  py::arg("components"), py::arg("prototype"), py::arg("periodicVectorStarts") = std::vector<index>{})
             .def("BuildBoundaryValues", &VariationalReconstructionPlan::BuildBoundaryValues)
+            .def("PlaceBoundaryValues", &VariationalReconstructionPlan::PlaceBoundaryValues)
             .def("NumBoundaryQuadrature", &VariationalReconstructionPlan::NumBoundaryQuadrature)
             .def("GetBoundaryQuadrature", &VariationalReconstructionPlan::GetBoundaryQuadrature)
             .def("BuildFaceTransform", &VariationalReconstructionPlan::BuildFaceTransform)
+            .def("PlaceFaceTransform", &VariationalReconstructionPlan::PlaceFaceTransform)
             .def("FinalizeFaceTransform", &VariationalReconstructionPlan::FinalizeFaceTransform,
                  "Validate and publish matrices after filling from cell means; any later write requires re-finalization.")
             .def("DoReconstructionIter", &VariationalReconstructionPlan::DoReconstructionIter,
-                 "One synchronous CPU sweep. Release Python array views and refresh input halos first.")
+                 py::arg("mean"), py::arg("workspace"), py::arg("boundary"),
+                 py::arg("kernel") = ReconstructionDeviceKernel::FP64,
+                 "One synchronous backend-resolved sweep and commit. Release Python aliases and refresh input halos first.")
             .def("DoReconstructionIterTo", &VariationalReconstructionPlan::DoReconstructionIterTo,
                  py::arg("mean"), py::arg("input"), py::arg("workspace"), py::arg("boundary"), py::arg("region") = ReconstructionRegion::All)
+            .def("SubmitReconstructionIterTo", &VariationalReconstructionPlan::SubmitReconstructionIterTo,
+                 py::arg("engine"), py::arg("stream"), py::arg("mean"), py::arg("input"), py::arg("workspace"), py::arg("boundary"),
+                 py::arg("region") = ReconstructionRegion::All, py::arg("kernel") = ReconstructionDeviceKernel::FP64,
+                 "Enqueue one backend-resolved reconstruction sweep. The operation retains all Array owners through completion.")
             .def("DoReconstructionIterLimitedTo", &VariationalReconstructionPlan::DoReconstructionIterLimitedTo,
                  py::arg("mean"), py::arg("input"), py::arg("workspace"), py::arg("boundary"), py::arg("target"), py::arg("alpha"),
                  py::arg("region") = ReconstructionRegion::All,
                  "CPU A-weighted penalty sweep. Freeze finite target and alpha in [0,1]; refresh input halos before dependent work and commit only after all rows finish.")
             .def("CommitReconstruction", &VariationalReconstructionPlan::CommitReconstruction)
-            .def("DoLimiterWBAP_3Order", &VariationalReconstructionPlan::DoLimiterWBAP_3Order,
-                 py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr,
-                 "Call in descending order with a coefficient halo exchange after each order.")
-            .def("DoLimiterWBAP_3OrderTo", &VariationalReconstructionPlan::DoLimiterWBAP_3OrderTo,
-                 py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr,
-                 py::arg("region") = ReconstructionRegion::All,
-                 py::arg("indicator") = nullptr, py::arg("threshold") = 0)
+            .def("SubmitCommitReconstruction", &VariationalReconstructionPlan::SubmitCommitReconstruction,
+                 py::arg("engine"), py::arg("stream"), py::arg("workspace"),
+                 "Enqueue temporary-to-coefficient publication on the selected backend stream.")
+            .def("DoLimiterWBAP_3Order", [](const VariationalReconstructionPlan &plan, ReconstructionWorkspace &work, int order, const FaceCharacteristicTransform *transform)
+                 { plan.DoLimiterWBAP_3Order(work, order, transform ? FaceCharacteristicTransformRef(std::cref(*transform)) : std::nullopt); }, py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr, "Call in descending order with a coefficient halo exchange after each order.")
+            .def("DoLimiterWBAP_3OrderTo", [](const VariationalReconstructionPlan &plan, ReconstructionWorkspace &work, int order, const FaceCharacteristicTransform *transform, ReconstructionRegion region, const Runtime::Array<real> *indicator, real threshold)
+                 { plan.DoLimiterWBAP_3OrderTo(work, order,
+                                               transform ? FaceCharacteristicTransformRef(std::cref(*transform)) : std::nullopt,
+                                               region, indicator, threshold); }, py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr, py::arg("region") = ReconstructionRegion::All, py::arg("indicator") = nullptr, py::arg("threshold") = 0)
+            .def("SubmitLimiterWBAP_3OrderTo", [](const VariationalReconstructionPlan &plan, Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, ReconstructionWorkspace &work, int order, const FaceCharacteristicTransform *transform, ReconstructionRegion region, const Runtime::Array<real> *indicator, real threshold)
+                 { plan.SubmitLimiterWBAP_3OrderTo(engine, stream, work, order,
+                                                   transform ? FaceCharacteristicTransformRef(std::cref(*transform)) : std::nullopt,
+                                                   region, indicator, threshold); }, py::arg("engine"), py::arg("stream"), py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr, py::arg("region") = ReconstructionRegion::All, py::arg("indicator") = nullptr, py::arg("threshold") = 0, "Enqueue one descending limiter order through the common CFV plan.")
+            .def("BindHalo", &VariationalReconstructionPlan::BindHalo, py::arg("field"), py::arg("transport") = Runtime::TransferTransport::Direct, py::arg("options") = Runtime::TransferOptions{}, "Collective payload binding for this plan placement; explicitly order consumers after transfer completion.")
+            .def("CheckStatus", &VariationalReconstructionPlan::CheckStatus)
             .def("Evaluate", &VariationalReconstructionPlan::Evaluate)
             .def("EvaluateDerivative", &VariationalReconstructionPlan::EvaluateDerivative)
             .def("GetCachedFaceBasis", &VariationalReconstructionPlan::GetCachedFaceBasis)
-            .def("ApplyLinearOperator", &VariationalReconstructionPlan::ApplyLinearOperator,
-                 py::arg("coefficients"), py::arg("output"), py::arg("periodicVectorStarts") = std::vector<index>{})
-            .def("BuildRightHandSide", &VariationalReconstructionPlan::BuildRightHandSide,
-                 py::arg("mean"), py::arg("boundary"), py::arg("output"), py::arg("periodicVectorStarts") = std::vector<index>{})
-            .def("ComputeResidual", &VariationalReconstructionPlan::ComputeResidual,
-                 py::arg("rhs"), py::arg("coefficients"), py::arg("output"), py::arg("periodicVectorStarts") = std::vector<index>{})
+            .def("ApplyLinearOperator", &VariationalReconstructionPlan::ApplyLinearOperator, py::arg("coefficients"), py::arg("output"), py::arg("periodicVectorStarts") = std::vector<index>{})
+            .def("BuildRightHandSide", &VariationalReconstructionPlan::BuildRightHandSide, py::arg("mean"), py::arg("boundary"), py::arg("output"), py::arg("periodicVectorStarts") = std::vector<index>{})
+            .def("ComputeResidual", &VariationalReconstructionPlan::ComputeResidual, py::arg("rhs"), py::arg("coefficients"), py::arg("output"), py::arg("periodicVectorStarts") = std::vector<index>{})
             .def("ApplyLocalPreconditioner", &VariationalReconstructionPlan::ApplyLocalPreconditioner);
         py::class_<InterfaceSamplingPlan>(m, "InterfaceSamplingPlan")
             .def(py::init<VariationalReconstructionPlan, Geom::InterfacePointMap>())

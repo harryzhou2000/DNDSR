@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/Core/Domain.hpp"
+#include "Cauchy/IO/EquationArchive.hpp"
 #include "../Geom/NativeMeshOverlapFixture.hpp"
 #include "DNDS/Runtime/Array/ArrayIO.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
@@ -72,8 +73,15 @@ namespace
         serializer->ReadReal("accepted_time", result.time);
         serializer->ReadIndex("accepted_step", result.step);
         auto ids = R::ReadArray<I>(serializer, "cell_ids", mpi, region);
-        auto flow = R::ReadArray<double>(serializer, "flow", mpi, region);
-        auto coefficients = R::ReadArray<double>(serializer, "reconstruction_guess", mpi, region);
+        std::string metadataText;
+        serializer->ReadString("metadata_json", metadataText);
+        const auto metadata = C::Json::parse(metadataText);
+        auto state = C::EquationArchive::Read(serializer, "state_field_", metadata.at("state_storage"), mpi, region);
+        auto reconstruction = C::EquationArchive::Read(serializer, "reconstruction_field_", metadata.at("reconstruction_storage"), mpi, region);
+        REQUIRE(state.fields.size() == 1);
+        REQUIRE(reconstruction.fields.size() == 1);
+        auto flow = std::move(state.fields[0]);
+        auto coefficients = std::move(reconstruction.fields[0]);
         auto history = R::ReadArray<double>(serializer, "limited_vr_history", mpi, region);
         serializer->CloseFile();
         const auto idRead = ids.Read();

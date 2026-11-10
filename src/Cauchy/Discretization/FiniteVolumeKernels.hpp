@@ -119,10 +119,20 @@ namespace DNDS::Cauchy::EquationFVDetail
     };
     inline void BoundaryValue(PointScratch &point, index flowFirst, index speciesFirst, int independent,
                               const FiniteVolumeDetail::Sample &sample, EquationPointEvaluator &evaluator,
-                              const RigidFrame &frame, real time, bool exterior, RANSBoundaryInput rans = {})
+                              const RigidFrame &frame, real time, bool exterior, RANSBoundaryInput rans = {},
+                              RHSScalarView incoming = {})
     {
         const int components = rans.model ? rans.model->ComponentNumber() : 0;
         DNDS_check_throw_info((rans.first >= 0) == bool(components), "boundary RANS block/model differs");
+        if (sample.boundary.kind == BoundaryKind::Interface)
+        {
+            DNDS_check_throw_info(incoming.data && !independent && !components && sample.boundaryPoint >= 0 &&
+                                      sample.boundaryPoint < incoming.RowCount(),
+                                  "interface boundary needs a complete flow5 packet");
+            for (int j = 0; j < 5; ++j)
+                point.values[flowFirst + j] = incoming(sample.boundaryPoint, j);
+            return;
+        }
         const bool twoEquationWall = components == 2 && sample.boundary.kind == BoundaryKind::NoSlipWall;
         DNDS_check_throw_info(!twoEquationWall || (rans.mean && std::isfinite(rans.meanWallDistance) && rans.meanWallDistance > 0),
                               "two-equation wall needs cell mean and positive mean wall distance");

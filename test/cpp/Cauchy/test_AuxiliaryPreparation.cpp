@@ -421,9 +421,12 @@ TEST_CASE("Synchronous residual joins queued auxiliary work before a controller 
     C::FiniteVolume fv(mesh, settings, equation);
     auto state = fv.Metrics().BuildField(5), reference = fv.Metrics().BuildField(5), result = fv.Metrics().BuildField(5);
     Initialize(fv, state, equation);
-    auto work = fv.BuildWorkspace(state), referenceWork = fv.BuildWorkspace(state);
+    auto logical = C::EquationDofs::Coupled(equation.Schema(), state);
+    auto referenceLogical = C::EquationDofs::Coupled(equation.Schema(), reference);
+    auto resultLogical = C::EquationDofs::Coupled(equation.Schema(), result);
+    auto work = fv.BuildWorkspace(logical), referenceWork = fv.BuildWorkspace(logical);
     R::EagerEngine baseline;
-    fv.Evaluate(state, reference, *referenceWork, baseline, baseline.CreateCPUStream());
+    fv.Evaluate(logical, referenceLogical, *referenceWork, baseline, baseline.CreateCPUStream());
     auto launcher = std::make_shared<RejectAuxiliaryDependent>();
     R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
     const auto stream = engine.CreateStream(launcher);
@@ -437,7 +440,7 @@ TEST_CASE("Synchronous residual joins queued auxiliary work before a controller 
             launcher->cancel = true;
         }
         launcher->Release(); });
-    CHECK_THROWS(fv.Evaluate(state, result, *work, engine, stream));
+    CHECK_THROWS(fv.Evaluate(logical, resultLogical, *work, engine, stream));
     // A missing join fails safely: skip the delayed body before permitting the
     // worker to resume, instead of intentionally dereferencing expired leases.
     if (!launcher->ObservedJoin())
@@ -450,16 +453,16 @@ TEST_CASE("Synchronous residual joins queued auxiliary work before a controller 
     CHECK(launcher->rejected);
     CHECK(launcher->ObservedJoin());
     CHECK(launcher->coreCompleted);
-    CHECK_THROWS(fv.PreparedAuxValues(*work));
+    CHECK_THROWS(fv.FluxReconstruction(*work).ReadOwned());
     {
         auto released = state.Owned().Write();
         released.CancelUnmodified();
     }
-    CHECK_THROWS_WITH(fv.Evaluate(state, result, *work, engine, stream), doctest::Contains("failed allocation must be replaced"));
+    CHECK_THROWS_WITH(fv.Evaluate(logical, resultLogical, *work, engine, stream), doctest::Contains("failed allocation must be replaced"));
     // Runtime poisons partial write allocations during exception unwinding.
     // Keep the accepted input and engine, but replace failed numerical scratch.
-    work = fv.BuildWorkspace(state);
-    REQUIRE_NOTHROW(fv.Evaluate(state, result, *work, engine, stream));
+    work = fv.BuildWorkspace(logical);
+    REQUIRE_NOTHROW(fv.Evaluate(logical, resultLogical, *work, engine, stream));
     const auto expected = reference.Owned().Read(), actual = result.Owned().Read();
     for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
         for (int j = 0; j < 5; ++j)

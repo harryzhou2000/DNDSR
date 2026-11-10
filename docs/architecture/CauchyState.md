@@ -215,12 +215,14 @@ output value changes.
 
 ## Current physical dispatch and explicit limits
 
-`FiniteVolume::BuildEquationWorkspace(EquationDofs&, ...)` and `Evaluate(EquationDofs&,
+`FiniteVolume::BuildWorkspace(EquationDofs&, ...)` and `Evaluate(EquationDofs&,
 ...)` validate exact semantic schema, native row/storage identity and backend
 outside cell loops. `EquationSystem::ResolveKernelProfile()` distinguishes
 perfect-gas and ideal-mixture CPU models; this key alone does not promise every
-spatial/time operator exists for that model. FV has the established perfect-gas
-adapter and the explicit whole-equation mixture profile described below.
+spatial/time operator exists for that model. FV has one schema-driven workspace
+and evaluation schedule. A perfect-gas flow5 operator may resolve a fixed-width
+leaf kernel, but Domain, time stepping, multigrid, restart, output and Python do
+not select a second flow5 frontend.
 Requesting another device fails explicitly,
 without host fallback. In checked execution a rank-local schema mismatch is
 coordinated before communication. FV entry/preparation stages inherit the
@@ -229,10 +231,15 @@ local failures abort before dependent collective/payload work. Successful local
 stages add no safety agreement. This applies to whole-equation mean-gradient,
 auxiliary, reconstruction and restore stages too; it is not a promise of
 recoverable unchecked distributed exceptions.
-The raw-field overload remains the trusted compressible stage/scratch adapter.
+The explicitly named `Flow5KernelWorkspace` API remains only for frozen kernel
+comparisons while its fixed-width arithmetic moves behind prepared operators.
+Native Cauchy consumers do not call it or select it. The single `Workspace`
+still resolves an internal compatibility sub-workspace for the unmigrated
+features listed below; that temporary whole-loop bridge is not Plan 59 closure.
 
-The Domain frontend uses the semantic binding. Perfect gas retains its established
-path. Configured ideal mixtures use separate flow/species arrays, whole-equation
+The Domain frontend always uses the semantic binding. Perfect gas may select
+established fixed-width arithmetic inside an operator. Configured ideal mixtures
+use separate flow/species arrays, whole-equation
 FV/implicit stages, dynamic reports and full-state publication. Native checkpoint
 and output preserve all logical components; the independent mean trial also
 supports whole-equation physical-dt PP. Polynomial FAS preserves all logical
@@ -240,7 +247,17 @@ blocks through the shared hierarchy. Extended interface packets and explicit
 flux blending still require adapters. Explicit extended stages instead use
 uncompressed flow5/species residuals and reject the whole trial when
 inadmissible. Separate RANS exponential repair is permitted without rescaling
-those components. `CoupledField()` explicitly
+those components.
+
+CFV reconstruction and limiting are prepared per physical allocation, not per
+logical equation block. A combined equation allocation therefore makes one CFV
+call; segmented flow/RANS/species allocations make one call per allocation so
+each keeps its own layout and halo. Characteristic WBAP uses CFV's ranged face
+transform: Cauchy supplies only the physical flow block's local `[first,first+5)`
+range and a 5x5 matrix. Components outside that range, including RANS and
+species, remain ordinary scalar WBAP channels; no full-state identity matrix is
+formed. The same rule supports a permuted flow block in a combined allocation.
+`CoupledField()` explicitly
 refuses split or permuted physical segments instead of silently flattening them. Generic mock
 tests exercise 17/21-component coupled BDF/block solves and separate physical
 bindings; those tests are not RANS, species or incompressible implementations.
@@ -300,9 +317,9 @@ production BC, PP, physical Jacobian assembly or RANS/species validation.
 
 ## Equation-state finite volume
 
-`FiniteVolume::BuildEquationWorkspace(state, optionalWorkers)` uses the same
+`FiniteVolume::BuildWorkspace(state, optionalWorkers)` owns the canonical
 immutable metrics, geometry, face incidences, work partition, basis provider and
-CFV plans as the established flow5 workspace. Each physical input field gets
+CFV plans. Each physical input field gets
 its own reconstruction buffers and halo bindings; logical flow/species views
 retain their parent strides and physical offsets. No distributed state is
 flattened into a coupled temporary array. Coefficient block widths and physical
@@ -375,10 +392,11 @@ schema, grouping and schedule agreement and numerical norms remain collective.
 This does not change the separate nonlinear driver's caller-ordered contract.
 
 This is a functional residual path, not a completed extended production Domain.
-It explicitly rejects face fallback, characteristic WBAP, other prepared
-Riemann profiles, a distinct unlimited viscous polynomial, and non-wall/non-
-extrapolate BC producers until connected. The established flow5 path retains
-its existing capabilities. Euler-style thermal/species PP now composes with the
+Face fallback and ranged flow5 characteristic WBAP now use the native equation
+workspace for combined or segmented perfect-gas fields. Prepared Riemann
+stencils, a distinct unlimited viscous polynomial, LVR, and non-wall/non-
+extrapolate BC producers remain on the compatibility path until connected.
+Euler-style thermal/species PP now composes with the
 equation-state residual and nonlinear stages; see
 [CauchyImplicit.md](CauchyImplicit.md#equation-state-thermal-and-species-pp).
 Extended restart and visualization support is described below; frontend adapters
@@ -802,8 +820,14 @@ Domain connects the extended BC/PP and checkpoint paths. The physical
 Jacobian and whole-equation nonlinear stage operator now compose with the logical
 linear/time drivers; see [CauchyImplicit.md](CauchyImplicit.md#whole-equation-cpu-nonlinear-adapter).
 The production executable now uses DNDS MPI lifecycle helpers,
-the shared segmented CSV writer, and argparse overrides through the existing
-resolved-configuration/provenance API. See the [case guide](../../cases/cauchy/README.md)
+the shared `DNDS::CsvLog` typed-schema/typed-row segmented CSV writer, and
+argparse overrides through the existing resolved-configuration/provenance API.
+One `ProgressOutputController` constructs iteration, stage-end and accepted-step
+rows and console messages at their safe frontend boundaries. History stores the
+current named residual components, not the solver-internal initial/reference
+normalization vectors. `output.historyPrecision` controls real-cell precision
+and defaults to Euler's compact value of 10; absent fields remain empty cells.
+See the [case guide](../../cases/cauchy/README.md)
 for override paths, restart and history segment conventions. Python Domain and
 Simulation use the same native operators; standalone operator-level Python
 coverage remains incomplete. The physical source/implicit-reactor fixtures do not qualify a full
@@ -858,7 +882,7 @@ componentwise WBAP when enabled, polynomial viscous gradients and optional
 configuration/frontend does not infer another numerical profile from defaults.
 
 Domain stepping uses the same EquationTimeStepper for every logical component;
-implicit stages use EquationNonlinearSolver and explicit SSPRK uses full-state
+implicit stages use NonlinearSolver and explicit SSPRK uses full-state
 updates. Shared/split physical arrays remain unflattened, and publication reserves
 all destination fields before any accepted value changes. A species-only retained
 view blocks the entire publication. ResidualState returns every residual block;

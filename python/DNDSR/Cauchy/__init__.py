@@ -6,8 +6,8 @@ preload("cauchy")
 
 from ._ext.cauchy_pybind11 import Domain, Simulation, StepResult, InterfaceDiagnostics, NonlinearIterationReport, PhysicalStepLimit, DerivedFields, DerivedQuantity
 from ._ext.cauchy_pybind11 import (EquationDofs, EquationOperators, AuxiliaryRequest,
-                                  AuxiliaryValues, MeanGradients, EquationWorkspace,
-                                  EquationMeanWorkspace, DiagonalStorage, OffDiagonalStorage,
+                                  AuxiliaryValues, MeanGradients, Workspace,
+                                  MeanWorkspace, DiagonalStorage, OffDiagonalStorage,
                                   LinearRegion, JacobianPreparation, LinearProblem,
                                   LinearSolveSettings, LinearExecution, LinearIterationReport, LinearStop,
                                   EquationLinearSolver, EquationSGSIteration,
@@ -16,7 +16,7 @@ from ._ext.cauchy_pybind11 import (EquationDofs, EquationOperators, AuxiliaryReq
 
 __all__ = ["Domain", "Simulation", "StepResult", "InterfaceDiagnostics", "NonlinearIterationReport", "PhysicalStepLimit", "DerivedFields", "DerivedQuantity"]
 __all__ += ["EquationDofs", "EquationOperators", "AuxiliaryRequest", "AuxiliaryValues",
-            "MeanGradients", "EquationWorkspace", "EquationMeanWorkspace",
+            "MeanGradients", "Workspace", "MeanWorkspace",
             "DiagonalStorage", "OffDiagonalStorage", "LinearRegion",
             "JacobianPreparation", "LinearProblem", "LinearSolveSettings",
             "LinearExecution", "LinearIterationReport", "LinearStop", "EquationLinearSolver",

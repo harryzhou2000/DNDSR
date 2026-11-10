@@ -187,13 +187,13 @@ TEST_CASE("Equation mean trial and thermal dt preserve all block layouts and the
         }
     }
     auto rhs = C::EquationDofOperations::NewVector(state);
-    auto regular = fv.BuildEquationWorkspace(state, setup.workers);
+    auto regular = fv.BuildWorkspace(state, setup.workers);
     const auto &guess = fv.ReconstructionGuess(*regular);
     auto seed = C::EquationDofOperations::NewVector(guess);
     C::EquationDofOperations::Fill(seed, .0001);
     fv.RestoreReconstructionGuess(*regular, seed);
     const C::EquationDofOperations::Binding before(state), warm(guess);
-    auto meanWork = fv.BuildEquationMeanWorkspace(state, setup.workers);
+    auto meanWork = fv.BuildMeanWorkspace(state, setup.workers);
     R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
     const auto stream = engine.CreateCPUStream();
     fv.EvaluateMean(state, rhs, *meanWork, engine, stream);
@@ -222,7 +222,7 @@ TEST_CASE("Equation mean trial and thermal dt preserve all block layouts and the
         }
     }
     auto expected = C::EquationDofOperations::NewVector(referenceState);
-    auto referenceWork = reference.BuildEquationWorkspace(referenceState, setup.workers);
+    auto referenceWork = reference.BuildWorkspace(referenceState, setup.workers);
     reference.Evaluate(referenceState, expected, *referenceWork, engine, stream);
     {
         const auto a = rhs.ReadOwned(), b = expected.ReadOwned();
@@ -362,22 +362,19 @@ TEST_CASE("Typed mean residual skips VR and filtering without modifying the norm
                     write.View<R::UniformTableRows>()(iCell, j) = value[j];
             }
         }
-        auto regular = fv.BuildWorkspace(state);
-        const auto &guess = fv.ReconstructionGuess(*regular).Owned();
-        R::Array<double> seed(guess.Layout());
-        {
-            auto write = seed.Write();
-            for (DNDS::index iCell = 0; iCell < seed.RowCount(); ++iCell)
-                for (DNDS::index j = 0; j < seed.RowSize(iCell); ++j)
-                    write.View<R::UniformTableRows>()(iCell, j) = .01;
-        }
+        auto logical = C::EquationDofs::Coupled(equation.Schema(), state);
+        auto output = C::EquationDofs::Coupled(equation.Schema(), residual);
+        auto regular = fv.BuildWorkspace(logical);
+        const auto &guess = fv.ReconstructionGuess(*regular);
+        auto seed = C::EquationDofOperations::NewVector(guess);
+        C::EquationDofOperations::Fill(seed, .01);
         fv.RestoreReconstructionGuess(*regular, seed);
-        const auto guessVersion = guess.Version(), meanVersion = state.Owned().Version();
-        auto work = fv.BuildMeanWorkspace(state);
+        const auto guessVersion = guess.CoupledField().Owned().Version(), meanVersion = state.Owned().Version();
+        auto work = fv.BuildMeanWorkspace(logical);
         R::EagerEngine engine(scenario ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
-        fv.EvaluateMean(state, residual, *work, engine, stream);
-        CHECK(guess.Version() == guessVersion);
+        fv.EvaluateMean(logical, output, *work, engine, stream);
+        CHECK(guess.CoupledField().Owned().Version() == guessVersion);
         CHECK(state.Owned().Version() == meanVersion);
         CHECK(fv.LastReconstructionIterations(*regular) == 0);
         auto referenceSettings = settings;
@@ -395,8 +392,10 @@ TEST_CASE("Typed mean residual skips VR and filtering without modifying the norm
                 for (int j = 0; j < 5; ++j)
                     write.View<R::UniformTableRows>()(iCell, j) = read.View<R::UniformTableRows>()(iCell, j);
         }
-        auto referenceWork = reference.BuildWorkspace(referenceState);
-        reference.Evaluate(referenceState, expected, *referenceWork, engine, stream);
+        auto referenceLogical = C::EquationDofs::Coupled(reference.Equation().Schema(), referenceState);
+        auto expectedLogical = C::EquationDofs::Coupled(reference.Equation().Schema(), expected);
+        auto referenceWork = reference.BuildWorkspace(referenceLogical);
+        reference.Evaluate(referenceLogical, expectedLogical, *referenceWork, engine, stream);
         if (equation.Viscous())
         {
             // The real viscous residual differs on this nonconstant thermal
@@ -412,8 +411,10 @@ TEST_CASE("Typed mean residual skips VR and filtering without modifying the norm
                     for (int j = 0; j < 5; ++j)
                         write.View<R::UniformTableRows>()(iCell, j) = read.View<R::UniformTableRows>()(iCell, j);
             }
-            auto viscousWork = viscous.BuildWorkspace(values);
-            viscous.Evaluate(values, output, *viscousWork, engine, stream);
+            auto viscousState = C::EquationDofs::Coupled(equation.Schema(), values);
+            auto viscousOutput = C::EquationDofs::Coupled(equation.Schema(), output);
+            auto viscousWork = viscous.BuildWorkspace(viscousState);
+            viscous.Evaluate(viscousState, viscousOutput, *viscousWork, engine, stream);
             double difference = 0;
             {
                 const auto meanRHS = residual.Owned().Read(), viscousRHS = output.Owned().Read();
@@ -423,7 +424,7 @@ TEST_CASE("Typed mean residual skips VR and filtering without modifying the norm
             MPI_Allreduce(MPI_IN_PLACE, &difference, 1, MPI_DOUBLE, MPI_SUM, mpi.comm);
             CHECK(difference > 1e-4);
         }
-        const auto actual = residual.Owned().Read(), oracle = expected.Owned().Read(), rec = guess.Read();
+        const auto actual = residual.Owned().Read(), oracle = expected.Owned().Read(), rec = guess.CoupledField().Owned().Read();
         std::array<double, 2> error{};
         for (DNDS::index iCell = 0; iCell < state.Owned().RowCount(); ++iCell)
         {
@@ -434,19 +435,16 @@ TEST_CASE("Typed mean residual skips VR and filtering without modifying the norm
                 error[0] = std::isfinite(difference) ? std::max(error[0], difference) : std::numeric_limits<double>::infinity();
                 error[1] = std::max({error[1], std::abs(left), std::abs(right)});
             }
-            for (DNDS::index j = 0; j < guess.RowSize(iCell); ++j)
+            for (DNDS::index j = 0; j < guess.CoupledField().Owned().RowSize(iCell); ++j)
                 CHECK(rec.View<R::UniformTableRows>()(iCell, j) == .01);
         }
         CheckFlatMeanIntegral(error, "flow5");
         if (mpi.size > 1)
         {
-            CHECK_THROWS([&]
-                         {
-                if (mpi.rank == 0) fv.BuildMeanWorkspace(state);
-                else fv.BuildWorkspace(state); }());
-            C::AuxiliaryRequest different;
-            different.cellWaveJump = mpi.rank == 0;
-            CHECK_THROWS(fv.BuildWorkspace(state, different));
+            const C::FiniteVolume::WorkspaceOptions different(
+                mpi.rank == 0 ? C::FiniteVolume::RHSKernelPolicy::Generic
+                              : C::FiniteVolume::RHSKernelPolicy::Auto);
+            CHECK_THROWS(fv.BuildWorkspace(logical, std::nullopt, different));
         }
     }
 }

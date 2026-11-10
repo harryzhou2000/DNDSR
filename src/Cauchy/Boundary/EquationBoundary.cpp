@@ -1,5 +1,6 @@
 #include "Cauchy/Boundary/BoundarySystem.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/FlowProfile.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -7,17 +8,29 @@ namespace DNDS::Cauchy
     {
         DNDS_check_throw_info(kind == BoundaryKind::Extrapolate || kind == BoundaryKind::Farfield ||
                                   kind == BoundaryKind::SlipWall || kind == BoundaryKind::NoSlipWall ||
-                                  (kind == BoundaryKind::Analytic && profile.kind == "constant"),
+                                  kind == BoundaryKind::Interface ||
+                                  (kind == BoundaryKind::Analytic &&
+                                   (profile.kind == "constant" || hasPerfectGasState)),
                               "requested equation-state boundary producer is not connected");
     }
     namespace
     {
         FlowState EquationValue(const BoundaryCondition &condition, EquationPointEvaluator &evaluator,
                                 const FlowState &inside, Physics::Chemistry::SpeciesBufferView rhoY,
-                                const Vector3 &normal, const Vector3 &point, const RigidFrame *frame, bool exterior)
+                                const Vector3 &normal, const Vector3 &point, real time,
+                                const RigidFrame *frame, bool exterior)
         {
             if (condition.kind == BoundaryKind::Extrapolate)
                 return inside;
+            if (condition.kind == BoundaryKind::Analytic && condition.profile.kind != "constant")
+            {
+                DNDS_assert_info(condition.hasPerfectGasState && !rhoY.nSpecies,
+                                 "nonconstant analytic boundary requires a perfect-gas flow5 profile");
+                const auto value = ProfileValue(condition.profile, condition.prescribedPrimitive,
+                                                evaluator.PerfectGasModel(),
+                                                frame ? frame->WorldPoint(point) : point, time);
+                return frame ? frame->LocalState(value) : value;
+            }
             if (condition.kind == BoundaryKind::Farfield || condition.kind == BoundaryKind::Analytic)
             {
                 DNDS_check_throw_info(condition.prescribedFractions.size() == size_t(rhoY.nSpecies), "boundary composition extent differs from point state");
@@ -92,14 +105,14 @@ namespace DNDS::Cauchy
     }
     FlowState BoundaryCondition::FaceValue(EquationPointEvaluator &evaluator, const FlowState &inside,
                                            Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
-                                           const Vector3 &point, real, const RigidFrame *frame) const
+                                           const Vector3 &point, real time, const RigidFrame *frame) const
     {
-        return EquationValue(*this, evaluator, inside, rhoY, normal, point, frame, false);
+        return EquationValue(*this, evaluator, inside, rhoY, normal, point, time, frame, false);
     }
     FlowState BoundaryCondition::Exterior(EquationPointEvaluator &evaluator, const FlowState &inside,
                                           Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
-                                          const Vector3 &point, real, const RigidFrame *frame) const
+                                          const Vector3 &point, real time, const RigidFrame *frame) const
     {
-        return EquationValue(*this, evaluator, inside, rhoY, normal, point, frame, true);
+        return EquationValue(*this, evaluator, inside, rhoY, normal, point, time, frame, true);
     }
 }

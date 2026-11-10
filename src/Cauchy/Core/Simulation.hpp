@@ -39,7 +39,11 @@ namespace DNDS::Cauchy
         /// domains. All accepted destinations are reserved before any domain
         /// publishes. Process failure recovery is unsupported. DITR currently
         /// retains its single-domain coupled-iteration driver.
-        [[nodiscard]] StepResult Advance(real dt);
+        /// If acceptedTime is present, it is the exact controller target for
+        /// this step (normally an output time or tEnd). The numerical solve
+        /// still uses dt; successful publication snaps every accepted clock to
+        /// the supplied target without accumulating an extra floating add.
+        [[nodiscard]] StepResult Advance(real dt, std::optional<real> acceptedTime = {});
         /// Parallel persistent-ID checkpoint on each domain communicator.
         /// A multi-domain HDF5 manifest references immutable child files and
         /// is published only after every domain write succeeds. Existing

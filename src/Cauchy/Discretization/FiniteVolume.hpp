@@ -16,6 +16,7 @@ namespace DNDS::Geom
 }
 #include "Geom/Access/EntityWorkPartition.hpp"
 #include <array>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -47,7 +48,8 @@ namespace DNDS::Cauchy
     /// exchange is performed by BeginAuxValues/EquationAuxiliaryPreparation.
     struct EquationAuxiliaryInputs
     {
-        const EquationMeanGradients *meanGradients = nullptr;
+        std::optional<std::reference_wrapper<const EquationMeanGradients>> meanGradients;
+        std::optional<std::reference_wrapper<const BoundaryInputs>> boundary;
     };
     /// Explicit result of physical-step selection. Alpha/count describe the PP
     /// bound before any independent growth cap or subsequent retry halving.
@@ -223,10 +225,23 @@ namespace DNDS::Cauchy
         void ValidateBoundaryLayout(const BoundaryInputs &input) const;
 
     public:
+        enum class RHSKernelPolicy
+        {
+            Auto,
+            Generic,
+            FixedFlow5
+        };
+        struct WorkspaceOptions
+        {
+            /// Resolve once during workspace construction. Generic is the
+            /// layout/physics-general CPU oracle; FixedFlow5 requires one
+            /// perfect-gas flow5 field and never changes the outer schedule.
+            RHSKernelPolicy rhsKernel;
+            constexpr explicit WorkspaceOptions(RHSKernelPolicy policy = RHSKernelPolicy::Auto)
+                : rhsKernel(policy) {}
+        };
         struct Workspace;
         struct MeanWorkspace;
-        struct EquationWorkspace;
-        struct EquationMeanWorkspace;
         /// Reserved synchronous warm-guess publication. Construction validates
         /// every input and retains its reads, destination writes and workspace.
         /// Commit performs only prevalidated copies; abandonment cancels the
@@ -262,9 +277,9 @@ namespace DNDS::Cauchy
         /// Reservation is memory-only. With collectiveChecks=false it performs
         /// no MPI; the caller must agree all reservations before any Commit.
         /// Simulation uses that mode for one cross-domain publication preflight.
-        ReconstructionRestore ReserveReconstructionRestore(std::shared_ptr<Workspace> workspace, const Runtime::Array<real> &coefficients,
-                                                           const Runtime::Array<real> *limitedVRHistory = nullptr, bool collectiveChecks = true) const;
-        ReconstructionRestore ReserveReconstructionRestore(std::shared_ptr<EquationWorkspace> workspace, const EquationDofs &guess, bool collectiveChecks = true) const;
+        ReconstructionRestore ReserveReconstructionRestore(std::shared_ptr<Workspace> workspace, const EquationDofs &guess,
+                                                           const Runtime::Array<real> *limitedVRHistory = nullptr,
+                                                           bool collectiveChecks = true) const;
         /// Full logical-state CPU workspace on the same geometry/CFV plans.
         /// Each physical field keeps its layout and shared row routing; no
         /// whole-state packing is performed. Matching schema/physical grouping
@@ -274,21 +289,24 @@ namespace DNDS::Cauchy
         /// componentwise WBAP, Euler quadrature PP, polynomial Newtonian/Fourier
         /// diffusion and optional mixture chemistry. Extrapolate, farfield,
         /// constant prescribed and adiabatic/isothermal wall producers use the
-        /// actual EOS. Face fallback, characteristic WBAP, other flux preparations,
-        /// interfaces and nonconstant analytic profiles are rejected here
-        /// until their equation-state implementations are connected. Existing
-        /// flow5 Workspace retains those established capabilities.
-        std::shared_ptr<EquationWorkspace> BuildEquationWorkspace(EquationDofs &state,
-                                                                  std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt) const;
+        /// actual EOS. Operator-local fixed-flow leaves retain established
+        /// flow5 arithmetic without a second workspace or execution loop.
+        std::shared_ptr<Workspace> BuildWorkspace(EquationDofs &state,
+                                                  std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
+                                                  WorkspaceOptions options = WorkspaceOptions()) const;
         /// Separate typed scratch for Euler's zero-reconstruction physical-dt
         /// trial. Shares geometry and kernels, never the ordinary warm guess.
         /// Includes configured volume/rotation sources, ignores viscous faces.
         /// RANS sources still require their actual molecular properties.
-        std::shared_ptr<EquationMeanWorkspace> BuildEquationMeanWorkspace(EquationDofs &state,
-                                                                          std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt) const;
+        std::shared_ptr<MeanWorkspace> BuildMeanWorkspace(EquationDofs &state,
+                                                          std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt) const;
         /// Local preflight of owner and bound state allocations. No numerical
         /// access, property refresh or communication occurs here.
-        void ValidateWorkspace(const EquationDofs &state, const EquationWorkspace &workspace) const;
+        void ValidateWorkspace(const EquationDofs &state, const Workspace &workspace) const;
+        /// Whether the prepared Jacobian operator set contains the established
+        /// fixed-flow Roe leaf. This is an operator capability query, not a
+        /// selection between solver orchestration paths.
+        bool HasRoeJacobianKernel(const Workspace &workspace) const;
         /// Integrated residual for every logical equation block. CPU controller
         /// entry is synchronous; mean/coefficient transfers overlap owned-only
         /// core work when configured. Caller serializes workspace/state handles
@@ -299,7 +317,7 @@ namespace DNDS::Cauchy
         /// agreements and aborts on local rejection; matching call order stays
         /// the caller's responsibility. Required setup protocols and numerical
         /// reductions remain. Access checking is an independent engine choice.
-        void Evaluate(EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace,
+        void Evaluate(EquationDofs &state, EquationDofs &residual, Workspace &workspace,
                       Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
         /// Prepare the requested auxiliary outputs during the mean exchange,
         /// before reconstruction/RHS. RHS reads this explicit publication;
@@ -307,41 +325,46 @@ namespace DNDS::Cauchy
         /// setup without recomputing and overwriting RHS-refined signals.
         /// Buffers must be distinct from state/residual and retained through
         /// this synchronous call. The no-aux overload retains its old scope.
-        void Evaluate(EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace,
+        void Evaluate(EquationDofs &state, EquationDofs &residual, Workspace &workspace,
                       AuxiliaryValues &auxiliary, Runtime::EagerEngine &engine,
                       const Runtime::ExecutionStream &stream, real time = 0) const;
         /// The same mean/gradient/reconstruction/limiter preparation as Evaluate,
         /// including completed halos, but no flux/source evaluation or dummy
         /// residual allocation. Use before independent EvaluateFlux/AddSource.
-        void PrepareReconstruction(EquationDofs &state, EquationWorkspace &workspace, Runtime::EagerEngine &engine,
+        void PrepareReconstruction(EquationDofs &state, Workspace &workspace, Runtime::EagerEngine &engine,
                                    const Runtime::ExecutionStream &stream, real time = 0) const;
+        void RefreshSamplingInputs(EquationDofs &state, Workspace &workspace, Runtime::EagerEngine &engine,
+                                   const Runtime::ExecutionStream &stream) const;
         /// Same synchronous collective/access contract as Evaluate. Only this
         /// trial's private scratch and distinct residual are written; state
         /// owned values and ordinary reconstruction are unchanged.
         /// This zero-polynomial physical-dt probe retains parent quadrature,
         /// as in Euler; it is not a separately configured P0 FV operator.
-        void EvaluateMean(EquationDofs &state, EquationDofs &residual, EquationMeanWorkspace &workspace,
+        void EvaluateMean(EquationDofs &state, EquationDofs &residual, MeanWorkspace &workspace,
                           Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
-        const EquationDofs &ReconstructionGuess(const EquationWorkspace &workspace) const;
+        const EquationDofs &ReconstructionGuess(const Workspace &workspace) const;
         /// Collective transactional owned warm-guess restore: finite-value and
         /// lease preflight precedes every write. No halo transfer/mean mutation.
         /// Caller joins workspace work and supplies a distinct snapshot.
-        void RestoreReconstructionGuess(EquationWorkspace &workspace, const EquationDofs &guess) const;
+        void RestoreReconstructionGuess(Workspace &workspace, const EquationDofs &guess,
+                                        const Runtime::Array<real> *limitedVRHistory = nullptr) const;
+        std::optional<Runtime::Array<real>> LimitedVRHistory(const Workspace &workspace) const;
+        std::optional<Runtime::Array<real>> LimitedVRAlpha(const Workspace &workspace) const;
         /// Local reset; caller coordinates failures and joins workspace work.
-        void ResetReconstruction(EquationWorkspace &workspace) const;
-        const EquationDofs &FluxReconstruction(const EquationWorkspace &workspace) const;
+        void ResetReconstruction(Workspace &workspace) const;
+        const EquationDofs &FluxReconstruction(const Workspace &workspace) const;
         /// Latest complete equation evaluation's global coefficient-update
         /// norm. No extra reduction occurs when reading these diagnostics.
         /// Fixed sweeps without a tolerance leave the update norm unmeasured
         /// (infinity); constant/gradient reconstruction reports zero.
-        int LastReconstructionIterations(const EquationWorkspace &workspace) const;
-        real LastReconstructionUpdate(const EquationWorkspace &workspace) const;
+        int LastReconstructionIterations(const Workspace &workspace) const;
+        real LastReconstructionUpdate(const Workspace &workspace) const;
         /// Owned-only polynomial projection. Standalone use starts from the
         /// unlimited guess; Evaluate preserves its preceding WBAP result.
         /// No halo transfer occurs here. Caller serializes workspace/state.
-        void LimitReconstructionPP(const EquationDofs &state, EquationWorkspace &workspace) const;
+        void LimitReconstructionPP(const EquationDofs &state, Workspace &workspace) const;
         /// Collective count/min snapshot; no implicit refresh or mutation.
-        std::pair<index, real> PositivityReconstructionStats(const EquationWorkspace &workspace) const;
+        std::pair<index, real> PositivityReconstructionStats(const Workspace &workspace) const;
         /// Whole-equation counterpart of AuxiliaryPreparation. Holds numeric
         /// input scopes and reserves optional output arrays before writing.
         /// Core reads owned inputs only; complete every input field's halo
@@ -367,7 +390,7 @@ namespace DNDS::Cauchy
         /// Synchronous CPU property preparation with explicit mixture workers.
         /// The caller owns collective order/error handling and halo completion;
         /// even an empty rank uses the same outer schedule. Boundary producers
-        /// match EquationWorkspace. Two-equation closures require a current
+        /// match Workspace. Two-equation closures require a current
         /// explicit mean-gradient publication; neither overload exchanges data.
         EquationAuxiliaryPreparation BeginAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time = 0,
                                                     std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
@@ -389,7 +412,8 @@ namespace DNDS::Cauchy
         /// a retained auxiliary publication stale and validation rejects it.
         void PrepareAuxValues(EquationDofs &state, AuxiliaryValues &output, EquationMeanGradients &gradients,
                               Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0,
-                              std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt) const;
+                              std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
+                              EquationAuxiliaryInputs inputs = {}) const;
         void ValidateAuxValues(const EquationDofs &state, const AuxiliaryValues &values, real time = 0) const;
         /// Copyable immutable read scope for RHS geometry/basis data. Apply is
         /// stateless: no MPI, reconstruction, cache update or hidden counters.
@@ -426,6 +450,11 @@ namespace DNDS::Cauchy
             /// ordered worker path or calls MPI from that worker.
             RHSKernelDiagnostics ApplyBorrowedFatal(const RHSReadViews &input, const RHSWriteViews &output,
                                                     CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0) const;
+            /// Production flux-only leaf used by the unified FV orchestration;
+            /// volume sources remain a separate equation operator. Kernel
+            /// invariant and disabled-fallback failures abort directly.
+            RHSKernelDiagnostics ApplyFluxBorrowedFatal(const RHSReadViews &input, const RHSWriteViews &output,
+                                                        CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0) const;
             /// Compatibility spelling for the checked borrowed-view entry.
             RHSKernelDiagnostics Apply(const RHSReadViews &input, const RHSWriteViews &output,
                                        CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0) const;
@@ -449,10 +478,10 @@ namespace DNDS::Cauchy
         /// from state and workspace arrays. A face buffer is optional and follows
         /// AuxiliaryFaces() with the same orientation as RHSWriteViews::faceFlux.
         /// Caller serializes workspace use and coordinates distributed failures.
-        void EvaluateFlux(const EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace,
+        void EvaluateFlux(const EquationDofs &state, EquationDofs &residual, Workspace &workspace,
                           CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0,
                           Runtime::Array<real> *faceFlux = nullptr, const AuxiliaryValues *auxiliary = nullptr) const;
-        void AddSource(const EquationDofs &state, EquationDofs &residual, EquationWorkspace &workspace, real time = 0) const;
+        void AddSource(const EquationDofs &state, EquationDofs &residual, Workspace &workspace, real time = 0) const;
         /// Allocate a fixed cell-face-cell matrix stencil using the prototype's
         /// native row space. No payload is copied from the prototype. Evaluated
         /// mode omits off-diagonal storage; PrepareJacobian supplies its frozen
@@ -490,7 +519,7 @@ namespace DNDS::Cauchy
                              const Runtime::Array<real> &inversePseudoTime, LinearProblemContext &output,
                              JacobianPreparation controls = {}, real time = 0,
                              std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
-                             const EquationWorkspace *sourceReconstruction = nullptr) const;
+                             const Workspace *sourceReconstruction = nullptr) const;
         FiniteVolume(ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const EquationSystem &equation);
         bool SharesPlan(const FiniteVolume &other) const { return _data && _data == other._data; }
         const CFV::FiniteVolumePlan &Metrics() const;
@@ -522,28 +551,23 @@ namespace DNDS::Cauchy
         /// Share a packet with another FV level only after proving identical
         /// boundary point order/geometry. No interpolation or payload copy.
         BoundaryInputs AliasBoundaryInputs(const BoundaryInputs &input) const;
+        /// Equation-orchestration entry. The initial interface implementation
+        /// is available for the operator-local perfect-gas flow5 specialization;
+        /// extended physical systems fail explicitly until their trace kernels
+        /// are supplied.
         void SetBoundaryInputs(Workspace &workspace, const BoundaryInputs &input) const;
         void SetBoundaryInputs(MeanWorkspace &workspace, const BoundaryInputs &input) const;
-        /// Additional channels are allocated once and fused into auxiliary
-        /// preparation. Implicit consumers request face/cell spectral values;
-        /// explicit consumers retain the minimal default packet. Collective:
-        /// domain ranks must request the same resolved channels/workspace mode.
-        std::shared_ptr<Workspace> BuildWorkspace(CFV::FVField &state, AuxiliaryRequest additional = {}) const;
-        /// Semantic frontend. Validate the equation profile and backend before
-        /// preparing persistent transfers. Initial kernels require one coupled
-        /// physical field; split bindings fail without flattening or copying.
-        std::shared_ptr<Workspace> BuildWorkspace(EquationDofs &state, AuxiliaryRequest additional = {}) const;
-        /// Separate typed scratch for Euler's zero-reconstruction physical-dt
-        /// trial. It cannot be supplied to a nonlinear reconstruction solve.
-        std::shared_ptr<MeanWorkspace> BuildMeanWorkspace(CFV::FVField &state) const;
-        /// Check allocation capability before the first Evaluate. This does not
-        /// certify prepared values or input provenance; PreparedAuxValues does.
-        void RequireWorkspaceChannels(const Workspace &workspace, AuxiliaryRequest required) const;
         /// Allocate the requested members once. Cell reductions without matching
         /// face outputs also need private face scratch. Callers may instead
         /// supply compatible buffers themselves, including strided tables;
         /// BeginAuxValues lazily allocates their missing private scratch once.
         AuxiliaryValues BuildAuxiliaryValues(AuxiliaryRequest request) const;
+        /// Add every auxiliary channel required by the configured RHS flux to
+        /// a caller's explicit request. BuildAuxiliaryValues remains an exact
+        /// allocator; RHS callers use this union so an independently requested
+        /// spectral/dTau bundle cannot omit H-correction or pressure-stencil
+        /// inputs consumed by the same numerical operator.
+        AuxiliaryRequest CompleteRHSAuxiliaryRequest(AuxiliaryRequest request = {}) const;
         const std::vector<index> &AuxiliaryFaces() const;
         /// Move-only CPU preparation transaction. Core reads owned means only;
         /// finish the mean halo before HaloDependent. All runs both phases.
@@ -590,75 +614,10 @@ namespace DNDS::Cauchy
         void ValidateAuxValues(const CFV::FVField &state, const AuxiliaryValues &values, real time = 0) const;
         real StableStep(const CFV::FVField &state, const AuxiliaryValues &values, real cfl, real time = 0) const;
         real StableStep(const EquationDofs &state, const AuxiliaryValues &values, real cfl, real time = 0) const;
-        /// Clear owned polynomial and retained LVR gates at a synchronous
-        /// workspace boundary. Local only; reserve all local destinations before
-        /// writing, and let the caller coordinate rank-local errors. Evaluate
-        /// refreshes coefficient ghosts before they are subsequently consumed.
-        void ResetReconstruction(Workspace &workspace) const;
-        /// Fixed-sweep VR carries a numerical initial guess between stages.
-        /// Retain it in a restart for exact continuation; only owned values are
-        /// persistent, since Evaluate refreshes ghosts before consuming them.
-        const CFV::FVField &ReconstructionGuess(const Workspace &workspace) const;
-        /// Completed flux polynomial, after optional WBAP/PP. Filtering never
-        /// overwrites ReconstructionGuess(), which remains the unlimited guess.
-        /// With filtering disabled these references share the same coefficients.
-        const CFV::FVField &FluxReconstruction(const Workspace &workspace) const;
-        /// Prepare the same boundary/VR/limiter polynomial as Evaluate, without
-        /// computing a residual. Refreshes its canonical halos before returning.
-        /// A coupling controller may sample it to refresh incoming traces.
-        /// Interface packets must already be published at this stage time.
-        void PrepareReconstruction(CFV::FVField &state, Workspace &workspace, Runtime::EagerEngine &engine,
-                                   const Runtime::ExecutionStream &stream, real time) const;
-        /// Refresh stage means and the retained unlimited polynomial for a
-        /// predictor sampling round. Reuses the workspace's canonical bindings.
-        void RefreshSamplingInputs(CFV::FVField &state, Workspace &workspace, Runtime::EagerEngine &engine,
-                                   const Runtime::ExecutionStream &stream) const;
         /// Interpretation of stored polynomial rows; independent of physical
         /// flow schema. Restart may restore means and cold-start incompatible
         /// coefficients rather than matching a C++ static row type.
         Json ReconstructionMetadata() const;
-        /// Validate shape/finite values collectively, then replace the owned
-        /// initial guess. Caller serializes workspace and publication accesses.
-        /// Optional LVR history is restored in the same write transaction.
-        /// Omitting it explicitly cold-starts that history when LVR is active.
-        void RestoreReconstructionGuess(Workspace &workspace, const Runtime::Array<real> &coefficients,
-                                        const Runtime::Array<real> *limitedVRHistory = nullptr) const;
-        /// Optional owned [shock,contact] retained LVR history. The returned
-        /// pointer borrows the workspace; a copied Array retains its allocation.
-        /// Release views before Evaluate.
-        /// Domain rollback/observations/warm restart preserve this with the VR
-        /// guess. RestoreReconstructionGuess restores both or cold-starts history.
-        std::optional<Runtime::Array<real>> LimitedVRHistory(const Workspace &workspace) const;
-        /// Most recent RHS's frozen alpha, not persistent restart state. It is
-        /// overwritten by Evaluate and cleared by ResetReconstruction; a warm
-        /// history restore does not prepare a new alpha. Same borrowing rules.
-        std::optional<Runtime::Array<real>> LimitedVRAlpha(const Workspace &workspace) const;
-        /// Integrated d(V*U)/dt, owned rows only. Mean/rec/gradient exchanges are
-        /// explicit inside this domain-level routine; numerical kernels use
-        /// owned-only core inputs while ghost transfers are active. The caller
-        /// serializes residuals on this workspace and coordinates domain errors.
-        /// Synchronous collective: invoke on an MPI-authorized controller thread.
-        /// Queued work is observed on success and before borrowed scopes unwind
-        /// on exceptions; failed scratch allocations require replacement.
-        /// Local preparation inherits Metrics().Communication()'s safety mode.
-        /// Disabled preflight still validates locally and aborts on rejection;
-        /// it does not provide recoverable rank-asymmetric failures. Numerical
-        /// decisions and required protocols remain collective in either mode.
-        void Evaluate(CFV::FVField &state, CFV::FVField &residual, Workspace &workspace,
-                      Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
-        /// Equation-independent entry; dispatch/semantic checks occur outside
-        /// cell loops. The field overload is the trusted compressible-kernel
-        /// adapter used by stage and multigrid scratch, not a model selector.
-        void Evaluate(EquationDofs &state, CFV::FVField &residual, Workspace &workspace,
-                      Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
-        /// Euler physical-dt trial: configured convective flux/BC/auxiliary
-        /// policy, zero polynomial and viscosity explicitly ignored. No VR,
-        /// WBAP or reconstruction PP. Uses only its independent typed scratch;
-        /// accepted means, clock and the normal VR workspace are unchanged.
-        /// Retains parent quadrature/trace points as Euler's zero-polynomial
-        /// physical-dt probe does. Standalone constant FV instead uses midpoint.
-        void EvaluateMean(CFV::FVField &state, CFV::FVField &residual, MeanWorkspace &workspace,
-                          Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
         /// Collective Euler compress=1 bound from dt*scale*meanResidual/volume.
         /// Inputs are owned-only CPU flow5 fields; state ghost writes may be
         /// active. No input mutation, time advance, growth cap or communication
@@ -675,6 +634,10 @@ namespace DNDS::Cauchy
         /// be ready, distinct and admissible. No EOS, mutation or payload MPI.
         PhysicalStepLimit LimitPhysicalStep(const EquationDofs &state, const EquationDofs &meanResidual,
                                             const EquationThermalView &thermal, real dt, real relax, real scale, int compressionPower = 1) const;
+        /// Initialize the logical flow block from a cell-averaged analytic
+        /// profile. The current producer is available for pure perfect-gas
+        /// flow5 states; extended states use InitializeConstant/InitializeField.
+        void Initialize(EquationDofs &state, const FlowProfileSettings &profile, const FlowState &primitive) const;
         void Initialize(CFV::FVField &state, const FlowProfileSettings &profile, const FlowState &primitive) const;
         /// Fill exact code-unit conservative values in equation-schema order.
         /// Applies the initial rigid-frame rotation to flow momentum only.
@@ -698,29 +661,18 @@ namespace DNDS::Cauchy
         /// A point failure can leave partial setup output; discard it on error.
         void InitializeField(EquationDofs &state, const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers = {}) const;
         /// Volume-normalized L1/L2/Linf error in conservative cell averages.
+        std::array<FlowState, 3> Error(const EquationDofs &state, const FlowProfileSettings &profile, const FlowState &primitive, real time) const;
         std::array<FlowState, 3> Error(const CFV::FVField &state, const FlowProfileSettings &profile, const FlowState &primitive, real time) const;
         real StableStep(const CFV::FVField &state, real cfl) const;
         /// Collective owned-only admissibility; never repairs a state silently.
+        bool Admissible(const EquationDofs &state) const;
         bool Admissible(const CFV::FVField &state) const;
         index LastFaceFallbacks(const Workspace &workspace) const;
-        int LastReconstructionIterations(const Workspace &workspace) const;
-        real LastReconstructionUpdate(const Workspace &workspace) const;
-        const CFV::FVField &LowOrderResidual(const Workspace &workspace) const;
-        /// Explicit mean/face/cell outputs of this workspace's last Evaluate.
-        /// Only flux-required stencil channels are present. Cell ghosts are
-        /// refreshed from owners using the field's canonical mapping.
-        AuxiliaryValues PreparedAuxValues(const Workspace &workspace) const;
-        /// Synchronous correction preparation when the time method already
-        /// supplies a physical RHS cache. Refresh means and auxiliary values,
-        /// without advancing reconstruction, limiter history or evaluating RHS.
-        /// Input halo may be stale. Retain this bound workspace through return.
-        void PrepareCorrectionAux(CFV::FVField &state, Workspace &workspace, Runtime::EagerEngine &engine,
-                                  const Runtime::ExecutionStream &stream, real time) const;
         /// Full-state variant also refreshes sampled source inputs from the
         /// retained polynomial before publishing their Jacobian provenance.
         /// PrepareJacobian separately evaluates the mean-state source matrix;
         /// this call evaluates neither chemical rates nor the physical RHS.
-        void PrepareCorrectionAux(EquationDofs &state, EquationWorkspace &workspace, AuxiliaryValues &auxiliary,
+        void PrepareCorrectionAux(EquationDofs &state, Workspace &workspace, AuxiliaryValues &auxiliary,
                                   Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time) const;
         const ThermalBounds &ThermalConstraints() const;
         /// Collective checked projection of a fresh copy of the unlimited
@@ -729,48 +681,40 @@ namespace DNDS::Cauchy
         /// active. Coefficient transfers must be complete before publication.
         /// Explicit outputs are limited coefficients and per-call beta stats.
         /// Does not reconstruct, exchange, advance time or change cell means.
-        void LimitReconstructionPP(const CFV::FVField &state, Workspace &workspace) const;
         index LastCharacteristicFallbacks(const Workspace &workspace) const;
-        std::pair<index, real> PositivityReconstructionStats(const Workspace &workspace) const;
-        Vector3 LastBoundaryForce(const Workspace &workspace, const std::vector<int> &zones) const;
+        /// Flow5 explicit conservative-blend compatibility. This is an
+        /// operator-local specialization; generic equations do not expose a
+        /// separately constructed low-order residual yet.
+        const EquationDofs &LowOrderResidual(const Workspace &workspace) const;
         /// Collective sum of the last completed equation RHS's wall momentum
         /// flux, in mesh axes, with the same sign as pressure*n - traction.
         /// Per-quadrature outputs include the actual numerical pressure, RANS
         /// stress and viscous traction; no separate EOS/flux recomputation.
         /// Workspace access is controller-serialized; do not read during Evaluate.
-        Vector3 LastBoundaryForce(const EquationWorkspace &workspace, const std::vector<int> &zones) const;
-        /// Native parallel VTKHDF cell means and rank-local surface quadrature
-        /// samples. Does not gather mesh/state to a serial rank.
-        void WriteVisualization(const CFV::FVField &state, const Workspace &workspace, const std::string &prefix, real time, int hdfDeflateLevel = 0) const;
+        Vector3 LastBoundaryForce(const Workspace &workspace, const std::vector<int> &zones) const;
         /// All conservative blocks plus mean thermodynamic/species fields and
         /// reconstructed boundary traces. Reads an observation workspace only;
         /// does not modify the production reconstruction or any state values.
-        void WriteVisualization(const EquationDofs &state, const EquationWorkspace &workspace,
+        void WriteVisualization(const EquationDofs &state, const Workspace &workspace,
                                 const std::string &prefix, real time, int hdfDeflateLevel,
                                 const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers) const;
 
     private:
-        ReconstructionRestore ReserveReconstructionRestoreImpl(Workspace &workspace, const Runtime::Array<real> &coefficients,
-                                                               const Runtime::Array<real> *limitedVRHistory, std::shared_ptr<Workspace> retained, bool collectiveChecks = true) const;
-        ReconstructionRestore ReserveReconstructionRestoreImpl(EquationWorkspace &workspace, const EquationDofs &guess,
-                                                               std::shared_ptr<EquationWorkspace> retained, bool collectiveChecks = true) const;
-        std::shared_ptr<EquationWorkspace> BuildEquationWorkspaceImpl(EquationDofs &state,
-                                                                      std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, bool meanOnly) const;
-        void EvaluateEquationImpl(EquationDofs &state, EquationDofs *residual, EquationWorkspace &workspace,
-                                  Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time,
-                                  AuxiliaryValues *auxiliary = nullptr) const;
-        void ValidateEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &workspace, real time) const;
-        bool AddEquationSourceJacobian(const EquationDofs &state, const EquationWorkspace &workspace,
+        ReconstructionRestore ReserveReconstructionRestoreImpl(Workspace &workspace, const EquationDofs &guess,
+                                                               const Runtime::Array<real> *limitedVRHistory,
+                                                               std::shared_ptr<Workspace> retained, bool collectiveChecks = true) const;
+        std::shared_ptr<Workspace> BuildWorkspaceImpl(EquationDofs &state,
+                                                      std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
+                                                      bool meanOnly, WorkspaceOptions options = WorkspaceOptions()) const;
+        void EvaluateImpl(EquationDofs &state, EquationDofs *residual, Workspace &workspace,
+                          Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time,
+                          AuxiliaryValues *auxiliary = nullptr) const;
+        void ValidateEquationSourceJacobian(const EquationDofs &state, const Workspace &workspace, real time) const;
+        bool AddEquationSourceJacobian(const EquationDofs &state, const Workspace &workspace,
                                        const Runtime::Array<real>::WriteLease &diagonal, DiagonalStorage storage,
                                        real scale, EquationPointEvaluator &evaluator,
                                        const EquationFVDetail::MeanLinearizationOutput *linearization = nullptr) const;
-        CFV::FVField &RequireState(EquationDofs &state) const;
-        index PrepareFaceCharacteristics(const CFV::FVField &state, CFV::FaceCharacteristicTransform &transform) const;
-        std::shared_ptr<Workspace> BuildWorkspaceImpl(CFV::FVField &state, AuxiliaryRequest request, bool meanOnly) const;
-        void EvaluateImpl(CFV::FVField &state, CFV::FVField *residual, Workspace &workspace,
-                          Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time) const;
-        /// Evaluate preserves its preceding WBAP result; the public standalone
-        /// projection always starts afresh from the unlimited guess.
-        void LimitReconstructionPPImpl(const CFV::FVField &state, Workspace &workspace, bool refresh) const;
+        index PrepareFaceCharacteristics(const CFV::FVField &state, CFV::FaceCharacteristicTransform &transform,
+                                         index firstComponent = 0) const;
     };
 }

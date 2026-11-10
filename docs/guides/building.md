@@ -26,7 +26,8 @@ pip install -r external/cfd_externals/requirements.txt
 
 # Header-only libs first
 curl -L -o external/external_headeronlys.tar.gz \
-  https://github.com/harryzhou2000/cfd_externals_headeronlys/releases/latest/download/external_headeronlys.tar.gz
+  https://github.com/harryzhou2000/cfd_externals_headeronlys/releases/download/v0.2.0/external_headeronlys.tar.gz
+echo "f756b3331d852836434b56a25e7f913ab58d1a80f13d001832e0504266aa6af2  external/external_headeronlys.tar.gz" | sha256sum -c -
 cd external && tar -xzf external_headeronlys.tar.gz && cd ..
 
 # Then binary libs (needs header-onlys already extracted)
@@ -102,14 +103,15 @@ DNDSR requires two sets of external dependencies: header-only libraries
 shipped as a tarball, and binary libraries built from the `cfd_externals`
 submodule.
 
-### Header-only libraries (Eigen, Boost, CGAL, fmt, pybind11, ...)
+### Header-only libraries (Eigen, Boost, CGAL, fmt, spdlog, pybind11, ...)
 
-Download the latest release tarball from GitHub and extract it into
+Download the pinned v0.2.0 release tarball from GitHub and extract it into
 the `external/` directory:
 
 ```bash
 curl -L -o external/external_headeronlys.tar.gz \
-  https://github.com/harryzhou2000/cfd_externals_headeronlys/releases/latest/download/external_headeronlys.tar.gz
+  https://github.com/harryzhou2000/cfd_externals_headeronlys/releases/download/v0.2.0/external_headeronlys.tar.gz
+echo "f756b3331d852836434b56a25e7f913ab58d1a80f13d001832e0504266aa6af2  external/external_headeronlys.tar.gz" | sha256sum -c -
 cd external
 tar -xzf external_headeronlys.tar.gz
 cd ..

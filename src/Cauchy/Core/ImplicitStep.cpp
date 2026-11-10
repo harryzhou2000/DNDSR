@@ -13,6 +13,14 @@ namespace DNDS::Cauchy
         _trialEpoch.stage = coupled ? 0 : stage;
         _trialEpoch.coupledStage = coupled ? stage : 0;
     }
+    NonlinearSolveControl Domain::ProgressControl() const
+    {
+        NonlinearSolveControl control;
+        if (_progressObserver)
+            control.progress = [observer = _progressObserver](const NonlinearProgress &progress)
+            { observer(progress); };
+        return control;
+    }
     void Domain::InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh)
     {
         _steady = time.steady;
@@ -33,56 +41,27 @@ namespace DNDS::Cauchy
                           _ditrComponents = _equation.Schema().ResolveComponents(settings.implicit.residualComponents); });
         _coupledFactory = [this, mesh, settings, mpi](EquationDofs &middle)
         {
-            if (_equationWorkspace)
-            {
-                const auto workspace = _fv.BuildEquationWorkspace(middle, _workers);
-                const auto solver = std::make_shared<EquationNonlinearSolver>(_fv, middle, workspace, _engine, _stream, settings,
-                                                                              Algebra::ComponentSelection(middle.ComponentNumber(), _ditrComponents), _workers);
-                std::shared_ptr<PolynomialMultigrid> multigrid;
-                if (settings.implicit.multigrid.levels)
-                    multigrid = std::make_shared<PolynomialMultigrid>(mesh, _fv, middle, *solver, _engine, _stream, settings, _workers);
-                return CoupledStageOperator{
-                    [this, solver](auto &state, auto &rate, real time, int stage)
-                    { SetTimeStage(stage); solver->EvaluateRate(state, rate, time); },
-                    [this, solver, multigrid](const auto &equation, const auto &rate, real cfl)
-                    {
-                        const auto &c = equation.coefficients;
-                        SetTimeStage(equation.coupledStage);
-                        return multigrid ? multigrid->ApplyCycle(equation.resOther, c.inverseDt, c.rhsScale, c.time, equation.coupledStage, cfl, &rate)
-                                         : solver->CorrectOnce(equation.state, equation.resOther, c.inverseDt, c.rhsScale, c.time,
-                                                               equation.coupledStage, {1, cfl}, &rate);
-                    },
-                    [solver]
-                    { return solver->ReconstructionStats(); },
-                    [fv = _fv, workspace, mpi]
-                    { MPI::LocalStage(mpi, [&]
-                                      { fv.ResetReconstruction(*workspace); }); }};
-            }
-            AuxiliaryRequest required;
-            required.faceSpectralRadius = required.cellSpectralSum = true;
-            const auto workspace = _fv.BuildWorkspace(middle, required);
-            const auto solver = std::make_shared<NonlinearSolver>(_fv, middle.CoupledField(), workspace, _engine, _stream, settings);
+            const auto workspace = _fv.BuildWorkspace(middle, _workers);
+            const auto solver = std::make_shared<NonlinearSolver>(_fv, middle, workspace, _engine, _stream, settings,
+                                                                  Algebra::ComponentSelection(middle.ComponentNumber(), _ditrComponents), _workers);
             std::shared_ptr<PolynomialMultigrid> multigrid;
             if (settings.implicit.multigrid.levels)
-                multigrid = std::make_shared<PolynomialMultigrid>(mesh, _fv, middle.CoupledField(), *solver, _engine, _stream, settings);
+                multigrid = std::make_shared<PolynomialMultigrid>(mesh, _fv, middle, *solver, _engine, _stream, settings, _workers);
             return CoupledStageOperator{
-                [this, workspace](auto &state, auto &rate, real time, int stage)
-                { EvaluateImplicitRate(state, rate, *workspace, time, stage); },
+                [this, solver](auto &state, auto &rate, real time, int stage)
+                { SetTimeStage(stage); solver->EvaluateRate(state, rate, time); },
                 [this, solver, multigrid](const auto &equation, const auto &rate, real cfl)
                 {
                     const auto &c = equation.coefficients;
                     SetTimeStage(equation.coupledStage);
-                    return AsEquationReport(multigrid
-                                                ? multigrid->ApplyCycle(equation.resOther.CoupledField(), c.inverseDt, c.rhsScale, c.time, equation.coupledStage, cfl, &rate.CoupledField())
-                                                : solver->CorrectOnce(equation.state.CoupledField(), equation.resOther.CoupledField(), c.inverseDt, c.rhsScale, c.time,
-                                                                      equation.coupledStage, {1, cfl}, &rate.CoupledField()));
+                    return multigrid ? multigrid->ApplyCycle(equation.resOther, c.inverseDt, c.rhsScale, c.time, equation.coupledStage, cfl, &rate)
+                                     : solver->CorrectOnce(equation.state, equation.resOther, c.inverseDt, c.rhsScale, c.time,
+                                                           equation.coupledStage, {1, cfl}, &rate);
                 },
                 [solver]
                 { return solver->ReconstructionStats(); },
                 [fv = _fv, workspace, mpi]
                 {
-                    // Intermediate polynomials are trial-local, so no second
-                    // warm-history dataset is required for exact restart/retry.
                     MPI::LocalStage(mpi, [&]
                                     { fv.ResetReconstruction(*workspace); });
                 }};
@@ -90,33 +69,17 @@ namespace DNDS::Cauchy
         MPI::LocalStage(mpi, [&]
                         { _timeStepper = std::make_unique<EquationTimeStepper>(_trial, _steady ? "bdf1" : time.method, [mpi, checks = settings.implicit.collectiveChecks](const auto &run)
                                                                                { if (checks) MPI::LocalStage(mpi, run); else run(); }, ODE::DITRSettings{time.ditr.fraction, time.ditr.theta, time.ditr.variant == "U2R1" ? ODE::DITRVariant::U2R1 : ODE::DITRVariant::U2R2}); });
-        if (_equationWorkspace)
-            _equationImplicit = std::make_unique<EquationNonlinearSolver>(_fv, _trial, _equationWorkspace, _engine, _stream, settings,
-                                                                          Algebra::ComponentSelection(_trial.ComponentNumber(), _ditrComponents), _workers);
-        else
-            _implicit = std::make_unique<NonlinearSolver>(_fv, _trial.CoupledField(), _workspace, _engine, _stream, settings);
+        _implicit = std::make_unique<NonlinearSolver>(_fv, _trial, _workspace, _engine, _stream, settings,
+                                                      Algebra::ComponentSelection(_trial.ComponentNumber(), _ditrComponents), _workers);
         if (settings.implicit.multigrid.levels)
-        {
-            if (_equationImplicit)
-                _multigrid = std::make_unique<PolynomialMultigrid>(mesh, _fv, _trial, *_equationImplicit, _engine, _stream, settings, _workers);
-            else
-                _multigrid = std::make_unique<PolynomialMultigrid>(mesh, _fv, _trial.CoupledField(), *_implicit, _engine, _stream, settings);
-        }
+            _multigrid = std::make_unique<PolynomialMultigrid>(mesh, _fv, _trial, *_implicit, _engine, _stream, settings, _workers);
     }
     void Domain::EvaluateImplicitRate(EquationDofs &state, EquationDofs &rate, FiniteVolume::Workspace &workspace, real time, int stage)
     {
         SetTimeStage(stage);
-        _fv.Evaluate(state, _residualState.CoupledField(), workspace, _engine, _stream, time);
-        _lastFallbacks += _fv.LastFaceFallbacks(workspace);
-        _lastCharacteristicFallbacks += _fv.LastCharacteristicFallbacks(workspace);
-        NormalizeRate(rate);
-    }
-    void Domain::EvaluateImplicitRate(EquationDofs &state, EquationDofs &rate, FiniteVolume::EquationWorkspace &workspace, real time, int stage)
-    {
-        SetTimeStage(stage);
-        DNDS_check_throw_info(_equationImplicit && _equationWorkspace.get() == &workspace,
+        DNDS_check_throw_info(_implicit && _workspace.get() == &workspace,
                               "implicit equation rate belongs to another workspace");
-        _equationImplicit->EvaluateRate(state, rate, time);
+        _implicit->EvaluateRate(state, rate, time);
     }
     void Domain::NormalizeRate(EquationDofs &rate)
     {
@@ -131,32 +94,6 @@ namespace DNDS::Cauchy
                     for (index j = 0; j < input.ComponentNumber(); ++j) output(iCell, j) = input(iCell, j) / metrics.GetCellVol(iCell);
             } });
     }
-    bool Domain::RecordImplicitStage(NonlinearIterationReport report)
-    {
-        return RecordImplicitStage(AsEquationReport(std::move(report)));
-    }
-    EquationNonlinearIterationReport Domain::AsEquationReport(NonlinearIterationReport report)
-    {
-        EquationNonlinearIterationReport result;
-        result.converged = report.converged;
-        result.iterations = report.iterations;
-        result.linearIterations = report.linearIterations;
-        result.rhsLimited = report.rhsLimited;
-        result.incrementLimited = report.incrementLimited;
-        result.multigridCycles = report.multigridCycles;
-        result.levelCorrections = std::move(report.levelCorrections);
-        result.initialResidual.assign(report.initialResidual.begin(), report.initialResidual.end());
-        result.referenceResidual.assign(report.referenceResidual.begin(), report.referenceResidual.end());
-        result.residual.assign(report.residual.begin(), report.residual.end());
-        result.residualTargetRatio = report.residualTargetRatio;
-        result.minimumRHSAlpha = report.minimumRHSAlpha;
-        result.minimumIncrementAlpha = report.minimumIncrementAlpha;
-        result.pseudoCFL = report.pseudoCFL;
-        result.reconstructionIterations = report.reconstructionIterations;
-        result.reconstructionRelativeUpdate = report.reconstructionRelativeUpdate;
-        result.lastLinear = std::move(report.lastLinear);
-        return result;
-    }
     bool Domain::RecordImplicitStage(EquationNonlinearIterationReport report)
     {
         _lastAlphaCells += report.incrementLimited;
@@ -170,65 +107,23 @@ namespace DNDS::Cauchy
     }
     void Domain::PreserveReconstructionGuess()
     {
-        if (_equationWorkspace)
-        {
-            MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
-                            {
-                if (_restoreReconstruction) _fv.RestoreReconstructionGuess(*_equationWorkspace, *_equationBackup);
-                else
-                {
-                    const auto &guess = _fv.ReconstructionGuess(*_equationWorkspace);
-                    if (!_equationBackup) _equationBackup.emplace(EquationDofOperations::NewVector(guess));
-                    EquationDofOperations::Copy(*_equationBackup, guess);
-                    _restoreReconstruction = true;
-                } });
-            return;
-        }
-        if (_restoreReconstruction)
-        {
-            _fv.RestoreReconstructionGuess(*_workspace, *_reconstructionBackup, _limitedVRBackup ? &*_limitedVRBackup : nullptr);
-            return;
-        }
-        std::optional<R::Array<real>::ReadLease> guessRead, historyRead;
-        std::optional<R::Array<real>::WriteLease> guessWrite, historyWrite;
-        try
-        {
-            MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
-                            {
-                const auto &guess = _fv.ReconstructionGuess(*_workspace).Owned();
-                if (!_reconstructionBackup) _reconstructionBackup.emplace(guess.Layout());
-                guessRead.emplace(guess.Read());
+        MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
+                        {
+            if (_restoreReconstruction)
+                _fv.RestoreReconstructionGuess(*_workspace, *_reconstructionBackup,
+                                               _limitedVRBackup ? &*_limitedVRBackup : nullptr);
+            else
+            {
+                const auto &guess = _fv.ReconstructionGuess(*_workspace);
+                if (!_reconstructionBackup) _reconstructionBackup.emplace(EquationDofOperations::NewVector(guess));
+                EquationDofOperations::Copy(*_reconstructionBackup, guess);
                 if (const auto history = _fv.LimitedVRHistory(*_workspace))
                 {
                     if (!_limitedVRBackup) _limitedVRBackup.emplace(history->Layout());
-                    historyRead.emplace(history->Read());
+                    _limitedVRBackup->CopyFrom(*history).Wait();
                 }
-                guessWrite.emplace(_reconstructionBackup->Write());
-                if (historyRead) historyWrite.emplace(_limitedVRBackup->Write()); });
-        }
-        catch (...)
-        {
-            MPI::AbortIfSolverFailure("Cauchy reconstruction backup failed");
-            if (guessWrite)
-                guessWrite->CancelUnmodified();
-            if (historyWrite)
-                historyWrite->CancelUnmodified();
-            throw;
-        }
-        const auto source = guessRead->View<R::UniformTableRows>();
-        const auto output = guessWrite->View<R::UniformTableRows>();
-        for (index iCell = 0; iCell < source.RowCount(); ++iCell)
-            for (index j = 0; j < source.RowSize(iCell); ++j)
-                output(iCell, j) = source(iCell, j);
-        if (historyRead)
-        {
-            const auto from = historyRead->View<R::UniformTableRows>();
-            const auto to = historyWrite->View<R::UniformTableRows>();
-            for (index iCell = 0; iCell < from.RowCount(); ++iCell)
-                for (int j = 0; j < 2; ++j)
-                    to(iCell, j) = from(iCell, j);
-        }
-        _restoreReconstruction = true;
+                _restoreReconstruction = true;
+            } });
     }
     StepResult Domain::PrepareImplicitStep(real dt)
     {
@@ -242,18 +137,15 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(_coupledMiddle, "DITR intermediate operator is not bound");
                 _coupledMiddle->evaluate(state, rate, time, stage);
             }
-            else if (_equationWorkspace)
-                EvaluateImplicitRate(state, rate, *_equationWorkspace, time, stage);
             else
                 EvaluateImplicitRate(state, rate, *_workspace, time, stage);
         };
         const auto solve = [&](EquationDofs &state, const EquationDofs &source, real mass, real scale, real time, int stage)
         {
             SetTimeStage(stage);
-            if (_equationImplicit)
-                return RecordImplicitStage(_multigrid ? _multigrid->Solve(source, mass, scale, time, stage)
-                                                      : _equationImplicit->Solve(state, source, mass, scale, time, stage));
-            return RecordImplicitStage(_multigrid ? _multigrid->Solve(source.CoupledField(), mass, scale, time, stage) : _implicit->Solve(state.CoupledField(), source.CoupledField(), mass, scale, time, stage));
+            const auto progress = ProgressControl();
+            return RecordImplicitStage(_multigrid ? _multigrid->Solve(source, mass, scale, time, stage, progress)
+                                                  : _implicit->Solve(state, source, mass, scale, time, stage, progress));
         };
         const auto coupled = [&](EquationTimeStepper::DITR &method, EquationDofs &endpoint)
         {
@@ -272,7 +164,7 @@ namespace DNDS::Cauchy
             const auto &settings = _implicitControls;
             EquationNonlinearIterationReport initial;
             initial.residual.resize(size_t(endpoint.ComponentNumber()));
-            const auto report = NonlinearDetail::Iterate(settings, endpoint.Schema(), mpi.rank, 0, {}, std::move(initial), _coupledReconstructionTolerance, [&]
+            const auto report = NonlinearDetail::Iterate(settings, endpoint.Schema(), mpi.rank, 0, ProgressControl(), std::move(initial), _coupledReconstructionTolerance, [&]
                                                          { method.AssembleStoppingResidual(endpoint, *_coupledResidual); }, [&](auto &norms)
                                                          {
                     std::vector<real> sum(norms.size() + 1, 0);
@@ -297,7 +189,7 @@ namespace DNDS::Cauchy
                         norms[j] = settings.normOrder == 1 ? sum[j] : std::sqrt(sum[j]); }, [&]
                                                          {
                     const auto a = _coupledMiddle->reconstruction();
-                    const auto b = _equationImplicit ? _equationImplicit->ReconstructionStats() : _implicit->ReconstructionStats();
+                    const auto b = _implicit->ReconstructionStats();
                     return std::make_pair(std::max(a.first, b.first), std::max(a.second, b.second)); }, [&](auto &iteration)
                                                          {
                     for (int coupledStage = 0; coupledStage < method.CoupledStageNumber(); ++coupledStage)
@@ -309,15 +201,10 @@ namespace DNDS::Cauchy
                         EquationNonlinearIterationReport work;
                         if (coupledStage == 0)
                             work = _coupledMiddle->correct(equation, rate, iteration.pseudoCFL);
-                        else if (_equationImplicit)
-                            work = _multigrid ? _multigrid->ApplyCycle(equation.resOther, c.inverseDt, c.rhsScale, c.time, coupledStage, iteration.pseudoCFL, &rate)
-                                             : _equationImplicit->CorrectOnce(endpoint, equation.resOther, c.inverseDt, c.rhsScale, c.time,
-                                                                               coupledStage, {1, iteration.pseudoCFL}, &rate);
                         else
-                            work = AsEquationReport(_multigrid
-                                ? _multigrid->ApplyCycle(equation.resOther.CoupledField(), c.inverseDt, c.rhsScale, c.time, coupledStage, iteration.pseudoCFL, &rate.CoupledField())
-                                : _implicit->CorrectOnce(endpoint.CoupledField(), equation.resOther.CoupledField(), c.inverseDt, c.rhsScale, c.time,
-                                                         coupledStage, {1, iteration.pseudoCFL}, &rate.CoupledField()));
+                            work = _multigrid ? _multigrid->ApplyCycle(equation.resOther, c.inverseDt, c.rhsScale, c.time, coupledStage, iteration.pseudoCFL, &rate)
+                                              : _implicit->CorrectOnce(endpoint, equation.resOther, c.inverseDt, c.rhsScale, c.time,
+                                                                       coupledStage, {1, iteration.pseudoCFL}, &rate);
                         NonlinearDetail::AccumulateWork(iteration, work);
                         method.CompleteCoupledStage(endpoint, evaluate);
                     } }, NonlinearDetail::ResidualObservation::AfterUpdate);

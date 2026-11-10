@@ -72,12 +72,12 @@ The caller owns every producer/consumer edge. A typical split iteration is:
 ```cpp
 comm.WaitFor(compute.Record()); // last owned producer/previous ghost consumer
 halo.Enqueue(engine, comm);    // pack -> NCCL -> unpack, in this stream
-resident.DoReconstructionIterTo(engine, compute, mean, work.coefficients,
-                               work, boundary, ReconstructionRegion::Core);
+resident.SubmitReconstructionIterTo(engine, compute, mean, work.coefficients,
+                                    work, boundary, ReconstructionRegion::Core);
 compute.WaitFor(comm.Record()); // logical ghost values ready after unpack
-resident.DoReconstructionIterTo(engine, compute, mean, work.coefficients,
-                               work, boundary, ReconstructionRegion::HaloDependent);
-resident.CommitReconstruction(engine, compute, work);
+resident.SubmitReconstructionIterTo(engine, compute, mean, work.coefficients,
+                                    work, boundary, ReconstructionRegion::HaloDependent);
+resident.SubmitCommitReconstruction(engine, compute, work);
 // Further correctly ordered iterations may be queued before observation.
 engine.Synchronize();
 provider->CheckAsyncError();

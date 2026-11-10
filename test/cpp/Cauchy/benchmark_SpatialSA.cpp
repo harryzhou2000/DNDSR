@@ -59,7 +59,7 @@ int main(int argc, char **argv)
         C::FiniteVolume fv(mesh, settings, equation);
         auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(6));
         auto result = C::EquationDofOperations::NewVector(state);
-        auto workspace = fv.BuildEquationWorkspace(state);
+        auto workspace = fv.BuildWorkspace(state);
         R::EagerEngine engine;
         const auto stream = engine.CreateCPUStream();
 

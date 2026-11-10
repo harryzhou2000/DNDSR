@@ -80,6 +80,16 @@ namespace DNDS::Cauchy
         return diagnostics;
     }
 
+    RHSKernelDiagnostics FiniteVolume::RHSOperator::ApplyFluxBorrowedFatal(const RHSReadViews &input, const RHSWriteViews &output,
+                                                                           CFV::ReconstructionRegion region, real time) const
+    {
+        auto diagnostics = ApplyFluxImpl<FailurePolicy::Abort>(input, output, region, time);
+        const auto &settings = _read->data->settings.numerics;
+        RequireKernel<true>((settings.faceFallback && !settings.positivity) || diagnostics.FaceFallbacks() == 0,
+                            "inadmissible reconstructed face with faceFallback disabled");
+        return diagnostics;
+    }
+
     RHSKernelDiagnostics FiniteVolume::RHSOperator::ApplyFlux(const RHSReadViews &input, const RHSWriteViews &output,
                                                               CFV::ReconstructionRegion region, real time) const
     {

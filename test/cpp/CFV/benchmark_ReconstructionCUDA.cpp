@@ -1,6 +1,6 @@
 // Actual resident VR wrappers, not synthetic layout arithmetic. CPU operations
 // supply numerical oracles; local CPU time is not a cluster performance claim.
-#include "CFV/Plans/ReconstructionDevicePlan.hpp"
+#include "CFV/Plans/FiniteVolumePlan.hpp"
 #include "DNDS/Runtime/Communication/NCCLTransfer.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "../Geom/NativeMeshOverlapFixture.hpp"
@@ -75,9 +75,9 @@ int main(int argc, char **argv)
         std::optional<C::VariationalReconstructionPlan> plan;
         const double prepareTime = measure([&]
                                            { plan = C::VariationalReconstructionPlan::ConstructRecCoeff(*metrics, settings); });
-        std::optional<C::ReconstructionDevicePlan> resident;
+        std::optional<C::VariationalReconstructionPlan> resident;
         const double uploadTime = measure([&]
-                                          { resident = C::ReconstructionDevicePlan::Prepare(*plan, device, context); });
+                                          { resident = plan->Place(device, context); });
         const I recWidth = components * plan->NRecDOF();
         auto mean = metrics->BuildField(components);
         Fill(mean, 1);
@@ -89,14 +89,14 @@ int main(int argc, char **argv)
                 for (I j = 0; j < components; ++j)
                     write.View()(iRow, j) = 1 + .01 * j;
         }
-        auto deviceBC = resident->PrepareBoundary(bc);
+        auto deviceBC = resident->PlaceBoundaryValues(bc);
         metrics->BindHalo(mean).Begin().Wait();
         for (auto kind : {R::RowLayoutKind::Table, R::RowLayoutKind::ColMajorTable, R::RowLayoutKind::TiledColMajorTable})
         {
             const auto shape = [&](I count)
             { return kind == R::RowLayoutKind::Table ? R::RowLayout::Dense(0, count) : kind == R::RowLayoutKind::ColMajorTable ? R::RowLayout::ColMajor(0, count, {32, 1})
                                                                                                                                : R::RowLayout::TiledColMajor(0, count, 32); };
-            auto gpuMean = resident->BuildField(shape(components));
+            auto gpuMean = metrics->BuildField(shape(components), resident->Device());
             Fill(gpuMean, 1);
             auto gpu = resident->BuildWorkspace(components, shape(recWidth));
             Fill(cpu.coefficients, .02);
@@ -122,7 +122,7 @@ int main(int argc, char **argv)
             auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
             auto commStream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
             for (int warm = 0; warm < 3; ++warm)
-                resident->DoReconstructionIterTo(engine, stream, gpuMean, gpu.coefficients, gpu, deviceBC, C::ReconstructionRegion::All, kernel);
+                resident->SubmitReconstructionIterTo(engine, stream, gpuMean, gpu.coefficients, gpu, deviceBC, C::ReconstructionRegion::All, kernel);
             engine.Synchronize();
             // A separate, untimed overlap probe extends real owned-only work.
             // Observe a started but unfinished compute prefix at MPI completion;
@@ -139,7 +139,7 @@ int main(int argc, char **argv)
                 const auto transferred = transferOptions.provider ? commStream.Record() : R::StreamEvent{};
                 const auto begin = stream.Record();
                 for (int repeat = 0; repeat < 32; ++repeat)
-                    resident->DoReconstructionIterTo(engine, stream, gpuMean, gpu.coefficients, gpu, deviceBC, C::ReconstructionRegion::Core, kernel);
+                    resident->SubmitReconstructionIterTo(engine, stream, gpuMean, gpu.coefficients, gpu, deviceBC, C::ReconstructionRegion::Core, kernel);
                 const auto end = stream.Record();
                 if (transferOptions.provider)
                     transferred.WaitHost();
@@ -152,10 +152,10 @@ int main(int argc, char **argv)
             for (int trial = 0; trial < 3; ++trial)
             {
                 const double jacobi = measure([&]
-                                              {for(int step=0;step<repeats;++step)resident->DoReconstructionIterTo(engine,stream,gpuMean,gpu.coefficients,gpu,deviceBC,C::ReconstructionRegion::All,kernel);engine.Synchronize(); }) /
+                                              {for(int step=0;step<repeats;++step)resident->SubmitReconstructionIterTo(engine,stream,gpuMean,gpu.coefficients,gpu,deviceBC,C::ReconstructionRegion::All,kernel);engine.Synchronize(); }) /
                                       repeats;
                 const double wbap = measure([&]
-                                            {for(int step=0;step<repeats;++step)resident->DoLimiterWBAP_3OrderTo(engine,stream,gpu,degree);engine.Synchronize(); }) /
+                                            {for(int step=0;step<repeats;++step)resident->SubmitLimiterWBAP_3OrderTo(engine,stream,gpu,degree);engine.Synchronize(); }) /
                                     repeats;
                 const double comm = measure([&]
                                             {for(int step=0;step<repeats;++step) { if(transferOptions.provider) gpuHalo.Enqueue(engine,commStream); else gpuHalo.Begin(context).Wait(); } engine.Synchronize(); }) /
@@ -166,10 +166,10 @@ int main(int argc, char **argv)
                     R::TransferOperation exchange;
                     if(transferOptions.provider) { commStream.WaitFor(stream.Record()); gpuHalo.Enqueue(engine,commStream); }
                     else exchange=gpuHalo.Begin(context);
-                    resident->DoReconstructionIterTo(engine,stream,gpuMean,gpu.coefficients,gpu,deviceBC,C::ReconstructionRegion::Core,kernel);
+                    resident->SubmitReconstructionIterTo(engine,stream,gpuMean,gpu.coefficients,gpu,deviceBC,C::ReconstructionRegion::Core,kernel);
                     if(transferOptions.provider) stream.WaitFor(commStream.Record()); else exchange.Wait();
-                    resident->DoReconstructionIterTo(engine,stream,gpuMean,gpu.coefficients,gpu,deviceBC,C::ReconstructionRegion::HaloDependent,kernel);
-                    resident->CommitReconstruction(engine,stream,gpu);
+                    resident->SubmitReconstructionIterTo(engine,stream,gpuMean,gpu.coefficients,gpu,deviceBC,C::ReconstructionRegion::HaloDependent,kernel);
+                    resident->SubmitCommitReconstruction(engine,stream,gpu);
                     if(!transferOptions.provider) engine.Synchronize();
                 } engine.Synchronize(); }) /
                                           repeats;

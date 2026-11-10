@@ -150,12 +150,33 @@ TEST_CASE("Steady config resolves Euler's BDF1 infinite timestep override with p
     CHECK(config.Time().steady);
     CHECK(config.Time().method == "bdf1");
     CHECK(config.Time().steps == 1);
-    CHECK(config.Time().finalTime == 0);
+    CHECK(config.Time().tEnd == 0);
+    CHECK(config.Time().finalTime == -1);
     CHECK(config.Time().cfl == 0);
     CHECK(config.Time().maxRetries == 0);
     CHECK(config.Root()["time"]["method"] == "bdf1");
     CHECK(config.Provenance().at("/time/method") == "BDF1 steady limit");
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"implicit", {{"consoleInterval", -1}}}}}}, 2));
+}
+TEST_CASE("Deprecated time and output aliases are exclusive with their canonical controls")
+{
+    const auto oldTime = C::SimulationConfig::Resolve({{"time", {{"finalTime", 2.5}}}}, 1);
+    CHECK(oldTime.Time().tEnd == 2.5);
+    CHECK(oldTime.Time().finalTime == -1);
+    const auto oldOutput = C::SimulationConfig::Resolve({{"output", {{"interval", 7}}}}, 1);
+    CHECK(oldOutput.Output().checkpointInterval == 7);
+    CHECK(oldOutput.Output().interval == -1);
+
+    CHECK_THROWS_WITH(C::SimulationConfig::Resolve({{"time", {{"tEnd", 2.5}, {"finalTime", 2.5}}}}, 1),
+                      doctest::Contains("only time.tEnd"));
+    CHECK_THROWS_WITH(C::SimulationConfig::Resolve({{"output", {{"checkpointInterval", 7}, {"interval", 7}}}}, 1),
+                      doctest::Contains("only output.checkpointInterval"));
+    CHECK_THROWS_WITH(C::SimulationConfig::Resolve({{"time", {{"finalTime", 2.5}}}}, 1,
+                                                   {{"/time/tEnd", 2.5}}),
+                      doctest::Contains("only time.tEnd"));
+    CHECK_THROWS_WITH(C::SimulationConfig::Resolve({{"output", {{"interval", 7}}}}, 1,
+                                                   {{"/output/checkpointInterval", 7}}),
+                      doctest::Contains("only output.checkpointInterval"));
 }
 TEST_CASE("Reconstruction PP controls are explicit and reject unsupported compatibility combinations")
 {
@@ -241,6 +262,10 @@ TEST_CASE("Cauchy partial analytic boundary profile receives nested schema defau
     CHECK(profile.period == 10);
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"mesh", {{"boundaryIds", {{"FAR", 1}}}}}}}}, 1));
     CHECK(C::SimulationConfig::Resolve(C::Json::object(), 1).Output().hdfDeflateLevel == 0);
+    CHECK(C::SimulationConfig::Resolve(C::Json::object(), 1).Output().historyPrecision == 10);
+    CHECK(C::SimulationConfig::Resolve({{"output", {{"historyPrecision", 8}}}}, 1).Output().historyPrecision == 8);
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"output", {{"historyPrecision", 0}}}}, 1));
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"output", {{"historyPrecision", 18}}}}, 1));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"output", {{"hdfDeflateLevel", 10}}}}, 1));
     CHECK_THROWS(C::SimulationConfig::Resolve({{"output", {{"hdfDeflateLevel", -1}}}}, 1));
 }

@@ -1,6 +1,6 @@
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Implicit/JacobianGeometry.hpp"
-#include "Cauchy/Discretization/EquationFiniteVolumeInternal.hpp"
+#include "Cauchy/Discretization/FiniteVolumeKernels.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/Physics/EquationFlux.hpp"
 #include "Cauchy/Implicit/EquationJacobianKernels.hpp"
@@ -366,8 +366,15 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::PrepareJacobian(const EquationDofs &state, const AuxiliaryValues &auxiliary, const R::Array<real> &inversePseudoTime,
                                        LinearProblemContext &output, JacobianPreparation controls, real time, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
-                                       const EquationWorkspace *sourceReconstruction) const
+                                       const Workspace *sourceReconstruction) const
     {
+        if (controls.roeDissipation && sourceReconstruction && HasRoeJacobianKernel(*sourceReconstruction))
+        {
+            DNDS_check_throw_info(!workers && state.ComponentNumber() == 5 && state.PhysicalFieldNumber() == 1,
+                                  "flow5 Roe Jacobian specialization received an extended physical state");
+            PrepareJacobian(state.CoupledField(), auxiliary, inversePseudoTime, output, controls, time);
+            return;
+        }
         ValidateAuxValues(state, auxiliary, time);
         output.Validate();
         const index nv = state.ComponentNumber(), owned = Metrics().NumCell(), all = Metrics().NumCellProc();

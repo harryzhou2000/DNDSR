@@ -5,6 +5,10 @@
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "Cauchy/Core/StepResult.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
 namespace DNDS::Cauchy
 {
     namespace
@@ -65,14 +69,17 @@ namespace DNDS::Cauchy
                     if (domain)
                     {
                         if (prepared)
-                            domain->_fv.PrepareReconstruction(domain->_trial.CoupledField(), *domain->_workspace, domain->_engine, domain->_stream, 0);
+                            domain->_fv.PrepareReconstruction(domain->_trial, *domain->_workspace, domain->_engine, domain->_stream, 0);
                         else
-                            domain->_fv.RefreshSamplingInputs(domain->_trial.CoupledField(), *domain->_workspace, domain->_engine, domain->_stream);
+                            domain->_fv.RefreshSamplingInputs(domain->_trial, *domain->_workspace, domain->_engine, domain->_stream);
                     }
                 std::vector<InterfaceDomainInput> ports(_domains.size());
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                     if (auto &domain = _domains[iDomain])
-                        ports[iDomain] = {CFV::DonorInputs(domain->_trial.CoupledField(), prepared ? domain->_fv.FluxReconstruction(*domain->_workspace) : domain->_fv.ReconstructionGuess(*domain->_workspace))};
+                        ports[iDomain] = {CFV::DonorInputs(domain->_trial.CoupledField(),
+                                                           (prepared ? domain->_fv.FluxReconstruction(*domain->_workspace)
+                                                                     : domain->_fv.ReconstructionGuess(*domain->_workspace))
+                                                               .CoupledField())};
                 _interfaces->Refresh(ports, 0, {});
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                     if (_domains[iDomain])
@@ -106,7 +113,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(Local(iDomain), "Cauchy domain is remote on this rank");
         return *_domains[iDomain];
     }
-    StepResult Simulation::Advance(real dt)
+    StepResult Simulation::Advance(real dt, std::optional<real> acceptedTime)
     {
         real limits[2]{dt, -dt};
         int valid = std::isfinite(dt) && dt > 0;
@@ -114,6 +121,22 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(valid, "invalid coordinated Cauchy timestep");
         MPI_Allreduce(MPI_IN_PLACE, limits, 2, MPI_DOUBLE, MPI_MIN, _placement.Control());
         DNDS_check_throw_info(limits[0] == -limits[1], "simulation ranks requested different timesteps");
+        int targetFlags[2]{int(acceptedTime.has_value()), -int(acceptedTime.has_value())};
+        MPI_Allreduce(MPI_IN_PLACE, targetFlags, 2, MPI_INT, MPI_MIN, _placement.Control());
+        DNDS_check_throw_info(targetFlags[0] == -targetFlags[1], "simulation ranks disagree on exact accepted-time snapping");
+        real acceptedTarget = acceptedTime.value_or(0);
+        if (acceptedTime)
+        {
+            real targets[2]{acceptedTarget, -acceptedTarget};
+            MPI_Allreduce(MPI_IN_PLACE, targets, 2, MPI_DOUBLE, MPI_MIN, _placement.Control());
+            DNDS_check_throw_info(targets[0] == -targets[1] && std::isfinite(acceptedTarget) && acceptedTarget > _time,
+                                  "simulation ranks requested different or invalid exact accepted times");
+            const real expected = _time + dt;
+            const real tolerance = 8 * std::numeric_limits<real>::epsilon() *
+                                   std::max({real(1), std::abs(expected), std::abs(acceptedTarget)});
+            DNDS_check_throw_info(std::abs(expected - acceptedTarget) <= tolerance,
+                                  "exact accepted time is inconsistent with the requested timestep");
+        }
         if (_placement.DomainNumber() != 1 || _interfaces || _placement.Group(0).ranks.size() != size_t(_placement.Size()))
         {
             uint64_t trialIdentifier = 0;
@@ -147,7 +170,10 @@ namespace DNDS::Cauchy
                 std::vector<InterfaceDomainInput> inputs(_domains.size());
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                     if (auto &domain = _domains[iDomain])
-                        inputs[iDomain] = {CFV::DonorInputs(domain->_trial.CoupledField(), prepared ? domain->_fv.FluxReconstruction(*domain->_workspace) : domain->_fv.ReconstructionGuess(*domain->_workspace))};
+                        inputs[iDomain] = {CFV::DonorInputs(domain->_trial.CoupledField(),
+                                                            (prepared ? domain->_fv.FluxReconstruction(*domain->_workspace)
+                                                                      : domain->_fv.ReconstructionGuess(*domain->_workspace))
+                                                                .CoupledField())};
                 return inputs;
             };
             const auto refresh = [&](real time, int stage, bool prepared, bool acceptedSnapshot = false)
@@ -194,10 +220,10 @@ namespace DNDS::Cauchy
                     if (_interfaces)
                     {
                         localPhase([](index, Domain &domain)
-                                   { domain._fv.RefreshSamplingInputs(domain._trial.CoupledField(), *domain._workspace, domain._engine, domain._stream); }, "predictor halos");
+                                   { domain._fv.RefreshSamplingInputs(domain._trial, *domain._workspace, domain._engine, domain._stream); }, "predictor halos");
                         refresh(stageTime, stage, false);
                         localPhase([&](index, Domain &domain)
-                                   { domain._fv.PrepareReconstruction(domain._trial.CoupledField(), *domain._workspace, domain._engine, domain._stream, stageTime); }, "interface reconstruction");
+                                   { domain._fv.PrepareReconstruction(domain._trial, *domain._workspace, domain._engine, domain._stream, stageTime); }, "interface reconstruction");
                         refresh(stageTime, stage, true);
                     }
                     if (auto result = localPhase([](index, Domain &domain)
@@ -212,7 +238,7 @@ namespace DNDS::Cauchy
                 if (_interfaces)
                 {
                     localPhase([](index, Domain &domain)
-                               { domain._fv.RefreshSamplingInputs(domain._trial.CoupledField(), *domain._workspace, domain._engine, domain._stream); }, "accepted-time predictor halos");
+                               { domain._fv.RefreshSamplingInputs(domain._trial, *domain._workspace, domain._engine, domain._stream); }, "accepted-time predictor halos");
                     refresh(_config.Time().steady ? _time : _time + dt, 0, false, true);
                 }
                 // Only local lease acquisition belongs in this control-stage
@@ -279,7 +305,12 @@ namespace DNDS::Cauchy
                 return result;
             }
             if (!_config.Time().steady)
-                _time += dt;
+            {
+                _time = acceptedTime.value_or(_time + dt);
+                for (auto &domain : _domains)
+                    if (domain)
+                        domain->_time = domain->_trialTime = _time;
+            }
             ++_step;
             return {};
         }
@@ -301,7 +332,12 @@ namespace DNDS::Cauchy
             if (domain)
                 domain->CommitStep();
         if (!_config.Time().steady)
-            _time += dt;
+        {
+            _time = acceptedTime.value_or(_time + dt);
+            for (auto &domain : _domains)
+                if (domain)
+                    domain->_time = domain->_trialTime = _time;
+        }
         ++_step;
         return {};
     }

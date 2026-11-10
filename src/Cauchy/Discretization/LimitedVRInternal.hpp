@@ -32,7 +32,7 @@ namespace DNDS::Cauchy
         /// for this input; target,alpha are frozen until the next Build. History
         /// mutation is explicit here and must be backed up by the domain driver.
         void Build(const Data &data, const CFV::FVField &mean,
-                   const CFV::FaceCharacteristicTransform *transform,
+                   CFV::FaceCharacteristicTransformRef transform,
                    Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream);
     };
 }

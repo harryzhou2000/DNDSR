@@ -70,12 +70,9 @@ TEST_CASE("VR wall targets use reflected exterior states in both flow and equati
     };
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
-    auto workspace = fv.BuildWorkspace(state);
-    fv.Evaluate(state, residual, *workspace, engine, stream);
-    check(fv.ReconstructionGuess(*workspace));
     auto logical = C::EquationDofs::Coupled(equation.Schema(), state);
     auto output = C::EquationDofs::Coupled(equation.Schema(), residual);
-    auto equationWorkspace = fv.BuildEquationWorkspace(logical);
+    auto equationWorkspace = fv.BuildWorkspace(logical);
     fv.Evaluate(logical, output, *equationWorkspace, engine, stream);
     check(fv.ReconstructionGuess(*equationWorkspace).CoupledField());
 }
@@ -103,20 +100,14 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
     C::FiniteVolume coupled(mesh, settings, equation);
     auto a = reference.Metrics().BuildField(5), b = coupled.Metrics().BuildField(5);
     auto ra = reference.Metrics().BuildField(5), rb = coupled.Metrics().BuildField(5);
-    reference.Initialize(a, settings.initialProfile, settings.initialPrimitive);
-    coupled.Initialize(b, settings.initialProfile, settings.initialPrimitive);
-    C::AuxiliaryRequest withDerived;
-    withDerived.meanThermodynamics = true;
-    withDerived.derived = {C::DerivedQuantity::Temperature};
-    auto workA = reference.BuildWorkspace(a), workB = coupled.BuildWorkspace(b, withDerived);
-    CHECK_NOTHROW(coupled.RequireWorkspaceChannels(*workB, withDerived));
-    if (mpi.size > 1)
-    {
-        C::AuxiliaryRequest inconsistent;
-        if (mpi.rank == 0)
-            inconsistent.derived = {C::DerivedQuantity::Temperature};
-        CHECK_THROWS(coupled.BuildWorkspace(b, inconsistent));
-    }
+    auto equationA = C::EquationDofs::Coupled(equation.Schema(), a);
+    auto equationB = C::EquationDofs::Coupled(equation.Schema(), b);
+    auto equationRA = C::EquationDofs::Coupled(equation.Schema(), ra);
+    auto equationRB = C::EquationDofs::Coupled(equation.Schema(), rb);
+    reference.InitializeField(equationA);
+    coupled.InitializeField(equationB);
+    auto workA = reference.BuildWorkspace(equationA);
+    auto workB = coupled.BuildWorkspace(equationB);
     auto incoming = coupled.BuildBoundaryInputs();
     constexpr double time = .3;
     CHECK_THROWS(coupled.ValidateBoundaryInputs(incoming, time));
@@ -156,8 +147,8 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
     coupled.SetBoundaryInputs(*workB, incoming);
     R::EagerEngine engine(2);
     const auto stream = engine.CreateCPUStream();
-    reference.Evaluate(a, ra, *workA, engine, stream, time);
-    coupled.Evaluate(b, rb, *workB, engine, stream, time);
+    reference.Evaluate(equationA, equationRA, *workA, engine, stream, time);
+    coupled.Evaluate(equationB, equationRB, *workB, engine, stream, time);
     const auto compare = [](const auto &left, const auto &right)
     {
         const auto ar = left.Owned().Read(), br = right.Owned().Read();
@@ -167,12 +158,14 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
                 CHECK(u(iCell, j) == v(iCell, j));
     };
     compare(ra, rb);
-    compare(reference.FluxReconstruction(*workA), coupled.FluxReconstruction(*workB));
+    compare(reference.FluxReconstruction(*workA).CoupledField(),
+            coupled.FluxReconstruction(*workB).CoupledField());
     C::AuxiliaryRequest request;
     request.faceSpectralRadius = true;
     auto auxA = reference.BuildAuxiliaryValues(request), auxB = coupled.BuildAuxiliaryValues(request);
-    reference.PrepareAuxValues(a, auxA, time);
-    coupled.PrepareAuxValues(b, auxB, time, &incoming);
+    reference.PrepareAuxValues(equationA, auxA, time);
+    coupled.PrepareAuxValues(equationB, auxB, time, std::nullopt,
+                             {std::nullopt, std::cref(incoming)});
     R::Array<double> tau(R::RowLayout::Dense(reference.Metrics().NumCell(), 1));
     {
         auto write = tau.Write();

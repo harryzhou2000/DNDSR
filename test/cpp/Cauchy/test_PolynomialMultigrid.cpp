@@ -14,6 +14,18 @@ namespace A = DNDS::Algebra;
 static DNDS::MPIInfo mpi;
 namespace
 {
+    C::EquationDofs Bind(const C::FiniteVolume &fv, const DNDS::CFV::FVField &field)
+    {
+        return C::EquationDofs::Coupled(fv.Equation().Schema(), field);
+    }
+    C::NonlinearSolver MakeSolver(const C::FiniteVolume &fv, C::EquationDofs &state,
+                                  R::EagerEngine &engine, const R::ExecutionStream &stream,
+                                  const C::DomainSettings &settings)
+    {
+        return {fv, state, fv.BuildWorkspace(state), engine, stream, settings,
+                A::ComponentSelection(state.ComponentNumber(),
+                                      state.Schema().ResolveComponents(settings.implicit.residualComponents))};
+    }
     C::DomainSettings Controls()
     {
         C::DomainSettings settings;
@@ -79,18 +91,13 @@ TEST_CASE("Bottom pMG uses mean convection and jump-only face viscosity in both 
                 Fill(fv, equation, state, 0);
                 R::EagerEngine engine;
                 const auto stream = engine.CreateCPUStream();
-                if (logical)
-                {
-                    auto input = C::EquationDofs::Coupled(equation.Schema(), state);
-                    auto output = C::EquationDofs::Coupled(equation.Schema(), residual);
-                    auto workspace = fv.BuildEquationWorkspace(input);
-                    fv.Evaluate(input, output, *workspace, engine, stream);
-                }
-                else
-                {
-                    auto workspace = fv.BuildWorkspace(state);
-                    fv.Evaluate(state, residual, *workspace, engine, stream);
-                }
+                auto input = Bind(fv, state), output = Bind(fv, residual);
+                auto workspace = logical
+                                     ? fv.BuildWorkspace(input)
+                                     : fv.BuildWorkspace(
+                                           input, std::nullopt,
+                                           C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic});
+                fv.Evaluate(input, output, *workspace, engine, stream);
                 const auto read = residual.Owned().Read();
                 const auto values = read.View<R::UniformTableRows>();
                 for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
@@ -191,15 +198,13 @@ TEST_CASE("Finest FAS acceptance shares selected-component L1 L2 convergence wit
                     values(iCell, 4) += .1 * (fine.Metrics().Cells().LocalToGlobal(iCell) + 1);
                 }
             }
-            C::AuxiliaryRequest channels;
-            channels.faceSpectralRadius = channels.cellSpectralSum = true;
-            auto work = fine.BuildWorkspace(state, channels);
             R::EagerEngine engine;
             const auto stream = engine.CreateCPUStream();
-            C::NonlinearSolver smoother(fine, state, work, engine, stream, settings);
-            C::PolynomialMultigrid solver(mesh, fine, state, smoother, engine, stream, settings);
+            auto input = Bind(fine, state), right = Bind(fine, source);
+            auto smoother = MakeSolver(fine, input, engine, stream, settings);
+            C::PolynomialMultigrid solver(mesh, fine, input, smoother, engine, stream, settings);
             const auto version = state.Owned().Version();
-            const auto report = solver.Solve(source, 20, 1, 0);
+            const auto report = solver.Solve(right, 20, 1, 0);
             CHECK(report.converged);
             CHECK(report.multigridCycles == 0);
             CHECK(report.initialResidual == report.referenceResidual);
@@ -237,21 +242,19 @@ TEST_CASE("Coarse FAS rate reuse and fail-fast halos preserve distributed viscou
         // and can fail admissibility independently of the reuse being tested.
         A::Copy(source, state);
         A::Scale(source, 20.);
-        C::AuxiliaryRequest channels;
-        channels.faceSpectralRadius = channels.cellSpectralSum = true;
-        auto work = fine.BuildWorkspace(state, channels);
         R::EagerEngine engine;
         const auto stream = engine.CreateCPUStream();
-        C::NonlinearSolver smoother(fine, state, work, engine, stream, settings);
+        auto input = Bind(fine, state), right = Bind(fine, source);
+        auto smoother = MakeSolver(fine, input, engine, stream, settings);
         auto solver = [&]
         {
             auto original = smoother.RetainForMultigrid();
-            C::PolynomialMultigrid hierarchy(mesh, fine, state, original, engine, stream, settings);
+            C::PolynomialMultigrid hierarchy(mesh, fine, input, original, engine, stream, settings);
             auto moved = std::move(original);
             return hierarchy;
         }(); // Both caller facades expire before cached-rate cycle execution.
         for (int cycle = 0; cycle < 2; ++cycle)
-            solver.ApplyCycle(source, 20, .5, .1);
+            solver.ApplyCycle(right, 20, .5, .1);
         const auto [scratchBytes, peakBorrows] = solver.ScratchPoolStatistics();
         if (variant == 3)
         {
@@ -298,38 +301,25 @@ TEST_CASE("FAS consumes the measured finest VR rate once for field and logical e
             A::Scale(source, 20.);
             R::EagerEngine engine;
             const auto stream = engine.CreateCPUStream();
-            if (logical)
+            auto input = Bind(fine, state), forcing = Bind(fine, source);
+            const auto workspace = logical
+                                       ? fine.BuildWorkspace(input)
+                                       : fine.BuildWorkspace(
+                                             input, std::nullopt,
+                                             C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic});
+            C::NonlinearSolver smoother(
+                fine, input, workspace, engine, stream, settings,
+                A::ComponentSelection(input.ComponentNumber(),
+                                      input.Schema().ResolveComponents(settings.implicit.residualComponents)));
+            C::PolynomialMultigrid solver(mesh, fine, input, smoother, engine, stream, settings);
+            if (manual)
             {
-                auto input = C::EquationDofs::Coupled(equation.Schema(), state);
-                auto forcing = C::EquationDofs::Coupled(equation.Schema(), source);
-                const auto workspace = fine.BuildEquationWorkspace(input);
-                C::EquationNonlinearSolver smoother(fine, input, workspace, engine, stream, settings, A::ComponentSelection(5));
-                C::PolynomialMultigrid solver(mesh, fine, input, smoother, engine, stream, settings);
-                if (manual)
-                {
-                    auto value = C::EquationDofOperations::NewVector(input), rate = C::EquationDofOperations::NewVector(input);
-                    smoother.EvaluateEquation(input, value, 20, .5, .1, &rate);
-                    solver.ApplyCycle(forcing, 20, .5, .1, 0, 0, &rate);
-                }
-                else
-                    CHECK(solver.Solve(forcing, 20, .5, .1).multigridCycles == 1);
+                auto value = C::EquationDofOperations::NewVector(input), rate = C::EquationDofOperations::NewVector(input);
+                smoother.EvaluateEquation(input, value, 20, .5, .1, &rate);
+                solver.ApplyCycle(forcing, 20, .5, .1, 0, 0, &rate);
             }
             else
-            {
-                C::AuxiliaryRequest channels;
-                channels.faceSpectralRadius = channels.cellSpectralSum = true;
-                const auto workspace = fine.BuildWorkspace(state, channels);
-                C::NonlinearSolver smoother(fine, state, workspace, engine, stream, settings);
-                C::PolynomialMultigrid solver(mesh, fine, state, smoother, engine, stream, settings);
-                if (manual)
-                {
-                    auto value = fine.Metrics().BuildField(5), rate = fine.Metrics().BuildField(5);
-                    smoother.EvaluateEquation(state, value, 20, .5, .1, &rate);
-                    solver.ApplyCycle(source, 20, .5, .1, 0, 0, &rate);
-                }
-                else
-                    CHECK(solver.Solve(source, 20, .5, .1).multigridCycles == 1);
-            }
+                CHECK(solver.Solve(forcing, 20, .5, .1).multigridCycles == 1);
             const auto read = state.Owned().Read();
             const auto values = read.View<R::UniformTableRows>();
             DNDS::index entry = 0;
@@ -376,19 +366,17 @@ TEST_CASE("Polynomial FAS recovers the original P3 manufactured equation across 
         const auto layout = scenario == 0 ? R::RowLayout::Dense(0, 5, 8) : scenario == 1 ? R::RowLayout::ColMajor(0, 5, {8, 1})
                                                                                          : R::RowLayout::TiledColMajor(0, 5, 32);
         auto state = fine.Metrics().BuildField(layout), exact = fine.Metrics().BuildField(layout), source = fine.Metrics().BuildField(layout);
-        C::AuxiliaryRequest channels;
-        channels.faceSpectralRadius = channels.cellSpectralSum = true;
-        auto workspace = fine.BuildWorkspace(state, channels);
         R::EagerEngine engine(scenario == 2 ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
-        C::NonlinearSolver smoother(fine, state, workspace, engine, stream, settings);
+        auto input = Bind(fine, state), forcing = Bind(fine, source);
         Fill(fine, equation, state, 0);
+        auto smoother = MakeSolver(fine, input, engine, stream, settings);
         A::Copy(exact, state);
-        smoother.EvaluateEquation(state, source, 30, .5, .1);
+        smoother.EvaluateEquation(input, forcing, 30, .5, .1);
         const auto generation = source.Owned().Version();
         Fill(fine, equation, state, .01);
-        C::PolynomialMultigrid solver(mesh, fine, state, smoother, engine, stream, settings);
-        const auto report = solver.Solve(source, 30, .5, .1);
+        C::PolynomialMultigrid solver(mesh, fine, input, smoother, engine, stream, settings);
+        const auto report = solver.Solve(forcing, 30, .5, .1);
         CAPTURE(scenario);
         CAPTURE(report.multigridCycles);
         CAPTURE(report.residual[0]);
@@ -423,22 +411,24 @@ TEST_CASE("Polynomial FAS fixed points and preflight errors preserve fine means"
     fine.Initialize(state, {}, {1, .2, -.1, 0, 1});
     A::Copy(source, state);
     A::Scale(source, 10.);
-    C::AuxiliaryRequest channels;
-    channels.faceSpectralRadius = channels.cellSpectralSum = true;
-    auto workspace = fine.BuildWorkspace(state, channels);
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
-    C::NonlinearSolver smoother(fine, state, workspace, engine, stream, settings);
-    C::PolynomialMultigrid solver(mesh, fine, state, smoother, engine, stream, settings);
+    auto input = Bind(fine, state), forcing = Bind(fine, source);
+    auto workspace = fine.BuildWorkspace(input);
+    C::NonlinearSolver smoother(
+        fine, input, workspace, engine, stream, settings,
+        A::ComponentSelection(input.ComponentNumber(),
+                              input.Schema().ResolveComponents(settings.implicit.residualComponents)));
+    C::PolynomialMultigrid solver(mesh, fine, input, smoother, engine, stream, settings);
     const auto generation = state.Owned().Version();
-    CHECK_THROWS(solver.Solve(state, 10, .5, 0));
-    CHECK_THROWS(solver.Solve(wrong, 10, .5, 0));
-    const auto report = solver.Solve(source, 10, .5, 0);
+    CHECK_THROWS(solver.Solve(input, 10, .5, 0));
+    CHECK_THROWS(Bind(fine, wrong));
+    const auto report = solver.Solve(forcing, 10, .5, 0);
     CHECK(report.converged);
     CHECK(report.multigridCycles == 0);
     CHECK(state.Owned().Version() == generation);
     A::Fill(source, -1e6);
-    CHECK_THROWS(solver.Solve(source, 10, .5, 0));
+    CHECK_THROWS(solver.Solve(forcing, 10, .5, 0));
     CHECK(state.Owned().IsValid());
     CHECK(state.Owned().Version() == generation);
     // A callback failure invalidates the generic cycle. The physical wrapper
@@ -448,7 +438,7 @@ TEST_CASE("Polynomial FAS fixed points and preflight errors preserve fine means"
     A::Scale(source, 10.);
     Fill(fine, equation, state, .01);
     fine.ResetReconstruction(*workspace);
-    CHECK(solver.Solve(source, 10, .5, 0).converged);
+    CHECK(solver.Solve(forcing, 10, .5, 0).converged);
 }
 TEST_CASE("Selected pMG recovers nonconstant principal equations while preserving frozen means and full residual reporting")
 {
@@ -477,15 +467,17 @@ TEST_CASE("Selected pMG recovers nonconstant principal equations while preservin
                                                                                          : R::RowLayout::TiledColMajor(0, 5, 8);
         auto state = fine.Metrics().BuildField(layout), exact = fine.Metrics().BuildField(layout), source = fine.Metrics().BuildField(layout);
         auto value = fine.Metrics().BuildField(layout);
-        C::AuxiliaryRequest channels;
-        channels.faceSpectralRadius = channels.cellSpectralSum = true;
-        auto workspace = fine.BuildWorkspace(state, channels);
         R::EagerEngine engine(scenario == 2 ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
-        C::NonlinearSolver smoother(fine, state, workspace, engine, stream, settings);
+        auto input = Bind(fine, state), forcing = Bind(fine, source), measured = Bind(fine, value);
         Fill(fine, equation, state, 0);
+        auto workspace = fine.BuildWorkspace(input);
+        C::NonlinearSolver smoother(
+            fine, input, workspace, engine, stream, settings,
+            A::ComponentSelection(input.ComponentNumber(),
+                                  input.Schema().ResolveComponents(settings.implicit.residualComponents)));
         A::Copy(exact, state);
-        smoother.EvaluateEquation(state, source, 30, .5, .1);
+        smoother.EvaluateEquation(input, forcing, 30, .5, .1);
         {
             auto write = state.Owned().Write();
             const auto u = write.View<R::UniformTableRows>();
@@ -505,7 +497,7 @@ TEST_CASE("Selected pMG recovers nonconstant principal equations while preservin
         const auto sourceVersion = source.Owned().Version();
         const auto measure = [&]
         {
-            smoother.EvaluateEquation(state, value, 30, .5, .1);
+            smoother.EvaluateEquation(input, measured, 30, .5, .1);
             std::array<double, 6> norms{};
             {
                 const auto read = value.Owned().Read(), bRead = source.Owned().Read();
@@ -532,8 +524,8 @@ TEST_CASE("Selected pMG recovers nonconstant principal equations while preservin
         fine.ResetReconstruction(*workspace);
         const auto initialNorm = measure();
         fine.ResetReconstruction(*workspace);
-        C::PolynomialMultigrid solver(mesh, fine, state, smoother, engine, stream, settings);
-        const auto report = solver.Solve(source, 30, .5, .1);
+        C::PolynomialMultigrid solver(mesh, fine, input, smoother, engine, stream, settings);
+        const auto report = solver.Solve(forcing, 30, .5, .1);
         CAPTURE(scenario);
         CAPTURE(report.multigridCycles);
         CAPTURE(report.residual);
@@ -547,7 +539,8 @@ TEST_CASE("Selected pMG recovers nonconstant principal equations while preservin
             CHECK(report.residual[2] == doctest::Approx(.1).epsilon(1e-10));
             auto subsetControls = settings.implicit;
             subsetControls.residualComponents = {"rho", "rhoE"};
-            C::ResidualConvergence subset(subsetControls, equation.Schema());
+            C::BasicResidualConvergence<std::vector<DNDS::real>> subset(
+                subsetControls, equation.Schema(), std::vector<DNDS::real>(5));
             subset.Observe(report.initialResidual);
             subset.Observe(report.residual);
             CHECK(subset.Accepted());
@@ -707,11 +700,11 @@ TEST_CASE("Logical polynomial FAS recovers nonconstant RANS and reacting mixture
         }
         auto exact = C::EquationDofOperations::NewVector(state), source = C::EquationDofOperations::NewVector(state);
         C::EquationDofOperations::Copy(exact, state);
-        auto work = fine.BuildEquationWorkspace(state, setup.workers);
+        auto work = fine.BuildWorkspace(state, setup.workers);
         R::EagerEngine engine(scenario ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
-        C::EquationNonlinearSolver smoother(fine, state, work, engine, stream, settings,
-                                            A::ComponentSelection(state.ComponentNumber(), state.Schema().ResolveComponents(settings.implicit.residualComponents)), setup.workers);
+        C::NonlinearSolver smoother(fine, state, work, engine, stream, settings,
+                                    A::ComponentSelection(state.ComponentNumber(), state.Schema().ResolveComponents(settings.implicit.residualComponents)), setup.workers);
         constexpr double mass = 10000, scale = .5;
         smoother.EvaluateEquation(state, source, mass, scale, .1);
         const C::EquationDofOperations::Binding sourceBinding(source);

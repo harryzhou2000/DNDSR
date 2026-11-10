@@ -5,6 +5,7 @@
 #include "CFV/Legacy/VariationalReconstruction_LimiterProcedure.hxx"
 #include "CFV/Plans/InterfaceSamplingPlan.hpp"
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
+#include "DNDS/Algebra/DofAlgebra.hpp"
 #include "Geom/IO/NativeMeshCGNS.hpp"
 #include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
 #include "Geom/Interface/BoundaryInterface.hpp"
@@ -378,6 +379,15 @@ TEST_CASE("WBAP explicit five-component face transforms match legacy and preserv
     auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh, settings.intOrder);
     auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
     auto work = plan.BuildWorkspace(6);
+    auto disabled = plan.BuildFaceTransform(3, 0);
+    CHECK(disabled.count == 0);
+    CHECK(disabled.forward.RowCount() == 0);
+    CHECK(disabled.inverse.RowCount() == 0);
+    CHECK_NOTHROW(plan.FinalizeFaceTransform(disabled));
+    auto disabledWork = plan.BuildWorkspace(6);
+    DNDS::Algebra::Fill(disabledWork.coefficients, 0.);
+    metrics.BindHalo(disabledWork.coefficients).Begin().Wait();
+    CHECK_NOTHROW(plan.DoLimiterWBAP_3Order(disabledWork, 2, std::cref(disabled)));
     auto characteristic = plan.BuildFaceTransform(0, 5);
     Eigen::Matrix<DNDS::real, 5, 5> L = Eigen::Matrix<DNDS::real, 5, 5>::Identity();
     L(0, 0) = .8, L(0, 1) = -.6, L(1, 0) = .6, L(1, 1) = .8;
@@ -389,7 +399,7 @@ TEST_CASE("WBAP explicit five-component face transforms match legacy and preserv
             Eigen::Map<Eigen::MatrixXd>(right.View()[iFace].data(), 5, 5) = L.transpose();
         }
     }
-    CHECK_THROWS(plan.DoLimiterWBAP_3Order(work, 2, &characteristic));
+    CHECK_THROWS(plan.DoLimiterWBAP_3Order(work, 2, std::cref(characteristic)));
     plan.FinalizeFaceTransform(characteristic);
     C::VariationalReconstruction<2> legacy(mpi, mesh);
     C::VRSettings old(2);
@@ -442,7 +452,7 @@ TEST_CASE("WBAP explicit five-component face transforms match legacy and preserv
     legacy.DoLimiterWBAP_3<6>(mean, rec, output, temporary, indicator, true, forward, inverse, true);
     for (int order = 2; order >= 1; --order)
     {
-        plan.DoLimiterWBAP_3Order(work, order, &characteristic);
+        plan.DoLimiterWBAP_3Order(work, order, std::cref(characteristic));
         halo.Begin().Wait();
     }
     auto read = work.coefficients.Owned().Read();
@@ -452,7 +462,7 @@ TEST_CASE("WBAP explicit five-component face transforms match legacy and preserv
                 CHECK(read.View()(iCell, v * plan.NRecDOF() + mode) == doctest::Approx(output[iCell](mode, v)).epsilon(1e-9).scale(1));
     auto bad = characteristic;
     bad.first = 2;
-    CHECK_THROWS(plan.DoLimiterWBAP_3Order(work, 2, &bad));
+    CHECK_THROWS(plan.DoLimiterWBAP_3Order(work, 2, std::cref(bad)));
     {
         auto write = characteristic.inverse.Write();
         if (metrics.NumFaceProc())

@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include "Geom/Access/EntityWorkPartition.hpp"
 #include "CFV/Math/TaylorBasis.hpp"
@@ -180,14 +181,17 @@ TEST_CASE("Polynomial viscosity exchanges the selected limited or unlimited coef
                             write.View<R::UniformTableRows>()(iCell, j) = value[j];
                     }
                 }
-                auto work = fv.BuildWorkspace(mean);
+                auto state = C::EquationDofs::Coupled(equation.Schema(), mean);
+                auto result = C::EquationDofs::Coupled(equation.Schema(), actual);
+                auto work = fv.BuildWorkspace(state);
                 R::EagerEngine engine(overlap ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
                 const auto stream = engine.CreateCPUStream();
-                fv.Evaluate(mean, actual, *work, engine, stream);
+                fv.Evaluate(state, result, *work, engine, stream);
                 // Independently refresh both published coefficient fields before
                 // the direct stateless operator. A stale unlimited halo from the
                 // final VR commit would disagree with this reference on np>1.
-                auto flux = fv.FluxReconstruction(*work), guess = fv.ReconstructionGuess(*work);
+                auto flux = fv.FluxReconstruction(*work).CoupledField();
+                auto guess = fv.ReconstructionGuess(*work).CoupledField();
                 auto fluxOperation = fv.Metrics().BindHalo(flux).Begin();
                 fluxOperation.Wait();
                 auto guessOperation = fv.Metrics().BindHalo(guess).Begin();
@@ -249,7 +253,60 @@ TEST_CASE("Viscous policy disagreement is rejected before differing transfer sch
             settings.numerics.noGRPOnWall = mpi.rank == 0;
         C::FiniteVolume fv(mesh, settings, C::EquationSystem::Resolve(settings.equation));
         auto mean = fv.Metrics().BuildField(5);
-        CHECK_THROWS_WITH(fv.BuildWorkspace(mean), doctest::Contains("FV viscous policy differs between domain ranks"));
+        auto state = C::EquationDofs::Coupled(fv.Equation().Schema(), mean);
+        CHECK_THROWS(fv.BuildWorkspace(state));
+    }
+}
+TEST_CASE("Unified equation orchestration preserves primitive-gradient flow5 viscosity")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    for (bool overlap : {false, true})
+    {
+        CAPTURE(overlap);
+        C::DomainSettings settings;
+        settings.execution.overlap = overlap;
+        settings.equation.transport = "NewtonianFourier";
+        settings.equation.viscosity = .015;
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.viscousGradient = "primitive";
+        settings.numerics.reconstructionIterations = 4;
+        settings.numerics.cfv.maxOrder = 2;
+        settings.numerics.faceFallback = false;
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto raw = fv.Metrics().BuildField(5), expected = fv.Metrics().BuildField(5);
+        {
+            auto write = raw.Owned().Write();
+            const auto values = write.View<R::UniformTableRows>();
+            for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+            {
+                const auto center = fv.Metrics().GetCellCent(iCell);
+                const auto value = equation.Gas().Conservative(
+                    {1 + .05 * std::sin(2 * DNDS::pi * center[0]),
+                     .2 + .1 * center[1], -.08 + .04 * center[0], .03,
+                     1 + .07 * std::cos(2 * DNDS::pi * center[1])});
+                for (int j = 0; j < 5; ++j)
+                    values(iCell, j) = value[j];
+            }
+        }
+        auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(5));
+        auto generic = C::EquationDofs::Coupled(equation.Schema(), raw);
+        C::EquationDofOperations::Copy(state, generic);
+        auto expectedState = C::EquationDofs::Coupled(equation.Schema(), expected);
+        auto actual = C::EquationDofOperations::NewVector(state);
+        auto genericWork = fv.BuildWorkspace(
+            generic, std::nullopt,
+            C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic});
+        auto work = fv.BuildWorkspace(state);
+        R::EagerEngine engine(overlap ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateCPUStream();
+        fv.Evaluate(generic, expectedState, *genericWork, engine, stream);
+        fv.Evaluate(state, actual, *work, engine, stream);
+        const auto a = actual.CoupledField().Owned().Read(), b = expected.Owned().Read();
+        const auto av = a.View<R::UniformTableRows>(), bv = b.View<R::UniformTableRows>();
+        for (DNDS::index iCell = 0; iCell < av.RowCount(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+                CHECK(av(iCell, j) == doctest::Approx(bv(iCell, j)).epsilon(2e-12).scale(1));
     }
 }
 TEST_CASE("Polynomial wall viscosity has the Euler normal jump and noGRP switch")
@@ -271,12 +328,14 @@ TEST_CASE("Polynomial wall viscosity has the Euler normal jump and noGRP switch"
         const auto equation = C::EquationSystem::Resolve(settings.equation);
         C::FiniteVolume fv(mesh, settings, equation);
         auto mean = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5), inviscid = fv.Metrics().BuildField(5);
-        fv.Initialize(mean, {}, settings.initialPrimitive);
-        auto work = fv.BuildWorkspace(mean);
+        auto state = C::EquationDofs::Coupled(equation.Schema(), mean);
+        auto output = C::EquationDofs::Coupled(equation.Schema(), residual);
+        fv.InitializeConstant(state, settings.initialPrimitive);
+        auto work = fv.BuildWorkspace(state);
         R::EagerEngine engine(2);
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(mean, residual, *work, engine, stream);
-        const auto &coefficients = fv.FluxReconstruction(*work);
+        fv.Evaluate(state, output, *work, engine, stream);
+        const auto &coefficients = fv.FluxReconstruction(*work).CoupledField();
         {
             const auto u = mean.Owned().Read(), ug = mean.Ghost().Read(), c = coefficients.Owned().Read(), cg = coefficients.Ghost().Read();
             C::RHSReadViews input;

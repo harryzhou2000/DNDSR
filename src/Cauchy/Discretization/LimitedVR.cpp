@@ -94,7 +94,7 @@ namespace DNDS::Cauchy
         }
     }
     void FiniteVolume::LimitedVRWorkspace::Build(const Data &data, const CFV::FVField &mean,
-                                                 const CFV::FaceCharacteristicTransform *transform,
+                                                 CFV::FaceCharacteristicTransformRef transform,
                                                  R::EagerEngine &engine, const R::ExecutionStream &stream)
     {
         const MPIInfo mpi(data.metrics.Communicator());
@@ -110,12 +110,14 @@ namespace DNDS::Cauchy
         {
             auto transfer = begin(targetHalo);
             if (overlap)
-                data.reconstruction.DoLimiterWBAP_3OrderTo(target, 1, transform, CFV::ReconstructionRegion::Core);
+                data.reconstruction.SubmitLimiterWBAP_3OrderTo(engine, stream, target, 1, transform,
+                                                               CFV::ReconstructionRegion::Core);
             transfer.Wait();
-            MPI::LocalStage(mpi, [&]
-                            {
-                data.reconstruction.DoLimiterWBAP_3OrderTo(target, 1, transform, overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
-                data.reconstruction.CommitReconstruction(target); });
+            data.reconstruction.SubmitLimiterWBAP_3OrderTo(
+                engine, stream, target, 1, transform,
+                overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
+            data.reconstruction.SubmitCommitReconstruction(engine, stream, target);
+            stream.Record().WaitHost();
         }
         // Reuse the Euler common-beta mathematics on a mean-based O2 target,
         // independently of the final high-order PP policy. No alternate limiter

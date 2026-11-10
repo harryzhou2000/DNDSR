@@ -31,21 +31,19 @@ namespace DNDS::Cauchy
         EquationDofs _accepted, _trial;
         EquationDofs _residualState;
         EquationDofs _initial;
-        std::shared_ptr<FiniteVolume::Workspace> _workspace;
-        std::shared_ptr<FiniteVolume::EquationWorkspace> _equationWorkspace, _equationObservationWorkspace;
-        std::optional<EquationDofs> _equationBackup, _observationState;
-        std::optional<EquationThermalPolicy> _equationThermal;
+        std::shared_ptr<FiniteVolume::Workspace> _workspace, _observationWorkspace;
+        std::optional<EquationDofs> _reconstructionBackup, _observationState;
+        std::optional<Runtime::Array<real>> _limitedVRBackup;
+        std::optional<EquationThermalPolicy> _thermal;
         std::optional<RANSStateView> _ransState;
-        std::shared_ptr<FiniteVolume::Workspace> _observationWorkspace;
-        std::optional<CFV::FVField> _observationResidual;
         /// Logical-const diagnostics may enqueue work on the domain stream.
         mutable Runtime::EagerEngine _engine;
         Runtime::ExecutionStream _stream;
         std::unique_ptr<NonlinearSolver> _implicit;
-        std::unique_ptr<EquationNonlinearSolver> _equationImplicit;
         std::unique_ptr<PolynomialMultigrid> _multigrid;
         std::unique_ptr<EquationTimeStepper> _timeStepper;
         std::vector<EquationNonlinearIterationReport> _lastImplicit;
+        std::function<void(const NonlinearProgress &)> _progressObserver;
         index _lastCoupledIterations = 0;
         real _lastCoupledTargetRatio = 0;
         std::vector<index> _ditrComponents;
@@ -62,8 +60,6 @@ namespace DNDS::Cauchy
         std::optional<CoupledStageOperator> _coupledMiddle;
         Runtime::ArrayStorage::Shared _coupledMiddleOwner;
         std::optional<EquationDofs> _coupledResidual;
-        std::optional<Runtime::Array<real>> _reconstructionBackup;
-        std::optional<Runtime::Array<real>> _limitedVRBackup;
         bool _restoreReconstruction = false;
         mutable std::optional<AuxiliaryValues> _timeAuxiliary;
         mutable std::optional<EquationMeanGradients> _timeMeanGradients;
@@ -71,9 +67,7 @@ namespace DNDS::Cauchy
         PhysicalTimePositivitySettings _timePP;
         int _timeCompressionPower = 1;
         std::shared_ptr<FiniteVolume::MeanWorkspace> _timePPWorkspace;
-        std::optional<CFV::FVField> _timePPResidual;
-        std::shared_ptr<FiniteVolume::EquationMeanWorkspace> _timeEquationPPWorkspace;
-        std::optional<EquationDofs> _timeEquationPPResidual;
+        std::optional<EquationDofs> _timePPResidual;
         StateEpoch _epoch;
         StateEpoch _trialEpoch;
         uint64_t _nextTrial = 0;
@@ -94,14 +88,12 @@ namespace DNDS::Cauchy
         void InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh);
         void ConfigureTimeStep(const TimeSettings &time, int compressionPower);
         StepResult PrepareImplicitStep(real dt);
+        NonlinearSolveControl ProgressControl() const;
         void SetTimeStage(int stage);
         void PreserveReconstructionGuess();
         void EvaluateImplicitRate(EquationDofs &state, EquationDofs &rate, FiniteVolume::Workspace &workspace, real time, int stage);
-        void EvaluateImplicitRate(EquationDofs &state, EquationDofs &rate, FiniteVolume::EquationWorkspace &workspace, real time, int stage);
         void NormalizeRate(EquationDofs &rate);
-        bool RecordImplicitStage(NonlinearIterationReport report);
         bool RecordImplicitStage(EquationNonlinearIterationReport report);
-        static EquationNonlinearIterationReport AsEquationReport(NonlinearIterationReport report);
         bool Admissible(const EquationDofs &state) const;
         static CFV::FVField &FlowField(EquationDofs &state);
         static const CFV::FVField &FlowField(const EquationDofs &state);
@@ -177,6 +169,12 @@ namespace DNDS::Cauchy
         bool UsesStrangSource() const { return _sourceStrang; }
         const StateEpoch &Epoch() const { return _epoch; }
         const std::vector<EquationNonlinearIterationReport> &LastImplicitStages() const { return _lastImplicit; }
+        /// Synchronous sink-neutral nonlinear progress callback. The callback
+        /// may buffer/report locally but must not enter unrelated collectives.
+        void SetProgressObserver(std::function<void(const NonlinearProgress &)> observer)
+        {
+            _progressObserver = std::move(observer);
+        }
         index LastCoupledIterations() const { return _lastCoupledIterations; }
         /// Shared nonlinear policy's selected-component ratio for I+H after
         /// the two DITR updates. Identical to its single solve report's ratio;

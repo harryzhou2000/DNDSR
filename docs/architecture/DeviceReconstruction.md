@@ -1,14 +1,16 @@
-# Resident CUDA reconstruction
+# Backend-resident reconstruction
 
-`CFV::ReconstructionDevicePlan` is an explicit placement of a CPU-prepared
-`VariationalReconstructionPlan`. It provides CUDA Jacobi and order-wise WBAP;
-it is not a new numerical owner or a flow solver. CPU preparation, SVD, mesh
-mutation, partitioning and spatial search remain on the host.
+`CFV::VariationalReconstructionPlan` is the single public reconstruction plan
+on host and CUDA. `Place(device, context, options)` attaches an immutable
+backend payload and returns the same plan type; `ReconstructionWorkspace` is
+likewise the only public workspace type. Cauchy and other callers do not select
+between CPU/device plan classes. CPU preparation, SVD, mesh mutation,
+partitioning and spatial search remain on the host.
 
 ```mermaid
 flowchart TD
     M[CPU UnstructuredMesh] --> F[CPU FV metrics and VR plan]
-    F --> P[Shared immutable ReconstructionDevicePlan publication]
+    F --> P[Same plan type with immutable CUDA placement]
     P --> N[Numeric matrices, neighbors and work lists on CUDA]
     P --> X[Optional mesh, metrics and cached basis]
     P --> R[Retained read scope and source-generation pin]
@@ -22,7 +24,7 @@ flowchart TD
 
 ## Placement and ownership
 
-`Prepare(source, Device::CUDA(i), context, options)` synchronously uploads only
+`source.Place(Device::CUDA(i), context, options)` synchronously uploads only
 the supported operators' numeric inputs. It validates the selected device and
 rejects CPU placement, unavailable CUDA builds and SOR before returning a usable
 publication. `options.mesh`, `metrics` and `basis` select additional query data;
@@ -30,17 +32,18 @@ basis also needs the metric quadrature offsets. Missing optional capabilities
 throw. Mesh data uses the existing `UnstructuredMeshSnapshot`, including its
 device-callable view; CFV does not create another topology implementation.
 
-`Buffers()` reports retained numeric capacities, names and placements, including
+`ResidentBuffers()` reports retained numeric capacities, names and placements, including
 payload and metadata allocations of the optional mesh snapshot. Shared mesh
 allocations are counted once. This is an allocation-capacity manifest, excluding
 native allocator bookkeeping/alignment overhead, host authority and separately
 created fields/workspaces. `UnstructuredMeshSnapshot::VisitAllocations` supplies
 the reusable payload/metadata enumeration also used by mesh-state accounting.
 
-Plan copies share the publication. A read scope pins source geometry generations
-and device buffers; its plain view is borrowed and must not outlive that scope.
-Queued wrappers retain the scope through actual completion. Preparation's stream
-is not retained as an immutable buffer's later access context. Geometry,
+Plan copies share the publication. Managed operation records retain the logical
+plan, placement payload, device buffers and all submitted operands through
+actual completion. Kernel views are plain borrows valid only within that
+retained operation. Preparation's stream is not retained as an immutable
+buffer's later access context. Geometry,
 topology/distribution or layout changes invalidate the source plan before reuse;
 solution changes do not invalidate geometric caches.
 
@@ -51,8 +54,10 @@ readiness or turn CUDA-aware MPI into a stream-ordered backend.
 
 ## Fields and numerical envelope
 
-`BuildField(prototype)` and `BuildWorkspace(components, prototype, vectorStarts)`
-create device fields in Table, ColMajorTable or TiledColMajorTable storage.
+`BuildWorkspace(components, prototype, vectorStarts)` creates device fields in
+Table, ColMajorTable or TiledColMajorTable storage. Other solution fields use
+the common metric plan's `BuildField(prototype, device)`; no device-plan-specific
+field factory exists.
 The prototype's row count is replaced by actual owned/ghost counts; its logical
 width must match the requested field. The internal metric, matrix, boundary,
 transform and scratch formats remain unchanged. URec still flattens
@@ -134,8 +139,9 @@ commit, then synchronize and inspect status. Python exposes these wrappers and
 the same shared field allocations. Release retained Python write/DLPack aliases
 before invoking them; element reads and `numpy()` use Runtime synchronization.
 
-The C++ `...To(engine, stream, ...)` calls enqueue without a host wait per kernel.
-They write `workspace.temporary`; call `CommitReconstruction` separately. The
+The C++ `Submit...(engine, stream, ...)` calls enqueue without a host wait per
+kernel. They write `workspace.temporary`; call
+`SubmitCommitReconstruction` separately. The
 existing eager engine reserves/retains operands, but does **not** prove stream
 dependencies. The caller must establish readiness and every conflicting access
 edge, including scratch reuse, transform refresh and final destruction. Ordinary
@@ -147,12 +153,12 @@ The safe direct MPI overlap shape is:
 ```cpp
 // All previous producers of coefficients have completed or been joined.
 auto transfer = halo.Begin(deviceContext); // owned read, separate ghost write
-resident.DoReconstructionIterTo(engine, compute, mean, work.coefficients,
-                                work, boundary, ReconstructionRegion::Core);
+resident.SubmitReconstructionIterTo(engine, compute, mean, work.coefficients,
+                                    work, boundary, ReconstructionRegion::Core);
 transfer.Wait(); // CUDA-aware MPI is a host-managed readiness boundary
-resident.DoReconstructionIterTo(engine, compute, mean, work.coefficients,
-                                work, boundary, ReconstructionRegion::HaloDependent);
-resident.CommitReconstruction(engine, compute, work);
+resident.SubmitReconstructionIterTo(engine, compute, mean, work.coefficients,
+                                    work, boundary, ReconstructionRegion::HaloDependent);
+resident.SubmitCommitReconstruction(engine, compute, work);
 engine.Synchronize(); // observation/next MPI producer boundary
 resident.CheckStatus(work);
 ```

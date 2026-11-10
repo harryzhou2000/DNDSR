@@ -54,13 +54,16 @@ int main(int argc, char **argv)
         }
         const auto version = state.Owned().Version();
         auto logical = C::EquationDofs::Coupled(equation.Schema(), state);
+        auto physicalLogicalOutput = C::EquationDofs::Coupled(equation.Schema(), physicalOutput);
         auto logicalOutput = C::EquationDofs::Coupled(equation.Schema(), equationOutput);
-        auto physicalWork = fv.BuildWorkspace(state);
-        auto equationWork = fv.BuildEquationWorkspace(logical);
+        auto physicalWork = fv.BuildWorkspace(
+            logical, std::nullopt,
+            C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic});
+        auto equationWork = fv.BuildWorkspace(logical);
         R::EagerEngine engine;
         const auto stream = engine.CreateCPUStream();
         const auto physical = [&]
-        { fv.Evaluate(state, physicalOutput, *physicalWork, engine, stream); };
+        { fv.Evaluate(logical, physicalLogicalOutput, *physicalWork, engine, stream); };
         const auto general = [&]
         { fv.Evaluate(logical, logicalOutput, *equationWork, engine, stream); };
         for (int warmup = 0; warmup < 3; ++warmup)

@@ -6,6 +6,21 @@
 
 namespace DNDS::Cauchy
 {
+    /// Sink-neutral nonlinear progress snapshot. Numerical solvers publish the
+    /// same values to history/console observers; no file or MPI policy lives in
+    /// this type. Vectors follow the equation schema's logical component order.
+    struct NonlinearProgress
+    {
+        int stage = 0, coupledStage = -1;
+        index iteration = 0;
+        bool converged = false, terminal = false;
+        std::vector<real> residual, initialResidual, referenceResidual;
+        real residualTargetRatio = 0, pseudoCFL = 0;
+        index linearIterations = 0, rhsLimited = 0, incrementLimited = 0;
+        real minimumRHSAlpha = 1, minimumIncrementAlpha = 1;
+        int reconstructionIterations = 0;
+        real reconstructionRelativeUpdate = 0;
+    };
     /// Optional synchronous CPU profile. Values are local wall seconds, not
     /// reduced across ranks. Total encloses the disjoint named sections;
     /// its remainder includes controller work and timer overhead. The caller
@@ -38,6 +53,11 @@ namespace DNDS::Cauchy
         /// linear system with all other means frozen, including through PP.
         /// This never changes the separately configured convergence selection.
         std::vector<index> updateComponents;
+        /// Called synchronously after a completed nonlinear correction is
+        /// measured. It must not enter unrelated MPI collectives. The observer
+        /// receives copied scalar/vector data and may buffer it for a safe
+        /// frontend flush boundary.
+        std::function<void(const NonlinearProgress &)> progress;
     };
     template <class Norms>
     struct BasicNonlinearIterationReport
@@ -59,97 +79,13 @@ namespace DNDS::Cauchy
     };
     using NonlinearIterationReport = BasicNonlinearIterationReport<FlowState>;
     using EquationNonlinearIterationReport = BasicNonlinearIterationReport<std::vector<real>>;
-    /// Initial compressible-flow5 CPU stage adapter. Its physical PP, norms
-    /// and identity accumulation do not implement other equation profiles.
-    /// The underlying time interface and coupled linear algebra are generic.
-    /// CPU pseudo-time-continuation stage solver. Time equations supply explicit
-    /// source/mass/RHS coefficients; physics/discretization, sparse algebra and
-    /// physical history remain separate. Each instance binds to one stable trial
-    /// state/workspace. Caller serializes all accesses and coordinates retries.
-    /// Mutable sessions are move-only. The explicit pMG alias shares one
-    /// exclusion controller and uses a retained nested ticket during a cycle.
-    /// The bound stream weakly identifies the actual execution runtime; each
-    /// operator locks it for the call and rejects closure/expiry. No engine
-    /// object address is retained.
-    /// Optional local phases omit successful safety agreement when checks are
-    /// disabled and abort on failure. Solve-entry, numerical norms and candidate
-    /// acceptance remain coordinated; off mode does not permit rank-local retry.
-    class NonlinearSolver
-    {
-        struct Data;
-        std::shared_ptr<Data> _data;
-        std::weak_ptr<const Runtime::SessionAccess::Ticket> _nestedSession;
-        explicit NonlinearSolver(std::shared_ptr<Data> data) : _data(std::move(data)) {}
-        std::pair<index, real> ApplyCorrectionImpl(CFV::FVField &state, const CFV::FVField &increment, real scale, const std::vector<index> &components);
-        NonlinearIterationReport Execute(CFV::FVField &state, const CFV::FVField &source,
-                                         real mass, real rhsScale, real time, int stage,
-                                         NonlinearSolveControl control, bool singleCorrection, const CFV::FVField *cachedRate);
-
-    public:
-        NonlinearSolver(const NonlinearSolver &) = delete;
-        NonlinearSolver &operator=(const NonlinearSolver &) = delete;
-        NonlinearSolver(NonlinearSolver &&) noexcept = default;
-        NonlinearSolver &operator=(NonlinearSolver &&) noexcept = default;
-        /// Explicit internal hierarchy alias; ordinary session copies are forbidden.
-        NonlinearSolver RetainForMultigrid() const { return NonlinearSolver(_data); }
-        Runtime::SessionAccess::Lease ReserveForMultigrid();
-        NonlinearSolver(const FiniteVolume &discrete, CFV::FVField &state, std::shared_ptr<FiniteVolume::Workspace> workspace,
-                        Runtime::EagerEngine &engine, Runtime::ExecutionStream stream, const DomainSettings &settings);
-        /// Solve mass*U-rhsScale*(R(U)/V)=source. Source is owned and immutable;
-        /// all domain ranks enter with identical controls. Returns unconverged
-        /// on a correction cap; the caller chooses whether to advance that
-        /// finite iterate or reject the physical trial. The report never labels
-        /// a capped, unconverged solve as converged.
-        /// Nonfinite/unusable linear corrections and inadmissible states throw.
-        /// PP uses Euler alpha compression/flow5 repair only when requested.
-        /// Strict reconstruction acceptance, when requested, additionally checks
-        /// the latest global VR update against its positive configured tolerance.
-        /// Nonnegative control.correctionLimit selects a bounded FAS smoother;
-        /// that cap reports work and does not imply physical-stage acceptance.
-        /// With collectiveChecks enabled ranks agree controls before iteration;
-        /// otherwise the caller must supply identical controls/order on all
-        /// ranks and fail fast on local errors. Local validation stays active.
-        NonlinearIterationReport Solve(CFV::FVField &state, const CFV::FVField &source,
-                                       real mass, real rhsScale, real time, int stage = 0, NonlinearSolveControl control = {});
-        /// Exactly one pseudo-time/Jacobian/linear/PP update, with no convergence
-        /// loop or norm reduction. The caller owns CFL progression and stopping.
-        /// Accepts stale input halo; returns owned updates with unspecified halo.
-        /// report.converged is false: this operation makes no acceptance decision.
-        /// Optional cachedRate is a method-owned F=dU/dt (owned values only).
-        /// Caller guarantees its time/stage provenance; it is consumed verbatim,
-        /// with fresh auxiliary preparation but no duplicate reconstruction/RHS.
-        NonlinearIterationReport CorrectOnce(CFV::FVField &state, const CFV::FVField &source,
-                                             real mass, real rhsScale, real time, int stage = 0, NonlinearSolveControl control = {},
-                                             const CFV::FVField *cachedRate = nullptr);
-        /// FAS operator in the same normalized convention as Solve. No input
-        /// mean mutation; Evaluate may refresh ghosts and reconstruction scratch.
-        /// Optional rate receives the unscaled spatial dU/dt from this same
-        /// evaluation, avoiding cancellation when mass*U dominates the defect.
-        /// It must be distinct from state/value and have no conflicting leases.
-        void EvaluateEquation(CFV::FVField &state, CFV::FVField &value, real mass, real rhsScale, real time,
-                              CFV::FVField *rate = nullptr);
-        /// Rank-local snapshot after the most recent equation evaluation.
-        std::pair<int, real> ReconstructionStats() const;
-        /// Already agreed by the FV reconstruction's global norm. No MPI here.
-        /// With strict acceptance disabled, fixed-sweep Euler behavior remains.
-        bool ReconstructionConverged() const;
-        real ReconstructionTolerance() const;
-        /// Apply a separate increment using the same Euler flow5 PP policy as
-        /// the smoother. Returns global (limited cells, minimum fraction).
-        /// Candidate admissibility is agreed before any state values change.
-        /// Optional updateComponents masks before PP; frozen means remain
-        /// bit-identical. Ranks must agree selection and scale before entering.
-        std::pair<index, real> ApplyCorrection(CFV::FVField &state, const CFV::FVField &correction, real scale = 1,
-                                               const std::vector<index> &updateComponents = {});
-    };
-
     /// CPU whole-equation stage adapter over the shared nonlinear iteration
     /// policy, equation FV and coupled linear driver. The explicit residual
     /// selection is resolved by the equation frontend; it cannot silently use
     /// the historical flow5 defaults for a larger system. Every component's
     /// norm is reported. Storage grouping/layout may differ between operands.
     ///
-    /// The equation profile matches EquationWorkspace: no Roe fallback.
+    /// The equation profile matches Workspace: no Roe fallback.
     /// Polynomial FAS uses CorrectOnce as its bounded smoother. A capped finite solve
     /// remains unconverged and leaves acceptance to the time orchestrator.
     /// Callers serialize bound state/workspace/engine access, coordinate all
@@ -159,33 +95,33 @@ namespace DNDS::Cauchy
     /// closed/expired execution. No EagerEngine object address is retained.
     /// Optional local-phase failures follow the flow5 adapter's same policy:
     /// off mode aborts; candidate acceptance and solve-entry remain coordinated.
-    class EquationNonlinearSolver
+    class NonlinearSolver
     {
         struct Data;
         std::shared_ptr<Data> _data;
         std::weak_ptr<const Runtime::SessionAccess::Ticket> _nestedSession;
-        explicit EquationNonlinearSolver(std::shared_ptr<Data> data) : _data(std::move(data)) {}
+        explicit NonlinearSolver(std::shared_ptr<Data> data) : _data(std::move(data)) {}
         std::pair<index, real> ApplyCorrectionImpl(EquationDofs &state, const EquationDofs &increment, real scale, const std::vector<index> &components);
         EquationNonlinearIterationReport Execute(EquationDofs &state, const EquationDofs &source,
                                                  real mass, real rhsScale, real time, int stage,
                                                  NonlinearSolveControl control, bool singleCorrection, const EquationDofs *cachedRate);
 
     public:
-        EquationNonlinearSolver(const EquationNonlinearSolver &) = delete;
-        EquationNonlinearSolver &operator=(const EquationNonlinearSolver &) = delete;
-        EquationNonlinearSolver(EquationNonlinearSolver &&) noexcept = default;
-        EquationNonlinearSolver &operator=(EquationNonlinearSolver &&) noexcept = default;
+        NonlinearSolver(const NonlinearSolver &) = delete;
+        NonlinearSolver &operator=(const NonlinearSolver &) = delete;
+        NonlinearSolver(NonlinearSolver &&) noexcept = default;
+        NonlinearSolver &operator=(NonlinearSolver &&) noexcept = default;
         /// Explicit internal hierarchy alias; ordinary session copies are forbidden.
-        EquationNonlinearSolver RetainForMultigrid() const { return EquationNonlinearSolver(_data); }
+        NonlinearSolver RetainForMultigrid() const { return NonlinearSolver(_data); }
         Runtime::SessionAccess::Lease ReserveForMultigrid();
-        EquationNonlinearSolver(const FiniteVolume &discrete, EquationDofs &state, std::shared_ptr<FiniteVolume::EquationWorkspace> workspace,
-                                Runtime::EagerEngine &engine, Runtime::ExecutionStream stream, const DomainSettings &settings,
-                                const Algebra::ComponentSelection &residualSelection,
-                                std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt);
+        NonlinearSolver(const FiniteVolume &discrete, EquationDofs &state, std::shared_ptr<FiniteVolume::Workspace> workspace,
+                        Runtime::EagerEngine &engine, Runtime::ExecutionStream stream, const DomainSettings &settings,
+                        const Algebra::ComponentSelection &residualSelection,
+                        std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt);
         EquationNonlinearIterationReport Solve(EquationDofs &state, const EquationDofs &source, real mass, real rhsScale, real time,
                                                int stage = 0, NonlinearSolveControl control = {});
-        /// Whole-equation counterpart of NonlinearSolver::CorrectOnce, retaining
-        /// split allocation/layout and EOS/source/PP dispatch. No nested solve.
+        /// One bounded correction retaining split allocation/layout and
+        /// EOS/source/PP dispatch. No nested solve.
         EquationNonlinearIterationReport CorrectOnce(EquationDofs &state, const EquationDofs &source, real mass, real rhsScale, real time,
                                                      int stage = 0, NonlinearSolveControl control = {}, const EquationDofs *cachedRate = nullptr);
         /// Evaluate dU/dt with aux preparation before reconstruction/RHS and

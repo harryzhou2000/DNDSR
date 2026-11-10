@@ -30,33 +30,20 @@ namespace DNDS::Cauchy
         PhysicalStepLimit result{requestedDt};
         if (_steady || !_timePP.enabled)
             return result;
-        if (_equationWorkspace)
+        if (!_timePPWorkspace)
         {
-            if (!_timeEquationPPWorkspace)
-            {
-                std::optional<EquationDofs> residual;
-                MPI::LocalStage(mpi, [&]
-                                { residual.emplace(EquationDofOperations::NewVector(_accepted)); });
-                auto work = _fv.BuildEquationMeanWorkspace(_accepted, _workers);
-                _timeEquationPPResidual = std::move(residual);
-                _timeEquationPPWorkspace = std::move(work);
-            }
-            _fv.EvaluateMean(_accepted, *_timeEquationPPResidual, *_timeEquationPPWorkspace, _engine, _stream, _time);
-            result = _fv.LimitPhysicalStep(_accepted, *_timeEquationPPResidual, _equationThermal->View(), requestedDt,
-                                           _timePP.relax, _timePP.scale, _timeCompressionPower);
+            std::optional<EquationDofs> residual;
+            MPI::LocalStage(mpi, [&]
+                            { residual.emplace(EquationDofOperations::NewVector(_accepted)); });
+            auto work = _fv.BuildMeanWorkspace(_accepted, _workers);
+            _timePPResidual = std::move(residual);
+            _timePPWorkspace = std::move(work);
+            if (_interfaceInputs)
+                _fv.SetBoundaryInputs(*_timePPWorkspace, *_interfaceInputs);
         }
-        else
-        {
-            if (!_timePPWorkspace)
-            {
-                _timePPResidual.emplace(_fv.Metrics().BuildField(Flow().Owned().Layout()));
-                _timePPWorkspace = _fv.BuildMeanWorkspace(Flow());
-                if (_interfaceInputs)
-                    _fv.SetBoundaryInputs(*_timePPWorkspace, *_interfaceInputs);
-            }
-            _fv.EvaluateMean(Flow(), *_timePPResidual, *_timePPWorkspace, _engine, _stream, _time);
-            result = _fv.LimitPhysicalStep(Flow(), *_timePPResidual, requestedDt, _timePP.relax, _timePP.scale, _timeCompressionPower);
-        }
+        _fv.EvaluateMean(_accepted, *_timePPResidual, *_timePPWorkspace, _engine, _stream, _time);
+        result = _fv.LimitPhysicalStep(_accepted, *_timePPResidual, _thermal->View(), requestedDt,
+                                       _timePP.relax, _timePP.scale, _timeCompressionPower);
         // Last accepted dt, never a rejected/prepared proposal, controls growth.
         // Division avoids overflow in an unnecessary previousDt*limit product.
         if (_lastAcceptedDt > 0 && result.dt / _lastAcceptedDt > _timePP.increaseLimit)

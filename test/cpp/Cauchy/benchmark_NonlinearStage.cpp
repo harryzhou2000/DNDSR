@@ -35,9 +35,9 @@ namespace
         C::EquationDofOperations::Copy(state, fixture.state);
         R::EagerEngine engine(0);
         const auto stream = engine.CreateCPUStream();
-        auto work = fixture.fv.BuildEquationWorkspace(state, fixture.physical.workers);
-        C::EquationNonlinearSolver solver(fixture.fv, state, work, engine, stream, settings,
-                                          DNDS::Algebra::ComponentSelection(state.ComponentNumber()), fixture.physical.workers);
+        auto work = fixture.fv.BuildWorkspace(state, fixture.physical.workers);
+        C::NonlinearSolver solver(fixture.fv, state, work, engine, stream, settings,
+                                  DNDS::Algebra::ComponentSelection(state.ComponentNumber()), fixture.physical.workers);
         constexpr double mass = 1e6;
         solver.EvaluateEquation(state, source, mass, 1, 0);
         const auto sourceValues = Plan53::RHSFixture::Values(source);
@@ -107,9 +107,9 @@ namespace
             for (I iCell = 0; iCell < fixture.fv.Metrics().NumCell(); ++iCell)
                 flow(iCell, 4) += .0001 * flow(iCell, 0);
         }
-        auto alternativeWork = fixture.fv.BuildEquationWorkspace(alternate, fixture.physical.workers);
-        C::EquationNonlinearSolver other(fixture.fv, alternate, alternativeWork, engine, stream, settings,
-                                         DNDS::Algebra::ComponentSelection(alternate.ComponentNumber()), fixture.physical.workers);
+        auto alternativeWork = fixture.fv.BuildWorkspace(alternate, fixture.physical.workers);
+        C::NonlinearSolver other(fixture.fv, alternate, alternativeWork, engine, stream, settings,
+                                 DNDS::Algebra::ComponentSelection(alternate.ComponentNumber()), fixture.physical.workers);
         C::NonlinearProfile unused;
         const auto report = other.Solve(alternate, source, mass, 1, 0, 0, {1, 0, &unused});
         const auto actual = Plan53::RHSFixture::Values(alternate);

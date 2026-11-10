@@ -81,6 +81,13 @@ namespace DNDS::Cauchy
         EquationPointEvaluator(EquationPointEvaluator &&) noexcept = default;
         EquationPointEvaluator &operator=(EquationPointEvaluator &&) noexcept = default;
         Physics::Chemistry::SpeciesBufferView SpeciesInput() const;
+        /// Perfect-gas profile parameter for setup-validated analytic boundary
+        /// producers. Mixtures must use an equation-specific profile adapter.
+        const PerfectGas &PerfectGasModel() const
+        {
+            DNDS_assert_info(!_mixture, "perfect-gas profile requested from a mixture evaluator");
+            return _gas;
+        }
         /// Construct flow5 from [rho,u,v,w,p] and Ns-1 conservative species.
         /// A positive temperature overrides p; zero selects the pressure input.
         /// Full thermochemical energy is retained for mixtures. The species

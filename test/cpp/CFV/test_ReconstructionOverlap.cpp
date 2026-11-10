@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
+#include "DNDS/Algebra/DofAlgebra.hpp"
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
 #include "DNDS/Runtime/Communication/MPIProgress.hpp"
 #include "../Geom/NativeMeshOverlapFixture.hpp"
@@ -67,9 +68,9 @@ TEST_CASE("Jacobi and WBAP core work overlaps real direct MPI and preserves unsp
         referenceHalo.Begin().Wait();
         plan.DoLimiterWBAP_3Order(reference, order);
         auto pending = splitHalo.Begin();
-        plan.DoLimiterWBAP_3OrderTo(split, order, nullptr, C::ReconstructionRegion::Core);
+        plan.DoLimiterWBAP_3OrderTo(split, order, std::nullopt, C::ReconstructionRegion::Core);
         pending.Wait();
-        plan.DoLimiterWBAP_3OrderTo(split, order, nullptr, C::ReconstructionRegion::HaloDependent);
+        plan.DoLimiterWBAP_3OrderTo(split, order, std::nullopt, C::ReconstructionRegion::HaloDependent);
         plan.CommitReconstruction(split);
         Equal(reference.coefficients, split.coefficients);
     }
@@ -79,7 +80,7 @@ TEST_CASE("Jacobi and WBAP core work overlaps real direct MPI and preserves unsp
         for (I row = 0; row < metrics.NumCell(); ++row)
             write.View()(row, 0) = -1;
     }
-    plan.DoLimiterWBAP_3OrderTo(split, 1, nullptr, C::ReconstructionRegion::All, &indicator, 0);
+    plan.DoLimiterWBAP_3OrderTo(split, 1, std::nullopt, C::ReconstructionRegion::All, &indicator, 0);
     plan.CommitReconstruction(split);
     Equal(reference.coefficients, split.coefficients); // inactive is exact passthrough
     referenceHalo.Begin().Wait();
@@ -90,10 +91,10 @@ TEST_CASE("Jacobi and WBAP core work overlaps real direct MPI and preserves unsp
         for (I row = 0; row < metrics.NumCell(); ++row)
             write.View()(row, 0) = 0;
     }
-    plan.DoLimiterWBAP_3OrderTo(split, 1, nullptr, C::ReconstructionRegion::All, &indicator, 0);
+    plan.DoLimiterWBAP_3OrderTo(split, 1, std::nullopt, C::ReconstructionRegion::All, &indicator, 0);
     plan.CommitReconstruction(split);
     Equal(reference.coefficients, split.coefficients); // equality activates
-    CHECK_THROWS(plan.DoLimiterWBAP_3OrderTo(split, 1, nullptr, C::ReconstructionRegion::All, nullptr,
+    CHECK_THROWS(plan.DoLimiterWBAP_3OrderTo(split, 1, std::nullopt, C::ReconstructionRegion::All, nullptr,
                                              std::numeric_limits<double>::quiet_NaN()));
     if (metrics.NumCell())
     {
@@ -101,7 +102,7 @@ TEST_CASE("Jacobi and WBAP core work overlaps real direct MPI and preserves unsp
             auto write = indicator.Write();
             write.View()(0, 0) = std::numeric_limits<double>::quiet_NaN();
         }
-        CHECK_THROWS(plan.DoLimiterWBAP_3OrderTo(split, 1, nullptr, C::ReconstructionRegion::All, &indicator, 0));
+        CHECK_THROWS(plan.DoLimiterWBAP_3OrderTo(split, 1, std::nullopt, C::ReconstructionRegion::All, &indicator, 0));
     }
 }
 
@@ -163,25 +164,37 @@ TEST_CASE("CFV split operators share eager ordering across inline and worker CPU
         auto split = plan.BuildWorkspace(1);
         Fill(split.coefficients, 0.3);
         auto halo = metrics.BindHalo(split.coefficients);
-        R::EagerEngine engine(workers);
+        R::EagerEngine engine(workers, std::make_shared<R::AccessTrackingContext>());
         auto core = engine.CreateCPUStream(), ring = engine.CreateCPUStream();
         R::MPIProgress progress;
         const auto communication = progress.Import(halo.Begin());
-        engine.Submit(core, [&](R::ExecutionContext)
-                      {
-            // Repeating a pure out-of-place core pass increases its work while
-            // preserving the exact same numerical reference result.
-            for (int repeat = 0; repeat < 8; ++repeat)
-                plan.DoReconstructionIterTo(mean, split.coefficients, split, boundary, C::ReconstructionRegion::Core); });
+        // Repeating a pure out-of-place core pass increases its work while
+        // preserving the exact same numerical reference result. Each record
+        // retains its operands and declares reads/writes at submission.
+        for (int repeat = 0; repeat < 8; ++repeat)
+            plan.SubmitReconstructionIterTo(engine, core, mean, split.coefficients, split, boundary,
+                                            C::ReconstructionRegion::Core);
         ring.WaitFor(core.Record());
         ring.WaitFor(communication);
-        engine.Submit(ring, [&](R::ExecutionContext)
-                      {
-            plan.DoReconstructionIterTo(mean, split.coefficients, split, boundary, C::ReconstructionRegion::HaloDependent);
-            plan.CommitReconstruction(split); });
+        plan.SubmitReconstructionIterTo(engine, ring, mean, split.coefficients, split, boundary,
+                                        C::ReconstructionRegion::HaloDependent);
+        plan.SubmitCommitReconstruction(engine, ring, split);
         progress.Drain();
         engine.Synchronize();
         Equal(reference.coefficients, split.coefficients);
+        auto limitedReference = plan.BuildWorkspace(1);
+        DNDS::Algebra::Copy(limitedReference.coefficients, reference.coefficients);
+        for (int order = plan.Settings().maxOrder; order >= 1; --order)
+        {
+            metrics.BindHalo(limitedReference.coefficients).Begin().Wait();
+            halo.Begin().Wait();
+            plan.DoLimiterWBAP_3Order(limitedReference, order);
+            plan.SubmitLimiterWBAP_3OrderTo(engine, ring, split, order, std::nullopt,
+                                            C::ReconstructionRegion::All);
+            plan.SubmitCommitReconstruction(engine, ring, split);
+            engine.Synchronize();
+            Equal(limitedReference.coefficients, split.coefficients);
+        }
     }
 }
 
@@ -249,8 +262,8 @@ TEST_CASE("CPU FV reconstruction limiter and linear actions agree across mixed D
             {
                 refHalo.Begin().Wait();
                 halo.Begin().Wait();
-                plan.DoLimiterWBAP_3Order(reference, order, &transform);
-                plan.DoLimiterWBAP_3Order(work, order, &transform);
+                plan.DoLimiterWBAP_3Order(reference, order, std::cref(transform));
+                plan.DoLimiterWBAP_3Order(work, order, std::cref(transform));
                 Equal(reference.coefficients, work.coefficients);
             }
             refHalo.Begin().Wait();

@@ -1,4 +1,4 @@
-#include "Cauchy/Discretization/EquationFiniteVolumeInternal.hpp"
+#include "Cauchy/Discretization/FiniteVolumeKernels.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/Physics/EquationPositivity.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
@@ -7,7 +7,7 @@
 
 namespace DNDS::Cauchy
 {
-    void FiniteVolume::WriteVisualization(const EquationDofs &state, const EquationWorkspace &workspace,
+    void FiniteVolume::WriteVisualization(const EquationDofs &state, const Workspace &workspace,
                                           const std::string &prefix, real time, int hdfDeflateLevel,
                                           const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers) const
     {

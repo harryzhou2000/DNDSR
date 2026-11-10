@@ -105,8 +105,10 @@ TEST_CASE("Equation FV uses the established P3/gradient/WBAP flow5 kernels acros
         settings.numerics.reconstructionIterations = 5;
         settings.numerics.limiter = variant == 2 ? "WBAP" : "none";
         settings.numerics.cfv.SORInstead = variant == 2;
-        settings.numerics.characteristicLimiter = false;
+        settings.numerics.characteristicLimiter = variant == 2;
         settings.numerics.faceFallback = false;
+        settings.numerics.positivity = false;
+        settings.numerics.riemann.useStencil = false;
         settings.numerics.viscousGradient = "polynomial";
         if (variant == 1)
         {
@@ -136,15 +138,18 @@ TEST_CASE("Equation FV uses the established P3/gradient/WBAP flow5 kernels acros
         }
         auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(shape));
         A::Copy(state.CoupledField(), raw);
-        auto expected = fv.Metrics().BuildField(shape);
+        auto generic = C::EquationDofs::Coupled(equation.Schema(), raw);
+        auto expected = C::EquationDofOperations::NewVector(generic);
         auto result = C::EquationDofOperations::NewVector(state);
-        auto rawWork = fv.BuildWorkspace(raw);
-        auto work = fv.BuildEquationWorkspace(state);
+        auto genericWork = fv.BuildWorkspace(
+            generic, std::nullopt,
+            C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic});
+        auto work = fv.BuildWorkspace(state);
         R::EagerEngine engine(variant == 0 ? 0 : 2);
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(raw, expected, *rawWork, engine, stream);
+        fv.Evaluate(generic, expected, *genericWork, engine, stream);
         fv.Evaluate(state, result, *work, engine, stream);
-        Compare(result, C::EquationDofs::Coupled(equation.Schema(), expected), 2e-12);
+        Compare(result, expected, 2e-12);
         auto separate = C::EquationDofOperations::NewVector(state);
         auto faceFlux = fv.BuildFaceFluxBuffer(state.ComponentNumber());
         fv.EvaluateFlux(state, separate, *work, DNDS::CFV::ReconstructionRegion::All, 0, &faceFlux);
@@ -152,7 +157,7 @@ TEST_CASE("Equation FV uses the established P3/gradient/WBAP flow5 kernels acros
         Compare(result, separate, 2e-12);
         if (variant == 0)
         {
-            auto prepared = fv.BuildEquationWorkspace(state);
+            auto prepared = fv.BuildWorkspace(state);
             fv.PrepareReconstruction(state, *prepared, engine, stream);
             fv.EvaluateFlux(state, separate, *prepared);
             fv.AddSource(state, separate, *prepared);
@@ -202,6 +207,8 @@ TEST_CASE("Equation FV local stages and physical-field halos inherit the agreed 
         settings.numerics.limiter = "WBAP";
         settings.numerics.characteristicLimiter = false;
         settings.numerics.faceFallback = false;
+        settings.numerics.positivity = false;
+        settings.numerics.riemann.useStencil = false;
         const auto equation = C::EquationSystem::Resolve(settings.equation);
         C::FiniteVolume fv(mesh, settings, equation);
         auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(5));
@@ -217,7 +224,7 @@ TEST_CASE("Equation FV local stages and physical-field halos inherit the agreed 
             }
         }
         auto result = C::EquationDofOperations::NewVector(state);
-        auto work = fv.BuildEquationWorkspace(state);
+        auto work = fv.BuildWorkspace(state);
         R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
         struct CountingScope
@@ -263,7 +270,7 @@ TEST_CASE("Canonical equation face flux agrees with cell incidence on rotated an
             settings.boundaries["12"].kind = settings.boundaries["13"].kind = "extrapolate";
         const auto equation = C::EquationSystem::Resolve(settings.equation);
         C::FiniteVolume fv(mesh, settings, equation);
-        auto raw = fv.Metrics().BuildField(5), expected = fv.Metrics().BuildField(5);
+        auto raw = fv.Metrics().BuildField(5);
         {
             auto write = raw.Owned().Write();
             const auto values = write.View<R::UniformTableRows>();
@@ -277,14 +284,18 @@ TEST_CASE("Canonical equation face flux agrees with cell incidence on rotated an
         }
         auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(5));
         A::Copy(state.CoupledField(), raw);
+        auto generic = C::EquationDofs::Coupled(equation.Schema(), raw);
+        auto expected = C::EquationDofOperations::NewVector(generic);
         auto result = C::EquationDofOperations::NewVector(state);
-        auto oldWork = fv.BuildWorkspace(raw);
-        auto work = fv.BuildEquationWorkspace(state);
+        auto genericWork = fv.BuildWorkspace(
+            generic, std::nullopt,
+            C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic});
+        auto work = fv.BuildWorkspace(state);
         R::EagerEngine engine;
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(raw, expected, *oldWork, engine, stream);
+        fv.Evaluate(generic, expected, *genericWork, engine, stream);
         fv.Evaluate(state, result, *work, engine, stream);
-        Compare(result, C::EquationDofs::Coupled(equation.Schema(), expected), 2e-12);
+        Compare(result, expected, 2e-12);
     }
 }
 
@@ -319,14 +330,19 @@ TEST_CASE("Logical nonlinear flow5 retains native finite-sweep stage mathematics
         }
         auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(R::RowLayout::TiledColMajor(0, 5, 8)));
         A::Copy(state.CoupledField(), raw);
+        auto generic = C::EquationDofs::Coupled(equation.Schema(), raw);
         auto right = C::EquationDofs::Coupled(equation.Schema(), source);
         R::EagerEngine engine(scenario ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
         C::AuxiliaryRequest request;
         request.faceSpectralRadius = request.cellSpectralSum = true;
-        C::NonlinearSolver reference(fv, raw, fv.BuildWorkspace(raw, request), engine, stream, settings);
-        C::EquationNonlinearSolver solver(fv, state, fv.BuildEquationWorkspace(state), engine, stream, settings, A::ComponentSelection(5));
-        const auto expected = reference.Solve(raw, source, 20, .5, .1, 0, {2});
+        C::NonlinearSolver reference(fv, generic,
+                                     fv.BuildWorkspace(
+                                         generic, std::nullopt,
+                                         C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic}),
+                                     engine, stream, settings, A::ComponentSelection(5));
+        C::NonlinearSolver solver(fv, state, fv.BuildWorkspace(state), engine, stream, settings, A::ComponentSelection(5));
+        const auto expected = reference.Solve(generic, right, 20, .5, .1, 0, {2});
         const auto actual = solver.Solve(state, right, 20, .5, .1, 0, {2});
         CHECK(actual.iterations == expected.iterations);
         CHECK(actual.linearIterations == expected.linearIterations);
@@ -335,7 +351,7 @@ TEST_CASE("Logical nonlinear flow5 retains native finite-sweep stage mathematics
         CHECK(actual.reconstructionRelativeUpdate == doctest::Approx(expected.reconstructionRelativeUpdate).epsilon(1e-10));
         for (int j = 0; j < 5; ++j)
             CHECK(actual.residual[j] == doctest::Approx(expected.residual[j]).epsilon(1e-10).scale(1e-10));
-        Compare(state, C::EquationDofs::Coupled(equation.Schema(), raw), 1e-12);
+        Compare(state, generic, 1e-12);
     }
 }
 
@@ -376,19 +392,22 @@ TEST_CASE("Equation wall values preserve internal energy and support empty owner
         }
         auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(5));
         A::Copy(state.CoupledField(), raw);
-        auto expected = fv.Metrics().BuildField(5);
+        auto generic = C::EquationDofs::Coupled(equation.Schema(), raw);
+        auto expected = C::EquationDofOperations::NewVector(generic);
         auto result = C::EquationDofOperations::NewVector(state);
-        auto rawWork = fv.BuildWorkspace(raw);
-        auto work = fv.BuildEquationWorkspace(state);
+        auto genericWork = fv.BuildWorkspace(
+            generic, std::nullopt,
+            C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic});
+        auto work = fv.BuildWorkspace(state);
         R::EagerEngine engine(2);
         const auto stream = engine.CreateCPUStream();
-        fv.Evaluate(raw, expected, *rawWork, engine, stream);
+        fv.Evaluate(generic, expected, *genericWork, engine, stream);
         fv.Evaluate(state, result, *work, engine, stream);
-        Compare(result, C::EquationDofs::Coupled(equation.Schema(), expected), 2e-12);
+        Compare(result, expected, 2e-12);
         C::AuxiliaryRequest request;
         request.meanThermodynamics = request.faceSpectralRadius = request.cellSpectralSum = true;
         auto originalAux = fv.BuildAuxiliaryValues(request), equationAux = fv.BuildAuxiliaryValues(request);
-        fv.PrepareAuxValues(raw, originalAux);
+        fv.PrepareAuxValues(generic, originalAux);
         fv.PrepareAuxValues(state, equationAux);
         CompareAuxiliary(originalAux, equationAux);
     }
@@ -530,7 +549,7 @@ TEST_CASE("A single-species material uses empty independent composition and no c
             }
         }
         auto residual = C::EquationDofOperations::NewVector(state);
-        auto work = fv.BuildEquationWorkspace(state, workers);
+        auto work = fv.BuildWorkspace(state, workers);
         R::EagerEngine engine;
         const auto stream = engine.CreateCPUStream();
         fv.Evaluate(state, residual, *work, engine, stream);
@@ -660,7 +679,7 @@ TEST_CASE("Distributed prescribed mixture boundaries match independent nonconsta
         }
         mixture.Fill(state, fv.Metrics(), false);
         auto result = C::EquationDofOperations::NewVector(state);
-        auto work = fv.BuildEquationWorkspace(state, mixture.workers);
+        auto work = fv.BuildWorkspace(state, mixture.workers);
         R::EagerEngine engine(scenario ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
         fv.Evaluate(state, result, *work, engine, stream);
@@ -795,7 +814,7 @@ TEST_CASE("Mixture isothermal wall conducts the independent Fourier flux without
     for (int k = 0; k < mixture.species; ++k)
         composition[mixture.material.SpeciesNames()[k]] = Y[k];
     fv.InitializeConstant(state, {.8, 0, 0, 0, 1}, composition, 1400 / mixture.scales.T0, mixture.workers);
-    auto work = fv.BuildEquationWorkspace(state, mixture.workers);
+    auto work = fv.BuildWorkspace(state, mixture.workers);
     R::EagerEngine engine(2);
     const auto stream = engine.CreateCPUStream();
     fv.Evaluate(state, result, *work, engine, stream);
@@ -999,7 +1018,7 @@ TEST_CASE("Explicit mixture rejects inadmissible raw flow or species and retries
     auto oracle = original.Clone();
     auto rhs = C::EquationDofOperations::NewVector(oracle);
     const auto &fv = domain.Discretization();
-    auto work = fv.BuildEquationWorkspace(oracle, domain.ChemicalWorkers());
+    auto work = fv.BuildWorkspace(oracle, domain.ChemicalWorkers());
     R::EagerEngine engine(2);
     const auto stream = engine.CreateCPUStream();
     const double history[3]{0, .75, 1. / 3}, weight[3]{1, .25, 2. / 3}, stageTime[3]{0, dt, .5 * dt};
@@ -1359,7 +1378,7 @@ TEST_CASE("Actual mixture FV residual preserves separate/permuted fields and cor
     auto referenceState = mixture.State(baseline.Metrics().Space(), 0);
     mixture.Fill(referenceState, baseline.Metrics(), false);
     auto expected = C::EquationDofOperations::NewVector(referenceState);
-    auto baseWork = baseline.BuildEquationWorkspace(referenceState, mixture.workers);
+    auto baseWork = baseline.BuildWorkspace(referenceState, mixture.workers);
     R::EagerEngine engine(2);
     const auto stream = engine.CreateCPUStream();
     baseline.Evaluate(referenceState, expected, *baseWork, engine, stream);
@@ -1374,7 +1393,7 @@ TEST_CASE("Actual mixture FV residual preserves separate/permuted fields and cor
         auto state = mixture.State(fv.Metrics().Space(), layout);
         mixture.Fill(state, fv.Metrics(), false);
         auto result = C::EquationDofOperations::NewVector(state);
-        auto work = fv.BuildEquationWorkspace(state, mixture.workers);
+        auto work = fv.BuildWorkspace(state, mixture.workers);
         const auto before = state.PhysicalField(0).Owned().Version();
         fv.Evaluate(state, result, *work, engine, stream);
         Compare(expected, result, 5e-11);
@@ -1418,7 +1437,7 @@ TEST_CASE("Actual mixture FV residual preserves separate/permuted fields and cor
     if (mpi.size > 1)
     {
         auto inconsistent = mixture.State(baseline.Metrics().Space(), mpi.rank == 0 ? 0 : 1);
-        CHECK_THROWS(baseline.BuildEquationWorkspace(inconsistent, mixture.workers));
+        CHECK_THROWS(baseline.BuildWorkspace(inconsistent, mixture.workers));
     }
 }
 
@@ -1438,7 +1457,7 @@ TEST_CASE("Mixture volume quadrature adds the conservative chemical rate and lea
     auto state = mixture.State(fv.Metrics().Space(), 1);
     mixture.Fill(state, fv.Metrics(), true);
     auto result = C::EquationDofOperations::NewVector(state);
-    auto work = fv.BuildEquationWorkspace(state, mixture.workers);
+    auto work = fv.BuildWorkspace(state, mixture.workers);
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
     fv.Evaluate(state, result, *work, engine, stream);
@@ -1485,7 +1504,7 @@ TEST_CASE("Nonconstant assembled mixture diffusion matches an independent face i
     auto b = C::EquationDofs::Coupled(mixture.equation.Schema(), diffusion.Metrics().BuildField(mixture.species + 4));
     mixture.Fill(a, noDiffusion.Metrics(), false);
     mixture.Fill(b, diffusion.Metrics(), false);
-    auto wa = noDiffusion.BuildEquationWorkspace(a, mixture.workers), wb = diffusion.BuildEquationWorkspace(b, mixture.workers);
+    auto wa = noDiffusion.BuildWorkspace(a, mixture.workers), wb = diffusion.BuildWorkspace(b, mixture.workers);
     auto ra = C::EquationDofOperations::NewVector(a), rb = C::EquationDofOperations::NewVector(b);
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
@@ -1624,9 +1643,9 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
     mixture.Fill(a, withoutSource.Metrics(), true);
     mixture.Fill(b, withSource.Metrics(), true);
     mixture.Fill(bq, withSourceQuadrature.Metrics(), true);
-    auto wa = withoutSource.BuildEquationWorkspace(a, mixture.workers), wb = withSource.BuildEquationWorkspace(b, mixture.workers),
-         wbq = withSourceQuadrature.BuildEquationWorkspace(bq, mixture.workers);
-    for (const auto &[fv, work] : std::vector<std::pair<const C::FiniteVolume *, std::shared_ptr<C::FiniteVolume::EquationWorkspace>>>{
+    auto wa = withoutSource.BuildWorkspace(a, mixture.workers), wb = withSource.BuildWorkspace(b, mixture.workers),
+         wbq = withSourceQuadrature.BuildWorkspace(bq, mixture.workers);
+    for (const auto &[fv, work] : std::vector<std::pair<const C::FiniteVolume *, std::shared_ptr<C::FiniteVolume::Workspace>>>{
              {&withoutSource, wa}, {&withSource, wb}, {&withSourceQuadrature, wbq}})
     {
         auto coefficients = fv->ReconstructionGuess(*work);
@@ -1807,7 +1826,7 @@ TEST_CASE("Equation P3 positivity protects actual EOS samples and preserves unli
         C::FiniteVolume fv(mesh, settings, mixture.equation);
         auto state = mixture.State(fv.Metrics().Space(), scenario + 1);
         mixture.Fill(state, fv.Metrics(), true);
-        auto work = fv.BuildEquationWorkspace(state, mixture.workers);
+        auto work = fv.BuildWorkspace(state, mixture.workers);
         auto guess = fv.ReconstructionGuess(*work);
         const int modes = fv.Reconstruction().NRecDOF();
         {
@@ -1919,7 +1938,7 @@ TEST_CASE("Equation workspace agrees PP controls before binding conditional halo
     C::FiniteVolume fv(mesh, settings, mixture.equation);
     auto state = mixture.State(fv.Metrics().Space(), 1);
     mixture.Fill(state, fv.Metrics(), true);
-    CHECK_THROWS_WITH(fv.BuildEquationWorkspace(state, mixture.workers), doctest::Contains("operation controls"));
+    CHECK_THROWS_WITH(fv.BuildWorkspace(state, mixture.workers), doctest::Contains("operation controls"));
 }
 TEST_CASE("Equation implicit PP compresses RHS or pseudo-time and repairs species without changing flow")
 {
@@ -1952,8 +1971,8 @@ TEST_CASE("Equation implicit PP compresses RHS or pseudo-time and repairs specie
         }
         R::EagerEngine engine(2);
         const auto stream = engine.CreateCPUStream();
-        C::EquationNonlinearSolver solver(fv, state, fv.BuildEquationWorkspace(state, mixture.workers), engine, stream,
-                                          settings, A::ComponentSelection(state.ComponentNumber()), mixture.workers);
+        C::NonlinearSolver solver(fv, state, fv.BuildWorkspace(state, mixture.workers), engine, stream,
+                                  settings, A::ComponentSelection(state.ComponentNumber()), mixture.workers);
         const auto report = solver.Solve(state, source, 20, 1, .1);
         CHECK(report.iterations == 1);
         CHECK_FALSE(report.converged);
@@ -2053,8 +2072,8 @@ TEST_CASE("Coupled mixture nonlinear stage recovers a manufactured target throug
         C::EquationDofOperations::Scale(source, 20);
         R::EagerEngine engine(scenario ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
-        auto work = fv.BuildEquationWorkspace(state, mixture.workers);
-        C::EquationNonlinearSolver solver(fv, state, work, engine, stream, settings, A::ComponentSelection(state.ComponentNumber()), mixture.workers);
+        auto work = fv.BuildWorkspace(state, mixture.workers);
+        C::NonlinearSolver solver(fv, state, work, engine, stream, settings, A::ComponentSelection(state.ComponentNumber()), mixture.workers);
         const auto report = solver.Solve(state, source, 20, .5, .1);
         CAPTURE(scenario);
         CAPTURE(report.iterations);
@@ -2133,8 +2152,8 @@ TEST_CASE("Production equation nonlinear stages advance a distributed reacting F
         C::EquationDofOperations::Copy(trial, initial);
         R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
-        auto work = fv.BuildEquationWorkspace(trial, mixture.workers);
-        C::EquationNonlinearSolver nonlinear(fv, trial, work, engine, stream, settings, A::ComponentSelection(trial.ComponentNumber()), mixture.workers);
+        auto work = fv.BuildWorkspace(trial, mixture.workers);
+        C::NonlinearSolver nonlinear(fv, trial, work, engine, stream, settings, A::ComponentSelection(trial.ComponentNumber()), mixture.workers);
         C::EquationTimeStepper stepper(accepted, "bdf1");
         const auto evaluate = [&](auto &state, auto &rate, double time, int)
         {

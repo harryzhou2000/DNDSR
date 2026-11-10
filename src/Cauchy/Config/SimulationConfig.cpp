@@ -397,7 +397,9 @@ namespace DNDS::Cauchy
                     "extended equation thermodynamic flux preparation/face fallback");
             require(!s.numerics.riemann.useStencil || (!flux.UsesTransverseSignal() && !flux.UsesPressureStencil()),
                     "extended equation wave/pressure stencil auxiliary inputs");
-            require(s.numerics.limiter == "none" || (s.numerics.limiter == "WBAP" && !s.numerics.characteristicLimiter), "extended equation limiter");
+            require(s.numerics.limiter == "none" ||
+                        (s.numerics.limiter == "WBAP" && (!s.numerics.characteristicLimiter || !mixture)),
+                    "extended equation limiter");
             require(s.equation.transport != "NewtonianFourier" || s.numerics.viscousGradient == "polynomial", "extended equation viscous gradient");
             require(!s.implicit.roeDissipation, "extended equation Roe Jacobian");
         }
@@ -438,6 +440,27 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(size > 0, "invalid simulation size");
         Allowed(input, {"schemaVersion", "profiles", "defaults", "domains", "time", "output", "interfaces"}, "");
         DNDS_check_throw_info(input.value("schemaVersion", 1) == 1, "unsupported Cauchy schema version");
+        const auto supplied = [&](const char *section, const char *field)
+        {
+            const std::string pointer = std::string("/") + section + "/" + field;
+            return (input.contains(section) && input.at(section).contains(field)) ||
+                   std::any_of(overrides.begin(), overrides.end(), [&](const auto &override)
+                               { return override.pointer == pointer; });
+        };
+        const auto activeDeprecatedAlias = [&](const char *section, const char *field)
+        {
+            const std::string pointer = std::string("/") + section + "/" + field;
+            const auto active = [](const Json &value)
+            { return value.is_number() && value.get<real>() >= 0; };
+            if (input.contains(section) && input.at(section).contains(field) && active(input.at(section).at(field)))
+                return true;
+            return std::any_of(overrides.begin(), overrides.end(), [&](const auto &override)
+                               { return override.pointer == pointer && active(override.value); });
+        };
+        DNDS_check_throw_info(!(supplied("time", "tEnd") && activeDeprecatedAlias("time", "finalTime")),
+                              "specify only time.tEnd or deprecated time.finalTime");
+        DNDS_check_throw_info(!(supplied("output", "checkpointInterval") && activeDeprecatedAlias("output", "interval")),
+                              "specify only output.checkpointInterval or deprecated output.interval");
         const auto schema = DomainSettings::schema();
         const auto profiles = input.value("profiles", Json::object());
         DNDS_check_throw_info(profiles.is_object(), "Cauchy profiles must be named objects");
@@ -558,6 +581,27 @@ namespace DNDS::Cauchy
         Keys(data->root["output"], OutputSettings::schema(), "/output");
         data->time = data->root["time"].get<TimeSettings>();
         data->output = data->root["output"].get<OutputSettings>();
+        if (data->time.finalTime >= 0)
+        {
+            DNDS_check_throw_info(data->time.tEnd == 0 || data->time.tEnd == data->time.finalTime,
+                                  "time.tEnd and deprecated time.finalTime differ");
+            data->time.tEnd = data->time.finalTime;
+            data->time.finalTime = -1;
+            data->root["time"]["tEnd"] = data->time.tEnd;
+            data->root["time"]["finalTime"] = -1;
+            data->provenance["/time/tEnd"] = "deprecated /time/finalTime alias";
+        }
+        if (data->output.interval >= 0)
+        {
+            DNDS_check_throw_info(data->output.checkpointInterval == OutputSettings{}.checkpointInterval ||
+                                      data->output.checkpointInterval == data->output.interval,
+                                  "output.checkpointInterval and deprecated output.interval differ");
+            data->output.checkpointInterval = data->output.interval;
+            data->output.interval = -1;
+            data->root["output"]["checkpointInterval"] = data->output.checkpointInterval;
+            data->root["output"]["interval"] = -1;
+            data->provenance["/output/checkpointInterval"] = "deprecated /output/interval alias";
+        }
         std::set<std::pair<std::string, int>> receivers;
         for (const auto &entry : data->root.value("interfaces", Json::array()))
         {
@@ -585,7 +629,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(data->interfaces.empty() || data->time.steady || data->time.method != "ditr", "multi-domain DITR requires coupled midpoint/end coordination");
         const std::vector<std::string> timeMethods{"ssprk3", "bdf1", "bdf2", "trapz", "esdirk2", "esdirk3", "esdirk4", "ditr"};
         DNDS_check_throw_info(std::find(timeMethods.begin(), timeMethods.end(), data->time.method) != timeMethods.end() && std::isfinite(data->time.dt) && data->time.dt > 0 && data->time.steps >= 0 &&
-                                  std::isfinite(data->time.finalTime) && data->time.finalTime >= 0 && std::isfinite(data->time.cfl) && data->time.cfl >= 0 &&
+                                  std::isfinite(data->time.tEnd) && data->time.tEnd >= 0 && data->time.finalTime == -1 && std::isfinite(data->time.cfl) && data->time.cfl >= 0 &&
                                   std::isfinite(data->time.wallSeconds) && data->time.wallSeconds >= 0 && data->time.maxRetries >= 0,
                               "Cauchy requires an available time method, positive dt and nonnegative steps");
         DNDS_check_throw_info(std::isfinite(data->time.steadyTolerance) && data->time.steadyTolerance >= 0 && data->time.steadyMinSteps >= 0, "invalid steady stopping controls");
@@ -606,11 +650,11 @@ namespace DNDS::Cauchy
             }
             data->time.method = "bdf1";
             data->time.steps = std::min(index(1), data->time.steps);
-            data->time.finalTime = data->time.cfl = 0;
+            data->time.tEnd = data->time.cfl = 0;
             data->time.maxRetries = 0;
             data->time.steadyMinSteps = std::min(index(1), data->time.steadyMinSteps);
             const Json effective = data->time;
-            for (const auto *name : {"method", "steps", "finalTime", "cfl", "maxRetries", "steadyMinSteps"})
+            for (const auto *name : {"method", "steps", "tEnd", "cfl", "maxRetries", "steadyMinSteps"})
                 if (data->root["time"][name] != effective[name])
                 {
                     data->root["time"][name] = effective[name];
@@ -623,7 +667,19 @@ namespace DNDS::Cauchy
             if (data->time.method == "ditr")
                 data->time.ditr.ResolveControls(domain.settings.implicit);
         }
-        DNDS_check_throw_info(data->output.interval >= 0 && data->output.historyInterval > 0 && data->output.historySegmentRows > 0 && !data->output.prefix.empty(), "invalid Cauchy output controls");
+        const std::vector<std::string> diagnosticLevels{"trace", "debug", "info", "warn", "error", "critical", "off"};
+        DNDS_check_throw_info(data->output.interval == -1 && data->output.checkpointInterval >= 0 && data->output.visualizationInterval >= -1 &&
+                                  std::isfinite(data->output.checkpointTimeInterval) && data->output.checkpointTimeInterval >= 0 &&
+                                  std::isfinite(data->output.visualizationTimeInterval) && data->output.visualizationTimeInterval >= -1 &&
+                                  std::isfinite(data->output.endpointSnapRelativeTolerance) && data->output.endpointSnapRelativeTolerance >= 0 &&
+                                  data->output.consoleInterval >= 0 && data->output.historyInterval > 0 && data->output.historySegmentRows > 0 &&
+                                  data->output.historyPrecision >= 1 && data->output.historyPrecision <= std::numeric_limits<real>::max_digits10 &&
+                                  data->output.implicit.consoleInterval >= 0 && data->output.implicit.historyInterval > 0 &&
+                                  data->output.implicit.checkpointInterval >= 0 && data->output.implicit.visualizationInterval >= -1 &&
+                                  (data->output.consoleColor == "auto" || data->output.consoleColor == "always" || data->output.consoleColor == "never") &&
+                                  std::find(diagnosticLevels.begin(), diagnosticLevels.end(), data->output.diagnostics.level) != diagnosticLevels.end() &&
+                                  data->output.diagnostics.maxBytes > 0 && data->output.diagnostics.rotatedFiles > 0 && !data->output.prefix.empty(),
+                              "invalid Cauchy output controls");
         DNDS_check_throw_info(data->output.hdfDeflateLevel >= 0 && data->output.hdfDeflateLevel <= 9, "Cauchy output hdfDeflateLevel must be in [0,9]");
         return SimulationConfig(std::move(data));
     }

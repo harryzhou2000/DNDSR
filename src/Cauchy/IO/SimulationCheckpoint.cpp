@@ -168,9 +168,10 @@ namespace DNDS::Cauchy
                 const MPIInfo mpi(_placement.Context(iDomain)->Communicator());
                 MPI::LocalStage(mpi, [&]
                                 {
-                    DNDS_check_throw_info(bool(candidate.guess), "interface checkpoint requires a flow5 reconstruction");
-                    coefficients[iDomain].emplace(domain._fv.Metrics().BuildField(candidate.guess->Layout()));
-                    const auto read = candidate.guess->Read(); auto write = coefficients[iDomain]->Owned().Write();
+                    DNDS_check_throw_info(bool(candidate.equationGuess), "interface checkpoint requires a flow5 reconstruction");
+                    const auto &guess = candidate.equationGuess->CoupledField().Owned();
+                    coefficients[iDomain].emplace(domain._fv.Metrics().BuildField(guess.Layout()));
+                    const auto read = guess.Read(); auto write = coefficients[iDomain]->Owned().Write();
                     const auto input = read.View<Runtime::UniformTableRows>(); const auto output = write.View<Runtime::UniformTableRows>();
                     for (index iCell = 0; iCell < output.RowCount(); ++iCell)
                         for (index j = 0; j < output.RowSize(iCell); ++j) output(iCell, j) = input(iCell, j); });

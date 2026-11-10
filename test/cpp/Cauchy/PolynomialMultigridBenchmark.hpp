@@ -36,16 +36,20 @@ namespace CauchyBenchmark
             settings.implicit.multigrid.coarseSmooth = 3;
             settings.implicit.multigrid.updateComponents = variant == 3 ? std::vector<I>{0, 4} : std::vector<I>{};
             auto trial = metrics.BuildField(5), source = metrics.BuildField(5), value = metrics.BuildField(5), defect = metrics.BuildField(5);
+            auto trialState = C::EquationDofs::Coupled(fv.Equation().Schema(), trial);
+            auto sourceState = C::EquationDofs::Coupled(fv.Equation().Schema(), source);
+            auto valueState = C::EquationDofs::Coupled(fv.Equation().Schema(), value);
             std::shared_ptr<C::FiniteVolume::Workspace> workspace;
             std::optional<C::NonlinearSolver> smoother;
             std::optional<C::PolynomialMultigrid> multigrid;
-            C::AuxiliaryRequest channels;
-            channels.faceSpectralRadius = channels.cellSpectralSum = true;
             const double preparation = measure([&]
                                                {
-                workspace = fv.BuildWorkspace(trial, channels);
-                smoother.emplace(fv, trial, workspace, engine, stream, settings);
-                if (variant) multigrid.emplace(mesh, fv, trial, *smoother, engine, stream, settings); });
+                workspace = fv.BuildWorkspace(trialState);
+                smoother.emplace(
+                    fv, trialState, workspace, engine, stream, settings,
+                    A::ComponentSelection(trialState.ComponentNumber(),
+                                          trialState.Schema().ResolveComponents(settings.implicit.residualComponents)));
+                if (variant) multigrid.emplace(mesh, fv, trialState, *smoother, engine, stream, settings); });
             // The target changes density/energy only, so subset and full runs
             // solve the same finest equation from the same initial means.
             A::Copy(trial, frozen);
@@ -62,14 +66,14 @@ namespace CauchyBenchmark
                         u(iCell, j) *= factor;
                 }
             }
-            smoother->EvaluateEquation(trial, source, mass, 1, 0);
+            smoother->EvaluateEquation(trialState, sourceState, mass, 1, 0);
             const auto sourceVersion = source.Owned().Version();
             const auto norm = [&]
             {
                 // Cold guesses make both independent residual evaluations
                 // comparable. This evaluation/reset is outside Solve timing.
                 fv.ResetReconstruction(*workspace);
-                smoother->EvaluateEquation(trial, value, mass, 1, 0);
+                smoother->EvaluateEquation(trialState, valueState, mass, 1, 0);
                 A::LinearCombination(defect, 1., source, -1., value);
                 return A::NormGlobal(defect);
             };
@@ -79,9 +83,9 @@ namespace CauchyBenchmark
                 A::Copy(trial, frozen);
                 const double initial = norm();
                 fv.ResetReconstruction(*workspace);
-                C::NonlinearIterationReport report;
+                C::EquationNonlinearIterationReport report;
                 const double elapsed = measure([&]
-                                               { report = multigrid ? multigrid->Solve(source, mass, 1, 0) : smoother->Solve(trial, source, mass, 1, 0, 0, {5}); });
+                                               { report = multigrid ? multigrid->Solve(sourceState, mass, 1, 0) : smoother->Solve(trialState, sourceState, mass, 1, 0, 0, {5}); });
                 const double final = norm();
                 DNDS_check_throw_info(std::isfinite(initial) && initial > 0 && std::isfinite(final) && final < .1 * initial,
                                       "fixed-work pMG benchmark did not reduce its original full finest defect");

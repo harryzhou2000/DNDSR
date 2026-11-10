@@ -425,21 +425,18 @@ namespace DNDS::Cauchy
     {
         const MPIInfo mpi(_fv.Metrics().Communicator());
         const bool history = _timeStepper && _timeStepper->Method() == "bdf2" && _timeStepper->HasHistory();
-        const bool limitedVRHistory = includeReconstruction && !_equationWorkspace && _fv.LimitedVRHistory(*_workspace);
+        const bool limitedVRHistory = includeReconstruction && bool(_fv.LimitedVRHistory(*_workspace));
         int flags[]{int(includeReconstruction), -int(includeReconstruction), int(history), -int(history), int(limitedVRHistory), -int(limitedVRHistory)};
         MPI_Allreduce(MPI_IN_PLACE, flags, 6, MPI_INT, MPI_MIN, mpi.comm);
         DNDS_check_throw_info(flags[0] == -flags[1] && flags[2] == -flags[3] && flags[4] == -flags[5], "checkpoint optional sections differ between ranks");
         Json metadata{{"schema_version", 1}, {"mesh_envelope", 2}, {"flow", EquationMetadata(_equation)}, {"reconstruction", _fv.ReconstructionMetadata()}, {"time_method", _timeStepper ? _timeStepper->Method() : "ssprk3"}, {"history", history}, {"limited_vr_history", limitedVRHistory}, {"limited_vr_history_schema", 1}, {"frame", FrameMetadata(_fv, _time)}};
-        if (_equationWorkspace)
-        {
-            metadata["state_storage"] = DescribeEquationStorage(_accepted);
-            if (includeReconstruction)
-                metadata["reconstruction_storage"] = DescribeEquationStorage(_fv.ReconstructionGuess(*_equationWorkspace));
-        }
+        metadata["state_storage"] = DescribeEquationStorage(_accepted);
+        if (includeReconstruction)
+            metadata["reconstruction_storage"] = DescribeEquationStorage(_fv.ReconstructionGuess(*_workspace));
         metadata["source_integration"] = _sourceStrang ? "strang" : "coupled";
         auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
         serializer->OpenFile(path, false);
-        serializer->WriteInt("cauchy_format", _equationWorkspace ? 5 : 4);
+        serializer->WriteInt("cauchy_format", 5);
         serializer->WriteString("resolved_config", resolved.dump());
         serializer->WriteString("metadata_json", metadata.dump());
         serializer->WriteString("domain_name", _name);
@@ -453,27 +450,15 @@ namespace DNDS::Cauchy
         Runtime::WriteArray(envelope->topology, serializer, "mesh_topology", mpi);
         Runtime::WriteArray(envelope->coordinates, serializer, "mesh_coordinates", mpi);
         Runtime::WriteArray(envelope->periodicTransforms, serializer, "periodic_transforms", mpi);
-        if (_equationWorkspace)
-        {
-            WriteEquationArrays(_accepted, serializer, "state_field_", mpi);
-            if (includeReconstruction)
-                WriteEquationArrays(_restoreReconstruction ? *_equationBackup : _fv.ReconstructionGuess(*_equationWorkspace), serializer, "reconstruction_field_", mpi);
-        }
-        else
-        {
-            Runtime::WriteArray(Flow().Owned(), serializer, "flow", mpi);
-            if (includeReconstruction)
-                Runtime::WriteArray(_restoreReconstruction ? *_reconstructionBackup : _fv.ReconstructionGuess(*_workspace).Owned(), serializer, "reconstruction_guess", mpi);
-        }
+        WriteEquationArrays(_accepted, serializer, "state_field_", mpi);
+        if (includeReconstruction)
+            WriteEquationArrays(_restoreReconstruction ? *_reconstructionBackup : _fv.ReconstructionGuess(*_workspace), serializer, "reconstruction_field_", mpi);
         if (limitedVRHistory)
             Runtime::WriteArray(_restoreReconstruction ? *_limitedVRBackup : *_fv.LimitedVRHistory(*_workspace), serializer, "limited_vr_history", mpi);
         if (history)
         {
             serializer->WriteReal("history_dt", _timeStepper->PreviousDt());
-            if (_equationWorkspace)
-                WriteEquationArrays(_timeStepper->PreviousState(), serializer, "history_field_", mpi);
-            else
-                Runtime::WriteArray(_timeStepper->PreviousState().CoupledField().Owned(), serializer, "history_flow", mpi);
+            WriteEquationArrays(_timeStepper->PreviousState(), serializer, "history_field_", mpi);
         }
         serializer->CloseFile();
     }
@@ -558,12 +543,13 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(lastDt == historyDt, "stored last accepted timestep conflicts with BDF history");
         auto storedConfig = Json::parse(config, nullptr, false);
         int valid = name == _name && !storedConfig.is_discarded() && CompatibleConfig(storedConfig) == CompatibleConfig(resolved) && std::isfinite(time) && time >= 0 && step >= 0 &&
-                    (stateArchive ? bool(_equationWorkspace) && stateArchive->Compatible(_trial) && stateArchive->fields[0].RowCount() == ids.RowCount()
-                                  : !_equationWorkspace && flow && flow->RowCount() == ids.RowCount() && flow->Layout().Width() == 5);
+                    (stateArchive ? stateArchive->Compatible(_trial) && stateArchive->fields[0].RowCount() == ids.RowCount()
+                                  : flow && _trial.ComponentNumber() == 5 && _trial.PhysicalFieldNumber() == 1 &&
+                                        flow->RowCount() == ids.RowCount() && flow->Layout().Width() == 5);
         valid = valid && (version < 4 || (metadata.is_object() && metadata.value("schema_version", 0) == 1 &&
                                           CompatibleEquationMetadata(metadata.value("flow", Json())) == CompatibleEquationMetadata(EquationMetadata(_equation))));
         valid = valid && CompatibleFrame(metadata, _fv, std::isfinite(time) ? time : 0);
-        valid = valid && (!limitedVRHistory || (reconstruction && limitedVRHistory->RowCount() == ids.RowCount() &&
+        valid = valid && (!limitedVRHistory || ((reconstruction || reconstructionArchive) && limitedVRHistory->RowCount() == ids.RowCount() &&
                                                 !limitedVRHistory->Layout().IsVariable() && limitedVRHistory->Layout().Width() == 2));
         valid = valid && (version < 4 || (metadata.is_object() && metadata.value("limited_vr_history", false) == bool(limitedVRHistory) &&
                                           (!limitedVRHistory || metadata.value("limited_vr_history_schema", 0) == 1)));
@@ -615,12 +601,23 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(Admissible(_trial), "Cauchy restart contains inadmissible equation states");
             std::optional<EquationDofs> guess;
             MPI::LocalStage(mpi, [&]
-                            { guess.emplace(EquationDofOperations::NewVector(_fv.ReconstructionGuess(*_equationWorkspace))); });
+                            { guess.emplace(EquationDofOperations::NewVector(_fv.ReconstructionGuess(*_workspace))); });
+            const bool needsLimitedVRHistory = bool(_fv.LimitedVRHistory(*_workspace));
             int compatible = reconstructionArchive && reconstructionArchive->Compatible(*guess) &&
-                             metadata.value("reconstruction", Json()) == _fv.ReconstructionMetadata();
+                             metadata.value("reconstruction", Json()) == _fv.ReconstructionMetadata() &&
+                             (!needsLimitedVRHistory || limitedVRHistory);
             MPI_Allreduce(MPI_IN_PLACE, &compatible, 1, MPI_INT, MPI_MIN, mpi.comm);
+            std::optional<Runtime::Array<real>> mappedLimitedVRHistory;
             if (compatible)
+            {
                 reconstructionArchive->Restore(*guess, route, context);
+                if (needsLimitedVRHistory)
+                {
+                    MPI::LocalStage(mpi, [&]
+                                    { mappedLimitedVRHistory.emplace(Runtime::RowLayout::Dense(_fv.Metrics().NumCell(), 2)); });
+                    transfer(*limitedVRHistory, *mappedLimitedVRHistory);
+                }
+            }
             else
                 EquationDofOperations::Fill(*guess, 0);
             std::unique_ptr<EquationTimeStepper> restoredStepper;
@@ -646,26 +643,28 @@ namespace DNDS::Cauchy
             checkpoint->epoch.acceptedStep = uint64_t(step);
             checkpoint->stepper = std::move(restoredStepper);
             checkpoint->equationGuess = std::move(guess);
+            checkpoint->limitedVRHistory = std::move(mappedLimitedVRHistory);
             return checkpoint;
         }
         // Existing trial allocations and binding identities remain stable.
         auto &trial = _trial.CoupledField();
         transfer(*flow, trial.Owned());
-        DNDS_check_throw_info(_fv.Admissible(trial), "Cauchy restart contains inadmissible states");
-        Runtime::Array<real> guess;
+        DNDS_check_throw_info(Admissible(_trial), "Cauchy restart contains inadmissible states");
+        std::optional<EquationDofs> guess;
         MPI::LocalStage(mpi, [&]
-                        { guess = Runtime::Array<real>(_fv.ReconstructionGuess(*_workspace).Owned().Layout()); });
+                        { guess.emplace(EquationDofOperations::NewVector(_fv.ReconstructionGuess(*_workspace))); });
+        auto &guessArray = guess->CoupledField().Owned();
         int compatibleReconstruction = bool(reconstruction) && (version < 4 || metadata.value("reconstruction", Json()) == _fv.ReconstructionMetadata());
         const bool needsLimitedVRHistory = _fv.LimitedVRHistory(*_workspace).has_value();
         compatibleReconstruction = compatibleReconstruction && (!needsLimitedVRHistory || limitedVRHistory);
         if (reconstruction)
             for (index iRow = 0; iRow < reconstruction->RowCount(); ++iRow)
-                compatibleReconstruction = compatibleReconstruction && reconstruction->RowSize(iRow) == guess.Layout().Width();
+                compatibleReconstruction = compatibleReconstruction && reconstruction->RowSize(iRow) == guessArray.Layout().Width();
         MPI_Allreduce(MPI_IN_PLACE, &compatibleReconstruction, 1, MPI_INT, MPI_MIN, mpi.comm);
         std::optional<Runtime::Array<real>> mappedLimitedVRHistory;
         if (compatibleReconstruction)
         {
-            transfer(*reconstruction, guess);
+            transfer(*reconstruction, guessArray);
             if (needsLimitedVRHistory)
             {
                 MPI::LocalStage(mpi, [&]
@@ -675,7 +674,7 @@ namespace DNDS::Cauchy
         }
         else
         {
-            auto write = guess.Write();
+            auto write = guessArray.Write();
             const auto output = write.View<Runtime::UniformTableRows>();
             for (index iCell = 0; iCell < output.RowCount(); ++iCell)
                 for (index j = 0; j < output.RowSize(iCell); ++j)
@@ -694,16 +693,17 @@ namespace DNDS::Cauchy
                     DNDS_check_throw_info(std::isfinite(historyDt) && historyDt > 0, "invalid Cauchy restart history timestep");
                     restoredHistory.emplace(_fv.Metrics().BuildField(Flow().Owned().Layout())); });
                 transfer(*history, restoredHistory->Owned());
-                DNDS_check_throw_info(_fv.Admissible(*restoredHistory), "inadmissible Cauchy restart history");
+                const auto restoredState = _trial.RebindCoupled(*restoredHistory);
+                DNDS_check_throw_info(Admissible(restoredState), "inadmissible Cauchy restart history");
                 MPI::LocalStage(mpi, [&]
-                                { restoredStepper->RestoreHistory(_trial.RebindCoupled(*restoredHistory), historyDt); });
+                                { restoredStepper->RestoreHistory(restoredState, historyDt); });
             }
         }
         checkpoint->time = time;
         checkpoint->lastDt = lastDt;
         checkpoint->epoch.acceptedStep = uint64_t(step);
         checkpoint->stepper = std::move(restoredStepper);
-        checkpoint->guess = std::move(guess);
+        checkpoint->equationGuess = std::move(guess);
         checkpoint->limitedVRHistory = std::move(mappedLimitedVRHistory);
         return checkpoint;
     }
@@ -723,11 +723,10 @@ namespace DNDS::Cauchy
             MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), reserve);
         else
             reserve();
-        if (checkpoint.equationGuess)
-            checkpoint.reconstruction.emplace(_fv.ReserveReconstructionRestore(_equationWorkspace, *checkpoint.equationGuess, collectiveChecks));
-        else
-            checkpoint.reconstruction.emplace(_fv.ReserveReconstructionRestore(_workspace, *checkpoint.guess,
-                                                                               checkpoint.limitedVRHistory ? &*checkpoint.limitedVRHistory : nullptr, collectiveChecks));
+        DNDS_check_throw_info(bool(checkpoint.equationGuess), "checkpoint lacks a unified equation reconstruction candidate");
+        checkpoint.reconstruction.emplace(_fv.ReserveReconstructionRestore(
+            _workspace, *checkpoint.equationGuess,
+            checkpoint.limitedVRHistory ? &*checkpoint.limitedVRHistory : nullptr, collectiveChecks));
     }
     void Domain::CommitCheckpointRead(CheckpointRead &checkpoint)
     {

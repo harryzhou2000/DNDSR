@@ -305,9 +305,9 @@ def test_device_reconstruction_publication_layouts_and_python_shared_buffers(bac
     context = R.ExecutionContext(device)
     if not R.cuda_enabled:
         with pytest.raises(RuntimeError):
-            CFV.ReconstructionDevicePlan.Prepare(plan, device, context)
+            plan.Place(device, context)
         return
-    resident = CFV.ReconstructionDevicePlan.Prepare(plan, device, context)
+    resident = plan.Place(device, context)
     kernel = getattr(CFV.ReconstructionDeviceKernel, kernel_name)
     if not resident.SupportsKernel(kernel):
         pytest.skip("requested FP64 tensor-core kernel unavailable on this device/build")
@@ -316,13 +316,13 @@ def test_device_reconstruction_publication_layouts_and_python_shared_buffers(bac
         mpi = DNDS.MPIInfo()
         mpi.setWorld()
         options.provider = R.NCCLTransferProvider(mpi, device)
-    assert sum(item.bytes for item in resident.Buffers()) > 0
+    assert sum(item.bytes for item in resident.ResidentBuffers()) > 0
     components = 5
     width = components * plan.NRecDOF()
     cpu = plan.BuildWorkspace(components)
-    gpu = resident.BuildWorkspace(components, R.RowLayout.tiled_col_major(0, width, 8))
+    gpu = resident.BuildWorkspaceWithLayout(components, R.RowLayout.tiled_col_major(0, width, 8))
     mean = metrics.BuildField(components)
-    gpu_mean = resident.BuildField(R.RowLayout.col_major(0, components, 32, 1))
+    gpu_mean = metrics.BuildFieldWithLayout(R.RowLayout.col_major(0, components, 32, 1), device)
     values = 1 + .01 * np.arange(metrics.NumCell() * components).reshape(-1, components)
     mean.owned.assign(values)
     gpu_mean.owned.assign(values)
@@ -331,7 +331,7 @@ def test_device_reconstruction_publication_layouts_and_python_shared_buffers(bac
     gpu.coefficients.owned.assign(coefficients)
     boundary = plan.BuildBoundaryValues(components)
     boundary.values.assign(np.ones((plan.NumBoundaryQuadrature(), components)))
-    gpu_boundary = resident.PrepareBoundary(boundary)
+    gpu_boundary = resident.PlaceBoundaryValues(boundary)
     metrics.BindHalo(mean).begin().wait()
     resident.BindHalo(gpu_mean, R.TransferTransport.DevicePacked, options).begin(context).wait()
     cpu_halo, gpu_halo = metrics.BindHalo(cpu.coefficients), resident.BindHalo(gpu.coefficients, R.TransferTransport.DevicePacked, options)
@@ -344,15 +344,15 @@ def test_device_reconstruction_publication_layouts_and_python_shared_buffers(bac
         if backend == "nccl":
             comm.wait_for(stream.record())
             gpu_halo.enqueue(engine, comm)
-            resident.DoReconstructionIterTo(engine, stream, gpu_mean, gpu.coefficients, gpu, gpu_boundary,
-                                            CFV.ReconstructionRegion.Core, kernel)
+            resident.SubmitReconstructionIterTo(engine, stream, gpu_mean, gpu.coefficients, gpu, gpu_boundary,
+                                                CFV.ReconstructionRegion.Core, kernel)
             stream.wait_for(comm.record())
-            resident.DoReconstructionIterTo(engine, stream, gpu_mean, gpu.coefficients, gpu, gpu_boundary,
-                                            CFV.ReconstructionRegion.HaloDependent, kernel)
+            resident.SubmitReconstructionIterTo(engine, stream, gpu_mean, gpu.coefficients, gpu, gpu_boundary,
+                                                CFV.ReconstructionRegion.HaloDependent, kernel)
         else:
             gpu_halo.begin(context).wait()
-            resident.DoReconstructionIterTo(engine, stream, gpu_mean, gpu.coefficients, gpu, gpu_boundary, kernel=kernel)
-        resident.CommitReconstruction(engine, stream, gpu)
+            resident.SubmitReconstructionIterTo(engine, stream, gpu_mean, gpu.coefficients, gpu, gpu_boundary, kernel=kernel)
+        resident.SubmitCommitReconstruction(engine, stream, gpu)
         engine.synchronize()
         resident.CheckStatus(gpu)
         np.testing.assert_allclose(gpu.coefficients.owned.numpy(), cpu.coefficients.owned.numpy(), rtol=1e-9, atol=1e-10)

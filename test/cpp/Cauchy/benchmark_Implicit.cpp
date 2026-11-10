@@ -114,10 +114,15 @@ int main(int argc, char **argv)
                     values(iCell, j) = value[j];
             }
         }
+        auto logicalState = C::EquationDofs::Coupled(equation.Schema(), state);
+        auto logicalResidual = C::EquationDofs::Coupled(equation.Schema(), residual);
+        auto logicalAction = C::EquationDofs::Coupled(equation.Schema(), action);
+        auto logicalForward = C::EquationDofs::Coupled(equation.Schema(), forward);
+        auto logicalUpdate = C::EquationDofs::Coupled(equation.Schema(), update);
         const auto ownedVersion = state.Owned().Version();
         C::AuxiliaryRequest request;
         request.meanThermodynamics = request.faceSpectralRadius = request.cellSpectralSum = true;
-        auto workspace = fv.BuildWorkspace(state, request);
+        auto workspace = fv.BuildWorkspace(logicalState);
         auto auxiliary = fv.BuildAuxiliaryValues(request);
         R::EagerEngine engine(0, checked ? std::make_shared<R::AccessTrackingContext>() : nullptr);
         const auto stream = engine.CreateCPUStream();
@@ -128,13 +133,13 @@ int main(int argc, char **argv)
             for (I iCell = 0; iCell < owned; ++iCell)
                 write.View()(iCell, 0) = 1;
         }
-        auto problem = fv.BuildLinearProblem(state, C::DiagonalStorage::Entries,
+        auto problem = fv.BuildLinearProblem(logicalState, C::DiagonalStorage::Entries,
                                              evaluated ? C::OffDiagonalStorage::SemiMatrixFree : C::OffDiagonalStorage::Assembled);
         C::LinearSolveSettings linear;
         linear.maxIterations = 5;
         linear.relativeTolerance = linear.absoluteTolerance = 0;
-        C::LinearSolver solver(problem, state, [&](auto &field)
-                               { return metrics.BindHalo(field); }, linear, {overlap, checked});
+        C::EquationLinearSolver solver(problem, logicalState, [&](auto &field)
+                                       { return metrics.BindHalo(field); }, linear, {overlap, checked});
         for (int trial = 0; trial < trials; ++trial)
         {
             if (polynomial)
@@ -145,17 +150,17 @@ int main(int argc, char **argv)
                     std::cout << "CAUCHY_PMG_BENCH " << C::Json{{"cells", global}, {"np", mpi.size}, {"degree", 3}, {"trial", trial}, {"repetitions", repetitions}, {"checked", checked}, {"overlap", overlap}, {"import", import}, {"topology", topology}, {"fv_prepare", preparation}, {"mass", 1e5}, {"positivity", false}, {"owned_generation_preserved", true}, {"variants", std::move(variants)}}.dump() << std::endl;
                 continue;
             }
-            fv.Evaluate(state, residual, *workspace, engine, stream);
+            fv.Evaluate(logicalState, logicalResidual, *workspace, engine, stream);
             const double evaluate = measure([&]
-                                            { fv.Evaluate(state, residual, *workspace, engine, stream); }, repetitions);
+                                            { fv.Evaluate(logicalState, logicalResidual, *workspace, engine, stream); }, repetitions);
             const double auxiliaryTime = measure([&]
-                                                 { fv.PrepareAuxValues(state, auxiliary); }, repetitions);
-            fv.ValidateAuxValues(state, auxiliary);
+                                                 { fv.PrepareAuxValues(logicalState, auxiliary); }, repetitions);
+            fv.ValidateAuxValues(logicalState, auxiliary);
             double rawRHS = 0;
             {
                 const auto rhs = fv.AcquireRHSOperator();
                 const auto u = state.Owned().Read(), ug = state.Ghost().Read();
-                const auto &coefficients = fv.FluxReconstruction(*workspace);
+                const auto &coefficients = fv.FluxReconstruction(*workspace).CoupledField();
                 const auto r = coefficients.Owned().Read(), rg = coefficients.Ghost().Read();
                 const auto thermo = auxiliary.meanThermodynamics->Read();
                 auto output = rawResidual.Owned().Write();
@@ -184,7 +189,7 @@ int main(int argc, char **argv)
             MPI_Allreduce(MPI_IN_PLACE, &difference, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
             DNDS_check_throw_info(difference <= 1e-12, "raw RHS differs from its composed Evaluate result");
             const double jacobian = measure([&]
-                                            { fv.PrepareJacobian(state, auxiliary, inversePseudoTime, *problem, {1000, 1, false}); }, repetitions);
+                                            { fv.PrepareJacobian(logicalState, auxiliary, inversePseudoTime, *problem, {1000, 1, false}); }, repetitions);
             // InvertDiagonal is lazy: time its first real inversion after the
             // last Jacobian fill, rather than averaging cached no-op calls.
             const double inverse = measure([&]
@@ -194,20 +199,20 @@ int main(int argc, char **argv)
             const double factor = measure([&]
                                           { problem->FactorizeILU(); }, repetitions);
             const double matvec = measure([&]
-                                          { problem->Apply(state, action); }, repetitions);
+                                          { problem->Apply(logicalState, logicalAction); }, repetitions);
             const double sgs = measure([&]
-                                       { problem->ApplySGS(residual, state, forward, update); }, repetitions);
+                                       { problem->ApplySGS(logicalResidual, logicalState, logicalForward, logicalUpdate); }, repetitions);
             const double ilu = measure([&]
-                                       { problem->ApplyILU(residual, forward, update); }, repetitions);
+                                       { problem->ApplyILU(logicalResidual, logicalForward, logicalUpdate); }, repetitions);
             I linearIterations = 0;
             const double solve = measure([&]
-                                         { linearIterations += solver.Solve(residual).iterations; }, repetitions);
+                                         { linearIterations += solver.Solve(logicalResidual).iterations; }, repetitions);
             DNDS_check_throw_info(linearIterations == I(5) * repetitions, "unexpected standalone SGS work count");
             const double transfer = measure([&]
                                             { halo.Begin().Wait(); }, repetitions);
             C::Json controllers;
             if (extra)
-                controllers = CauchyBenchmark::ControllerPhases(fv, state, *workspace, engine, stream, settings, checked, repetitions, measure);
+                controllers = CauchyBenchmark::ControllerPhases(fv, logicalState, *workspace, engine, stream, settings, checked, repetitions, measure);
             DNDS_check_throw_info(state.Owned().Version() == ownedVersion, "benchmark changed its frozen means");
             DNDS_check_throw_info(std::isfinite(A::NormGlobal(update)), "nonfinite local factor solve");
             if (mpi.rank == 0)

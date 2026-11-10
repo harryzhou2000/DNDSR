@@ -53,7 +53,7 @@ not be repeated in the subsequent matrix/linear block. In particular, future
 RHS-refined face signals must survive until Jacobian setup. Preparation and
 RHS outputs are distinct publications, not untracked in-kernel mutation.
 
-`EquationNonlinearSolver::EvaluateRate` and `EvaluateEquation` retain their
+`NonlinearSolver::EvaluateRate` and `EvaluateEquation` retain their
 auxiliary input state/time/ghost generations. A cached `CorrectOnce` on that
 same publication reuses them. A foreign cached rate still follows the existing
 explicit correction-preparation fallback; the caller owns rate provenance.
@@ -111,7 +111,7 @@ ordinary stage solves retain before-update observation, while a DITR problem
 can request observation after its two coupled updates. Both use the same norm,
 reference, CFL and cap policy; after-update mode has no iteration-zero stop.
 
-`NonlinearSolver::CorrectOnce` and `EquationNonlinearSolver::CorrectOnce` share
+`NonlinearSolver::CorrectOnce` and `NonlinearSolver::CorrectOnce` share
 the ordinary solve's evaluation, defect assembly, pseudo-time, approximate
 Jacobian, linear solver and PP/update implementations. They do exactly one
 update without a convergence loop or residual-norm Allreduce. Other required
@@ -1401,17 +1401,16 @@ accumulation order. A future OpenMP implementation must reduce local norm and
 diagnostic values per thread and merge after the loop; it must not introduce
 atomic counters or pointer-owned diagnostics into the row loop.
 
-`EquationNonlinearSolver` connects the equation-state FV residual, physical
-Jacobian and logical linear driver to the same private iteration policy as
-`NonlinearSolver`. It does not flatten separate flow/species fields or infer
-logical positions from physical storage order. The original flow5 adapter
-keeps its existing PP and p-FAS behavior.
+`NonlinearSolver` connects the equation-state FV residual, physical Jacobian
+and logical linear driver to one private iteration policy. It does not flatten
+separate flow/species fields or infer logical positions from physical storage
+order. Fixed-width flow5 specialization is resolved inside the corresponding
+operator rather than by another nonlinear controller.
 
 ```mermaid
 flowchart TD
-    Time[EquationTimeStepper: history and stage equation] --> Equation[EquationNonlinearSolver: bound trial state]
-    Field[Existing flow5 NonlinearSolver] --> Policy[Shared nonlinear iteration policy]
-    Equation --> Policy
+    Time[EquationTimeStepper: history and stage equation] --> Solver[NonlinearSolver: EquationDofs trial state]
+    Solver --> Policy[Shared nonlinear iteration policy]
     Policy --> Auxiliary[Prepare explicit auxiliary inputs from means]
     Auxiliary --> Residual[Reconstruction, limiting and integrated FV residual]
     Residual --> Norm[All-component norms; explicit stopping selection]
@@ -1433,8 +1432,9 @@ projects the linear problem before correction; unselected means are copied
 exactly. Norm formulas, initial/running-maximum reference, pseudo-CFL growth,
 fixed correction cap and optional profiling use the shared iteration policy.
 
-The equation adapter requires the implemented EquationWorkspace profile and
-rejects unavailable Roe dissipation. Its bounded corrections and equation
+The native solver requires the implemented Workspace profile. Operator
+capability resolution selects available fixed-width or general kernels before
+execution and rejects a missing combination explicitly. Its bounded corrections and equation
 application also serve polynomial FAS. It retains actual mean halos
 and high-order source samples from each residual evaluation. Auxiliary
 preparation is stateless with explicit outputs. The default approximate source

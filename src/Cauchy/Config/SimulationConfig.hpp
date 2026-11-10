@@ -535,7 +535,11 @@ namespace DNDS::Cauchy
         bool steady = false;
         real dt = 1e-3;
         index steps = 1;
-        real finalTime = 0, cfl = 0, wallSeconds = 0;
+        real tEnd = 0;
+        /// Compatibility input only. Resolution copies a nonnegative value to
+        /// tEnd and rewrites the resolved root; native code uses tEnd.
+        real finalTime = -1;
+        real cfl = 0, wallSeconds = 0;
         real steadyTolerance = 0;
         index steadyMinSteps = 100;
         int maxRetries = 0;
@@ -555,7 +559,8 @@ namespace DNDS::Cauchy
             DNDS_FIELD(steady, "Euler steady override: BDF1 infinite-dt limit, one outer solve and frozen physical time");
             DNDS_FIELD(dt, "Fixed positive physical timestep");
             DNDS_FIELD(steps, "Nonnegative accepted step target");
-            DNDS_FIELD(finalTime, "Positive physical-time target; zero uses the step target");
+            DNDS_FIELD(tEnd, "Positive physical-time target; zero uses the step target");
+            DNDS_FIELD(finalTime, "Deprecated alias for tEnd; leave at -1 in new inputs");
             DNDS_FIELD(cfl, "Positive CFL enables adaptive global stepping, capped by dt");
             DNDS_FIELD(wallSeconds, "Collective graceful wall stop; zero disables it");
             DNDS_FIELD(maxRetries, "C++ frontend maximum whole-step dt halvings after rejection; zero reports failure. Direct/Python callers own retries");
@@ -566,24 +571,74 @@ namespace DNDS::Cauchy
             config.field_section(&T::reactor, "reactor", "Existing Euler constant-volume source-step controls");
         }
     };
+    struct ImplicitOutputSettings
+    {
+        index consoleInterval = 1;
+        index historyInterval = 1;
+        index checkpointInterval = 0;
+        index visualizationInterval = -1;
+        DNDS_DECLARE_CONFIG(ImplicitOutputSettings)
+        {
+            DNDS_FIELD(consoleInterval, "Nonlinear iteration console cadence; zero suppresses ordinary iteration lines");
+            DNDS_FIELD(historyInterval, "Nonlinear iteration CSV cadence; stage/step end rows are unconditional");
+            DNDS_FIELD(checkpointInterval, "Restartable nonlinear-iteration checkpoint cadence; zero disables it");
+            DNDS_FIELD(visualizationInterval, "Nonlinear-iteration visualization cadence; -1 inherits checkpointInterval and zero disables it");
+        }
+    };
+    struct DiagnosticOutputSettings
+    {
+        bool perRank = false;
+        std::string level = "info";
+        index maxBytes = 64 * 1024 * 1024;
+        index rotatedFiles = 3;
+        DNDS_DECLARE_CONFIG(DiagnosticOutputSettings)
+        {
+            DNDS_FIELD(perRank, "Write one rotating operational diagnostic file per global rank");
+            DNDS_FIELD(level, "Operational diagnostic level: trace, debug, info, warn, error, critical or off");
+            DNDS_FIELD(maxBytes, "Per-rank diagnostic rotation size in bytes");
+            DNDS_FIELD(rotatedFiles, "Number of rotated per-rank diagnostic files retained");
+        }
+    };
     struct OutputSettings
     {
         std::string prefix = "cauchy";
-        index interval = 1;
+        /// Deprecated compatibility alias. A nonnegative value is resolved to
+        /// checkpointInterval before execution.
+        index interval = -1;
+        index checkpointInterval = 1;
+        index visualizationInterval = -1;
+        real checkpointTimeInterval = 0;
+        real visualizationTimeInterval = -1;
+        real endpointSnapRelativeTolerance = smallReal;
+        index consoleInterval = 1;
         index historyInterval = 1;
         index historySegmentRows = 10000;
+        int historyPrecision = 10;
+        std::string consoleColor = "auto";
         int hdfDeflateLevel = 0;
         bool checkpointReconstruction = false;
         std::vector<int> forceZones;
+        ImplicitOutputSettings implicit;
+        DiagnosticOutputSettings diagnostics;
         DNDS_DECLARE_CONFIG(OutputSettings)
         {
             DNDS_FIELD(prefix, "Output file prefix");
-            DNDS_FIELD(interval, "Accepted-step snapshot interval; zero disables periodic output");
-            DNDS_FIELD(historyInterval, "CSV diagnostics cadence in accepted steps");
+            DNDS_FIELD(interval, "Deprecated alias for checkpointInterval; leave at -1 in new inputs");
+            DNDS_FIELD(checkpointInterval, "Accepted-step checkpoint cadence; zero disables periodic checkpoints");
+            DNDS_FIELD(visualizationInterval, "Accepted-step visualization cadence; -1 inherits checkpointInterval and zero disables it");
+            DNDS_FIELD(checkpointTimeInterval, "Physical-time checkpoint cadence; zero disables it");
+            DNDS_FIELD(visualizationTimeInterval, "Physical-time visualization cadence; -1 inherits checkpointTimeInterval and zero disables it");
+            DNDS_FIELD(endpointSnapRelativeTolerance, "Relative dt tolerance for snapping physical steps to output times; Euler default is 1e-10");
+            DNDS_FIELD(consoleInterval, "Accepted-step console cadence; zero suppresses ordinary step lines");
+            DNDS_FIELD(historyInterval, "Accepted-step CSV cadence; final step rows remain unconditional");
             DNDS_FIELD(historySegmentRows, "Maximum history rows per CSV segment; each segment has the same header");
+            DNDS_FIELD(historyPrecision, "Scientific-notation digits after the decimal point for real CSV cells");
+            DNDS_FIELD(consoleColor, "Console color policy: auto, always or never");
             DNDS_FIELD(hdfDeflateLevel, "VTKHDF compression level 0..9; uncompressed is the initial portable baseline");
             DNDS_FIELD(checkpointReconstruction, "Store optional compatible polynomial warm guesses for exact finite-sweep continuation; default omits them");
             DNDS_FIELD(forceZones, "Boundary zones on which pressure and viscous body force are integrated");
+            config.field_section(&T::implicit, "implicit", "Nonlinear iteration history, console and internal artifact cadence");
+            config.field_section(&T::diagnostics, "diagnostics", "Operational logging sinks independent of scientific history");
         }
     };
     struct DomainConfig

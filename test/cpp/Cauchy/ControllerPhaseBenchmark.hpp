@@ -10,7 +10,7 @@
 namespace CauchyBenchmark
 {
     template <class Measure>
-    DNDS::Cauchy::Json ControllerPhases(DNDS::Cauchy::FiniteVolume &fv, DNDS::CFV::FVField &frozen,
+    DNDS::Cauchy::Json ControllerPhases(DNDS::Cauchy::FiniteVolume &fv, DNDS::Cauchy::EquationDofs &frozenState,
                                         DNDS::Cauchy::FiniteVolume::Workspace &workspace, DNDS::Runtime::EagerEngine &engine,
                                         const DNDS::Runtime::ExecutionStream &stream, DNDS::Cauchy::DomainSettings settings,
                                         bool checked, int repetitions, Measure &measure)
@@ -21,6 +21,7 @@ namespace CauchyBenchmark
         using I = DNDS::index;
         const DNDS::MPIInfo mpi(fv.Metrics().Communicator());
         const auto &metrics = fv.Metrics();
+        auto &frozen = frozenState.CoupledField();
         const I rows = metrics.NumCell();
         I globalRows = rows;
         MPI_Allreduce(MPI_IN_PLACE, &globalRows, 1, MPI_INT64_T, MPI_SUM, mpi.comm);
@@ -122,12 +123,12 @@ namespace CauchyBenchmark
                               "physical PP benchmark differs from its affine-energy oracle");
         output["pp_active_cells"] = expectedActive;
         output["pp_physical_dt"] = limit.dt;
-        const auto &guess = fv.ReconstructionGuess(workspace).Owned();
-        R::Array<double> saved(guess.Layout()), synthetic(guess.Layout());
-        saved.CopyFrom(guess);
+        const auto &guess = fv.ReconstructionGuess(workspace);
+        auto saved = guess.Clone(), synthetic = guess.Clone();
+        auto &syntheticArray = synthetic.CoupledField().Owned();
         {
             const auto mean = frozen.Owned().Read();
-            auto write = synthetic.Write();
+            auto write = syntheticArray.Write();
             const auto u = mean.View<R::UniformTableRows>();
             const auto r = write.View<R::UniformTableRows>();
             for (I iCell = 0; iCell < rows; ++iCell)
@@ -147,7 +148,7 @@ namespace CauchyBenchmark
         }
         fv.RestoreReconstructionGuess(workspace, synthetic);
         output["pp_quadrature"] = measure([&]
-                                          { fv.LimitReconstructionPP(frozen, workspace); }, repetitions);
+                                          { fv.LimitReconstructionPP(frozenState, workspace); }, repetitions);
         const auto [limited, beta] = fv.PositivityReconstructionStats(workspace);
         DNDS_check_throw_info(limited == globalRows && beta > 0 && beta < 1,
                               "quadrature PP benchmark did not exercise active limiting: cells=" + std::to_string(limited) + "/" + std::to_string(globalRows) + " beta=" + std::to_string(beta));
@@ -202,11 +203,14 @@ namespace CauchyBenchmark
         settings.implicit.positivity.rhsFPPMode = "dTau";
         auto trial = metrics.BuildField(5), source = metrics.BuildField(5);
         A::Copy(trial, frozen);
-        C::AuxiliaryRequest channels;
-        channels.faceSpectralRadius = channels.cellSpectralSum = true;
-        auto work = fv.BuildWorkspace(trial, channels);
-        C::NonlinearSolver solver(fv, trial, work, engine, stream, settings);
-        solver.EvaluateEquation(trial, source, 1e5, 1, 0);
+        auto trialState = C::EquationDofs::Coupled(fv.Equation().Schema(), trial);
+        auto sourceState = C::EquationDofs::Coupled(fv.Equation().Schema(), source);
+        auto work = fv.BuildWorkspace(trialState);
+        C::NonlinearSolver solver(
+            fv, trialState, work, engine, stream, settings,
+            A::ComponentSelection(trialState.ComponentNumber(),
+                                  trialState.Schema().ResolveComponents(settings.implicit.residualComponents)));
+        solver.EvaluateEquation(trialState, sourceState, 1e5, 1, 0);
         C::NonlinearProfile accumulated;
         for (int repetition = 0; repetition < repetitions; ++repetition)
         {
@@ -220,7 +224,7 @@ namespace CauchyBenchmark
             }
             MPI_Barrier(mpi.comm);
             C::NonlinearProfile profile;
-            const auto report = solver.Solve(trial, source, 1e5, 1, 0, 0, {1, 0, &profile});
+            const auto report = solver.Solve(trialState, sourceState, 1e5, 1, 0, 0, {1, 0, &profile});
             DNDS_check_throw_info(report.iterations == 1 && report.linearIterations == 5 && profile.residualEvaluations == 2 &&
                                       report.residual[4] < report.initialResidual[4],
                                   "nonlinear benchmark did not perform the declared correction or reduce its defect");

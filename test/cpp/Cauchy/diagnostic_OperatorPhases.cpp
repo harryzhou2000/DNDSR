@@ -8,9 +8,9 @@
 #include "Euler/EulerSolver.hpp"
 #include "ExtractedEulerSA.hpp"
 // Diagnostic-only TU extraction: supplies the exact production definitions.
-// Static linking therefore does not pull EquationFiniteVolume.cpp.o a second time.
+// Static linking therefore does not pull FiniteVolume.cpp.o a second time.
 // No private-access macro, extra production API or internal timer is needed.
-#include "Cauchy/Discretization/EquationFiniteVolume.cpp"
+#include "Cauchy/Discretization/FiniteVolume.cpp"
 #include <iostream>
 
 namespace C = DNDS::Cauchy;
@@ -100,7 +100,7 @@ int main(int argc, char **argv)
         C::FiniteVolume fv(mesh, settings, equation);
         auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(6));
         auto result = C::EquationDofOperations::NewVector(state);
-        auto workspace = fv.BuildEquationWorkspace(state);
+        auto workspace = fv.BuildWorkspace(state);
         R::Array<DNDS::real> meanSourceDiagonal(R::RowLayout::Dense(fv.Metrics().NumCell(), 6));
 
         using Eval = E::DiagnosticEulerSA;

@@ -17,6 +17,18 @@ namespace C = DNDS::Cauchy;
 namespace R = DNDS::Runtime;
 namespace A = DNDS::Algebra;
 static DNDS::MPIInfo mpi;
+static C::EquationDofs Bind(const C::FiniteVolume &fv, const DNDS::CFV::FVField &field)
+{
+    return C::EquationDofs::Coupled(fv.Equation().Schema(), field);
+}
+static C::NonlinearSolver MakeSolver(const C::FiniteVolume &fv, C::EquationDofs &state,
+                                     R::EagerEngine &engine, const R::ExecutionStream &stream,
+                                     const C::DomainSettings &settings)
+{
+    return {fv, state, fv.BuildWorkspace(state), engine, stream, settings,
+            A::ComponentSelection(state.ComponentNumber(),
+                                  state.Schema().ResolveComponents(settings.implicit.residualComponents))};
+}
 TEST_CASE("Mean-state Krylov scaling uses volume averages and one common momentum scale")
 {
     R::Array<DNDS::real> values(R::RowLayout::Dense(3, 6));
@@ -69,7 +81,7 @@ TEST_CASE("Shared nonlinear controller observes coupled updates once and advance
     CHECK(cfl == std::vector<double>{1, 2});
     CHECK(report.pseudoCFL == 2);
 }
-TEST_CASE("Cauchy nonlinear progress labels iterations and stage one-based")
+TEST_CASE("Cauchy nonlinear progress reports completed iterations and zero-based stage identity")
 {
     C::ImplicitSettings settings;
     settings.iterations = 2;
@@ -78,19 +90,19 @@ TEST_CASE("Cauchy nonlinear progress labels iterations and stage one-based")
     settings.relativeTolerance = 1;
     settings.absoluteTolerance = 0;
     const auto schema = C::EquationSystem::Resolve(C::EquationSettings{}).Schema();
-    std::ostringstream captured;
-    auto *const previous = std::cout.rdbuf(captured.rdbuf());
-    const auto report = C::NonlinearDetail::Iterate(settings, schema, mpi.rank, 0, {}, C::NonlinearIterationReport{}, 0, [] {}, [](auto &norms)
+    std::vector<C::NonlinearProgress> captured;
+    C::NonlinearSolveControl control;
+    control.progress = [&](const auto &progress)
+    { captured.push_back(progress); };
+    const auto report = C::NonlinearDetail::Iterate(settings, schema, mpi.rank, 0, control, C::NonlinearIterationReport{}, 0, [] {}, [](auto &norms)
                                                     { norms[0] = 1; }, []
                                                     { return std::make_pair(0, 0.); }, [](auto &) {});
-    std::cout.rdbuf(previous);
     CHECK(report.converged);
-    if (mpi.rank == 0)
-    {
-        CHECK(captured.str().find("Cauchy nonlinear stage 1 iteration 1") != std::string::npos);
-        CHECK(captured.str().find("Cauchy nonlinear stage 1 iteration 2") != std::string::npos);
-        CHECK(captured.str().find("iteration 0") == std::string::npos);
-    }
+    REQUIRE(captured.size() == 2);
+    CHECK(captured[0].stage == 0);
+    CHECK(captured[0].iteration == 1);
+    CHECK(captured[1].stage == 0);
+    CHECK(captured[1].iteration == 2);
 }
 TEST_CASE("Implicit convergence retains initial and running references without hiding unselected components")
 {
@@ -201,9 +213,10 @@ TEST_CASE("Distributed implicit L1 L2 norms and selected-component stops use the
             const auto stream = engine.CreateCPUStream();
             C::AuxiliaryRequest request;
             request.faceSpectralRadius = request.cellSpectralSum = true;
-            C::NonlinearSolver solver(fv, state, fv.BuildWorkspace(state, request), engine, stream, settings);
+            auto logical = Bind(fv, state), right = Bind(fv, source);
+            auto solver = MakeSolver(fv, logical, engine, stream, settings);
             const auto version = state.Owned().Version();
-            const auto report = solver.Solve(state, source, 20, 1, 0, 0, {0, 0});
+            const auto report = solver.Solve(logical, right, 20, 1, 0, 0, {0, 0});
             CHECK(report.iterations == 0);
             CHECK(report.converged == densityOnly);
             CHECK(report.residual[0] == 0);
@@ -237,12 +250,13 @@ TEST_CASE("One correction reuses the ordinary solve update without a stopping lo
     const auto stream = engine.CreateCPUStream();
     C::AuxiliaryRequest request;
     request.faceSpectralRadius = request.cellSpectralSum = true;
-    C::NonlinearSolver full(fv, reference, fv.BuildWorkspace(reference, request), engine, stream, settings);
-    C::NonlinearSolver one(fv, single, fv.BuildWorkspace(single, request), engine, stream, settings);
+    auto referenceState = Bind(fv, reference), singleState = Bind(fv, single), right = Bind(fv, source);
+    auto full = MakeSolver(fv, referenceState, engine, stream, settings);
+    auto one = MakeSolver(fv, singleState, engine, stream, settings);
     const auto version = source.Owned().Version();
-    const auto solved = full.Solve(reference, source, 20, 1, .1);
+    const auto solved = full.Solve(referenceState, right, 20, 1, .1);
     C::NonlinearProfile profile;
-    const auto corrected = one.CorrectOnce(single, source, 20, 1, .1, 0, {-1, 0, &profile});
+    const auto corrected = one.CorrectOnce(singleState, right, 20, 1, .1, 0, {-1, 0, &profile});
     CHECK(corrected.iterations == 1);
     CHECK_FALSE(corrected.converged);
     CHECK(profile.residualEvaluations == 1);
@@ -306,8 +320,9 @@ TEST_CASE("Global Euler RHS alpha policies affect unmarked rows only for minimum
             const auto stream = engine.CreateCPUStream();
             C::AuxiliaryRequest request;
             request.faceSpectralRadius = request.cellSpectralSum = true;
-            C::NonlinearSolver solver(fv, state, fv.BuildWorkspace(state, request), engine, stream, settings);
-            const auto report = solver.Solve(state, source, 20, 1, .1);
+            auto logical = Bind(fv, state), right = Bind(fv, source);
+            auto solver = MakeSolver(fv, logical, engine, stream, settings);
+            const auto report = solver.Solve(logical, right, 20, 1, .1);
             CAPTURE(mode);
             CAPTURE(scope);
             CHECK(report.rhsLimited == 2); // Original triggers, not all scaled rows.
@@ -360,7 +375,6 @@ TEST_CASE("Native implicit stage recovers a constant manufactured solution from 
         auto state = fv.Metrics().BuildField(layout), source = fv.Metrics().BuildField(layout);
         C::AuxiliaryRequest request;
         request.faceSpectralRadius = request.cellSpectralSum = true;
-        auto workspace = fv.BuildWorkspace(state, request);
         R::EagerEngine engine(scenario == 2 ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
         const auto target = equation.Gas().Conservative({1.2, .3, -.1, .2, 1.1});
@@ -374,8 +388,9 @@ TEST_CASE("Native implicit stage recovers a constant manufactured solution from 
                 }
         }
         const auto sourceVersion = source.Owned().Version();
-        C::NonlinearSolver solver(fv, state, workspace, engine, stream, settings);
-        const auto report = solver.Solve(state, source, 20, .5, .1);
+        auto logical = Bind(fv, state), right = Bind(fv, source);
+        auto solver = MakeSolver(fv, logical, engine, stream, settings);
+        const auto report = solver.Solve(logical, right, 20, .5, .1);
         CAPTURE(scenario);
         CAPTURE(report.iterations);
         CAPTURE(report.linearIterations);
@@ -392,21 +407,22 @@ TEST_CASE("Native implicit stage recovers a constant manufactured solution from 
         }
         for (int j = 0; j < 5; ++j)
             CHECK(report.residual[j] <= std::max(settings.implicit.absoluteTolerance, settings.implicit.relativeTolerance * report.initialResidual[j]));
-        CHECK_THROWS(solver.Solve(state, state, 20, .5, .1));
-        CHECK_THROWS(solver.Solve(state, source, -1, .5, .1));
+        CHECK_THROWS(solver.Solve(logical, logical, 20, .5, .1));
+        CHECK_THROWS(solver.Solve(logical, right, -1, .5, .1));
         int eligible = state.Ghost().Storage().Bytes() >= source.Owned().Storage().Bytes() && source.Owned().Storage().Bytes() > 0;
         MPI_Allreduce(MPI_IN_PLACE, &eligible, 1, MPI_INT, MPI_MIN, mpi.comm);
         if (eligible)
         {
             auto aliased = source;
             aliased.Owned() = R::Array<double>::FromStorage(source.Owned().Layout(), state.Ghost().Storage().Subspan(0, source.Owned().Storage().Bytes()));
+            auto aliasedLogical = Bind(fv, aliased);
             const auto ghostGeneration = state.Ghost().Version();
-            CHECK_THROWS(solver.Solve(state, aliased, 20, .5, .1));
+            CHECK_THROWS(solver.Solve(logical, aliasedLogical, 20, .5, .1));
             CHECK(state.Ghost().Version() == ghostGeneration);
         }
     }
 }
-TEST_CASE("Implicit stage cap reports unconverged and auxiliary requirements fail before iteration")
+TEST_CASE("Implicit stage cap reports unconverged and sessions exclude concurrent solves")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
     C::DomainSettings settings;
@@ -421,11 +437,9 @@ TEST_CASE("Implicit stage cap reports unconverged and auxiliary requirements fai
     A::Fill(source, 0.);
     R::EagerEngine engine(2);
     const auto stream = engine.CreateCPUStream();
-    CHECK_THROWS(C::NonlinearSolver(fv, state, fv.BuildWorkspace(state), engine, stream, settings));
-    C::AuxiliaryRequest request;
-    request.faceSpectralRadius = request.cellSpectralSum = true;
-    C::NonlinearSolver solver(fv, state, fv.BuildWorkspace(state, request), engine, stream, settings);
-    const auto report = solver.Solve(state, source, 1, 1, .1);
+    auto logical = Bind(fv, state), right = Bind(fv, source);
+    auto solver = MakeSolver(fv, logical, engine, stream, settings);
+    const auto report = solver.Solve(logical, right, 1, 1, .1);
     CHECK_FALSE(report.converged);
     CHECK(report.iterations == 1);
     CHECK(fv.Admissible(state));
@@ -439,11 +453,11 @@ TEST_CASE("Implicit stage cap reports unconverged and auxiliary requirements fai
         std::this_thread::yield();
     // The worker owns the explicit nested-session ticket. The independent
     // public facade must reject before entering any numerical collective.
-    CHECK_THROWS_WITH_AS(solver.Solve(state, source, 1, 1, .1), doctest::Contains("active operation"), std::exception);
+    CHECK_THROWS_WITH_AS(solver.Solve(logical, right, 1, 1, .1), doctest::Contains("active operation"), std::exception);
     release = true;
     engine.Synchronize();
     engine.Close();
-    CHECK_THROWS_WITH_AS(solver.Solve(state, source, 1, 1, .1), doctest::Contains("closed"), std::exception);
+    CHECK_THROWS_WITH_AS(solver.Solve(logical, right, 1, 1, .1), doctest::Contains("closed"), std::exception);
 }
 TEST_CASE("Implicit bad corrections reject without poisoning state and nonlinear controls agree before allocation")
 {
@@ -464,18 +478,25 @@ TEST_CASE("Implicit bad corrections reject without poisoning state and nonlinear
     }
     C::AuxiliaryRequest request;
     request.faceSpectralRadius = request.cellSpectralSum = true;
-    auto workspace = fv.BuildWorkspace(state, request);
+    auto logical = Bind(fv, state), right = Bind(fv, source);
+    auto workspace = fv.BuildWorkspace(logical);
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
     if (mpi.size > 1)
     {
         auto mismatched = settings;
         mismatched.implicit.positivity.compressionPower += mpi.rank;
-        CHECK_THROWS(C::NonlinearSolver(fv, state, workspace, engine, stream, mismatched));
+        CHECK_THROWS(C::NonlinearSolver(
+            fv, logical, workspace, engine, stream, mismatched,
+            A::ComponentSelection(logical.ComponentNumber(),
+                                  logical.Schema().ResolveComponents(mismatched.implicit.residualComponents))));
     }
-    C::NonlinearSolver solver(fv, state, workspace, engine, stream, settings);
+    C::NonlinearSolver solver(
+        fv, logical, workspace, engine, stream, settings,
+        A::ComponentSelection(logical.ComponentNumber(),
+                              logical.Schema().ResolveComponents(settings.implicit.residualComponents)));
     const auto generation = state.Owned().Version();
-    CHECK_THROWS(solver.Solve(state, source, 20, 1, .1));
+    CHECK_THROWS(solver.Solve(logical, right, 20, 1, .1));
     CHECK(state.Owned().IsValid());
     CHECK(state.Owned().Version() == generation);
     CHECK(fv.Admissible(state));
@@ -485,7 +506,7 @@ TEST_CASE("Implicit bad corrections reject without poisoning state and nonlinear
             for (int j = 0; j < 5; ++j)
                 write.View()(iCell, j) = 20 * target[j];
     }
-    CHECK(solver.Solve(state, source, 20, 1, .1).converged);
+    CHECK(solver.Solve(logical, right, 20, 1, .1).converged);
 }
 TEST_CASE("Subset correction masks before Euler PP and preserves frozen means exactly")
 {
@@ -510,7 +531,8 @@ TEST_CASE("Subset correction masks before Euler PP and preserves frozen means ex
     channels.faceSpectralRadius = channels.cellSpectralSum = true;
     R::EagerEngine engine;
     const auto stream = engine.CreateCPUStream();
-    C::NonlinearSolver solver(fv, state, fv.BuildWorkspace(state, channels), engine, stream, settings);
+    auto logical = Bind(fv, state), deltaState = Bind(fv, increment), right = Bind(fv, source);
+    auto solver = MakeSolver(fv, logical, engine, stream, settings);
     const auto alpha = C::FlowIncrementFraction(initial, delta, fv.ThermalConstraints(), settings.implicit.positivity.incrementRelax, 2, settings.implicit.positivity.compressionPower);
     CHECK(alpha > 0);
     CHECK(alpha < 1);
@@ -518,7 +540,7 @@ TEST_CASE("Subset correction masks before Euler PP and preserves frozen means ex
     for (auto &value : limitedDelta)
         value *= alpha;
     limitedDelta = C::FixFlowIncrement(initial, limitedDelta, fv.ThermalConstraints());
-    const auto result = solver.ApplyCorrection(state, increment, 1, {4});
+    const auto result = solver.ApplyCorrection(logical, deltaState, 1, {4});
     CHECK(result.first == 1);
     CHECK(result.second == alpha);
     CHECK(fv.Admissible(state));
@@ -536,8 +558,8 @@ TEST_CASE("Subset correction masks before Euler PP and preserves frozen means ex
     {
         C::NonlinearSolveControl control;
         control.updateComponents = bad;
-        CHECK_THROWS(solver.Solve(state, source, 1, 1, 0, 0, control));
-        CHECK_THROWS(solver.ApplyCorrection(state, increment, 1, bad));
+        CHECK_THROWS(solver.Solve(logical, right, 1, 1, 0, 0, control));
+        CHECK_THROWS(solver.ApplyCorrection(logical, deltaState, 1, bad));
         CHECK(state.Owned().Version() == generation);
         auto invalid = settings.implicit;
         invalid.multigrid.updateComponents = bad;
@@ -547,7 +569,7 @@ TEST_CASE("Subset correction masks before Euler PP and preserves frozen means ex
     {
         C::NonlinearSolveControl mismatch;
         mismatch.updateComponents = mpi.rank == 0 ? std::vector<DNDS::index>{0} : std::vector<DNDS::index>{4};
-        CHECK_THROWS(solver.Solve(state, source, 1, 1, 0, 0, mismatch));
+        CHECK_THROWS(solver.Solve(logical, right, 1, 1, 0, 0, mismatch));
         CHECK(state.Owned().Version() == generation);
     }
 }
@@ -578,13 +600,14 @@ TEST_CASE("Optional nonlinear phase output preserves exact corrections and recor
     const auto stream = engine.CreateCPUStream();
     C::AuxiliaryRequest request;
     request.faceSpectralRadius = request.cellSpectralSum = true;
-    C::NonlinearSolver plainSolver(fv, plain, fv.BuildWorkspace(plain, request), engine, stream, settings);
-    C::NonlinearSolver profiledSolver(fv, profiled, fv.BuildWorkspace(profiled, request), engine, stream, settings);
-    const auto a = plainSolver.Solve(plain, source, 20, 1, 0, 0, {1});
+    auto plainState = Bind(fv, plain), profiledState = Bind(fv, profiled), right = Bind(fv, source);
+    auto plainSolver = MakeSolver(fv, plainState, engine, stream, settings);
+    auto profiledSolver = MakeSolver(fv, profiledState, engine, stream, settings);
+    const auto a = plainSolver.Solve(plainState, right, 20, 1, 0, 0, {1});
     C::NonlinearProfile profile;
     profile.seconds.fill(-1);
     profile.residualEvaluations = 777;
-    const auto b = profiledSolver.Solve(profiled, source, 20, 1, 0, 0, {1, 0, &profile});
+    const auto b = profiledSolver.Solve(profiledState, right, 20, 1, 0, 0, {1, 0, &profile});
     CHECK(a.iterations == 1);
     CHECK(b.iterations == a.iterations);
     CHECK(b.linearIterations == a.linearIterations);
@@ -605,7 +628,7 @@ TEST_CASE("Optional nonlinear phase output preserves exact corrections and recor
             for (int j = 0; j < 5; ++j)
                 CHECK(x.View<R::UniformTableRows>()(iCell, j) == y.View<R::UniformTableRows>()(iCell, j));
     }
-    CHECK_THROWS(profiledSolver.Solve(profiled, source, std::numeric_limits<double>::quiet_NaN(), 1, 0, 0, {1, 0, &profile}));
+    CHECK_THROWS(profiledSolver.Solve(profiledState, right, std::numeric_limits<double>::quiet_NaN(), 1, 0, 0, {1, 0, &profile}));
     CHECK(profile.residualEvaluations == 0);
     CHECK(profile.seconds[C::NonlinearProfile::Entry] > 0);
     CHECK(profile.seconds[C::NonlinearProfile::Total] >= profile.seconds[C::NonlinearProfile::Entry]);

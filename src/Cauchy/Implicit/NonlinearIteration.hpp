@@ -4,7 +4,6 @@
 #include "Cauchy/Implicit/ResidualConvergence.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include <chrono>
-#include <iostream>
 #include <tuple>
 
 namespace DNDS::Cauchy::NonlinearDetail
@@ -96,6 +95,7 @@ namespace DNDS::Cauchy::NonlinearDetail
                    Reconstruction &&reconstruction, Advance &&advance,
                    ResidualObservation observation = ResidualObservation::BeforeUpdate)
     {
+        (void)rank; // Output is emitted only through control.progress.
         BasicResidualConvergence<decltype(report.residual)> convergence(settings, schema, report.residual);
         report.pseudoCFL = control.initialPseudoCFL == 0 ? settings.pseudoCFL : control.initialPseudoCFL;
         const index limit = control.correctionLimit < 0 ? settings.iterations : control.correctionLimit;
@@ -130,11 +130,28 @@ namespace DNDS::Cauchy::NonlinearDetail
                 // iteration is the first completed correction.
                 const index reportedIteration = std::max(iteration, index(1));
                 const bool initialBeforeUpdate = !afterUpdate && iteration == 0;
-                if (control.correctionLimit < 0 && settings.consoleInterval > 0 && rank == 0 &&
-                    (!initialBeforeUpdate || iteration == limit) &&
-                    (reportedIteration % settings.consoleInterval == 0 || converged || iteration == limit))
-                    std::cout << "Cauchy nonlinear stage " << stage + 1 << " iteration " << reportedIteration << " residual " << Json(report.residual).dump()
-                              << " CFL " << report.pseudoCFL << " VR " << report.reconstructionIterations << ':' << report.reconstructionRelativeUpdate << std::endl;
+                if (control.progress && !initialBeforeUpdate)
+                {
+                    const auto copy = [](const auto &values)
+                    { return std::vector<real>(values.begin(), values.end()); };
+                    control.progress(NonlinearProgress{stage,
+                                                       -1,
+                                                       reportedIteration,
+                                                       converged,
+                                                       converged || iteration == limit,
+                                                       copy(report.residual),
+                                                       copy(report.initialResidual),
+                                                       copy(report.referenceResidual),
+                                                       report.residualTargetRatio,
+                                                       report.pseudoCFL,
+                                                       report.linearIterations,
+                                                       report.rhsLimited,
+                                                       report.incrementLimited,
+                                                       report.minimumRHSAlpha,
+                                                       report.minimumIncrementAlpha,
+                                                       report.reconstructionIterations,
+                                                       report.reconstructionRelativeUpdate});
+                }
                 if (converged || iteration == limit)
                 {
                     report.converged = converged;

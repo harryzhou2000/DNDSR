@@ -554,11 +554,17 @@ TEST_CASE("Checkpoint changes MPI partition and polynomial degree using persiste
             source.WriteCheckpoint(polynomial, config.Root(), true);
             auto serializer = std::make_shared<DNDS::Serializer::SerializerH5>(writers);
             serializer->OpenFile(plain, true);
-            CHECK_FALSE(serializer->ListCurrentPath().count("reconstruction_guess"));
+            CHECK_FALSE(serializer->ListCurrentPath().count("reconstruction_field_0"));
             CHECK(serializer->ListCurrentPath().count("metadata_json") == 1);
             serializer->CloseFile();
             serializer->OpenFile(polynomial, true);
-            const auto rec = R::ReadArray<double>(serializer, "reconstruction_guess", writers);
+            std::string metadataText;
+            serializer->ReadString("metadata_json", metadataText);
+            const auto descriptor = C::Json::parse(metadataText).at("reconstruction_storage");
+            const auto archive = C::EquationArchive::Read(serializer, "reconstruction_field_", descriptor, writers,
+                                                          DNDS::Serializer::ArrayGlobalOffset_Unknown);
+            REQUIRE(archive.fields.size() == 1);
+            const auto &rec = archive.fields[0];
             serializer->CloseFile();
             double norm = 0;
             {
@@ -611,7 +617,13 @@ TEST_CASE("Checkpoint changes MPI partition and polynomial degree using persiste
     target.WriteCheckpoint(cold, config.Root(), true);
     auto serializer = std::make_shared<DNDS::Serializer::SerializerH5>(mpi);
     serializer->OpenFile(cold, true);
-    const auto coefficients = R::ReadArray<double>(serializer, "reconstruction_guess", mpi);
+    std::string metadataText;
+    serializer->ReadString("metadata_json", metadataText);
+    const auto descriptor = C::Json::parse(metadataText).at("reconstruction_storage");
+    const auto archive = C::EquationArchive::Read(serializer, "reconstruction_field_", descriptor, mpi,
+                                                  DNDS::Serializer::ArrayGlobalOffset_Unknown);
+    REQUIRE(archive.fields.size() == 1);
+    const auto &coefficients = archive.fields[0];
     serializer->CloseFile();
     {
         const auto read = coefficients.Read();

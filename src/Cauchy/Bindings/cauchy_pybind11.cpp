@@ -294,8 +294,9 @@ PYBIND11_MODULE(cauchy_pybind11, m)
             py::arg("domain"), py::return_value_policy::reference_internal,
             "Borrow a local domain, retaining Simulation. Advance through Simulation to keep clocks and interface snapshots coordinated.")
         .def(
-            "advance", &C::Simulation::Advance, py::arg("dt"), py::call_guard<py::gil_scoped_release>(),
-            "Collective coordinated step with the same dt on all control ranks. A rejected StepResult certifies an agreed numerical retry; other exceptions must reach a fail-fast MPI application boundary without another collective/finalization. No automatic maxRetries here.")
+            "advance", &C::Simulation::Advance, py::arg("dt"), py::arg("accepted_time") = py::none(),
+            py::call_guard<py::gil_scoped_release>(),
+            "Collective coordinated step with the same dt on all control ranks. accepted_time optionally publishes an exact snapped clock after acceptance. A rejected StepResult certifies an agreed numerical retry; other exceptions must reach a fail-fast MPI application boundary without another collective/finalization. No automatic maxRetries here.")
         .def(
             "write_checkpoint", &C::Simulation::WriteCheckpoint, py::arg("path"), py::arg("reconstruction") = false,
             py::call_guard<py::gil_scoped_release>(),

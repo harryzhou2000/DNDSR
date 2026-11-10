@@ -82,10 +82,8 @@ namespace
         auto physical = C::EquationSetup::Resolve(settings.equation);
         const auto &equation = physical.equation;
         C::FiniteVolume fv(mesh, settings, equation);
-        std::optional<F::FVField> mean, residual;
         std::optional<C::EquationDofs> equationMean, equationResidual;
-        std::shared_ptr<C::FiniteVolume::Workspace> workspace;
-        std::shared_ptr<C::FiniteVolume::EquationWorkspace> equationWorkspace;
+        std::shared_ptr<C::FiniteVolume::Workspace> equationWorkspace;
         I components = 5, fields = 1;
         std::vector<uint64_t> generations;
         R::EagerEngine engine(0);
@@ -93,11 +91,10 @@ namespace
         std::function<void()> evaluate, validate;
         if (!mixture)
         {
-            mean.emplace(fv.Metrics().BuildField(5));
-            residual.emplace(fv.Metrics().BuildField(5));
+            equationMean.emplace(C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(5)));
             {
-                auto write = mean->Owned().Write();
-                const auto values = write.View<R::UniformTableRows>();
+                auto write = equationMean->WriteOwned();
+                const auto values = write.Block("flow");
                 for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
                 {
                     const auto point = fv.Metrics().GetCellCent(iCell);
@@ -106,15 +103,16 @@ namespace
                         values(iCell, j) = state[j];
                 }
             }
-            generations.push_back(mean->Owned().Version());
-            workspace = fv.BuildWorkspace(*mean);
+            generations.push_back(equationMean->PhysicalField(0).Owned().Version());
+            equationResidual.emplace(C::EquationDofOperations::NewVector(*equationMean));
+            equationWorkspace = fv.BuildWorkspace(*equationMean);
             evaluate = [&]
-            { fv.Evaluate(*mean, *residual, *workspace, engine, stream); };
+            { fv.Evaluate(*equationMean, *equationResidual, *equationWorkspace, engine, stream); };
             validate = [&]
             {
-                DNDS_check_throw_info(mean->Owned().Version() == generations[0], "composed RHS mutated means");
-                auto read = residual->Owned().Read();
-                const auto values = read.View<R::UniformTableRows>();
+                DNDS_check_throw_info(equationMean->PhysicalField(0).Owned().Version() == generations[0], "composed RHS mutated means");
+                auto read = equationResidual->ReadOwned();
+                const auto values = read.Block("flow");
                 for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
                     for (int j = 0; j < 5; ++j)
                         DNDS_check_throw_info(std::isfinite(values(iCell, j)), "nonfinite composed RHS");
@@ -156,7 +154,7 @@ namespace
             for (I iField = 0; iField < fields; ++iField)
                 generations.push_back(equationMean->PhysicalField(iField).Owned().Version());
             equationResidual.emplace(C::EquationDofOperations::NewVector(*equationMean));
-            equationWorkspace = fv.BuildEquationWorkspace(*equationMean, physical.workers);
+            equationWorkspace = fv.BuildWorkspace(*equationMean, physical.workers);
             evaluate = [&]
             { fv.Evaluate(*equationMean, *equationResidual, *equationWorkspace, engine, stream); };
             validate = [&]

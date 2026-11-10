@@ -126,11 +126,12 @@ it contains no source contribution or implicit halo. Release debug views before
 the write. Direct P1 consumes physical gradients; constant/P0 face reconstruction
 keeps gradient-dependent RANS sources independently active.
 
-The equation workspace supports the native equation-state profile, including
+The `Workspace` object is the sole native finite-volume workspace and supports
+the equation-state profile, including
 P3 VR, component WBAP, Euler reconstruction PP and supported RANS/mixture
 transport and sources. Unsupported characteristic/LVR/flux/interface profiles
-still fail explicitly, including when a flow5 Domain itself has a more capable
-specialized flow5 workspace. For Strang domains, these operators expose the resolved
+still fail explicitly until a corresponding prepared operator is available.
+For Strang domains, these operators expose the resolved
 source-free transport profile, as used inside the Domain.
 
 `build_mean_workspace` / `evaluate_mean` use separate zero-reconstruction

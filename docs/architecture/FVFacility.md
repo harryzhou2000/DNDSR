@@ -123,6 +123,10 @@ callback. Separate nonhomogeneous-derivative quadrature controls remain deferred
 each local face. Rows contain column-major `count*count` matrices acting on
 column vectors in `[first,first+count)`. For a six-component Euler-SA field,
 `first=0,count=5` transforms the gas block; SA is limited componentwise.
+`count=0` is the explicit disabled descriptor and owns no matrix payload. The
+typed optional-reference operator argument may also be absent; both forms run
+the same scalar-only limiter path. Raw nullable pointers are confined to
+language-binding or immediate kernel-launch frames.
 
 The equation adapter fills the pair from **cell averages** and calls
 `FinalizeFaceTransform`. This checks finite mutual inverses once outside hot
@@ -133,8 +137,8 @@ changes: the limiter does not infer thermodynamics or state freshness.
 
 Legacy `DoLimiterWBAP_3` and `_C` also pass cell averages to their characteristic
 callbacks. Euler computes the eigenvectors from the arithmetic mean of those
-states, with face-frame momentum rotation and an identity extension for passive
-components. Reconstructed states enter the separate smoothness indicator, not
+states, with face-frame momentum rotation. The native ranged transform needs no
+identity extension for passive components. Reconstructed states enter the separate smoothness indicator, not
 that characteristic mean. The new operator limits all selected cell modes; it
 accepts a supplied scalar activation indicator through the out-of-place pass;
 constructing a physical smoothness indicator remains the equation adapter's job.

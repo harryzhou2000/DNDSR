@@ -108,12 +108,14 @@ TEST_CASE("Native Cauchy LVR prepares active v2/v3 targets identically across la
                                                                                                     : R::RowLayout::TiledColMajor(0, 5, 32);
                         auto mean = fv.Metrics().BuildField(shape), residual = fv.Metrics().BuildField(shape);
                         Initialize(fv, mean, equation.Gas());
+                        auto state = C::EquationDofs::Coupled(equation.Schema(), mean);
+                        auto output = C::EquationDofs::Coupled(equation.Schema(), residual);
                         const auto version = mean.Owned().Version();
-                        auto work = fv.BuildWorkspace(mean);
+                        auto work = fv.BuildWorkspace(state);
                         R::EagerEngine engine(workers, std::make_shared<R::AccessTrackingContext>());
                         const auto stream = engine.CreateCPUStream();
                         for (int iteration = 0; iteration < 2; ++iteration)
-                            fv.Evaluate(mean, residual, *work, engine, stream);
+                            fv.Evaluate(state, output, *work, engine, stream);
                         CHECK(mean.Owned().Version() == version);
                         CHECK(fv.LastFaceFallbacks(*work) == 0);
                         REQUIRE(fv.LimitedVRAlpha(*work));
@@ -128,8 +130,8 @@ TEST_CASE("Native Cauchy LVR prepares active v2/v3 targets identically across la
                         CHECK(maximum == doctest::Approx(std::max(settings.numerics.limitedVR.alphaMax, settings.numerics.limitedVR.contactAlphaMax)));
                         std::vector<double> values;
                         Append(values, residual.Owned());
-                        Append(values, fv.ReconstructionGuess(*work).Owned());
-                        Append(values, fv.FluxReconstruction(*work).Owned());
+                        Append(values, fv.ReconstructionGuess(*work).CoupledField().Owned());
+                        Append(values, fv.FluxReconstruction(*work).CoupledField().Owned());
                         Append(values, *fv.LimitedVRAlpha(*work));
                         Append(values, *fv.LimitedVRHistory(*work));
                         if (!overlap && workers == 0)
@@ -151,10 +153,12 @@ TEST_CASE("Native Cauchy LVR expansion admission changes the shock gate while co
             C::FiniteVolume fv(mesh, settings, equation);
             auto mean = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
             Initialize(fv, mean, equation.Gas(), true, constant);
-            auto work = fv.BuildWorkspace(mean);
+            auto state = C::EquationDofs::Coupled(equation.Schema(), mean);
+            auto output = C::EquationDofs::Coupled(equation.Schema(), residual);
+            auto work = fv.BuildWorkspace(state);
             R::EagerEngine engine(2);
             const auto stream = engine.CreateCPUStream();
-            fv.Evaluate(mean, residual, *work, engine, stream);
+            fv.Evaluate(state, output, *work, engine, stream);
             double maximum = 0, norm = 0;
             {
                 const auto alpha = fv.LimitedVRAlpha(*work)->Read(), rhs = residual.Owned().Read();
@@ -177,6 +181,62 @@ TEST_CASE("Native Cauchy LVR expansion admission changes the shock gate while co
                 CHECK(norm < 1e-12);
         }
 }
+TEST_CASE("Canonical EquationDofs LVR retains the established target gates and residual")
+{
+    const auto mesh = G::OverlapTest::BuildNativeFixture(mpi, mpi.size > 2, 24).mesh;
+    auto settings = Settings("v3");
+    settings.execution.overlap = true;
+    const auto equation = C::EquationSystem::Resolve(settings.equation);
+    C::FiniteVolume fv(mesh, settings, equation);
+    auto genericField = fv.Metrics().BuildField(5), genericResidualField = fv.Metrics().BuildField(5);
+    auto state = C::EquationDofs::Coupled(equation.Schema(), fv.Metrics().BuildField(5), "packed");
+    auto residual = C::EquationDofOperations::NewVector(state);
+    Initialize(fv, genericField, equation.Gas());
+    auto generic = C::EquationDofs::Coupled(equation.Schema(), genericField);
+    auto genericResidual = C::EquationDofs::Coupled(equation.Schema(), genericResidualField);
+    {
+        const auto source = genericField.Owned().Read();
+        auto destination = state.CoupledField().Owned().Write();
+        for (I iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+                destination.View()(iCell, j) = source.View()(iCell, j);
+    }
+    auto genericWork = fv.BuildWorkspace(
+        generic, std::nullopt,
+        C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic});
+    auto work = fv.BuildWorkspace(state);
+    R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
+    const auto stream = engine.CreateCPUStream();
+    for (int iteration = 0; iteration < 2; ++iteration)
+    {
+        fv.Evaluate(generic, genericResidual, *genericWork, engine, stream);
+        fv.Evaluate(state, residual, *work, engine, stream);
+    }
+    REQUIRE(fv.LimitedVRAlpha(*genericWork));
+    REQUIRE(fv.LimitedVRAlpha(*work));
+    REQUIRE(fv.LimitedVRHistory(*genericWork));
+    REQUIRE(fv.LimitedVRHistory(*work));
+    const auto compare = [](const R::Array<double> &a, const R::Array<double> &b)
+    {
+        const auto ar = a.Read(), br = b.Read();
+        REQUIRE(ar.View().RowCount() == br.View().RowCount());
+        REQUIRE(ar.View().Width() == br.View().Width());
+        for (I iRow = 0; iRow < ar.View().RowCount(); ++iRow)
+            for (I j = 0; j < ar.View().RowSize(iRow); ++j)
+                CHECK(br.View()(iRow, j) == doctest::Approx(ar.View()(iRow, j)).epsilon(3e-13));
+    };
+    compare(genericResidualField.Owned(), residual.CoupledField().Owned());
+    compare(fv.ReconstructionGuess(*genericWork).CoupledField().Owned(), fv.ReconstructionGuess(*work).CoupledField().Owned());
+    compare(fv.FluxReconstruction(*genericWork).CoupledField().Owned(), fv.FluxReconstruction(*work).CoupledField().Owned());
+    compare(*fv.LimitedVRAlpha(*genericWork), *fv.LimitedVRAlpha(*work));
+    compare(*fv.LimitedVRHistory(*genericWork), *fv.LimitedVRHistory(*work));
+    const auto guess = fv.ReconstructionGuess(*work).Clone();
+    const auto history = Snapshot(*fv.LimitedVRHistory(*work));
+    fv.ResetReconstruction(*work);
+    fv.RestoreReconstructionGuess(*work, guess, &history);
+    compare(guess.CoupledField().Owned(), fv.ReconstructionGuess(*work).CoupledField().Owned());
+    compare(history, *fv.LimitedVRHistory(*work));
+}
 TEST_CASE("LVR layer or capability differences reject before building divergent transfer bindings")
 {
     if (mpi.size < 2)
@@ -193,7 +253,8 @@ TEST_CASE("LVR layer or capability differences reject before building divergent 
         {
             C::FiniteVolume fv(mesh, settings, C::EquationSystem::Resolve(settings.equation));
             auto mean = fv.Metrics().BuildField(5);
-            fv.BuildWorkspace(mean);
+            auto state = C::EquationDofs::Coupled(fv.Equation().Schema(), mean);
+            fv.BuildWorkspace(state);
         };
         // Different operation support now rejects during CFV preparation,
         // earlier than the workspace's LVR routing/configuration agreement.
@@ -214,17 +275,19 @@ TEST_CASE("Zero LVR caps recover the unlimited operator and omit unnecessary gat
         C::FiniteVolume fv(mesh, settings, equation);
         auto mean = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
         Initialize(fv, mean, equation.Gas());
-        auto work = fv.BuildWorkspace(mean);
+        auto state = C::EquationDofs::Coupled(equation.Schema(), mean);
+        auto output = C::EquationDofs::Coupled(equation.Schema(), residual);
+        auto work = fv.BuildWorkspace(state);
         R::EagerEngine engine;
         const auto stream = engine.CreateCPUStream();
         for (int iteration = 0; iteration < 2; ++iteration)
-            fv.Evaluate(mean, residual, *work, engine, stream);
+            fv.Evaluate(state, output, *work, engine, stream);
         CHECK_FALSE(fv.LimitedVRHistory(*work));
         CHECK_FALSE(fv.LimitedVRAlpha(*work));
         std::vector<double> values;
         Append(values, residual.Owned());
-        Append(values, fv.ReconstructionGuess(*work).Owned());
-        Append(values, fv.FluxReconstruction(*work).Owned());
+        Append(values, fv.ReconstructionGuess(*work).CoupledField().Owned());
+        Append(values, fv.FluxReconstruction(*work).CoupledField().Owned());
         if (!disabled)
             expected = std::move(values);
         else
@@ -239,33 +302,37 @@ TEST_CASE("LVR history errors reject before publication and full warm-state rest
     C::FiniteVolume fv(mesh, settings, equation);
     auto mean = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
     Initialize(fv, mean, equation.Gas());
-    auto work = fv.BuildWorkspace(mean);
+    auto state = C::EquationDofs::Coupled(equation.Schema(), mean);
+    auto output = C::EquationDofs::Coupled(equation.Schema(), residual);
+    auto work = fv.BuildWorkspace(state);
     R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
     const auto stream = engine.CreateCPUStream();
-    fv.Evaluate(mean, residual, *work, engine, stream);
-    auto guess = Snapshot(fv.ReconstructionGuess(*work).Owned()), history = Snapshot(*fv.LimitedVRHistory(*work));
+    fv.Evaluate(state, output, *work, engine, stream);
+    auto guess = fv.ReconstructionGuess(*work).Clone();
+    auto history = Snapshot(*fv.LimitedVRHistory(*work));
     const auto meanVersion = mean.Owned().Version(), residualVersion = residual.Owned().Version();
     std::optional<R::Array<double>::ReadLease> held;
     if (mpi.rank == 0)
         held.emplace(fv.LimitedVRHistory(*work)->Read());
-    CHECK_THROWS_AS(fv.Evaluate(mean, residual, *work, engine, stream), std::exception);
+    CHECK_THROWS_AS(fv.Evaluate(state, output, *work, engine, stream), std::exception);
     held.reset();
     CHECK(mean.Owned().Version() == meanVersion);
     CHECK(residual.Owned().Version() == residualVersion);
     std::vector<double> before, after;
-    Append(before, guess);
+    Append(before, guess.CoupledField().Owned());
     Append(before, history);
-    Append(after, fv.ReconstructionGuess(*work).Owned());
+    Append(after, fv.ReconstructionGuess(*work).CoupledField().Owned());
     Append(after, *fv.LimitedVRHistory(*work));
     CHECK(before == after);
     // Failed execution outputs are replaced. Accepted means and both warm
     // inputs remain available, including on ranks that observed a peer error.
-    auto recovered = fv.BuildWorkspace(mean), reference = fv.BuildWorkspace(mean);
+    auto recovered = fv.BuildWorkspace(state), reference = fv.BuildWorkspace(state);
     fv.RestoreReconstructionGuess(*recovered, guess, &history);
     fv.RestoreReconstructionGuess(*reference, guess, &history);
     auto referenceResidual = fv.Metrics().BuildField(5);
-    fv.Evaluate(mean, residual, *recovered, engine, stream);
-    fv.Evaluate(mean, referenceResidual, *reference, engine, stream);
+    auto referenceOutput = C::EquationDofs::Coupled(equation.Schema(), referenceResidual);
+    fv.Evaluate(state, output, *recovered, engine, stream);
+    fv.Evaluate(state, referenceOutput, *reference, engine, stream);
     before.clear();
     after.clear();
     Append(before, residual.Owned());
@@ -278,11 +345,11 @@ TEST_CASE("LVR history errors reject before publication and full warm-state rest
         write.View()(0, 0) = std::numeric_limits<double>::quiet_NaN();
     }
     before.clear();
-    Append(before, fv.ReconstructionGuess(*reference).Owned());
+    Append(before, fv.ReconstructionGuess(*reference).CoupledField().Owned());
     Append(before, *fv.LimitedVRHistory(*reference));
     CHECK_THROWS_AS(fv.RestoreReconstructionGuess(*reference, guess, &badHistory), std::exception);
     after.clear();
-    Append(after, fv.ReconstructionGuess(*reference).Owned());
+    Append(after, fv.ReconstructionGuess(*reference).CoupledField().Owned());
     Append(after, *fv.LimitedVRHistory(*reference));
     CHECK(before == after);
     // A conflicting history destination cannot first overwrite coefficients.
@@ -290,23 +357,23 @@ TEST_CASE("LVR history errors reject before publication and full warm-state rest
     CHECK_THROWS_AS(fv.RestoreReconstructionGuess(*reference, guess, &history), std::exception);
     held.reset();
     after.clear();
-    Append(after, fv.ReconstructionGuess(*reference).Owned());
+    Append(after, fv.ReconstructionGuess(*reference).CoupledField().Owned());
     Append(after, *fv.LimitedVRHistory(*reference));
     CHECK(before == after);
     CHECK_NOTHROW(fv.RestoreReconstructionGuess(*reference, guess, &history));
     before.clear();
-    Append(before, fv.ReconstructionGuess(*reference).Owned());
+    Append(before, fv.ReconstructionGuess(*reference).CoupledField().Owned());
     Append(before, *fv.LimitedVRHistory(*reference));
     held.emplace(fv.LimitedVRHistory(*reference)->Read());
     CHECK_THROWS_AS(fv.ResetReconstruction(*reference), std::exception);
     held.reset();
     after.clear();
-    Append(after, fv.ReconstructionGuess(*reference).Owned());
+    Append(after, fv.ReconstructionGuess(*reference).CoupledField().Owned());
     Append(after, *fv.LimitedVRHistory(*reference));
     CHECK(before == after); // A local reset conflict must not erase the polynomial first.
     fv.ResetReconstruction(*reference);
     after.clear();
-    Append(after, fv.ReconstructionGuess(*reference).Owned());
+    Append(after, fv.ReconstructionGuess(*reference).CoupledField().Owned());
     Append(after, *fv.LimitedVRHistory(*reference));
     Append(after, *fv.LimitedVRAlpha(*reference));
     for (const auto value : after)
@@ -327,14 +394,16 @@ TEST_CASE("LVR periodic mean and target halos agree across split and unsplit CPU
             C::FiniteVolume fv(mesh, settings, equation);
             auto mean = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
             Initialize(fv, mean, equation.Gas());
-            const auto workspace = fv.BuildWorkspace(mean);
+            auto state = C::EquationDofs::Coupled(equation.Schema(), mean);
+            auto output = C::EquationDofs::Coupled(equation.Schema(), residual);
+            const auto workspace = fv.BuildWorkspace(state);
             R::EagerEngine engine(overlap ? 2 : 0);
             const auto stream = engine.CreateCPUStream();
             for (int evaluation = 0; evaluation < 2; ++evaluation)
-                fv.Evaluate(mean, residual, *workspace, engine, stream, 0);
+                fv.Evaluate(state, output, *workspace, engine, stream, 0);
             std::vector<double> actual;
             Append(actual, residual.Owned());
-            Append(actual, fv.ReconstructionGuess(*workspace).Owned());
+            Append(actual, fv.ReconstructionGuess(*workspace).CoupledField().Owned());
             Append(actual, *fv.LimitedVRHistory(*workspace));
             Append(actual, *fv.LimitedVRAlpha(*workspace));
             if (!overlap)

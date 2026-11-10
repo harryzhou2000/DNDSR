@@ -1,6 +1,7 @@
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
 #include "Cauchy/Physics/EquationPositivity.hpp"
 #include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/Physics/ReconstructionPositivity.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "CFV/Math/TaylorBasis.hpp"
 
@@ -144,7 +145,7 @@ namespace DNDS::Cauchy
         // actual coefficients generated these samples and remain unchanged;
         // no write scope, repeat sampling or publication is needed. This is
         // local only: the enclosing operator owns collective ordering.
-        if (allGood)
+        if (allGood && n.positivityReconstruction != "Segment")
         {
             data.limited = 0;
             data.minimum = 1;
@@ -236,8 +237,22 @@ namespace DNDS::Cauchy
                             coefficients(iCell, (data.ransFirst + component) * modes + mode) *= scale;
                 if (degrees(iCell, 0) == n.cfv.maxOrder)
                     continue;
-                const auto beta = baseRead ? bounds.ReconstructionFraction(mean, baseRead->View(), higher, begin, end, n.positivityBetaPower, n.positivityBetaCutoff)
-                                           : bounds.ReconstructionFraction(mean, base, higher, begin, end, n.positivityBetaPower, n.positivityBetaCutoff);
+                real beta = 1;
+                if (n.positivityReconstruction == "Segment")
+                {
+                    DNDS_check_throw_info(!data.owner->equation.HasMixture() && !data.owner->equation.HasRANS() &&
+                                              data.prototype.ComponentNumber() == 5,
+                                          "Segment reconstruction PP is a flow5 compatibility policy");
+                    const auto flowMean = bounds.Flow(mean);
+                    for (index q = begin; q < end; ++q)
+                        beta = std::min(beta, AdmissibleFraction(flowMean, bounds.Flow(EquationPositivityDetail::PointRow<decltype(higher)>{higher, q}),
+                                                                 data.owner->PerfectGasBounds()));
+                    if (beta < n.positivityBetaCutoff)
+                        beta = 0;
+                }
+                else
+                    beta = baseRead ? bounds.ReconstructionFraction(mean, baseRead->View(), higher, begin, end, n.positivityBetaPower, n.positivityBetaCutoff)
+                                    : bounds.ReconstructionFraction(mean, base, higher, begin, end, n.positivityBetaPower, n.positivityBetaCutoff);
                 DNDS_check_throw_info(std::isfinite(beta) && beta >= 0 && beta <= 1, "invalid equation reconstruction PP beta");
                 if (beta < 1)
                 {

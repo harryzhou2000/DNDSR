@@ -32,7 +32,7 @@ namespace
         // Reference uses the original public Direct bindings and inline CPU
         // kernels. Complete elementwise output comparison, not just a digest.
         execution.OriginalBindings(true);
-        auto reference = fv.BuildEquationWorkspace(fixture.state, fixture.physical.workers);
+        auto reference = fv.BuildWorkspace(fixture.state, fixture.physical.workers);
         execution.OriginalBindings(false);
         R::EagerEngine inlineEngine(0);
         const auto inlineStream = inlineEngine.CreateCPUStream();
@@ -41,7 +41,7 @@ namespace
         for (int repetition = 0; repetition < repetitions; ++repetition)
             fv.Evaluate(fixture.state, expected, *reference, inlineEngine, inlineStream);
         const auto oracle = Plan53::RHSFixture::Values(expected);
-        auto work = fv.BuildEquationWorkspace(fixture.state, fixture.physical.workers);
+        auto work = fv.BuildWorkspace(fixture.state, fixture.physical.workers);
         for (int warm = 0; warm < 2; ++warm)
             fv.Evaluate(fixture.state, fixture.residual, *work, engine, stream);
         int provided = 0;

@@ -130,7 +130,7 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
                 values(iCell, j) = solver.getU()[iCell][j];
     }
     C::EquationDofOperations::Copy(initial, state);
-    auto work = fv.BuildEquationWorkspace(state);
+    auto work = fv.BuildWorkspace(state);
     double wallDifference = 0;
     {
         const auto read = work->owner->wallDistance->AcquireRead();
@@ -159,8 +159,8 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
     MPI_Allreduce(MPI_IN_PLACE, &wallDifference, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
     R::EagerEngine engine;
     auto stream = engine.CreateCPUStream();
-    C::EquationNonlinearSolver nonlinear(fv, state, work, engine, stream, settings,
-                                         DNDS::Algebra::ComponentSelection(6, {0}));
+    C::NonlinearSolver nonlinear(fv, state, work, engine, stream, settings,
+                                 DNDS::Algebra::ComponentSelection(6, {0}));
     std::unique_ptr<C::PolynomialMultigrid> multigrid;
     if (levels)
         multigrid = std::make_unique<C::PolynomialMultigrid>(mesh, fv, state, nonlinear, engine, stream, settings);

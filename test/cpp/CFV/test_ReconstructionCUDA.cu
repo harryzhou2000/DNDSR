@@ -1,6 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "CFV/Plans/ReconstructionDevicePlan.hpp"
+#include "CFV/Plans/FiniteVolumePlan.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "DNDS/Runtime/Communication/NCCLTransfer.hpp"
 #include "Geom/Unstructured/UnstructuredMeshSnapshot.hpp"
@@ -18,7 +18,7 @@ using I = DNDS::index;
 static DNDS::MPIInfo mpi;
 static C::ReconstructionDeviceKernel jacobiKernel = C::ReconstructionDeviceKernel::FP64;
 static std::shared_ptr<R::NCCLTransferProvider> nccl;
-static R::TransferBinding Halo(const C::ReconstructionDevicePlan &plan, C::FVField &field, R::TransferTransport transport = R::TransferTransport::Direct)
+static R::TransferBinding Halo(const C::VariationalReconstructionPlan &plan, C::FVField &field, R::TransferTransport transport = R::TransferTransport::Direct)
 {
     R::TransferOptions options;
     options.provider = nccl;
@@ -60,8 +60,8 @@ TEST_CASE("Device publications retain actual mesh metrics and basis with explici
     auto fixture = G::OverlapTest::BuildNativeFixture(mpi, false);
     auto metrics = C::FiniteVolumePlan::ConstructMetrics(fixture.mesh);
     auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics);
-    auto resident = C::ReconstructionDevicePlan::Prepare(plan, R::Device::CUDA(0), R::ExecutionContext::CUDA(0), {true, true, true});
-    auto read = resident.AcquireRead();
+    auto resident = plan.Place(R::Device::CUDA(0), R::ExecutionContext::CUDA(0), {true, true, true});
+    auto read = resident.AcquireResidentRead();
     auto mesh = resident.MeshSnapshot().AcquireRead(R::ExecutionContext::CUDA(0));
     auto source = fixture.mesh->AcquireRead(G::MeshReadRequirements::CellFlux());
     const auto view = source.HostView();
@@ -85,9 +85,9 @@ TEST_CASE("Device publications retain actual mesh metrics and basis with explici
     CHECK(values.View()(0, 2) == plan.GetCachedFaceBasis(face, side, 0)(1, 1));
     CHECK(values.View()(0, 3) == view.CellNodes(0).size());
     CHECK(values.View()(0, 4) == view.Coord(view.CellNodes(0)[0])[0]);
-    CHECK(resident.Buffers().size() >= 14);
-    auto minimal = C::ReconstructionDevicePlan::Prepare(plan, R::Device::CUDA(0), R::ExecutionContext::CUDA(0));
-    CHECK_THROWS(minimal.AcquireRead().MetricView());
+    CHECK(resident.ResidentBuffers().size() >= 14);
+    auto minimal = plan.Place(R::Device::CUDA(0), R::ExecutionContext::CUDA(0));
+    CHECK_THROWS(minimal.AcquireResidentRead().MetricView());
     CHECK_THROWS(minimal.MeshSnapshot());
 }
 TEST_CASE("CUDA Jacobi and WBAP agree with CPU for physical DOF layouts and direct MPI split work")
@@ -101,7 +101,7 @@ TEST_CASE("CUDA Jacobi and WBAP agree with CPU for physical DOF layouts and dire
         C::ReconstructionSettings settings;
         settings.maxOrder = degree;
         auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
-        auto resident = C::ReconstructionDevicePlan::Prepare(plan, R::Device::CUDA(0), R::ExecutionContext::CUDA(0));
+        auto resident = plan.Place(R::Device::CUDA(0), R::ExecutionContext::CUDA(0));
         const I components = degree == 3 ? 7 : 5, width = components * plan.NRecDOF();
         auto mean = metrics.BuildField(components);
         Fill(mean, 1.0);
@@ -114,14 +114,14 @@ TEST_CASE("CUDA Jacobi and WBAP agree with CPU for physical DOF layouts and dire
                 for (I j = 0; j < components; ++j)
                     write.View()(row, j) = 1 + .1 * j;
         }
-        auto deviceBC = resident.PrepareBoundary(bc);
+        auto deviceBC = resident.PlaceBoundaryValues(bc);
         const auto formats = std::vector<R::RowLayout>{R::RowLayout::Dense(0, width), R::RowLayout::ColMajor(0, width, {32, 1}), R::RowLayout::TiledColMajor(0, width, 8)};
         for (const auto &shape : formats)
         {
             CAPTURE(degree);
             CAPTURE(shape.Kind());
             Fill(reference.coefficients, .02);
-            auto deviceMean = resident.BuildField(R::RowLayout::ColMajor(0, components, {32, 1}));
+            auto deviceMean = metrics.BuildField(R::RowLayout::ColMajor(0, components, {32, 1}), resident.Device());
             Fill(deviceMean, 1.0);
             auto work = resident.BuildWorkspace(components, shape);
             Fill(work.coefficients, .02);
@@ -147,13 +147,13 @@ TEST_CASE("CUDA Jacobi and WBAP agree with CPU for physical DOF layouts and dire
                 }
                 else
                     pending = deviceHalo.Begin(R::ExecutionContext::CUDA(0));
-                resident.DoReconstructionIterTo(engine, stream, deviceMean, work.coefficients, work, deviceBC, C::ReconstructionRegion::Core, jacobiKernel);
+                resident.SubmitReconstructionIterTo(engine, stream, deviceMean, work.coefficients, work, deviceBC, C::ReconstructionRegion::Core, jacobiKernel);
                 if (nccl)
                     stream.WaitFor(comm.Record());
                 else
                     pending.Wait();
-                resident.DoReconstructionIterTo(engine, stream, deviceMean, work.coefficients, work, deviceBC, C::ReconstructionRegion::HaloDependent, jacobiKernel);
-                resident.CommitReconstruction(engine, stream, work);
+                resident.SubmitReconstructionIterTo(engine, stream, deviceMean, work.coefficients, work, deviceBC, C::ReconstructionRegion::HaloDependent, jacobiKernel);
+                resident.SubmitCommitReconstruction(engine, stream, work);
                 engine.Synchronize();
                 resident.CheckStatus(work);
                 Equal(reference.coefficients, work.coefficients);
@@ -168,11 +168,11 @@ TEST_CASE("CUDA Jacobi and WBAP agree with CPU for physical DOF layouts and dire
                 }
             }
             plan.FinalizeFaceTransform(transform);
-            auto deviceTransform = resident.PrepareTransform(transform);
+            auto deviceTransform = resident.PlaceFaceTransform(transform);
             for (int order = degree; order >= 1; --order)
             {
                 referenceHalo.Begin().Wait();
-                plan.DoLimiterWBAP_3Order(reference, order, &transform);
+                plan.DoLimiterWBAP_3Order(reference, order, std::cref(transform));
                 R::TransferOperation pending;
                 if (nccl)
                 {
@@ -181,13 +181,13 @@ TEST_CASE("CUDA Jacobi and WBAP agree with CPU for physical DOF layouts and dire
                 }
                 else
                     pending = deviceHalo.Begin(R::ExecutionContext::CUDA(0));
-                resident.DoLimiterWBAP_3OrderTo(engine, stream, work, order, &deviceTransform, C::ReconstructionRegion::Core);
+                resident.SubmitLimiterWBAP_3OrderTo(engine, stream, work, order, std::cref(deviceTransform), C::ReconstructionRegion::Core);
                 if (nccl)
                     stream.WaitFor(comm.Record());
                 else
                     pending.Wait();
-                resident.DoLimiterWBAP_3OrderTo(engine, stream, work, order, &deviceTransform, C::ReconstructionRegion::HaloDependent);
-                resident.CommitReconstruction(engine, stream, work);
+                resident.SubmitLimiterWBAP_3OrderTo(engine, stream, work, order, std::cref(deviceTransform), C::ReconstructionRegion::HaloDependent);
+                resident.SubmitCommitReconstruction(engine, stream, work);
                 engine.Synchronize();
                 resident.CheckStatus(work);
                 Equal(reference.coefficients, work.coefficients, 2e-9);
@@ -204,7 +204,7 @@ TEST_CASE("CUDA preserves rotated periodic vectors and axisymmetric prepared ope
         C::ReconstructionSettings settings;
         settings.maxOrder = 2;
         auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
-        auto resident = C::ReconstructionDevicePlan::Prepare(plan, R::Device::CUDA(0), R::ExecutionContext::CUDA(0));
+        auto resident = plan.Place(R::Device::CUDA(0), R::ExecutionContext::CUDA(0));
         const I components = 21, width = components * plan.NRecDOF();
         const auto vectors = std::vector<I>{1, 7};
         auto mean = metrics.BuildField(components);
@@ -213,7 +213,7 @@ TEST_CASE("CUDA preserves rotated periodic vectors and axisymmetric prepared ope
         Fill(cpu.coefficients, .02);
         auto gpu = resident.BuildWorkspace(components, R::RowLayout::TiledColMajor(0, width, 16), vectors);
         Fill(gpu.coefficients, .02);
-        auto gpuMean = resident.BuildField(R::RowLayout::ColMajor(0, components, {32, 1}));
+        auto gpuMean = metrics.BuildField(R::RowLayout::ColMajor(0, components, {32, 1}), resident.Device());
         Fill(gpuMean, 1.0);
         auto boundary = plan.BuildBoundaryValues(components);
         {
@@ -222,7 +222,7 @@ TEST_CASE("CUDA preserves rotated periodic vectors and axisymmetric prepared ope
                 for (I j = 0; j < components; ++j)
                     write.View()(iRow, j) = 1 + .1 * j;
         }
-        auto gpuBoundary = resident.PrepareBoundary(boundary);
+        auto gpuBoundary = resident.PlaceBoundaryValues(boundary);
         auto meanHalo = metrics.BindHalo(mean), gpuMeanHalo = Halo(resident, gpuMean);
         auto cpuHalo = metrics.BindHalo(cpu.coefficients), gpuHalo = Halo(resident, gpu.coefficients);
         meanHalo.Begin().Wait();
@@ -256,7 +256,7 @@ TEST_CASE("CUDA degree three 3D reconstruction supports 37 coupled components an
         settings.maxOrder = 3;
         auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
         REQUIRE(plan.NRecDOF() == 19);
-        auto resident = C::ReconstructionDevicePlan::Prepare(plan, R::Device::CUDA(0), R::ExecutionContext::CUDA(0));
+        auto resident = plan.Place(R::Device::CUDA(0), R::ExecutionContext::CUDA(0));
         const I components = 37, width = components * plan.NRecDOF();
         auto mean = metrics.BuildField(components);
         Fill(mean, 1.0);
@@ -264,7 +264,7 @@ TEST_CASE("CUDA degree three 3D reconstruction supports 37 coupled components an
         Fill(cpu.coefficients, .02);
         auto gpu = resident.BuildWorkspace(components, R::RowLayout::ColMajor(0, width, {32, 1}));
         Fill(gpu.coefficients, .02);
-        auto gpuMean = resident.BuildField(R::RowLayout::TiledColMajor(0, components, 8));
+        auto gpuMean = metrics.BuildField(R::RowLayout::TiledColMajor(0, components, 8), resident.Device());
         Fill(gpuMean, 1.0);
         auto boundary = plan.BuildBoundaryValues(components);
         {
@@ -273,7 +273,7 @@ TEST_CASE("CUDA degree three 3D reconstruction supports 37 coupled components an
                 for (I j = 0; j < components; ++j)
                     write.View()(iRow, j) = 1 + .1 * j;
         }
-        auto gpuBoundary = resident.PrepareBoundary(boundary);
+        auto gpuBoundary = resident.PlaceBoundaryValues(boundary);
         auto meanHalo = metrics.BindHalo(mean), gpuMeanHalo = Halo(resident, gpuMean);
         auto cpuHalo = metrics.BindHalo(cpu.coefficients), gpuHalo = Halo(resident, gpu.coefficients);
         meanHalo.Begin().Wait();
@@ -304,10 +304,10 @@ TEST_CASE("Device errors reject unsupported SOR stale publications and invalid i
     C::ReconstructionSettings settings;
     settings.SORInstead = true;
     auto sor = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
-    CHECK_THROWS(C::ReconstructionDevicePlan::Prepare(sor, R::Device::CUDA(0), R::ExecutionContext::CUDA(0)));
+    CHECK_THROWS(sor.Place(R::Device::CUDA(0), R::ExecutionContext::CUDA(0)));
     settings.SORInstead = false;
     auto plan = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
-    auto resident = C::ReconstructionDevicePlan::Prepare(plan, R::Device::CUDA(0), R::ExecutionContext::CUDA(0));
+    auto resident = plan.Place(R::Device::CUDA(0), R::ExecutionContext::CUDA(0));
     auto work = resident.BuildWorkspace(5, R::RowLayout::TiledColMajor(0, 5 * plan.NRecDOF(), 8));
     Fill(work.coefficients, 1.0);
     Fill(work.temporary, 9.0);
@@ -323,24 +323,24 @@ TEST_CASE("Device errors reject unsupported SOR stale publications and invalid i
     auto gpuActivation = activation.To(R::Device::CUDA(0));
     metrics.BindHalo(cpu.coefficients).Begin().Wait();
     Halo(resident, work.coefficients).Begin(R::ExecutionContext::CUDA(0)).Wait();
-    plan.DoLimiterWBAP_3OrderTo(cpu, 1, nullptr, C::ReconstructionRegion::All, &activation, .5);
+    plan.DoLimiterWBAP_3OrderTo(cpu, 1, std::nullopt, C::ReconstructionRegion::All, &activation, .5);
     plan.CommitReconstruction(cpu);
     R::EagerEngine activeEngine;
     auto activeStream = activeEngine.CreateStream(std::make_shared<R::CUDALauncher>(0));
-    resident.DoLimiterWBAP_3OrderTo(activeEngine, activeStream, work, 1, nullptr, C::ReconstructionRegion::All, &gpuActivation, .5);
-    resident.CommitReconstruction(activeEngine, activeStream, work);
+    resident.SubmitLimiterWBAP_3OrderTo(activeEngine, activeStream, work, 1, std::nullopt, C::ReconstructionRegion::All, &gpuActivation, .5);
+    resident.SubmitCommitReconstruction(activeEngine, activeStream, work);
     activeEngine.Synchronize();
     resident.CheckStatus(work);
     Equal(cpu.coefficients, work.coefficients, 2e-9);
     auto bad = work;
     bad.temporary = work.coefficients;
-    CHECK_THROWS(resident.CommitReconstruction(activeEngine, activeStream, bad));
+    CHECK_THROWS(resident.SubmitCommitReconstruction(activeEngine, activeStream, bad));
     bad = work;
     bad.components = std::numeric_limits<I>::max();
-    CHECK_THROWS(resident.CommitReconstruction(activeEngine, activeStream, bad));
+    CHECK_THROWS(resident.SubmitCommitReconstruction(activeEngine, activeStream, bad));
     bad = work;
-    bad.scratch = R::Array<double>(R::RowLayout::Padded(std::vector<size_t>(size_t(work.blocks * 6), 0), work.scratch.Layout().Width()), R::Device::CUDA(0));
-    CHECK_THROWS(resident.CommitReconstruction(activeEngine, activeStream, bad));
+    bad.scratch = R::Array<double>(R::RowLayout::Padded(std::vector<size_t>(size_t(work.deviceBlocks * 6), 0), work.scratch.Layout().Width()), R::Device::CUDA(0));
+    CHECK_THROWS(resident.SubmitCommitReconstruction(activeEngine, activeStream, bad));
     Fill(work.coefficients, 1.0);
     Fill(work.temporary, 9.0);
     auto before = work.temporary.Owned().To(R::Device::Host());
@@ -349,8 +349,8 @@ TEST_CASE("Device errors reject unsupported SOR stale publications and invalid i
     auto deviceIndicator = indicator.To(R::Device::CUDA(0));
     R::EagerEngine engine;
     auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
-    resident.DoLimiterWBAP_3OrderTo(engine, stream, work, 1, nullptr, C::ReconstructionRegion::All, &deviceIndicator);
-    resident.CommitReconstruction(engine, stream, work);
+    resident.SubmitLimiterWBAP_3OrderTo(engine, stream, work, 1, std::nullopt, C::ReconstructionRegion::All, &deviceIndicator);
+    resident.SubmitCommitReconstruction(engine, stream, work);
     engine.Synchronize();
     CHECK_THROWS(resident.CheckStatus(work));
     const auto actual = work.temporary.Owned().To(R::Device::Host());

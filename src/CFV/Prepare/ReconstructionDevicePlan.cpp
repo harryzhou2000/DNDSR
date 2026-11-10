@@ -1,4 +1,4 @@
-#include "CFV/Plans/ReconstructionDevicePlan.hpp"
+#include "CFV/Plans/FiniteVolumePlan.hpp"
 #include "CFV/Detail/ReconstructionData.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "CFV/Detail/ReconstructionDeviceKernels.hpp"
@@ -55,15 +55,16 @@ namespace DNDS::CFV
     }
     namespace
     {
-        void ValidateField(const ReconstructionDevicePlan &plan, const FVField &field, index width)
+        void ValidateDeviceField(const VariationalReconstructionPlan &plan, const FVField &field, index width)
         {
             field.Validate();
             DNDS_check_throw_info(field.Device() == plan.Device() && index(field.Width()) == width, "device FV field width/placement mismatch");
         }
-        void ValidateWorkspace(const std::shared_ptr<const Detail::ReconstructionPlacementData> &data, const ReconstructionDeviceWorkspace &work)
+        void ValidateDeviceWorkspace(const std::shared_ptr<const Detail::ReconstructionPlacementData> &data, const ReconstructionWorkspace &work)
         {
             const auto n = data->view.n;
-            DNDS_check_throw_info(work.plan == data && work.components > 0 && work.components <= INT_MAX / n && work.blocks > 0 && work.blocks <= 256,
+            DNDS_check_throw_info(work.devicePlan == data && work.components > 0 && work.components <= INT_MAX / n &&
+                                      work.deviceBlocks > 0 && work.deviceBlocks <= 256,
                                   "device workspace belongs to another publication or has an invalid shape");
             work.coefficients.Validate();
             work.temporary.Validate();
@@ -72,11 +73,14 @@ namespace DNDS::CFV
                                       work.coefficients.Space().Same(work.temporary.Space()) && work.coefficients.Space().Same(*data->dofs),
                                   "device workspace fields invalid");
             DNDS_check_throw_info(!Algebra::Detail::Overlaps(work.coefficients.Owned().Storage(), work.temporary.Owned().Storage()) &&
-                                      work.scratch.GetDevice() == data->device && work.scratch.Layout().Kind() == R::RowLayoutKind::Table && work.scratch.RowCount() == work.blocks * 6 &&
-                                      work.scratch.Layout().Width() == n * work.components && work.status.GetDevice() == data->device && work.status.Layout().Kind() == R::RowLayoutKind::Table &&
-                                      work.status.RowCount() == 1 && work.status.Layout().Width() == 1 &&
-                                      work.periodicVectorStarts.Identity() == work.periodicIdentity && work.periodicVectorStarts.Version() == work.periodicVersion &&
-                                      work.periodicVectorStarts.GetDevice() == data->device && work.periodicVectorStarts.Layout().Kind() == R::RowLayoutKind::Table && work.periodicVectorStarts.Layout().Width() == 1,
+                                      work.scratch.GetDevice() == data->device && work.scratch.Layout().Kind() == R::RowLayoutKind::Table && work.scratch.RowCount() == work.deviceBlocks * 6 &&
+                                      work.scratch.Layout().Width() == n * work.components && work.deviceStatus.GetDevice() == data->device && work.deviceStatus.Layout().Kind() == R::RowLayoutKind::Table &&
+                                      work.deviceStatus.RowCount() == 1 && work.deviceStatus.Layout().Width() == 1 &&
+                                      work.devicePeriodicVectorStarts.Identity() == work.devicePeriodicIdentity &&
+                                      work.devicePeriodicVectorStarts.Version() == work.devicePeriodicVersion &&
+                                      work.devicePeriodicVectorStarts.GetDevice() == data->device &&
+                                      work.devicePeriodicVectorStarts.Layout().Kind() == R::RowLayoutKind::Table &&
+                                      work.devicePeriodicVectorStarts.Layout().Width() == 1,
                                   "device workspace output/scratch/status mismatch");
         }
         Detail::DeviceWorkSelection Selection(const Detail::ReconstructionPlacementData &data, ReconstructionRegion region)
@@ -87,7 +91,7 @@ namespace DNDS::CFV
             const auto rows = region == ReconstructionRegion::Core ? data.view.core : data.view.dependent;
             return {rows, rows.rows, true};
         }
-        void ValidateStream(const ReconstructionDevicePlan &plan, const R::ExecutionStream &stream)
+        void ValidateDeviceStream(const VariationalReconstructionPlan &plan, const R::ExecutionStream &stream)
         {
             plan.Validate();
             DNDS_check_throw_info(stream.Context().device == plan.Device(), "device operator stream placement mismatch");
@@ -99,27 +103,33 @@ namespace DNDS::CFV
                                   "device operator array shape/placement mismatch");
         }
     }
-    ReconstructionDevicePlan ReconstructionDevicePlan::Prepare(const VariationalReconstructionPlan &source, R::Device device,
-                                                               R::ExecutionContext context, ReconstructionResidencyOptions options)
+    VariationalReconstructionPlan VariationalReconstructionPlan::Place(R::Device device, R::ExecutionContext context,
+                                                                       ReconstructionResidencyOptions options) const
     {
+        if (device == R::Device::Host())
+        {
+            DNDS_check_throw_info(context.device == device, "host reconstruction placement/context differs");
+            Validate();
+            return *this;
+        }
 #ifndef DNDS_USE_CUDA
         DNDS_check_throw_info(false, "CUDA reconstruction is unavailable in this build");
 #endif
-        source.Require(ReconstructionOperation::Sweep);
-        source.Require(ReconstructionOperation::WBAP);
-        source.Validate();
+        Require(ReconstructionOperation::Sweep);
+        Require(ReconstructionOperation::WBAP);
+        Validate();
         DNDS_check_throw_info(device.space == R::MemorySpace::CUDA && context.device == device, "device reconstruction requires explicit CUDA placement/context");
-        DNDS_check_throw_info(!source.Settings().SORInstead, "CUDA SOR requires a logical parallel sweep design and is unsupported");
-        source._data->workPartition->Validate();
-        auto geometry = source.Metrics().AcquireRead();
-        auto result = std::make_shared<Detail::ReconstructionPlacementData>(source, device, options);
+        DNDS_check_throw_info(!Settings().SORInstead, "CUDA SOR requires a logical parallel sweep design and is unsupported");
+        _data->workPartition->Validate();
+        auto geometry = Metrics().AcquireRead();
+        auto result = std::make_shared<Detail::ReconstructionPlacementData>(*this, device, options);
         result->fp64TensorCore = Detail::FP64TensorCoreAvailable(device);
-        const auto &host = *source._data;
+        const auto &host = *_data;
         auto &view = result->view;
-        view.owned = source.Metrics().NumCell();
-        view.n = source.NRecDOF();
-        view.relax = source.Settings().jacobiRelax;
-        view.wbapCenterWeight = source.Settings().WBAP_nStd;
+        view.owned = Metrics().NumCell();
+        view.n = NRecDOF();
+        view.relax = Settings().jacobiRelax;
+        view.wbapCenterWeight = Settings().WBAP_nStd;
         view.rotated = host.hasRotatedPeriodicity;
 #define DNDS_REC_ADD(member) view.member = result->Add(#member, host.member, context)
         DNDS_REC_ADD(offsets);
@@ -147,7 +157,7 @@ namespace DNDS::CFV
             else
                 view.dependent = selected;
         }
-        const auto &metric = *source.Metrics()._data;
+        const auto &metric = *Metrics()._data;
         result->dofs = metric.dofs;
         if (options.metrics || options.basis)
         {
@@ -164,7 +174,7 @@ namespace DNDS::CFV
         }
         if (options.basis)
         {
-            DNDS_check_throw_info(source.Settings().cacheDiffBase, "device basis publication requires prepared cacheDiffBase");
+            DNDS_check_throw_info(Settings().cacheDiffBase, "device basis publication requires prepared cacheDiffBase");
             const auto basis = result->Add("faceBasis", host.faceBasis, context);
             result->basisView = {R::Detail::ProjectView<const real, false, R::TableRows>(basis, host.faceBasis.Layout()), result->metricView.faceOffsets, host.n, host.cachedDerivatives};
         }
@@ -177,66 +187,56 @@ namespace DNDS::CFV
                 if(allocations.insert(identity).second)
                     result->buffers.push_back({"mesh.allocation."+std::to_string(allocations.size()),capacity,placement}); });
         }
-        return ReconstructionDevicePlan(std::move(result));
+        return VariationalReconstructionPlan(_data, std::move(result));
     }
-    R::Device ReconstructionDevicePlan::Device() const
+    R::Device VariationalReconstructionPlan::Device() const
     {
-        DNDS_check_throw_info(_data, "device plan was moved/released");
-        return _data->device;
+        DNDS_check_throw_info(_data, "reconstruction plan was moved/released");
+        return _device ? _device->device : R::Device::Host();
     }
-    void ReconstructionDevicePlan::Validate() const
-    {
-        DNDS_check_throw_info(_data, "device plan was moved/released");
-        _data->source.Validate();
-        _data->source._data->workPartition->Validate();
-    }
-    ReconstructionDeviceRead::ReconstructionDeviceRead(std::shared_ptr<const Detail::ReconstructionPlacementData> data)
-        : _data(std::move(data)), _geometry(std::make_shared<FiniteVolumeRead>(_data->source.Metrics().AcquireRead())) {}
-    ReconstructionDeviceRead ReconstructionDevicePlan::AcquireRead() const
+    std::vector<ResidentBufferInfo> VariationalReconstructionPlan::ResidentBuffers() const
     {
         Validate();
-        return ReconstructionDeviceRead(_data);
+        return _device ? _device->buffers : std::vector<ResidentBufferInfo>{};
     }
-    Detail::ReconstructionDeviceView ReconstructionDeviceRead::DeviceView() const
+    ReconstructionResidentRead VariationalReconstructionPlan::AcquireResidentRead() const
     {
-        DNDS_check_throw_info(_data, "device read scope was moved/released");
+        Validate();
+        DNDS_check_throw_info(_device, "reconstruction plan has no non-host placement");
+        return ReconstructionResidentRead(_device);
+    }
+    Detail::ReconstructionDeviceView ReconstructionResidentRead::DeviceView() const
+    {
+        DNDS_check_throw_info(_data, "resident reconstruction read was moved/released");
         return _data->view;
     }
-    FiniteVolumeHostView ReconstructionDeviceRead::MetricView() const
+    FiniteVolumeHostView ReconstructionResidentRead::MetricView() const
     {
-        DNDS_check_throw_info(_data, "device read scope was moved/released");
-        DNDS_check_throw_info(_data->options.metrics || _data->options.basis, "device metrics were not requested");
+        DNDS_check_throw_info(_data && (_data->options.metrics || _data->options.basis),
+                              "resident reconstruction metrics were not requested");
         return _data->metricView;
     }
-    ReconstructionBasisHostView ReconstructionDeviceRead::BasisView() const
+    ReconstructionBasisHostView ReconstructionResidentRead::BasisView() const
     {
-        DNDS_check_throw_info(_data, "device read scope was moved/released");
-        DNDS_check_throw_info(_data->options.basis, "device basis was not requested");
+        DNDS_check_throw_info(_data && _data->options.basis,
+                              "resident reconstruction basis was not requested");
         return _data->basisView;
     }
-    std::vector<ResidentBufferInfo> ReconstructionDevicePlan::Buffers() const
+    const Geom::UnstructuredMeshSnapshot &VariationalReconstructionPlan::MeshSnapshot() const
     {
         Validate();
-        return _data->buffers;
+        DNDS_check_throw_info(_device && _device->mesh, "device mesh was not requested");
+        return *_device->mesh;
     }
-    const Geom::UnstructuredMeshSnapshot &ReconstructionDevicePlan::MeshSnapshot() const
+    ReconstructionWorkspace VariationalReconstructionPlan::BuildDeviceWorkspace(index components, R::RowLayout prototype,
+                                                                                std::vector<index> periodic) const
     {
         Validate();
-        DNDS_check_throw_info(_data->mesh, "device mesh was not requested");
-        return *_data->mesh;
-    }
-    FVField ReconstructionDevicePlan::BuildField(R::RowLayout prototype) const
-    {
-        Validate();
-        return _data->source.Metrics().BuildField(std::move(prototype), Device());
-    }
-    ReconstructionDeviceWorkspace ReconstructionDevicePlan::BuildWorkspace(index components, R::RowLayout prototype, std::vector<index> periodic) const
-    {
-        Validate();
-        DNDS_check_throw_info(components > 0 && components <= INT_MAX / _data->view.n && !prototype.IsVariable() && prototype.Width() == components * _data->view.n,
+        DNDS_check_throw_info(_device && components > 0 && components <= INT_MAX / _device->view.n &&
+                                  !prototype.IsVariable() && prototype.Width() == components * _device->view.n,
                               "invalid device reconstruction shape");
         Detail::ValidateVectorBlocks(components, periodic);
-        const index blocks = std::max<index>(1, std::min<index>(256, _data->view.owned));
+        const index blocks = std::max<index>(1, std::min<index>(256, _device->view.owned));
         R::Array<index> starts(R::RowLayout::Dense(periodic.size(), 1));
         {
             auto write = starts.Write();
@@ -244,34 +244,47 @@ namespace DNDS::CFV
                 write.View()(i, 0) = periodic[size_t(i)];
         }
         auto deviceStarts = starts.To(Device());
-        const auto identity = deviceStarts.Identity(), version = deviceStarts.Version();
-        return {BuildField(prototype), BuildField(prototype), R::Array<real>(R::RowLayout::Dense(blocks * 6, prototype.Width()), Device()),
-                std::move(deviceStarts), R::Array<int>(R::RowLayout::Dense(1, 1), Device()), components, blocks, identity, version, _data};
+        const auto periodicIdentity = deviceStarts.Identity();
+        const auto periodicVersion = deviceStarts.Version();
+        return {Metrics().BuildField(prototype, Device()), Metrics().BuildField(prototype, Device()),
+                R::Array<real>(R::RowLayout::Dense(blocks * 6, prototype.Width()), Device()),
+                components, _data, std::move(periodic), std::move(deviceStarts),
+                R::Array<int>(R::RowLayout::Dense(1, 1), Device()), blocks,
+                periodicIdentity, periodicVersion, _device};
     }
-    R::TransferBinding ReconstructionDevicePlan::BindHalo(FVField &field, R::TransferTransport transport, R::TransferOptions options) const
+    R::TransferBinding VariationalReconstructionPlan::BindHalo(FVField &field, R::TransferTransport transport, R::TransferOptions options) const
     {
         Validate();
-        const auto &metric = _data->source.Metrics();
+        const auto &metric = Metrics();
         metric.Communication()->LocalStage([&]
-                                           {Validate();ValidateField(*this,field,field.Width());
+                                           {Validate();ValidateDeviceField(*this,field,field.Width());
             DNDS_check_throw_info(field.Space().Same(metric._data->dofs),"device field belongs to another metric space"); });
         return R::PayloadPlan(*metric._data->halo, field.Owned().Layout(), field.Ghost().Layout(), R::ElementSchema::Arithmetic<real>()).Bind(field.Owned(), field.Ghost(), transport, std::move(options));
     }
-    ReconstructionBoundaryValues ReconstructionDevicePlan::PrepareBoundary(const ReconstructionBoundaryValues &source) const
+    ReconstructionBoundaryValues VariationalReconstructionPlan::PlaceBoundaryValues(const ReconstructionBoundaryValues &source) const
     {
         Validate();
-        DNDS_check_throw_info(source.plan == _data->source._data, "boundary values belong to another plan");
-        ValidateArray(source.values, R::Device::Host(), _data->source.NumBoundaryQuadrature(), source.values.Layout().Width());
-        return {source.values.To(Device()), source.plan};
+        DNDS_check_throw_info(_device && source.plan == _data, "boundary values belong to another plan or placement is not device-resident");
+        ValidateArray(source.values, R::Device::Host(), NumBoundaryQuadrature(), source.values.Layout().Width());
+        return {source.values.To(Device()), _data};
     }
-    DeviceFaceCharacteristicTransform ReconstructionDevicePlan::PrepareTransform(const FaceCharacteristicTransform &source) const
+    FaceCharacteristicTransform VariationalReconstructionPlan::PlaceFaceTransform(const FaceCharacteristicTransform &source) const
     {
         Validate();
-        DNDS_check_throw_info(source.plan == _data->source._data && source.count > 0 && source.count <= 64 &&
-                                  source.forwardVersion == source.forward.Version() && source.inverseVersion == source.inverse.Version() && source.forwardVersion &&
-                                  source.forwardIdentity == source.forward.Identity() && source.inverseIdentity == source.inverse.Identity(),
-                              "unfinalized device characteristic source");
-        DeviceFaceCharacteristicTransform result{source.forward.To(Device()), source.inverse.To(Device()), source.first, source.count};
+        DNDS_check_throw_info(_device && source.plan == _data && source.first >= 0 && source.count >= 0 && source.count <= 64,
+                              "device characteristic source belongs to another plan or has an invalid range");
+        if (source.count == 0)
+        {
+            FaceCharacteristicTransform result;
+            result.first = source.first;
+            result.plan = _data;
+            return result;
+        }
+        DNDS_check_throw_info(
+            source.forwardVersion == source.forward.Version() && source.inverseVersion == source.inverse.Version() && source.forwardVersion &&
+                source.forwardIdentity == source.forward.Identity() && source.inverseIdentity == source.inverse.Identity(),
+            "unfinalized device characteristic source");
+        FaceCharacteristicTransform result{source.first, source.count, source.forward.To(Device()), source.inverse.To(Device()), _data};
         result.forwardVersion = result.forward.Version();
         result.inverseVersion = result.inverse.Version();
         result.forwardIdentity = result.forward.Identity();
@@ -279,136 +292,131 @@ namespace DNDS::CFV
         result.plan = _data;
         return result;
     }
-    void ReconstructionDevicePlan::DoReconstructionIterTo(R::EagerEngine &engine, const R::ExecutionStream &stream, const FVField &mean,
-                                                          const FVField &input, ReconstructionDeviceWorkspace &work, const ReconstructionBoundaryValues &boundary,
-                                                          ReconstructionRegion region, ReconstructionDeviceKernel kernel) const
+    void VariationalReconstructionPlan::SubmitDeviceReconstructionIterTo(
+        R::EagerEngine &engine, const R::ExecutionStream &stream, const FVField &mean,
+        const FVField &input, ReconstructionWorkspace &work, const ReconstructionBoundaryValues &boundary,
+        ReconstructionRegion region, ReconstructionDeviceKernel kernel) const
     {
-        ValidateStream(*this, stream);
+        ValidateDeviceStream(*this, stream);
         DNDS_check_throw_info(SupportsKernel(kernel), "requested CUDA reconstruction kernel is unavailable on this device/build");
-        ValidateWorkspace(_data, work);
-        ValidateField(*this, mean, work.components);
-        ValidateField(*this, input, work.components * _data->view.n);
+        ValidateDeviceWorkspace(_device, work);
+        ValidateDeviceField(*this, mean, work.components);
+        ValidateDeviceField(*this, input, work.components * _device->view.n);
         for (const auto *array : {&mean.Owned(), &mean.Ghost(), &input.Owned(), &input.Ghost(), &boundary.values})
             DNDS_check_throw_info(!Algebra::Detail::Overlaps(array->Storage(), work.temporary.Owned().Storage()), "device Jacobi output aliases an input");
         DNDS_check_throw_info(mean.Space().Same(work.coefficients.Space()) && input.Space().Same(work.coefficients.Space()), "device fields belong to different spaces");
-        DNDS_check_throw_info(boundary.plan == _data->source._data, "device boundary plan mismatch");
-        ValidateArray(boundary.values, Device(), _data->source.NumBoundaryQuadrature(), work.components);
+        DNDS_check_throw_info(boundary.plan == _data, "device boundary plan mismatch");
+        ValidateArray(boundary.values, Device(), NumBoundaryQuadrature(), work.components);
         DNDS_check_throw_info(!Algebra::Detail::Overlaps(input.Owned().Storage(), work.temporary.Owned().Storage()) &&
                                   !Algebra::Detail::Overlaps(input.Ghost().Storage(), work.temporary.Owned().Storage()),
                               "device Jacobi aliases its input");
-        const auto selection = Selection(*_data, region);
-        auto pin = std::make_shared<ReconstructionDeviceRead>(AcquireRead());
+        const auto selection = Selection(*_device, region);
+        auto pin = _device;
         auto launch = [pin, selection, kernel](R::ExecutionContext context, auto mo, auto mg, auto ro, auto rg, auto bc, auto output, auto blocks, auto status)
         {
             if (kernel == ReconstructionDeviceKernel::FP64TensorCoreShared || kernel == ReconstructionDeviceKernel::FP64TensorCoreAsync)
-                Detail::LaunchJacobiTensorCoreShared(context, pin->DeviceView(), selection, {blocks}, {mo, mg}, {ro, rg}, bc, output, status,
+                Detail::LaunchJacobiTensorCoreShared(context, pin->view, selection, {blocks}, {mo, mg}, {ro, rg}, bc, output, status,
                                                      kernel == ReconstructionDeviceKernel::FP64TensorCoreAsync);
             else if (kernel == ReconstructionDeviceKernel::FP64TensorCore)
-                Detail::LaunchJacobiTensorCore(context, pin->DeviceView(), selection, {blocks}, {mo, mg}, {ro, rg}, bc, output, status);
+                Detail::LaunchJacobiTensorCore(context, pin->view, selection, {blocks}, {mo, mg}, {ro, rg}, bc, output, status);
             else
-                Detail::LaunchJacobi(context, pin->DeviceView(), selection, {blocks}, {mo, mg}, {ro, rg}, bc, output, status);
+                Detail::LaunchJacobi(context, pin->view, selection, {blocks}, {mo, mg}, {ro, rg}, bc, output, status);
         };
         if (region == ReconstructionRegion::Core)
             R::SubmitArrays(engine, stream, [launch](R::ExecutionContext c, auto meanOwned, auto recOwned, auto bc, auto output, auto blocks, auto status)
-                            { launch(c, meanOwned, R::ArrayView<const real>{}, recOwned, R::ArrayView<const real>{}, bc, output, blocks, status); }, R::Read(mean.Owned()), R::Read(input.Owned()), R::Read(boundary.values), R::Write(work.temporary.Owned()), R::Read(work.periodicVectorStarts), R::Read(work.status));
+                            { launch(c, meanOwned, R::ArrayView<const real>{}, recOwned, R::ArrayView<const real>{}, bc, output, blocks, status); }, R::Read(mean.Owned()), R::Read(input.Owned()), R::Read(boundary.values), R::Write(work.temporary.Owned()), R::Read(work.devicePeriodicVectorStarts), R::Read(work.deviceStatus));
         else
             R::SubmitArrays(engine, stream, launch, R::Read(mean.Owned()), R::Read(mean.Ghost()), R::Read(input.Owned()), R::Read(input.Ghost()),
-                            R::Read(boundary.values), R::Write(work.temporary.Owned()), R::Read(work.periodicVectorStarts), R::Read(work.status));
+                            R::Read(boundary.values), R::Write(work.temporary.Owned()), R::Read(work.devicePeriodicVectorStarts), R::Read(work.deviceStatus));
     }
-    void ReconstructionDevicePlan::CommitReconstruction(R::EagerEngine &engine, const R::ExecutionStream &stream, ReconstructionDeviceWorkspace &work) const
+    void VariationalReconstructionPlan::SubmitDeviceCommitReconstruction(
+        R::EagerEngine &engine, const R::ExecutionStream &stream, ReconstructionWorkspace &work) const
     {
         // Stable owned-only publication: coefficient ghosts remain stale until
         // exchange. Keep leases and the device-status guard in any future copy
         // optimization; Runtime::Array::CopyFrom alone does not provide the guard.
-        ValidateStream(*this, stream);
-        ValidateWorkspace(_data, work);
-        auto pin = std::make_shared<ReconstructionDeviceRead>(AcquireRead());
+        ValidateDeviceStream(*this, stream);
+        ValidateDeviceWorkspace(_device, work);
+        auto pin = _device;
         R::SubmitArrays(engine, stream, [pin](R::ExecutionContext context, auto input, auto output, auto status)
-                        { Detail::LaunchCommit(context, input, output, status); }, R::Read(work.temporary.Owned()), R::Write(work.coefficients.Owned()), R::Read(work.status));
+                        { Detail::LaunchCommit(context, input, output, status); }, R::Read(work.temporary.Owned()), R::Write(work.coefficients.Owned()), R::Read(work.deviceStatus));
     }
-    void ReconstructionDevicePlan::DoLimiterWBAP_3OrderTo(R::EagerEngine &engine, const R::ExecutionStream &stream, ReconstructionDeviceWorkspace &work, int order,
-                                                          const DeviceFaceCharacteristicTransform *transform, ReconstructionRegion region, const R::Array<real> *indicator, real threshold) const
+    void VariationalReconstructionPlan::SubmitDeviceLimiterWBAP_3OrderTo(
+        R::EagerEngine &engine, const R::ExecutionStream &stream, ReconstructionWorkspace &work, int order,
+        FaceCharacteristicTransformRef transform, ReconstructionRegion region, const R::Array<real> *indicator,
+        real threshold) const
     {
-        ValidateStream(*this, stream);
-        ValidateWorkspace(_data, work);
-        DNDS_check_throw_info(order >= 1 && order <= _data->source.Settings().maxOrder && std::isfinite(threshold), "invalid device limiter order/threshold");
+        ValidateDeviceStream(*this, stream);
+        ValidateDeviceWorkspace(_device, work);
+        DNDS_check_throw_info(order >= 1 && order <= Settings().maxOrder && std::isfinite(threshold), "invalid device limiter order/threshold");
         for (const auto *input : {&work.coefficients.Owned(), &work.coefficients.Ghost(), &work.scratch})
             DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), work.temporary.Owned().Storage()), "device limiter output aliases its input/scratch");
         DNDS_check_throw_info(!Algebra::Detail::Overlaps(work.coefficients.Owned().Storage(), work.scratch.Storage()) &&
                                   !Algebra::Detail::Overlaps(work.coefficients.Ghost().Storage(), work.scratch.Storage()),
                               "device limiter scratch aliases coefficients");
-        const auto selection = Selection(*_data, region);
-        const auto n = _data->view.n;
-        const index begin = order == 1 ? 0 : Math::PolynomialSize(_data->source.Metrics().Dimension(), order - 1) - 1;
-        const index modes = Math::PolynomialSize(_data->source.Metrics().Dimension(), order) - 1 - begin;
+        const auto selection = Selection(*_device, region);
+        const auto n = _device->view.n;
+        const index begin = order == 1 ? 0 : Math::PolynomialSize(Metrics().Dimension(), order - 1) - 1;
+        const index modes = Math::PolynomialSize(Metrics().Dimension(), order) - 1 - begin;
         if (indicator)
         {
-            ValidateArray(*indicator, Device(), _data->view.owned, 1);
+            ValidateArray(*indicator, Device(), _device->view.owned, 1);
             DNDS_check_throw_info(!Algebra::Detail::Overlaps(indicator->Storage(), work.temporary.Owned().Storage()) &&
                                       !Algebra::Detail::Overlaps(indicator->Storage(), work.scratch.Storage()),
                                   "device indicator aliases mutable output/scratch");
         }
-        if (transform)
+        const auto *selectedTransform = transform && transform->get().count ? &transform->get() : nullptr;
+        if (transform && !selectedTransform)
+            DNDS_check_throw_info(transform->get().plan == _data && transform->get().first >= 0 && transform->get().first <= work.components,
+                                  "disabled device characteristic transform belongs to another plan or has an invalid offset");
+        if (selectedTransform)
         {
-            DNDS_check_throw_info(transform->plan == _data && transform->first >= 0 && transform->count > 0 && transform->count <= 64 && transform->count <= work.components - transform->first &&
-                                      transform->forwardIdentity == transform->forward.Identity() && transform->inverseIdentity == transform->inverse.Identity() &&
-                                      transform->forwardVersion == transform->forward.Version() && transform->inverseVersion == transform->inverse.Version(),
+            DNDS_check_throw_info(selectedTransform->plan == _data && selectedTransform->first >= 0 && selectedTransform->count > 0 && selectedTransform->count <= 64 && selectedTransform->count <= work.components - selectedTransform->first &&
+                                      selectedTransform->forwardIdentity == selectedTransform->forward.Identity() && selectedTransform->inverseIdentity == selectedTransform->inverse.Identity() &&
+                                      selectedTransform->forwardVersion == selectedTransform->forward.Version() && selectedTransform->inverseVersion == selectedTransform->inverse.Version(),
                                   "device characteristic data changed/unfinalized");
-            ValidateArray(transform->forward, Device(), _data->source.Metrics().NumFaceProc(), transform->count * transform->count);
-            ValidateArray(transform->inverse, Device(), _data->source.Metrics().NumFaceProc(), transform->count * transform->count);
-            for (const auto *input : {&transform->forward, &transform->inverse})
+            ValidateArray(selectedTransform->forward, Device(), Metrics().NumFaceProc(), selectedTransform->count * selectedTransform->count);
+            ValidateArray(selectedTransform->inverse, Device(), Metrics().NumFaceProc(), selectedTransform->count * selectedTransform->count);
+            for (const auto *input : {&selectedTransform->forward, &selectedTransform->inverse})
                 DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), work.temporary.Owned().Storage()) &&
                                           !Algebra::Detail::Overlaps(input->Storage(), work.scratch.Storage()),
                                       "device transform aliases mutable output/scratch");
         }
-        auto pin = std::make_shared<ReconstructionDeviceRead>(AcquireRead());
-        const auto first = transform ? transform->first : 0, count = transform ? transform->count : 0, blocksCount = work.blocks;
+        auto pin = _device;
+        const auto first = selectedTransform ? selectedTransform->first : 0, count = selectedTransform ? selectedTransform->count : 0,
+                   blocksCount = work.deviceBlocks;
         // Optional read operands are empty owned arrays on the right device,
         // retained in the closure. No fabricated pointers or implicit transfer.
-        const auto &forward = transform ? transform->forward : _data->empty, &inverse = transform ? transform->inverse : _data->empty,
-                   &activation = indicator ? *indicator : _data->empty;
+        const auto &forward = selectedTransform ? selectedTransform->forward : _device->empty,
+                   &inverse = selectedTransform ? selectedTransform->inverse : _device->empty,
+                   &activation = indicator ? *indicator : _device->empty;
         auto launch = [pin, selection, first, count, begin, modes, threshold, blocksCount](R::ExecutionContext context, auto owned, auto ghost, auto output, auto scratch, auto blocks, auto left, auto right, auto active, auto status)
-        { Detail::LaunchWBAP(context, pin->DeviceView(), selection, {blocks}, {owned, ghost}, output, scratch, {left, right, first, count}, active, status, begin, modes, threshold, blocksCount); };
+        { Detail::LaunchWBAP(context, pin->view, selection, {blocks}, {owned, ghost}, output, scratch, {left, right, first, count}, active, status, begin, modes, threshold, blocksCount); };
         if (region == ReconstructionRegion::Core)
             R::SubmitArrays(engine, stream, [launch](R::ExecutionContext c, auto owned, auto output, auto scratch, auto blocks, auto left, auto right, auto active, auto status)
-                            { launch(c, owned, R::ArrayView<const real>{}, output, scratch, blocks, left, right, active, status); }, R::Read(work.coefficients.Owned()), R::Write(work.temporary.Owned()), R::ReadWrite(work.scratch), R::Read(work.periodicVectorStarts), R::Read(forward), R::Read(inverse), R::Read(activation), R::ReadWrite(work.status));
+                            { launch(c, owned, R::ArrayView<const real>{}, output, scratch, blocks, left, right, active, status); }, R::Read(work.coefficients.Owned()), R::Write(work.temporary.Owned()), R::ReadWrite(work.scratch), R::Read(work.devicePeriodicVectorStarts), R::Read(forward), R::Read(inverse), R::Read(activation), R::ReadWrite(work.deviceStatus));
         else
             R::SubmitArrays(engine, stream, launch, R::Read(work.coefficients.Owned()), R::Read(work.coefficients.Ghost()), R::Write(work.temporary.Owned()),
-                            R::ReadWrite(work.scratch), R::Read(work.periodicVectorStarts), R::Read(forward), R::Read(inverse), R::Read(activation), R::ReadWrite(work.status));
+                            R::ReadWrite(work.scratch), R::Read(work.devicePeriodicVectorStarts), R::Read(forward), R::Read(inverse), R::Read(activation), R::ReadWrite(work.deviceStatus));
     }
-    void ReconstructionDevicePlan::CheckStatus(const ReconstructionDeviceWorkspace &work) const
+    void VariationalReconstructionPlan::CheckStatus(const ReconstructionWorkspace &work) const
     {
         Validate();
-        ValidateWorkspace(_data, work);
-        const auto host = work.status.To(R::Device::Host());
+        if (!_device)
+            return;
+        ValidateDeviceWorkspace(_device, work);
+        const auto host = work.deviceStatus.To(R::Device::Host());
         DNDS_check_throw_info(host.Read().View()(0, 0) == 0, "device limiter indicator contains nonfinite values; output was not updated");
     }
-    bool ReconstructionDevicePlan::SupportsKernel(ReconstructionDeviceKernel kernel) const
+    bool VariationalReconstructionPlan::SupportsKernel(ReconstructionDeviceKernel kernel) const
     {
-        DNDS_check_throw_info(_data, "device reconstruction publication is empty");
+        DNDS_check_throw_info(_data, "reconstruction plan is empty");
+        if (!_device)
+            return kernel == ReconstructionDeviceKernel::FP64;
         return kernel == ReconstructionDeviceKernel::FP64 ||
                ((kernel == ReconstructionDeviceKernel::FP64TensorCore || kernel == ReconstructionDeviceKernel::FP64TensorCoreShared ||
                  kernel == ReconstructionDeviceKernel::FP64TensorCoreAsync) &&
-                _data->fp64TensorCore);
-    }
-    void ReconstructionDevicePlan::DoReconstructionIter(const FVField &mean, ReconstructionDeviceWorkspace &work,
-                                                        const ReconstructionBoundaryValues &boundary, ReconstructionDeviceKernel kernel) const
-    {
-        R::EagerEngine engine;
-        auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(Device().ordinal));
-        DoReconstructionIterTo(engine, stream, mean, work.coefficients, work, boundary, ReconstructionRegion::All, kernel);
-        CommitReconstruction(engine, stream, work);
-        engine.Synchronize();
-        CheckStatus(work);
-    }
-    void ReconstructionDevicePlan::DoLimiterWBAP_3Order(ReconstructionDeviceWorkspace &work, int order, const DeviceFaceCharacteristicTransform *transform) const
-    {
-        R::EagerEngine engine;
-        auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(Device().ordinal));
-        DoLimiterWBAP_3OrderTo(engine, stream, work, order, transform);
-        CommitReconstruction(engine, stream, work);
-        engine.Synchronize();
-        CheckStatus(work);
+                _device->fp64TensorCore);
     }
 #ifndef DNDS_USE_CUDA
     namespace Detail

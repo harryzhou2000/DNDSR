@@ -40,7 +40,7 @@ def main():
         text = text[:position] + addition + text[position:]
         trace_insertions.append(addition)
 
-    insert_trace("void FiniteVolume::PrepareCorrectionAux(EquationDofs &state, EquationWorkspace &work, AuxiliaryValues &auxiliary,\n"
+    insert_trace("void FiniteVolume::PrepareCorrectionAux(EquationDofs &state, Workspace &work, AuxiliaryValues &auxiliary,\n"
                  "R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const\n    {",
                  "        ::DiagnosticTiming::AuxiliaryTrace correctionTrace(!work.meanGradients, 1,\n"
                  "            _data->settings.numerics.firstOrderConvection ? 2 : _data->settings.numerics.reconstruction == \"variational\" ? 0 : 1);\n", True)
@@ -58,7 +58,7 @@ def main():
                  "                correctionTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::ComputeBegin);\n")
     insert_trace("                preparation->Apply(_data->settings.execution.overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);",
                  "                correctionTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::ComputeEnd);\n", True)
-    insert_trace("        const EquationWorkspace::PhaseTime timing(work, EquationWorkspace::TotalPhase);",
+    insert_trace("        const Workspace::PhaseTime timing(work, Workspace::TotalPhase);",
                  "        ::DiagnosticTiming::AuxiliaryTrace evaluationTrace(auxiliary && !work.meanGradients, 0,\n"
                  "            _data->settings.numerics.firstOrderConvection ? 2 : _data->settings.numerics.reconstruction == \"variational\" ? 0 : 1);\n")
     insert_trace("        for (auto &halo : work.meanHalo)\n"
@@ -97,17 +97,17 @@ def main():
     for phase, block in (('Gradient', 'Gradient'), ('VR', 'Reconstruction'),
                          ('PP', 'PolynomialPP'), ('RHS', 'FaceRHS'),
                          ('Sampling', 'SourceSampling'), ('Source', 'VolumeSource')):
-        pattern = (r'const\s+(?:EquationWorkspace::)?PhaseTime\s+timing\('
-                   r'(\*this|work),\s*(?:EquationWorkspace::)?' + phase + r'Phase\);')
+        pattern = (r'const\s+(?:Workspace::)?PhaseTime\s+timing\('
+                   r'(\*this|work),\s*(?:Workspace::)?' + phase + r'Phase\);')
         text, count = re.subn(pattern,
             lambda match: f'::DiagnosticTiming::Scope detailScope(::DiagnosticTiming::Block::{block});\n' + match.group(0), text)
         if count != 1:
             raise ValueError(f'FV detail scope {phase} expected once, got {count}')
     text = replace_once(text,
-        "        const EquationWorkspace::PhaseTime timing(work, EquationWorkspace::TotalPhase);",
+        "        const Workspace::PhaseTime timing(work, Workspace::TotalPhase);",
         "        ::DiagnosticTiming::Level diagnosticLevel(_data->settings.numerics.firstOrderConvection ? 2 : _data->settings.numerics.reconstruction == \"variational\" ? 0 : 1);\n"
         "        ::DiagnosticTiming::Scope diagnosticFV(::DiagnosticTiming::Block::Spatial);\n"
-        "        const EquationWorkspace::PhaseTime timing(work, EquationWorkspace::TotalPhase);")
+        "        const Workspace::PhaseTime timing(work, Workspace::TotalPhase);")
     text = replace_once(text,
         "local([&] { auxiliaryPreparation.emplace(BeginAuxValues(state, *auxiliary, time, work.workers)); });",
         "local([&] { ::DiagnosticTiming::Scope scope(::DiagnosticTiming::Block::AuxiliaryPrepare); auxiliaryPreparation.emplace(BeginAuxValues(state, *auxiliary, time, work.workers)); });")
