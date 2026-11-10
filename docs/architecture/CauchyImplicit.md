@@ -1391,6 +1391,16 @@ its next ESDIRK4 step after repartition, preserving loaded means and diagnostics
 
 ## Whole-equation CPU nonlinear adapter
 
+Pure row-wise host arithmetic is isolated in `NonlinearHostKernels.hpp`.
+Flow5 and whole-equation orchestration share the same stateless leaves for
+cached-rate scaling, rate normalization, defect/norm accumulation, and FAS
+equation assembly. The enclosing solver still owns leases, component
+selection, MPI reductions, PP decisions, convergence decisions, and operation
+ordering. These kernels are serial today and preserve the previous row-major
+accumulation order. A future OpenMP implementation must reduce local norm and
+diagnostic values per thread and merge after the loop; it must not introduce
+atomic counters or pointer-owned diagnostics into the row loop.
+
 `EquationNonlinearSolver` connects the equation-state FV residual, physical
 Jacobian and logical linear driver to the same private iteration policy as
 `NonlinearSolver`. It does not flatten separate flow/species fields or infer

@@ -1,6 +1,7 @@
 #include "DNDS/MPI/Failure.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
+#include "Cauchy/Implicit/NonlinearHostKernels.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
@@ -237,9 +238,7 @@ namespace DNDS::Cauchy
             const auto to = write.ComponentLayout();
             const auto input = from.View();
             const auto output = to.View();
-            for (index iCell = 0; iCell < input.RowCount(); ++iCell)
-                for (index j = 0; j < input.ComponentNumber(); ++j)
-                    output(iCell, j) = input(iCell, j) / metric.GetCellVol(iCell); });
+            Detail::NormalizeRateByVolume(input, output, metric, input.ComponentNumber()); });
     }
     AuxiliaryValues EquationNonlinearSolver::PreparedAuxValues() const
     {
@@ -316,8 +315,7 @@ namespace DNDS::Cauchy
                 {
                     const auto rate = read.Block(iBlock).owned;
                     const auto output = write.Block(iBlock);
-                    for (index iCell = 0; iCell < rate.RowCount(); ++iCell)
-                        for (index j = 0; j < rate.ComponentNumber(); ++j) output(iCell, j) = metric.GetCellVol(iCell) * rate(iCell, j);
+                    Detail::ScaleRateByVolume(rate, output, metric, rate.ComponentNumber());
                 } });
         };
         const auto measure = [&](auto &norms)
@@ -331,20 +329,10 @@ namespace DNDS::Cauchy
                     const EquationViewLayout<real> wl(data.defect, write);
                     const auto assemble = [&](auto mean, auto residual, auto constant, auto output)
                     {
-                        for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
-                        {
-                            const real volume = metric.GetCellVol(iCell);
-                            if (!singleCorrection)
-                                local[nv] += volume;
-                            for (index j = 0; j < nv; ++j)
-                            {
-                                const real value = rhsScale * residual(iCell, j) + volume * (constant(iCell, j) - mass * mean(iCell, j));
-                                DNDS_check_throw_info(std::isfinite(value), "nonfinite equation implicit defect");
-                                output(iCell, j) = selection.Includes(j) ? value : 0;
-                                if (!singleCorrection)
-                                    local[j] += data.settings.normOrder == 1 ? std::abs(value) : value * value / volume;
-                            }
-                        }
+                        Detail::AssembleDefectRows(mean, residual, constant, output, metric, nv, mass, rhsScale,
+                                                   [&](index j) { return selection.Includes(j); },
+                                                   data.settings.normOrder, !singleCorrection, local,
+                                                   "nonfinite equation implicit defect");
                     };
                     // An operator-local AoS selection avoids per-component
                     // logical block lookup without packing or changing sums.
@@ -650,13 +638,11 @@ namespace DNDS::Cauchy
             if (rate) rateWrite.emplace(rate->WriteOwned());
             if (rateWrite) rateLayout.emplace(rateWrite->ComponentLayout());
             const auto spatialRate = rateLayout ? rateLayout->View() : Algebra::DofComponentView<real>{};
-            for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
-                for (index j = 0; j < mean.ComponentNumber(); ++j)
-                {
-                    const real rateValue = residual(iCell, j) / metric.GetCellVol(iCell);
-                    output(iCell, j) = mass * mean(iCell, j) - rhsScale * residual(iCell, j) / metric.GetCellVol(iCell);
-                    if (rate) spatialRate(iCell, j) = rateValue;
-                } });
+            if (rate)
+                Detail::AssembleEquationAndRateRows(mean, residual, output, spatialRate, metric,
+                                                    mean.ComponentNumber(), mass, rhsScale);
+            else
+                Detail::AssembleEquationRows(mean, residual, output, metric, mean.ComponentNumber(), mass, rhsScale); });
     }
     R::SessionAccess::Lease EquationNonlinearSolver::ReserveForMultigrid()
     {

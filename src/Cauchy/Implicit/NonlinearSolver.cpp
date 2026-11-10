@@ -2,6 +2,7 @@
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
 #include "Cauchy/Implicit/PositivityReduction.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
+#include "Cauchy/Implicit/NonlinearHostKernels.hpp"
 #include "Cauchy/Implicit/LinearScaling.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "Cauchy/Core/LocalStage.hpp"
@@ -149,8 +150,7 @@ namespace DNDS::Cauchy
                 const auto read = cachedRate->Owned().Read(); auto write = data.spatial.Owned().Write();
                 const auto rate = read.View<R::UniformTableRows>();
                 const auto output = write.View<R::UniformTableRows>();
-                for (index iCell = 0; iCell < rate.RowCount(); ++iCell)
-                    for (int j = 0; j < 5; ++j) output(iCell, j) = metric.GetCellVol(iCell) * rate(iCell, j); });
+                Detail::ScaleRateByVolume(rate, output, metric, 5); });
         };
         const auto measure = [&](auto &norms)
         {
@@ -161,17 +161,9 @@ namespace DNDS::Cauchy
                 auto write = data.defect.Owned().Write();
                 const auto mean = u.View<R::UniformTableRows>(), residual = r.View<R::UniformTableRows>(), constant = b.View<R::UniformTableRows>();
                 const auto output = write.View<R::UniformTableRows>();
-                for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
-                {
-                    const real volume = metric.GetCellVol(iCell); if (!singleCorrection) norm[5] += volume;
-                    for (int j = 0; j < 5; ++j)
-                    {
-                        const real value = rhsScale * residual(iCell, j) + volume * (constant(iCell, j) - mass * mean(iCell, j));
-                        DNDS_check_throw_info(std::isfinite(value), "nonfinite implicit stage defect");
-                        output(iCell, j) = active[j] ? value : 0;
-                        if (!singleCorrection) norm[j] += data.settings.normOrder == 1 ? std::abs(value) : value * value / volume;
-                    }
-                } });
+                Detail::AssembleDefectRows(mean, residual, constant, output, metric, 5, mass, rhsScale,
+                                           [&](index j) { return active[j]; }, data.settings.normOrder,
+                                           !singleCorrection, norm, "nonfinite implicit stage defect"); });
                 if (singleCorrection) return; // Defect is ready; no stopping norm is needed.
                 MPI_Allreduce(MPI_IN_PLACE, norm.data(), 6, MPI_DOUBLE, MPI_SUM, data.mpi.comm);
                 DNDS_check_throw_info(std::isfinite(norm[5]) && norm[5] > 0, "invalid global stage volume");
@@ -309,13 +301,10 @@ namespace DNDS::Cauchy
             std::optional<R::Array<real>::WriteLease> rateWrite;
             if (rate) rateWrite.emplace(rate->Owned().Write());
             const auto spatialRate = rateWrite ? rateWrite->View<R::UniformTableRows>() : R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows>{};
-            for (index iCell = 0; iCell < output.RowCount(); ++iCell)
-                for (int j = 0; j < 5; ++j)
-                {
-                    const real rateValue = r(iCell, j) / metric.GetCellVol(iCell);
-                    output(iCell, j) = mass * u(iCell, j) - rhsScale * r(iCell, j) / metric.GetCellVol(iCell);
-                    if (rate) spatialRate(iCell, j) = rateValue;
-                } });
+            if (rate)
+                Detail::AssembleEquationAndRateRows(u, r, output, spatialRate, metric, 5, mass, rhsScale);
+            else
+                Detail::AssembleEquationRows(u, r, output, metric, 5, mass, rhsScale); });
     }
     std::pair<int, real> NonlinearSolver::ReconstructionStats() const
     {
