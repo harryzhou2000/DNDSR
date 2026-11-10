@@ -232,6 +232,9 @@ def test_distributed_interface_owner_sampling_and_query_order():
         np.testing.assert_array_equal(output.numpy(), expected)
     assert [maps[0].Get(i).geometry.donorOriginalId for i in range(len(query))] == [
         maps[1].Get(i).geometry.donorOriginalId for i in range(len(query))]
+    # All participants coordinate this local input error before native sampling.
+    with pytest.raises(RuntimeError):
+        sampler.EvaluateCoupled(mean, None, scratch, output)
 
 
 @pytest.mark.mpi

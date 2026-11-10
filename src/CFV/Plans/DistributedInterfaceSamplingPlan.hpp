@@ -101,6 +101,8 @@ namespace DNDS::CFV
                 _data = std::make_shared<Data>(std::move(reconstruction), std::move(map), std::move(cells), std::move(points), route.Route().Reverse()); });
         }
         index Size() const { return _data->map.Size(); }
+        /// Shared coupling owner for frontend input agreement, not a new namespace.
+        std::shared_ptr<Runtime::CommunicationContext> Communication() const { return _data->returnRoute.Context(); }
         void Validate() const
         {
             _data->map.Validate();

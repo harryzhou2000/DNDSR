@@ -291,7 +291,11 @@ namespace DNDS::CFV
             .def("BuildWorkspace", &DistributedInterfaceSamplingPlan::BuildWorkspace)
             .def("Evaluate", &DistributedInterfaceSamplingPlan::Evaluate,
                  "Collective owner evaluation and direct return transfer. Release views and finish all producers first.")
-            .def("EvaluateCoupled", &DistributedInterfaceSamplingPlan::EvaluateCoupled, py::arg("mean"), py::arg("coefficients"), py::arg("workspace"), py::arg("values"),
-                 "Collective coupling evaluation. Both inputs must be None outside the donor domain; all ranks participate and retain buffers through completion.");
+            .def("EvaluateCoupled", [](const DistributedInterfaceSamplingPlan &plan, const std::optional<FVField> &mean, const std::optional<FVField> &coefficients, DistributedSamplingWorkspace &workspace, Runtime::Array<real> &values)
+                 {
+                     // Preserve Python's two optional arguments, but cross the
+                     // native operator boundary with one owning donor bundle.
+                     plan.Communication()->Preflight(bool(mean) == bool(coefficients), "donor mean and coefficients must both be present or absent");
+                     plan.EvaluateCoupled(mean ? std::make_optional(DonorInputs(*mean, *coefficients)) : std::nullopt, workspace, values); }, py::arg("mean"), py::arg("coefficients"), py::arg("workspace"), py::arg("values"), "Collective coupling evaluation. Both inputs must be None outside the donor domain; all ranks participate and retain buffers through completion.");
     }
 }
