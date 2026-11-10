@@ -163,13 +163,12 @@ int main(int argc, char **argv)
                 reads.mean = {u.View<R::UniformTableRows>(), ug.View<R::UniformTableRows>()};
                 reads.coefficients = {r.View<R::UniformTableRows>(), rg.View<R::UniformTableRows>()};
                 reads.auxiliary.meanThermodynamics = thermo.View<R::UniformTableRows>();
-                std::atomic<I> fallbacks{0};
+                C::RHSLocalDiagnostics diagnostics;
                 C::RHSWriteViews writes;
                 writes.residual = output.View<R::UniformTableRows>();
-                writes.faceFallbacks = &fallbacks;
                 rawRHS = measure([&]
-                                 { rhs.Apply(reads, writes); }, repetitions);
-                DNDS_check_throw_info(fallbacks == 0, "benchmark encountered an inadmissible reconstructed face");
+                                 { diagnostics.Merge(rhs.Apply(reads, writes)); }, repetitions);
+                DNDS_check_throw_info(diagnostics.FaceFallbacks() == 0, "benchmark encountered an inadmissible reconstructed face");
             }
             double difference = 0;
             {

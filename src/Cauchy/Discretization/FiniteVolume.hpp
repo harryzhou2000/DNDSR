@@ -16,9 +16,10 @@ namespace DNDS::Geom
 }
 #include "Geom/Access/EntityWorkPartition.hpp"
 #include <array>
-#include <optional>
-#include <atomic>
 #include <map>
+#include <memory>
+#include <optional>
+#include <vector>
 
 namespace DNDS::Cauchy
 {
@@ -110,6 +111,44 @@ namespace DNDS::Cauchy
     using RHSFieldView = Runtime::PairReadView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
     using RHSScalarView = Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
     using RHSOutputView = Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
+    /// One kernel region's plain, movable diagnostics. The cell loop updates
+    /// only this local value and returns it for one final merge. A future OMP
+    /// implementation can reduce the same value per thread; no atomic belongs
+    /// in a face/quadrature hot loop.
+    class RHSKernelDiagnostics
+    {
+        index _faceFallbacks = 0;
+        std::vector<Vector3> _forces;
+        friend class RHSLocalDiagnostics;
+
+    public:
+        explicit RHSKernelDiagnostics(index forceSlots = 0) : _forces(size_t(forceSlots), Vector3{}) {}
+        void AddFaceFallback() { ++_faceFallbacks; }
+        void AddBoundaryForce(index slot, int component, real value)
+        {
+            DNDS_assert_info(slot >= 0 && size_t(slot) < _forces.size() && component >= 0 && component < 3,
+                             "invalid RHS boundary-force slot");
+            _forces[size_t(slot)][component] += value;
+        }
+        index FaceFallbacks() const { return _faceFallbacks; }
+    };
+    /// Workspace-owned, rank-local aggregate for one complete RHS evaluation.
+    /// Boundary zones are resolved to dense slots during plan setup; kernels
+    /// neither search a map nor mutate this aggregate from their inner loop.
+    class RHSLocalDiagnostics
+    {
+        std::vector<int> _zones;
+        std::vector<Vector3> _forces;
+        index _faceFallbacks = 0;
+
+    public:
+        RHSLocalDiagnostics() = default;
+        explicit RHSLocalDiagnostics(std::vector<int> zones);
+        void Reset();
+        void Merge(const RHSKernelDiagnostics &input);
+        index FaceFallbacks() const { return _faceFallbacks; }
+        Vector3 BoundaryForce(const std::vector<int> &zones) const;
+    };
     /// Borrowed [p,a,diffusivity] projection, possibly in a wider derived table.
     /// Preserve parent layout and retain the producer's read scopes.
     struct MeanThermodynamicView
@@ -158,14 +197,12 @@ namespace DNDS::Cauchy
         /// Explicit physical-dt/mean trial; no reconstructed point increment.
         bool meanOnly = false;
     };
-    /// Explicit outputs. Diagnostics accumulate across core/dependent calls;
-    /// caller initializes them before an evaluation and reduces them afterwards.
+    /// Explicit numerical outputs. Diagnostics are returned by the RHS kernel
+    /// as a value and merged after each core/dependent operation completes.
     struct RHSWriteViews
     {
         RHSOutputView residual;
         std::optional<RHSOutputView> lowOrder;
-        std::atomic<index> *faceFallbacks = nullptr;
-        std::map<int, std::array<std::atomic<real>, 3>> *boundaryForces = nullptr;
         /// Optional integrated negative outward flux in AuxiliaryFaces() order,
         /// in the prepared anchor cell's axes. Selected faces are overwritten;
         /// core/dependent sets can overlap. No source term is included.
@@ -362,17 +399,40 @@ namespace DNDS::Cauchy
         class RHSOperator
         {
             struct ReadData;
+            enum class FailurePolicy
+            {
+                Throw,
+                Abort
+            };
             std::shared_ptr<const ReadData> _read;
             explicit RHSOperator(std::shared_ptr<const ReadData> read) : _read(std::move(read)) {}
+            template <FailurePolicy policy>
+            RHSKernelDiagnostics ApplyFluxImpl(const RHSReadViews &input, const RHSWriteViews &output,
+                                               CFV::ReconstructionRegion region, real time) const;
+            template <FailurePolicy policy>
+            void AddSourceImpl(const RHSReadViews &input, const RHSWriteViews &output,
+                               CFV::ReconstructionRegion region, real time) const;
             friend class FiniteVolume;
 
         public:
-            void Apply(const RHSReadViews &input, const RHSWriteViews &output,
-                       CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0) const;
+            /// Checked synchronous borrowed-view entry point. The caller keeps
+            /// every view lease and owner alive through return. Validation
+            /// failures throw before or during this standalone kernel call.
+            RHSKernelDiagnostics ApplyBorrowedChecked(const RHSReadViews &input, const RHSWriteViews &output,
+                                                      CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0) const;
+            /// Resolved production-kernel entry point. Its caller has already
+            /// validated and retained the operation scope. A failed invariant
+            /// terminates this rank directly; it never unwinds a collectively
+            /// ordered worker path or calls MPI from that worker.
+            RHSKernelDiagnostics ApplyBorrowedFatal(const RHSReadViews &input, const RHSWriteViews &output,
+                                                    CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0) const;
+            /// Compatibility spelling for the checked borrowed-view entry.
+            RHSKernelDiagnostics Apply(const RHSReadViews &input, const RHSWriteViews &output,
+                                       CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0) const;
             /// Overwrite selected residual rows with integrated face flux only.
             /// Optional faceFlux follows the documented canonical face order.
-            void ApplyFlux(const RHSReadViews &input, const RHSWriteViews &output,
-                           CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0) const;
+            RHSKernelDiagnostics ApplyFlux(const RHSReadViews &input, const RHSWriteViews &output,
+                                           CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All, real time = 0) const;
             /// Add owned-cell volume sources (flow5: rigid-frame source) to
             /// initialized output rows. No face, reconstruction or MPI work.
             void AddSource(const RHSReadViews &input, const RHSWriteViews &output,

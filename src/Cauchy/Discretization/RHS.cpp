@@ -1,5 +1,7 @@
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
 #include "Cauchy/Discretization/ViscousFlux.hpp"
+#include <cstdio>
+#include <cstdlib>
 
 namespace DNDS::Cauchy
 {
@@ -20,6 +22,20 @@ namespace DNDS::Cauchy
                             for (int v = 0; v < 3; ++v)
                                 result[component][d] += rotation(component - 1, v) * gradient[1 + v][k] * rotation(d, k);
             return result;
+        }
+        template <bool fatal>
+        void RequireKernel(bool condition, const char *message)
+        {
+            if (condition)
+                return;
+            if constexpr (fatal)
+            {
+                std::fprintf(stderr, "Cauchy fatal RHS kernel invariant: %s\n", message);
+                std::fflush(stderr);
+                std::abort();
+            }
+            else
+                DNDS_check_throw_info(false, message);
         }
     }
 
@@ -42,27 +58,50 @@ namespace DNDS::Cauchy
         return RHSOperator(std::make_shared<RHSOperator::ReadData>(_data));
     }
 
-    void FiniteVolume::RHSOperator::Apply(const RHSReadViews &input, const RHSWriteViews &output,
-                                          CFV::ReconstructionRegion region, real time) const
+    RHSKernelDiagnostics FiniteVolume::RHSOperator::Apply(const RHSReadViews &input, const RHSWriteViews &output,
+                                                          CFV::ReconstructionRegion region, real time) const
     {
-        ApplyFlux(input, output, region, time);
-        AddSource(input, output, region, time);
+        return ApplyBorrowedChecked(input, output, region, time);
     }
 
-    void FiniteVolume::RHSOperator::ApplyFlux(const RHSReadViews &input, const RHSWriteViews &output,
-                                              CFV::ReconstructionRegion region, real time) const
+    RHSKernelDiagnostics FiniteVolume::RHSOperator::ApplyBorrowedChecked(const RHSReadViews &input, const RHSWriteViews &output,
+                                                                         CFV::ReconstructionRegion region, real time) const
     {
-        DNDS_check_throw_info(_read && std::isfinite(time), "invalid RHS operator or time");
+        auto diagnostics = ApplyFluxImpl<FailurePolicy::Throw>(input, output, region, time);
+        AddSourceImpl<FailurePolicy::Throw>(input, output, region, time);
+        return diagnostics;
+    }
+
+    RHSKernelDiagnostics FiniteVolume::RHSOperator::ApplyBorrowedFatal(const RHSReadViews &input, const RHSWriteViews &output,
+                                                                       CFV::ReconstructionRegion region, real time) const
+    {
+        auto diagnostics = ApplyFluxImpl<FailurePolicy::Abort>(input, output, region, time);
+        AddSourceImpl<FailurePolicy::Abort>(input, output, region, time);
+        return diagnostics;
+    }
+
+    RHSKernelDiagnostics FiniteVolume::RHSOperator::ApplyFlux(const RHSReadViews &input, const RHSWriteViews &output,
+                                                              CFV::ReconstructionRegion region, real time) const
+    {
+        return ApplyFluxImpl<FailurePolicy::Throw>(input, output, region, time);
+    }
+
+    template <FiniteVolume::RHSOperator::FailurePolicy policy>
+    RHSKernelDiagnostics FiniteVolume::RHSOperator::ApplyFluxImpl(const RHSReadViews &input, const RHSWriteViews &output,
+                                                                  CFV::ReconstructionRegion region, real time) const
+    {
+        constexpr bool fatal = policy == FailurePolicy::Abort;
+        RequireKernel<fatal>(_read && std::isfinite(time), "invalid RHS operator or time");
         const auto &data = _read->data;
         const auto metric = _read->geometry.HostView();
         const int modes = data->reconstruction.NRecDOF(), dim = data->metrics.Dimension();
         const auto &gas = data->equation.Gas();
         const auto &thermalBounds = data->PerfectGasBounds();
         const auto frame = data->motion.At(time);
-        DNDS_check_throw_info(!data->hasInterfaces || input.boundary, "RHS requires incoming interface values");
+        RequireKernel<fatal>(!data->hasInterfaces || input.boundary, "RHS requires incoming interface values");
         const auto incoming = input.boundary.value_or(RHSScalarView{});
         if (input.boundary)
-            DNDS_check_throw_info(incoming.RowCount() == index(data->boundaryEntries.size()) && incoming.Width() == 5, "RHS interface input shape differs");
+            RequireKernel<fatal>(incoming.RowCount() == index(data->boundaryEntries.size()) && incoming.Width() == 5, "RHS interface input shape differs");
         const bool viscous = data->equation.Viscous() && input.includeViscosity;
         const bool direct = data->settings.numerics.reconstruction != "variational";
         const auto physicalGradient = input.conservativeGradient.value_or(RHSFieldView{});
@@ -79,26 +118,31 @@ namespace DNDS::Cauchy
         const auto thermo = input.auxiliary.meanThermodynamics.value_or(RHSScalarView{});
         const auto waveInput = input.auxiliary.cellWaveJump.value_or(RHSFieldView{});
         const auto pressureInput = input.auxiliary.cellPressureMinimum.value_or(RHSFieldView{});
-        auto *forces = output.boundaryForces;
-        auto *diagnostics = output.faceFallbacks;
-        DNDS_check_throw_info(region == CFV::ReconstructionRegion::All || region == CFV::ReconstructionRegion::Core ||
-                                  region == CFV::ReconstructionRegion::HaloDependent,
-                              "invalid RHS region");
+        RHSKernelDiagnostics diagnostics(index(data->forceZones.size()));
+        const auto &fluxPolicy = data->fluxPolicy;
+        const auto baseFluxSettings = fluxPolicy.settings;
+        const bool writeFace = bool(output.faceFlux);
+        const bool noRsOnWall = fluxPolicy.noRsOnWall;
+        const bool noGRPOnWall = fluxPolicy.noGRPOnWall;
+        const bool distinctViscousState = direct ? bool(input.viscousConservativeGradient) : bool(input.viscousCoefficients);
+        RequireKernel<fatal>(region == CFV::ReconstructionRegion::All || region == CFV::ReconstructionRegion::Core ||
+                                 region == CFV::ReconstructionRegion::HaloDependent,
+                             "invalid RHS region");
         const bool needGhost = region != CFV::ReconstructionRegion::Core && !data->partition.HaloDependent().empty();
         const auto checkField = [&](const RHSFieldView &field, index width)
         {
-            DNDS_check_throw_info(field.owned.RowCount() == data->metrics.NumCell() && field.owned.Width() == width,
-                                  "RHS owned input shape differs");
+            RequireKernel<fatal>(field.owned.RowCount() == data->metrics.NumCell() && field.owned.Width() == width,
+                                 "RHS owned input shape differs");
             if (needGhost)
-                DNDS_check_throw_info(field.ghost.RowCount() == data->metrics.NumCellProc() - data->metrics.NumCell() && field.ghost.Width() == width,
-                                      "RHS ghost input is missing or has wrong shape");
+                RequireKernel<fatal>(field.ghost.RowCount() == data->metrics.NumCellProc() - data->metrics.NumCell() && field.ghost.Width() == width,
+                                     "RHS ghost input is missing or has wrong shape");
         };
         checkField(mean, 5);
         if (!direct)
             checkField(coefficient, 5 * modes);
         else if (!input.meanOnly && !data->settings.numerics.firstOrderConvection && data->settings.numerics.reconstruction == "gradient")
         {
-            DNDS_check_throw_info(input.conservativeGradient, "direct P1 RHS requires physical conservative gradients");
+            RequireKernel<fatal>(bool(input.conservativeGradient), "direct P1 RHS requires physical conservative gradients");
             checkField(physicalGradient, 5 * dim);
             if (polynomialViscosity)
                 checkField(physicalViscousGradient, 5 * dim);
@@ -111,20 +155,18 @@ namespace DNDS::Cauchy
             checkField(waveInput, 1);
         if (usePressure)
             checkField(pressureInput, 1);
-        DNDS_check_throw_info(result.RowCount() == data->metrics.NumCell() && result.Width() == 5, "RHS output shape differs");
+        RequireKernel<fatal>(result.RowCount() == data->metrics.NumCell() && result.Width() == 5, "RHS output shape differs");
         if (produceLow)
-            DNDS_check_throw_info(lowOutput.RowCount() == result.RowCount() && lowOutput.Width() == 5, "low-order RHS shape differs");
+            RequireKernel<fatal>(lowOutput.RowCount() == result.RowCount() && lowOutput.Width() == 5, "low-order RHS shape differs");
         if (output.faceFlux)
-            DNDS_check_throw_info(output.faceFlux->RowCount() == index(data->stencilFaces.size()) && output.faceFlux->Width() == 5,
-                                  "RHS face output shape differs");
+            RequireKernel<fatal>(output.faceFlux->RowCount() == index(data->stencilFaces.size()) && output.faceFlux->Width() == 5,
+                                 "RHS face output shape differs");
         if (hasThermo)
-            DNDS_check_throw_info(thermo.Width() == 3 && thermo.RowCount() >= (needGhost ? data->metrics.NumCellProc() : data->metrics.NumCell()),
-                                  "RHS thermodynamic cache shape differs");
-        DNDS_check_throw_info(diagnostics || (data->settings.numerics.faceFallback && !data->settings.numerics.positivity),
-                              "strict face admissibility requires explicit fallback output");
-        DNDS_check_throw_info(!data->settings.numerics.riemann.useStencil ||
-                                  ((!data->flux.UsesTransverseSignal() || useWave) && (!data->flux.UsesPressureStencil() || usePressure)),
-                              "required RHS wave or pressure auxiliary input is absent");
+            RequireKernel<fatal>(thermo.Width() == 3 && thermo.RowCount() >= (needGhost ? data->metrics.NumCellProc() : data->metrics.NumCell()),
+                                 "RHS thermodynamic cache shape differs");
+        RequireKernel<fatal>(!data->settings.numerics.riemann.useStencil ||
+                                 ((!fluxPolicy.transverseSignal || useWave) && (!fluxPolicy.pressureStencil || usePressure)),
+                             "required RHS wave or pressure auxiliary input is absent");
         auto compute = [&](index iCell)
         {
             FlowState integrated{};
@@ -132,7 +174,9 @@ namespace DNDS::Cauchy
             for (index entry = data->offsets[iCell]; entry < data->offsets[iCell + 1]; ++entry)
             {
                 const auto &sample = data->samples[entry];
-                const bool writeFace = bool(output.faceFlux);
+                const bool internal = sample.other != UnInitIndex;
+                const auto boundaryKind = sample.boundary.kind;
+                const real weight = metric.GetFaceWeight(sample.point);
                 if (writeFace && sample.point == metric.FaceQuadratureBegin(sample.face))
                     for (int j = 0; j < 5; ++j)
                         (*output.faceFlux)(sample.auxiliaryFace, j) = 0;
@@ -179,14 +223,13 @@ namespace DNDS::Cauchy
                                 }
                             }
                     }
-                    if (!(direct ? bool(input.viscousConservativeGradient) : bool(input.viscousCoefficients)))
+                    if (!distinctViscousState)
                         viscousState = state;
                     // Explicit local first-order fallback keeps the mean
                     // unchanged when a high-order face value is inadmissible.
                     if (!ThermallyAdmissible(state, thermalBounds))
                     {
-                        if (diagnostics)
-                            diagnostics->fetch_add(1, std::memory_order_relaxed);
+                        diagnostics.AddFaceFallback();
                         state = Load(mean, cell);
                     }
                     if (viscous && !polynomialViscosity)
@@ -203,14 +246,14 @@ namespace DNDS::Cauchy
                 const auto left = reconstruct(iCell, 0);
                 FlowState right{}, viscousRight{};
                 FlowGradient rightGradient{};
-                if (sample.other != UnInitIndex)
+                if (internal)
                 {
                     auto other = reconstruct(sample.other, 1);
-                    right = RotateState(other.state, sample.rotation);
+                    right = sample.changesFrame ? RotateState(other.state, sample.rotation) : other.state;
                     if (viscous)
                     {
-                        viscousRight = RotateState(other.viscousState, sample.rotation);
-                        rightGradient = RotateGradient(other.gradient, sample.rotation);
+                        viscousRight = sample.changesFrame ? RotateState(other.viscousState, sample.rotation) : other.viscousState;
+                        rightGradient = sample.changesFrame ? RotateGradient(other.gradient, sample.rotation) : other.gradient;
                     }
                 }
                 else
@@ -221,42 +264,46 @@ namespace DNDS::Cauchy
                 }
                 const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
                 const Vector3 point{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]};
-                const bool noRsWall = data->settings.numerics.noRsOnWall && sample.other == UnInitIndex && sample.boundary.kind == BoundaryKind::NoSlipWall;
-                const auto convectiveLeft = noRsWall ? FiniteVolumeDetail::BoundaryFaceValue(sample, gas, left.state, time, frame, incoming) : left.state;
-                const auto convectiveRight = noRsWall ? convectiveLeft : right;
+                const bool wallFluxState = noRsOnWall && !internal && boundaryKind == BoundaryKind::NoSlipWall;
+                const auto convectiveLeft = wallFluxState ? FiniteVolumeDetail::BoundaryFaceValue(sample, gas, left.state, time, frame, incoming) : left.state;
+                const auto convectiveRight = wallFluxState ? convectiveLeft : right;
                 const auto leftFlux = data->equation.PrepareFluxState(convectiveLeft), rightFlux = data->equation.PrepareFluxState(convectiveRight);
                 const auto gridVelocity = frame.GridVelocity(point);
-                const auto leftMean = Load(mean, iCell), rightMean = sample.other == UnInitIndex ? FiniteVolumeDetail::BoundaryExterior(sample, gas, leftMean, time, frame, incoming) : RotateState(Load(mean, sample.other), sample.rotation);
+                const auto leftMean = Load(mean, iCell);
+                const auto otherMean = internal ? Load(mean, sample.other) : FlowState{};
+                const auto rightMean = !internal             ? FiniteVolumeDetail::BoundaryExterior(sample, gas, leftMean, time, frame, incoming)
+                                       : sample.changesFrame ? RotateState(otherMean, sample.rotation)
+                                                             : otherMean;
                 const auto leftMeanData = hasThermo ? Riemann::AcousticState{{leftMean, thermo(iCell, 0)}, thermo(iCell, 1)} : data->equation.PrepareFluxState(leftMean);
-                const auto rightMeanData = sample.other == UnInitIndex || !hasThermo ? data->equation.PrepareFluxState(rightMean) : Riemann::AcousticState{{rightMean, thermo(sample.other, 0)}, thermo(sample.other, 1)};
-                auto fluxSettings = data->settings.numerics.riemann.KernelSettings();
+                const auto rightMeanData = !internal || !hasThermo ? data->equation.PrepareFluxState(rightMean) : Riemann::AcousticState{{rightMean, thermo(sample.other, 0)}, thermo(sample.other, 1)};
+                auto fluxSettings = baseFluxSettings;
                 if (useWave)
                 {
                     real jump = waveInput(iCell, 0);
-                    if (sample.other != UnInitIndex)
+                    if (internal)
                         jump = std::max(jump, waveInput(sample.other, 0));
                     fluxSettings.dLambda = std::max(fluxSettings.dLambda, jump);
                 }
                 if (usePressure)
                 {
                     real minimum = pressureInput(iCell, 0);
-                    if (sample.other != UnInitIndex)
+                    if (internal)
                         minimum = std::min(minimum, pressureInput(sample.other, 0));
                     fluxSettings.pressureStencilMin = std::min(fluxSettings.pressureStencilMin, minimum);
                 }
                 auto flux = data->equation.EvaluateFlowFlux(data->flux, leftFlux, rightFlux, leftMeanData, rightMeanData, normal, gridVelocity, fluxSettings).flux;
                 FlowState lowFlux{};
                 if (produceLow)
-                    lowFlux = noRsWall ? Riemann::Rusanov(leftFlux, rightFlux, normal, gridVelocity) : Riemann::Rusanov(leftMeanData, rightMeanData, normal, gridVelocity);
-                if (polynomialViscosity && (sample.other != UnInitIndex || sample.boundary.kind == BoundaryKind::NoSlipWall || sample.boundary.kind == BoundaryKind::Interface))
+                    lowFlux = wallFluxState ? Riemann::Rusanov(leftFlux, rightFlux, normal, gridVelocity) : Riemann::Rusanov(leftMeanData, rightMeanData, normal, gridVelocity);
+                if (polynomialViscosity && (internal || boundaryKind == BoundaryKind::NoSlipWall || boundaryKind == BoundaryKind::Interface))
                 {
                     FlowState rightLinearization = convectiveRight;
                     FlowState faceMean{};
                     for (int j = 0; j < 5; ++j)
                         faceMean[j] = .5 * (convectiveLeft[j] + rightLinearization[j]);
-                    DNDS_check_throw_info(ThermallyAdmissible(faceMean, thermalBounds), "inadmissible polynomial viscous linearization");
-                    const bool wall = sample.other == UnInitIndex && sample.boundary.kind == BoundaryKind::NoSlipWall;
-                    const real inverseDistance = wall && data->settings.numerics.noGRPOnWall ? 0 : 1 / sample.viscousDistance;
+                    RequireKernel<fatal>(ThermallyAdmissible(faceMean, thermalBounds), "inadmissible polynomial viscous linearization");
+                    const bool wall = !internal && boundaryKind == BoundaryKind::NoSlipWall;
+                    const real inverseDistance = wall && noGRPOnWall ? 0 : 1 / sample.viscousDistance;
                     const auto diffusion = PolynomialViscousFlux(data->equation, convectiveLeft, rightLinearization, left.viscousState, viscousRight,
                                                                  left.gradient, rightGradient, normal, inverseDistance, wall && !sample.boundary.isothermal);
                     for (int component = 0; component < 5; ++component)
@@ -266,17 +313,19 @@ namespace DNDS::Cauchy
                     }
                 }
                 else if (viscous && !polynomialViscosity &&
-                         (sample.other != UnInitIndex || sample.boundary.kind == BoundaryKind::NoSlipWall || sample.boundary.kind == BoundaryKind::Interface))
+                         (internal || boundaryKind == BoundaryKind::NoSlipWall || boundaryKind == BoundaryKind::Interface))
                 {
                     auto primitive = gas.Primitive(left.state);
                     auto gradient = left.gradient;
                     const auto ownPrimitive = gas.Primitive(Load(mean, iCell));
-                    const auto rightPrimitive = gas.Primitive(sample.other == UnInitIndex ? FiniteVolumeDetail::BoundaryGradientValue(sample, gas, Load(mean, iCell), time, frame, incoming) : RotateState(Load(mean, sample.other), sample.rotation));
+                    const auto rightPrimitive = gas.Primitive(!internal             ? FiniteVolumeDetail::BoundaryGradientValue(sample, gas, Load(mean, iCell), time, frame, incoming)
+                                                              : sample.changesFrame ? RotateState(Load(mean, sample.other), sample.rotation)
+                                                                                    : Load(mean, sample.other));
                     // Evaluate into an owning vector: an Eigen expression
                     // would retain a dangling temporary cell barycenter.
-                    const Geom::tPoint distance = sample.other == UnInitIndex ? Geom::tPoint(sample.ownPoint - metric.GetCellBary(iCell)) : Geom::tPoint(sample.otherPoint - metric.GetCellBary(iCell));
+                    const Geom::tPoint distance = !internal ? Geom::tPoint(sample.ownPoint - metric.GetCellBary(iCell)) : Geom::tPoint(sample.otherPoint - metric.GetCellBary(iCell));
                     const real lengthSquared = distance.squaredNorm();
-                    DNDS_check_throw_info(lengthSquared > 0, "zero viscous stencil displacement");
+                    RequireKernel<fatal>(lengthSquared > 0, "zero viscous stencil displacement");
                     const std::array<real, 5> own{ownPrimitive.density, ownPrimitive.velocity[0], ownPrimitive.velocity[1], ownPrimitive.velocity[2], ownPrimitive.temperature};
                     const std::array<real, 5> neighbor{rightPrimitive.density, rightPrimitive.velocity[0], rightPrimitive.velocity[1], rightPrimitive.velocity[2], rightPrimitive.temperature};
                     for (int component = 0; component < 5; ++component)
@@ -284,20 +333,20 @@ namespace DNDS::Cauchy
                         real projected = 0;
                         for (int d = 0; d < 3; ++d)
                         {
-                            if (sample.other != UnInitIndex)
+                            if (internal)
                                 gradient[component][d] = .5 * (gradient[component][d] + rightGradient[component][d]);
                             projected += gradient[component][d] * distance[d];
                         }
                         for (int d = 0; d < 3; ++d)
                             gradient[component][d] += (neighbor[component] - own[component] - projected) * distance[d] / lengthSquared;
                     }
-                    if (sample.other != UnInitIndex)
+                    if (internal)
                     {
                         const auto p = gas.Primitive(right);
                         for (int d = 0; d < 3; ++d)
                             primitive.velocity[d] = .5 * (primitive.velocity[d] + p.velocity[d]);
                     }
-                    else if (sample.boundary.kind == BoundaryKind::SlipWall || sample.boundary.kind == BoundaryKind::NoSlipWall)
+                    else if (boundaryKind == BoundaryKind::SlipWall || boundaryKind == BoundaryKind::NoSlipWall)
                     {
                         FlowState faceMean{};
                         for (int j = 0; j < 5; ++j)
@@ -319,32 +368,25 @@ namespace DNDS::Cauchy
                         lowFlux[component] -= viscous[component];
                     }
                 }
-                if (forces && sample.other == UnInitIndex && (sample.boundary.kind == BoundaryKind::SlipWall || sample.boundary.kind == BoundaryKind::NoSlipWall))
+                if (sample.forceSlot != UnInitIndex)
                     for (int d = 0; d < 3; ++d)
-                    {
-                        auto &sum = forces->at(sample.zone)[d];
-                        const real contribution = metric.GetFaceWeight(sample.point) * flux[1 + d];
-                        real previous = sum.load(std::memory_order_relaxed);
-                        while (!sum.compare_exchange_weak(previous, previous + contribution, std::memory_order_relaxed))
-                        {
-                        }
-                    }
+                        diagnostics.AddBoundaryForce(sample.forceSlot, d, weight * flux[1 + d]);
                 FlowState canonical{};
                 if (writeFace)
                 {
                     const auto &anchor = data->samples[data->faceEntries[sample.auxiliaryFace]];
-                    canonical = sample.side == anchor.side ? flux : RotateState(flux, sample.rotation.transpose());
+                    canonical = sample.side == anchor.side || !sample.changesFrame ? flux : RotateState(flux, sample.rotation.transpose());
                     if (sample.side != anchor.side)
                         for (auto &value : canonical)
                             value = -value;
                 }
                 for (int component = 0; component < 5; ++component)
                 {
-                    integrated[component] -= metric.GetFaceWeight(sample.point) * flux[component];
+                    integrated[component] -= weight * flux[component];
                     if (writeFace)
-                        (*output.faceFlux)(sample.auxiliaryFace, component) -= metric.GetFaceWeight(sample.point) * canonical[component];
+                        (*output.faceFlux)(sample.auxiliaryFace, component) -= weight * canonical[component];
                     if (produceLow)
-                        integratedLow[component] -= metric.GetFaceWeight(sample.point) * lowFlux[component];
+                        integratedLow[component] -= weight * lowFlux[component];
                 }
             }
             for (int component = 0; component < 5; ++component)
@@ -360,21 +402,30 @@ namespace DNDS::Cauchy
         else
             for (auto iCell : region == CFV::ReconstructionRegion::Core ? data->partition.Core() : data->partition.HaloDependent())
                 compute(iCell);
+        return diagnostics;
     }
 
     void FiniteVolume::RHSOperator::AddSource(const RHSReadViews &input, const RHSWriteViews &output,
                                               CFV::ReconstructionRegion region, real time) const
     {
-        DNDS_check_throw_info(_read && std::isfinite(time), "invalid source operator or time");
+        AddSourceImpl<FailurePolicy::Throw>(input, output, region, time);
+    }
+
+    template <FiniteVolume::RHSOperator::FailurePolicy policy>
+    void FiniteVolume::RHSOperator::AddSourceImpl(const RHSReadViews &input, const RHSWriteViews &output,
+                                                  CFV::ReconstructionRegion region, real time) const
+    {
+        constexpr bool fatal = policy == FailurePolicy::Abort;
+        RequireKernel<fatal>(_read && std::isfinite(time), "invalid source operator or time");
         const auto &data = _read->data;
-        DNDS_check_throw_info(region == CFV::ReconstructionRegion::All || region == CFV::ReconstructionRegion::Core ||
-                                  region == CFV::ReconstructionRegion::HaloDependent,
-                              "invalid source region");
-        DNDS_check_throw_info(input.mean.owned.RowCount() == data->metrics.NumCell() && input.mean.owned.Width() == 5 &&
-                                  output.residual.RowCount() == data->metrics.NumCell() && output.residual.Width() == 5,
-                              "source input/output shape differs");
+        RequireKernel<fatal>(region == CFV::ReconstructionRegion::All || region == CFV::ReconstructionRegion::Core ||
+                                 region == CFV::ReconstructionRegion::HaloDependent,
+                             "invalid source region");
+        RequireKernel<fatal>(input.mean.owned.RowCount() == data->metrics.NumCell() && input.mean.owned.Width() == 5 &&
+                                 output.residual.RowCount() == data->metrics.NumCell() && output.residual.Width() == 5,
+                             "source input/output shape differs");
         if (output.lowOrder)
-            DNDS_check_throw_info(output.lowOrder->RowCount() == output.residual.RowCount() && output.lowOrder->Width() == 5, "source low-order output shape differs");
+            RequireKernel<fatal>(output.lowOrder->RowCount() == output.residual.RowCount() && output.lowOrder->Width() == 5, "source low-order output shape differs");
         const auto frame = data->motion.At(time);
         if (!frame.moving)
             return;

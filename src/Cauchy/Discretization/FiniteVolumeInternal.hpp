@@ -12,6 +12,25 @@
 
 namespace DNDS::Cauchy::FiniteVolumeDetail
 {
+    /// Immutable point-flux dispatch resolved with the FV plan. Flow5 and the
+    /// extensible equation adapter consume the same policy; numerical kernels
+    /// retain their specialized storage and arithmetic.
+    struct FluxKernelPolicy
+    {
+        Riemann::Requirements required;
+        Riemann::FluxSettings settings;
+        bool rusanov = false;
+        bool transverseSignal = false;
+        bool pressureStencil = false;
+        bool noRsOnWall = false;
+        bool noGRPOnWall = false;
+    };
+    inline FluxKernelPolicy ResolveFluxKernelPolicy(const DomainSettings &settings, const Riemann::RiemannFlux &flux)
+    {
+        return {flux.RequiredInputs(), settings.numerics.riemann.KernelSettings(),
+                flux.Kind() == Riemann::Solver::Rusanov, flux.UsesTransverseSignal(), flux.UsesPressureStencil(),
+                settings.numerics.noRsOnWall, settings.numerics.noGRPOnWall};
+    }
     inline CFV::ReconstructionCapabilities ReconstructionSupport(const DomainSettings &settings)
     {
         const auto &numerics = settings.numerics;
@@ -47,6 +66,9 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         /// Row in the incoming packet used by this sample: RHS flow for
         /// quadrature samples, faceFlow for centered Jacobian samples.
         index boundaryPoint = UnInitIndex;
+        /// Dense RHSLocalDiagnostics force slot, resolved once during setup.
+        /// Non-wall and interior samples keep UnInitIndex.
+        index forceSlot = UnInitIndex;
         /// Exact setup-time frame test. Ordinary and translated-periodic faces
         /// keep components unchanged; even a small nonidentity rotation remains
         /// active. Default true keeps hand-built samples conservative.
@@ -151,6 +173,7 @@ namespace DNDS::Cauchy
         EquationSystem equation;
         RigidMotion motion;
         Riemann::RiemannFlux flux;
+        FiniteVolumeDetail::FluxKernelPolicy fluxPolicy;
         BoundarySystem boundary;
         CFV::FiniteVolumePlan metrics;
         CFV::VariationalReconstructionPlan reconstruction;
@@ -169,6 +192,8 @@ namespace DNDS::Cauchy
         std::shared_ptr<const std::vector<std::vector<index>>> jacobianColumns;
         std::vector<index> boundaryEntries;
         std::vector<int> boundaryZones;
+        std::vector<int> forceZones;
+        std::map<int, index> forceSlots;
         std::shared_ptr<Detail::BoundaryPointLayout> boundaryLayout;
         std::vector<index> gradientBoundaryPoints;
         bool hasInterfaces = false;
@@ -220,6 +245,7 @@ namespace DNDS::Cauchy
         }
         Data(ssp<Geom::UnstructuredMesh> source, DomainSettings controls, EquationSystem physics)
             : mesh(std::move(source)), settings(std::move(controls)), equation(std::move(physics)), motion(settings.motion, settings.mesh.dimension), flux(Riemann::RiemannFlux::Resolve(settings.numerics.flux)),
+              fluxPolicy(FiniteVolumeDetail::ResolveFluxKernelPolicy(settings, flux)),
               boundary(settings.boundaries, equation), metrics(CFV::FiniteVolumePlan::ConstructMetrics(mesh, MetricOptions(settings))),
               reconstruction(CFV::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings.numerics.cfv, FiniteVolumeDetail::ReconstructionSupport(settings))),
               gradient(CFV::GradientPlan::Prepare(*mesh, metrics, settings.numerics.gradient == "greenGauss" ? CFV::GradientMethod::GreenGauss : settings.numerics.gradient == "ggmp" ? CFV::GradientMethod::GGMP

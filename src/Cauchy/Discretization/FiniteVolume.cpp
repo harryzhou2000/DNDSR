@@ -2,6 +2,7 @@
 #include "DNDS/MPI/Failure.hpp"
 #include "DNDS/Algebra/DofHalo.hpp"
 #include "Cauchy/Discretization/LimitedVRInternal.hpp"
+#include "Cauchy/Core/OperatorSchedule.hpp"
 #include "Cauchy/Physics/FlowProfile.hpp"
 #include "Cauchy/Physics/ReconstructionPositivity.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
@@ -102,36 +103,6 @@ namespace DNDS::Cauchy
                               << std::endl;
             }
         };
-        /// These CPU convenience wrappers return with their submitted work
-        /// observed, including when a later controller operation throws. Declare
-        /// the guard after borrowed resources so it joins before they unwind.
-        class JoinStreamOnException
-        {
-            const R::ExecutionStream &_stream;
-            int _exceptions = std::uncaught_exceptions();
-
-        public:
-            explicit JoinStreamOnException(const R::ExecutionStream &stream) : _stream(stream) {}
-            JoinStreamOnException(const JoinStreamOnException &) = delete;
-            JoinStreamOnException &operator=(const JoinStreamOnException &) = delete;
-            ~JoinStreamOnException()
-            {
-                if (std::uncaught_exceptions() > _exceptions)
-                {
-                    MPI::AbortIfSolverFailure("solver unwinding before a finite-volume stream join");
-                    try
-                    {
-                        _stream.Record().WaitHost();
-                    }
-                    catch (...)
-                    {
-                        MPI::AbortIfSolverFailure("Cauchy finite-volume preparation failed");
-                        // A failed prefix must not replace the original
-                        // controller exception with its completion error.
-                    }
-                }
-            }
-        };
         void CopyOwned(const CFV::FVField &from, CFV::FVField &to)
         {
             DNDS_check_throw_info(from.Space().Same(to.Space()) && from.Width() == to.Width() &&
@@ -145,6 +116,45 @@ namespace DNDS::Cauchy
                 for (index j = 0; j < a.RowSize(iCell); ++j)
                     b(iCell, j) = a(iCell, j);
         }
+    }
+    RHSLocalDiagnostics::RHSLocalDiagnostics(std::vector<int> zones)
+        : _zones(std::move(zones)), _forces(_zones.size())
+    {
+        DNDS_check_throw_info(std::is_sorted(_zones.begin(), _zones.end()) &&
+                                  std::adjacent_find(_zones.begin(), _zones.end()) == _zones.end(),
+                              "RHS diagnostic zones must be sorted and unique");
+        Reset();
+    }
+    void RHSLocalDiagnostics::Reset()
+    {
+        _faceFallbacks = 0;
+        std::fill(_forces.begin(), _forces.end(), Vector3{});
+    }
+    void RHSLocalDiagnostics::Merge(const RHSKernelDiagnostics &input)
+    {
+        // Standalone kernel users commonly need only the fallback count. Let an
+        // empty aggregate adopt the immutable slot extent on first merge; named
+        // BoundaryForce queries still require construction with the zone table.
+        if (_zones.empty() && _forces.empty())
+            _forces.resize(input._forces.size(), Vector3{});
+        DNDS_check_throw_info(input._forces.size() == _forces.size(), "RHS diagnostic force-slot layout differs");
+        _faceFallbacks += input._faceFallbacks;
+        for (size_t slot = 0; slot < _forces.size(); ++slot)
+            for (int d = 0; d < 3; ++d)
+                _forces[slot][d] += input._forces[slot][d];
+    }
+    Vector3 RHSLocalDiagnostics::BoundaryForce(const std::vector<int> &zones) const
+    {
+        Vector3 force{};
+        for (int zone : zones)
+        {
+            const auto found = std::lower_bound(_zones.begin(), _zones.end(), zone);
+            DNDS_check_throw_info(found != _zones.end() && *found == zone, "force zone has no boundary condition");
+            const auto slot = size_t(found - _zones.begin());
+            for (int d = 0; d < 3; ++d)
+                force[d] += _forces[slot][d];
+        }
+        return force;
     }
     struct FiniteVolume::Workspace
     {
@@ -180,20 +190,17 @@ namespace DNDS::Cauchy
         std::optional<R::TransferBinding> waveHalo, pressureHalo;
         std::weak_ptr<const Data> owner; // Actual plan identity, never a reusable address.
         R::ArrayStorage::Shared ownedStorage, ghostStorage;
-        std::atomic<index> fallbacks{0};
+        RHSLocalDiagnostics diagnostics;
         int iterations = 0;
         real relativeUpdate = 0;
         CFV::FaceCharacteristicTransform characteristic;
-        // Only a handful of physical boundary zones. Kernels accumulate into
-        // disjoint atomic counters; no mutable mesh or reconstruction policy.
-        std::map<int, std::array<std::atomic<real>, 3>> forces;
         Workspace(const Data &data, std::weak_ptr<const Data> identity, CFV::FVField &state, bool meanTrial)
             : meanOnly(meanTrial), reconstruction(data.reconstruction.BuildWorkspace(5, FieldLayout(state.Owned().Layout(), data.metrics.NumCell(), data.reconstruction.NRecDOF() * 5), {1})),
               gradient(data.metrics.BuildField(5 * data.metrics.Dimension())), primitive(data.metrics.BuildField(5)),
               positivityValues(R::RowLayout::Dense(!meanOnly && data.positivitySamples ? data.positivitySamples->Size() : 0, 5)), boundary(data.reconstruction.BuildBoundaryValues(5)),
               gradientBoundary(data.gradient.BuildBoundaryValues(5)), meanHalo(data.BindTrackedHalo(state)),
               coefficientHalo(data.BindHalo(reconstruction.coefficients, "cauchy-reconstruction")), gradientHalo(data.BindHalo(gradient, "cauchy-gradient")), owner(std::move(identity)),
-              ownedStorage(state.Owned().SharedStorage()), ghostStorage(state.Ghost().SharedStorage())
+              ownedStorage(state.Owned().SharedStorage()), ghostStorage(state.Ghost().SharedStorage()), diagnostics(data.forceZones)
         {
             Algebra::Fill(reconstruction.coefficients, 0.);
             Algebra::Fill(reconstruction.temporary, 0.);
@@ -228,8 +235,6 @@ namespace DNDS::Cauchy
                 positivityReferenceValues = R::Array<real>(R::RowLayout::Dense(positivityValues.RowCount(), 5));
                 positivityReferenceDegree = R::Array<int>(R::RowLayout::Dense(data.metrics.NumCell(), 1));
             }
-            for (const auto &[zone, condition] : data.settings.boundaries)
-                forces.try_emplace(std::stoi(zone));
         }
         bool BelongsTo(const std::shared_ptr<const Data> &plan) const { return plan && owner.lock() == plan; }
         CFV::ReconstructionWorkspace &Flux() { return fluxReconstruction ? *fluxReconstruction : reconstruction; }
@@ -273,6 +278,12 @@ namespace DNDS::Cauchy
                 data->wallDistance.emplace(WallDistanceSamples::Construct(data->mesh, settings.numerics.RHSIntegrationOrder(), settings.numerics.wallDistanceFloor));
                 data->ransCellLength = data->metrics.BuildCellMaxLenScale(); });
         const bool limitedVR = settings.numerics.limiter == "LVR" && (settings.numerics.limitedVR.alphaMax > 0 || settings.numerics.limitedVR.contactAlphaMax > 0);
+        for (const auto &[zone, condition] : data->settings.boundaries)
+            data->forceZones.push_back(std::stoi(zone));
+        std::sort(data->forceZones.begin(), data->forceZones.end());
+        data->forceZones.erase(std::unique(data->forceZones.begin(), data->forceZones.end()), data->forceZones.end());
+        for (index slot = 0; slot < index(data->forceZones.size()); ++slot)
+            data->forceSlots.emplace(data->forceZones[size_t(slot)], slot);
         auto meshRead = data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto topology = meshRead.HostView();
         auto geometry = data->metrics.AcquireRead();
@@ -342,6 +353,9 @@ namespace DNDS::Cauchy
                                   CFV::Detail::OtherPointInCell(topology, iFace, side, metric.GetCellCent(other == UnInitIndex ? iCell : other)),
                                   CFV::Detail::OtherFrameInCell(topology, iFace, side), condition};
                     sample.auxiliaryFace = auxiliaryFace;
+                    if (other == UnInitIndex &&
+                        (condition.kind == BoundaryKind::SlipWall || condition.kind == BoundaryKind::NoSlipWall))
+                        sample.forceSlot = data->forceSlots.at(sample.zone);
                     data->hasRotatedFrames = data->hasRotatedFrames || !(sample.rotation.array() == Geom::tGPoint::Identity().array()).all();
                     sample.face = iFace;
                     sample.changesFrame = !(sample.rotation.array() == Geom::tGPoint::Identity().array()).all();
@@ -574,8 +588,8 @@ namespace DNDS::Cauchy
         Metrics().Communication()->LocalStage([&]
                                               { DNDS_check_throw_info(!_data->equation.HasMixture() && !_data->equation.HasRANS(), "flow-only workspace cannot bind an extended equation state"); Metrics().ValidateField(state, 5); });
         request.meanThermodynamics = true;
-        const bool wave = _data->settings.numerics.riemann.useStencil && _data->flux.UsesTransverseSignal();
-        const bool pressure = _data->settings.numerics.riemann.useStencil && _data->flux.UsesPressureStencil();
+        const bool wave = _data->settings.numerics.riemann.useStencil && _data->fluxPolicy.transverseSignal;
+        const bool pressure = _data->settings.numerics.riemann.useStencil && _data->fluxPolicy.pressureStencil;
         request.cellWaveJump = request.cellWaveJump || wave;
         request.cellPressureMinimum = request.cellPressureMinimum || pressure;
         // Agree resolved channels before constructing any differing bindings.
@@ -941,19 +955,15 @@ namespace DNDS::Cauchy
         }
         if (_data->settings.execution.overlap)
             auxiliaryPreparation.emplace(BeginAuxValues(state, work.auxiliary, time,work.incoming?&*work.incoming:nullptr)); });
-        JoinStreamOnException auxiliaryJoin(stream);
         work.auxiliary._origin.reset();
         work.fluxReady = false;
         DNDS_check_throw_info(Admissible(state), "inadmissible Cauchy mean state");
-        work.fallbacks = 0;
+        work.diagnostics.Reset();
         work.iterations = 0;
         work.relativeUpdate = 0;
         work.betaMin = 1;
         work.betaLimited = 0;
         work.characteristicFallbacks = 0;
-        for (auto &[zone, force] : work.forces)
-            for (auto &component : force)
-                component.store(0);
         auto geometry = Metrics().AcquireRead();
         const auto metric = geometry.HostView();
         auto meshRead = _data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
@@ -962,11 +972,6 @@ namespace DNDS::Cauchy
         const bool overlap = _data->settings.execution.overlap;
         const auto frame = _data->motion.At(time);
         const auto incoming = incomingView.value_or(RHSScalarView{});
-        auto exchange = [&](R::TransferBinding &binding)
-        {
-            auto operation = engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream);
-            operation.Wait();
-        };
         profile.Mark(0); // Validation/access acquisition/auxiliary core.
         const bool primitiveViscosity = !work.meanOnly && bool(work.primitiveBoundary);
         const bool hasGradientWork = bool(work.conservativeGradient) || primitiveViscosity || bool(work.limitedVR);
@@ -1094,28 +1099,33 @@ namespace DNDS::Cauchy
             else
                 _data->reconstruction.DoReconstructionIterTo(state, work.reconstruction.coefficients, work.reconstruction, work.boundary, region);
         };
+        OperatorSchedule preparationSchedule(engine, stream, overlap);
+        const auto exchange = [&](R::TransferBinding &binding)
+        {
+            auto operation = preparationSchedule.Begin(binding);
+            OperatorSchedule::Wait(operation);
+        };
         // LVR first needs its completed O2 target and distributed gates. Its GG
         // core still overlaps the mean halo; a VR core cannot precede that gate.
         if (!work.meanOnly && !work.limitedVR && overlap && _data->settings.numerics.reconstruction == "variational")
         {
             if (_data->settings.numerics.reconstructionBoundaryFromPolynomial)
                 updateReconstructionBoundary();
-            firstCoefficientOperation.emplace(engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream));
+            firstCoefficientOperation.emplace(preparationSchedule.Begin(work.coefficientHalo));
         }
         // Worker callbacks borrow the helpers and mesh scopes above. On every
         // exceptional controller exit, join before any of those resources die.
-        JoinStreamOnException gradientJoin(stream);
         if (overlap)
         {
             // Post both required transfers before queueing CPU work: the checked
             // MPI bridge observes a stream prefix for producer readiness. Queueing
             // auxiliary work before that bridge would join it prematurely.
             auto *preparation = &*auxiliaryPreparation;
-            engine.Submit(stream, [preparation](auto)
-                          { preparation->Apply(CFV::ReconstructionRegion::Core); });
+            preparationSchedule.Submit([preparation]
+                                       { preparation->Apply(CFV::ReconstructionRegion::Core); });
             if (hasGradientWork)
-                engine.Submit(stream, [&](auto)
-                              { prepareGradientCore(CFV::ReconstructionRegion::Core); });
+                preparationSchedule.Submit([&]
+                                           { prepareGradientCore(CFV::ReconstructionRegion::Core); });
             // The first VR core consumes only owned means and coefficients.
             // It is independent of both active ghost writes and of auxiliary
             // preparation, which may run concurrently on a CPU worker.
@@ -1133,14 +1143,14 @@ namespace DNDS::Cauchy
             if (auxiliaryPreparation)
             {
                 auto *preparation = &*auxiliaryPreparation;
-                engine.Submit(stream, [preparation, output = &work.auxiliary](auto)
-                              {
+                preparationSchedule.Submit([preparation, output = &work.auxiliary]
+                                           {
                     preparation->Apply(CFV::ReconstructionRegion::HaloDependent);
                     preparation->Finish(*output); });
                 if (hasGradientWork)
-                    engine.Submit(stream, [&](auto)
-                                  { prepareGradientDependent(); });
-                stream.Record().WaitHost();
+                    preparationSchedule.Submit([&]
+                                               { prepareGradientDependent(); });
+                preparationSchedule.Join();
             }
             else
             {
@@ -1150,7 +1160,7 @@ namespace DNDS::Cauchy
         if (primitiveViscosity)
         {
             if (overlap)
-                gradientOperation.emplace(engine.ChecksAccess() ? work.gradientHalo.BeginChecked(stream) : work.gradientHalo.BeginScheduled(stream));
+                gradientOperation.emplace(preparationSchedule.Begin(work.gradientHalo));
             else
                 exchange(work.gradientHalo);
         }
@@ -1193,11 +1203,11 @@ namespace DNDS::Cauchy
                     firstCoefficientOperation.reset();
                 }
                 else
-                    operation = engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream);
+                    operation = preparationSchedule.Begin(work.coefficientHalo);
                 if (overlap && !corePrepared)
                     reconstructionSweep(CFV::ReconstructionRegion::Core);
-                operation.Wait();
-                reconstructionSweep(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
+                OperatorSchedule::Wait(operation);
+                reconstructionSweep(preparationSchedule.DependentRegion());
                 work.iterations = iteration + 1;
                 bool converged = false;
                 if ((_data->settings.numerics.reconstructionTolerance > 0 && iteration % 4 == 3) || iteration + 1 == _data->settings.numerics.reconstructionIterations)
@@ -1231,13 +1241,13 @@ namespace DNDS::Cauchy
                 work.characteristicFallbacks += PrepareFaceCharacteristics(state, work.characteristic); });
             for (int order = _data->settings.numerics.cfv.maxOrder; order >= 1; --order)
             {
-                auto operation = engine.ChecksAccess() ? work.FluxHalo().BeginChecked(stream) : work.FluxHalo().BeginScheduled(stream);
+                auto operation = preparationSchedule.Begin(work.FluxHalo());
                 if (overlap)
                     _data->reconstruction.DoLimiterWBAP_3OrderTo(work.Flux(), order, _data->settings.numerics.characteristicLimiter ? &work.characteristic : nullptr,
                                                                  CFV::ReconstructionRegion::Core);
-                operation.Wait();
+                OperatorSchedule::Wait(operation);
                 _data->reconstruction.DoLimiterWBAP_3OrderTo(work.Flux(), order, _data->settings.numerics.characteristicLimiter ? &work.characteristic : nullptr,
-                                                             overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
+                                                             preparationSchedule.DependentRegion());
                 _data->reconstruction.CommitReconstruction(work.Flux());
             }
         }
@@ -1249,9 +1259,10 @@ namespace DNDS::Cauchy
             if (gradientOperation)
                 gradientOperation->Wait();
             exchange(work.FluxHalo());
-            stream.Record().WaitHost();
+            preparationSchedule.Join();
             return;
         }
+        preparationSchedule.Join();
         const bool polynomialViscosity = !work.meanOnly && _data->equation.Viscous() && _data->settings.numerics.viscousGradient == "polynomial";
         std::optional<R::Array<real>::WriteLease> lowWrite;
         R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows> lowOutput;
@@ -1309,7 +1320,7 @@ namespace DNDS::Cauchy
             // The final VR commit changes owned coefficients after its last
             // incoming exchange. Refresh that distinct unlimited polynomial;
             // the flux-polynomial exchange below cannot refresh these ghosts.
-            viscousOperation.emplace(engine.ChecksAccess() ? work.coefficientHalo.BeginChecked(stream) : work.coefficientHalo.BeginScheduled(stream));
+            viscousOperation.emplace(preparationSchedule.Begin(work.coefficientHalo));
             viscousOwned.emplace(work.reconstruction.coefficients.Owned().Read());
             viscousCoefficients = FieldView{viscousOwned->View<R::UniformTableRows>(), {}};
         }
@@ -1335,28 +1346,28 @@ namespace DNDS::Cauchy
         if (work.auxiliary.cellPressureMinimum)
             auxiliary.cellPressureMinimum = pressure;
         const auto kernel = [rhs, time, lowOutput, incomingView, produceLow = bool(work.lowResidual), includeViscosity = !work.meanOnly,
-                             forces = &work.forces, diagnostics = &work.fallbacks, meanOnly = work.meanOnly](CFV::ReconstructionRegion region,
-                                                                                                             const auto &mean, const auto &coefficient, const auto &gradientInput,
-                                                                                                             const RHSAuxiliaryViews &auxiliaryInput, const std::optional<FieldView> &viscousInput,
-                                                                                                             const std::optional<FieldView> &directInput, const std::optional<FieldView> &directViscousInput, auto result)
+                             diagnostics = std::ref(work.diagnostics), meanOnly = work.meanOnly](CFV::ReconstructionRegion region,
+                                                                                                 const auto &mean, const auto &coefficient, const auto &gradientInput,
+                                                                                                 const RHSAuxiliaryViews &auxiliaryInput, const std::optional<FieldView> &viscousInput,
+                                                                                                 const std::optional<FieldView> &directInput, const std::optional<FieldView> &directViscousInput, auto result)
         {
-            RHSWriteViews outputs{result, std::nullopt, diagnostics, forces};
+            RHSWriteViews outputs{result};
             if (produceLow)
                 outputs.lowOrder = lowOutput;
-            rhs.Apply({mean, coefficient, gradientInput, auxiliaryInput, includeViscosity, viscousInput, incomingView, directInput, directViscousInput, meanOnly}, outputs, region, time);
+            diagnostics.get().Merge(rhs.ApplyBorrowedFatal({mean, coefficient, gradientInput, auxiliaryInput, includeViscosity, viscousInput, incomingView, directInput, directViscousInput, meanOnly}, outputs, region, time));
         };
         const auto &fluxCoefficients = FluxReconstruction(work);
-        auto operation = engine.ChecksAccess() ? work.FluxHalo().BeginChecked(stream) : work.FluxHalo().BeginScheduled(stream);
+        OperatorSchedule residualSchedule(engine, stream, overlap);
+        auto operation = residualSchedule.Begin(work.FluxHalo());
         auto coreAuxiliary = auxiliary;
         if (coreAuxiliary.cellWaveJump)
             coreAuxiliary.cellWaveJump->ghost = {};
         if (coreAuxiliary.cellPressureMinimum)
             coreAuxiliary.cellPressureMinimum->ghost = {};
-        JoinStreamOnException residualJoin(stream);
         if (overlap)
-            R::SubmitArrays(engine, stream, [kernel, gradientInput = FieldView{gradients.owned, {}}, coreAuxiliary, viscousCoefficients, directGradient, directViscous](auto, auto mean, auto rec, auto result)
-                            { kernel(CFV::ReconstructionRegion::Core, FieldView{mean, {}}, FieldView{rec, {}}, gradientInput, coreAuxiliary, viscousCoefficients, directGradient, directViscous, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::WriteAs<R::UniformTableRows>(residual->Owned()));
-        operation.Wait();
+            residualSchedule.SubmitArrays([kernel, gradientInput = FieldView{gradients.owned, {}}, coreAuxiliary, viscousCoefficients, directGradient, directViscous](auto, auto mean, auto rec, auto result)
+                                          { kernel(CFV::ReconstructionRegion::Core, FieldView{mean, {}}, FieldView{rec, {}}, gradientInput, coreAuxiliary, viscousCoefficients, directGradient, directViscous, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::WriteAs<R::UniformTableRows>(residual->Owned()));
+        OperatorSchedule::Wait(operation);
         if (gradientOperation)
         {
             gradientOperation->Wait();
@@ -1381,12 +1392,12 @@ namespace DNDS::Cauchy
                 directViscous->ghost = directViscousGhost->View<R::UniformTableRows>();
             }
         }
-        R::SubmitArrays(engine, stream, [kernel, gradients, auxiliary, overlap, viscousCoefficients, directGradient, directViscous](auto, auto mean, auto meanGhost, auto rec, auto recGhost, auto result)
-                        { kernel(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All, FieldView{mean, meanGhost}, FieldView{rec, recGhost}, gradients, auxiliary, viscousCoefficients, directGradient, directViscous, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(state.Ghost()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Ghost()), R::WriteAs<R::UniformTableRows>(residual->Owned()));
+        residualSchedule.SubmitArrays([kernel, gradients, auxiliary, rest = residualSchedule.DependentRegion(), viscousCoefficients, directGradient, directViscous](auto, auto mean, auto meanGhost, auto rec, auto recGhost, auto result)
+                                      { kernel(rest, FieldView{mean, meanGhost}, FieldView{rec, recGhost}, gradients, auxiliary, viscousCoefficients, directGradient, directViscous, result); }, R::ReadAs<R::UniformTableRows>(state.Owned()), R::ReadAs<R::UniformTableRows>(state.Ghost()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Owned()), R::ReadAs<R::UniformTableRows>(fluxCoefficients.Ghost()), R::WriteAs<R::UniformTableRows>(residual->Owned()));
         // Local read scopes pin geometry/cache pointers through both submitted
         // phases. A later async public wrapper can retain these same scopes;
         // this CPU synchronous convenience observes only its own stream prefix.
-        stream.Record().WaitHost();
+        residualSchedule.Join();
         if (!_data->settings.numerics.faceFallback || _data->settings.numerics.positivity)
             DNDS_check_throw_info(LastFaceFallbacks(work) == 0, "inadmissible reconstructed face with faceFallback disabled");
     }
@@ -1495,22 +1506,23 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(!HasInterfaces() || work.incoming, "correction preparation needs interface values");
             if (work.incoming) ValidateBoundaryInputs(*work.incoming, time);
             preparation.emplace(BeginAuxValues(state, work.auxiliary, time, work.incoming ? &*work.incoming : nullptr)); });
-        JoinStreamOnException join(stream);
+        OperatorSchedule schedule(engine, stream, _data->settings.execution.overlap);
         auto transfer = work.meanHalo.Begin(++work.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness());
         if (_data->settings.execution.overlap)
-            engine.Submit(stream, [&](auto)
-                          { preparation->Apply(CFV::ReconstructionRegion::Core); });
-        transfer.Wait();
+            schedule.Submit([&]
+                            { preparation->Apply(CFV::ReconstructionRegion::Core); });
+        OperatorSchedule::Wait(transfer);
+        const auto rest = schedule.DependentRegion();
         MPI::LocalStage(mpi, [&]
                         {
             if (_data->settings.CheckHaloFreshness())
                 work.meanHalo.RequireCurrent(state, work.meanEpoch);
-            engine.Submit(stream, [&](auto)
+            schedule.Submit([&, rest]
             {
-                preparation->Apply(_data->settings.execution.overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
+                preparation->Apply(rest);
                 preparation->Finish(work.auxiliary);
             });
-            stream.Record().WaitHost(); });
+            schedule.Join(); });
     }
     const ThermalBounds &FiniteVolume::ThermalConstraints() const { return _data->PerfectGasBounds(); }
     void FiniteVolume::LimitReconstructionPP(const CFV::FVField &state, Workspace &work) const
@@ -1692,14 +1704,7 @@ namespace DNDS::Cauchy
     real FiniteVolume::LastReconstructionUpdate(const Workspace &work) const { return work.relativeUpdate; }
     Vector3 FiniteVolume::LastBoundaryForce(const Workspace &work, const std::vector<int> &zones) const
     {
-        Vector3 force{};
-        for (int zone : zones)
-        {
-            const auto found = work.forces.find(zone);
-            DNDS_check_throw_info(found != work.forces.end(), "force zone has no boundary condition");
-            for (int d = 0; d < 3; ++d)
-                force[d] += found->second[d].load();
-        }
+        auto force = work.diagnostics.BoundaryForce(zones);
         MPI_Allreduce(MPI_IN_PLACE, force.data(), 3, MPI_DOUBLE, MPI_SUM, Metrics().Communicator());
         return force;
     }
@@ -1779,7 +1784,7 @@ namespace DNDS::Cauchy
     index FiniteVolume::LastFaceFallbacks(const Workspace &workspace) const
     {
         DNDS_check_throw_info(workspace.BelongsTo(_data), "foreign FV diagnostics workspace");
-        index count = workspace.fallbacks.load();
+        index count = workspace.diagnostics.FaceFallbacks();
         MPI_Allreduce(MPI_IN_PLACE, &count, 1, MPI_INT64_T, MPI_SUM, Metrics().Communicator());
         return count;
     }

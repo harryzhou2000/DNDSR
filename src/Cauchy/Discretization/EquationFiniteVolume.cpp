@@ -2,6 +2,7 @@
 #include "DNDS/MPI/Failure.hpp"
 #include "DNDS/Algebra/DofHalo.hpp"
 #include "Cauchy/Discretization/EquationFiniteVolumeInternal.hpp"
+#include "Cauchy/Core/OperatorSchedule.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/Physics/EquationTransport.hpp"
 #include "Cauchy/Physics/EquationFlux.hpp"
@@ -65,26 +66,6 @@ namespace DNDS::Cauchy
                 lease.CancelUnmodified();
         }
         using namespace EquationFVDetail;
-        struct StreamJoin
-        {
-            const R::ExecutionStream &stream;
-            int exceptions = std::uncaught_exceptions();
-            ~StreamJoin()
-            {
-                if (std::uncaught_exceptions() > exceptions)
-                {
-                    MPI::AbortIfSolverFailure("solver unwinding before an equation finite-volume stream join");
-                    try
-                    {
-                        stream.Record().WaitHost();
-                    }
-                    catch (...)
-                    {
-                        MPI::AbortIfSolverFailure("Cauchy equation finite-volume preparation failed");
-                    }
-                }
-            }
-        };
     }
 
     struct FiniteVolume::EquationWorkspace
@@ -593,6 +574,12 @@ namespace DNDS::Cauchy
             };
             const int modes = owner->reconstruction.NRecDOF(), dim = owner->metrics.Dimension();
             const bool viscous = !meanOnly && owner->equation.Viscous();
+            const auto &fluxPolicy = owner->fluxPolicy;
+            const bool noRsOnWall = fluxPolicy.noRsOnWall;
+            const bool noGRPOnWall = fluxPolicy.noGRPOnWall;
+            const bool rusanovFlux = fluxPolicy.rusanov;
+            const auto &fluxRequirements = fluxPolicy.required;
+            const auto &fluxSettings = fluxPolicy.settings;
             const int species = owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() : 0;
             const int independent = std::max(0, species - 1);
             const index width = state.ComponentNumber();
@@ -670,11 +657,14 @@ namespace DNDS::Cauchy
                 for (index entry = first; entry < end; ++entry)
                 {
                     const auto &sample = owner->samples[entry];
+                    const bool internal = sample.other != UnInitIndex;
+                    const auto boundaryKind = sample.boundary.kind;
+                    const real weight = metric.GetFaceWeight(sample.point);
                     reconstruct(iCell, sample, sample.side, left);
 #ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
                     real wallSAViscousInterior = 0;
 #endif
-                    if (sample.other != UnInitIndex)
+                    if (internal)
                     {
                         reconstruct(sample.other, sample, 1 - sample.side, right);
                         if (sample.changesFrame)
@@ -697,7 +687,7 @@ namespace DNDS::Cauchy
 #endif
                     }
                     auto leftFlow = left.Flow(flowFirst), rightFlow = right.Flow(flowFirst);
-                    const bool noRsWall = owner->settings.numerics.noRsOnWall && sample.other == UnInitIndex && sample.boundary.kind == BoundaryKind::NoSlipWall;
+                    const bool wallFluxState = noRsOnWall && !internal && boundaryKind == BoundaryKind::NoSlipWall;
                     const auto prepareWallState = [&]
                     {
                         face.values = left.values;
@@ -713,21 +703,21 @@ namespace DNDS::Cauchy
                                 face.values[ransFirst + j] *= wall[0] / original[0];
                         return wall;
                     };
-                    if (noRsWall)
+                    if (wallFluxState)
                         leftFlow = rightFlow = prepareWallState();
-                    const auto leftData = EquationPointEvaluator::FluxState(leftFlow, evaluator.Evaluate(leftFlow, noRsWall ? face.Species(speciesFirst, independent) : left.Species(speciesFirst, independent), 0, {}));
-                    const auto rightData = EquationPointEvaluator::FluxState(rightFlow, evaluator.Evaluate(rightFlow, noRsWall ? face.Species(speciesFirst, independent) : right.Species(speciesFirst, independent), 0, {}));
+                    const auto leftData = EquationPointEvaluator::FluxState(leftFlow, evaluator.Evaluate(leftFlow, wallFluxState ? face.Species(speciesFirst, independent) : left.Species(speciesFirst, independent), 0, {}));
+                    const auto rightData = EquationPointEvaluator::FluxState(rightFlow, evaluator.Evaluate(rightFlow, wallFluxState ? face.Species(speciesFirst, independent) : right.Species(speciesFirst, independent), 0, {}));
                     const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
                     const auto grid = frame.GridVelocity({sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]});
                     auto meanLeftData = leftData, meanRightData = rightData;
-                    if (owner->flux.RequiredInputs().meanStates)
+                    if (fluxRequirements.meanStates)
                     {
                         // Mean eigenvalue preparation follows the same path as
                         // flow5. Storage/block traversal stays in this adapter.
                         Gather(meanBlocks, iCell, cellMean);
                         const auto meanLeft = cellMean.Flow(flowFirst);
                         auto meanRight = meanLeft;
-                        if (sample.other != UnInitIndex)
+                        if (internal)
                         {
                             Gather(meanBlocks, sample.other, cellMean);
                             meanRight = sample.changesFrame ? FiniteVolumeDetail::RotateState(cellMean.Flow(flowFirst), sample.rotation) : cellMean.Flow(flowFirst);
@@ -737,12 +727,12 @@ namespace DNDS::Cauchy
                         meanLeftData = preparedMean
                                            ? Riemann::AcousticState{{meanLeft, (*preparedMean)(iCell, 0)}, (*preparedMean)(iCell, 1)}
                                            : owner->equation.PrepareFluxState(meanLeft);
-                        meanRightData = preparedMean && sample.other != UnInitIndex
+                        meanRightData = preparedMean && internal
                                             ? Riemann::AcousticState{{meanRight, (*preparedMean)(sample.other, 0)}, (*preparedMean)(sample.other, 1)}
                                             : owner->equation.PrepareFluxState(meanRight);
                     }
                     const auto convection = owner->equation.EvaluateFlowFlux(owner->flux, leftData, rightData, meanLeftData, meanRightData,
-                                                                             normal, grid, owner->settings.numerics.riemann.KernelSettings());
+                                                                             normal, grid, fluxSettings);
                     const auto &flowFlux = convection.flux;
                     real speedLeft = 0, speedRight = 0;
                     for (int d = 0; d < 3; ++d)
@@ -754,12 +744,12 @@ namespace DNDS::Cauchy
                     // acoustic flux. Roe's prepared contact magnitude is the
                     // Euler velocity/entropy-fix policy. Rusanov's diagnostic
                     // contact is acoustic, so use an explicit velocity speed.
-                    const real alpha = owner->flux.Kind() == Riemann::Solver::Rusanov
+                    const real alpha = rusanovFlux
                                            ? .5 * (std::abs(speedLeft) + std::abs(speedRight))
                                            : convection.contact;
                     for (index j = 0; j < width; ++j)
                         if (j < flowFirst || j >= flowFirst + 5)
-                            flux[j] = noRsWall ? face.values[j] * speedLeft : AdvectedScalarFlux(left.values[j], right.values[j], speedLeft, speedRight, alpha);
+                            flux[j] = wallFluxState ? face.values[j] * speedLeft : AdvectedScalarFlux(left.values[j], right.values[j], speedLeft, speedRight, alpha);
                     for (int j = 0; j < 5; ++j)
                         flux[flowFirst + j] = flowFlux[j];
                     if (ransModel && ransModel->ComponentNumber() == 2)
@@ -767,14 +757,14 @@ namespace DNDS::Cauchy
                         FlowState average;
                         for (int j = 0; j < 5; ++j)
                             average[j] = .5 * (leftFlow[j] + rightFlow[j]);
-                        const auto stress = TurbulentNormalFlux(average, noRsWall ? face.values[ransFirst] : .5 * (left.values[ransFirst] + right.values[ransFirst]), normal);
+                        const auto stress = TurbulentNormalFlux(average, wallFluxState ? face.values[ransFirst] : .5 * (left.values[ransFirst] + right.values[ransFirst]), normal);
                         for (int j = 0; j < 5; ++j)
                             flux[flowFirst + j] += stress[j];
                     }
-                    const bool wall = sample.other == UnInitIndex && sample.boundary.kind == BoundaryKind::NoSlipWall;
-                    if (viscous && (sample.other != UnInitIndex || wall))
+                    const bool wall = !internal && boundaryKind == BoundaryKind::NoSlipWall;
+                    if (viscous && (internal || wall))
                     {
-                        const real inverseDistance = wall && owner->settings.numerics.noGRPOnWall ? 0 : 1 / sample.viscousDistance;
+                        const real inverseDistance = wall && noGRPOnWall ? 0 : 1 / sample.viscousDistance;
                         for (index j = 0; j < width; ++j)
                         {
                             face.values[j] = .5 * (left.values[j] + right.values[j]);
@@ -787,7 +777,7 @@ namespace DNDS::Cauchy
                             for (int d = 0; d < 3; ++d)
                                 face.gradient(ransFirst, d) -= normal[d] * wallSAViscousInterior * inverseDistance;
 #endif
-                        if (noRsWall)
+                        if (wallFluxState)
                             prepareWallState();
                         const auto faceFlow = face.Flow(flowFirst);
                         const auto point = evaluator.Evaluate(faceFlow, face.Species(speciesFirst, independent), 0, {true, true, true, false, false});
@@ -822,11 +812,11 @@ namespace DNDS::Cauchy
                     }
                     if (sample.boundaryPoint != UnInitIndex)
                         for (int d = 0; d < 3; ++d)
-                            wallFlux(sample.boundaryPoint, d) = wall || sample.boundary.kind == BoundaryKind::SlipWall
-                                                                    ? metric.GetFaceWeight(sample.point) * flux[flowFirst + 1 + d]
+                            wallFlux(sample.boundaryPoint, d) = wall || boundaryKind == BoundaryKind::SlipWall
+                                                                    ? weight * flux[flowFirst + 1 + d]
                                                                     : 0;
                     for (index j = 0; j < width; ++j)
-                        integrated[j] -= metric.GetFaceWeight(sample.point) * flux[j];
+                        integrated[j] -= weight * flux[j];
                 }
                 for (index j = 0; j < width; ++j)
                     faceValues(iAux, j) = integrated[j];
@@ -1399,25 +1389,25 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(stream.Context().device == R::Device::Host(), "equation correction requires a CPU stream");
             PreflightHalo(state);
             preparation.emplace(BeginAuxValues(state, auxiliary, time, work.workers)); });
-        StreamJoin join{stream};
+        OperatorSchedule schedule(engine, stream, _data->settings.execution.overlap);
         std::vector<Algebra::DofHalo<>::Operation> transfers;
         transfers.reserve(work.meanHalo.size());
         ++work.meanEpoch;
         for (auto &halo : work.meanHalo)
             transfers.push_back(halo.Begin(work.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));
         if (_data->settings.execution.overlap)
-            engine.Submit(stream, [&](auto)
-                          { preparation->Apply(CFV::ReconstructionRegion::Core); });
-        for (auto &transfer : transfers)
-            transfer.Wait();
+            schedule.Submit([&]
+                            { preparation->Apply(CFV::ReconstructionRegion::Core); });
+        OperatorSchedule::Wait(transfers);
+        const auto rest = schedule.DependentRegion();
         local([&]
               {
             if (_data->settings.CheckHaloFreshness())
                 for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                     work.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), work.meanEpoch);
-            engine.Submit(stream, [&](auto)
+            schedule.Submit([&, rest]
             {
-                preparation->Apply(_data->settings.execution.overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
+                preparation->Apply(rest);
                 preparation->Finish(auxiliary);
                 // Source Jacobians use the retained current polynomial. RANS
                 // inputs must be current before publishing these samples.
@@ -1432,7 +1422,7 @@ namespace DNDS::Cauchy
                 else work.SampleSourceState(state);
                 work.PublishSourceState(state, time);
             });
-            stream.Record().WaitHost(); });
+            schedule.Join(); });
     }
     void FiniteVolume::InitializeConservative(EquationDofs &state, const std::vector<real> &values) const
     {
@@ -1523,8 +1513,8 @@ namespace DNDS::Cauchy
             const auto &n = _data->settings.numerics;
             DNDS_check_throw_info((n.reconstruction == "constant" || n.reconstruction == "gradient" || n.reconstruction == "variational") &&
                                   n.reconstructionIterations >= 0, "invalid equation reconstruction controls");
-            DNDS_check_throw_info((!_data->equation.HasMixture() || _data->flux.Kind() == Riemann::Solver::Rusanov) &&
-                (!n.riemann.useStencil || (!_data->flux.UsesTransverseSignal() && !_data->flux.UsesPressureStencil())),
+            DNDS_check_throw_info((!_data->equation.HasMixture() || _data->fluxPolicy.rusanov) &&
+                (!n.riemann.useStencil || (!_data->fluxPolicy.transverseSignal && !_data->fluxPolicy.pressureStencil)),
                 "extended EOS or stencil flux needs an explicit preparation provider");
             DNDS_check_throw_info(!n.faceFallback &&
                 (n.limiter == "none" || (n.limiter == "WBAP" && !n.characteristicLimiter)),
@@ -1767,21 +1757,9 @@ namespace DNDS::Cauchy
         if (auxiliary && !work.meanGradients)
             local([&]
                   { auxiliaryPreparation.emplace(BeginAuxValues(state, *auxiliary, time, work.workers)); });
-        const auto begin = [&](std::vector<R::TransferBinding> &bindings)
-        {
-            std::vector<R::TransferOperation> operations;
-            operations.reserve(bindings.size());
-            for (auto &binding : bindings)
-                operations.push_back(engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream));
-            return operations;
-        };
-        const auto wait = [](auto &operations)
-        { for (auto &operation : operations) operation.Wait(); operations.clear(); };
-        const auto submit = [&](auto action)
-        { engine.Submit(stream, [action = std::move(action)](auto)
-                        { action(); }); };
         const bool overlap = _data->settings.execution.overlap;
-        const auto rest = overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All;
+        OperatorSchedule schedule(engine, stream, overlap);
+        const auto rest = schedule.DependentRegion();
         const auto sweep = [&](CFV::ReconstructionRegion region)
         {
             const EquationWorkspace::PhaseTime timing(work, EquationWorkspace::VRPhase);
@@ -1802,7 +1780,6 @@ namespace DNDS::Cauchy
             }
         };
         // Locals captured by worker commands remain alive even on exceptions.
-        StreamJoin join{stream};
         std::vector<Algebra::DofHalo<>::Operation> meanOperations;
         meanOperations.reserve(work.meanHalo.size());
         ++work.meanEpoch;
@@ -1813,32 +1790,32 @@ namespace DNDS::Cauchy
         const bool variational = !work.meanOnly && numerics.reconstruction == "variational";
         const bool firstSweep = overlap && variational && numerics.reconstructionIterations > 0 && !deferredEvaluator;
         if (firstSweep)
-            firstCoefficients = begin(work.coefficientHalo);
+            firstCoefficients = schedule.Begin(work.coefficientHalo);
         // Post both transfers before queueing core work. A CPU-visible MPI
         // bridge may otherwise join that work while checking producer readiness.
         if (auxiliaryPreparation && overlap)
-            submit([&]
-                   { auxiliaryPreparation->Apply(CFV::ReconstructionRegion::Core); });
+            schedule.Submit([&]
+                            { auxiliaryPreparation->Apply(CFV::ReconstructionRegion::Core); });
         if (!deferredEvaluator)
-            submit([&, variational]
-                   { work.FillBoundary(state, variational && _data->settings.numerics.reconstructionBoundaryFromPolynomial, time, *evaluator); });
+            schedule.Submit([&, variational]
+                            { work.FillBoundary(state, variational && _data->settings.numerics.reconstructionBoundaryFromPolynomial, time, *evaluator); });
         const bool directGradientWork = !work.meanOnly && (numerics.reconstruction == "gradient" ||
                                                            (_data->equation.HasRANS() && numerics.reconstruction == "constant"));
         if (directGradientWork && overlap && !deferredEvaluator)
-            submit([&]
-                   { gradient(CFV::ReconstructionRegion::Core); });
+            schedule.Submit([&]
+                            { gradient(CFV::ReconstructionRegion::Core); });
         if (firstSweep)
-            submit([&]
-                   { sweep(CFV::ReconstructionRegion::Core); });
-        wait(meanOperations);
+            schedule.Submit([&]
+                            { sweep(CFV::ReconstructionRegion::Core); });
+        OperatorSchedule::Wait(meanOperations);
         if (auxiliaryPreparation)
         {
-            submit([&]
-                   {
-                auxiliaryPreparation->Apply(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
+            schedule.Submit([&]
+                            {
+                auxiliaryPreparation->Apply(rest);
                 auxiliaryPreparation->Finish(*auxiliary); });
             local([&]
-                  { stream.Record().WaitHost(); });
+                  { schedule.Join(); });
         }
         else if (auxiliary)
         {
@@ -1849,8 +1826,8 @@ namespace DNDS::Cauchy
         if (deferredEvaluator)
         {
             local(createEvaluator);
-            submit([&, variational]
-                   { work.FillBoundary(state, variational && numerics.reconstructionBoundaryFromPolynomial, time, *evaluator); });
+            schedule.Submit([&, variational]
+                            { work.FillBoundary(state, variational && numerics.reconstructionBoundaryFromPolynomial, time, *evaluator); });
         }
         if (_data->settings.CheckHaloFreshness())
             local([&]
@@ -1859,17 +1836,17 @@ namespace DNDS::Cauchy
                 work.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), work.meanEpoch); });
         if (directGradientWork)
         {
-            submit([&, rest]
-                   { gradient(deferredEvaluator ? CFV::ReconstructionRegion::All : rest); });
-            submit([&]
-                   {
+            schedule.Submit([&, rest]
+                            { gradient(deferredEvaluator ? CFV::ReconstructionRegion::All : rest); });
+            schedule.Submit([&]
+                            {
                 for (auto &field : work.fields)
                     if (numerics.reconstruction == "gradient")
                         _data->gradient.ConvertToCoefficients(*field.gradient, _data->reconstruction, field.reconstruction.coefficients);
                     else
                         Algebra::Fill(field.reconstruction.coefficients, 0.); });
             local([&]
-                  { stream.Record().WaitHost(); });
+                  { schedule.Join(); });
         }
         else if (variational)
         {
@@ -1881,20 +1858,20 @@ namespace DNDS::Cauchy
                 else
                 {
                     local([&]
-                          { stream.Record().WaitHost(); });
+                          { schedule.Join(); });
                     if (numerics.reconstructionBoundaryFromPolynomial)
                         local([&]
                               { work.FillBoundary(state, true, time, *evaluator); });
-                    operations = begin(work.coefficientHalo);
+                    operations = schedule.Begin(work.coefficientHalo);
                     if (overlap)
-                        submit([&]
-                               { sweep(CFV::ReconstructionRegion::Core); });
+                        schedule.Submit([&]
+                                        { sweep(CFV::ReconstructionRegion::Core); });
                 }
-                wait(operations);
-                submit([&, rest]
-                       { sweep(rest); });
+                OperatorSchedule::Wait(operations);
+                schedule.Submit([&, rest]
+                                { sweep(rest); });
                 local([&]
-                      { stream.Record().WaitHost(); });
+                      { schedule.Join(); });
                 bool converged = false;
                 if (numerics.reconstructionTolerance > 0 && (iteration % 4 == 3 || iteration + 1 == numerics.reconstructionIterations))
                 {
@@ -1926,7 +1903,7 @@ namespace DNDS::Cauchy
         else
             local([&]
                   {
-                stream.Record().WaitHost();
+                schedule.Join();
                 for (auto &field : work.fields) Algebra::Fill(field.reconstruction.coefficients, 0.); });
         if (!work.limited.empty())
         {
@@ -1935,17 +1912,17 @@ namespace DNDS::Cauchy
             if (numerics.limiter == "WBAP")
                 for (int order = numerics.cfv.maxOrder; order >= 1; --order)
                 {
-                    auto operations = begin(work.fluxHalo);
+                    auto operations = schedule.Begin(work.fluxHalo);
                     const auto limit = [&, order](CFV::ReconstructionRegion region)
                     { for (auto &field : work.limited) _data->reconstruction.DoLimiterWBAP_3OrderTo(field.reconstruction, order, nullptr, region); };
                     if (overlap)
-                        submit([limit]
-                               { limit(CFV::ReconstructionRegion::Core); });
-                    wait(operations);
-                    submit([limit, rest]
-                           { limit(rest); });
+                        schedule.Submit([limit]
+                                        { limit(CFV::ReconstructionRegion::Core); });
+                    OperatorSchedule::Wait(operations);
+                    schedule.Submit([limit, rest]
+                                    { limit(rest); });
                     local([&]
-                          { stream.Record().WaitHost(); });
+                          { schedule.Join(); });
                     local([&]
                           { for (auto &field : work.limited) _data->reconstruction.CommitReconstruction(field.reconstruction); });
                 }
@@ -1954,26 +1931,26 @@ namespace DNDS::Cauchy
             local([&]
                   { const EquationWorkspace::PhaseTime timing(work, EquationWorkspace::PPPhase);
                     work.positivity->Apply(state, work.coefficients, work.fluxCoefficients, false); });
-        auto operations = begin(work.limited.empty() ? work.coefficientHalo : work.fluxHalo);
+        auto operations = schedule.Begin(work.limited.empty() ? work.coefficientHalo : work.fluxHalo);
         // Explicit compatibility conversion after limiter/PP, once per row.
         // The physical-gradient RHS itself never interprets coefficient data.
-        submit([&]
-               { work.RefreshDirectGradients(false); });
+        schedule.Submit([&]
+                        { work.RefreshDirectGradients(false); });
         if (overlap && residual)
-            submit([&]
-                   { work.ApplyRHS(state, *residual, CFV::ReconstructionRegion::Core, *evaluator, time, auxiliary); });
-        wait(operations);
-        submit([&]
-               { work.RefreshDirectGradients(true); });
+            schedule.Submit([&]
+                            { work.ApplyRHS(state, *residual, CFV::ReconstructionRegion::Core, *evaluator, time, auxiliary); });
+        OperatorSchedule::Wait(operations);
+        schedule.Submit([&]
+                        { work.RefreshDirectGradients(true); });
         if (residual)
         {
-            submit([&, rest]
-                   { work.ApplyRHS(state, *residual, rest, *evaluator, time, auxiliary); });
-            submit([&]
-                   { work.PrepareVolumeSource(state, residual, *evaluator, time); });
+            schedule.Submit([&, rest]
+                            { work.ApplyRHS(state, *residual, rest, *evaluator, time, auxiliary); });
+            schedule.Submit([&]
+                            { work.PrepareVolumeSource(state, residual, *evaluator, time); });
         }
         local([&]
-              { stream.Record().WaitHost(); });
+              { schedule.Join(); });
         if (residual && (work.chemical || work.ransFirst >= 0) && work.sourceSampling)
             local([&]
                   { work.PublishSourceState(state, time); });

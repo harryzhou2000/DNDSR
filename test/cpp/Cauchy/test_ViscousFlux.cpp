@@ -102,26 +102,26 @@ TEST_CASE("P3 viscous face derivatives reproduce polynomial heat conduction and 
             C::RHSReadViews input;
             input.mean.owned = owned.View<R::UniformTableRows>();
             input.coefficients.owned = recOwned.View<R::UniformTableRows>();
-            std::atomic<DNDS::index> fallbacks{0};
+            C::RHSLocalDiagnostics diagnostics;
             auto splitWrite = split.Owned().Write();
             auto meanOperation = meanHalo.Begin(), recOperation = recHalo.Begin();
-            engine.Submit(stream, [rhs, input, output = splitWrite.View<R::UniformTableRows>(), &fallbacks](auto)
-                          { rhs.Apply(input, {output, std::nullopt, &fallbacks}, DNDS::CFV::ReconstructionRegion::Core); });
+            engine.Submit(stream, [rhs, input, output = splitWrite.View<R::UniformTableRows>(), diagnostics = std::ref(diagnostics)](auto)
+                          { diagnostics.get().Merge(rhs.Apply(input, {output}, DNDS::CFV::ReconstructionRegion::Core)); });
             meanOperation.Wait();
             recOperation.Wait();
             auto ghost = mean.Ghost().Read(), recGhost = coefficients.Ghost().Read();
             input.mean.ghost = ghost.View<R::UniformTableRows>();
             input.coefficients.ghost = recGhost.View<R::UniformTableRows>();
-            engine.Submit(stream, [rhs, input, output = splitWrite.View<R::UniformTableRows>(), &fallbacks](auto)
-                          { rhs.Apply(input, {output, std::nullopt, &fallbacks}, DNDS::CFV::ReconstructionRegion::HaloDependent); });
+            engine.Submit(stream, [rhs, input, output = splitWrite.View<R::UniformTableRows>(), diagnostics = std::ref(diagnostics)](auto)
+                          { diagnostics.get().Merge(rhs.Apply(input, {output}, DNDS::CFV::ReconstructionRegion::HaloDependent)); });
             auto fullWrite = full.Owned().Write(), inviscidWrite = inviscid.Owned().Write();
-            engine.Submit(stream, [rhs, input, output = fullWrite.View<R::UniformTableRows>(), base = inviscidWrite.View<R::UniformTableRows>(), &fallbacks](auto) mutable
+            engine.Submit(stream, [rhs, input, output = fullWrite.View<R::UniformTableRows>(), base = inviscidWrite.View<R::UniformTableRows>(), diagnostics = std::ref(diagnostics)](auto) mutable
                           {
-                rhs.Apply(input, {output, std::nullopt, &fallbacks});
+                diagnostics.get().Merge(rhs.Apply(input, {output}));
                 input.includeViscosity = false;
-                rhs.Apply(input, {base, std::nullopt, &fallbacks}); });
+                diagnostics.get().Merge(rhs.Apply(input, {base})); });
             stream.Record().WaitHost();
-            CHECK(fallbacks.load() == 0);
+            CHECK(diagnostics.FaceFallbacks() == 0);
         }
         const auto actual = full.Owned().Read(), staged = split.Owned().Read(), base = inviscid.Owned().Read();
         DNDS::index tested = 0;
@@ -199,20 +199,20 @@ TEST_CASE("Polynomial viscosity exchanges the selected limited or unlimited coef
                 input.coefficients = {c.View<R::UniformTableRows>(), cg.View<R::UniformTableRows>()};
                 if (!limited)
                     input.viscousCoefficients = C::RHSFieldView{v.View<R::UniformTableRows>(), vg.View<R::UniformTableRows>()};
-                std::atomic<DNDS::index> fallbacks{0};
+                C::RHSLocalDiagnostics diagnostics;
                 {
                     auto write = expected.Owned().Write();
                     const auto rhs = fv.AcquireRHSOperator();
-                    rhs.Apply(input, {write.View<R::UniformTableRows>(), std::nullopt, &fallbacks});
+                    diagnostics.Merge(rhs.Apply(input, {write.View<R::UniformTableRows>()}));
                     auto bad = input;
                     bad.viscousCoefficients = C::RHSFieldView{};
-                    CHECK_THROWS(rhs.Apply(bad, {write.View<R::UniformTableRows>(), std::nullopt, &fallbacks}));
+                    CHECK_THROWS(rhs.Apply(bad, {write.View<R::UniformTableRows>()}));
                 }
                 if (!limited)
                 {
                     auto write = alternative.Owned().Write();
                     input.viscousCoefficients.reset();
-                    fv.AcquireRHSOperator().Apply(input, {write.View<R::UniformTableRows>(), std::nullopt, &fallbacks});
+                    diagnostics.Merge(fv.AcquireRHSOperator().Apply(input, {write.View<R::UniformTableRows>()}));
                 }
                 const auto a = actual.Owned().Read(), b = expected.Owned().Read(), other = alternative.Owned().Read();
                 int differs = 0;
@@ -228,7 +228,7 @@ TEST_CASE("Polynomial viscosity exchanges the selected limited or unlimited coef
                     MPI_Allreduce(MPI_IN_PLACE, &differs, 1, MPI_INT, MPI_MAX, mpi.comm);
                     CHECK(differs == 1);
                 }
-                CHECK(fallbacks.load() == 0);
+                CHECK(diagnostics.FaceFallbacks() == 0);
             }
 }
 TEST_CASE("Viscous policy disagreement is rejected before differing transfer schedules are bound")
@@ -284,9 +284,9 @@ TEST_CASE("Polynomial wall viscosity has the Euler normal jump and noGRP switch"
             input.coefficients = {c.View<R::UniformTableRows>(), cg.View<R::UniformTableRows>()};
             input.includeViscosity = false;
             auto output = inviscid.Owned().Write();
-            std::atomic<DNDS::index> fallback{0};
-            fv.AcquireRHSOperator().Apply(input, {output.View<R::UniformTableRows>(), std::nullopt, &fallback});
-            CHECK(fallback.load() == 0);
+            C::RHSLocalDiagnostics diagnostics;
+            diagnostics.Merge(fv.AcquireRHSOperator().Apply(input, {output.View<R::UniformTableRows>()}));
+            CHECK(diagnostics.FaceFallbacks() == 0);
         }
         const auto actual = residual.Owned().Read(), base = inviscid.Owned().Read();
         for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
@@ -341,18 +341,18 @@ TEST_CASE("Nonzero quadratic temperature does not introduce viscosity at Euler o
         input.mean = {u.View<R::UniformTableRows>(), ug.View<R::UniformTableRows>()};
         input.coefficients = {c.View<R::UniformTableRows>(), cg.View<R::UniformTableRows>()};
         const auto rhs = fv.AcquireRHSOperator();
-        std::atomic<DNDS::index> fallback{0};
+        C::RHSLocalDiagnostics diagnostics;
         {
             auto output = residual.Owned().Write(), base = inviscid.Owned().Write();
-            rhs.Apply(input, {output.View<R::UniformTableRows>(), std::nullopt, &fallback});
+            diagnostics.Merge(rhs.Apply(input, {output.View<R::UniformTableRows>()}));
             input.includeViscosity = false;
-            rhs.Apply(input, {base.View<R::UniformTableRows>(), std::nullopt, &fallback});
+            diagnostics.Merge(rhs.Apply(input, {base.View<R::UniformTableRows>()}));
         }
         const auto a = residual.Owned().Read(), b = inviscid.Owned().Read();
         for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
             for (int j = 0; j < 5; ++j)
                 CHECK(a.View()(iCell, j) == b.View()(iCell, j));
-        CHECK(fallback.load() == 0);
+        CHECK(diagnostics.FaceFallbacks() == 0);
     }
 }
 

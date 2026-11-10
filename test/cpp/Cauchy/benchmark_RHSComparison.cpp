@@ -104,12 +104,11 @@ int main(int argc, char **argv)
             C::RHSReadViews input;
             input.mean = {u.View<R::UniformTableRows>(), ug.View<R::UniformTableRows>()};
             input.coefficients = {rec.View<R::UniformTableRows>(), rg.View<R::UniformTableRows>()};
-            std::atomic<I> fallbacks{0};
+            C::RHSLocalDiagnostics diagnostics;
             C::RHSWriteViews output;
             output.residual = write.View<R::UniformTableRows>();
-            output.faceFallbacks = &fallbacks;
-            op.Apply(input, output);
-            DNDS_check_throw_info(fallbacks == 0, "unexpected RHS face fallback");
+            diagnostics.Merge(op.Apply(input, output));
+            DNDS_check_throw_info(diagnostics.FaceFallbacks() == 0, "unexpected RHS face fallback");
         };
         const auto legacyRHS = [&]
         {

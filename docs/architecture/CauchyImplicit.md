@@ -1043,8 +1043,11 @@ VR -> unlimited owned commit -> own halo refresh (only if separately consumed)
 The wrapper refreshes a separately selected unlimited halo after the final VR
 commit. Its read leases, geometry cache and optional raw views remain alive
 through worker execution. Core views omit all ghosts; the dependent call follows
-the exchange wait. `RHSOperator::Apply` does not communicate or acquire leases:
-direct callers supply ready inputs, retain their leases and avoid output aliases.
+the exchange wait. `RHSOperator::ApplyBorrowedChecked` and
+`ApplyBorrowedFatal` do not communicate or acquire leases: direct callers supply
+ready inputs, retain their leases and avoid output aliases. Each region returns
+operation-local diagnostics; the managed wrapper merges them after completion
+rather than sharing atomics through the face loop.
 The physical-dt PP mean trial still explicitly ignores viscosity in both modes.
 Finite-difference gradient, legacy face-formula, exact P3 conduction/shear,
 limited/unlimited halo, policy-agreement and old-archive tests cover these contracts.

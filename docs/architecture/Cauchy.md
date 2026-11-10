@@ -632,13 +632,17 @@ from their owners before a ghost-dependent flux consumes them. A local face
 subset is not a complete stencil for a ghost cell. The Domain/residual wrappers
 own communication and engine scheduling; phase kernels have no such policy.
 
-The CPU wrapper posts mean and first-coefficient exchanges before queueing the
+The CPU wrapper records these phases through `OperatorSchedule`, which is the
+same backend-neutral submission contract for inline CPU, worker CPU and future
+resolved device launchers. It posts mean and first-coefficient exchanges before queueing the
 auxiliary core. This order matters: checked MPI observes a producer stream prefix
 and would prematurely join a core task queued before the coefficient bridge.
 A worker can execute auxiliary core while the controller executes the independent
 VR core and progresses MPI. The dependent task follows on the same CPU lane after
 the mean wait and publishes when that CPU phase finishes. The wrapper observes
 the prefix before consuming or returning the packet.
+With overlap disabled, the same schedule waits for the transfer and executes an
+unsplit `All` operation; it does not silently choose another numerical kernel.
 Inline CPU uses the same ordering and phase APIs. These are CPU wrappers; CUDA
 auxiliary kernels and stream-ordered device leases are not implied.
 
@@ -681,10 +685,15 @@ dt flux/reconstruction mathematics do not depend on this global selection.
 ## Stateless spatial residual
 
 `FiniteVolume::AcquireRHSOperator()` acquires an immutable geometry/basis read
-scope. Its `Apply(RHSReadViews, RHSWriteViews, region, time)` performs only the
+scope. Its checked `ApplyBorrowedChecked(RHSReadViews, RHSWriteViews, region,
+time)` (and compatibility spelling `Apply`) performs only the
 spatial residual calculation. It has no workspace, communication, reconstruction
 update, auxiliary publication or implicit diagnostic storage. The `Evaluate`
 convenience wrapper retains the orchestration of those operations.
+The resolved production wrapper uses `ApplyBorrowedFatal`: both instantiate the
+same arithmetic, but invariant failure throws from the standalone checked entry
+and aborts rank-locally from a collectively ordered worker entry. Positivity
+rejection and timestep retry remain explicit numerical results, not exceptions.
 
 Basis values are borrowed from CFV's canonical face cache through a retained
 `ReconstructionBasisRead`, with only an incidence-to-face mapping in Cauchy.
@@ -706,13 +715,17 @@ This is argument grouping; it does not pack or copy array payloads. Missing
 optional thermodynamics are calculated from the supplied means. Missing signals
 required by the configured stencil flux are rejected before the cell loop.
 
-Residual, optional low-order residual, fallback count and boundary-force
-accumulators are explicit outputs. Residual rows are overwritten; diagnostic
-accumulators are added to, so the caller initializes them once before a complete
-evaluation and performs any global reductions afterwards. Neither `Apply` nor
+Residual and optional low-order residual are explicit borrowed outputs. Each
+core/dependent kernel returns a movable `RHSKernelDiagnostics` containing a
+plain fallback count and dense boundary-force slots. The face loop contains no
+diagnostic pointer, map lookup, atomic operation or shared mutation. The caller
+merges that value once into workspace-owned `RHSLocalDiagnostics` after the
+operation completes, then performs any MPI reduction. Current cell loops are
+serial inside one submitted operation; a future OpenMP implementation should
+use a thread reduction into the same operation-local value. Neither `Apply` nor
 the packed input bundle owns the caller's numerical arrays.
 
-The raw-view interface is the kernel boundary: callers retain the corresponding
+The borrowed-view interface is the kernel boundary: callers retain the corresponding
 Array leases, validate prepared auxiliary provenance, and ensure output storage
 does not overlap input or other output storage. `Apply` checks required fields
 and shapes; a raw pointer view alone cannot establish its producer's generation.
