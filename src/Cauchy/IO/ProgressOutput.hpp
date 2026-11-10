@@ -38,10 +38,12 @@ namespace DNDS::Cauchy
         int _precision = 10;
 
     public:
-        ProgressHistory(CsvSchema schema, std::string bare, index segmentRows, int precision);
+        ProgressHistory(CsvSchema schema, std::string bare, index segmentRows, int precision,
+                        std::optional<CsvLogPosition> resume = std::nullopt);
         ProgressRow NewRow() const { return ProgressRow(_log.MakeRow()); }
         void Write(const ProgressRow &row);
         void Flush();
+        CsvLogPosition Position() const { return _log.Position(); }
         const std::vector<std::string> &Columns() const { return _columns; }
     };
 
@@ -116,7 +118,8 @@ namespace DNDS::Cauchy
     public:
         ProgressOutputController(EquationSchema schema, OutputSettings settings, std::string domain,
                                  std::string bareHistory, bool writer,
-                                 std::shared_ptr<OperationalLogger> logger);
+                                 std::shared_ptr<OperationalLogger> logger,
+                                 std::optional<CsvLogPosition> resume = std::nullopt);
         void BeginAttempt(ProgressLocation location) { _attempt = location; }
         void CaptureIteration(const NonlinearProgress &progress);
         void FlushIterations();
@@ -124,5 +127,7 @@ namespace DNDS::Cauchy
         void StepEnd(ProgressLocation location, const AcceptedStepProgress &progress, bool forceHistory = false,
                      bool printConsole = true);
         void Flush();
+        /// Valid only on the designated history writer after Flush.
+        CsvLogPosition HistoryPosition() const;
     };
 }

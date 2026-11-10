@@ -113,6 +113,11 @@ static int Run(int argc, char **argv, double started)
             const auto &time = config.Time();
             const auto domainCount = DNDS::index(config.Domains().size());
             const DNDS::Cauchy::OutputPlan outputPlan(output, domainCount);
+            const auto &restoredOutput = simulation.RestoredOutputController();
+            const bool continueOutput = restoredOutput && restoredOutput->is_object() &&
+                                        restoredOutput->value("prefix", std::string{}) == output.prefix;
+            auto outputState = restoredOutput ? outputPlan.RestoreState(*restoredOutput, simulation.Time())
+                                              : outputPlan.InitialState(simulation.Time());
             // Actions may enter domain collectives. Propagate unexpected errors
             // to the fatal boundary; never try a control reduction after a
             // rank-local failure while its peers may still be in that action.
@@ -142,7 +147,8 @@ static int Run(int argc, char **argv, double started)
                                       {
                     progress[iDomain] = std::make_unique<DNDS::Cauchy::ProgressOutputController>(
                         domain.Equation().Schema(), output, domain.Name(), outputPlan.HistoryBare(iDomain),
-                        simulation.Placement().DomainRank(iDomain) == 0, logger); });
+                        simulation.Placement().DomainRank(iDomain) == 0, logger,
+                        continueOutput ? std::optional(outputState.history.at(size_t(iDomain))) : std::nullopt); });
                 domain.SetProgressObserver([&, iDomain](const DNDS::Cauchy::NonlinearProgress &entry)
                                            { progress[iDomain]->CaptureIteration(entry); }); });
             DNDS::Cauchy::Json localDomains = DNDS::Cauchy::Json::array();
@@ -231,14 +237,44 @@ static int Run(int argc, char **argv, double started)
             };
             // The initial state remains in the CSV history, but console
             // iteration labels begin with the first completed physical step.
-            record(0, 0, false, false, true);
+            if (!continueOutput)
+                record(0, 0, false, false, true);
             const DNDS::index visualizationInterval = outputPlan.VisualizationInterval();
             const DNDS::real visualizationTimeInterval = outputPlan.VisualizationTimeInterval();
-            uint64_t nextCheckpointTime = DNDS::Cauchy::OutputPlan::NextTimeOrdinal(simulation.Time(), output.checkpointTimeInterval);
-            uint64_t nextVisualizationTime = DNDS::Cauchy::OutputPlan::NextTimeOrdinal(simulation.Time(), visualizationTimeInterval);
+            uint64_t nextCheckpointTime = outputState.nextCheckpointTime;
+            uint64_t nextVisualizationTime = outputState.nextVisualizationTime;
+            const auto captureOutputState = [&]
+            {
+                std::vector<int64_t> positions(size_t(2 * domainCount), 0);
+                std::vector<int> roots(size_t(domainCount), 0);
+                visitDomains([&](DNDS::index iDomain, auto &)
+                             {
+                    progress[iDomain]->Flush();
+                    if (simulation.Placement().DomainRank(iDomain) == 0)
+                    {
+                        const auto cursor = progress[iDomain]->HistoryPosition();
+                        positions[size_t(2 * iDomain)] = cursor.block;
+                        positions[size_t(2 * iDomain + 1)] = cursor.line;
+                        roots[size_t(iDomain)] = 1;
+                    } });
+                MPI_Allreduce(MPI_IN_PLACE, positions.data(), int(positions.size()), MPI_INT64_T, MPI_SUM, mpi.comm);
+                MPI_Allreduce(MPI_IN_PLACE, roots.data(), int(roots.size()), MPI_INT, MPI_SUM, mpi.comm);
+                outputState.nextCheckpointTime = nextCheckpointTime;
+                outputState.nextVisualizationTime = nextVisualizationTime;
+                for (DNDS::index iDomain = 0; iDomain < domainCount; ++iDomain)
+                {
+                    DNDS_check_throw_info(roots[size_t(iDomain)] == 1 && positions[size_t(2 * iDomain)] >= 0 &&
+                                              positions[size_t(2 * iDomain + 1)] >= 0,
+                                          "Cauchy output history cursor has no unique domain root");
+                    outputState.history[size_t(iDomain)] = {int(positions[size_t(2 * iDomain)]),
+                                                            positions[size_t(2 * iDomain + 1)]};
+                }
+                return outputState.ToJson();
+            };
             const auto writeCheckpoint = [&](const std::string &token)
             {
-                simulation.WriteCheckpoint(outputPlan.CheckpointPath(token), output.checkpointReconstruction);
+                simulation.WriteCheckpoint(outputPlan.CheckpointPath(token), output.checkpointReconstruction,
+                                           captureOutputState());
             };
             const auto writeVisualization = [&](const std::string &token)
             {

@@ -35,15 +35,33 @@ namespace DNDS::Cauchy
             MPI::LocalStage(mpi, [&]
                             { DNDS_check_throw_info(path == reference, "Cauchy archive paths differ between control ranks"); });
         }
+        void AgreeJson(const MPIInfo &mpi, const Json &value)
+        {
+            const auto encoded = value.dump();
+            int length = 0;
+            MPI::LocalStage(mpi, [&]
+                            {
+                DNDS_check_throw_info(encoded.size() <= size_t(INT_MAX), "Cauchy checkpoint controller metadata is too large");
+                if (mpi.rank == 0) length = int(encoded.size()); });
+            MPI_Bcast(&length, 1, MPI_INT, 0, mpi.comm);
+            std::string reference;
+            MPI::LocalStage(mpi, [&]
+                            { reference = mpi.rank == 0 ? encoded : std::string(size_t(length), '\0'); });
+            MPI_Bcast(reference.data(), length, MPI_CHAR, 0, mpi.comm);
+            MPI::LocalStage(mpi, [&]
+                            { DNDS_check_throw_info(reference == encoded, "Cauchy checkpoint controller metadata differs between ranks"); });
+        }
         bool DirectArchive(const DomainPlacement &placement)
         {
             return placement.DomainNumber() == 1 && placement.Group(0).ranks.size() == size_t(placement.Size());
         }
     }
-    void Simulation::WriteCheckpoint(const std::string &path, bool includeReconstruction) const
+    void Simulation::WriteCheckpoint(const std::string &path, bool includeReconstruction,
+                                     Json outputController) const
     {
         const MPIInfo control(_placement.Control());
         AgreePath(control, path);
+        AgreeJson(control, outputController);
         int flags[]{int(includeReconstruction), -int(includeReconstruction)};
         MPI_Allreduce(MPI_IN_PLACE, flags, 2, MPI_INT, MPI_MIN, control.comm);
         DNDS_check_throw_info(flags[0] == -flags[1], "simulation checkpoint reconstruction selection differs between ranks");
@@ -54,7 +72,7 @@ namespace DNDS::Cauchy
                                                   "domain was advanced outside its Simulation before checkpoint"); });
         if (DirectArchive(_placement))
         {
-            GetDomain(0).WriteCheckpoint(path, _config.Root(), includeReconstruction);
+            GetDomain(0).WriteCheckpoint(path, _config.Root(), includeReconstruction, outputController);
             return;
         }
         // Never overwrite children referenced by a previously published
@@ -86,6 +104,8 @@ namespace DNDS::Cauchy
         serializer.WriteString("domains_json", domains.dump());
         serializer.WriteReal("accepted_time", _time);
         serializer.WriteIndex("accepted_step", index(_step));
+        if (!outputController.is_null())
+            serializer.WriteString("output_controller_json", outputController.dump());
         serializer.CloseFile();
         MPI::LocalStage(control, [&]
                         { if (control.rank == 0) std::filesystem::rename(temporary, manifest); });
@@ -100,6 +120,7 @@ namespace DNDS::Cauchy
         MPI::LocalStage(control, [&]
                         { DNDS_check_throw_info(std::filesystem::is_regular_file(manifest), "Cauchy checkpoint does not exist: " + path); });
         std::vector<std::string> paths;
+        std::optional<Json> outputController;
         real time = 0;
         index step = 0;
         bool direct = false;
@@ -116,6 +137,13 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(DirectArchive(_placement), "a single-domain checkpoint cannot restore a multi-domain simulation");
             serializer.ReadReal("accepted_time", time);
             serializer.ReadIndex("accepted_step", step);
+            if (keys.count("output_controller_json"))
+            {
+                std::string text;
+                serializer.ReadString("output_controller_json", text);
+                MPI::LocalStage(control, [&]
+                                { outputController = Json::parse(text); });
+            }
             paths.push_back(path);
         }
         else
@@ -126,6 +154,13 @@ namespace DNDS::Cauchy
             serializer.ReadString("domains_json", text);
             serializer.ReadReal("accepted_time", time);
             serializer.ReadIndex("accepted_step", step);
+            if (keys.count("output_controller_json"))
+            {
+                std::string controllerText;
+                serializer.ReadString("output_controller_json", controllerText);
+                MPI::LocalStage(control, [&]
+                                { outputController = Json::parse(controllerText); });
+            }
             MPI::LocalStage(control, [&]
                             {
                 const auto entries = Json::parse(text);
@@ -216,6 +251,7 @@ namespace DNDS::Cauchy
             _interfaces->Commit();
         _time = time;
         _step = uint64_t(step);
+        _restoredOutputController = std::move(outputController);
     }
     void Simulation::WriteVisualization(const std::string &prefix, int hdfDeflateLevel)
     {

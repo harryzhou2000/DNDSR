@@ -245,7 +245,8 @@ namespace DNDS::Cauchy
         /// Extended equation archives retain all physical fields and their
         /// logical block map, including species history. Native layouts are
         /// preserved on write and converted on read. Derived fields are omitted.
-        void WriteCheckpoint(const std::string &path, const Json &resolved, bool includeReconstruction = false) const;
+        void WriteCheckpoint(const std::string &path, const Json &resolved, bool includeReconstruction = false,
+                             const Json &outputController = Json()) const;
         void ReadCheckpoint(const std::string &path, const Json &resolved);
     };
 }

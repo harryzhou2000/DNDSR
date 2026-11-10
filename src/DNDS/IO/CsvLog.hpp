@@ -5,9 +5,11 @@
 #include <iostream>
 #include <iomanip>
 #include <fstream>
+#include <filesystem>
 #include <limits>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <type_traits>
 #include <variant>
@@ -30,6 +32,15 @@ namespace DNDS
     {
         std::string name;
         CsvColumnType type = CsvColumnType::Text;
+    };
+
+    /// Stable append position for a segmented CSV stream. `line` counts data
+    /// rows in `block`; the header is not included. A zero line identifies the
+    /// next unopened segment after an exact-size completed block.
+    struct CsvLogPosition
+    {
+        int block = 0;
+        int64_t line = 0;
     };
 
     /// Immutable ordered CSV schema. Column names are unique and rows built
@@ -175,18 +186,56 @@ namespace DNDS
         std::string delim = ",";
         int iBlock = 0;
         int64_t n_line_max = INT64_MAX;
-        void update_ofstream(const std::string &fname)
+        bool resuming = false;
+        std::string SegmentPath() const
+        {
+            return log_name_bare + (iBlock ? "_" + std::to_string(iBlock) : "") + log_name_suffix;
+        }
+        void update_ofstream(const std::string &fname, std::ios_base::openmode mode = std::ios_base::out)
         {
             createOutputDir(fname);
-            pOs = std::make_unique<std::ofstream>(fname);
+            pOs = std::make_unique<std::ofstream>(fname, mode);
             DNDS_check_throw_info(*pOs, "csv file [" + fname + "] did not open");
+        }
+        std::string HeaderLine() const
+        {
+            std::ostringstream output;
+            const auto &columns = schema->Columns();
+            for (size_t i = 0; i < columns.size(); ++i)
+            {
+                WriteText(output, columns[i].name);
+                if (i + 1 != columns.size())
+                    output << ',';
+            }
+            return output.str();
+        }
+        void ResumeSegment()
+        {
+            const auto path = SegmentPath();
+            DNDS_check_throw_info(std::filesystem::is_regular_file(path), "CSV resume segment is missing: " + path);
+            std::ifstream input(path);
+            DNDS_check_throw_info(bool(input), "CSV resume segment did not open: " + path);
+            std::string line;
+            DNDS_check_throw_info(bool(std::getline(input, line)) && line == HeaderLine(), "CSV resume header differs: " + path);
+            int64_t rows = 0;
+            while (std::getline(input, line))
+                ++rows;
+            DNDS_check_throw_info(rows == n_line, "CSV resume row count differs: " + path);
+            update_ofstream(path, std::ios_base::out | std::ios_base::app);
         }
         void ensure_ofstream()
         {
             if (pOs)
                 return;
             DNDS_check_throw_info(log_name_bare.length(), "need to give a log name");
-            update_ofstream(log_name_bare + (iBlock ? "_" + std::to_string(iBlock) : "") + log_name_suffix);
+            const auto path = SegmentPath();
+            if (resuming)
+            {
+                DNDS_check_throw_info(!std::filesystem::exists(path) || std::filesystem::is_empty(path),
+                                      "CSV next resume segment already contains data: " + path);
+                resuming = false;
+            }
+            update_ofstream(path);
         }
         static void WriteText(std::ostream &output, const std::string &value)
         {
@@ -239,8 +288,28 @@ namespace DNDS
             update_ofstream(log_name_bare + n_log_name_suffix);
         }
 
+        /// Resume a previously flushed segmented stream without rewriting its
+        /// header or rows. The existing segment and exact row count are checked
+        /// before opening it for append.
+        CsvLog(CsvSchema n_schema, const std::string &n_log_name_bare,
+               const std::string &n_log_name_suffix, int64_t n_n_line_max,
+               CsvLogPosition position)
+            : schema(std::make_shared<CsvSchema>(std::move(n_schema))), n_line(position.line),
+              log_name_bare(n_log_name_bare), log_name_suffix(n_log_name_suffix),
+              iBlock(position.block), n_line_max(n_n_line_max), resuming(true)
+        {
+            DNDS_check_throw_info(n_line_max > 0 && iBlock >= 0 && n_line >= 0 && n_line < n_line_max,
+                                  "invalid CSV resume position");
+            if (n_line)
+            {
+                ResumeSegment();
+                resuming = false;
+            }
+        }
+
         CsvRow MakeRow() const { return CsvRow(schema); }
         const CsvSchema &Schema() const { return *schema; }
+        CsvLogPosition Position() const { return {iBlock, n_line}; }
 
         void WriteLine(const CsvRow &row, int nPrecision = 17)
         {

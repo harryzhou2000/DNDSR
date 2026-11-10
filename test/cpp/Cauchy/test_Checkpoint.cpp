@@ -799,12 +799,16 @@ TEST_CASE("Rigid motion restart retains absolute-state convention and BDF histor
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 3);
     C::Domain source("flow", mesh, config.Domains()[0].settings, config.Time());
     REQUIRE(source.Advance(.001).accepted);
-    source.WriteCheckpoint(path, config.Root());
+    const C::Json outputController{{"schema_version", 1}, {"test_cursor", 9}};
+    source.WriteCheckpoint(path, config.Root(), false, outputController);
     {
         auto serializer = std::make_shared<DNDS::Serializer::SerializerH5>(mpi);
         serializer->OpenFile(path, true);
         std::string metadata;
         serializer->ReadString("metadata_json", metadata);
+        std::string output;
+        serializer->ReadString("output_controller_json", output);
+        CHECK(C::Json::parse(output) == outputController);
         const auto frame = C::Json::parse(metadata)["frame"];
         CHECK(frame["convention"] == "absolute-velocity-and-energy-in-mesh-axes");
         CHECK(frame["law"]["angularVelocity"][2] == .2);

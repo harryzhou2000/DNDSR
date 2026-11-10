@@ -110,7 +110,8 @@ TEST_CASE("Multi-domain BDF2 restart reserves every domain and redistributes by 
         REQUIRE(source.Advance(.001).accepted);
         REQUIRE(source.Advance(.002).accepted);
         const auto saved = TorusValues(source);
-        source.WriteCheckpoint(path, true);
+        const C::Json outputController{{"schema_version", 1}, {"test_cursor", 7}};
+        source.WriteCheckpoint(path, true, outputController);
         REQUIRE(source.Advance(.0015).accepted);
         const auto continuation = TorusValues(source);
         std::array<uint64_t, 2> versions{};
@@ -130,17 +131,21 @@ TEST_CASE("Multi-domain BDF2 restart reserves every domain and redistributes by 
         source.ReadCheckpoint(path);
         CHECK(source.Step() == 2);
         CHECK(source.Time() == .003);
+        REQUIRE(source.RestoredOutputController());
+        CHECK(*source.RestoredOutputController() == outputController);
         CHECK(TorusValues(source) == saved);
         REQUIRE(source.Advance(.0015).accepted);
         CHECK(TorusValues(source) == continuation);
         // Republishing uses a new child generation. Reverse sharing and use
         // SoA/P3 to exercise actual redistribution and intentional cold VR.
-        source.WriteCheckpoint(path, true);
+        source.WriteCheckpoint(path, true, outputController);
         input["domains"] = Domains(!split && mpi.size > 1);
         input["defaults"]["execution"]["layout"] = "soa";
         input["defaults"]["numerics"]["cfv"]["maxOrder"] = 3;
         C::Simulation redistributed(C::SimulationConfig::ResolveCollective(input, mpi.comm), mpi.comm, factory);
         redistributed.ReadCheckpoint(path);
+        REQUIRE(redistributed.RestoredOutputController());
+        CHECK(*redistributed.RestoredOutputController() == outputController);
         CHECK(redistributed.Step() == source.Step());
         CHECK(redistributed.Time() == source.Time());
         CHECK(TorusValues(redistributed) == continuation);

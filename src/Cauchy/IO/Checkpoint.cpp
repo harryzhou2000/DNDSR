@@ -421,7 +421,8 @@ namespace DNDS::Cauchy
             return {};
         }
     }
-    void Domain::WriteCheckpoint(const std::string &path, const Json &resolved, bool includeReconstruction) const
+    void Domain::WriteCheckpoint(const std::string &path, const Json &resolved, bool includeReconstruction,
+                                 const Json &outputController) const
     {
         const MPIInfo mpi(_fv.Metrics().Communicator());
         const bool history = _timeStepper && _timeStepper->Method() == "bdf2" && _timeStepper->HasHistory();
@@ -443,6 +444,8 @@ namespace DNDS::Cauchy
         serializer->WriteInt("cauchy_format", 5);
         serializer->WriteString("resolved_config", resolved.dump());
         serializer->WriteString("metadata_json", metadata.dump());
+        if (!outputController.is_null())
+            serializer->WriteString("output_controller_json", outputController.dump());
         serializer->WriteString("domain_name", _name);
         serializer->WriteReal("accepted_time", _time);
         serializer->WriteReal("last_accepted_dt", _lastAcceptedDt);

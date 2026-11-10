@@ -52,8 +52,12 @@ namespace DNDS::Cauchy
         }
     }
 
-    ProgressHistory::ProgressHistory(CsvSchema schema, std::string bare, index segmentRows, int precision)
-        : _columns(ColumnNames(schema)), _log(std::move(schema), bare, ".csv", segmentRows), _precision(precision)
+    ProgressHistory::ProgressHistory(CsvSchema schema, std::string bare, index segmentRows, int precision,
+                                     std::optional<CsvLogPosition> resume)
+        : _columns(ColumnNames(schema)),
+          _log(resume ? CsvLog(std::move(schema), bare, ".csv", segmentRows, *resume)
+                      : CsvLog(std::move(schema), bare, ".csv", segmentRows)),
+          _precision(precision)
     {
         DNDS_check_throw_info(!_columns.empty() && !bare.empty() && segmentRows > 0,
                               "invalid Cauchy detailed-history construction");
@@ -145,14 +149,15 @@ namespace DNDS::Cauchy
 
     ProgressOutputController::ProgressOutputController(EquationSchema schema, OutputSettings settings, std::string domain,
                                                        std::string bareHistory, bool writer,
-                                                       std::shared_ptr<OperationalLogger> logger)
+                                                       std::shared_ptr<OperationalLogger> logger,
+                                                       std::optional<CsvLogPosition> resume)
         : _schema(std::move(schema)), _settings(std::move(settings)), _domain(std::move(domain)), _writer(writer),
           _logger(std::move(logger))
     {
         DNDS_check_throw_info(_logger && !_domain.empty(), "invalid Cauchy progress-output controller");
         if (_writer)
             _history = std::make_unique<ProgressHistory>(DetailedHistorySchema(_schema), std::move(bareHistory),
-                                                         _settings.historySegmentRows, _settings.historyPrecision);
+                                                         _settings.historySegmentRows, _settings.historyPrecision, resume);
     }
     ProgressRow ProgressOutputController::Base(const ProgressLocation &location, ProgressRecordStatus status) const
     {
@@ -324,5 +329,10 @@ namespace DNDS::Cauchy
         if (_history)
             _history->Flush();
         _logger->Flush();
+    }
+    CsvLogPosition ProgressOutputController::HistoryPosition() const
+    {
+        DNDS_check_throw_info(_writer && _history, "history position is available only on its writer");
+        return _history->Position();
     }
 }

@@ -54,6 +54,7 @@ TEST_CASE("One progress controller constructs iteration stage and step CSV rows"
     const auto bare = (directory / "case-D0-history").string();
     settings.prefix = (directory / "case").string();
     auto logger = std::make_shared<C::OperationalLogger>(settings, 0);
+    DNDS::CsvLogPosition resume;
     {
         C::ProgressOutputController output(schema, settings, "fluid", bare, true, logger);
         output.BeginAttempt({3, -1, -1, -1, 1, .3, .01, 2});
@@ -84,6 +85,18 @@ TEST_CASE("One progress controller constructs iteration stage and step CSV rows"
         step.diagnostics[4] = .125;
         output.StepEnd({3, 7, 6, 5, 1, .3, .01, 2.2}, step, true, false);
         output.Flush();
+        resume = output.HistoryPosition();
+    }
+    CHECK(resume.block == 1);
+    CHECK(resume.line == 1);
+    {
+        C::ProgressOutputController output(schema, settings, "fluid", bare, true, logger, resume);
+        C::AcceptedStepProgress step;
+        step.diagnostics[0] = 12;
+        output.StepEnd({4, -1, -1, -1, 0, .4, .01, 3}, step, true, false);
+        output.Flush();
+        CHECK(output.HistoryPosition().block == 2);
+        CHECK(output.HistoryPosition().line == 0);
     }
 
     std::ifstream first(bare + ".csv");
@@ -117,6 +130,9 @@ TEST_CASE("One progress controller constructs iteration stage and step CSV rows"
     CHECK(accepted.at("iteration") == "-1");
     CHECK(accepted.at("status") == "2");
     CHECK(accepted.at("mass") == "1.10000000e+01");
+    const auto resumed = ReadRow(second, header);
+    CHECK(resumed.at("step") == "4");
+    CHECK(resumed.at("mass") == "1.20000000e+01");
     CHECK_FALSE(std::getline(second, line));
     CHECK_FALSE(std::filesystem::exists(bare + "_2.csv"));
     std::filesystem::remove_all(directory);
@@ -141,6 +157,22 @@ TEST_CASE("Resolved output plan centralizes names cadence inheritance and exact 
     CHECK(plan.SnapshotManifestPath("-S12") == "/tmp/cauchy-plan/case-S12-manifest.json");
     CHECK(C::OutputPlan::NextTimeOrdinal(.5, .25) == 3);
     CHECK(C::OutputPlan::TimeAt(3, .25) == .75);
+
+    auto state = plan.InitialState(.5);
+    state.history[0] = {2, 3};
+    state.history[1] = {4, 5};
+    const auto restored = plan.RestoreState(state.ToJson(), .5);
+    CHECK(restored.nextCheckpointTime == 3);
+    CHECK(restored.nextVisualizationTime == 3);
+    CHECK(restored.history[1].block == 4);
+    CHECK(restored.history[1].line == 5);
+    auto changed = settings;
+    changed.prefix += "-new";
+    const C::OutputPlan changedPlan(changed, 2);
+    const auto restartedBundle = changedPlan.RestoreState(state.ToJson(), .5);
+    CHECK(restartedBundle.prefix == changed.prefix);
+    CHECK(restartedBundle.history[0].block == 0);
+    CHECK(restartedBundle.history[0].line == 0);
 
     const auto snapped = plan.SnapStep(.25, .25000000001, 2, 2, 2);
     REQUIRE(snapped.exactTime);

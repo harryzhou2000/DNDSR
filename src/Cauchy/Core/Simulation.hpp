@@ -21,6 +21,7 @@ namespace DNDS::Cauchy
         std::unique_ptr<InterfaceCoupling> _interfaces;
         real _time = 0;
         uint64_t _step = 0;
+        std::optional<Json> _restoredOutputController;
 
     public:
         using MeshFactory = std::function<ssp<Geom::UnstructuredMesh>(index, const DomainConfig &, const MPIInfo &)>;
@@ -48,7 +49,8 @@ namespace DNDS::Cauchy
         /// A multi-domain HDF5 manifest references immutable child files and
         /// is published only after every domain write succeeds. Existing
         /// single-domain archives retain their format and filename.
-        void WriteCheckpoint(const std::string &path, bool includeReconstruction = false) const;
+        void WriteCheckpoint(const std::string &path, bool includeReconstruction = false,
+                             Json outputController = Json()) const;
         /// Restore the coordinated clock, all means and compatible method/
         /// reconstruction history. Every domain validates and reserves before
         /// any accepted state changes. Placement may differ; names/order and
@@ -56,6 +58,7 @@ namespace DNDS::Cauchy
         /// stored time from restored polynomials. Process-failure recovery is
         /// unsupported. Caller joins work and releases conflicting views.
         void ReadCheckpoint(const std::string &path);
+        const std::optional<Json> &RestoredOutputController() const { return _restoredOutputController; }
         /// One native parallel output per domain, named prefix_domainN for
         /// several domains. The single-domain output name is unchanged.
         void WriteVisualization(const std::string &prefix, int hdfDeflateLevel = 0);

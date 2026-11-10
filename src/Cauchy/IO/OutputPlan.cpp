@@ -11,6 +11,42 @@
 
 namespace DNDS::Cauchy
 {
+    Json OutputControllerState::ToJson() const
+    {
+        Json positions = Json::array();
+        for (const auto cursor : history)
+            positions.push_back({{"block", cursor.block}, {"rows", cursor.line}});
+        return {{"schema_version", schemaVersion},
+                {"prefix", prefix},
+                {"checkpoint_interval", checkpointInterval},
+                {"visualization_interval", visualizationInterval},
+                {"checkpoint_time_interval", checkpointTimeInterval},
+                {"visualization_time_interval", visualizationTimeInterval},
+                {"next_checkpoint_time", nextCheckpointTime},
+                {"next_visualization_time", nextVisualizationTime},
+                {"history", std::move(positions)}};
+    }
+    OutputControllerState OutputControllerState::FromJson(const Json &value)
+    {
+        OutputControllerState state;
+        state.schemaVersion = value.at("schema_version").get<int>();
+        state.prefix = value.at("prefix").get<std::string>();
+        state.checkpointInterval = value.at("checkpoint_interval").get<index>();
+        state.visualizationInterval = value.at("visualization_interval").get<index>();
+        state.checkpointTimeInterval = value.at("checkpoint_time_interval").get<real>();
+        state.visualizationTimeInterval = value.at("visualization_time_interval").get<real>();
+        state.nextCheckpointTime = value.at("next_checkpoint_time").get<uint64_t>();
+        state.nextVisualizationTime = value.at("next_visualization_time").get<uint64_t>();
+        for (const auto &cursor : value.at("history"))
+            state.history.push_back({cursor.at("block").get<int>(), cursor.at("rows").get<int64_t>()});
+        DNDS_check_throw_info(state.schemaVersion == 1 && !state.prefix.empty() &&
+                                  state.checkpointInterval >= 0 && state.visualizationInterval >= 0 &&
+                                  std::isfinite(state.checkpointTimeInterval) && state.checkpointTimeInterval >= 0 &&
+                                  std::isfinite(state.visualizationTimeInterval) && state.visualizationTimeInterval >= 0,
+                              "invalid Cauchy output-controller state");
+        return state;
+    }
+
     OutputPlan::OutputPlan(OutputSettings settings, index domains)
         : _settings(std::move(settings)), _domains(domains),
           _visualizationInterval(_settings.visualizationInterval < 0
@@ -34,6 +70,39 @@ namespace DNDS::Cauchy
         return _settings.prefix + "-D" + std::to_string(domain);
     }
     std::string OutputPlan::HistoryBare(index domain) const { return DomainPrefix(domain) + "-history"; }
+    OutputControllerState OutputPlan::InitialState(real time) const
+    {
+        DNDS_check_throw_info(std::isfinite(time) && time >= 0, "invalid initial output-controller time");
+        OutputControllerState state;
+        state.prefix = _settings.prefix;
+        state.checkpointInterval = _settings.checkpointInterval;
+        state.visualizationInterval = _visualizationInterval;
+        state.checkpointTimeInterval = _settings.checkpointTimeInterval;
+        state.visualizationTimeInterval = _visualizationTimeInterval;
+        state.nextCheckpointTime = NextTimeOrdinal(time, state.checkpointTimeInterval);
+        state.nextVisualizationTime = NextTimeOrdinal(time, state.visualizationTimeInterval);
+        state.history.resize(size_t(_domains));
+        return state;
+    }
+    OutputControllerState OutputPlan::RestoreState(const Json &value, real time) const
+    {
+        auto state = OutputControllerState::FromJson(value);
+        if (state.prefix != _settings.prefix)
+            return InitialState(time);
+        DNDS_check_throw_info(state.checkpointInterval == _settings.checkpointInterval &&
+                                  state.visualizationInterval == _visualizationInterval &&
+                                  state.checkpointTimeInterval == _settings.checkpointTimeInterval &&
+                                  state.visualizationTimeInterval == _visualizationTimeInterval &&
+                                  state.history.size() == size_t(_domains),
+                              "checkpoint output cadence differs while continuing the same output prefix");
+        DNDS_check_throw_info(state.nextCheckpointTime == NextTimeOrdinal(time, state.checkpointTimeInterval) &&
+                                  state.nextVisualizationTime == NextTimeOrdinal(time, state.visualizationTimeInterval),
+                              "checkpoint output-time cursor differs from its accepted clock");
+        for (const auto cursor : state.history)
+            DNDS_check_throw_info(cursor.block >= 0 && cursor.line >= 0 && cursor.line < _settings.historySegmentRows,
+                                  "checkpoint CSV continuation cursor is invalid");
+        return state;
+    }
     std::string OutputPlan::ResolvedPath() const { return _settings.prefix + "-resolved.json"; }
     std::string OutputPlan::SummaryPath() const { return _settings.prefix + "-summary.json"; }
     std::string OutputPlan::RunManifestPath() const { return _settings.prefix + "-run-manifest.json"; }
