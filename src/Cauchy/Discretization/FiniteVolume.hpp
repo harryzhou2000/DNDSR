@@ -145,12 +145,14 @@ namespace DNDS::Cauchy
         MeanThermodynamicView() = default;
         MeanThermodynamicView(RHSScalarView combined) : values{combined, {}}, width(combined.Width()) {}
         MeanThermodynamicView(RHSFieldView paired, std::array<int, 3> selected) : values(paired), columns(selected) {}
-        static MeanThermodynamicView Derived(const DerivedFields::ReadScope &owned, const DerivedFields::ReadScope *ghost = nullptr)
+        static MeanThermodynamicView Derived(
+            const DerivedFields::ReadScope &owned,
+            std::optional<std::reference_wrapper<const DerivedFields::ReadScope>> ghost = std::nullopt)
         {
             const std::array<int, 3> selected{owned.Column(DerivedQuantity::Pressure), owned.Column(DerivedQuantity::SoundSpeed), owned.Column(DerivedQuantity::DiffusionBound)};
             if (ghost)
-                DNDS_check_throw_info((selected == std::array<int, 3>{ghost->Column(DerivedQuantity::Pressure), ghost->Column(DerivedQuantity::SoundSpeed), ghost->Column(DerivedQuantity::DiffusionBound)}), "derived owned/ghost property columns differ");
-            return {{owned.View(), ghost ? ghost->View() : RHSScalarView{}}, selected};
+                DNDS_check_throw_info((selected == std::array<int, 3>{ghost->get().Column(DerivedQuantity::Pressure), ghost->get().Column(DerivedQuantity::SoundSpeed), ghost->get().Column(DerivedQuantity::DiffusionBound)}), "derived owned/ghost property columns differ");
+            return {{owned.View(), ghost ? ghost->get().View() : RHSScalarView{}}, selected};
         }
         index RowCount() const { return values.RowCount(); }
         index Width() const { return width; }

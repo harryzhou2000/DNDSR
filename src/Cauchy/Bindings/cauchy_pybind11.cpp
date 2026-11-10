@@ -283,9 +283,21 @@ PYBIND11_MODULE(cauchy_pybind11, m)
             py::call_guard<py::gil_scoped_release>(),
             "Collective coordinated step with the same dt on all control ranks. accepted_time optionally publishes an exact snapped clock after acceptance. A rejected StepResult certifies an agreed numerical retry; other exceptions must reach a fail-fast MPI application boundary without another collective/finalization. No automatic maxRetries here.")
         .def(
-            "write_checkpoint", &C::Simulation::WriteCheckpoint, py::arg("path"), py::arg("reconstruction") = false,
-            py::call_guard<py::gil_scoped_release>(),
-            "Collective coordinated checkpoint; multi-domain manifests retain per-domain native archives. All ranks use the same path and release conflicting views.")
+            "write_checkpoint",
+            [](const C::Simulation &simulation, const std::string &path, bool reconstruction,
+               const py::object &outputController)
+    {
+        C::Json controller;
+        if (!outputController.is_none())
+        {
+            const auto encoded = py::module_::import("json").attr("dumps")(outputController).cast<std::string>();
+            controller = C::Json::parse(encoded);
+        }
+        py::gil_scoped_release release;
+        simulation.WriteCheckpoint(path, reconstruction, controller);
+    },
+            py::arg("path"), py::arg("reconstruction") = false, py::arg("output_controller") = py::none(),
+            "Collective coordinated checkpoint; multi-domain manifests retain per-domain native archives. Optional output-controller JSON preserves frontend cadence/history state. All ranks use the same path and release conflicting views.")
         .def(
             "read_checkpoint", &C::Simulation::ReadCheckpoint, py::arg("path"),
             py::call_guard<py::gil_scoped_release>(),

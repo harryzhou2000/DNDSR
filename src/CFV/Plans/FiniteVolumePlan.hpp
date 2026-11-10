@@ -259,6 +259,7 @@ namespace DNDS::CFV
         uint64_t forwardIdentity = 0, inverseIdentity = 0;
     };
     using FaceCharacteristicTransformRef = std::optional<std::reference_wrapper<const FaceCharacteristicTransform>>;
+    using LimiterIndicatorRef = std::optional<std::reference_wrapper<const Runtime::Array<real>>>;
 
     struct ReconstructionResidencyOptions
     {
@@ -490,12 +491,12 @@ namespace DNDS::CFV
         void DoLimiterWBAP_3OrderTo(const FVField &coefficients, ReconstructionWorkspace &work, int order,
                                     FaceCharacteristicTransformRef transform = std::nullopt,
                                     ReconstructionRegion region = ReconstructionRegion::All,
-                                    const Runtime::Array<real> *indicator = nullptr, real threshold = 0) const;
+                                    LimiterIndicatorRef indicator = std::nullopt, real threshold = 0) const;
         void SubmitLimiterWBAP_3OrderTo(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                                         const FVField &coefficients, ReconstructionWorkspace &work, int order,
                                         FaceCharacteristicTransformRef transform = std::nullopt,
                                         ReconstructionRegion region = ReconstructionRegion::All,
-                                        const Runtime::Array<real> *indicator = nullptr, real threshold = 0) const;
+                                        LimiterIndicatorRef indicator = std::nullopt, real threshold = 0) const;
         Runtime::TransferBinding BindHalo(FVField &, Runtime::TransferTransport transport = Runtime::TransferTransport::Direct,
                                           Runtime::TransferOptions options = {}) const;
         /// Observe device validation status after the producing stream prefix

@@ -580,13 +580,14 @@ namespace DNDS::CFV
     void VariationalReconstructionPlan::DoLimiterWBAP_3OrderTo(const FVField &coefficients,
                                                                ReconstructionWorkspace &work, int order,
                                                                FaceCharacteristicTransformRef transform, ReconstructionRegion region,
-                                                               const R::Array<real> *indicator, real threshold) const
+                                                               LimiterIndicatorRef indicator, real threshold) const
     {
+        const auto *indicatorArray = indicator ? &indicator->get() : nullptr;
         if (_device)
         {
             R::EagerEngine engine;
             const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(Device().ordinal));
-            SubmitDeviceLimiterWBAP_3OrderTo(engine, stream, coefficients, work, order, transform, region, indicator, threshold);
+            SubmitDeviceLimiterWBAP_3OrderTo(engine, stream, coefficients, work, order, transform, region, indicatorArray, threshold);
             engine.Synchronize();
             CheckStatus(work);
             return;
@@ -604,10 +605,10 @@ namespace DNDS::CFV
         DNDS_check_throw_info(std::isfinite(threshold), "limiter threshold must be finite");
         std::optional<R::Array<real>::ReadLease> indicatorRead;
         R::ArrayView<const real, false, R::FixedRows<1>> activation;
-        if (indicator)
+        if (indicatorArray)
         {
-            CheckArray(*indicator, Metrics().NumCell(), 1);
-            indicatorRead.emplace(indicator->Read());
+            CheckArray(*indicatorArray, Metrics().NumCell(), 1);
+            indicatorRead.emplace(indicatorArray->Read());
             activation = indicatorRead->View<R::FixedRows<1>>();
             for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
                 DNDS_check_throw_info(std::isfinite(activation(iCell, 0)), "limiter indicator must be finite");
@@ -661,7 +662,7 @@ namespace DNDS::CFV
             {
                 auto out = outputMatrices[iCell];
                 out = recMatrices[iCell];
-                if (indicator && activation(iCell, 0) < threshold)
+                if (indicatorArray && activation(iCell, 0) < threshold)
                     return;
                 up.setConstant(Settings().WBAP_nStd), down.setConstant(Settings().WBAP_nStd), valid.setOnes();
                 for (index iEntry = offsets(iCell, 0); iEntry < offsets(iCell + 1, 0); ++iEntry)
@@ -728,11 +729,12 @@ namespace DNDS::CFV
         R::EagerEngine &engine, const R::ExecutionStream &stream, const FVField &coefficients,
         ReconstructionWorkspace &work, int order,
         FaceCharacteristicTransformRef transform, ReconstructionRegion region,
-        const R::Array<real> *indicator, real threshold) const
+        LimiterIndicatorRef indicator, real threshold) const
     {
+        const auto *indicatorArray = indicator ? &indicator->get() : nullptr;
         if (_device)
         {
-            SubmitDeviceLimiterWBAP_3OrderTo(engine, stream, coefficients, work, order, transform, region, indicator, threshold);
+            SubmitDeviceLimiterWBAP_3OrderTo(engine, stream, coefficients, work, order, transform, region, indicatorArray, threshold);
             return;
         }
         Require(ReconstructionOperation::WBAP);
@@ -762,9 +764,9 @@ namespace DNDS::CFV
             }
         }
         std::optional<R::Array<real>> retainedIndicator;
-        if (indicator)
+        if (indicatorArray)
         {
-            retainedIndicator.emplace(*indicator);
+            retainedIndicator.emplace(*indicatorArray);
             add(*retainedIndicator, R::AccessMode::Read);
         }
         auto plan = *this;
@@ -781,7 +783,8 @@ namespace DNDS::CFV
                                                                     ? FaceCharacteristicTransformRef(std::cref(*retainedTransform))
                                                                     : std::nullopt;
                 plan.DoLimiterWBAP_3OrderTo(retainedCoefficients, retainedWork, order, selected, region,
-                                            retainedIndicator ? &*retainedIndicator : nullptr, threshold);
+                                            retainedIndicator ? LimiterIndicatorRef(std::cref(*retainedIndicator)) : std::nullopt,
+                                            threshold);
             },
             [](std::exception_ptr) noexcept {}, std::move(accesses));
     }

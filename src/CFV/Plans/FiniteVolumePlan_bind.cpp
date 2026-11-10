@@ -226,11 +226,13 @@ namespace DNDS::CFV
             .def("DoLimiterWBAP_3OrderTo", [](const VariationalReconstructionPlan &plan, const FVField &coefficients, ReconstructionWorkspace &work, int order, const FaceCharacteristicTransform *transform, ReconstructionRegion region, const Runtime::Array<real> *indicator, real threshold)
                  { plan.DoLimiterWBAP_3OrderTo(coefficients, work, order,
                                                transform ? FaceCharacteristicTransformRef(std::cref(*transform)) : std::nullopt,
-                                               region, indicator, threshold); }, py::arg("coefficients"), py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr, py::arg("region") = ReconstructionRegion::All, py::arg("indicator") = nullptr, py::arg("threshold") = 0)
+                                               region, indicator ? LimiterIndicatorRef(std::cref(*indicator)) : std::nullopt,
+                                               threshold); }, py::arg("coefficients"), py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr, py::arg("region") = ReconstructionRegion::All, py::arg("indicator") = nullptr, py::arg("threshold") = 0)
             .def("SubmitLimiterWBAP_3OrderTo", [](const VariationalReconstructionPlan &plan, Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, const FVField &coefficients, ReconstructionWorkspace &work, int order, const FaceCharacteristicTransform *transform, ReconstructionRegion region, const Runtime::Array<real> *indicator, real threshold)
                  { plan.SubmitLimiterWBAP_3OrderTo(engine, stream, coefficients, work, order,
                                                    transform ? FaceCharacteristicTransformRef(std::cref(*transform)) : std::nullopt,
-                                                   region, indicator, threshold); }, py::arg("engine"), py::arg("stream"), py::arg("coefficients"), py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr, py::arg("region") = ReconstructionRegion::All, py::arg("indicator") = nullptr, py::arg("threshold") = 0, "Enqueue one descending limiter order through the common CFV plan.")
+                                                   region, indicator ? LimiterIndicatorRef(std::cref(*indicator)) : std::nullopt,
+                                                   threshold); }, py::arg("engine"), py::arg("stream"), py::arg("coefficients"), py::arg("workspace"), py::arg("order"), py::arg("transform") = nullptr, py::arg("region") = ReconstructionRegion::All, py::arg("indicator") = nullptr, py::arg("threshold") = 0, "Enqueue one descending limiter order through the common CFV plan.")
             .def("BindHalo", &VariationalReconstructionPlan::BindHalo, py::arg("field"), py::arg("transport") = Runtime::TransferTransport::Direct, py::arg("options") = Runtime::TransferOptions{}, "Collective payload binding for this plan placement; explicitly order consumers after transfer completion.")
             .def("CheckStatus", &VariationalReconstructionPlan::CheckStatus)
             .def("Evaluate", &VariationalReconstructionPlan::Evaluate)

@@ -81,7 +81,7 @@ TEST_CASE("Jacobi and WBAP core work overlaps real direct MPI and preserves unsp
         for (I row = 0; row < metrics.NumCell(); ++row)
             write.View()(row, 0) = -1;
     }
-    plan.DoLimiterWBAP_3OrderTo(splitCoefficients, split, 1, std::nullopt, C::ReconstructionRegion::All, &indicator, 0);
+    plan.DoLimiterWBAP_3OrderTo(splitCoefficients, split, 1, std::nullopt, C::ReconstructionRegion::All, std::cref(indicator), 0);
     plan.CommitReconstruction(splitCoefficients, split);
     Equal(referenceCoefficients, splitCoefficients); // inactive is exact passthrough
     referenceHalo.Begin().Wait();
@@ -92,10 +92,10 @@ TEST_CASE("Jacobi and WBAP core work overlaps real direct MPI and preserves unsp
         for (I row = 0; row < metrics.NumCell(); ++row)
             write.View()(row, 0) = 0;
     }
-    plan.DoLimiterWBAP_3OrderTo(splitCoefficients, split, 1, std::nullopt, C::ReconstructionRegion::All, &indicator, 0);
+    plan.DoLimiterWBAP_3OrderTo(splitCoefficients, split, 1, std::nullopt, C::ReconstructionRegion::All, std::cref(indicator), 0);
     plan.CommitReconstruction(splitCoefficients, split);
     Equal(referenceCoefficients, splitCoefficients); // equality activates
-    CHECK_THROWS(plan.DoLimiterWBAP_3OrderTo(splitCoefficients, split, 1, std::nullopt, C::ReconstructionRegion::All, nullptr,
+    CHECK_THROWS(plan.DoLimiterWBAP_3OrderTo(splitCoefficients, split, 1, std::nullopt, C::ReconstructionRegion::All, std::nullopt,
                                              std::numeric_limits<double>::quiet_NaN()));
     if (metrics.NumCell())
     {
@@ -103,7 +103,7 @@ TEST_CASE("Jacobi and WBAP core work overlaps real direct MPI and preserves unsp
             auto write = indicator.Write();
             write.View()(0, 0) = std::numeric_limits<double>::quiet_NaN();
         }
-        CHECK_THROWS(plan.DoLimiterWBAP_3OrderTo(splitCoefficients, split, 1, std::nullopt, C::ReconstructionRegion::All, &indicator, 0));
+        CHECK_THROWS(plan.DoLimiterWBAP_3OrderTo(splitCoefficients, split, 1, std::nullopt, C::ReconstructionRegion::All, std::cref(indicator), 0));
     }
 }
 

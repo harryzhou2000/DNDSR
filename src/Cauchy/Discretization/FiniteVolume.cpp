@@ -1279,8 +1279,8 @@ namespace DNDS::Cauchy
                     derivedOwned.emplace(values.derivedOwned->ReadCurrent(typed, owner->equation));
                     if (ghosts && values.derivedGhost)
                         derivedGhost.emplace(values.derivedGhost->ReadCurrent(typed, owner->equation));
-                    input.auxiliary.meanThermodynamics.emplace(
-                        MeanThermodynamicView::Derived(*derivedOwned, derivedGhost ? &*derivedGhost : nullptr));
+                    input.auxiliary.meanThermodynamics.emplace(MeanThermodynamicView::Derived(
+                        *derivedOwned, derivedGhost ? std::optional(std::cref(*derivedGhost)) : std::nullopt));
                 }
                 if (values.cellWaveJump)
                     input.auxiliary.cellWaveJump = readField(*values.cellWaveJump);

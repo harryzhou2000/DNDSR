@@ -313,7 +313,8 @@ def test_coordinated_simulation_python_owners_and_reversed_subgroups(split, tmp_
     assert domain.time == simulation.time
     archive = world.bcast(str(tmp_path / "simulation.h5") if world.rank == 0 else None, root=0)
     shared_flow = domain.fields["flow"]
-    simulation.write_checkpoint(archive, reconstruction=True)
+    simulation.write_checkpoint(archive, reconstruction=True,
+                                output_controller={"schema": "python-test"})
     assert simulation.advance(.001).accepted
     simulation.read_checkpoint(archive)
     assert simulation.step == domain.step == 2

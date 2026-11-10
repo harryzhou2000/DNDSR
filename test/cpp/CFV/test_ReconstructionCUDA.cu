@@ -331,11 +331,11 @@ TEST_CASE("Device errors reject unsupported SOR stale publications and invalid i
     auto gpuActivation = activation.To(R::Device::CUDA(0));
     metrics.BindHalo(cpuCoefficients).Begin().Wait();
     Halo(resident, coefficients).Begin(R::ExecutionContext::CUDA(0)).Wait();
-    plan.DoLimiterWBAP_3OrderTo(cpuCoefficients, cpu, 1, std::nullopt, C::ReconstructionRegion::All, &activation, .5);
+    plan.DoLimiterWBAP_3OrderTo(cpuCoefficients, cpu, 1, std::nullopt, C::ReconstructionRegion::All, std::cref(activation), .5);
     plan.CommitReconstruction(cpuCoefficients, cpu);
     R::EagerEngine activeEngine;
     auto activeStream = activeEngine.CreateStream(std::make_shared<R::CUDALauncher>(0));
-    resident.SubmitLimiterWBAP_3OrderTo(activeEngine, activeStream, coefficients, work, 1, std::nullopt, C::ReconstructionRegion::All, &gpuActivation, .5);
+    resident.SubmitLimiterWBAP_3OrderTo(activeEngine, activeStream, coefficients, work, 1, std::nullopt, C::ReconstructionRegion::All, std::cref(gpuActivation), .5);
     resident.SubmitCommitReconstruction(activeEngine, activeStream, coefficients, work);
     activeEngine.Synchronize();
     resident.CheckStatus(work);
@@ -357,7 +357,7 @@ TEST_CASE("Device errors reject unsupported SOR stale publications and invalid i
     auto deviceIndicator = indicator.To(R::Device::CUDA(0));
     R::EagerEngine engine;
     auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
-    resident.SubmitLimiterWBAP_3OrderTo(engine, stream, coefficients, work, 1, std::nullopt, C::ReconstructionRegion::All, &deviceIndicator);
+    resident.SubmitLimiterWBAP_3OrderTo(engine, stream, coefficients, work, 1, std::nullopt, C::ReconstructionRegion::All, std::cref(deviceIndicator));
     resident.SubmitCommitReconstruction(engine, stream, coefficients, work);
     engine.Synchronize();
     CHECK_THROWS(resident.CheckStatus(work));

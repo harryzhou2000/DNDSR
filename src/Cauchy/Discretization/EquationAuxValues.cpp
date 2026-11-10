@@ -502,7 +502,8 @@ namespace DNDS::Cauchy
             const auto metric = geometry.HostView();
             std::optional<MeanThermodynamicView> derived;
             if (buffers._derivedThermodynamics)
-                derived.emplace(MeanThermodynamicView::Derived(*derivedOwned, derivedGhost ? &*derivedGhost : nullptr));
+                derived.emplace(MeanThermodynamicView::Derived(
+                    *derivedOwned, derivedGhost ? std::optional(std::cref(*derivedGhost)) : std::nullopt));
             EquationFVDetail::PointScratch left(source.ComponentNumber()), right(source.ComponentNumber()), face(source.ComponentNumber());
             const auto *ransModel = data->equation.HasRANS() ? &data->equation.RANS() : nullptr;
             const auto prepared = [&](index iCell, auto &point)
