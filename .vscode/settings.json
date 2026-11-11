@@ -239,6 +239,17 @@
     },
     "C_Cpp.exclusionPolicy": "checkFilesAndFolders",
     "clangd.path": "clangd",
+    "clangd.arguments": [
+        "--header-insertion=never",
+        // This worktree may be nested below another DNDSR checkout. Pin clangd to
+        // this VS Code workspace so an ancestor compile_commands.json cannot
+        // contribute stale commands for similarly named sources.
+        "--compile-commands-dir=.",
+        // CMake intentionally records the MPI compiler wrapper. Let clangd
+        // query common wrapper names for their implicit MPI/system includes;
+        // the globs avoid embedding a machine- or checkout-specific path.
+        "--query-driver=**/mpicxx,**/mpic++,**/mpiCC"
+    ],
     "C_Cpp.intelliSenseEngine": "disabled",
     // "C_Cpp.intelliSenseEngine": "Tag Parser"
     "[cpp]": {

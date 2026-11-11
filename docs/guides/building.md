@@ -525,6 +525,23 @@ cmake --build build -t process-compile-commands
 This creates `build/compile_commands_processed.json` and symlinks it
 to `compile_commands.json` at the project root.
 
+The repository VS Code settings start clangd with
+`--compile-commands-dir=.`. The extension launches clangd with the opened
+workspace folder as its working directory, so this pins compilation database
+lookup to that checkout. This matters for linked worktrees stored below another
+DNDSR checkout: without the pin, clangd may also discover the ancestor
+checkout's database. The settings also allow clangd to query common MPI C++
+wrapper names for their implicit MPI and system include paths; no particular
+MPI installation path is embedded.
+
+After configuring or changing build targets, refresh the processed database
+and restart clangd:
+
+```bash
+cmake --build build -t process-compile-commands
+# VS Code command palette: clangd: Restart language server
+```
+
 The build system uses a shipped, modified version of compdb at
 `scripts/compdb/` (invoked as `PYTHONPATH=scripts python -m compdb`).
 If the shipped version is not found, it falls back to a
