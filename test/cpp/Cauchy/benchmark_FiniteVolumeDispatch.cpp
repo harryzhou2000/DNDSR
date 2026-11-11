@@ -1,6 +1,7 @@
-// Isolate the logical-DOF dispatch using the same physical flow5 arrays,
-// perfect-gas model and composed constant-FV operation. Both paths include
-// their normal mean/coefficient halos. No nonlinear solve, PP, VR or sources.
+// Compare the forced generic and automatically resolved fixed-flow5 RHS leaves
+// through the same unified EquationDofs finite-volume schedule. Both paths use
+// the same perfect-gas arrays and constant-FV operation, including their normal
+// mean/coefficient halos. No nonlinear solve, PP, VR or sources.
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "CartesianFixture.hpp"
@@ -20,7 +21,7 @@ int main(int argc, char **argv)
         const I width = std::stoll(argv[1]);
         const bool viscous = std::stoi(argv[2]);
         const int repetitions = std::stoi(argv[3]), trials = std::stoi(argv[4]);
-        DNDS_check_throw_info(repetitions > 0 && trials > 0, "invalid adapter comparison controls");
+        DNDS_check_throw_info(repetitions > 0 && trials > 0, "invalid finite-volume dispatch comparison controls");
         auto mesh = CauchyTest::PeriodicQuads(mpi, width);
         C::DomainSettings settings;
         settings.numerics.reconstruction = "constant";
@@ -37,7 +38,7 @@ int main(int argc, char **argv)
         settings.implicit.collectiveChecks = false;
         const auto equation = C::EquationSystem::Resolve(settings.equation);
         C::FiniteVolume fv(mesh, settings, equation);
-        auto state = fv.Metrics().BuildField(5), physicalOutput = fv.Metrics().BuildField(5), equationOutput = fv.Metrics().BuildField(5);
+        auto state = fv.Metrics().BuildField(5), genericOutput = fv.Metrics().BuildField(5), fixedFlow5Output = fv.Metrics().BuildField(5);
         {
             const auto geometry = fv.Metrics().AcquireRead();
             const auto metric = geometry.HostView();
@@ -54,25 +55,25 @@ int main(int argc, char **argv)
         }
         const auto version = state.Owned().Version();
         auto logical = C::EquationDofs::Coupled(equation.Schema(), state);
-        auto physicalLogicalOutput = C::EquationDofs::Coupled(equation.Schema(), physicalOutput);
-        auto logicalOutput = C::EquationDofs::Coupled(equation.Schema(), equationOutput);
-        auto physicalWork = fv.BuildWorkspace(
+        auto genericLogicalOutput = C::EquationDofs::Coupled(equation.Schema(), genericOutput);
+        auto fixedFlow5LogicalOutput = C::EquationDofs::Coupled(equation.Schema(), fixedFlow5Output);
+        auto genericWork = fv.BuildWorkspace(
             logical, std::nullopt,
             C::FiniteVolume::WorkspaceOptions{C::FiniteVolume::RHSKernelPolicy::Generic});
-        auto equationWork = fv.BuildWorkspace(logical);
-        auto physicalReconstruction = fv.BuildReconstructionState(logical);
-        auto equationReconstruction = fv.BuildReconstructionState(logical);
+        auto fixedFlow5Work = fv.BuildWorkspace(logical);
+        auto genericReconstruction = fv.BuildReconstructionState(logical);
+        auto fixedFlow5Reconstruction = fv.BuildReconstructionState(logical);
         R::EagerEngine engine;
         const auto stream = engine.CreateCPUStream();
-        const auto physical = [&]
-        { fv.Evaluate(logical, physicalLogicalOutput, *physicalReconstruction, *physicalWork, engine, stream); };
-        const auto general = [&]
-        { fv.Evaluate(logical, logicalOutput, *equationReconstruction, *equationWork, engine, stream); };
+        const auto generic = [&]
+        { fv.Evaluate(logical, genericLogicalOutput, *genericReconstruction, *genericWork, engine, stream); };
+        const auto fixedFlow5 = [&]
+        { fv.Evaluate(logical, fixedFlow5LogicalOutput, *fixedFlow5Reconstruction, *fixedFlow5Work, engine, stream); };
         for (int warmup = 0; warmup < 3; ++warmup)
-            physical(), general();
+            generic(), fixedFlow5();
         double error = 0, magnitude = 0;
         {
-            const auto aRead = physicalOutput.Owned().Read(), bRead = equationOutput.Owned().Read();
+            const auto aRead = genericOutput.Owned().Read(), bRead = fixedFlow5Output.Owned().Read();
             const auto a = aRead.View<R::FixedRows<5>>(), b = bRead.View<R::FixedRows<5>>();
             for (I iCell = 0; iCell < a.RowCount(); ++iCell)
                 for (int j = 0; j < 5; ++j)
@@ -83,7 +84,8 @@ int main(int argc, char **argv)
         }
         MPI_Allreduce(MPI_IN_PLACE, &error, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
         MPI_Allreduce(MPI_IN_PLACE, &magnitude, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
-        DNDS_check_throw_info(std::isfinite(error) && error < 1e-11 * std::max(1., magnitude), "physical/equation spatial results differ; do not time unmatched operations");
+        DNDS_check_throw_info(std::isfinite(error) && error < 1e-11 * std::max(1., magnitude),
+                              "generic/fixed-flow5 spatial results differ; do not time unmatched operations");
         const auto measure = [&](auto &&run)
         {
             MPI_Barrier(mpi.comm);
@@ -96,14 +98,14 @@ int main(int argc, char **argv)
         };
         for (int trial = 0; trial < trials; ++trial)
         {
-            double physicalSeconds, equationSeconds;
+            double genericSeconds, fixedFlow5Seconds;
             if (trial % 2)
-                equationSeconds = measure(general), physicalSeconds = measure(physical);
+                fixedFlow5Seconds = measure(fixedFlow5), genericSeconds = measure(generic);
             else
-                physicalSeconds = measure(physical), equationSeconds = measure(general);
+                genericSeconds = measure(generic), fixedFlow5Seconds = measure(fixedFlow5);
             DNDS_check_throw_info(state.Owned().Version() == version, "spatial component changed owned means");
             if (mpi.rank == 0)
-                std::cout << "EQUATION_ADAPTER " << C::Json{{"cells", width * width}, {"np", mpi.size}, {"viscous", viscous}, {"repetitions", repetitions}, {"trial", trial}, {"physical_seconds", physicalSeconds}, {"equation_seconds", equationSeconds}, {"max_error", error}, {"rhs_magnitude", magnitude}, {"includes_halo", true}, {"includes_nonlinear", false}, {"reconstruction", "constant"}, {"owned_generation_preserved", true}}.dump() << std::endl;
+                std::cout << "FINITE_VOLUME_DISPATCH " << C::Json{{"cells", width * width}, {"np", mpi.size}, {"viscous", viscous}, {"repetitions", repetitions}, {"trial", trial}, {"generic_seconds", genericSeconds}, {"fixed_flow5_seconds", fixedFlow5Seconds}, {"max_error", error}, {"rhs_magnitude", magnitude}, {"includes_halo", true}, {"includes_nonlinear", false}, {"reconstruction", "constant"}, {"owned_generation_preserved", true}}.dump() << std::endl;
         }
     }
     catch (const std::exception &error)
