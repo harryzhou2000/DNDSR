@@ -189,6 +189,7 @@ TEST_CASE("Reconstruction PP controls are explicit and reject unsupported compat
 {
     C::NumericsSettings settings;
     CHECK(settings.positivityReconstruction == "Euler");
+    CHECK(settings.positivityClippedReferencePolicy == "fallbackToBase");
     CHECK_NOTHROW(settings.ValidatePositivity());
     settings.positivity = true;
     settings.positivityCompressToMean = false;
@@ -206,6 +207,12 @@ TEST_CASE("Reconstruction PP controls are explicit and reject unsupported compat
     settings.positivityReconstruction = "unknown";
     CHECK_THROWS(settings.ValidatePositivity());
     CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"numerics", {{"positivityReconstruction", "unknown"}}}}}}, 2));
+    settings.positivityReconstruction = "Euler";
+    settings.positivityClippedReferencePolicy = "backtracking";
+    CHECK_NOTHROW(settings.ValidatePositivity());
+    settings.positivityClippedReferencePolicy = "unknown";
+    CHECK_THROWS(settings.ValidatePositivity());
+    CHECK_THROWS(C::SimulationConfig::Resolve({{"defaults", {{"numerics", {{"positivityClippedReferencePolicy", "unknown"}}}}}}, 2));
 }
 TEST_CASE("Cauchy implicit controls resolve through the root and reject contradictory paths")
 {

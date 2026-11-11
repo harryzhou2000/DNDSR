@@ -15,6 +15,7 @@ namespace DNDS::Cauchy
             return result;
         }
     }
+    /// PP POLICY -- pure-flow5 reconstruction specialization.
     /// Euler EvaluateURecBeta's common density fraction, scheme-one energy
     /// fraction and beta power/safety, applied to explicit quadrature values.
     /// Base may be a lower-order polynomial; all its points and the mean must

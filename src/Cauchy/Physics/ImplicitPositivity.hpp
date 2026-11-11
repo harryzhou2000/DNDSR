@@ -21,6 +21,7 @@ namespace DNDS::Cauchy
             return state[4] - .5 * momentum2 / (state[0] + verySmallReal);
         }
     }
+    /// PP POLICY -- shared affine segment helper.
     /// Euler Gas::IdealGasGetCompressionRatioPressure scheme=1, expressed in
     /// conservative flow5 and explicit internal-energy reference values. The
     /// reference must be affine on this segment (or a supplied safe affine
@@ -49,6 +50,7 @@ namespace DNDS::Cauchy
                    ? alpha
                    : std::numeric_limits<real>::quiet_NaN();
     }
+    /// PP POLICY -- pure-flow5 forecast specialization.
     /// Euler EvaluateCellRHSAlpha's density/energy relaxation, power compression
     /// and final safety factor. The caller performs field/global reductions and
     /// applies RHS compression or dTau compression; this pure rule does neither.
@@ -88,6 +90,7 @@ namespace DNDS::Cauchy
         const real alpha = alphaRho * alphaEnergy;
         return alpha < 1 ? std::pow(alpha, compression * power) * (1 - 1e-5) : 1;
     }
+    /// PP POLICY -- pure-flow5 final accepted-mean repair.
     /// Euler CompressInc flow5 repair, after the separately selected relaxed
     /// delta compression. Density is corrected first; each affine internal-
     /// energy bound uses scheme=1, .99 extra safety and the legacy .9 pull-up.

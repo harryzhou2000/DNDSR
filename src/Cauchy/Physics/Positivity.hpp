@@ -8,6 +8,7 @@
 
 namespace DNDS::Cauchy
 {
+    /// PP POLICY -- pure-flow5 affine admissibility model.
     /// Initial affine thermal bound. The energy reference may be negative.
     /// Future equation providers can supply composition/density-dependent
     /// MinimumInternalEnergyDensity(state), provided their admissible set is
@@ -53,6 +54,7 @@ namespace DNDS::Cauchy
         return state[0] - bounds.densityFloor >= roundoff * std::max(state[0], bounds.densityFloor) &&
                state[4] - kinetic - minimum >= roundoff * scale;
     }
+    /// PP POLICY -- global conservative explicit flux-blend segment search.
     /// Largest safe segment fraction by a bracketed convex-set search. Caller
     /// validates finite endpoints and an admissible base. No T inversion,
     /// pressure recovery, EOS equivalent gamma, or component clipping occurs.

@@ -430,6 +430,14 @@ namespace DNDS::Cauchy
                             DNDS_check_throw_info(std::isfinite(value) && value > 0, "invalid equation pseudo-time spectral sum");
                             if (data.positivity && data.settings.positivity.rhsFPPMode != "none")
                             {
+                                // PP POLICY -- whole-vector forecast. The trial
+                                // includes every coupled component, while its
+                                // mixture energy reference uses only a temporary
+                                // clipped/normalized composition. No species
+                                // simplex alpha or storage mutation occurs. The
+                                // resulting scalar applies to the complete defect
+                                // or common dTau; ApplyCorrectionImpl owns the
+                                // exact repaired-mean guarantee.
                                 const EquationPositivityDetail::PointRow<decltype(means)> mean{means, iCell};
                                 struct TrialIncrement
                                 {
@@ -611,6 +619,11 @@ namespace DNDS::Cauchy
                     real alpha = 1;
                     if (data.positivity)
                     {
+                        // PP POLICY -- preliminary solved-increment forecast.
+                        // Match Euler EvaluateCellRHSAlpha: one clipped-reference
+                        // scalar scales the complete flow/species/RANS correction.
+                        // This is not acceptance; the exact species target and
+                        // raw-affine FixFraction line search below remain mandatory.
                         alpha = bounds.IncrementFraction(old, change, data.settings.positivity.incrementRelax, 2,
                                                          data.settings.positivity.compressionPower);
                         DNDS_check_throw_info(std::isfinite(alpha) && alpha >= 0 && alpha <= 1,
@@ -624,6 +637,12 @@ namespace DNDS::Cauchy
                     } limitedChange{change, alpha};
                     if (data.positivity && independent)
                     {
+                        // PP POLICY -- exact stored species target. Repair once
+                        // before final thermal restriction; the resulting rhoY is
+                        // the actual accepted/exchanged mean. Both endpoints are
+                        // in the simplex, so raw and clipped EOS/T references
+                        // coincide along the line. No projection may follow
+                        // FixFraction.
                         for (index k = 0; k < independent; ++k)
                             repairedSpecies[size_t(k)] = old[data.speciesFirst + k] + limitedChange[data.speciesFirst + k];
                         struct SpeciesScratch
@@ -664,7 +683,21 @@ namespace DNDS::Cauchy
                     }
                     for (index j = 0; j < components; ++j)
                     {
-                        candidate(iCell, j) = mean(iCell, j) + fix * storedChange[j];
+                        if (data.positivity && independent &&
+                            j >= data.speciesFirst && j < data.speciesFirst + independent)
+                        {
+                            const real target = repairedSpecies[size_t(j - data.speciesFirst)];
+                            // Publish the exact repaired target when the final
+                            // thermal line needs no contraction. Computing
+                            // old+(target-old) can erase a tiny positive species
+                            // floor by cancellation. The convex form is retained
+                            // when FixFraction genuinely restricts the line.
+                            candidate(iCell, j) = fix == 1
+                                                      ? target
+                                                      : (1 - fix) * old[j] + fix * target;
+                        }
+                        else
+                            candidate(iCell, j) = mean(iCell, j) + fix * storedChange[j];
                         if (!selection.Includes(j))
                             frozen = frozen && candidate(iCell, j) == mean(iCell, j);
                         // Exponential scalar repair must not hide an infinite or

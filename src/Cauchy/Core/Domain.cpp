@@ -220,7 +220,10 @@ namespace DNDS::Cauchy
                     {
                         if (rans)
                         {
-                            // Euler's scalar-only repair is permitted here.
+                            // PP POLICY -- explicit extended equations retain
+                            // raw flow/species stage increments and reject the
+                            // whole step when their accepted mean is invalid.
+                            // Euler's scalar-only RANS repair is permitted here.
                             // It must never rescale the flow5/species update.
                             std::array<real, 2> old{}, change{}, next{};
                             for (int j = 0; j < ransState.components; ++j)
@@ -235,7 +238,8 @@ namespace DNDS::Cauchy
                             for (int j = 0; j < ransState.components; ++j) state(iCell, j) = next[j];
                             continue;
                         }
-                        // No cellwise thermal increment compression: flow5
+                        // PP POLICY -- no cellwise thermal increment compression:
+                        // flow5
                         // and species retain their conservative residuals.
                         // Do not clip/normalize species means here either;
                         // the full raw candidate must pass Admissible below.
@@ -254,7 +258,10 @@ namespace DNDS::Cauchy
         int safe[2]{1, 1}; // high candidate, low candidate
         if (_positivity)
         {
-            // Compatibility baseline: one domain-global conservative blend.
+            // PP POLICY -- pure-flow5 compatibility baseline: one domain-global
+            // conservative high/low face-flux blend. This is the only explicit
+            // thermal compression currently allowed; extended equations retry
+            // the step instead of compressing their pointwise increments.
             // Deferred explicit PP work should limit shared face-flux
             // corrections using both adjacent cells, including MPI faces.
             // A cell-local increment factor is not a conservative substitute.

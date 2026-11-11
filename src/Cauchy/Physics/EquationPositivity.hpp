@@ -7,6 +7,15 @@
 
 namespace DNDS::Cauchy
 {
+    /// Response to a failed clipped-composition reconstruction-energy check.
+    /// The predicate is shared; this enum changes only whether the complete
+    /// flow/species polynomial drops to its base or searches an intermediate beta.
+    enum class ReconstructionClippedReferencePolicy
+    {
+        FallbackToBase,
+        Backtracking
+    };
+
     namespace EquationPositivityDetail
     {
         template <class Values>
@@ -73,23 +82,36 @@ namespace DNDS::Cauchy
                 result[j] = values[flowFirst + j];
             return result;
         }
-        /// Raw is affine in transported conservative values. Repaired mirrors
-        /// the property producer's clipped/normalized temporary composition;
-        /// it never changes the row or the conservative derivatives.
+        /// Raw reference, affine in transported conservative values. It drives
+        /// reconstruction's analytic beta and final-mean line-search proofs.
+        /// Reconstruction retains these raw rhoY values for species advection
+        /// and diffusion, while final point-property acceptance checks only a
+        /// temporary clipped copy. The raw reconstruction bound is a limiter
+        /// construction, not an additional EOS/T acceptance invariant.
         template <class Row>
-        DNDS_DEVICE_CALLABLE real Reference(const Row &values, int constraint, bool repaired = false) const
+        DNDS_DEVICE_CALLABLE real Reference(const Row &values, int constraint) const
         {
             const real rho = values[flowFirst];
             const auto *energy = speciesEnergies[constraint];
             if (!energy)
                 return rho * densityCoefficients[constraint];
-            if (!repaired)
-            {
-                real value = rho * energy[independent];
-                for (index k = 0; k < independent; ++k)
-                    value += values[speciesFirst + k] * (energy[k] - energy[independent]);
-                return value;
-            }
+            real value = rho * energy[independent];
+            for (index k = 0; k < independent; ++k)
+                value += values[speciesFirst + k] * (energy[k] - energy[independent]);
+            return value;
+        }
+        /// Property-forecast reference. This mirrors Euler's tolerant temporary
+        /// composition (clip negative fractions, restore the dependent species,
+        /// then normalize) without changing stored rhoY. It is deliberately
+        /// separate from Reference(): the map is not affine and therefore must
+        /// never be used by the exact stored-state FixFraction line search.
+        template <class Row>
+        DNDS_DEVICE_CALLABLE real ClippedReference(const Row &values, int constraint) const
+        {
+            const real rho = values[flowFirst];
+            const auto *energy = speciesEnergies[constraint];
+            if (!energy)
+                return rho * densityCoefficients[constraint];
             real sum = 0;
             for (index k = 0; k < independent; ++k)
                 sum += std::max(real(0), values[speciesFirst + k] / rho);
@@ -101,20 +123,55 @@ namespace DNDS::Cauchy
             return rho * value;
         }
         template <class Row>
-        DNDS_DEVICE_CALLABLE real Sensible(const Row &values, int constraint, bool repaired = false) const
+        DNDS_DEVICE_CALLABLE real Sensible(const Row &values, int constraint) const
         {
-            return PositivityDetail::InternalEnergy(Flow(values)) - Reference(values, constraint, repaired);
+            return PositivityDetail::InternalEnergy(Flow(values)) - Reference(values, constraint);
         }
-        /// Reference/mean checks also require the raw species simplex. Final
-        /// quadrature checks may omit that test, matching Euler's thermal
-        /// postcheck while preserving the property-repaired energy constraint.
         template <class Row>
-        DNDS_DEVICE_CALLABLE bool Admissible(const Row &values, bool requireSpecies = true) const
+        DNDS_DEVICE_CALLABLE real ClippedSensible(const Row &values, int constraint) const
+        {
+            return PositivityDetail::InternalEnergy(Flow(values)) - ClippedReference(values, constraint);
+        }
+        /// Raw affine density/energy predicate. It deliberately ignores the
+        /// independent/dependent species simplex and performs no clipping.
+        template <class Row>
+        DNDS_DEVICE_CALLABLE bool RawThermallyAdmissible(const Row &values) const
         {
             for (index j = 0; j < components; ++j)
                 if (!std::isfinite(values[j]))
                     return false;
             if (!(values[flowFirst] >= densityFloor))
+                return false;
+            for (int c = 0; c < 2; ++c)
+                if (!(Sensible(values, c) >= floors[c]))
+                    return false;
+            return true;
+        }
+        /// Temporary physical-point predicate. Species are clipped/normalized
+        /// only inside ClippedReference(); the supplied row is never mutated.
+        /// Passing this bound makes the corresponding EOS temperature floor
+        /// representable after point preparation, without imposing a simplex
+        /// constraint on reconstruction coefficients.
+        template <class Row>
+        DNDS_DEVICE_CALLABLE bool ClippedReferenceAdmissible(const Row &values) const
+        {
+            for (index j = 0; j < components; ++j)
+                if (!std::isfinite(values[j]))
+                    return false;
+            if (!(values[flowFirst] >= densityFloor))
+                return false;
+            for (int c = 0; c < 2; ++c)
+                if (!(ClippedSensible(values, c) >= floors[c]))
+                    return false;
+            return true;
+        }
+        /// Accepted mean-state predicate. Unlike reconstruction, a stored mean
+        /// must satisfy the complete species simplex as well as both raw and
+        /// temporary-property energy views.
+        template <class Row>
+        DNDS_DEVICE_CALLABLE bool Admissible(const Row &values, bool requireSpecies = true) const
+        {
+            if (!RawThermallyAdmissible(values) || !ClippedReferenceAdmissible(values))
                 return false;
             if (requireSpecies)
             {
@@ -128,11 +185,9 @@ namespace DNDS::Cauchy
                 if (sum > values[flowFirst])
                     return false;
             }
-            for (int c = 0; c < 2; ++c)
-                if (!(Sensible(values, c) >= floors[c]) || !(Sensible(values, c, true) >= floors[c]))
-                    return false;
             return true;
         }
+        /// PP POLICY -- whole-vector clipped-reference forecast.
         /// Euler density relaxation and scheme-one energy compression.
         /// Returns alpha for U+alpha*dU: density first, then both relaxed
         /// energy bounds, followed by alpha^(compression*power)*(1-1e-5)
@@ -156,13 +211,17 @@ namespace DNDS::Cauchy
             real energy = 1;
             for (int c = 0; c < 2; ++c)
             {
-                const real oldEnergy = Sensible(state, c), newEnergy = Sensible(next, c);
+                const real oldEnergy = ClippedSensible(state, c), newEnergy = ClippedSensible(next, c);
                 if (!std::isfinite(oldEnergy) || !std::isfinite(newEnergy))
                     return std::numeric_limits<real>::quiet_NaN();
                 const real floor = newEnergy < oldEnergy ? floors[c] + (oldEnergy - floors[c]) * (1 - relax) : floors[c];
                 if (newEnergy < floor)
                 {
-                    const real value = InternalEnergyCompression(Flow(state), delta, floor, Reference(state, c), Reference(next, c));
+                    // Euler's forecast limiter evaluates the same tolerant
+                    // property composition as its EOS path. This is a guarded
+                    // predictor, not the exact stored-state line search below.
+                    const real value = InternalEnergyCompression(Flow(state), delta, floor,
+                                                                 ClippedReference(state, c), ClippedReference(next, c));
                     if (!std::isfinite(value))
                         return value;
                     energy = std::min(energy, value);
@@ -171,13 +230,18 @@ namespace DNDS::Cauchy
             const real fraction = density * energy;
             return fraction < 1 ? std::pow(fraction, compression * power) * (1 - 1e-5) : 1;
         }
+        /// PP POLICY -- exact stored-mean repair.
         /// Euler final density/energy increment repair (.99 safety, .9 pull-up).
         /// Returns the whole-increment multiplier, or NaN if pull-up fails.
         /// Callers must reject a nonfinite result, scale all components, then
         /// perform the separate RANS repair and validate the combined state.
-        /// The supplied increment must already point to the exact stored-species
-        /// target. This function uses the raw affine mixture reference and never
-        /// performs or assumes another composition projection.
+        /// The supplied increment must already point to the exact simplex-repaired
+        /// species target. Those rhoY values are the actual stored/exchanged mean.
+        /// Because that target is already in the complete simplex, the raw
+        /// reference and the clipped EOS/T composition coincide along the line;
+        /// this raw-affine search therefore proves the physical invariant too.
+        /// It performs no further projection and is distinct from temporary
+        /// reconstruction-point clipping. See CauchyPositivity.md.
         template <class Row, class Increment>
         DNDS_DEVICE_CALLABLE real FixFraction(const Row &state, const Increment &increment) const
         {
@@ -217,23 +281,35 @@ namespace DNDS::Cauchy
                     return std::numeric_limits<real>::quiet_NaN();
             return fraction;
         }
+        /// PP POLICY -- reconstruction analytic beta and physical endpoint.
         /// Euler flow/species quadrature beta. Apply only to components selected
         /// by CompressesReconstructionComponent(), relative to the supplied
         /// admissible base. This differs from whole-vector increment repair.
         /// densityLimit is an optional SA reduced-order ratio in [0,1], merged
         /// into the density stage before the energy test and beta power.
-        /// Raw affine references determine the
-        /// concave energy ratio; a failed property-repaired postcheck falls
-        /// back to the validated reference, as in the legacy species path.
+        /// Raw affine references determine the concave analytic ratio. The
+        /// clipped-reference predicate is the final physical endpoint because
+        /// it matches point preparation before the EOS/T solver; it never
+        /// mutates the polynomial or imposes a species-simplex beta.
+        ///
+        /// TODO(PP-RECONSTRUCTION-CLIPPED-RHOY): evaluate, with matched
+        /// Euler/Cauchy oracles, whether the analytic thermal beta itself should
+        /// use the clipped/normalized reference. That map is heuristic and
+        /// non-convex; do not change it without retaining endpoint backtracking.
         template <class Row, class BaseValues, class HigherValues>
         DNDS_DEVICE_CALLABLE real ReconstructionFraction(const Row &mean, const BaseValues &baseValues, const HigherValues &higherValues,
-                                                         index begin, index end, int power, real cutoff, real densityLimit = 1) const
+                                                         index begin, index end, int power, real cutoff, real densityLimit = 1,
+                                                         ReconstructionClippedReferencePolicy clippedPolicy = ReconstructionClippedReferencePolicy::FallbackToBase) const
         {
             using namespace EquationPositivityDetail;
-            bool good = true;
+            bool rawGood = true, clippedGood = true;
             for (index q = begin; q < end; ++q)
-                good = good && Admissible(PointRow<HigherValues>{higherValues, q}, false);
-            if (good && densityLimit == 1)
+            {
+                const PointRow<HigherValues> point{higherValues, q};
+                rawGood = rawGood && RawThermallyAdmissible(point);
+                clippedGood = clippedGood && ClippedReferenceAdmissible(point);
+            }
+            if (rawGood && clippedGood && densityLimit == 1)
                 return 1;
             real density = densityLimit;
             for (index q = begin; q < end; ++q)
@@ -265,13 +341,35 @@ namespace DNDS::Cauchy
                             return value;
                         energy = std::min(energy, value);
                     }
-                    if (speciesEnergies[c] && Sensible(next, c, true) < floors[c])
-                        energy = 0;
                 }
             }
             const real fraction = density * energy;
             const real compressed = fraction < 1 ? fraction * std::pow(fraction, power) * (1 - 1e-5) : 1;
-            return compressed < cutoff ? 0 : compressed;
+            real beta = compressed < cutoff ? 0 : compressed;
+            const auto clippedAt = [&](real candidate)
+            {
+                bool good = true;
+                for (index q = begin; q < end; ++q)
+                {
+                    const PointRow<BaseValues> base{baseValues, q};
+                    const PointRow<HigherValues> high{higherValues, q};
+                    const DifferenceRow<decltype(base), decltype(high)> delta{base, high, candidate};
+                    const SegmentRow<decltype(base), decltype(delta)> point{base, delta, 1};
+                    good = good && ClippedReferenceAdmissible(point);
+                }
+                return good;
+            };
+            if (!clippedAt(0))
+                return std::numeric_limits<real>::quiet_NaN();
+            if (clippedPolicy == ReconstructionClippedReferencePolicy::FallbackToBase)
+                return clippedAt(beta) ? beta : 0;
+            for (int iteration = 0; iteration < 1000 && !clippedAt(beta); ++iteration)
+            {
+                beta *= .9;
+                if (beta < cutoff)
+                    return 0;
+            }
+            return clippedAt(beta) ? beta : 0;
         }
     };
 
@@ -299,6 +397,7 @@ namespace DNDS::Cauchy
         }
     };
 
+    /// PP POLICY -- accepted mean-state boundary.
     /// Frozen complete mean-state admissibility view. Thermal flow/species
     /// constraints and model-specific RANS scalar constraints are resolved once
     /// by EquationAdmissibilityPolicy; row checks perform no EOS inversion,

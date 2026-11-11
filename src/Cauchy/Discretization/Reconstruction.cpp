@@ -85,7 +85,11 @@ namespace DNDS::Cauchy
         template <class Values>
         bool ReferenceGood(const Values &values, index q, const EquationThermalView &bounds) const
         {
-            return bounds.Admissible(EquationPositivityDetail::PointRow<Values>{values, q}, false);
+            const EquationPositivityDetail::PointRow<Values> point{values, q};
+            // A selected base must support both the raw-affine beta construction
+            // and the clipped EOS/T endpoint. Final reconstructed points use
+            // only the latter as their physical acceptance invariant.
+            return bounds.RawThermallyAdmissible(point) && bounds.ClippedReferenceAdmissible(point);
         }
     };
     FiniteVolume::PositivityWorkspace::PositivityWorkspace(std::shared_ptr<const Data> owner,
@@ -98,6 +102,9 @@ namespace DNDS::Cauchy
         auto &data = *state;
         const auto &n = data.owner->settings.numerics;
         const auto bounds = data.policy.View();
+        const auto clippedPolicy = n.positivityClippedReferencePolicy == "backtracking"
+                                       ? ReconstructionClippedReferencePolicy::Backtracking
+                                       : ReconstructionClippedReferencePolicy::FallbackToBase;
         const index cells = data.owner->metrics.NumCell(), points = data.owner->positivitySamples->Size();
         DNDS_check_throw_info(data.owner->reconstruction,
                               "polynomial positivity requires variational reconstruction");
@@ -202,6 +209,7 @@ namespace DNDS::Cauchy
         }
         data.limited = 0;
         data.minimum = 1;
+        std::vector<real> cellBeta(size_t(cells), 1);
         {
             const SampleRead read(data.prototype, data.higherValues, points);
             const auto higher = read.View();
@@ -253,13 +261,12 @@ namespace DNDS::Cauchy
                         beta = 0;
                 }
                 else
-                    beta = baseRead ? bounds.ReconstructionFraction(mean, baseRead->View(), higher, begin, end, n.positivityBetaPower, n.positivityBetaCutoff)
-                                    : bounds.ReconstructionFraction(mean, base, higher, begin, end, n.positivityBetaPower, n.positivityBetaCutoff);
+                    beta = baseRead ? bounds.ReconstructionFraction(mean, baseRead->View(), higher, begin, end, n.positivityBetaPower, n.positivityBetaCutoff, 1, clippedPolicy)
+                                    : bounds.ReconstructionFraction(mean, base, higher, begin, end, n.positivityBetaPower, n.positivityBetaCutoff, 1, clippedPolicy);
                 DNDS_check_throw_info(std::isfinite(beta) && beta >= 0 && beta <= 1, "invalid equation reconstruction PP beta");
+                cellBeta[size_t(iCell)] = beta;
                 if (beta < 1)
                 {
-                    ++data.limited;
-                    data.minimum = std::min(data.minimum, beta);
                     for (index component = 0; component < input.ComponentNumber(); ++component)
                         if (bounds.CompressesReconstructionComponent(component))
                             for (int mode = 0; mode < modes; ++mode)
@@ -271,12 +278,84 @@ namespace DNDS::Cauchy
                 }
             }
         }
-        // Validate the actual published coefficients, including roundoff and
-        // physical-layout indexing, rather than only the algebraic point blend.
+        // PP POLICY -- final published-point guarantee. Raw rhoY remains in the
+        // polynomial and in advection/diffusion; only the final predicate uses
+        // the temporary clipped composition passed to EOS/T. Re-sample actual
+        // post-layout storage and recover rather than treating the analytic beta
+        // as an exact floating-point publication guarantee.
+        std::vector<uint8_t> recover(size_t(cells), 0);
+        std::vector<real> recoveryScale(size_t(cells), 1);
+        for (int iteration = 0; iteration < 1000; ++iteration)
+        {
+            data.Sample(input, flux, data.higherValues);
+            bool any = false;
+            {
+                const SampleRead read(data.prototype, data.higherValues, points);
+                const auto values = read.View();
+                for (index iCell = 0; iCell < cells; ++iCell)
+                {
+                    bool clippedGood = true;
+                    for (index q = data.owner->positivityOffsets[iCell]; q < data.owner->positivityOffsets[iCell + 1]; ++q)
+                    {
+                        const EquationPositivityDetail::PointRow<decltype(values)> point{values, q};
+                        clippedGood = clippedGood && bounds.ClippedReferenceAdmissible(point);
+                    }
+                    recover[size_t(iCell)] = uint8_t(!clippedGood);
+                    if (!recover[size_t(iCell)])
+                        continue;
+                    any = true;
+                    const real previous = cellBeta[size_t(iCell)];
+                    if (clippedPolicy == ReconstructionClippedReferencePolicy::FallbackToBase)
+                        cellBeta[size_t(iCell)] = 0;
+                    else
+                        cellBeta[size_t(iCell)] *= .9;
+                    if (cellBeta[size_t(iCell)] < n.positivityBetaCutoff)
+                        cellBeta[size_t(iCell)] = 0;
+                    DNDS_check_throw_info(previous > 0,
+                                          "validated reconstruction base violates its final physical-state predicate");
+                    recoveryScale[size_t(iCell)] = cellBeta[size_t(iCell)] / previous;
+                }
+            }
+            if (!any)
+                break;
+
+            std::optional<EquationDofs::ReadScope> referenceScope;
+            std::optional<Algebra::DofComponentLayout<const real>> referenceLayout;
+            if (data.reference)
+            {
+                referenceScope.emplace(data.reference->ReadOwned());
+                referenceLayout.emplace(referenceScope->ComponentLayout());
+            }
+            auto write = flux.WriteOwned();
+            const auto layout = write.ComponentLayout();
+            const auto coefficients = layout.View();
+            for (index iCell = 0; iCell < cells; ++iCell)
+                if (recover[size_t(iCell)])
+                    for (index component = 0; component < input.ComponentNumber(); ++component)
+                        if (bounds.CompressesReconstructionComponent(component))
+                            for (int mode = 0; mode < modes; ++mode)
+                            {
+                                const index j = component * modes + mode;
+                                const real reference = referenceLayout ? referenceLayout->View()(iCell, j) : 0;
+                                coefficients(iCell, j) = reference + recoveryScale[size_t(iCell)] * (coefficients(iCell, j) - reference);
+                            }
+        }
         data.Sample(input, flux, data.higherValues);
-        const SampleRead read(data.prototype, data.higherValues, points);
-        const auto values = read.View();
-        for (index q = 0; q < points; ++q)
-            DNDS_check_throw_info(bounds.Admissible(EquationPositivityDetail::PointRow<decltype(values)>{values, q}, false), "published equation reconstruction violates its thermal bounds");
+        {
+            const SampleRead read(data.prototype, data.higherValues, points);
+            const auto values = read.View();
+            for (index q = 0; q < points; ++q)
+            {
+                const EquationPositivityDetail::PointRow<decltype(values)> point{values, q};
+                DNDS_check_throw_info(bounds.ClippedReferenceAdmissible(point),
+                                      "published equation reconstruction violates its clipped EOS/T bound");
+            }
+        }
+        for (const real beta : cellBeta)
+            if (beta < 1)
+            {
+                ++data.limited;
+                data.minimum = std::min(data.minimum, beta);
+            }
     }
 }

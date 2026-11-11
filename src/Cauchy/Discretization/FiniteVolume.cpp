@@ -1610,21 +1610,20 @@ namespace DNDS::Cauchy
                         directPPSamples[size_t(q * components + j)] = value;
                     }
                 base.cell = iCell;
-                const real beta = bounds.ReconstructionFraction(
+                const auto clippedPolicy = owner->settings.numerics.positivityClippedReferencePolicy == "backtracking"
+                                               ? ReconstructionClippedReferencePolicy::Backtracking
+                                               : ReconstructionClippedReferencePolicy::FallbackToBase;
+                real beta = bounds.ReconstructionFraction(
                     mean, base, higher, 0, points,
                     owner->settings.numerics.positivityBetaPower,
-                    owner->settings.numerics.positivityBetaCutoff);
+                    owner->settings.numerics.positivityBetaCutoff, 1,
+                    clippedPolicy);
                 DNDS_check_throw_info(std::isfinite(beta) && beta >= 0 && beta <= 1,
                                       "invalid direct-P1 thermal beta");
                 const real ransScale = rans.Compute(base, higher, ransFirst, 0, points);
                 DNDS_check_throw_info(std::isfinite(ransScale) && ransScale >= 0 &&
                                           ransScale <= 1,
                                       "invalid direct-P1 RANS factor");
-                if (beta < 1)
-                {
-                    ++directPPLimited;
-                    directPPMinimum = std::min(directPPMinimum, beta);
-                }
                 for (index j = 0; j < components; ++j)
                 {
                     real scale = bounds.CompressesReconstructionComponent(j) ? beta : 1;
@@ -1638,25 +1637,78 @@ namespace DNDS::Cauchy
                     for (int d = 0; d < dim; ++d)
                         gradients[field](iCell, component * dim + d) *= scale;
                 }
-                struct FinalValues
+
+                // PP POLICY -- verify the actual scaled gradient storage. Raw
+                // rhoY remains the advection/diffusion polynomial; only this
+                // predicate constructs the temporary clipped EOS/T composition.
+                struct ScratchRow
                 {
-                    decltype(mean) center;
-                    PointValues higher;
-                    EquationThermalView bounds;
-                    real beta;
-                    real operator()(index q, index j) const
+                    const std::vector<real> *values;
+                    index first;
+                    real operator[](index j) const { return (*values)[size_t(first + j)]; }
+                };
+                for (int iteration = 0; iteration < 1000; ++iteration)
+                {
+                    bool clippedGood = true;
+                    for (index q = 0; q < points; ++q)
                     {
-                        return bounds.CompressesReconstructionComponent(j)
-                                   ? center[j] + beta * (higher(q, j) - center[j])
-                                   : higher(q, j);
+                        for (index j = 0; j < components; ++j)
+                        {
+                            const index field = logicalField[size_t(j)];
+                            const index component = logicalComponent[size_t(j)];
+                            real value = mean[j];
+                            const auto &displacement =
+                                owner->positivityDisplacements[size_t(begin + q)];
+                            for (int d = 0; d < dim; ++d)
+                                value += gradients[field](iCell, component * dim + d) * displacement[d];
+                            directPPSamples[size_t(q * components + j)] = value;
+                        }
+                        const ScratchRow point{&directPPSamples, q * components};
+                        clippedGood = clippedGood && bounds.ClippedReferenceAdmissible(point);
                     }
-                } final{mean, higher, bounds, beta};
+                    if (clippedGood)
+                        break;
+                    const real previous = beta;
+                    if (clippedPolicy == ReconstructionClippedReferencePolicy::FallbackToBase)
+                        beta = 0;
+                    else
+                        beta *= .9;
+                    if (beta < owner->settings.numerics.positivityBetaCutoff)
+                        beta = 0;
+                    DNDS_check_throw_info(previous > 0,
+                                          "direct-P1 mean base violates its final physical-state predicate");
+                    const real ratio = beta / previous;
+                    for (index j = 0; j < components; ++j)
+                        if (bounds.CompressesReconstructionComponent(j))
+                        {
+                            const index field = logicalField[size_t(j)];
+                            const index component = logicalComponent[size_t(j)];
+                            for (int d = 0; d < dim; ++d)
+                                gradients[field](iCell, component * dim + d) *= ratio;
+                        }
+                }
+                if (beta < 1)
+                {
+                    ++directPPLimited;
+                    directPPMinimum = std::min(directPPMinimum, beta);
+                }
                 for (index q = 0; q < points; ++q)
-                    DNDS_check_throw_info(
-                        bounds.Admissible(
-                            EquationPositivityDetail::PointRow<FinalValues>{final, q},
-                            false),
-                        "published direct-P1 gradient violates thermal bounds");
+                {
+                    for (index j = 0; j < components; ++j)
+                    {
+                        const index field = logicalField[size_t(j)];
+                        const index component = logicalComponent[size_t(j)];
+                        real value = mean[j];
+                        const auto &displacement =
+                            owner->positivityDisplacements[size_t(begin + q)];
+                        for (int d = 0; d < dim; ++d)
+                            value += gradients[field](iCell, component * dim + d) * displacement[d];
+                        directPPSamples[size_t(q * components + j)] = value;
+                    }
+                    const ScratchRow point{&directPPSamples, q * components};
+                    DNDS_check_throw_info(bounds.ClippedReferenceAdmissible(point),
+                                          "published direct-P1 gradient violates its clipped EOS/T bound");
+                }
             }
         }
 
@@ -2092,17 +2144,48 @@ namespace DNDS::Cauchy
                         for (int d = 0; d < dim; ++d)
                             point.gradient(flowFirst + j, d) = row[j * dim + d];
                 }
-                // Equation reconstruction PP deliberately uses Euler's final
-                // property-repaired thermal postcheck. Requiring the raw
-                // species simplex again here would reject coefficients that
-                // the PP publication has already accepted. Standalone face
-                // fallback retains the stricter raw-state predicate.
-                const bool requireRawSpecies = !owner->settings.numerics.positivity;
-                if ((owner->settings.numerics.faceFallback || owner->settings.numerics.positivity) &&
-                    !thermalBounds.Admissible(point.values, requireRawSpecies))
+                // PP POLICY -- point-local physical fallback. Reconstruction
+                // deliberately retains raw rhoY for conservative advection and
+                // diffusion; its final limiter check only evaluates a temporary
+                // clipped composition matching EOS/T. No simplex condition is
+                // imposed on the polynomial. If the actual point preparation
+                // still fails, Cauchy may replace this temporary point by the
+                // valid mean without mutating coefficients. Euler's separate
+                // point policy is unchanged. See CauchyPositivity.md.
+                const bool pointAdmissible = owner->settings.numerics.positivity
+                                                 ? thermalBounds.ClippedReferenceAdmissible(point.values)
+                                                 : thermalBounds.Admissible(point.values);
+                if ((owner->settings.numerics.faceFallback || owner->settings.numerics.positivity) && !pointAdmissible)
                 {
                     ++localFallbacks;
                     gatherMean(iCell, point);
+                }
+            };
+            const bool allowPointFallback = owner->settings.numerics.faceFallback ||
+                                            owner->settings.numerics.positivity;
+            const auto evaluateReconstructedPoint = [&](index iCell, PointScratch &point, FlowState &flow)
+            {
+                const auto evaluate = [&]
+                {
+                    return EquationPointEvaluator::FluxState(
+                        flow, evaluator.Evaluate(flow, point.Species(speciesFirst, independent), 0, {}));
+                };
+                try
+                {
+                    return evaluate();
+                }
+                catch (const std::exception &)
+                {
+                    if (!allowPointFallback)
+                        throw;
+                    // PP POLICY -- the limiter has already validated the same
+                    // clipped-reference input. A remaining EOS/T inversion
+                    // failure is point-local numerical failure: retry from the
+                    // admissible mean without changing raw polynomial storage.
+                    ++localFallbacks;
+                    gatherMean(iCell, point);
+                    flow = point.Flow(flowFirst);
+                    return evaluate();
                 }
             };
             const auto computeFace = [&](index iAux)
@@ -2178,8 +2261,17 @@ namespace DNDS::Cauchy
                     };
                     if (wallFluxState)
                         leftFlow = rightFlow = prepareWallState();
-                    const auto leftData = EquationPointEvaluator::FluxState(leftFlow, evaluator.Evaluate(leftFlow, wallFluxState ? face.Species(speciesFirst, independent) : left.Species(speciesFirst, independent), 0, {}));
-                    const auto rightData = EquationPointEvaluator::FluxState(rightFlow, evaluator.Evaluate(rightFlow, wallFluxState ? face.Species(speciesFirst, independent) : right.Species(speciesFirst, independent), 0, {}));
+                    const auto leftData = wallFluxState
+                                              ? EquationPointEvaluator::FluxState(
+                                                    leftFlow, evaluator.Evaluate(leftFlow, face.Species(speciesFirst, independent), 0, {}))
+                                              : evaluateReconstructedPoint(iCell, left, leftFlow);
+                    const auto rightData = wallFluxState
+                                               ? EquationPointEvaluator::FluxState(
+                                                     rightFlow, evaluator.Evaluate(rightFlow, face.Species(speciesFirst, independent), 0, {}))
+                                           : internal
+                                               ? evaluateReconstructedPoint(sample.other, right, rightFlow)
+                                               : EquationPointEvaluator::FluxState(
+                                                     rightFlow, evaluator.Evaluate(rightFlow, right.Species(speciesFirst, independent), 0, {}));
                     const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
                     const auto grid = frame.GridVelocity({sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]});
                     auto meanLeftData = leftData, meanRightData = rightData;
@@ -2474,7 +2566,7 @@ namespace DNDS::Cauchy
             faceFallbacks[slot] = localFallbacks;
             if (region == CFV::ReconstructionRegion::All)
                 faceFallbacks[1] = 0;
-            if ((!owner->settings.numerics.faceFallback || owner->settings.numerics.positivity) && localFallbacks)
+            if (!allowPointFallback && localFallbacks)
                 DNDS_check_throw_info(false, "inadmissible reconstructed face with faceFallback disabled");
         }
         void SampleSourceState(const EquationDofs &state)

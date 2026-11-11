@@ -76,6 +76,11 @@ namespace DNDS::Cauchy
                     increment[j] = (dt * scale) * rhs(iCell, j) / metric.GetCellVol(iCell);
                     DNDS_check_throw_info(std::isfinite(increment[j]), "nonfinite physical timestep equation increment");
                 }
+                // PP POLICY -- physical-dt forecast. The complete coupled trial
+                // enters one clipped-reference thermal estimate; no species
+                // simplex factor is formed and no state is changed. The scalar
+                // restricts the common dt only. Explicit stage acceptance and
+                // retry remain the actual update guarantee.
                 const real alpha = thermal.IncrementFraction(row, increment, relax, 1, compressionPower);
                 DNDS_check_throw_info(std::isfinite(alpha) && alpha >= 0 && alpha <= 1, "invalid physical timestep equation fraction");
                 if (alpha < 1) { ++result.limitedCells; result.minimumAlpha = std::min(result.minimumAlpha, alpha); }

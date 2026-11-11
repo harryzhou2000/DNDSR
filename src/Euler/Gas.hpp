@@ -2110,6 +2110,13 @@ namespace DNDS::Euler::Gas
      *
      * Used during implicit time stepping and limiting to prevent negative pressures.
      *
+     * @par PP POLICY
+     * Both supplied base-energy endpoints must describe one affine reference on
+     * the segment. Forecast callers may supply a heuristic projected endpoint
+     * only as an estimate and retain a later exact repair; accepted-mean and
+     * reconstruction analytic callers supply the raw affine reference. This
+     * helper performs no species clipping, projection, or storage mutation.
+     *
      * @tparam dim         Spatial dimension (2 or 3).
      * @tparam scheme      0 = quadratic solve, 1 = linear (concave) estimate.
      * @tparam nVarsFixed  Compile-time size of the state vector.

@@ -1226,6 +1226,7 @@ TEST_CASE("Configured mixture Domains advance every block through production tim
             for (const auto &report : domain.LastImplicitStages())
             {
                 INFO("method=" << config.Time().method << " variant=" << config.Time().ditr.variant << " iterations=" << report.iterations << " target=" << report.residualTargetRatio
+                               << " min_rhs_alpha=" << report.minimumRHSAlpha << " rhs_limited=" << report.rhsLimited
                                << " min_increment_alpha=" << report.minimumIncrementAlpha << " increment_limited=" << report.incrementLimited
                                << " residual=" << C::Json(report.residual).dump() << " initial=" << C::Json(report.initialResidual).dump());
                 CHECK(report.converged);
@@ -2088,8 +2089,11 @@ TEST_CASE("Equation implicit PP compresses RHS or pseudo-time and repairs specie
         }
         std::pair<DNDS::index, DNDS::real> correction;
         CHECK_NOTHROW(correction = solver.ApplyCorrection(state, increment));
-        CHECK(correction.first > 0);
-        CHECK(correction.second < 1);
+        // Species simplex repair is an exact target projection, not a common
+        // flow/species thermal alpha. It must therefore leave the scalar
+        // compression diagnostics untouched while publishing the repaired mean.
+        CHECK(correction.first == 0);
+        CHECK(correction.second == 1);
         {
             const auto read = state.ReadOwned(), before = old.ReadOwned();
             const auto flow = read.Block("flow"), prior = before.Block("flow"), species = read.Block("species");

@@ -60,6 +60,11 @@ namespace DNDS::Cauchy
                                                              Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess,
                                                              Physics::Thermodynamics::MixturePropertyRequest request)
     {
+        // PP POLICY -- rhoY is a borrowed raw conservative point value. The
+        // mixture evaluator clips/normalizes it only into worker-local mass
+        // fractions for EOS, transport and temperature inversion. It never
+        // writes that temporary composition back to reconstruction coefficients,
+        // cell means, halos, or the species values used by conservative fluxes.
         request.diffusivity = _viscous && request.diffusivity;
         request.transport = _viscous && (request.transport || request.diffusivity);
         DNDS_check_throw_info((!request.transport || _request.transport) && (!request.diffusivity || _request.diffusivity) &&

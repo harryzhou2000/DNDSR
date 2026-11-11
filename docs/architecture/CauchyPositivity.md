@@ -47,10 +47,32 @@ flow/species thermal compression rather than introducing a species backoff.
 
 Property evaluation can use a clipped/normalized temporary composition. That
 reference is not globally affine; the same concavity argument is not a proof
-for that repaired map. The implementation therefore also checks the repaired
-reference. Reconstruction can fall back to its validated base polynomial;
-final increment repair has bounded pull-up followed by validation. An exhausted
-or nonfinite repair is an explicit failure, not a successful PP update.
+for that repaired map. Euler nevertheless uses its tolerant property
+composition for the **forecast** RHS/dTau and provisional increment factors.
+Cauchy retains that compatibility: those factors guard a trial direction and
+do not accept a stored state.
+
+Reconstruction has two simultaneous representations. Its raw, possibly
+out-of-simplex `rhoY` polynomial is retained and supplies conservative species
+advection and diffusion. A temporary clipped/normalized copy supplies only the
+pointwise EOS, transport and temperature solver. The raw affine reference gives
+the analytic beta; final sampled-point acceptance checks the temporary clipped
+reference actually seen by physics. Euler's compatibility policy falls back to
+the validated base on failure; `backtracking` searches an intermediate common
+flow/species beta. Neither policy writes the clipped composition back into
+coefficients, means, halos or flux states.
+
+Final mean repair is different: it constructs and stores the exact
+simplex-repaired species target before bounded raw-affine pull-up. Its raw
+predicate therefore describes the actual mean supplied to EOS/T, and no later
+species projection is permitted. An exhausted or nonfinite repair is an
+explicit failure, not a successful PP update.
+
+> **TODO(PP-RECONSTRUCTION-CLIPPED-RHOY):** evaluate with matched Euler/Cauchy
+> oracles whether the analytic reconstruction thermal beta should use the
+> clipped/normalized temporary-composition reference instead of the current raw
+> affine reference. The clipped map is heuristic and non-convex; retain final
+> endpoint checking/backtracking for either choice.
 
 ## Operations and their scopes
 
@@ -104,12 +126,12 @@ provenance; their immutable records are not rewritten.
 
 | Operation | Factor calculation | Application |
 | --- | --- | --- |
-| Reconstruction beta | Density, sensible energy and temperature at the configured cell/face/source quadrature points | Flow5 and species coefficient difference from the selected reference polynomial; not RANS |
-| Implicit RHS compression | Thermal trial `U + rhsFPPScale*dTau*defect/V` | Entire solve defect, as Euler's `cres *= alpha` |
-| Implicit dTau compression | Same thermal trial | Replace scalar dTau by `max(alpha,smallReal)*dTau`; no second component-wise RHS scaling |
-| Implicit increment compression | Thermal trial with the selected nonlinear correction | Entire correction, including RANS and species, before final repair |
-| Implicit final increment repair | Density and thermal bound of the proposed update | Entire correction, then separate RANS repair, addition, and species mean repair |
-| Physical dt restriction | Thermal trial with `dt*scale*R/V` | A scalar global timestep restriction; no independent RANS/species positivity scale |
+| Reconstruction beta | Raw-affine analytic beta followed by final clipped-reference energy/temperature-floor checking at every configured cell/face/source point | Flow5 and raw species coefficient difference from the selected reference polynomial; clipped species exist only as temporary EOS/T input; not RANS |
+| Implicit RHS compression | Property-projected thermal forecast `U + rhsFPPScale*dTau*defect/V` | Entire solve defect, as Euler's `cres *= alpha` |
+| Implicit dTau compression | Same property-projected forecast | Replace scalar dTau by `max(alpha,smallReal)*dTau`; no second component-wise RHS scaling |
+| Implicit increment compression | Property-projected forecast with the selected nonlinear correction | Entire correction, including RANS and species, before final repair |
+| Implicit final increment repair | Raw affine density/thermal bound of the exact stored-species target | Entire correction, then separate RANS repair and addition; no later species projection |
+| Physical dt restriction | Property-projected forecast with `dt*scale*R/V` | A scalar global timestep restriction; no independent RANS/species positivity scale |
 
 Coarse pMG defaults follow Euler's omission of the RHS/dTau limiter:
 `implicit.multigrid.coarseRHSFPP=false` forces coarse rhsFPPMode to none
@@ -212,14 +234,27 @@ first. For a decreasing sensible energy the relaxed energy target is
 `floor + (1-relax)*(Q_old-floor)`. After the scheme-one energy estimate, Euler's
 additional compression is `(alphaRho*alphaEnergy)^(compress*power)*(1-1e-5)`
 when the unpowered factor is below one. Internal/increment control uses
-`compress=2`; physical-dt control uses `compress=1`.
+`compress=2`; physical-dt control uses `compress=1`. These forecast factors use
+the tolerant property composition at their old/trial endpoints, matching
+`EulerEvaluator::EvaluateCellRHSAlpha`. They are deliberately distinguished
+from the raw affine proof used after the linear solve. A diagnostic must report
+RHS and final-increment limiter counts separately: an unconstrained final
+increment does not imply that the pre-solve RHS forecast was inactive.
 
-Implicit final increment repair uses the unrelaxed bound, the legacy `.99` safety factor
-and, if needed, successive `.9` pull-ups with a finite iteration cap. Afterwards
-RANS uses the model-specific exponential negative-update repair (and the SA
-floor where enabled), then its mean bounds. Species means are repaired against
-the accepted density. The combined state is validated after these repairs.
-Scalar repairs must not silently change a component frozen by a partial solve.
+Implicit final increment repair first forms and simplex-repairs the exact species
+target. It then uses the unrelaxed raw-affine bound, the legacy `.99` safety
+factor and, if needed, successive `.9` pull-ups with a finite iteration cap.
+The repaired rhoY is the actual stored/exchanged mean. Since the repaired target
+and the old mean lie in the complete simplex, their connecting line also lies in
+the simplex; along it the raw species reference and clipped EOS/T composition
+are identical. The raw predicate is therefore also the EOS/T invariant in this
+one operation. Afterwards RANS uses the model-specific exponential
+negative-update repair (and the SA floor where enabled), then its mean bounds.
+No later species projection may invalidate the line search. The combined state
+is validated after these repairs. Scalar repairs must not silently change a
+component frozen by a partial solve. Exact species-target projection is not a
+common thermal alpha: it does not reduce `minimumIncrementAlpha` unless the
+subsequent density/energy line search itself contracts the coupled update.
 
 Reconstruction optionally chooses a lower-order admissible reference before
 compression. This order fallback can discard higher modes in **all** blocks,

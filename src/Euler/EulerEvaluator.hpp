@@ -1902,6 +1902,14 @@ namespace DNDS::Euler
          * with the increment clamped so that density, internal energy, and (for RANS)
          * turbulent variables remain non-negative.
          *
+         * @par PP POLICY
+         * This is point-local physical preparation, not polynomial limiting.
+         * The raw reconstructed rhoY remains in reconstruction and conservative
+         * advection/diffusion storage. This routine may repair/reject only its
+         * temporary point before EOS/T evaluation and may fall back according to
+         * the established Euler behavior. It never publishes clipped rhoY back
+         * into coefficients or means.
+         *
          * @param umean     Cell-mean conservative state.
          * @param uRecInc   Reconstruction polynomial increment at an evaluation point.
          * @param compressed Set to true if compression was applied.
@@ -2036,6 +2044,16 @@ namespace DNDS::Euler
          * energy, and (for RANS) non-negative turbulent variables. Uses exponential
          * decay clamping for density and a quadratic solve for internal energy.
          *
+         * @par PP POLICY
+         * This is the final accepted-mean repair. The tentative species target
+         * is projected into the complete simplex first; that repaired rhoY is
+         * the actual state subsequently stored, exchanged and supplied to
+         * physics. The old and repaired-target compositions are both in the
+         * simplex, so the raw reference equals the clipped EOS/T reference along
+         * their line. The complete repaired increment then follows one
+         * raw-affine density/internal-energy line search, with no later species
+         * projection. RANS repair remains detached. See CauchyPositivity.md.
+         *
          * @param u    Current conservative state.
          * @param uInc Proposed increment.
          * @return Modified (compressed) increment safe to add to u.
@@ -2078,7 +2096,7 @@ namespace DNDS::Euler
                 ret(Eigen::seqN(Isp, Ns1)) = repairedTarget(Eigen::seqN(Isp, Ns1)) -
                                              u(Eigen::seqN(Isp, Ns1));
             }
-            real rhoE_base_old = phys_.mixtureBaseInternalRhoE(u);
+            real rhoE_base_old = phys_.mixtureBaseInternalRhoERaw(u);
             real ekOld = 0.5 * u(Seq123).squaredNorm() / (u(0) + verySmallReal);
             real rhoEinternal_sensible = u(I4) - ekOld - rhoE_base_old;
             DNDS_assert(rhoEinternal_sensible > 0);
@@ -2090,7 +2108,7 @@ namespace DNDS::Euler
                     return -std::numeric_limits<real>::infinity();
                 const real candidateKinetic =
                     0.5 * candidate(Seq123).squaredNorm() / (candidate(0) + verySmallReal);
-                const real candidateBase = phys_.mixtureBaseInternalRhoE(candidate);
+                const real candidateBase = phys_.mixtureBaseInternalRhoERaw(candidate);
                 const real candidateSensible = candidate(I4) - candidateKinetic - candidateBase;
                 return std::isfinite(candidateSensible)
                            ? candidateSensible
@@ -2103,7 +2121,7 @@ namespace DNDS::Euler
                 // rhoe_sensible(θ) is concave → secant ≤ function, linear estimate safe.
                 real alpha = Gas::IdealGasGetCompressionRatioPressure<dim, 1, nVarsFixed>(
                     u, repairedTargetIncrement, rhoeSensibleEps, rhoE_base_old,
-                    phys_.mixtureBaseInternalRhoE(TU(u + repairedTargetIncrement)));
+                    phys_.mixtureBaseInternalRhoERaw(TU(u + repairedTargetIncrement)));
                 if (!std::isfinite(alpha) || alpha < 0 || alpha > 1)
                     alpha = 1;
                 alpha *= 0.99;
@@ -2170,7 +2188,13 @@ namespace DNDS::Euler
             return ret;
         }
 
-        /// @brief Apply CompressInc to every cell, modifying cxInc in-place.
+        /**
+         * @brief Apply CompressInc to every cell, modifying cxInc in-place.
+         *
+         * @par PP POLICY
+         * This is the array wrapper for the exact stored-mean contract of
+         * `CompressInc`; it must not add a later species projection.
+         */
         void FixIncrement(
             ArrayDOFV<nVarsFixed> &cx,
             ArrayDOFV<nVarsFixed> &cxInc, real alpha = 1.0)
@@ -2183,10 +2207,13 @@ namespace DNDS::Euler
         /**
          * @brief Enforce the transported-species simplex constraints on one cell mean.
          *
-         * Only species densities are modified. Density, momentum, and total energy
-         * are left unchanged. A small dependent-species margin is retained so that
-         * reconstructing the final mass fraction as one minus the transported sum
-         * remains robust to floating-point roundoff.
+         * @par PP POLICY
+         * Only actual cell-mean species storage is modified. Density, momentum,
+         * and total energy are left unchanged. A small dependent-species margin
+         * is retained so that reconstructing the final mass fraction as one minus
+         * the transported sum remains robust to floating-point roundoff. This is
+         * not temporary point-property clipping and must precede any final thermal
+         * line search that depends on the repaired target.
          */
         template <class TState>
         void RepairCellMeanSpecies(TState &&uCell) const
@@ -2202,6 +2229,12 @@ namespace DNDS::Euler
     public:
         /**
          * @brief Repair reactive species in cell means and validate thermodynamic state.
+         *
+         * @par PP POLICY
+         * This utility mutates owned cell means and then refreshes their halos.
+         * It is not a reconstruction-point repair and must not be inserted after
+         * `CompressInc`, whose accepted increment already owns species repair and
+         * forbids a second projection.
          *
          * Density, momentum, and total energy must already be valid; this operation
          * only repairs transported species. Invalid density or post-repair
@@ -2269,6 +2302,13 @@ namespace DNDS::Euler
          *
          * For each cell, compresses the increment via CompressInc, then adds it to cx.
          * Reports the global minimum compression factor via MPI reduction.
+         *
+         * @par PP POLICY
+         * The caller may already have applied one common clipped-reference
+         * forecast alpha to the complete coupled increment. `CompressInc` is
+         * nevertheless mandatory as the last-resort exact mean-state repair;
+         * this function adds only that repaired result and performs no second
+         * species projection.
          *
          * @param[in,out] cx     Solution array (updated in-place).
          * @param[in]     cxInc  Increment array.

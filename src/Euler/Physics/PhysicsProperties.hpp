@@ -302,7 +302,11 @@ namespace DNDS::Euler
             return {T, p, asqr, H, gammaEqUse, gammaUse};
         }
 
+        /// PP POLICY -- tolerant property reference.
         /// Code-scaled volumetric base internal energy ρ·Σ Y_k·e_base,k.  0 when no chemistry.
+        /// Independent species are clipped and the full composition normalized in
+        /// temporary property storage. Euler forecast alpha and point EOS/T may use
+        /// this value; it never proves an exact stored-state affine line.
         real mixtureBaseInternalRhoE(const TU &U) const
         {
             if (!hasChemicalSource())
@@ -316,11 +320,13 @@ namespace DNDS::Euler
             return c.mixtureBaseInternalRhoE(U[0], {Y.data(), static_cast<int>(Y.size())});
         }
 
+        /// PP POLICY -- raw affine reference.
         /// Raw linear base internal energy from rho/rhoY without clipping or renormalizing species.
         /// Intentionally permits negative independent/dependent species masses (e.g. sum(rhoY_k) > rho)
         /// in order to preserve exact linearity through reconstruction and compression algebra.
-        /// Callers are responsible for downstream species-positivity enforcement
-        /// (checkRecBaseGood, CompressRecPart, CompressInc, AddFixedIncrement).
+        /// Reconstruction analytic beta and the already-simplex-repaired final
+        /// mean line search may use it. Reconstruction's final EOS/T gate still
+        /// uses the tolerant reference; accepted means repair species first.
         real mixtureBaseInternalRhoERaw(const TU &U) const
         {
             if (!hasChemicalSource())

@@ -361,12 +361,13 @@ namespace DNDS::Euler
 
         /// @name Reconstruction
         /// @{
-        int direct2ndRecMethod = 1;        ///< Gradient reconstruction: 1=GG (subs2ndOrderGGScheme controls interior weighting), 11=GGMP, 2=least squares. All use post-BC face targets.
-        int specialBuiltinInitializer = 0; ///< Index of a built-in special initializer (0 = none).
-        real uRecAlphaCompressPower = 1;   ///< Alpha compression power for the reconstruction limiter.
-        real uRecBetaCompressPower = 1;    ///< Beta compression power for the reconstruction limiter.
-        bool forceVolURecBeta = true;      ///< Force volume-based beta in the reconstruction.
-        bool ppEpsIsRelaxed = false;       ///< Use relaxed positivity-preserving epsilon.
+        int direct2ndRecMethod = 1;                                ///< Gradient reconstruction: 1=GG (subs2ndOrderGGScheme controls interior weighting), 11=GGMP, 2=least squares. All use post-BC face targets.
+        int specialBuiltinInitializer = 0;                         ///< Index of a built-in special initializer (0 = none).
+        real uRecAlphaCompressPower = 1;                           ///< Alpha compression power for the reconstruction limiter.
+        real uRecBetaCompressPower = 1;                            ///< Beta compression power for the reconstruction limiter.
+        std::string uRecClippedReferencePolicy = "fallbackToBase"; ///< Clipped-composition endpoint policy: fallbackToBase or backtracking.
+        bool forceVolURecBeta = true;                              ///< Force volume-based beta in the reconstruction.
+        bool ppEpsIsRelaxed = false;                               ///< Use relaxed positivity-preserving epsilon.
         /// @}
 
         RANS::SAConfig saConfig;               ///< Spalart-Allmaras kernel configuration.
@@ -730,6 +731,7 @@ namespace DNDS::Euler
             DNDS_FIELD(specialBuiltinInitializer, "Special built-in initializer code");
             DNDS_FIELD(uRecAlphaCompressPower,  "uRec alpha compression power");
             DNDS_FIELD(uRecBetaCompressPower,   "uRec beta compression power");
+            DNDS_FIELD(uRecClippedReferencePolicy, "Clipped-composition reconstruction energy policy: fallbackToBase or backtracking");
             DNDS_FIELD(forceVolURecBeta,        "Force volume uRec beta");
             DNDS_FIELD(ppEpsIsRelaxed,          "Positivity-preserving epsilon is relaxed");
             config.field_section(&T::saConfig, "SAConfig",
@@ -928,6 +930,8 @@ namespace DNDS::Euler
                                   "reactiveFlow.enabled does not support specialBuiltinInitializer; use explicit StateValue/ExprTk initialization");
             DNDS_check_throw_info(!reactiveFlow.enabled || !reactiveFlow.mechanismFile.empty(),
                                   "reactiveFlow.mechanismFile must be non-empty when reactiveFlow.enabled is true");
+            DNDS_check_throw_info(uRecClippedReferencePolicy == "fallbackToBase" || uRecClippedReferencePolicy == "backtracking",
+                                  "uRecClippedReferencePolicy must be fallbackToBase or backtracking");
             DNDS_assert(constMassForce.size() == 3);
             farFieldStaticValue.checkSize(nVars, "farFieldStaticValue");
             if (constMassForce.norm() || frameConstRotation.enabled ||

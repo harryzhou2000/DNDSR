@@ -122,6 +122,8 @@ namespace DNDS::Cauchy
             data.reconstruction->SubmitCommitReconstruction(engine, stream, targetCoefficients, target);
             stream.Record().WaitHost();
         }
+        // PP POLICY -- this is the pure-flow5 O2 target guard inside LVR,
+        // distinct from the later equation-aware high-order publication policy.
         // Reuse the Euler common-beta mathematics on a mean-based O2 target,
         // independently of the final high-order PP policy. No alternate limiter
         // or mean clipping is introduced. All PP samples belong to owned cells.

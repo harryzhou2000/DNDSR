@@ -3348,6 +3348,15 @@ namespace DNDS::Euler
      *  with a common scalar factor and the existing 0.9 safety margin. SA follows
      *  USE_NS_SA_NUT_REDUCED_ORDER; otherwise negative SA reconstruction is retained.
      *
+     *  @par PP POLICY
+     *  The analytic density/thermal beta uses the complete raw flow/species
+     *  polynomial and the affine mixture reference, but no species-simplex
+     *  bound. Raw reconstructed rhoY is retained for conservative advection and
+     *  diffusion. Final physical acceptance evaluates a temporary
+     *  clipped/normalized composition, matching the EOS/T input without writing
+     *  it back. `fallbackToBase` preserves Euler's all-or-nothing response;
+     *  `backtracking` searches an intermediate common beta. RANS is detached.
+     *
      *  @param uRecBeta  Per-cell flow/species compression coefficient (output).
      *  @param nLim      Number of cells with flow beta < 1; excludes scalar-only repairs.
      *  @param betaMin   Minimum flow beta; excludes scalar-only repairs.
@@ -3457,6 +3466,23 @@ namespace DNDS::Euler
                 }
                 return hf;
             };
+            const auto clippedReferenceGood = [&](const Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed> &rec)
+            {
+                for (int iG = 0; iG < rec.rows(); ++iG)
+                {
+                    const typename EulerEvaluator<model>::TU point = rec.row(iG);
+                    if (!(point(0) >= rhoEps) || !point.allFinite())
+                        return false;
+                    const real kinetic = .5 * point(Seq123).squaredNorm() / point(0);
+                    // mixtureBaseInternalRhoE performs only a temporary
+                    // clip/normalization. The raw polynomial remains untouched
+                    // for the conservative species fluxes.
+                    const real sensible = point(I4) - kinetic - phys_.mixtureBaseInternalRhoE(point);
+                    if (!(sensible >= rhoeSensibleEps))
+                        return false;
+                }
+                return true;
+            };
 
             // Scalar PP is independent of the flow base, and runs even when flow
             // passes immediately. Scale about the mean, not a lower-order base.
@@ -3500,6 +3526,8 @@ namespace DNDS::Euler
                 Eigen::Vector<real, Eigen::Dynamic> eInternalS = (recBase(EigenAll, I4) - ek - rhoE_base_q);
                 if (eInternalS.minCoeff() < rhoeSensibleEps)
                     return false;
+                if (!clippedReferenceGood(recBase))
+                    return false;
                 // Nonconstant polynomial bases are selected by the locked
                 // flow/species thermal condition, not by the raw species
                 // simplex. Point-property evaluation repairs a temporary
@@ -3530,8 +3558,10 @@ namespace DNDS::Euler
                 curOrder--;
             }
 
-            Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed>
-                recInc = quadBase * (uRec[iCell] - uRecBase);
+            const Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed> uRecTarget = uRec[iCell];
+            const Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed>
+                recIncOriginal = quadBase * (uRecTarget - uRecBase);
+            Eigen::Matrix<real, Eigen::Dynamic, nVarsFixed> recInc = recIncOriginal;
             Eigen::Vector<real, Eigen::Dynamic> rhoS = recInc(EigenAll, 0) + recBase(EigenAll, 0);
             Eigen::Index rhoMinIdx{-1};
             real rhoMin = rhoS.minCoeff(&rhoMinIdx);
@@ -3561,6 +3591,12 @@ namespace DNDS::Euler
             real thetaP = 1.0;
             Eigen::Vector<real, Eigen::Dynamic> rhoE_base_B = rhoE_base_perQ(recBase);
 
+            // TODO(PP-RECONSTRUCTION-CLIPPED-RHOY): evaluate, with matched
+            // Euler/Cauchy oracles, whether this analytic thermal beta should
+            // use the clipped/normalized temporary-composition reference rather
+            // than the raw affine reference. The clipped map is heuristic and
+            // non-convex; retain final endpoint checking/backtracking for either
+            // choice. See docs/architecture/CauchyPositivity.md.
             if (rhoeSensibleCent <= 2 * rhoeSensibleEps)
                 thetaP = 0;
             else
@@ -3575,33 +3611,14 @@ namespace DNDS::Euler
                     }
                 }
 
-            // --- species-aware PP check ---
-            // thetaP was computed using raw base energy (mixtureBaseInternalRhoERaw).
-            // gammaEq in fluxFace uses mixtureBaseInternalRhoE which clips negative
-            // rhoY_k to 0, potentially increasing rhoE_base and making e_sensible go
-            // negative.  Post-check using mixtureBaseInternalRhoE directly so the
-            // computed sensible energy matches what gammaEq will see.  If violated,
-            // zero the entire reconstruction increment (thetaP = 0), forcing
-            // fallback to uRecBase which passed checkRecBaseGood.
-            if constexpr (Traits::isExtended)
-            {
-                if (phys_.hasChemicalSource())
-                {
-                    Eigen::Vector<real, Eigen::Dynamic> ekC =
-                        0.5 * (recVRhoG(EigenAll, Seq123).array().square().rowwise().sum()) / recVRhoG(EigenAll, 0).array();
-                    Eigen::Vector<real, Eigen::Dynamic> rhoE_base_VC(nPoint);
-                    for (int iG = 0; iG < nPoint; ++iG)
-                    {
-                        typename EulerEvaluator<model>::TU tmp = recVRhoG.row(iG);
-                        rhoE_base_VC(iG) = phys_.mixtureBaseInternalRhoE(tmp);
-                    }
-                    Eigen::Vector<real, Eigen::Dynamic> eInternalSC =
-                        recVRhoG(EigenAll, I4) - ekC - rhoE_base_VC;
-
-                    if (eInternalSC.minCoeff() < rhoeSensibleEps)
-                        thetaP = 0;
-                }
-            }
+            // PP POLICY -- clipped reconstruction endpoint. This reads a
+            // temporary clipped/normalized composition only for the energy/T
+            // predicate. uRecTarget remains raw and continues to species
+            // advection/diffusion. The compatibility policy drops the complete
+            // flow/species increment to its clipped-valid base.
+            if (settings.uRecClippedReferencePolicy == "fallbackToBase" &&
+                !clippedReferenceGood(recVRhoG))
+                thetaP = 0;
 
             uRecBeta[iCell](0) = theta1 * thetaP;
             // if (uRecBeta[iCell](0) < 1)
@@ -3609,22 +3626,34 @@ namespace DNDS::Euler
             // uRecBeta[iCell](0) = std::min(theta1, thetaP);
             if (uRecBeta[iCell](0) < 1)
             {
-                nLimLocal++;
                 // uRecBeta[iCell](0) *= uRecBeta[iCell](0) < 0.99 ? 0. : 0.99; //! for safety
                 uRecBeta[iCell](0) *= std::pow(uRecBeta[iCell](0), static_cast<int>(std::round(settings.uRecBetaCompressPower))) * safetyRatio;
-                minBetaLocal = std::min(uRecBeta[iCell](0), minBetaLocal);
                 if (uRecBeta[iCell](0) < betaCutOff)
                     uRecBeta[iCell](0) = 0;
+            }
+            if (settings.uRecClippedReferencePolicy == "backtracking")
+            {
+                int iteration = 0;
+                auto candidate = (recBase + uRecBeta[iCell](0) * recIncOriginal).eval();
+                while (!clippedReferenceGood(candidate) && iteration < 1000)
+                {
+                    uRecBeta[iCell](0) *= .9;
+                    if (uRecBeta[iCell](0) < betaCutOff)
+                        uRecBeta[iCell](0) = 0;
+                    candidate = (recBase + uRecBeta[iCell](0) * recIncOriginal).eval();
+                    ++iteration;
+                }
+                DNDS_assert_info(clippedReferenceGood(candidate),
+                                 "clipped-reference reconstruction backtracking did not reach its validated base");
             }
             if (uRecBeta[iCell](0) < 0)
             {
                 std::cout << fmt::format("theta1 {}, thetaP {}", theta1, thetaP) << std::endl;
                 DNDS_assert(false);
             }
-            // only compresses main flow part and rhoY_i species, avoiding RANS part
-            if (uRecBeta[iCell](0) < 1)
+            const auto applyFlowSpeciesBeta = [&](real beta)
             {
-                uRec[iCell](EigenAll, Seq01234) = (uRec[iCell](EigenAll, Seq01234) - uRecBase(EigenAll, Seq01234)) * uRecBeta[iCell](0) + uRecBase(EigenAll, Seq01234);
+                uRec[iCell](EigenAll, Seq01234) = (uRecTarget(EigenAll, Seq01234) - uRecBase(EigenAll, Seq01234)) * beta + uRecBase(EigenAll, Seq01234);
                 if constexpr (Traits::isExtended)
                 {
                     if (phys_.hasChemicalSource())
@@ -3632,69 +3661,52 @@ namespace DNDS::Euler
                         int Ns1 = phys_.nSpecies() - 1;
                         int Isp = nVars - Ns1;
                         auto seqSpecies = Eigen::seq(Isp, EigenLast);
-                        uRec[iCell](EigenAll, seqSpecies) = (uRec[iCell](EigenAll, seqSpecies) - uRecBase(EigenAll, seqSpecies)) * uRecBeta[iCell](0) + uRecBase(EigenAll, seqSpecies);
+                        uRec[iCell](EigenAll, seqSpecies) = (uRecTarget(EigenAll, seqSpecies) - uRecBase(EigenAll, seqSpecies)) * beta + uRecBase(EigenAll, seqSpecies);
                     }
                 }
+            };
+            // Only compress flow and raw rhoY polynomial coefficients; RANS
+            // retains its independent scalar policy above.
+            if (uRecBeta[iCell](0) < 1)
+                applyFlowSpeciesBeta(uRecBeta[iCell](0));
+
+            // PP POLICY -- final published-point guarantee. The analytic raw
+            // beta is only the construction used to choose the coefficient
+            // scale. Re-sample the actual coefficient storage, then enforce the
+            // clipped composition that will be passed to EOS/T. Raw rhoY stays
+            // in the polynomial for advection/diffusion and is not a second
+            // physical acceptance invariant. Compatibility drops a clipped
+            // failure directly to the base; the optional policy backtracks.
+            for (int iteration = 0; iteration < 1000; ++iteration)
+            {
+                const auto sampled = (quadBase * uRec[iCell]).rowwise() + u[iCell].transpose();
+                const bool clippedGood = clippedReferenceGood(sampled);
+                if (clippedGood)
+                    break;
+                const real previous = uRecBeta[iCell](0);
+                if (settings.uRecClippedReferencePolicy == "fallbackToBase")
+                    uRecBeta[iCell](0) = 0;
+                else
+                    uRecBeta[iCell](0) *= .9;
+                if (uRecBeta[iCell](0) < betaCutOff)
+                    uRecBeta[iCell](0) = 0;
+                DNDS_assert_info(previous > 0 || clippedGood,
+                                 "validated reconstruction base violates its final physical-state predicate");
+                applyFlowSpeciesBeta(uRecBeta[iCell](0));
             }
 
-            // validation:
+            // Final physical invariant uses the exact clipped composition
+            // consumed by EOS/T. The raw-affine beta remains a documented
+            // limiter construction, not an extra gate on the retained rhoY
+            // polynomial used by conservative species fluxes.
             recInc = quadBase * uRec[iCell];
             recVRhoG = recInc.rowwise() + u[iCell].transpose();
-            ek = 0.5 * (recVRhoG(EigenAll, Seq123).array().square().rowwise().sum()) / recVRhoG(EigenAll, 0).array();
-            rhoE_base_VR = rhoE_base_perQ(recVRhoG);
-            eInternalS = (recVRhoG(EigenAll, I4) - ek - rhoE_base_VR);
-            for (int iG = 0; iG < eInternalS.size(); iG++)
+            DNDS_assert_info(clippedReferenceGood(recVRhoG),
+                             "published reconstruction is invalid after temporary composition clipping");
+            if (uRecBeta[iCell](0) < 1)
             {
-                if (eInternalS(iG) < rhoeSensibleEps)
-                {
-                    // Include stable mesh identity and physical location before aborting.
-                    const auto center = vfv->GetCellQuadraturePPhys(iCell, -1);
-                    Geom::tPoint failedPoint = center;
-                    index failedFace = UnInitIndex;
-                    int failedFacePoint = -1;
-                    int remainingPoint = iG;
-                    if (restrictOnVolPoints && remainingPoint < gCell.GetNumPoints())
-                        failedPoint = vfv->GetCellQuadraturePPhys(iCell, remainingPoint);
-                    else
-                    {
-                        if (restrictOnVolPoints)
-                            remainingPoint -= gCell.GetNumPoints();
-                        for (int ic2f = 0; ic2f < c2f.size(); ++ic2f)
-                        {
-                            index face = c2f[ic2f];
-                            int nq = vfv->GetFaceQuad(face).GetNumPoints();
-                            if (remainingPoint < nq)
-                            {
-                                int side = mesh->CellIsFaceBack(iCell, face, ic2f) ? 0 : 1;
-                                failedPoint = vfv->GetFaceQuadraturePPhysFromCell(face, iCell, side, remainingPoint);
-                                failedFace = face;
-                                failedFacePoint = remainingPoint;
-                                break;
-                            }
-                            remainingPoint -= nq;
-                        }
-                    }
-                    index originalCell = this->mesh->OriginalEntityId(Geom::EntityKind::Cell, iCell);
-                    std::ostringstream spatial;
-                    spatial << std::scientific << std::setprecision(17)
-                            << "PP_REC_FAILURE_LOCATION rank=" << this->mesh->getMPI().rank
-                            << " localCell=" << iCell << " originalCell=" << originalCell
-                            << " quadratureIndex=" << iG << " localFace=" << failedFace
-                            << " faceQuadratureIndex=" << failedFacePoint
-                            << " cellCenter=[" << center.transpose() << "] point=[" << failedPoint.transpose() << "]"
-                            << " sensibleInternalEnergy=" << eInternalS(iG) << " threshold=" << rhoeSensibleEps
-                            << " mean=[" << u[iCell].transpose() << "] pointState=[" << recVRhoG.row(iG) << "]"
-                            << " beta=" << uRecBeta[iCell](0) << " thetaDensity=" << theta1 << " thetaPressure=" << thetaP
-                            << "\n";
-                    std::cerr << spatial.str() << std::flush;
-                    std::cout << std::scientific;
-                    std::cout << eInternalS.transpose() << std::endl;
-                    std::cout << curOrder << std::endl;
-                    std::cout << fmt::format("{} {} {}", theta1, thetaP, uRecBeta[iCell](0)) << std::endl;
-                    std::cout << u[iCell] << std::endl;
-                    std::cout << recInc.transpose() << std::endl;
-                    DNDS_assert(false);
-                }
+                ++nLimLocal;
+                minBetaLocal = std::min(uRecBeta[iCell](0), minBetaLocal);
             }
         }
         if (flag & EvaluateURecBeta_LOCAL_STATS)
@@ -3822,12 +3834,15 @@ namespace DNDS::Euler
     template <EulerModel model>
     /** @brief Evaluate per-cell RHS scaling factor (alpha) for positivity-preserving time stepping.
      *
-     *  Determines the largest alpha in [0,1] such that u + alpha*res remains physically
-     *  realizable (positive density and pressure) at all quadrature points. Used for
-     *  under-relaxation to preserve positivity during explicit or implicit updates.
-     *
-     *  NOTE: uses mixtureBaseInternalRhoE (not Raw) for the sensible-energy
-     *  check, matching gammaEq's species clipping in fluxFace.
+     *  @par PP POLICY
+     *  Evaluate the complete coupled trial `u+alpha*res`, but derive no
+     *  independent/dependent species-simplex alpha. Mixture reference energy
+     *  uses the temporary clipped/normalized composition from
+     *  `mixtureBaseInternalRhoE`, matching point thermodynamics. Stored `u` and
+     *  `res` are never clipped or mutated here. The resulting one scalar is
+     *  applied by the caller to every flow/species/RANS component (or to the
+     *  common dTau). This forecast is heuristic; final stored-mean admissibility
+     *  belongs to `CompressInc`. See docs/architecture/CauchyPositivity.md.
      *
      *
      *  @param u             Conservative variable DOF array.
@@ -3965,6 +3980,12 @@ namespace DNDS::Euler
      *  Cells adjacent to limited cells (alpha < 1) are also given reduced alpha
      *  values to create a smooth transition region, preventing isolated sharp
      *  limiting boundaries.
+     *
+     *  @par PP POLICY
+     *  This operation only redistributes an alpha already computed by
+     *  `EvaluateCellRHSAlpha`. It adds no species-simplex, thermodynamic, or
+     *  storage-mutation rule of its own; final accepted-state repair remains in
+     *  `CompressInc`/`AddFixedIncrement`.
      *
      *  @param u             Conservative variable DOF array.
      *  @param uRec          Reconstruction coefficients.

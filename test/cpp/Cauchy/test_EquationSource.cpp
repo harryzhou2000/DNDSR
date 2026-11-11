@@ -10,6 +10,7 @@
 #include "Cauchy/Implicit/LinearSolver.hpp"
 #include "Cauchy/Boundary/BoundarySystem.hpp"
 #include "Euler/SourceTermContributor.hpp"
+#include "Physics/Chemistry/SpeciesAdmissibility.hpp"
 #include <Eigen/LU>
 #include <cstdlib>
 #include <numeric>
@@ -300,11 +301,39 @@ TEST_CASE("Mixture thermal references enforce a requested temperature through ac
             flow[j] = candidate[j];
         const auto point = evaluator.Evaluate(flow, {candidate.data() + 5, fixture.species - 1});
         CHECK(point.thermo.temperature >= codeTemperature);
+
+        // Final mean repair owns the stored composition: repair the exact
+        // target first, then line-search that target without another species
+        // projection. On this simplex segment the raw and clipped references
+        // are the same invariant seen by the EOS/T preparation.
+        auto repairedTarget = hot;
+        repairedTarget[5] = -0.25 * hot[0];
+        repairedTarget[6] = 1.75 * hot[0];
+        P::Chemistry::RepairSpeciesDensities(
+            repairedTarget[0], repairedTarget.segment(5, fixture.species - 1),
+            fixture.species - 1);
+        for (int c = 0; c < 2; ++c)
+            CHECK(bounds.Reference(repairedTarget, c) ==
+                  doctest::Approx(bounds.ClippedReference(repairedTarget, c)).epsilon(1e-13));
+        const double kinetic = .5 * repairedTarget.segment<3>(1).squaredNorm() / repairedTarget[0];
+        double required = -std::numeric_limits<double>::infinity();
+        for (int c = 0; c < 2; ++c)
+            required = std::max(required, bounds.Reference(repairedTarget, c) + bounds.floors[c]);
+        repairedTarget[4] = kinetic + required - std::max(1e-12, std::abs(required) * 1e-4);
+        REQUIRE_FALSE(bounds.RawThermallyAdmissible(repairedTarget));
+        const auto repairedIncrement = repairedTarget - hot;
+        const double repairedFraction = bounds.FixFraction(hot, repairedIncrement);
+        CHECK(repairedFraction > 0);
+        CHECK(repairedFraction < 1);
+        CHECK(bounds.Admissible(hot + repairedFraction * repairedIncrement));
     }
     auto one = fixture.Point(0), two = fixture.Point(5);
     const Eigen::VectorXd middle = .3 * one + .7 * two;
     for (int c = 0; c < 2; ++c)
+    {
         CHECK(bounds.Reference(middle, c) == doctest::Approx(.3 * bounds.Reference(one, c) + .7 * bounds.Reference(two, c)).epsilon(1e-14));
+        CHECK(bounds.ClippedReference(one, c) == doctest::Approx(bounds.Reference(one, c)).epsilon(1e-14));
+    }
 
     // A nonconstant polynomial base is selected by the locked conservative
     // flow/species thermal condition, not by a raw pointwise simplex test.
@@ -315,9 +344,56 @@ TEST_CASE("Mixture thermal references enforce a requested temperature through ac
     higher = base;
     higher(0, 5) = -one[0] * 1e-12;
     const C::EquationPositivityDetail::PointRow<Eigen::MatrixXd> speciesOnly{higher, 0};
+    CHECK(bounds.ClippedReference(speciesOnly, 0) != doctest::Approx(bounds.Reference(speciesOnly, 0)).epsilon(1e-14));
     CHECK_FALSE(bounds.Admissible(speciesOnly));
     CHECK(bounds.Admissible(speciesOnly, false));
     CHECK(bounds.ReconstructionFraction(one, base, higher, 0, 2, 1, 0) == 1);
+
+    // The analytic reconstruction beta uses raw affine energy, while the
+    // physical endpoint uses the clipped composition seen by the T solver.
+    // Find an out-of-simplex direction whose clipped reference is stricter;
+    // compatibility drops to the base, while the optional policy recovers an
+    // intermediate common flow/species beta without modifying the raw point.
+    Eigen::VectorXd clippedFailure;
+    bool found = false;
+    for (int k = 0; k < fixture.species - 1 && !found; ++k)
+        for (double multiple : {-2., 3.})
+        {
+            auto trial = one;
+            trial[5 + k] = multiple * one[0];
+            double rawRequired = -std::numeric_limits<double>::infinity();
+            double clippedRequired = -std::numeric_limits<double>::infinity();
+            for (int c = 0; c < 2; ++c)
+            {
+                rawRequired = std::max(rawRequired, bounds.floors[c] + bounds.Reference(trial, c));
+                clippedRequired = std::max(clippedRequired, bounds.floors[c] + bounds.ClippedReference(trial, c));
+            }
+            if (clippedRequired > rawRequired + 1e-10 * std::max(1., std::abs(rawRequired)))
+            {
+                const double kinetic = .5 * trial.segment<3>(1).squaredNorm() / trial[0];
+                trial[4] = kinetic + .5 * (rawRequired + clippedRequired);
+                clippedFailure = std::move(trial);
+                found = true;
+                break;
+            }
+        }
+    REQUIRE(found);
+    CHECK(bounds.RawThermallyAdmissible(clippedFailure));
+    CHECK_FALSE(bounds.ClippedReferenceAdmissible(clippedFailure));
+    Eigen::MatrixXd clippedHigh(1, fixture.components), clippedBase(1, fixture.components);
+    clippedHigh.row(0) = clippedFailure.transpose();
+    clippedBase.row(0) = one.transpose();
+    const double fallback = bounds.ReconstructionFraction(
+        one, clippedBase, clippedHigh, 0, 1, 1, 0, 1,
+        C::ReconstructionClippedReferencePolicy::FallbackToBase);
+    const double searched = bounds.ReconstructionFraction(
+        one, clippedBase, clippedHigh, 0, 1, 1, 0, 1,
+        C::ReconstructionClippedReferencePolicy::Backtracking);
+    CHECK(fallback == 0);
+    CHECK(searched > 0);
+    CHECK(searched < 1);
+    const Eigen::VectorXd searchedPoint = one + searched * (clippedFailure - one);
+    CHECK(bounds.ClippedReferenceAdmissible(searchedPoint));
 }
 TEST_CASE("Attached RANS leaves mixture thermal bounds and chemical Jacobian columns unchanged")
 {
