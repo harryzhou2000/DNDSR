@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Cauchy/Physics/EquationRANS.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
 #include "Physics/Chemistry/SpeciesAdmissibility.hpp"
@@ -30,6 +31,16 @@ namespace DNDS::Cauchy
             const Higher &higher;
             real scale;
             DNDS_DEVICE_CALLABLE real operator[](index j) const { return scale * (higher[j] - base[j]); }
+        };
+        template <class Row>
+        struct OffsetRow
+        {
+            const Row &values;
+            index first;
+            DNDS_DEVICE_CALLABLE real operator[](index j) const
+            {
+                return values[first + j];
+            }
         };
     }
 
@@ -286,5 +297,55 @@ namespace DNDS::Cauchy
                 result.speciesEnergies[c] = _energies[c].empty() ? nullptr : _energies[c].data();
             return result;
         }
+    };
+
+    /// Frozen complete mean-state admissibility view. Thermal flow/species
+    /// constraints and model-specific RANS scalar constraints are resolved once
+    /// by EquationAdmissibilityPolicy; row checks perform no EOS inversion,
+    /// allocation, worker acquisition, MPI, or physical-layout dispatch.
+    struct EquationAdmissibilityView
+    {
+        EquationThermalView thermal;
+        RANSStateView rans;
+        index ransFirst = -1;
+
+        template <class Row>
+        DNDS_DEVICE_CALLABLE bool Admissible(const Row &values,
+                                             bool requireSpecies = true) const
+        {
+            if (!thermal.Admissible(values, requireSpecies))
+                return false;
+            if (!rans.components)
+                return true;
+            return rans.Admissible(
+                EquationPositivityDetail::OffsetRow<Row>{values, ransFirst});
+        }
+    };
+
+    /// CPU owner for the complete equation mean-state admissibility contract.
+    /// Mixture energy coefficients are prepared once with the caller's worker;
+    /// the resulting View remains valid until this owner is moved, mutated, or
+    /// destroyed. RANS repair remains a separate explicit operation, but its
+    /// acceptance predicate is part of the same frozen view.
+    class EquationAdmissibilityPolicy
+    {
+        EquationThermalPolicy _thermal;
+        EquationPropertyKey _property;
+        RANSStateView _rans;
+        index _ransFirst = -1;
+
+    public:
+        EquationAdmissibilityPolicy(
+            const EquationSystem &equation, real densityFloor,
+            real temperatureFloor, real sensibleEnergyFloor,
+            real pressureFloor, RANSStateView rans = {},
+            Physics::Chemistry::ChemicalWorkerPool::Lease worker = {});
+
+        EquationAdmissibilityView View() const
+        {
+            return {_thermal.View(), _rans, _ransFirst};
+        }
+        const EquationPropertyKey &PropertyKey() const { return _property; }
+        const RANSStateView &RANS() const { return _rans; }
     };
 }

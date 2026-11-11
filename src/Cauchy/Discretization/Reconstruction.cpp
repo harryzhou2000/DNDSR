@@ -248,7 +248,7 @@ namespace DNDS::Cauchy
                     const auto flowMean = bounds.Flow(mean);
                     for (index q = begin; q < end; ++q)
                         beta = std::min(beta, AdmissibleFraction(flowMean, bounds.Flow(EquationPositivityDetail::PointRow<decltype(higher)>{higher, q}),
-                                                                 data.owner->PerfectGasBounds()));
+                                                                 data.owner->FixedFlowThermalBounds()));
                     if (beta < n.positivityBetaCutoff)
                         beta = 0;
                 }

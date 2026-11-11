@@ -35,8 +35,7 @@ namespace DNDS::Cauchy
         std::shared_ptr<FiniteVolume::Workspace> _workspace, _observationWorkspace;
         std::optional<EquationDofs> _reconstructionBackup, _observationInput, _observationState;
         std::optional<Runtime::Array<real>> _limitedVRBackup;
-        std::optional<EquationThermalPolicy> _thermal;
-        std::optional<RANSStateView> _ransState;
+        std::optional<EquationAdmissibilityPolicy> _admissibility;
         /// Logical-const diagnostics may enqueue work on the domain stream.
         mutable Runtime::EagerEngine _engine;
         Runtime::ExecutionStream _stream;

@@ -105,7 +105,7 @@ namespace DNDS::Cauchy
         const int modes = data->reconstruction ? data->reconstruction->NRecDOF() : 0;
         const int dim = data->metrics.Dimension();
         const auto &gas = data->equation.Gas();
-        const auto &thermalBounds = data->PerfectGasBounds();
+        const auto &thermalBounds = data->FixedFlowThermalBounds();
         const auto frame = data->motion.At(time);
         RequireKernel<fatal>(!data->hasInterfaces || input.boundary, "RHS requires incoming interface values");
         const auto incoming = input.boundary.value_or(RHSScalarView{});

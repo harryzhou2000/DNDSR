@@ -27,6 +27,17 @@ margin and the energy at `max(temperatureFloor, material.BaseTemperature())`.
 No equivalent gamma is used. The equation owner prepares the species energies;
 the numerical view performs arithmetic without chemistry callbacks.
 
+`EquationAdmissibilityPolicy` is the owning mean-state contract. It combines
+the prepared thermal/species coefficients with the resolved RANS scalar policy
+and publishes one layout-independent `EquationAdmissibilityView`. `Domain`,
+standalone finite-volume checks, restart validation and nonlinear acceptance
+therefore use the same row predicate. A mixture policy acquires a chemistry
+worker only during preparation; row checks perform no EOS inversion, worker
+acquisition or allocation. The policy retains the equation property key so a
+same-width state from another material cannot be validated accidentally.
+Specialized fixed-flow kernels may retain a five-component affine bound, but it
+is an internal leaf and not a competing orchestration-level admissibility rule.
+
 With positive density and the **raw affine reference**, Q is concave along a
 line in conservative state space. Its endpoint chord supplies Euler's
 scheme-one admissible compression estimate. Species must move with flow along

@@ -639,6 +639,27 @@ namespace
     };
 }
 
+TEST_CASE("Finite-volume admissibility uses one prepared complete mixture policy")
+{
+    MixtureFixture mixture;
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
+    C::DomainSettings settings;
+    settings.numerics.reconstruction = "constant";
+    settings.numerics.faceFallback = false;
+    C::FiniteVolume fv(mesh, settings, mixture.equation);
+    auto state = mixture.State(fv.Metrics().Space(), 1);
+    mixture.Fill(state, fv.Metrics(), true);
+    const auto policy = fv.PrepareAdmissibility(mixture.workers);
+    CHECK(fv.Admissible(state, policy));
+    CHECK_THROWS(fv.Admissible(state));
+    if (mpi.rank == 0)
+    {
+        auto write = state.WriteOwned();
+        write.Block("species")(0, 0) = -.01;
+    }
+    CHECK_FALSE(fv.Admissible(state, policy));
+}
+
 TEST_CASE("Direct P1 mixture PP shares one thermal factor across split flow and species storage")
 {
     MixtureFixture mixture;

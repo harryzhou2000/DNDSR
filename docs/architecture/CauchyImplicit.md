@@ -1552,11 +1552,19 @@ The temperature reference has zero margin. This enforces a temperature bound
 without a gamma-equivalent substitution, including mixtures with negative
 formation energies. Perfect gas retains its existing temperature and pressure
 energy constraints; `pressureFloor` is a perfect-gas control, not a gamma-based
-mixture conversion. Mixtures still require a positive actual EOS pressure.
+mixture conversion. The prepared mixture temperature bound, positive density
+and positive mixture gas constant imply positive ideal-mixture pressure without
+a pointwise temperature inversion; property kernels still validate the actual
+EOS state when they evaluate it.
 `IdealGasMixture::SpecificInternalEnergies` consumes a compatible worker only
 at preparation; policy views retain no worker or EOS callback. The coefficient
 owner must outlive its borrowed view. CUDA would require uploading coefficients
 and replacing the host pointers; no Cauchy CUDA kernel is claimed here.
+
+`EquationAdmissibilityPolicy` owns this thermal policy together with the
+resolved RANS mean-state predicate. Its property provenance and schema offsets
+are checked once, after which `FiniteVolume::Admissible` performs the common
+collective row check for Domain, restart and standalone callers.
 
 The pure view implements Euler's density relaxation, scheme-one energy ratio,
 power/safety compression, .99 final repair and .9 pull-up. RHS and dTau modes

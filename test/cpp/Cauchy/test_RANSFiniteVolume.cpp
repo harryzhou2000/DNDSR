@@ -78,6 +78,31 @@ namespace
     }
 }
 
+TEST_CASE("Finite-volume admissibility includes the prepared RANS mean policy")
+{
+    auto mesh = CFVTest::CartesianHexes(mpi, 2);
+    mesh->BuildNodeWallDist([](auto)
+                            { return false; });
+    auto settings = Settings();
+    settings.mesh.dimension = 3;
+    auto modelSettings = Equation(settings).RANS().Settings();
+    modelSettings.model = "KOmegaSST";
+    const auto equation =
+        C::EquationSystem::Resolve(settings.equation).WithRANS(modelSettings);
+    C::FiniteVolume fv(mesh, settings, equation);
+    auto state = State(fv, false);
+    Fill(state, fv, false, .5);
+    CHECK(fv.Admissible(state));
+    int owner = state.Space().OwnedRows() ? mpi.rank : mpi.size;
+    MPI_Allreduce(MPI_IN_PLACE, &owner, 1, MPI_INT, MPI_MIN, mpi.comm);
+    if (mpi.rank == owner)
+    {
+        auto write = state.WriteOwned();
+        write.Block("rans")(0, 1) = -1;
+    }
+    CHECK_FALSE(fv.Admissible(state));
+}
+
 TEST_CASE("Characteristic WBAP transforms only flow5 across combined and segmented equation storage")
 {
     auto mesh = CauchyTest::PeriodicQuads(mpi, 4);

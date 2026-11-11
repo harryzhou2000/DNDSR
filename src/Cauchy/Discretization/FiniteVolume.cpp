@@ -530,24 +530,61 @@ namespace DNDS::Cauchy
         }
         return errors;
     }
-    const ThermalBounds &FiniteVolume::ThermalConstraints() const { return _data->PerfectGasBounds(); }
+    EquationAdmissibilityPolicy FiniteVolume::PrepareAdmissibility(
+        std::optional<Physics::Chemistry::ChemicalWorkerPool> workers) const
+    {
+        DNDS_check_throw_info(
+            _data->equation.HasMixture() == bool(workers),
+            "equation admissibility needs exactly its mixture worker pool");
+        std::optional<EquationAdmissibilityPolicy> result;
+        Metrics().Communication()->LocalStage([&]
+                                              { result.emplace(
+                                                    _data->equation, _data->settings.numerics.densityFloor,
+                                                    _data->settings.numerics.temperatureFloor,
+                                                    _data->settings.numerics.sensibleEnergyFloor,
+                                                    _data->settings.numerics.pressureFloor,
+                                                    _data->equation.HasRANS()
+                                                        ? ResolveRANSStatePolicy(
+                                                              _data->equation,
+                                                              _data->settings.numerics.ransState)
+                                                        : RANSStateView{},
+                                                    workers ? workers->Acquire()
+                                                            : Physics::Chemistry::ChemicalWorkerPool::Lease{}); });
+        return std::move(*result);
+    }
+    const ThermalBounds &FiniteVolume::ThermalConstraints() const
+    {
+        return _data->FixedFlowThermalBounds();
+    }
     bool FiniteVolume::Admissible(const EquationDofs &state) const
     {
+        DNDS_check_throw_info(
+            _data->defaultAdmissibility,
+            "mixture finite-volume admissibility needs an explicitly prepared policy");
+        return Admissible(state, *_data->defaultAdmissibility);
+    }
+    bool FiniteVolume::Admissible(
+        const EquationDofs &state,
+        const EquationAdmissibilityPolicy &policy) const
+    {
         _data->equation.ValidateStateSchema(state);
-        DNDS_check_throw_info(!_data->equation.HasMixture() && !_data->equation.HasRANS(),
-                              "finite-volume admissibility without a worker/model policy is available only for pure flow5");
+        DNDS_check_throw_info(
+            policy.PropertyKey() == _data->equation.PropertyKey(),
+            "admissibility policy belongs to another equation material");
+        const auto bounds = policy.View();
+        DNDS_check_throw_info(
+            bounds.thermal.components == state.ComponentNumber(),
+            "admissibility policy and equation state widths differ");
         int valid = 1;
         Metrics().Communication()->LocalStage([&]
                                               {
             const auto read = state.ReadOwned();
-            const auto flow = read.Block("flow");
+            const auto layout = read.ComponentLayout();
+            const auto values = layout.View();
             for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
-            {
-                FlowState value{};
-                for (int j = 0; j < 5; ++j)
-                    value[j] = flow(iCell, j);
-                valid &= ThermallyAdmissible(value, _data->PerfectGasBounds());
-            } });
+                valid &= bounds.Admissible(
+                    EquationPositivityDetail::PointRow<decltype(values)>{
+                        values, iCell}); });
         MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, Metrics().Communicator());
         return valid;
     }

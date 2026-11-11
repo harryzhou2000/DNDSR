@@ -38,4 +38,34 @@ namespace DNDS::Cauchy
             _view.floors = {pressureFloor / (gas.gamma - 1), 0};
         }
     }
+
+    EquationAdmissibilityPolicy::EquationAdmissibilityPolicy(
+        const EquationSystem &equation, real densityFloor,
+        real temperatureFloor, real sensibleEnergyFloor, real pressureFloor,
+        RANSStateView rans,
+        Physics::Chemistry::ChemicalWorkerPool::Lease worker)
+        : _thermal(equation, densityFloor, temperatureFloor,
+                   sensibleEnergyFloor, pressureFloor, std::move(worker)),
+          _property(equation.PropertyKey()), _rans(rans)
+    {
+        index first = 0;
+        for (const auto &block : equation.Schema().blocks)
+        {
+            if (block.name == "rans")
+                _ransFirst = first;
+            first += index(block.components.size());
+        }
+        DNDS_check_throw_info(
+            equation.HasRANS() == bool(_rans.components),
+            "equation and admissibility RANS policies differ");
+        if (equation.HasRANS())
+            DNDS_check_throw_info(
+                _ransFirst >= 0 &&
+                    _rans.components == equation.RANS().ComponentNumber() &&
+                    _rans.kind == equation.RANS().Kind(),
+                "RANS admissibility policy differs from the equation schema");
+        else
+            DNDS_check_throw_info(_ransFirst < 0,
+                                  "non-RANS equation contains a RANS block");
+    }
 }

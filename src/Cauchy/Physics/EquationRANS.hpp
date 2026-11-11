@@ -24,7 +24,7 @@ namespace DNDS::Cauchy
 
         /// Euler's model-specific mean admissibility, before property kernels.
         template <class Row>
-        bool Admissible(const Row &values) const
+        DNDS_DEVICE_CALLABLE bool Admissible(const Row &values) const
         {
             for (int j = 0; j < components; ++j)
             {

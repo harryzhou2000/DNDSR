@@ -6,6 +6,7 @@
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
 #include "Cauchy/Discretization/WallDistanceSamples.hpp"
+#include "Cauchy/Physics/EquationPositivity.hpp"
 #include "Cauchy/Physics/EquationRANS.hpp"
 #include "DNDS/Algebra/DofHalo.hpp"
 #include "DNDS/Runtime/Communication/CommunicationWorker.hpp"
@@ -216,7 +217,10 @@ namespace DNDS::Cauchy
         /// Cell-center displacements for direct-P1 trace/volume PP checks.
         /// Shares positivityOffsets with polynomial sampling but owns no basis.
         std::vector<Geom::tPoint> positivityDisplacements;
-        std::optional<ThermalBounds> thermalBounds;
+        /// Small fixed-flow leaves retain their five-component affine bounds;
+        /// orchestration and complete equation checks use defaultAdmissibility.
+        std::optional<ThermalBounds> fixedFlowThermalBounds;
+        std::optional<EquationAdmissibilityPolicy> defaultAdmissibility;
         std::optional<WallDistanceSamples> wallDistance;
         Runtime::Array<real> ransCellLength;
         Runtime::TransferBinding BindHalo(CFV::FVField &field, const char *channel = "cauchy-field") const
@@ -245,10 +249,12 @@ namespace DNDS::Cauchy
             options.collectivePreflight = settings.implicit.collectiveChecks;
             return options;
         }
-        const ThermalBounds &PerfectGasBounds() const
+        const ThermalBounds &FixedFlowThermalBounds() const
         {
-            DNDS_check_throw_info(thermalBounds, "flow-only thermal policy is unavailable for this equation");
-            return *thermalBounds;
+            DNDS_check_throw_info(
+                fixedFlowThermalBounds,
+                "fixed-flow thermal policy is unavailable for this equation");
+            return *fixedFlowThermalBounds;
         }
         Data(ssp<Geom::UnstructuredMesh> source, DomainSettings controls, EquationSystem physics)
             : mesh(std::move(source)), settings(std::move(controls)), equation(std::move(physics)), boundaryPoint(equation), motion(settings.motion, settings.mesh.dimension), flux(Riemann::RiemannFlux::Resolve(settings.numerics.flux)),
@@ -269,7 +275,21 @@ namespace DNDS::Cauchy
             if (settings.execution.communicationExecution == "worker")
                 communicationWorker = std::make_shared<Runtime::CommunicationWorker>();
             if (!equation.HasMixture())
-                thermalBounds = equation.PrepareThermalBounds(settings.numerics.densityFloor, settings.numerics.temperatureFloor, settings.numerics.pressureFloor);
+            {
+                fixedFlowThermalBounds = equation.PrepareThermalBounds(
+                    settings.numerics.densityFloor,
+                    settings.numerics.temperatureFloor,
+                    settings.numerics.pressureFloor);
+                defaultAdmissibility.emplace(
+                    equation, settings.numerics.densityFloor,
+                    settings.numerics.temperatureFloor,
+                    settings.numerics.sensibleEnergyFloor,
+                    settings.numerics.pressureFloor,
+                    equation.HasRANS()
+                        ? RANSStateView{equation.RANS().Kind(),
+                                        equation.RANS().ComponentNumber()}
+                        : RANSStateView{});
+            }
         }
     };
     /// Private owned-quadrature PP composition. Physical coefficient fields

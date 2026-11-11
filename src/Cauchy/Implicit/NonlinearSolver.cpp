@@ -99,14 +99,13 @@ namespace DNDS::Cauchy
         std::vector<uint64_t> auxiliaryGhostVersions;
         real auxiliaryTime = 0;
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
+        EquationAdmissibilityPolicy admissibility;
         std::shared_ptr<LinearProblemContext> problem;
         std::unique_ptr<DofLinearSolver> linear;
         bool positivity;
-        std::optional<EquationThermalPolicy> thermal;
-        std::optional<RANSStateView> rans;
         AlphaReduction rhsFPPReduction = AlphaReduction::Cell;
         std::optional<R::Array<real>> cellRHSAlpha;
-        real reconstructionTolerance, densityFloor, temperatureFloor, pressureFloor;
+        real reconstructionTolerance;
         index flowFirst = -1, speciesFirst = -1, ransFirst = -1;
         NonlinearSolveState nonlinearState;
 
@@ -119,10 +118,10 @@ namespace DNDS::Cauchy
               mpi(fv.Metrics().Communicator()), binding(state), spatial(EquationDofOperations::NewVector(state)),
               defect(EquationDofOperations::NewVector(state)), candidate(EquationDofOperations::NewVector(state)),
               inversePseudoTime(R::RowLayout::Dense(fv.Metrics().NumCell(), 1)), workers(std::move(pool)),
+              admissibility(fv.PrepareAdmissibility(workers)),
               problem(fv.BuildLinearProblem(state, settings.diagonal == "block" ? DiagonalStorage::Block : DiagonalStorage::Entries,
                                             (settings.jacobianAction == "directEvaluated" || settings.jacobianAction == "semiMatrixFree") ? OffDiagonalStorage::DirectEvaluated : OffDiagonalStorage::Assembled)),
-              positivity(controls.numerics.positivity), reconstructionTolerance(settings.requireConvergedReconstruction && controls.numerics.reconstruction == "variational" ? controls.numerics.reconstructionTolerance : 0),
-              densityFloor(controls.numerics.densityFloor), temperatureFloor(controls.numerics.temperatureFloor), pressureFloor(controls.numerics.pressureFloor)
+              positivity(controls.numerics.positivity), reconstructionTolerance(settings.requireConvergedReconstruction && controls.numerics.reconstruction == "variational" ? controls.numerics.reconstructionTolerance : 0)
         {
             AuxiliaryRequest request;
             // This solve always needs face spectra. Prepare each mean's
@@ -131,11 +130,6 @@ namespace DNDS::Cauchy
             request.meanThermodynamics = true;
             request.faceSpectralRadius = request.cellSpectralSum = true;
             auxiliary = fv.BuildAuxiliaryValues(fv.CompleteRHSAuxiliaryRequest(request));
-            if (positivity)
-                thermal.emplace(fv.Equation(), densityFloor, temperatureFloor, controls.numerics.sensibleEnergyFloor, pressureFloor,
-                                workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{});
-            if (fv.Equation().HasRANS())
-                rans.emplace(ResolveRANSStatePolicy(fv.Equation(), controls.numerics.ransState));
             DNDS_check_throw_info(executor.Owns(stream), "nonlinear solver stream belongs to another runtime");
             rhsFPPReduction = settings.positivity.rhsFPPReduction == "cell" ? AlphaReduction::Cell : settings.positivity.rhsFPPReduction == "minimumLimited" ? AlphaReduction::MinimumLimited
                                                                                                                                                              : AlphaReduction::MinimumAll;
@@ -185,42 +179,17 @@ namespace DNDS::Cauchy
         }
         void ValidateMeans(const EquationDofs &state) const
         {
-            const auto &equation = discrete.Equation();
-            auto evaluator = equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {});
             const auto read = state.ReadOwned();
-            const auto scalars = rans ? read.Block("rans") : EquationBlockReadView{};
             const EquationViewLayout<const real> layout(state, read);
-            const int independent = equation.HasMixture() ? equation.Mixture().SpeciesNumber() - 1 : 0;
-            auto rhoY = evaluator.SpeciesInput();
-            const auto bounds = thermal ? thermal->View() : EquationThermalView{};
+            const auto bounds = admissibility.View();
             const auto validate = [&](auto values)
             {
                 for (index iCell = 0; iCell < values.RowCount(); ++iCell)
-                {
-                    if (thermal)
-                        DNDS_check_throw_info(bounds.Admissible(EquationPositivityDetail::PointRow<decltype(values)>{values, iCell}), "implicit equation mean violates its thermal/species bounds");
-                    for (index j = 0; j < values.ComponentNumber(); ++j)
-                        DNDS_check_throw_info(std::isfinite(values(iCell, j)), "nonfinite implicit equation mean");
-                    if (rans)
-                        DNDS_check_throw_info(rans->Admissible(scalars[iCell]), "implicit RANS mean violates its scalar bounds");
-                    FlowState flow;
-                    for (int j = 0; j < 5; ++j)
-                        flow[j] = values(iCell, flowFirst + j);
-                    DNDS_check_throw_info(flow[0] >= densityFloor, "implicit equation density is below its floor");
-                    real sum = 0;
-                    for (int k = 0; k < independent; ++k)
-                    {
-                        rhoY[k] = values(iCell, speciesFirst + k);
-                        DNDS_check_throw_info(rhoY[k] >= 0, "negative implicit equation species mean");
-                        sum += rhoY[k];
-                    }
-                    DNDS_check_throw_info(sum <= flow[0], "implicit equation species means exceed density");
-                    if (!equation.HasMixture())
-                        DNDS_check_throw_info(ThermallyAdmissible(flow, discrete.ThermalConstraints()), "inadmissible implicit flow mean");
-                    const auto point = evaluator.Evaluate(flow, {independent ? rhoY.data : nullptr, independent});
-                    DNDS_check_throw_info(point.thermo.temperature >= temperatureFloor && point.thermo.pressure > 0 && (equation.HasMixture() || point.thermo.pressure >= pressureFloor),
-                                          "implicit equation mean violates temperature or pressure floor");
-                }
+                    DNDS_check_throw_info(
+                        bounds.Admissible(
+                            EquationPositivityDetail::PointRow<decltype(values)>{
+                                values, iCell}),
+                        "implicit equation mean violates its thermal/species/RANS bounds");
             };
             // Resolve physical grouping/layout once. This changes only row
             // access; all thermal, species and RANS acceptance checks remain.
@@ -453,7 +422,7 @@ namespace DNDS::Cauchy
                         const auto alphas = alphaWrite ? alphaWrite->View<R::UniformTableRows>() : R::ArrayView<real, R::AccessBoundsChecks, R::UniformTableRows>{};
                         const auto spectral = read.View<R::UniformTableRows>();
                         const auto inverse = write.View<R::UniformTableRows>();
-                        const auto bounds = data.thermal ? data.thermal->View() : EquationThermalView{};
+                        const auto bounds = data.admissibility.View().thermal;
                         for (index iCell = 0; iCell < inverse.RowCount(); ++iCell)
                         {
                             const real volume = metric.GetCellVol(iCell);
@@ -621,7 +590,8 @@ namespace DNDS::Cauchy
             const auto u = state.ReadOwned(), d = increment.ReadOwned();
             auto write = data.candidate.WriteOwned();
             const auto ul = u.ComponentLayout(), dl = d.ComponentLayout(); const auto wl = write.ComponentLayout();
-            const auto bounds = data.thermal ? data.thermal->View() : EquationThermalView{};
+            const auto bounds = data.admissibility.View().thermal;
+            const auto &rans = data.admissibility.RANS();
             const int independent = data.discrete.Equation().HasMixture() ? data.discrete.Equation().Mixture().SpeciesNumber() - 1 : 0;
             const index components = state.ComponentNumber();
             const auto apply = [&](auto mean, auto delta, auto candidate)
@@ -702,23 +672,23 @@ namespace DNDS::Cauchy
                         DNDS_check_throw_info(std::isfinite(candidate(iCell, j)),
                                               "nonfinite equation correction candidate");
                     }
-                    if (data.rans)
+                    if (rans.components)
                     {
                         std::array<real, 2> oldRANS{}, changeRANS{}, nextRANS{};
-                        for (int j = 0; j < data.rans->components; ++j)
+                        for (int j = 0; j < rans.components; ++j)
                         {
                             oldRANS[j] = mean(iCell, data.ransFirst + j);
                             changeRANS[j] = fix * storedChange[data.ransFirst + j];
                         }
-                        DNDS_check_throw_info(data.rans->Admissible(oldRANS),
+                        DNDS_check_throw_info(rans.Admissible(oldRANS),
                                               "RANS correction requires an admissible old mean");
                         // Preserve Euler's order: whole-vector thermal compression,
                         // then component-wise RANS repair of that scaled increment.
-                        data.rans->RepairIncrement(oldRANS, changeRANS);
-                        for (int j = 0; j < data.rans->components; ++j)
+                        rans.RepairIncrement(oldRANS, changeRANS);
+                        for (int j = 0; j < rans.components; ++j)
                             nextRANS[j] = oldRANS[j] + changeRANS[j];
-                        data.rans->RepairMean(candidate(iCell, data.flowFirst), nextRANS);
-                        for (int j = 0; j < data.rans->components; ++j)
+                        rans.RepairMean(candidate(iCell, data.flowFirst), nextRANS);
+                        for (int j = 0; j < rans.components; ++j)
                         {
                             const index component = data.ransFirst + j;
                             candidate(iCell, component) = nextRANS[j];

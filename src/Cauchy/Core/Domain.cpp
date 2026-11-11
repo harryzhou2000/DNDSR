@@ -136,60 +136,23 @@ namespace DNDS::Cauchy
         _positivity = settings.numerics.positivity;
         _equation.ValidateStateSchema(_accepted);
         DNDS_check_throw_info(_fv.Metrics().Dimension() == settings.mesh.dimension, "Cauchy config/mesh dimension differs");
-        const auto &n = settings.numerics;
-        _thermal.emplace(_equation, n.densityFloor, n.temperatureFloor, n.sensibleEnergyFloor, n.pressureFloor,
-                         _workers ? _workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{});
-        if (_equation.HasRANS())
-            _ransState.emplace(ResolveRANSStatePolicy(_equation, settings.numerics.ransState));
+        _admissibility.emplace(_fv.PrepareAdmissibility(_workers));
         DNDS_check_throw_info(Admissible(_accepted), "Cauchy initial means violate density or minimum-temperature internal-energy bounds");
         ConfigureTimeStep(time, settings.implicit.positivity.compressionPower);
         InitializeImplicit(settings, time, mesh);
     }
     bool Domain::Admissible(const EquationDofs &state) const
     {
-        int valid = 1;
-        std::exception_ptr failure;
         try
         {
-            auto evaluator = _equation.MakePointEvaluator(_workers ? _workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {});
-            const auto read = state.ReadOwned();
-            const auto layout = read.ComponentLayout();
-            const auto values = layout.View();
-            const auto bounds = _thermal->View();
-            const auto scalars = _ransState ? read.Block("rans") : EquationBlockReadView{};
-            auto rhoY = evaluator.SpeciesInput();
-            for (index iCell = 0; iCell < values.RowCount(); ++iCell)
-            {
-                const EquationPositivityDetail::PointRow<decltype(values)> row{values, iCell};
-                if (!bounds.Admissible(row))
-                {
-                    valid = 0;
-                    break;
-                }
-                if (_ransState && !_ransState->Admissible(scalars[iCell]))
-                {
-                    valid = 0;
-                    break;
-                }
-                for (int k = 0; k < rhoY.nSpecies; ++k)
-                    rhoY[k] = values(iCell, bounds.speciesFirst + k);
-                const auto point = evaluator.Evaluate(bounds.Flow(row), rhoY);
-                valid &= point.thermo.pressure > 0 && point.thermo.temperature > 0;
-            }
+            DNDS_assert(_admissibility);
+            return _fv.Admissible(state, *_admissibility);
         }
         catch (...)
         {
             MPI::AbortIfSolverFailure("Cauchy domain operation failed");
-            // Purely local thermodynamic work above. Preserve backend/access
-            // errors rather than converting them into numerical rejection.
-            failure = std::current_exception();
+            throw;
         }
-        int status[]{valid, !failure};
-        MPI_Allreduce(MPI_IN_PLACE, status, 2, MPI_INT, MPI_MIN, _fv.Metrics().Communicator());
-        if (failure)
-            std::rethrow_exception(failure);
-        DNDS_check_throw_info(status[1], "Cauchy admissibility evaluation failed on another rank");
-        return bool(status[0]);
     }
     bool Domain::RefreshDerived(DerivedFields &fields, bool onlyIfStale) const
     {
@@ -250,7 +213,9 @@ namespace DNDS::Cauchy
                 for (index iBlock = 0; iBlock < _trial.BlockNumber(); ++iBlock)
                 {
                     const auto base = initial.Block(iBlock), rhs = residual.Block(iBlock); const auto state = output.Block(iBlock);
-                    const bool rans = _ransState && _trial.Schema().blocks[iBlock].name == "rans";
+                    const auto &ransState = _admissibility->RANS();
+                    const bool rans = ransState.components &&
+                                      _trial.Schema().blocks[iBlock].name == "rans";
                     for (index iCell = 0; iCell < state.RowCount(); ++iCell)
                     {
                         if (rans)
@@ -258,16 +223,16 @@ namespace DNDS::Cauchy
                             // Euler's scalar-only repair is permitted here.
                             // It must never rescale the flow5/species update.
                             std::array<real, 2> old{}, change{}, next{};
-                            for (int j = 0; j < _ransState->components; ++j)
+                            for (int j = 0; j < ransState.components; ++j)
                             {
                                 old[j] = state(iCell, j);
                                 change[j] = historyWeight * base(iCell, j) + stageWeight * (old[j] + dt * rhs(iCell, j) / metric.GetCellVol(iCell)) - old[j];
                                 DNDS_check_throw_info(std::isfinite(change[j]), "nonfinite explicit RANS increment");
                             }
-                            _ransState->RepairIncrement(old, change);
-                            for (int j = 0; j < _ransState->components; ++j) next[j] = old[j] + change[j];
-                            _ransState->RepairMean(flow(iCell, 0), next);
-                            for (int j = 0; j < _ransState->components; ++j) state(iCell, j) = next[j];
+                            ransState.RepairIncrement(old, change);
+                            for (int j = 0; j < ransState.components; ++j) next[j] = old[j] + change[j];
+                            ransState.RepairMean(flow(iCell, 0), next);
+                            for (int j = 0; j < ransState.components; ++j) state(iCell, j) = next[j];
                             continue;
                         }
                         // No cellwise thermal increment compression: flow5

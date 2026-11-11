@@ -42,7 +42,8 @@ namespace DNDS::Cauchy
                 _fv.SetBoundaryInputs(*_timePPWorkspace, *_interfaceInputs);
         }
         _fv.EvaluateMean(_accepted, *_timePPResidual, *_timePPWorkspace, _engine, _stream, _time);
-        result = _fv.LimitPhysicalStep(_accepted, *_timePPResidual, _thermal->View(), requestedDt,
+        result = _fv.LimitPhysicalStep(_accepted, *_timePPResidual,
+                                       _admissibility->View().thermal, requestedDt,
                                        _timePP.relax, _timePP.scale, _timeCompressionPower);
         // Last accepted dt, never a rejected/prepared proposal, controls growth.
         // Division avoids overflow in an unnecessary previousDt*limit product.

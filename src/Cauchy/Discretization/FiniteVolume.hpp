@@ -31,6 +31,7 @@ namespace DNDS::Cauchy
         struct MeanLinearizationOutput;
     }
     struct EquationThermalView;
+    class EquationAdmissibilityPolicy;
     /// Persistent buffers/plans for explicit mean-gradient preparation. One
     /// field per physical equation allocation, columns component*dim+direction.
     /// Gradient values use the cell's mesh frame; periodic tensors are rotated
@@ -728,8 +729,20 @@ namespace DNDS::Cauchy
         void InitializeField(EquationDofs &state, const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers = {}) const;
         /// Volume-normalized L1/L2/Linf error in conservative cell averages.
         std::array<FlowState, 3> Error(const EquationDofs &state, const FlowProfileSettings &profile, const FlowState &primitive, real time) const;
-        /// Collective owned-only admissibility; never repairs a state silently.
+        /// Prepare the complete equation mean-state predicate. Mixtures require
+        /// their retained worker pool exactly once here; subsequent row checks
+        /// perform no EOS inversion or worker acquisition.
+        EquationAdmissibilityPolicy PrepareAdmissibility(
+            std::optional<Physics::Chemistry::ChemicalWorkerPool> workers =
+                std::nullopt) const;
+        /// Collective owned-only admissibility using the plan's default
+        /// non-mixture policy. Never repairs a state silently. Mixture callers
+        /// prepare and retain an explicit policy instead.
         bool Admissible(const EquationDofs &state) const;
+        /// Collective, layout-agnostic complete-equation mean-state check.
+        /// The policy owner must outlive this synchronous call.
+        bool Admissible(const EquationDofs &state,
+                        const EquationAdmissibilityPolicy &policy) const;
         index LastFaceFallbacks(const Workspace &workspace) const;
         /// Full-state variant also refreshes sampled source inputs from the
         /// retained polynomial before publishing their Jacobian provenance.
@@ -744,6 +757,9 @@ namespace DNDS::Cauchy
         /// reconstruction scratch.
         void RefreshCorrectionSource(EquationDofs &state, ReconstructionState &reconstruction,
                                      Workspace &workspace, real time) const;
+        /// Five-component affine bound retained for specialized perfect-gas
+        /// flow kernels and their compatibility tests. Complete-equation
+        /// orchestration uses PrepareAdmissibility/Admissible instead.
         const ThermalBounds &ThermalConstraints() const;
         /// Collective checked projection of a fresh copy of the unlimited
         /// guess into flux coefficients, retaining the unlimited guess. Reads only
