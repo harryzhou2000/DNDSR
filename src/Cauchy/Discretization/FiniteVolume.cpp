@@ -752,6 +752,38 @@ namespace DNDS::Cauchy
         /// surrounding Workspace still owns the only reconstruction/RHS
         /// schedule and all operand leases.
         std::optional<RHSOperator> fixedFlowRHS;
+        /// One synchronous fixed-flow invocation's leases and plain views.
+        /// Capacity is resolved by the prepared operator contract; no heap
+        /// allocation occurs while packaging a core/dependent RHS call.
+        struct RHSAccessScope
+        {
+            struct FieldRead
+            {
+                std::optional<R::Array<real>::ReadLease> owned, ghost;
+            };
+            static constexpr size_t FieldCapacity = 8;
+            bool ghosts = false;
+            size_t fieldCount = 0;
+            std::array<FieldRead, FieldCapacity> fields;
+            std::optional<R::Array<real>::ReadLease> thermodynamics;
+            std::optional<DerivedFields::ReadScope> derivedOwned, derivedGhost;
+            std::optional<R::Array<real>::WriteLease> result, lowOrder, face;
+            RHSReadViews input;
+            RHSWriteViews output;
+
+            explicit RHSAccessScope(bool includeGhosts) : ghosts(includeGhosts) {}
+            RHSFieldView ReadField(const CFV::FVField &field)
+            {
+                DNDS_check_throw_info(fieldCount < fields.size(),
+                                      "prepared RHS access capacity exceeded");
+                auto &slot = fields[fieldCount++];
+                slot.owned.emplace(field.Owned().Read());
+                if (ghosts)
+                    slot.ghost.emplace(field.Ghost().Read());
+                return {slot.owned->View<R::UniformTableRows>(),
+                        slot.ghost ? slot.ghost->View<R::UniformTableRows>() : RHSScalarView{}};
+            }
+        };
         RHSLocalDiagnostics diagnostics;
         std::array<index, 2> faceFallbacks{};
         std::optional<CFV::FaceCharacteristicTransform> flowCharacteristic;
@@ -1302,79 +1334,66 @@ namespace DNDS::Cauchy
                                  state.ComponentNumber() == 5 && result.ComponentNumber() == 5,
                              "fixed-flow RHS leaf requires one flow5 physical field");
             const bool ghosts = region != CFV::ReconstructionRegion::Core;
-            std::vector<R::Array<real>::ReadLease> reads;
-            reads.reserve(16);
-            const auto readField = [&](const CFV::FVField &field)
-            {
-                const size_t owned = reads.size();
-                reads.emplace_back(field.Owned().Read());
-                if (ghosts)
-                    reads.emplace_back(field.Ghost().Read());
-                return RHSFieldView{reads[owned].View<R::UniformTableRows>(),
-                                    ghosts ? reads[owned + 1].View<R::UniformTableRows>() : RHSScalarView{}};
-            };
-            RHSReadViews input;
-            input.mean = readField(state.PhysicalField(0));
+            RHSAccessScope scope(ghosts);
+            auto &input = scope.input;
+            input.mean = scope.ReadField(state.PhysicalField(0));
             input.includeViscosity = !meanOnly;
             input.meanOnly = meanOnly;
             if (owner->settings.numerics.reconstruction == "variational")
-                input.coefficients = readField(FluxCoefficients().PhysicalField(0));
+                input.coefficients = scope.ReadField(FluxCoefficients().PhysicalField(0));
             else if (!meanOnly && !owner->settings.numerics.firstOrderConvection &&
                      owner->settings.numerics.reconstruction == "gradient")
             {
                 DNDS_assert_info(directGradients.size() == 1, "fixed-flow direct gradient is unavailable");
-                input.conservativeGradient = readField(directGradients.front());
+                input.conservativeGradient = scope.ReadField(directGradients.front());
             }
             if (!owner->settings.numerics.viscousLimited &&
                 (owner->settings.numerics.limiter == "WBAP" || limitedVR || owner->settings.numerics.positivity))
             {
                 if (owner->settings.numerics.reconstruction == "variational")
-                    input.viscousCoefficients = readField(Coefficients().PhysicalField(0));
+                    input.viscousCoefficients = scope.ReadField(Coefficients().PhysicalField(0));
                 else if (!directViscousGradients.empty())
-                    input.viscousConservativeGradient = readField(directViscousGradients.front());
+                    input.viscousConservativeGradient = scope.ReadField(directViscousGradients.front());
             }
             if (primitiveGradient)
-                input.primitiveGradient = readField(*primitiveGradient);
-            std::optional<R::Array<real>::ReadLease> thermodynamics;
-            std::optional<DerivedFields::ReadScope> derivedOwned, derivedGhost;
+                input.primitiveGradient = scope.ReadField(*primitiveGradient);
             if (auxiliary)
             {
                 const auto &values = auxiliary->get();
                 if (values.meanThermodynamics)
                 {
-                    thermodynamics.emplace(values.meanThermodynamics->Read());
-                    input.auxiliary.meanThermodynamics.emplace(thermodynamics->View<R::UniformTableRows>());
+                    scope.thermodynamics.emplace(values.meanThermodynamics->Read());
+                    input.auxiliary.meanThermodynamics.emplace(scope.thermodynamics->View<R::UniformTableRows>());
                 }
                 else if (values.derivedOwned)
                 {
                     const auto typed = EquationDofs::Coupled(owner->equation.Schema(), state.PhysicalField(0));
-                    derivedOwned.emplace(values.derivedOwned->ReadCurrent(typed, owner->equation));
+                    scope.derivedOwned.emplace(values.derivedOwned->ReadCurrent(typed, owner->equation));
                     if (ghosts && values.derivedGhost)
-                        derivedGhost.emplace(values.derivedGhost->ReadCurrent(typed, owner->equation));
+                        scope.derivedGhost.emplace(values.derivedGhost->ReadCurrent(typed, owner->equation));
                     input.auxiliary.meanThermodynamics.emplace(MeanThermodynamicView::Derived(
-                        *derivedOwned, derivedGhost ? std::optional(std::cref(*derivedGhost)) : std::nullopt));
+                        *scope.derivedOwned, scope.derivedGhost ? std::optional(std::cref(*scope.derivedGhost)) : std::nullopt));
                 }
                 if (values.cellWaveJump)
-                    input.auxiliary.cellWaveJump = readField(*values.cellWaveJump);
+                    input.auxiliary.cellWaveJump = scope.ReadField(*values.cellWaveJump);
                 if (values.cellPressureMinimum)
-                    input.auxiliary.cellPressureMinimum = readField(*values.cellPressureMinimum);
+                    input.auxiliary.cellPressureMinimum = scope.ReadField(*values.cellPressureMinimum);
             }
             if (incoming.data)
                 input.boundary = incoming;
-            auto outputWrite = result.PhysicalField(0).Owned().Write();
-            RHSWriteViews output{outputWrite.View<R::UniformTableRows>()};
-            std::optional<R::Array<real>::WriteLease> lowWrite, faceWrite;
+            scope.result.emplace(result.PhysicalField(0).Owned().Write());
+            scope.output.residual = scope.result->View<R::UniformTableRows>();
             if (lowOrderResidual)
             {
-                lowWrite.emplace(lowOrderResidual->PhysicalField(0).Owned().Write());
-                output.lowOrder = lowWrite->View<R::UniformTableRows>();
+                scope.lowOrder.emplace(lowOrderResidual->PhysicalField(0).Owned().Write());
+                scope.output.lowOrder = scope.lowOrder->View<R::UniformTableRows>();
             }
             if (faceOutput)
             {
-                faceWrite.emplace(faceOutput->get().Write());
-                output.faceFlux = faceWrite->View<R::UniformTableRows>();
+                scope.face.emplace(faceOutput->get().Write());
+                scope.output.faceFlux = scope.face->View<R::UniformTableRows>();
             }
-            diagnostics.Merge(fixedFlowRHS->ApplyFluxBorrowedFatal(input, output, region, time));
+            diagnostics.Merge(fixedFlowRHS->ApplyFluxBorrowedFatal(input, scope.output, region, time));
         }
         void ApplyRHS(const EquationDofs &state, EquationDofs &result, CFV::ReconstructionRegion region,
                       EquationPointEvaluator &evaluator, real time,
