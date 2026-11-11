@@ -27,6 +27,15 @@ mean gradients for its volume sources; it does not reconstruct face values or
 add those gradients to P0 face viscosity. Thus selecting constant convection
 does not silently turn off gradient-dependent production or destruction.
 
+P0 and direct P1 `ReconstructionState` objects alias the managed equation
+state and retain no modal value allocation or coefficient halo binding.
+Variational reconstruction owns its warm coefficients; limiter/PP output adds
+a second finalized allocation only when it must differ. The local
+`InspectReconstructionStorage` audit reports actual owned/ghost value bytes in
+addition to field/binding counts. `coefficientGhostBytes` is the local receive
+payload of one complete coefficient exchange; shared structural metadata and
+the independent mean halo are deliberately excluded.
+
 The current limiter/PP and warm-guess compatibility boundary remains explicit:
 direct gradients are converted to linear coefficients for those facilities,
 then the accepted linear modes are projected once into physical gradients.

@@ -3476,6 +3476,21 @@ namespace DNDS::Cauchy
                                        (state.distinctFinalized ? 2 : 1);
             result.coefficientTransferBindings = index(state.coefficientHalo.size() +
                                                        state.fluxHalo.size());
+            const auto accumulate = [&](const EquationDofs &values)
+            {
+                for (index iField = 0; iField < values.PhysicalFieldNumber(); ++iField)
+                {
+                    result.coefficientOwnedBytes = CheckedSize::Add(
+                        result.coefficientOwnedBytes,
+                        values.PhysicalField(iField).Owned().Storage().Bytes());
+                    result.coefficientGhostBytes = CheckedSize::Add(
+                        result.coefficientGhostBytes,
+                        values.PhysicalField(iField).Ghost().Storage().Bytes());
+                }
+            };
+            accumulate(state.coefficients);
+            if (state.distinctFinalized)
+                accumulate(state.fluxCoefficients);
         }
         return result;
     }

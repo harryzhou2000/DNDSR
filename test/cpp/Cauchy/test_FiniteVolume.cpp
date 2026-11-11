@@ -66,6 +66,7 @@ TEST_CASE("Finite-volume workspace identity follows its shared plan and rejects 
 TEST_CASE("Finalized reconstruction aliases unfiltered storage and retains publication provenance")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 3);
+    size_t unfilteredOwnedBytes = 0, unfilteredGhostBytes = 0;
     for (const bool filtered : {false, true})
     {
         C::DomainSettings settings;
@@ -79,6 +80,19 @@ TEST_CASE("Finalized reconstruction aliases unfiltered storage and retains publi
         auto field = fv.Metrics().BuildField(5);
         auto logical = Bind(fv, field);
         auto reconstruction = fv.BuildReconstructionState(logical);
+        const auto storage = fv.InspectReconstructionStorage(*reconstruction);
+        CHECK(storage.distinctFinalized == filtered);
+        CHECK(storage.coefficientOwnedBytes > 0);
+        if (!filtered)
+        {
+            unfilteredOwnedBytes = storage.coefficientOwnedBytes;
+            unfilteredGhostBytes = storage.coefficientGhostBytes;
+        }
+        else
+        {
+            CHECK(storage.coefficientOwnedBytes == 2 * unfilteredOwnedBytes);
+            CHECK(storage.coefficientGhostBytes == 2 * unfilteredGhostBytes);
+        }
         const auto publication = fv.AcquireFinalizedReconstruction(*reconstruction);
         CHECK(publication.UsesDistinctStorage() == filtered);
         const auto &warm = fv.ReconstructionGuess(*reconstruction);
@@ -700,11 +714,14 @@ TEST_CASE("Cauchy P0 explicit P1 and degree-one VR retain their distinct storage
             {
                 CHECK(storage.coefficientFields > 0);
                 CHECK(storage.coefficientTransferBindings > 0);
+                CHECK(storage.coefficientOwnedBytes > 0);
             }
             else
             {
                 CHECK(storage.coefficientFields == 0);
                 CHECK(storage.coefficientTransferBindings == 0);
+                CHECK(storage.coefficientOwnedBytes == 0);
+                CHECK(storage.coefficientGhostBytes == 0);
                 CHECK_FALSE(storage.distinctFinalized);
                 CHECK(storage.aliasesEquationState);
             }
@@ -756,6 +773,8 @@ TEST_CASE("Cauchy direct P1 owns Barth and thermal PP without variational storag
         CHECK_FALSE(storage.polynomialPlan);
         CHECK(storage.coefficientFields == 0);
         CHECK(storage.coefficientTransferBindings == 0);
+        CHECK(storage.coefficientOwnedBytes == 0);
+        CHECK(storage.coefficientGhostBytes == 0);
         CHECK(storage.aliasesEquationState);
         auto workspace = fv.BuildWorkspace(logical);
         R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
@@ -834,6 +853,8 @@ TEST_CASE("Native viscous Cauchy residual reproduces linear Couette heat product
     CHECK_FALSE(storage.polynomialPlan);
     CHECK(storage.coefficientFields == 0);
     CHECK(storage.coefficientTransferBindings == 0);
+    CHECK(storage.coefficientOwnedBytes == 0);
+    CHECK(storage.coefficientGhostBytes == 0);
     CHECK(storage.aliasesEquationState);
     const auto read = residual.Owned().Read();
     const auto base = inviscidResidual.Owned().Read();

@@ -280,6 +280,11 @@ namespace DNDS::Cauchy
             bool aliasesEquationState = false;
             index coefficientFields = 0;
             index coefficientTransferBindings = 0;
+            /// Actual retained value allocations. Structural layout metadata is
+            /// shared and intentionally excluded. Ghost bytes equal one local
+            /// receive payload across all coefficient halo bindings.
+            size_t coefficientOwnedBytes = 0;
+            size_t coefficientGhostBytes = 0;
         };
         /// Managed selection of the reconstruction publication consumed by
         /// flux, source and Jacobian operators. Variational modes retain the
