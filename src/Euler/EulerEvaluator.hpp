@@ -2052,8 +2052,6 @@ namespace DNDS::Euler
                 pEps *= verySmallReal, rhoEps *= verySmallReal;
             }
             real rhoeSensibleEps = pEps;
-            constexpr real rhoYFloor = 1e-30; // tiny positive floor (matches 0D ODE)
-            constexpr real ratio_decay = 0.75;
 
             TU ret = uInc;
 
@@ -2066,46 +2064,65 @@ namespace DNDS::Euler
                 newrho = rhoEps;
                 ret *= (newrho - u(0)) / (ret(0) - verySmallReal);
             }
+            // The stored target uses RepairSpeciesDensities, not the tolerant
+            // thermodynamic mass-fraction projection. Form that exact target
+            // before the energy restriction. The segment from the old valid
+            // mean to this repaired target remains inside the species simplex,
+            // so every subsequent common line-search scaling preserves it.
+            if (phys_.hasChemicalSource())
+            {
+                TU repairedTarget = u + ret;
+                RepairCellMeanSpecies(repairedTarget);
+                const int Ns1 = phys_.nSpecies() - 1;
+                const int Isp = static_cast<int>(repairedTarget.size()) - Ns1;
+                ret(Eigen::seqN(Isp, Ns1)) = repairedTarget(Eigen::seqN(Isp, Ns1)) -
+                                             u(Eigen::seqN(Isp, Ns1));
+            }
             real rhoE_base_old = phys_.mixtureBaseInternalRhoE(u);
             real ekOld = 0.5 * u(Seq123).squaredNorm() / (u(0) + verySmallReal);
             real rhoEinternal_sensible = u(I4) - ekOld - rhoE_base_old;
             DNDS_assert(rhoEinternal_sensible > 0);
-            real ek = 0.5 * (u(Seq123) + ret(Seq123)).squaredNorm() / (u(0) + ret(0) + verySmallReal);
-            real rhoE_base_new = phys_.mixtureBaseInternalRhoE(TU(u + ret));
-            real rhoEinternalNew_sensible = u(I4) + ret(I4) - ek - rhoE_base_new;
+            const TU repairedTargetIncrement = ret;
+            auto sensibleInternalEnergy = [&](real alpha)
+            {
+                TU candidate = u + repairedTargetIncrement * alpha;
+                if (!candidate.allFinite() || !(candidate(0) > 0))
+                    return -std::numeric_limits<real>::infinity();
+                const real candidateKinetic =
+                    0.5 * candidate(Seq123).squaredNorm() / (candidate(0) + verySmallReal);
+                const real candidateBase = phys_.mixtureBaseInternalRhoE(candidate);
+                const real candidateSensible = candidate(I4) - candidateKinetic - candidateBase;
+                return std::isfinite(candidateSensible)
+                           ? candidateSensible
+                           : -std::numeric_limits<real>::infinity();
+            };
+            const real rhoEinternalNew_sensible = sensibleInternalEnergy(1);
             if (rhoEinternalNew_sensible <= rhoeSensibleEps)
             {
                 // Use linear-concave compression ratio (scheme=1).
                 // rhoe_sensible(θ) is concave → secant ≤ function, linear estimate safe.
                 real alpha = Gas::IdealGasGetCompressionRatioPressure<dim, 1, nVarsFixed>(
-                    u, ret, rhoeSensibleEps, rhoE_base_old, rhoE_base_new);
-                ret *= alpha * (0.99);
+                    u, repairedTargetIncrement, rhoeSensibleEps, rhoE_base_old,
+                    phys_.mixtureBaseInternalRhoE(TU(u + repairedTargetIncrement)));
+                if (!std::isfinite(alpha) || alpha < 0 || alpha > 1)
+                    alpha = 1;
+                alpha *= 0.99;
 
-                // Iterative pull-up: concave → rhoe(ret) ≥ linear estimate, may still overshoot.
-                real decay = 1 - 1e-1;
-                for (int iter = 0; iter < 1000; iter++)
+                // The analytic estimate is retained as the fast initial guess,
+                // while this scalar backtracking is the final guarantee.  Since
+                // both endpoints satisfy the species simplex, common scaling
+                // cannot undo the exact projection performed above.
+                constexpr real decay = 0.9;
+                int iter = 0;
+                while (sensibleInternalEnergy(alpha) < rhoeSensibleEps && iter < 1000)
                 {
-                    real ek = 0.5 * (u(Seq123) + ret(Seq123)).squaredNorm() / (u(0) + ret(0) + verySmallReal);
-                    real rhoEBase_ret = phys_.mixtureBaseInternalRhoE(TU(u + ret));
-                    if (u(I4) + ret(I4) - ek - rhoEBase_ret < rhoeSensibleEps)
-                        ret *= decay, alpha *= decay;
-                    else
-                        break;
+                    alpha *= decay;
+                    ++iter;
                 }
-
-                real ek = 0.5 * (u(Seq123) + ret(Seq123)).squaredNorm() / (u(0) + ret(0) + verySmallReal);
-                real rhoEBase_ret = phys_.mixtureBaseInternalRhoE(TU(u + ret));
-
-                if (u(I4) + ret(I4) - ek - rhoEBase_ret < rhoeSensibleEps * 0.5)
-                {
-                    std::cout << std::scientific << std::setprecision(5);
-                    std::cout << u(0) << " " << ret(0) << std::endl;
-                    std::cout << rhoEinternalNew_sensible << " " << rhoEinternal_sensible << std::endl;
-                    std::cout << rhoeSensibleEps << std::endl;
-                    std::cout << u(I4) + ret(I4) - ek - rhoEBase_ret << std::endl;
-                    std::cout << alpha << std::endl;
-                    DNDS_assert(false);
-                }
+                DNDS_assert_info(
+                    sensibleInternalEnergy(alpha) >= rhoeSensibleEps,
+                    "CompressInc failed to find an admissible thermal compression");
+                ret = repairedTargetIncrement * alpha;
             }
 
             /** A intuitive fix **/
@@ -2279,8 +2296,9 @@ namespace DNDS::Euler
                 //               << this->CompressInc(cx[iCell], cxInc[iCell] * alpha).transpose() << "\n"
                 //               << cxInc[iCell].transpose() * alpha << std::endl;
                 cx[iCell] += compressedInc;
-
-                RepairCellMeanSpecies(cx[iCell]);
+                // CompressInc already projected the exact stored species target
+                // before its thermal line search. A second projection here
+                // could invalidate the just-proved internal-energy bound.
 
                 // wall fix in not needed
                 // if (model == NS_2EQ || model == NS_2EQ_3D)
