@@ -77,9 +77,20 @@ execution streams or accepted writers. It uses the non-owning synchronous
 cancel an abandoned writer. Every local domain is reserved before any candidate
 is committed. Checkpoint read transactions live under `Cauchy/IO`, rather than
 as public or simulation-visible `Domain` implementation types. This extraction
-does not yet replace the application-level accepted-step loop with the final
-`SimulationController`; it establishes the ownership and transaction boundary
-needed for that change.
+now feeds the application-level `SimulationController`, which owns the
+accepted-step loop for both one-domain and multi-domain runs. A one-domain run
+is the degenerate coordinated case, not a production shortcut through
+`Domain::PrepareStep`; the standalone `Domain` frontend remains a synchronous
+debugging/Python and numerical-oracle path.
+
+Serialized BDF/DIRK stages and coupled DITR groups use the same candidate
+reservation/commit transaction. For DITR with interfaces, the controller first
+prepares independent midpoint and endpoint boundary packets. Each packet owns
+its sampled equation rows and publication metadata, so preparing the endpoint
+cannot invalidate the midpoint through the interface coordinator's reusable
+incoming allocation. The two packets remain frozen through the registered
+sequential midpoint/endpoint nonlinear policy. Per-iteration interface refresh
+and interstage overlap remain future policies.
 
 `Cauchy/Core/DomainPlacement` owns immutable simulation/domain communicator
 namespaces. Descriptor construction is collective and checked for exact agreement.
@@ -579,9 +590,10 @@ Release residual views before the next evaluation. Do not rebind domain-owned
 fields, alias residual output to an input, or use escaped raw pointers. Keep MPI
 contexts and solver objects alive until operations finish and destroy them before
 MPI finalization on an MPI-permitted thread. This is coordinated error handling,
-not process-failure recovery. GPU flow kernels, real-gas adapters, species/RANS,
-deforming ALE, coupled multi-domain DITR and multi-domain checkpoint orchestration remain later
-capability packages and fail explicitly when requested now.
+not process-failure recovery. GPU flow kernels, real-gas adapters, broader
+species/RANS qualification, deforming ALE and stronger nonlinear-iteration
+interface coupling remain later capability packages and fail explicitly when
+requested now.
 
 See [checked execution](CheckedExecution.md) for the shared optional submission
 checker, alias/free fan-in, checked/unchecked policy boundaries and portable MPI.

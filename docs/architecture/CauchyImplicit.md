@@ -129,8 +129,20 @@ rejects the same policy under a two-stage DITR requirement. p-FAS smoothers do
 not resolve or nest this finest policy: they continue to call bounded
 `CorrectOnce` operations inside the selected outer update.
 
-`NonlinearSolver::CorrectOnce` and `NonlinearSolver::CorrectOnce` share
-the ordinary solve's evaluation, defect assembly, pseudo-time, approximate
+Production one-domain and multi-domain stepping now share
+`SimulationController`. `StateTimeStepper::BeginCoupled` initializes DITR's
+method-owned endpoint/midpoint/rates without entering the nonlinear loop. The
+controller then prepares separate stage-frozen midpoint and endpoint interface
+packets and calls `RunCoupled`; the resolved `ditrSequential2Stage` policy binds
+the matching packet before each named correction/rate completion. The packet
+payload is an independent frozen copy, not an alias of the interface
+coordinator's reusable update buffer. Standalone `Domain::PrepareStep` retains
+the convenience `Prepare` path only as a synchronous oracle/debugging frontend.
+No per-nonlinear-iteration refresh or DITR interstage overlap is implied.
+
+The one-stage and coupled DITR policies share
+`NonlinearSolver::CorrectOnce`'s ordinary evaluation, defect assembly,
+pseudo-time, approximate
 Jacobian, linear solver and PP/update implementations. They do exactly one
 update without a convergence loop or residual-norm Allreduce. Other required
 agreement, physics and linear-solver collectives remain. Their reports never
