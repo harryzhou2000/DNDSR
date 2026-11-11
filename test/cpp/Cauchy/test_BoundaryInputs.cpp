@@ -147,7 +147,19 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
                 values(iFace, j) = state[j];
         }
     }
-    coupled.PublishBoundaryInputs(incoming, time, {0, 1, 2, 0, 0, 0});
+    auto routeOwner = std::make_shared<int>(7);
+    C::BoundaryInterfaceSource source;
+    source.donorDomain = 3;
+    source.receiverDomain = 4;
+    source.routeGeneration = 9;
+    source.donorPose.translation[0] = .1;
+    source.receiverPose.translation[1] = -.2;
+    source.routeOwner = routeOwner;
+    coupled.PublishBoundaryInputs(incoming, time, {0, 1, 2, 0, 0, 0},
+                                  {source});
+    REQUIRE(incoming.InterfaceSources().size() == 1);
+    CHECK(incoming.InterfaceSources()[0].routeGeneration == 9);
+    CHECK(incoming.InterfaceSources()[0].routeOwner == routeOwner);
     coupled.SetBoundaryInputs(*workB, incoming);
     R::EagerEngine engine(2);
     const auto stream = engine.CreateCPUStream();
@@ -196,6 +208,8 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
           incoming.FaceCenterValues().CoupledField().Owned().SharedStorage());
     CHECK_NOTHROW(coarse.ValidateBoundaryInputs(alias, time));
     CHECK(alias.Epoch().stage == 2);
+    REQUIRE(alias.InterfaceSources().size() == 1);
+    CHECK(alias.InterfaceSources()[0].routeOwner == routeOwner);
     {
         auto write = incoming.FaceCenterValues().WriteOwned(); // Either table's debug write invalidates publication.
     }

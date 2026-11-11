@@ -139,7 +139,9 @@ namespace DNDS::Cauchy
                     rows(iPoint, j) = std::numeric_limits<real>::quiet_NaN();
         }
     }
-    void FiniteVolume::PublishBoundaryInputs(BoundaryInputs &input, real time, StateEpoch epoch) const
+    void FiniteVolume::PublishBoundaryInputs(
+        BoundaryInputs &input, real time, StateEpoch epoch,
+        std::vector<BoundaryInterfaceSource> sources) const
     {
         ValidateBoundaryLayout(input);
         DNDS_check_throw_info(input._updating && std::isfinite(time), "boundary publication needs a begun update and finite physical time");
@@ -171,7 +173,17 @@ namespace DNDS::Cauchy
         };
         validate(input._quadrature, input._layout->points);
         validate(input._faceCenters, input._layout->faces);
+        for (const auto &source : sources)
+        {
+            DNDS_check_throw_info(
+                source.donorDomain >= 0 && source.receiverDomain >= 0 &&
+                    source.routeGeneration > 0 && source.routeOwner,
+                "boundary interface source is incomplete");
+            source.donorPose.Validate();
+            source.receiverPose.Validate();
+        }
         BoundaryInputs::Publication publication{time, epoch};
+        publication.sources = std::move(sources);
         Snapshot(input._quadrature, publication.versions, publication.shapes);
         Snapshot(input._faceCenters, publication.faceVersions,
                  publication.faceShapes);

@@ -81,7 +81,12 @@ rigid, constant-volume operations; deforming ALE/GCL is not implemented.
 
 `BoundaryInputs` is an explicit incoming interface packet in receiver axes,
 separate from conservative means and from physical-BC reconstruction scratch.
-It currently contains flow5; additional equation blocks can accompany it later.
+Its quadrature and face-center tables contain the complete canonical equation
+row, including RANS and independent species. Donor physical fields are mapped
+to receiver logical components by qualified schema names and matching units,
+conservation groups and vector roles; equal row width or donor ordinal is never
+treated as compatibility. The initial coupling law still requires identical
+equation/material/scaling configuration.
 `BoundaryPoints()` exposes the canonical reference-frame point order used by
 reconstruction, gradients, auxiliary faces and RHS incidences. The coupling
 controller owns search, donor polynomial evaluation, vector rotation and return
@@ -93,8 +98,11 @@ BuildBoundaryInputs -> BeginBoundaryUpdate (withdraw, clear rows to NaN)
   -> SetBoundaryInputs(workspace) -> auxiliary / VR / RHS / Jacobian
 ```
 
-Publication checks the receiver's admissibility bounds and records payload/shape
-generations, physical time and the controller's actual source epoch. Clearing
+Publication checks the receiver's equation-aware admissibility bounds and
+records payload/shape generations, physical time and the controller's actual
+source epoch. It also records exact donor/receiver poses and a per-connection
+matching-route generation, and retains the distributed sampling/return-route
+owner. Clearing
 rows catches an incomplete refresh without a coverage bitmap or accidentally
 accepting values from the previous stage. Unused physical-BC rows are unspecified;
 their boundary operators still compute ordinary physical conditions. Packet
@@ -110,6 +118,14 @@ packet, so a later interface update invalidates the corresponding Jacobian's
 auxiliary inputs. A fixed incoming trace has zero derivative with respect to the
 local interior state in a decoupled implicit solve. Pointwise EOS evaluation,
 fluxes and the rotation source remain stateless.
+
+Physical boundary Jacobians use the same centralized boundary-state semantics.
+The generic LU-SGS approximation composes the frozen exterior flux derivative
+with the homogeneous wall reflection. Transported wall scalars are copied;
+no-slip RANS exterior values follow `2*target-interior` and contribute `-I`.
+Interface and prescribed targets remain frozen. Component selection projects
+the fully composed matrix, rather than dropping intermediate couplings before
+the boundary chain rule.
 
 `AliasBoundaryInputs` can share payload across FV levels after proving identical
 reference mesh, canonical point order, geometry and boundary semantics. This is

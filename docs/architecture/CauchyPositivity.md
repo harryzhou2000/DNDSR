@@ -62,11 +62,14 @@ the validated base on failure; `backtracking` searches an intermediate common
 flow/species beta. Neither policy writes the clipped composition back into
 coefficients, means, halos or flux states.
 
-Final mean repair is different: it constructs and stores the exact
-simplex-repaired species target before bounded raw-affine pull-up. Its raw
-predicate therefore describes the actual mean supplied to EOS/T, and no later
-species projection is permitted. An exhausted or nonfinite repair is an
-explicit failure, not a successful PP update.
+Final mean repair is different: it constructs the exact simplex-repaired species
+target before bounded raw-affine pull-up, and the resulting clipped `rhoY` is the
+actual state stored, exchanged and supplied to EOS/T. Both endpoints of the
+pull-up line lie in the simplex, so the raw affine reference equals the clipped
+composition everywhere on that line. The raw arithmetic is therefore an
+efficient proof of the final clipped-state invariant, not a second raw-species
+acceptance policy. No later species projection is permitted. An exhausted or
+nonfinite repair is an explicit failure, not a successful PP update.
 
 > **TODO(PP-RECONSTRUCTION-CLIPPED-RHOY):** evaluate with matched Euler/Cauchy
 > oracles whether the analytic reconstruction thermal beta should use the

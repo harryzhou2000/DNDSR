@@ -141,4 +141,43 @@ namespace DNDS::Cauchy
                     point[size_t(_ransFirst + j)] = condition.prescribedRANS[j];
         }
     }
+
+    void BoundaryPointOperator::ApproximateExteriorJacobian(
+        Eigen::Ref<Eigen::MatrixXd> output,
+        const BoundaryCondition &condition, const std::vector<real> &inside,
+        const Vector3 &normal, const Vector3 &location,
+        const RigidFrame &frame, real time) const
+    {
+        DNDS_check_throw_info(
+            index(inside.size()) == _components &&
+                output.rows() == _components && output.cols() == _components,
+            "boundary Jacobian state or output width differs");
+        output.setZero();
+        FlowState flow{};
+        for (int j = 0; j < 5; ++j)
+            flow[j] = inside[size_t(_flowFirst + j)];
+        const auto derivative = condition.ApproximateExteriorJacobian(
+            flow, normal, location, time, &frame);
+        for (int column = 0; column < 5; ++column)
+            for (int row = 0; row < 5; ++row)
+                output(_flowFirst + row, _flowFirst + column) =
+                    derivative[size_t(row + 5 * column)];
+        const bool wall = condition.kind == BoundaryKind::SlipWall ||
+                          condition.kind == BoundaryKind::NoSlipWall;
+        if (!wall)
+            return;
+        for (index j = 0; j < _components; ++j)
+            if (j < _flowFirst || j >= _flowFirst + 5)
+                output(j, j) = 1;
+        if (condition.kind == BoundaryKind::NoSlipWall &&
+            _equation.HasRANS())
+            for (int j = 0; j < _equation.RANS().ComponentNumber(); ++j)
+                output(_ransFirst + j, _ransFirst + j) = -1;
+#ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
+        if (condition.kind == BoundaryKind::NoSlipWall &&
+            _equation.HasRANS() &&
+            _equation.RANS().Kind() == Physics::RANS::ModelKind::SA)
+            output(_ransFirst, _ransFirst) = 0;
+#endif
+    }
 }

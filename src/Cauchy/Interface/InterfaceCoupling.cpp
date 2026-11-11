@@ -1,11 +1,79 @@
 #include "Cauchy/Interface/InterfaceCoupling.hpp"
 #include "CFV/Plans/DistributedInterfaceSamplingPlan.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include <limits>
 #include <mutex>
+#include <nlohmann/json.hpp>
 
 namespace DNDS::Cauchy
 {
     namespace R = Runtime;
+    namespace
+    {
+        using SchemaJson = nlohmann::ordered_json;
+
+        std::string DescribeSchema(const EquationSchema &schema)
+        {
+            SchemaJson blocks = SchemaJson::array();
+            for (const auto &block : schema.blocks)
+            {
+                SchemaJson components = SchemaJson::array();
+                for (const auto &component : block.components)
+                    components.push_back(
+                        {{"name", component.name},
+                         {"units", component.units},
+                         {"conservation_group", component.conservationGroup}});
+                blocks.push_back({{"name", block.name},
+                                  {"components", std::move(components)},
+                                  {"vector_starts", block.vectorStarts}});
+            }
+            return SchemaJson{{"family", schema.family},
+                              {"energy_convention", schema.energyConvention},
+                              {"physical_accumulation", schema.physicalAccumulation},
+                              {"blocks", std::move(blocks)}}
+                .dump();
+        }
+
+        EquationSchema ParseSchema(const std::string &description)
+        {
+            const auto json = SchemaJson::parse(description);
+            EquationSchema schema;
+            schema.family = json.at("family").get<std::string>();
+            schema.energyConvention =
+                json.at("energy_convention").get<std::string>();
+            schema.physicalAccumulation =
+                json.at("physical_accumulation").get<std::string>();
+            for (const auto &encodedBlock : json.at("blocks"))
+            {
+                EquationBlockSchema block;
+                block.name = encodedBlock.at("name").get<std::string>();
+                block.vectorStarts =
+                    encodedBlock.at("vector_starts").get<std::vector<index>>();
+                for (const auto &encodedComponent :
+                     encodedBlock.at("components"))
+                    block.components.push_back(
+                        {encodedComponent.at("name").get<std::string>(),
+                         encodedComponent.at("units").get<std::string>(),
+                         encodedComponent.at("conservation_group")
+                             .get<std::string>()});
+                schema.blocks.push_back(std::move(block));
+            }
+            return schema;
+        }
+
+        void BroadcastString(std::string &value, int root, MPI_Comm communicator)
+        {
+            index size = index(value.size());
+            MPI::Bcast(&size, 1, MPI_INT64_T, root, communicator);
+            DNDS_check_throw_info(
+                size >= 0 && size <= std::numeric_limits<int>::max(),
+                "interface schema descriptor is too large");
+            value.resize(size_t(size));
+            if (size)
+                MPI::Bcast(value.data(), int(size), MPI_CHAR, root,
+                           communicator);
+        }
+    }
     struct InterfaceCoupling::Data
     {
         struct Connection
@@ -35,7 +103,13 @@ namespace DNDS::Cauchy
             /// Collective, immutable donor physical grouping: mode, logical
             /// component count, then one logical-component map per field.
             std::vector<index> donorDescriptor;
+            /// Exact logical schema and donor-ordinal to receiver-ordinal map.
+            /// The latter is broadcast from a real receiver rank, so all
+            /// coupling ranks share one setup-time compatibility decision.
+            std::string donorSchema;
+            std::vector<index> receiverComponents;
             std::vector<index> lastDonors;
+            uint64_t mapGeneration = 0;
         };
         mutable std::mutex operationMutex;
         // One controller operation at a time; do not wait behind an MPI path.
@@ -177,6 +251,8 @@ namespace DNDS::Cauchy
         auto session = _data->Enter();
         auto &data = *_data;
         data.useAccepted = false;
+        std::vector<std::vector<BoundaryInterfaceSource>> sources(
+            data.discrete.size());
         MPI::LocalStage(data.mpi, [&]
                         {
             DNDS_check_throw_info(domains.size()==data.discrete.size()&&std::isfinite(time),"invalid interface refresh descriptors/time");
@@ -236,6 +312,69 @@ namespace DNDS::Cauchy
                            data.mpi.comm);
             DNDS_check_throw_info(descriptorRoot >= 0 && descriptorRoot < data.mpi.size,
                                   "interface connection has no donor publication");
+            // Resolve semantic component compatibility once, independently of
+            // physical field grouping. Same-width equations are not sufficient:
+            // species names, units, conservation groups and vector-frame roles
+            // must match. The exact equation/material configuration was already
+            // required equal in the constructor; this runtime map proves that
+            // the published schema still matches the receiver.
+            std::string localSchema;
+            if (publication)
+                localSchema = DescribeSchema(publication->Schema());
+            if (connection.receiverComponents.empty())
+            {
+                std::string donorSchema = data.mpi.rank == descriptorRoot
+                                              ? localSchema
+                                              : std::string{};
+                BroadcastString(donorSchema, descriptorRoot, data.mpi.comm);
+                MPI::LocalStage(data.mpi, [&]
+                                {
+                    if(publication)
+                        DNDS_check_throw_info(localSchema==donorSchema,
+                                              "interface donor ranks publish different equation schemas"); });
+                EquationSchema schema;
+                MPI::LocalStage(data.mpi, [&]
+                                { schema = ParseSchema(donorSchema); });
+                int receiverRoot = receiver ? data.mpi.rank : data.mpi.size;
+                MPI::Allreduce(MPI_IN_PLACE, &receiverRoot, 1, MPI_INT, MPI_MIN,
+                               data.mpi.comm);
+                DNDS_check_throw_info(
+                    receiverRoot >= 0 && receiverRoot < data.mpi.size,
+                    "interface connection has no receiver equation schema");
+                std::vector<index> mapping;
+                MPI::LocalStage(data.mpi, [&]
+                                {
+                    if(receiver)
+                        mapping=schema.MapComponentsTo(receiver->Equation().Schema()); });
+                index mappingSize = data.mpi.rank == receiverRoot
+                                        ? index(mapping.size())
+                                        : 0;
+                MPI::Bcast(&mappingSize, 1, MPI_INT64_T, receiverRoot,
+                           data.mpi.comm);
+                DNDS_check_throw_info(
+                    mappingSize > 0 &&
+                        mappingSize <= std::numeric_limits<int>::max(),
+                    "invalid interface equation component mapping size");
+                if (data.mpi.rank != receiverRoot)
+                    mapping.resize(size_t(mappingSize));
+                MPI::Bcast(mapping.data(), int(mappingSize), MPI_INT64_T,
+                           receiverRoot, data.mpi.comm);
+                MPI::LocalStage(data.mpi, [&]
+                                {
+                    if(receiver)
+                        DNDS_check_throw_info(
+                            mapping==schema.MapComponentsTo(receiver->Equation().Schema()),
+                            "interface receiver ranks resolve different equation mappings"); });
+                connection.donorSchema = std::move(donorSchema);
+                connection.receiverComponents = std::move(mapping);
+            }
+            else
+                MPI::LocalStage(data.mpi, [&]
+                                {
+                    if(publication)
+                        DNDS_check_throw_info(
+                            localSchema==connection.donorSchema,
+                            "interface donor equation schema changed after setup"); });
             int descriptorSize = data.mpi.rank == descriptorRoot
                                      ? int(localDescriptor.size())
                                      : 0;
@@ -275,7 +414,9 @@ namespace DNDS::Cauchy
                     DNDS_check_throw_info(
                         data.incoming[connection.receiver]
                                 ->QuadratureValues()
-                                .ComponentNumber() == descriptor[0],
+                                .ComponentNumber() == descriptor[0] &&
+                            index(connection.receiverComponents.size()) ==
+                                descriptor[0],
                         "interface donor and receiver equation schemas differ");
                 if (!connection.donorDescriptor.empty())
                     DNDS_check_throw_info(
@@ -330,7 +471,8 @@ namespace DNDS::Cauchy
                         if(!connection.lastDonors.empty()&&connection.lastDonors[iPoint]!=donors[iPoint]) ++data.changedDonors;
                     }
                     connection.lastDonors=std::move(donors);
-                    ++data.mapBuilds; });
+                    ++data.mapBuilds;
+                    ++connection.mapGeneration; });
                 connection.fields.clear();
                 connection.sampling.reset();
                 connection.sampling.emplace(std::move(metrics),
@@ -346,9 +488,19 @@ namespace DNDS::Cauchy
                         auto &field = connection.fields[size_t(iField)];
                         const index width =
                             connection.donorDescriptor[size_t(2 + iField)];
-                        field.logicalComponents.assign(
-                            connection.donorDescriptor.begin() + offset,
-                            connection.donorDescriptor.begin() + offset + width);
+                        field.logicalComponents.resize(size_t(width));
+                        for (index j = 0; j < width; ++j)
+                        {
+                            const index donorComponent =
+                                connection.donorDescriptor[size_t(offset + j)];
+                            DNDS_check_throw_info(
+                                donorComponent >= 0 &&
+                                    donorComponent <
+                                        index(connection.receiverComponents.size()),
+                                "interface donor field contains an invalid logical component");
+                            field.logicalComponents[size_t(j)] =
+                                connection.receiverComponents[size_t(donorComponent)];
+                        }
                         offset += width;
                         field.workspace =
                             connection.sampling->BuildWorkspace(width);
@@ -457,11 +609,23 @@ namespace DNDS::Cauchy
                         }
                         first += index(block.components.size());
                     }
-                } });
+                }
+                DNDS_check_throw_info(
+                    connection.mapGeneration > 0 &&
+                        !connection.fields.empty() &&
+                        connection.fields.front().workspace &&
+                        connection.fields.front().workspace->plan,
+                    "interface publication lacks a retained matching route");
+                sources[size_t(connection.receiver)].push_back(
+                    {connection.donor, connection.receiver,
+                     connection.mapGeneration, donorPose, receiverPose,
+                     connection.fields.front().workspace->plan}); });
         }
         MPI::LocalStage(data.mpi, [&]
                         {
             for(index iDomain=0;iDomain<index(data.discrete.size());++iDomain)
-                if(data.incoming[iDomain]) data.discrete[iDomain]->PublishBoundaryInputs(*data.incoming[iDomain],time,epoch); });
+                if(data.incoming[iDomain]) data.discrete[iDomain]->PublishBoundaryInputs(
+                    *data.incoming[iDomain],time,epoch,
+                    std::move(sources[size_t(iDomain)])); });
     }
 }

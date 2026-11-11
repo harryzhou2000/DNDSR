@@ -75,6 +75,13 @@ namespace DNDS::Cauchy
         /// Distinct from the exact physical derivative above. No branch
         /// derivative or wall-temperature derivative enters LU-SGS/Roe blocks.
         std::array<real, 25> ApproximateExteriorJacobian(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0, const RigidFrame *frame = nullptr) const;
+        /// Equation-generic form of the same approximate protocol. The
+        /// homogeneous wall reflection is independent of EOS; prescribed/open
+        /// and interface states are frozen. Thermal/species/RANS corrections
+        /// are composed by BoundaryPointOperator rather than hidden here.
+        std::array<real, 25> ApproximateExteriorJacobian(const FlowState &inside, const Vector3 &normal,
+                                                         const Vector3 &point = {}, real time = 0,
+                                                         const RigidFrame *frame = nullptr) const;
     };
     class BoundarySystem
     {

@@ -3,6 +3,7 @@
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/State/EquationDofs.hpp"
 #include "Cauchy/Core/StateEpoch.hpp"
+#include "Geom/Spatial/ElementGeometry.hpp"
 #include <optional>
 
 namespace DNDS::Cauchy
@@ -21,6 +22,18 @@ namespace DNDS::Cauchy
         int zone;
         Vector3 point, normal;
         bool interface;
+    };
+    /// One completed inter-domain matching/sampling source retained by a
+    /// boundary publication. Poses are exact values for this physical stage;
+    /// routeGeneration changes whenever matching is rebuilt. routeOwner pins
+    /// the distributed match, return route and donor geometry snapshot after
+    /// the controller returns. Payload arrays remain owned by BoundaryInputs.
+    struct BoundaryInterfaceSource
+    {
+        index donorDomain = -1, receiverDomain = -1;
+        uint64_t routeGeneration = 0;
+        Geom::RigidPose donorPose, receiverPose;
+        std::shared_ptr<const void> routeOwner;
     };
     /// Explicit incoming equation packet in receiver axes. QuadratureValues()
     /// holds RHS/reconstruction rows; FaceCenterValues() holds independently
@@ -49,6 +62,7 @@ namespace DNDS::Cauchy
             real time;
             StateEpoch epoch;
             std::vector<uint64_t> versions, shapes, faceVersions, faceShapes;
+            std::vector<BoundaryInterfaceSource> sources;
         };
         std::optional<Publication> _publication;
         bool _updating = false;
@@ -78,6 +92,14 @@ namespace DNDS::Cauchy
         {
             DNDS_check_throw_info(_publication, "boundary packet is unpublished");
             return _publication->epoch;
+        }
+        /// Immutable source identities for an interface-controller packet.
+        /// A manually prepared physical/test packet may have no sources.
+        const std::vector<BoundaryInterfaceSource> &InterfaceSources() const
+        {
+            DNDS_check_throw_info(_publication,
+                                  "boundary packet is unpublished");
+            return _publication->sources;
         }
     };
 }

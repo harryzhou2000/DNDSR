@@ -1,6 +1,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 #include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/Boundary/BoundaryPointOperator.hpp"
+#include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/State/EquationDofs.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
 
@@ -28,6 +30,48 @@ namespace
             return R::RowLayout::TiledColMajor(0, width, 32);
         return R::RowLayout::Dense(0, width, width + 2);
     }
+}
+
+TEST_CASE("Generic wall Jacobian follows the centralized RANS exterior-state law")
+{
+    const auto equation = Equation("SA");
+    C::BoundaryPointOperator pointOperator(equation);
+    C::BoundaryCondition wall;
+    wall.kind = C::BoundaryKind::NoSlipWall;
+    std::vector<double> inside{1.2, .31, -.17, .08, 3.4, .025};
+    const C::Vector3 normal{.6, .8, 0}, location{.2, -.1, .3};
+    const C::RigidFrame frame{};
+    Eigen::MatrixXd derivative(inside.size(), inside.size());
+    pointOperator.ApproximateExteriorJacobian(
+        derivative, wall, inside, normal, location, frame, .4);
+    CHECK(derivative(5, 5) == -1);
+    for (int j = 0; j < 5; ++j)
+        CHECK(derivative(5, j) == 0);
+    for (int j = 0; j < 6; ++j)
+        CHECK(derivative(j, 5) == (j == 5 ? -1 : 0));
+
+    auto evaluator = equation.MakePointEvaluator();
+    const auto exterior = [&](double perturbation)
+    {
+        auto point = inside;
+        point[5] += perturbation;
+        pointOperator.Evaluate(point, wall, -1, normal, location, evaluator,
+                               frame, .4,
+                               C::BoundaryPointStateKind::ExteriorState);
+        return point[5];
+    };
+    constexpr double h = 1e-7;
+    CHECK((exterior(h) - exterior(-h)) / (2 * h) ==
+          doctest::Approx(derivative(5, 5)).epsilon(1e-9));
+
+    wall.kind = C::BoundaryKind::SlipWall;
+    pointOperator.ApproximateExteriorJacobian(
+        derivative, wall, inside, normal, location, frame, .4);
+    CHECK(derivative(5, 5) == 1);
+    wall.kind = C::BoundaryKind::Analytic;
+    pointOperator.ApproximateExteriorJacobian(
+        derivative, wall, inside, normal, location, frame, .4);
+    CHECK(derivative.cwiseAbs().maxCoeff() == 0);
 }
 
 TEST_CASE("RANS model and point gathering follow logical blocks across split and coupled layouts")

@@ -49,8 +49,9 @@ namespace DNDS::Cauchy
         bool sixComponentProduct = false;
         JacobianData(const FiniteVolume &fv, const EquationDofs &state, LinearProblemContext &output, JacobianPreparation controls, real time)
             : components(state.ComponentNumber()), independent(fv._data->equation.HasMixture() ? fv._data->equation.Mixture().SpeciesNumber() - 1 : 0),
-              means(output.HasAssembledOffDiagonal() ? 0 : components, output.HasAssembledOffDiagonal() ? 0 : fv.Metrics().NumCellProc()), pressureDerivative(components, fv.Metrics().NumCellProc()),
-              pressure(size_t(fv.Metrics().NumCellProc())), radius(fv._data->stencilFaces.size()), frame(fv._data->motion.At(time)), scale(controls.residualScale)
+              means(output.HasAssembledOffDiagonal() ? 0 : components, output.HasAssembledOffDiagonal() ? 0 : fv.Metrics().NumCellProc()),
+              pressureDerivative(components, fv.Metrics().NumCellProc() + index(fv._data->jacobianSamples.size())),
+              pressure(size_t(fv.Metrics().NumCellProc() + fv._data->jacobianSamples.size())), radius(fv._data->stencilFaces.size()), frame(fv._data->motion.At(time)), scale(controls.residualScale)
         {
             const Algebra::ComponentSelection selection(components, controls.updateComponents);
             for (index j = 0; j < components; ++j)
@@ -101,7 +102,9 @@ namespace DNDS::Cauchy
         /// original point's .5*scale*weight separately. Different periodic
         /// images remain separate terms.
         template <class Means>
-        void Add(const Point &point, Eigen::Ref<Eigen::MatrixXd> output, const Means &values, bool weighted = true) const
+        void Add(const Point &point, Eigen::Ref<Eigen::MatrixXd> output,
+                 const Means &values, bool weighted = true,
+                 bool selectComponents = true) const
         {
             FlowState flow{};
             for (int j = 0; j < 5; ++j)
@@ -116,7 +119,7 @@ namespace DNDS::Cauchy
             const real lambda = radius[point.auxiliary][0] + radius[point.auxiliary][1];
             for (index column = 0; column < components; ++column)
             {
-                if (!active[column])
+                if (selectComponents && !active[column])
                     continue;
                 FlowState direction{};
                 if (column >= flowFirst && column < flowFirst + 5)
@@ -142,7 +145,7 @@ namespace DNDS::Cauchy
                     deltaSpeed += (direction[1 + d] - flow[1 + d] / flow[0] * direction[0]) / flow[0] * point.normal[d];
                 for (index row = 0; row < components; ++row)
                 {
-                    if (!active[row])
+                    if (selectComponents && !active[row])
                         continue;
                     real value;
                     if (row >= flowFirst && row < flowFirst + 5)
@@ -244,11 +247,14 @@ namespace DNDS::Cauchy
         /// two-equation turbulent stress retains that generic path for now.
         /// No gamma closure, source approximation or eigenvalue change occurs.
         template <class Means>
-        void AddFrozenFluxBlock(const Point &point, Eigen::Ref<Eigen::MatrixXd> output, const Means &values, bool weighted = true) const
+        void AddFrozenFluxBlock(const Point &point,
+                                Eigen::Ref<Eigen::MatrixXd> output,
+                                const Means &values, bool weighted = true,
+                                bool selectComponents = true) const
         {
             if (kineticFirst >= 0)
             {
-                Add(point, output, values, weighted);
+                Add(point, output, values, weighted, selectComponents);
                 return;
             }
             FlowState flow{};
@@ -294,7 +300,7 @@ namespace DNDS::Cauchy
             // arbitrary logical block offsets. No gamma-equivalent closure.
             // Exact identity is intentional: a small physical rotation must
             // still take the fully transformed path below.
-            if (sameFrame && allComponents)
+            if (sameFrame && (allComponents || !selectComponents))
             {
                 for (index column = 0; column < components; ++column)
                 {
@@ -321,7 +327,7 @@ namespace DNDS::Cauchy
             }
             for (index column = 0; column < components; ++column)
             {
-                if (!active[column])
+                if (selectComponents && !active[column])
                     continue;
                 FlowState direction{};
                 real deltaSpeed = 0;
@@ -343,7 +349,7 @@ namespace DNDS::Cauchy
                 derivative[4] = direction[4] * relativeVelocity + (flow[4] + pressure[point.other]) * deltaSpeed + dp * normalVelocity;
                 for (index row = 0; row < components; ++row)
                 {
-                    if (!active[row])
+                    if (selectComponents && !active[row])
                         continue;
                     const real value = row >= flowFirst && row < flowFirst + 5
                                            ? derivative[row - flowFirst] - lambda * direction[row - flowFirst]
@@ -419,6 +425,25 @@ namespace DNDS::Cauchy
         const auto blocks = EquationFVDetail::BlockViews(state, input);
         const auto inputLayout = input.ComponentLayout();
         const auto inputValues = inputLayout.View();
+        std::optional<R::Array<real>::ReadLease> incomingFaceRead;
+        std::optional<BoundaryInputs> boundaryInputs;
+        InterfaceBoundaryRows incomingFace;
+        if (HasInterfaces())
+        {
+            if (sourceWorkspace)
+                boundaryInputs = PreparedBoundaryInputs(*sourceWorkspace);
+            DNDS_check_throw_info(
+                boundaryInputs,
+                "equation interface Jacobian needs the current boundary publication");
+            ValidateBoundaryInputs(*boundaryInputs, time);
+            incomingFaceRead.emplace(
+                boundaryInputs->FaceCenterValues()
+                    .CoupledField()
+                    .Owned()
+                    .Read());
+            incomingFace =
+                incomingFaceRead->View<R::UniformTableRows>();
+        }
         // Only this assembled operator opts into the six-component AoS leaf.
         // Keep physical parent pitch when borrowing each row; every other
         // layout/grouping retains the original logical component accessor.
@@ -457,7 +482,21 @@ namespace DNDS::Cauchy
         if (off)
             b.emplace(off->View());
         EquationFVDetail::PointScratch point(nv);
-        Eigen::MatrixXd own(nv, nv), other(nv, nv);
+        EquationFVDetail::PointScratch cellMean(nv);
+        Eigen::MatrixXd own(nv, nv), other(nv, nv),
+            boundaryDerivative(nv, nv);
+        Eigen::MatrixXd boundaryMeans(
+            nv, index(_data->jacobianSamples.size()));
+        std::optional<WallDistanceRead> wallRead;
+        if (rans && _data->equation.RANS().ComponentNumber() == 2)
+        {
+            DNDS_check_throw_info(
+                _data->wallDistance,
+                "two-equation boundary Jacobian needs wall-distance samples");
+            wallRead.emplace(_data->wallDistance->AcquireRead());
+        }
+        const auto wallValues = wallRead ? wallRead->HostView()
+                                         : WallDistanceView{};
         const auto rotation = snapshot->frame.NegativeSourceJacobian();
         const real rotationBound = Geom::tPoint{snapshot->frame.angularVelocity[0], snapshot->frame.angularVelocity[1], snapshot->frame.angularVelocity[2]}.norm();
         try
@@ -515,6 +554,54 @@ namespace DNDS::Cauchy
                         }
                     }
             }
+            // Prepare the independently sampled face-center exterior rows used
+            // by the approximate boundary Jacobian. Interface rows are frozen
+            // packet values; physical rows use the same centralized equation
+            // boundary operator as RHS/reconstruction. The complete equation
+            // state and EOS derivative are stored only for this preparation.
+            const EquationFVDetail::MeanLinearizationOutput boundaryLinearization{
+                snapshot->flowFirst, snapshot->speciesFirst,
+                snapshot->pressureDerivative, snapshot->pressure, nullptr};
+            for (index entry = 0;
+                 entry < index(_data->jacobianSamples.size()); ++entry)
+            {
+                const auto &sample = _data->jacobianSamples[size_t(entry)];
+                if (sample.other != UnInitIndex)
+                    continue;
+                EquationFVDetail::Gather(blocks, sample.cell, point, false);
+                cellMean.values = point.values;
+                _data->boundaryPoint.Evaluate(
+                    point.values, sample.boundary, sample.boundaryPoint,
+                    {sample.normal[0], sample.normal[1], sample.normal[2]},
+                    {sample.ownPoint[0], sample.ownPoint[1],
+                     sample.ownPoint[2]},
+                    evaluator, snapshot->frame, time,
+                    BoundaryPointStateKind::ExteriorState,
+                    OptionalRef<const std::vector<real>>(cellMean.values),
+                    wallRead ? wallValues.cellMean(sample.cell, 0) : 0,
+                    incomingFace);
+                for (index j = 0; j < nv; ++j)
+                    boundaryMeans(j, entry) = point.values[size_t(j)];
+                const auto properties = evaluator.Evaluate(
+                    point.Flow(snapshot->flowFirst),
+                    point.Species(snapshot->speciesFirst,
+                                  snapshot->independent),
+                    0, {false, false, true, false, false});
+                boundaryLinearization.Publish(all + entry, point,
+                                              properties);
+            }
+            struct PreparedValues
+            {
+                const decltype(inputValues) &cells;
+                const Eigen::MatrixXd &boundary;
+                index firstBoundary;
+                real operator()(index iRow, index j) const
+                {
+                    return iRow < firstBoundary
+                               ? cells(iRow, j)
+                               : boundary(j, iRow - firstBoundary);
+                }
+            } preparedValues{inputValues, boundaryMeans, all};
             // A block-shaped output is already the row's dense workspace.
             // Keep its write lease and use the centralized borrowed adapter;
             // diagonal-line storage retains the existing projection scratch.
@@ -551,7 +638,30 @@ namespace DNDS::Cauchy
                     const real weight = metric.GetFaceArea(sample.face), lambda = radius(sample.auxiliaryFace, 0) + radius(sample.auxiliaryFace, 1);
                     own.diagonal().array() += .5 * controls.residualScale * weight * lambda;
                     if (sample.other == UnInitIndex)
-                        continue; // Active Euler scalar-BC approximation.
+                    {
+                        // The frozen exterior flux derivative is composed with
+                        // dU_exterior/dU_inside. Interface/prescribed targets
+                        // return zero; walls retain homogeneous flow reflection,
+                        // transported scalars and the -I no-slip RANS rule.
+                        other.setZero();
+                        const JacobianData::Point boundaryPoint{
+                            all + entry, sample.auxiliaryFace, {sample.normal[0], sample.normal[1], sample.normal[2]}, {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, Eigen::Matrix3d::Identity(), weight, false};
+                        snapshot->AddFrozenFluxBlock(
+                            boundaryPoint, other, preparedValues, true, false);
+                        for (index j = 0; j < nv; ++j)
+                            cellMean.values[size_t(j)] =
+                                inputValues(sample.cell, j);
+                        _data->boundaryPoint.ApproximateExteriorJacobian(
+                            boundaryDerivative, sample.boundary,
+                            cellMean.values,
+                            {sample.normal[0], sample.normal[1],
+                             sample.normal[2]},
+                            {sample.ownPoint[0], sample.ownPoint[1],
+                             sample.ownPoint[2]},
+                            snapshot->frame, time);
+                        own.noalias() += other * boundaryDerivative;
+                        continue;
+                    }
                     if (!b && sample.other != iCell)
                         continue;
                     if (sample.other == iCell)

@@ -240,6 +240,13 @@ namespace DNDS::Cauchy
     std::array<real, 25> BoundaryCondition::ApproximateExteriorJacobian(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal,
                                                                         const Vector3 &point, real time, const RigidFrame *frame) const
     {
+        (void)gas;
+        return ApproximateExteriorJacobian(inside, normal, point, time, frame);
+    }
+    std::array<real, 25> BoundaryCondition::ApproximateExteriorJacobian(const FlowState &inside, const Vector3 &normal,
+                                                                        const Vector3 &point, real time, const RigidFrame *frame) const
+    {
+        (void)inside;
         // Euler's linMode=1 returns homogeneous wall reflection before its
         // thermal/scalar wall treatment, and zero for prescribed/open BCs.
         auto wallKind = kind;
@@ -247,12 +254,36 @@ namespace DNDS::Cauchy
             wallKind = (frame ? frame->WorldPoint(point) : point)[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
         if (wallKind != BoundaryKind::SlipWall && wallKind != BoundaryKind::NoSlipWall)
             return {};
-        BoundaryCondition wall;
-        wall.kind = wallKind;
-        wall.velocity = velocity;
-        wall.wallMovesWithMesh = wallMovesWithMesh;
-        wall.isothermal = false;
-        return wall.ExteriorJacobian(gas, inside, normal, point, time, frame);
+        std::array<real, 25> result{};
+        for (int j = 0; j < 5; ++j)
+            result[j * 5 + j] = 1;
+        const auto wallVelocity = WallVelocity(*this, point, frame);
+        if (wallKind == BoundaryKind::SlipWall)
+        {
+            real wallNormal = 0;
+            for (int d = 0; d < 3; ++d)
+                wallNormal += wallVelocity[d] * normal[d];
+            result[4] += 2 * wallNormal * wallNormal;
+            for (int d = 0; d < 3; ++d)
+            {
+                result[1 + d] += 2 * wallNormal * normal[d];
+                result[(1 + d) * 5 + 4] -= 2 * wallNormal * normal[d];
+            }
+            for (int column = 0; column < 3; ++column)
+                for (int row = 0; row < 3; ++row)
+                    result[(1 + column) * 5 + 1 + row] -=
+                        2 * normal[row] * normal[column];
+            return result;
+        }
+        // m' = 2*rho*v_wall-m; E' = E+2*rho*|v_wall|^2-2*v_wall.m.
+        for (int d = 0; d < 3; ++d)
+        {
+            result[1 + d] = 2 * wallVelocity[d];
+            result[(1 + d) * 5 + 1 + d] = -1;
+            result[4] += 2 * wallVelocity[d] * wallVelocity[d];
+            result[(1 + d) * 5 + 4] = -2 * wallVelocity[d];
+        }
+        return result;
     }
     BoundarySystem::BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const PerfectGas &gas)
         : BoundarySystem(settings, &gas) {}

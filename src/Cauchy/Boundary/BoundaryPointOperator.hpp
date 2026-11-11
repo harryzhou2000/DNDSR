@@ -61,5 +61,17 @@ namespace DNDS::Cauchy
             OptionalRef<const std::vector<real>> mean = {},
             real meanWallDistance = 0,
             InterfaceBoundaryRows interfaceValues = {}) const;
+
+        /// Euler-compatible approximate exterior derivative in canonical
+        /// logical equation order. Physical/interface targets are frozen.
+        /// Wall flow uses the homogeneous reflection; transported scalars are
+        /// copied, except no-slip RANS exterior values use `2*target-interior`
+        /// and therefore contribute -I. Isothermal/property derivatives remain
+        /// outside this approximate LU-SGS model.
+        void ApproximateExteriorJacobian(
+            Eigen::Ref<Eigen::MatrixXd> output,
+            const BoundaryCondition &condition,
+            const std::vector<real> &inside, const Vector3 &normal,
+            const Vector3 &location, const RigidFrame &frame, real time) const;
     };
 }

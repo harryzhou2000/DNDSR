@@ -236,12 +236,14 @@ namespace DNDS::Cauchy
         /// Callers must reject a nonfinite result, scale all components, then
         /// perform the separate RANS repair and validate the combined state.
         /// The supplied increment must already point to the exact simplex-repaired
-        /// species target. Those rhoY values are the actual stored/exchanged mean.
-        /// Because that target is already in the complete simplex, the raw
-        /// reference and the clipped EOS/T composition coincide along the line;
-        /// this raw-affine search therefore proves the physical invariant too.
-        /// It performs no further projection and is distinct from temporary
-        /// reconstruction-point clipping. See CauchyPositivity.md.
+        /// species target. Those clipped rhoY values are the actual final
+        /// stored/exchanged mean and therefore define the EOS/T invariant. Because
+        /// both endpoints are in the complete simplex, the raw affine reference
+        /// equals that clipped composition everywhere on their connecting line;
+        /// the cheaper raw-affine search therefore proves the clipped-state
+        /// physical invariant without another projection. This is distinct from
+        /// reconstruction, where raw polynomial rhoY is retained and clipping is
+        /// only a temporary point-property view. See CauchyPositivity.md.
         template <class Row, class Increment>
         DNDS_DEVICE_CALLABLE real FixFraction(const Row &state, const Increment &increment) const
         {

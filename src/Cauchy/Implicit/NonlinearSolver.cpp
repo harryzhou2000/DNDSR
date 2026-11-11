@@ -638,11 +638,13 @@ namespace DNDS::Cauchy
                     if (data.positivity && independent)
                     {
                         // PP POLICY -- exact stored species target. Repair once
-                        // before final thermal restriction; the resulting rhoY is
-                        // the actual accepted/exchanged mean. Both endpoints are
-                        // in the simplex, so raw and clipped EOS/T references
-                        // coincide along the line. No projection may follow
-                        // FixFraction.
+                        // before final thermal restriction; this clipped rhoY is
+                        // the actual accepted/exchanged mean and EOS/T state. Both
+                        // endpoints are in the simplex, so the cheaper raw-affine
+                        // reference equals the clipped reference along the entire
+                        // line. No projection may follow FixFraction. In contrast,
+                        // reconstruction retains raw polynomial rhoY for transport
+                        // and clips only its temporary point-property view.
                         for (index k = 0; k < independent; ++k)
                             repairedSpecies[size_t(k)] = old[data.speciesFirst + k] + limitedChange[data.speciesFirst + k];
                         struct SpeciesScratch

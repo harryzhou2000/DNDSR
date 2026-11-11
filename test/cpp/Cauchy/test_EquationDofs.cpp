@@ -139,6 +139,32 @@ static_assert(std::is_trivially_copyable_v<C::EquationBlockReadView>);
 static_assert(C::EquationBlockArrayView<double, R::AccessBoundsChecks, 5, R::TableRows>::RowType::row_width == 5);
 static_assert(C::EquationBlockArrayView<double, R::AccessBoundsChecks, 5, R::TableRows>::RowType::component_stride == 1);
 static_assert(C::EquationBlockArrayView<double, R::AccessBoundsChecks, 5, R::TiledColMajorTable<32>>::RowType::component_stride == 32);
+TEST_CASE("Equation schema mapping uses semantic names instead of component count or ordinal")
+{
+    const auto source = Schema(5);
+    auto target = source;
+    std::swap(target.blocks[1], target.blocks[2]);
+    const auto mapping = source.MapComponentsTo(target);
+    REQUIRE(mapping.size() == size_t(Width(source)));
+    for (I j = 0; j < 5; ++j)
+        CHECK(mapping[size_t(j)] == j);
+    for (I j = 0; j < 2; ++j)
+        CHECK(mapping[size_t(5 + j)] == 19 + j);
+    for (I j = 0; j < 14; ++j)
+        CHECK(mapping[size_t(7 + j)] == 5 + j);
+
+    auto renamedSpecies = source;
+    renamedSpecies.blocks[2].components[3].name = "another_species";
+    CHECK_THROWS(source.MapComponentsTo(renamedSpecies));
+
+    auto changedVector = source;
+    changedVector.blocks[0].vectorStarts.clear();
+    CHECK_THROWS(source.MapComponentsTo(changedVector));
+
+    auto changedEnergy = source;
+    changedEnergy.energyConvention = "another-energy";
+    CHECK_THROWS(source.MapComponentsTo(changedEnergy));
+}
 TEST_CASE("Whole-equation dispatch preserves named blocks and scalar order across bounded view families")
 {
     Fixture fixture;

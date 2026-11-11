@@ -103,25 +103,32 @@ ghosts. No BC routine performs MPI or silently refreshes a halo.
 ## Explicit interface packet
 
 `FiniteVolume::BuildBoundaryInputs()` allocates two small boundary tables in
-receiver mesh axes. `flow` follows `BoundaryPoints()` and contains incoming
-flow5 values at RHS/VR quadrature points. `faceFlow` follows `BoundaryFaces()`
-and contains independently sampled flow5 values at maintained face centers;
-these descriptors have `quadrature=-1`. Approximate Roe/BC Jacobians read
-`faceFlow`, without selecting a quadrature row or averaging quadrature states.
-Physical BCs compute their states directly and need no incoming rows.
+receiver mesh axes. The quadrature table follows `BoundaryPoints()` and contains
+complete canonical equation rows at RHS/VR quadrature points. The face-center
+table follows `BoundaryFaces()` and contains independently sampled complete
+rows at maintained face centers; these descriptors have `quadrature=-1`.
+Approximate Roe/BC Jacobians read the face-center table without selecting a
+quadrature row or averaging quadrature states. Physical BCs compute their
+states directly and need no incoming rows.
 
 The coupling controller owns both sampling and transfer. It batches face-center
 and quadrature queries into the same distributed match/sample operation, then
 routes each result to its explicit packet table and rotates momentum into
-receiver axes. It does not change the mesh reference geometry. A domain does
-not communicate either table independently.
+receiver axes. Physical field grouping is private to the donor; qualified
+schema/component identities produce an explicit donor-to-receiver mapping,
+including species names and every declared vector triple. It does not change
+the mesh reference geometry. A domain does not communicate either table
+independently.
 
 Call `BeginBoundaryUpdate`, fill both interface sets, then publish once with
 their shared physical time and donor epoch. Missing required rows fail at
 publication. Mutating either table invalidates the publication, including its
 aliases on compatible pMG levels. Layout/geometry matching and both allocation
-versions are checked before reuse. The caller must release write views before
-publishing or launching readers; the packet does not perform hidden refreshes.
+versions are checked before reuse. Each controller publication additionally
+retains the exact poses, matching-route generation and distributed route owner,
+so a packet cannot outlive the resources that define its sampled rows. The
+caller must release write views before publishing or launching readers; the
+packet does not perform hidden refreshes.
 
 Focused tests cover prescribed isothermal pressure/temperature/velocity, exact
 physical versus approximate implicit derivatives, sonic farfield branches,

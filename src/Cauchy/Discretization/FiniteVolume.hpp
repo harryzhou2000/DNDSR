@@ -661,7 +661,9 @@ namespace DNDS::Cauchy
         /// Synchronous local point operations, no MPI. Begin withdraws the
         /// publication; publish checks complete admissible interface rows only.
         void BeginBoundaryUpdate(BoundaryInputs &input) const;
-        void PublishBoundaryInputs(BoundaryInputs &input, real time, StateEpoch epoch = {}) const;
+        void PublishBoundaryInputs(
+            BoundaryInputs &input, real time, StateEpoch epoch = {},
+            std::vector<BoundaryInterfaceSource> sources = {}) const;
         void ValidateBoundaryInputs(const BoundaryInputs &input, real time) const;
         /// Share a packet with another FV level only after proving identical
         /// boundary point order/geometry. No interpolation or payload copy.
