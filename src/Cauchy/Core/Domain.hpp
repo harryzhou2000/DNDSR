@@ -1,20 +1,16 @@
 #pragma once
 
 #include "Cauchy/Core/StepResult.hpp"
-#include "Cauchy/Core/DomainExecutionContext.hpp"
-
-#include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "Cauchy/Core/DomainComponents.hpp"
 #include "Cauchy/Core/CoordinatedSchedule.hpp"
-#include "Cauchy/Implicit/NonlinearSolver.hpp"
-#include "Cauchy/Multigrid/PolynomialMultigrid.hpp"
-#include "Cauchy/State/EquationTimeStepper.hpp"
 #include "Cauchy/Physics/EquationSetup.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
 #include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/IO/CheckpointTransaction.hpp"
 
 namespace DNDS::Cauchy
 {
     struct ResolvedPhysicalInputs;
+    class DomainController;
     /// One participating domain. Placement/context ownership belongs to the
     /// simulation; this object owns only local mesh, equation, fields and
     /// numerical workspace. Simulation coordinates its accepted clock;
@@ -24,24 +20,11 @@ namespace DNDS::Cauchy
     /// state separation and explicit domain-local residual boundary.
     class Domain
     {
-        friend class Simulation;
-        std::string _name;
-        EquationSystem _equation;
-        DomainExecutionContext _execution;
-        FiniteVolume _fv;
-        EquationDofs _accepted, _trial;
-        EquationDofs _residualState;
-        EquationDofs _initial;
-        std::shared_ptr<FiniteVolume::ReconstructionState> _reconstruction, _observationReconstruction;
-        std::shared_ptr<FiniteVolume::Workspace> _workspace, _observationWorkspace;
-        std::optional<EquationDofs> _reconstructionBackup, _observationInput, _observationState;
-        std::optional<Runtime::Array<real>> _limitedVRBackup;
-        std::optional<EquationAdmissibilityPolicy> _admissibility;
-        std::unique_ptr<NonlinearSolver> _implicit;
-        std::unique_ptr<PolynomialMultigrid> _multigrid;
-        std::unique_ptr<EquationTimeStepper> _timeStepper;
+        friend class DomainController;
+        DomainProblem _problem;
+        DomainState _state;
+        DomainExecution _execution;
         std::vector<NonlinearIterationReport> _lastImplicit;
-        NonlinearSolveState _coupledNonlinearState;
         std::function<void(const NonlinearProgress &)> _progressObserver;
         std::function<void(const NonlinearSolveState &)> _quiescentObserver;
         index _lastCoupledIterations = 0;
@@ -49,31 +32,9 @@ namespace DNDS::Cauchy
         std::vector<index> _ditrComponents;
         ImplicitSettings _implicitControls;
         real _coupledReconstructionTolerance = 0;
-        struct CoupledStageOperator
-        {
-            EquationTimeStepper::Evaluate evaluate;
-            std::function<NonlinearIterationReport(const ODE::CoupledStageEquation<EquationDofs> &, const EquationDofs &, real)> correct;
-            std::function<std::pair<int, real>()> reconstruction;
-            std::shared_ptr<FiniteVolume::ReconstructionState> state;
-        };
-        std::function<CoupledStageOperator(EquationDofs &)> _coupledFactory;
-        std::optional<CoupledStageOperator> _coupledMiddle;
-        Runtime::ArrayStorage::Shared _coupledMiddleOwner;
-        std::optional<EquationDofs> _coupledResidual;
-        bool _restoreReconstruction = false;
-        mutable std::optional<AuxiliaryValues> _timeAuxiliary;
-        mutable std::optional<MeanGradients> _timeMeanGradients;
-        mutable std::vector<Runtime::TransferBinding> _timeMeanHalo;
+        std::optional<DomainCoupledStageOperator> _coupledMiddle;
         PhysicalTimePositivitySettings _timePP;
         int _timeCompressionPower = 1;
-        std::shared_ptr<FiniteVolume::MeanWorkspace> _timePPWorkspace;
-        std::optional<EquationDofs> _timePPResidual;
-        StateEpoch _epoch;
-        StateEpoch _trialEpoch;
-        uint64_t _nextTrial = 0;
-        real _time = 0, _trialTime = 0, _trialDt = 0, _lastAcceptedDt = 0, _progressTime = 0;
-        bool _trialReady = false;
-        bool _internalResume = false;
         index _lastFallbacks = 0;
         bool _positivity = false, _steady = false, _rejectUnconvergedStages = false;
         bool _sourceStrang = false;
@@ -97,6 +58,7 @@ namespace DNDS::Cauchy
         void EvaluateImplicitRate(EquationDofs &state, EquationDofs &rate, FiniteVolume::Workspace &workspace, real time, int stage);
         void NormalizeRate(EquationDofs &rate);
         bool RecordImplicitStage(NonlinearIterationReport report);
+        Json UpdatePolicyMetadata() const;
         bool Admissible(const EquationDofs &state) const;
         Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time, EquationSetup setup);
         Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const ResolvedPhysicalInputs &inputs, const TimeSettings &time, EquationSetup setup);
@@ -109,56 +71,24 @@ namespace DNDS::Cauchy
         StepResult SolveCoordinatedStage();
         StepResult CompleteCoordinatedStage();
         int CoordinatedStageNumber() const;
-        std::optional<EquationTimeStepper::StageEquation> _stageEquation;
-        int _coordinatedStage = 0;
-        bool _coordinatedPrepared = false;
-        std::optional<BoundaryInputs> _interfaceInputs;
         void BindInterfaceInputs(const BoundaryInputs &input);
         void CommitReserved(EquationDofs::WriteScope &destination, EquationDofs::ReadScope &source);
-        /// Detached checkpoint candidate. Reads may use trial scratch but
-        /// accepted means/history/guesses change only after all reservations.
-        struct CheckpointRead
-        {
-            real time = 0, lastDt = 0;
-            StateEpoch epoch;
-            std::unique_ptr<EquationTimeStepper> stepper;
-            std::optional<Runtime::Array<real>> guess, limitedVRHistory;
-            std::optional<EquationDofs> equationGuess;
-            std::optional<EquationDofs::ReadScope> source;
-            std::optional<EquationDofs::WriteScope> destination;
-            std::vector<EquationBlockArrayView<const real>> input;
-            std::vector<EquationBlockArrayView<real>> output;
-            std::optional<FiniteVolume::ReconstructionRestore> reconstruction;
-            bool committed = false;
-            ~CheckpointRead()
-            {
-                if (!committed && destination)
-                    destination->CancelUnmodified();
-            }
-        };
-        struct InternalCheckpointRead
-        {
-            EquationTimeStepper::ActiveCheckpoint time;
-            NonlinearSolveState nonlinear;
-            StateEpoch trialEpoch;
-            real trialDt = 0, progressTime = 0;
-            std::optional<EquationDofs> endpointWarm, endpointFinal;
-            std::optional<Runtime::Array<real>> endpointHistory;
-            std::optional<EquationDofs> middleWarm, middleFinal;
-            std::optional<Runtime::Array<real>> middleHistory;
-            bool ditr = false;
-        };
-        std::unique_ptr<CheckpointRead> PrepareCheckpointRead(const std::string &path, const Json &resolved);
-        void ReserveCheckpointRead(CheckpointRead &checkpoint, bool collectiveChecks = true);
-        void CommitCheckpointRead(CheckpointRead &checkpoint);
-        std::unique_ptr<InternalCheckpointRead> PrepareInternalCheckpointRead(const std::string &path, const Json &resolved);
-        void CommitInternalCheckpointRead(InternalCheckpointRead &checkpoint);
+        std::unique_ptr<IO::DomainCheckpointRead> PrepareCheckpointRead(const std::string &path, const Json &resolved);
+        void ReserveCheckpointRead(IO::DomainCheckpointRead &checkpoint, bool collectiveChecks = true);
+        void CommitCheckpointRead(IO::DomainCheckpointRead &checkpoint);
+        std::unique_ptr<IO::DomainInternalCheckpointRead> PrepareInternalCheckpointRead(const std::string &path, const Json &resolved);
+        void CommitInternalCheckpointRead(IO::DomainInternalCheckpointRead &checkpoint);
 
     public:
         Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time = {});
-        const std::string &Name() const { return _name; }
-        const EquationSystem &Equation() const { return _equation; }
-        const FiniteVolume &Discretization() const { return _fv; }
+        /// Construct a short-lived controller view over this domain. The
+        /// controller owns no numerical resources and must not outlive Domain;
+        /// it is the only orchestration API allowed to reserve or publish a
+        /// coordinated trial candidate.
+        DomainController Controller();
+        const std::string &Name() const { return _problem.name; }
+        const EquationSystem &Equation() const { return _problem.equation; }
+        const FiniteVolume &Discretization() const { return _problem.finiteVolume; }
         /// Shared worker capacity for standalone native operators. A copy
         /// retains the pool, never an acquired worker. Serialize operator and
         /// Domain use or provide sufficient capacity; no implicit pool exists.
@@ -166,21 +96,21 @@ namespace DNDS::Cauchy
         {
             return _execution.ChemicalWorkers();
         }
-        EquationDofs &Dofs() { return _accepted; }
-        const EquationDofs &Dofs() const { return _accepted; }
+        EquationDofs &Dofs() { return _state.accepted; }
+        const EquationDofs &Dofs() const { return _state.accepted; }
         /// Synchronous local point refresh using this domain's explicit worker
         /// capacity. No halo exchange; caller ensures ready ghosts when used.
         bool RefreshDerived(DerivedFields &fields, bool onlyIfStale = false) const;
-        real Time() const { return _time; }
-        real InternalObservationTime() const { return _progressTime; }
+        real Time() const { return _state.time; }
+        real InternalObservationTime() const { return _state.progressTime; }
         /// Actual last committed physical step, including retry halving. Zero
         /// for steady/fresh state or an older restart without this information.
-        real PreviousTimeStep() const { return _lastAcceptedDt; }
+        real PreviousTimeStep() const { return _state.lastAcceptedDt; }
         bool Steady() const { return _steady; }
         /// Actual domain policy: inert domains remain unsplit even when the
         /// simulation selects Strang for its chemical domains.
         bool UsesStrangSource() const { return _sourceStrang; }
-        const StateEpoch &Epoch() const { return _epoch; }
+        const StateEpoch &Epoch() const { return _state.epoch; }
         const std::vector<NonlinearIterationReport> &LastImplicitStages() const { return _lastImplicit; }
         /// Synchronous sink-neutral nonlinear progress callback. The callback
         /// may buffer/report locally but must not enter unrelated collectives.
@@ -230,12 +160,12 @@ namespace DNDS::Cauchy
         void CommitStep();
         void DiscardStep() noexcept
         {
-            _trialReady = false;
-            _internalResume = false;
-            _coordinatedPrepared = false;
-            _stageEquation.reset();
-            if (_timeStepper)
-                _timeStepper->Discard();
+            _state.trialReady = false;
+            _state.internalResume = false;
+            _state.coordinatedPrepared = false;
+            _state.stageEquation.reset();
+            if (_state.timeStepper)
+                _state.timeStepper->Discard();
         }
         [[nodiscard]] StepResult Advance(real dt)
         {

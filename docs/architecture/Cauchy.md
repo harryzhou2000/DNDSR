@@ -45,6 +45,42 @@ flowchart TD
     Domain --> IO[Persistent-ID HDF5 checkpoint + redistribution]
 ```
 
+## Domain ownership and coordinated phases
+
+`Domain` is a facade over three explicit owners:
+
+```mermaid
+flowchart LR
+    Domain --> Problem[DomainProblem]
+    Domain --> State[DomainState]
+    Domain --> Execution[DomainExecution]
+    Simulation --> Controller[DomainController view]
+    Controller --> Domain
+    Problem --> P1[EquationSystem + FiniteVolume + admissibility]
+    State --> S1[accepted/trial means + time history]
+    State --> S2[durable reconstruction + epochs/cursors]
+    Execution --> E1[engine/stream/chemistry context]
+    Execution --> E2[workspaces + nonlinear/linear/pMG drivers]
+    Execution --> E3[auxiliary/interface scratch]
+```
+
+`DomainProblem` owns long-lived physical and discretization definitions but no
+solution history or backend scratch. `DomainState` owns restart-relevant mutable
+means, time-method history, durable reconstruction and active trial metadata.
+`DomainExecution` is rebuildable: it owns prepared workspaces, solver sessions
+and the retained execution context, but no accepted state. Its destruction
+order retires submitted work before state/problem storage disappears.
+
+`Simulation` no longer reaches into trial arrays, reconstruction workspaces,
+execution streams or accepted writers. It uses the non-owning synchronous
+`DomainController`, whose candidate/checkpoint tokens retain opaque leases and
+cancel an abandoned writer. Every local domain is reserved before any candidate
+is committed. Checkpoint read transactions live under `Cauchy/IO`, rather than
+as public or simulation-visible `Domain` implementation types. This extraction
+does not yet replace the application-level accepted-step loop with the final
+`SimulationController`; it establishes the ownership and transaction boundary
+needed for that change.
+
 `Cauchy/Core/DomainPlacement` owns immutable simulation/domain communicator
 namespaces. Descriptor construction is collective and checked for exact agreement.
 Ranks retain only metadata for domains they do not own. Rank lists retain their

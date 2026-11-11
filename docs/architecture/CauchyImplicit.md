@@ -111,6 +111,24 @@ ordinary stage solves retain before-update observation, while a DITR problem
 can request observation after its two coupled updates. Both use the same norm,
 reference, CFL and cap policy; after-update mode has no iteration-zero stop.
 
+That choice is now prepared through `UpdatePolicyRegistry`, not selected by an
+outer orchestration branch. `singleStageImplicit` invokes exactly one update
+with before-update residual observation. `ditrSequential2Stage` invokes the
+method-owned midpoint and endpoint updates in that order, then observes DITR's
+combined stopping residual. A descriptor records the stage-group size,
+observation point and whether the method supplies its stopping residual.
+Resolution rejects a policy whose descriptor contradicts the time method.
+`implicit.updatePolicy=auto` resolves these two current policies; explicit names
+are accepted only when compatible. The resolved descriptor is checkpoint
+metadata, while old archives without that field retain compatibility through
+the already validated time method/configuration.
+
+The registry is a setup-time extension point. A focused test registers another
+compatible one-stage policy without modifying `NonlinearSolver` or `Domain` and
+rejects the same policy under a two-stage DITR requirement. p-FAS smoothers do
+not resolve or nest this finest policy: they continue to call bounded
+`CorrectOnce` operations inside the selected outer update.
+
 `NonlinearSolver::CorrectOnce` and `NonlinearSolver::CorrectOnce` share
 the ordinary solve's evaluation, defect assembly, pseudo-time, approximate
 Jacobian, linear solver and PP/update implementations. They do exactly one

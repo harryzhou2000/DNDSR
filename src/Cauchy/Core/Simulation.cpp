@@ -1,5 +1,6 @@
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Core/Simulation.hpp"
+#include "Cauchy/Core/DomainController.hpp"
 #include "Cauchy/Interface/InterfaceCoupling.hpp"
 #include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
@@ -61,7 +62,7 @@ namespace DNDS::Cauchy
             for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                 if (_domains[iDomain])
                 {
-                    local[iDomain] = _domains[iDomain]->_fv;
+                    local[iDomain] = _domains[iDomain]->Discretization();
                     workers[iDomain] = _domains[iDomain]->ChemicalWorkers();
                 }
             _interfaces = std::make_unique<InterfaceCoupling>(
@@ -74,27 +75,22 @@ namespace DNDS::Cauchy
                 for (auto &domain : _domains)
                     if (domain)
                     {
+                        auto control = domain->Controller();
                         if (prepared)
-                            domain->_fv.Execute(domain->_trial, *domain->_reconstruction,
-                                                *domain->_workspace, domain->_execution,
-                                                FiniteVolumeEvaluation::Reconstruction(0));
+                            control.PrepareInterfaceReconstruction(0);
                         else
-                            domain->_fv.Execute(domain->_trial, *domain->_reconstruction,
-                                                *domain->_workspace, domain->_execution,
-                                                FiniteVolumeEvaluation::Sampling());
+                            control.PrepareInterfaceSampling();
                     }
                 std::vector<InterfaceDomainInput> ports(_domains.size());
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                     if (auto &domain = _domains[iDomain])
-                        ports[iDomain] = {domain->_fv.PublishInterfaceDonor(
-                            domain->_trial, *domain->_reconstruction,
-                            *domain->_workspace, prepared)};
+                        ports[iDomain] = {domain->Controller().PublishInterfaceDonor(prepared)};
                 _interfaces->Refresh(ports, 0, {});
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                     if (_domains[iDomain])
                     {
                         if (const auto input = _interfaces->Inputs(iDomain))
-                            _domains[iDomain]->BindInterfaceInputs(*input);
+                            _domains[iDomain]->Controller().BindInterfaceInputs(*input);
                     }
             };
             initialize(false);
@@ -182,9 +178,7 @@ namespace DNDS::Cauchy
                 std::vector<InterfaceDomainInput> inputs(_domains.size());
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                     if (auto &domain = _domains[iDomain])
-                        inputs[iDomain] = {domain->_fv.PublishInterfaceDonor(
-                            domain->_trial, *domain->_reconstruction,
-                            *domain->_workspace, prepared)};
+                        inputs[iDomain] = {domain->Controller().PublishInterfaceDonor(prepared)};
                 return inputs;
             };
             const auto refresh = [&](real time, int stage, bool prepared, bool acceptedSnapshot = false)
@@ -197,23 +191,23 @@ namespace DNDS::Cauchy
                 _interfaces->Refresh(ports(prepared), time, epoch);
                 localPhase([&](index iDomain, Domain &domain)
                            {
-                    if(const auto input=_interfaces->Inputs(iDomain)) domain.BindInterfaceInputs(*input); }, "interface binding");
+                    if(const auto input=_interfaces->Inputs(iDomain)) domain.Controller().BindInterfaceInputs(*input); }, "interface binding");
             };
-            std::vector<std::optional<EquationDofs::WriteScope>> destinations(_domains.size());
-            std::vector<std::optional<EquationDofs::ReadScope>> sources(_domains.size());
+            std::vector<std::optional<DomainController::CandidateReservation>> candidates(_domains.size());
             const auto prepareAndCommit = [&]() -> StepResult
             {
                 localPhase([&](index, Domain &domain)
                            {
-                    MPI::LocalStage(MPIInfo(domain._fv.Metrics().Communicator()),[&]
+                    auto control = domain.Controller();
+                    MPI::LocalStage(MPIInfo(control.Communicator()),[&]
                     {
-                        DNDS_check_throw_info(domain.Time()==_time&&domain.Epoch().acceptedStep==_step,"domain advanced outside its Simulation");
+                        control.RequireAcceptedClock(_time, _step);
                     });
-                    domain.BeginCoordinatedStep(dt); }, "step preparation");
+                    control.BeginStep(dt); }, "step preparation");
                 if (Local(0))
-                    trialIdentifier = _domains[0]->_trialEpoch.trial;
+                    trialIdentifier = _domains[0]->Controller().TrialIdentifier();
                 MPI_Bcast(&trialIdentifier, 1, MPI_UINT64_T, _placement.SimulationRank(0, 0), _placement.Control());
-                int stages = Local(0) ? _domains[0]->CoordinatedStageNumber() : 0;
+                int stages = Local(0) ? _domains[0]->Controller().StageNumber() : 0;
                 MPI_Bcast(&stages, 1, MPI_INT, _placement.SimulationRank(0, 0), _placement.Control());
                 for (int stage = 0; stage < stages; ++stage)
                 {
@@ -221,8 +215,9 @@ namespace DNDS::Cauchy
                     std::vector<real> localTimes(_domains.size(), 0);
                     localPhase([&](index iDomain, Domain &domain)
                                {
-                        DNDS_check_throw_info(domain.CoordinatedStageNumber()==stages,"domain stage counts differ");
-                        localTimes[iDomain]=domain.PrepareCoordinatedStage(stage); }, "stage preparation");
+                        auto control = domain.Controller();
+                        DNDS_check_throw_info(control.StageNumber()==stages,"domain stage counts differ");
+                        localTimes[iDomain]=control.PrepareStage(stage); }, "stage preparation");
                     if (Local(0))
                         stageTime = localTimes[0];
                     MPI_Bcast(&stageTime, 1, MPI_DOUBLE, _placement.SimulationRank(0, 0), _placement.Control());
@@ -231,31 +226,25 @@ namespace DNDS::Cauchy
                     if (_interfaces)
                     {
                         localPhase([](index, Domain &domain)
-                                   { domain._fv.Execute(domain._trial, *domain._reconstruction,
-                                                        *domain._workspace, domain._execution,
-                                                        FiniteVolumeEvaluation::Sampling()); }, "predictor halos");
+                                   { domain.Controller().PrepareInterfaceSampling(); }, "predictor halos");
                         refresh(stageTime, stage, false);
                         localPhase([&](index, Domain &domain)
-                                   { domain._fv.Execute(domain._trial, *domain._reconstruction,
-                                                        *domain._workspace, domain._execution,
-                                                        FiniteVolumeEvaluation::Reconstruction(stageTime)); }, "interface reconstruction");
+                                   { domain.Controller().PrepareInterfaceReconstruction(stageTime); }, "interface reconstruction");
                         refresh(stageTime, stage, true);
                     }
                     if (auto result = localPhase([](index, Domain &domain)
-                                                 { return domain.SolveCoordinatedStage(); }, "stage solve");
+                                                 { return domain.Controller().SolveStage(); }, "stage solve");
                         !result)
                         return result;
                     if (auto result = localPhase([](index, Domain &domain)
-                                                 { return domain.CompleteCoordinatedStage(); }, "stage completion");
+                                                 { return domain.Controller().CompleteStage(); }, "stage completion");
                         !result)
                         return result;
                 }
                 if (_interfaces)
                 {
                     localPhase([](index, Domain &domain)
-                               { domain._fv.Execute(domain._trial, *domain._reconstruction,
-                                                    *domain._workspace, domain._execution,
-                                                    FiniteVolumeEvaluation::Sampling()); }, "accepted-time predictor halos");
+                               { domain.Controller().PrepareInterfaceSampling(); }, "accepted-time predictor halos");
                     refresh(_config.Time().steady ? _time : _time + dt, 0, false, true);
                 }
                 // Only local lease acquisition belongs in this control-stage
@@ -267,18 +256,12 @@ namespace DNDS::Cauchy
                                     {
                     for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                         if (auto &domain = _domains[iDomain])
-                        {
-                            DNDS_check_throw_info(domain->_trialReady&&(!domain->_timeStepper||domain->_timeStepper->HasPendingTrial()),"domain has no complete candidate");
-                            destinations[iDomain].emplace(domain->_accepted.WriteOwned());
-                            sources[iDomain].emplace(domain->_trial.ReadOwned());
-                        } });
+                            candidates[iDomain].emplace(domain->Controller().ReserveCandidate()); });
                 }
                 catch (...)
                 {
                     MPI::AbortIfSolverFailure("Cauchy coordinated state reservation failed");
-                    for (auto &destination : destinations)
-                        if (destination)
-                            destination->CancelUnmodified();
+                    candidates.clear();
                     for (auto &domain : _domains)
                         if (domain)
                             domain->DiscardStep();
@@ -288,13 +271,13 @@ namespace DNDS::Cauchy
                         for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                             if (_domains[iDomain])
                                 if (const auto input = _interfaces->Inputs(iDomain))
-                                    _domains[iDomain]->BindInterfaceInputs(*input);
+                                    _domains[iDomain]->Controller().BindInterfaceInputs(*input);
                     }
                     throw;
                 }
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                     if (_domains[iDomain])
-                        _domains[iDomain]->CommitReserved(*destinations[iDomain], *sources[iDomain]);
+                        _domains[iDomain]->Controller().CommitCandidate(*candidates[iDomain]);
                 if (_interfaces)
                     _interfaces->Commit();
                 return {};
@@ -304,8 +287,7 @@ namespace DNDS::Cauchy
             {
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                 {
-                    if (destinations[iDomain])
-                        destinations[iDomain]->CancelUnmodified();
+                    candidates[iDomain].reset();
                     if (_domains[iDomain])
                         _domains[iDomain]->DiscardStep();
                 }
@@ -317,7 +299,7 @@ namespace DNDS::Cauchy
                     for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                         if (_domains[iDomain])
                             if (const auto input = _interfaces->Inputs(iDomain))
-                                _domains[iDomain]->BindInterfaceInputs(*input);
+                                _domains[iDomain]->Controller().BindInterfaceInputs(*input);
                 }
                 return result;
             }
@@ -326,7 +308,7 @@ namespace DNDS::Cauchy
                 _time = acceptedTime.value_or(_time + dt);
                 for (auto &domain : _domains)
                     if (domain)
-                        domain->_time = domain->_trialTime = _time;
+                        domain->Controller().SnapAcceptedTime(_time);
             }
             ++_step;
             return {};
@@ -353,7 +335,7 @@ namespace DNDS::Cauchy
             _time = acceptedTime.value_or(_time + dt);
             for (auto &domain : _domains)
                 if (domain)
-                    domain->_time = domain->_trialTime = _time;
+                    domain->Controller().SnapAcceptedTime(_time);
         }
         ++_step;
         return {};

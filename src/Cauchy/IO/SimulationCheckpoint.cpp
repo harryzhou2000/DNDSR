@@ -1,5 +1,6 @@
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Core/Simulation.hpp"
+#include "Cauchy/Core/DomainController.hpp"
 #include "Cauchy/Interface/InterfaceCoupling.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
@@ -179,8 +180,8 @@ namespace DNDS::Cauchy
                 } });
         }
         serializer.CloseFile();
-        std::vector<std::unique_ptr<Domain::CheckpointRead>> checkpoints;
-        std::unique_ptr<Domain::InternalCheckpointRead> internalCheckpoint;
+        std::vector<std::optional<DomainController::CheckpointCandidate>> checkpoints;
+        std::optional<DomainController::InternalCheckpointCandidate> internalCheckpoint;
         MPI::LocalStage(control, [&]
                         {
             DNDS_check_throw_info(std::isfinite(time) && time >= 0 && step >= 0, "invalid Cauchy simulation archive clock");
@@ -189,15 +190,15 @@ namespace DNDS::Cauchy
                      {
             MPI::LocalStage(MPIInfo(_placement.Context(iDomain)->Communicator()), [&]
                             { DNDS_check_throw_info(std::filesystem::is_regular_file(paths[iDomain]), "missing Cauchy domain checkpoint"); });
-            checkpoints[iDomain] = GetDomain(iDomain).PrepareCheckpointRead(paths[iDomain], _config.Root());
+            checkpoints[iDomain].emplace(GetDomain(iDomain).Controller().PrepareCheckpoint(paths[iDomain], _config.Root()));
             MPI::LocalStage(MPIInfo(_placement.Context(iDomain)->Communicator()), [&]
-                            { DNDS_check_throw_info(checkpoints[iDomain]->time == time && checkpoints[iDomain]->epoch.acceptedStep == uint64_t(step),
+                            { DNDS_check_throw_info(checkpoints[iDomain]->Time() == time && checkpoints[iDomain]->Epoch().acceptedStep == uint64_t(step),
                                                     "domain checkpoint clock differs from its simulation manifest"); }); });
         if (internal)
         {
-            internalCheckpoint = GetDomain(0).PrepareInternalCheckpointRead(path, _config.Root());
+            internalCheckpoint.emplace(GetDomain(0).Controller().PrepareInternalCheckpoint(path, _config.Root()));
             MPI::LocalStage(control, [&]
-                            { DNDS_check_throw_info(internalCheckpoint->trialEpoch.acceptedStep == uint64_t(step),
+                            { DNDS_check_throw_info(internalCheckpoint->TrialEpoch().acceptedStep == uint64_t(step),
                                                     "internal checkpoint trial belongs to another accepted step"); });
         }
         if (_interfaces)
@@ -213,31 +214,12 @@ namespace DNDS::Cauchy
                 auto &candidate = *checkpoints[iDomain];
                 const MPIInfo mpi(_placement.Context(iDomain)->Communicator());
                 MPI::LocalStage(mpi, [&]
-                                {
-                    DNDS_check_throw_info(
-                        bool(candidate.equationGuess),
-                        "interface checkpoint requires a variational reconstruction candidate"); });
-                std::vector<Runtime::TransferOperation> means, coefficients;
-                for (index iField = 0;
-                     iField < domain._trial.PhysicalFieldNumber(); ++iField)
-                {
-                    means.push_back(domain._fv.BindHalo(
-                        domain._trial.PhysicalField(iField)).Begin());
-                    coefficients.push_back(domain._fv.BindHalo(
-                        candidate.equationGuess->PhysicalField(iField)).Begin());
-                }
-                for (auto &operation : means)
-                    operation.Wait();
-                for (auto &operation : coefficients)
-                    operation.Wait();
-                ports[iDomain] = {
-                    domain._fv.PublishVariationalInterfaceDonor(
-                        domain._trial, *candidate.equationGuess)}; });
+                                { ports[iDomain] = {domain.Controller().PrepareCheckpointInterfaceDonor(candidate)}; }); });
             StateEpoch epoch;
             epoch.acceptedStep = uint64_t(step);
             _interfaces->Refresh(ports, time, epoch);
             LocalDomains(_placement, [&](index iDomain)
-                         { if (const auto input = _interfaces->Inputs(iDomain)) GetDomain(iDomain).BindInterfaceInputs(*input); });
+                         { if (const auto input = _interfaces->Inputs(iDomain)) GetDomain(iDomain).Controller().BindInterfaceInputs(*input); });
         }
         try
         {
@@ -246,7 +228,7 @@ namespace DNDS::Cauchy
             // another domain cannot reserve, without catching collective I/O.
             MPI::LocalStage(control, [&]
                             { LocalDomains(_placement, [&](index iDomain)
-                                           { GetDomain(iDomain).ReserveCheckpointRead(*checkpoints[iDomain], false); }); });
+                                           { GetDomain(iDomain).Controller().ReserveCheckpoint(*checkpoints[iDomain], false); }); });
         }
         catch (...)
         {
@@ -259,15 +241,15 @@ namespace DNDS::Cauchy
                 // Already validated accepted-packet aliases. Binding is local
                 // and does not perform I/O, search, transfer or MPI agreement.
                 LocalDomains(_placement, [&](index iDomain)
-                             { if (const auto input = _interfaces->Inputs(iDomain)) GetDomain(iDomain).BindInterfaceInputs(*input); });
+                             { if (const auto input = _interfaces->Inputs(iDomain)) GetDomain(iDomain).Controller().BindInterfaceInputs(*input); });
             }
             throw;
         }
         for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
             if (_domains[iDomain])
-                _domains[iDomain]->CommitCheckpointRead(*checkpoints[iDomain]);
+                _domains[iDomain]->Controller().CommitCheckpoint(*checkpoints[iDomain]);
         if (internalCheckpoint)
-            GetDomain(0).CommitInternalCheckpointRead(*internalCheckpoint);
+            GetDomain(0).Controller().CommitInternalCheckpoint(*internalCheckpoint);
         if (_interfaces)
             _interfaces->Commit();
         _time = time;

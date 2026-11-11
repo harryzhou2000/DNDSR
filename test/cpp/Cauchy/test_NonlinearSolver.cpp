@@ -4,6 +4,7 @@
 #include "Cauchy/Implicit/PositivityReduction.hpp"
 #include "Cauchy/Implicit/ResidualConvergence.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
+#include "Cauchy/Implicit/UpdatePolicy.hpp"
 #include "Cauchy/Implicit/LinearScaling.hpp"
 #include "CartesianFixture.hpp"
 #include <limits>
@@ -33,6 +34,47 @@ static C::NonlinearSolver MakeSolver(const C::FiniteVolume &fv, C::EquationDofs 
     return {fv, state, fv.BuildReconstructionState(state), fv.BuildWorkspace(state), engine, stream, settings,
             A::ComponentSelection(state.ComponentNumber(),
                                   state.Schema().ResolveComponents(settings.implicit.residualComponents))};
+}
+namespace
+{
+    class RegisteredOneStagePolicy final : public C::UpdatePolicy
+    {
+        C::UpdatePolicyDescriptor _descriptor{
+            "testRegisteredOneStage", 1,
+            C::NonlinearDetail::ResidualObservation::BeforeUpdate, false};
+
+    public:
+        const C::UpdatePolicyDescriptor &Descriptor() const override
+        {
+            return _descriptor;
+        }
+        C::NonlinearIterationReport Execute(
+            C::UpdatePolicyProblem problem) const override
+        {
+            problem.Validate(_descriptor);
+            C::NonlinearIterationReport result;
+            result.iterations = 17;
+            return result;
+        }
+    };
+}
+TEST_CASE("Update policies register without changing nonlinear orchestration")
+{
+    C::UpdatePolicyRegistry::Register(
+        RegisteredOneStagePolicy().Descriptor(),
+        []
+        { return std::make_unique<RegisteredOneStagePolicy>(); });
+    const C::UpdatePolicyRequirements compatible{
+        1, C::NonlinearDetail::ResidualObservation::BeforeUpdate, false};
+    auto policy = C::UpdatePolicyRegistry::Resolve(
+        "testRegisteredOneStage", compatible);
+    CHECK(policy->Descriptor().name == "testRegisteredOneStage");
+    CHECK(policy->Descriptor().Metadata().at("coupled_stages") == 1);
+
+    const C::UpdatePolicyRequirements incompatible{
+        2, C::NonlinearDetail::ResidualObservation::AfterUpdate, true};
+    CHECK_THROWS(C::UpdatePolicyRegistry::Resolve(
+        "testRegisteredOneStage", incompatible));
 }
 TEST_CASE("Nonlinear controller state has a versioned JSON round trip")
 {
