@@ -105,6 +105,20 @@ namespace DNDS::Cauchy
             std::optional<WallDistanceRead> wallRead;
             if (ransModel && ransModel->ComponentNumber() == 2) wallRead.emplace(_data->wallDistance->AcquireRead());
             const auto walls = wallRead ? wallRead->HostView() : WallDistanceView{};
+            std::optional<Runtime::Array<real>::ReadLease> incomingRead;
+            InterfaceBoundaryRows incoming;
+            const auto boundaryInput = PreparedBoundaryInputs(workspace);
+            DNDS_check_throw_info(!HasInterfaces() || boundaryInput,
+                                  "surface output needs a ready interface packet");
+            if (boundaryInput)
+            {
+                ValidateBoundaryInputs(*boundaryInput, time);
+                incomingRead.emplace(boundaryInput->QuadratureValues()
+                                         .CoupledField()
+                                         .Owned()
+                                         .Read());
+                incoming = incomingRead->View<Runtime::UniformTableRows>();
+            }
             for (const auto &sample : _data->samples)
             {
                 if (sample.other != UnInitIndex) continue;
@@ -121,8 +135,16 @@ namespace DNDS::Cauchy
                 if (ransModel)
                     RANSStateView{ransModel->Kind(), ransModel->ComponentNumber()}.RepairReconstruction(ransMean[sample.cell], point.values.data() + ransFirst);
                 if (wallRead) Gather(blocks, sample.cell, cellMean);
-                BoundaryValue(point, flowFirst, speciesFirst, independent, sample, *evaluator, frame, time, false,
-                              {ransModel, ransFirst, &cellMean, wallRead ? walls.cellMean(sample.cell, 0) : 0});
+                OptionalRef<const std::vector<real>> mean;
+                if (wallRead)
+                    mean.Emplace(cellMean.values);
+                _data->boundaryPoint.Evaluate(
+                    point.values, sample.boundary, sample.boundaryPoint,
+                    {sample.normal[0], sample.normal[1], sample.normal[2]},
+                    {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]},
+                    *evaluator, frame, time, BoundaryPointStateKind::FaceTrace,
+                    mean, wallRead ? walls.cellMean(sample.cell, 0) : 0,
+                    incoming);
                 const auto flow = point.Flow(flowFirst);
                 const auto properties = evaluator->Evaluate(flow, point.Species(speciesFirst, independent));
                 surface << Mesh().OriginalEntityId(Geom::EntityKind::Cell, sample.cell) << ',' << sample.zone;

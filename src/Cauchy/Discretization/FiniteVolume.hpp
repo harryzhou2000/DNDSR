@@ -774,6 +774,7 @@ namespace DNDS::Cauchy
         /// equation-level provenance check. Every equation packet uses this one
         /// leaf input.
         std::optional<BoundaryInputs> PreparedBoundaryInputs(const AuxiliaryValues &values) const;
+        std::optional<BoundaryInputs> PreparedBoundaryInputs(const Workspace &workspace) const;
         /// Established fixed perfect-gas Roe leaf selected by the equation
         /// Jacobian resolver. It is not a second public state API.
         void PrepareFlow5Jacobian(const CFV::FVField &state, const AuxiliaryValues &auxiliary,

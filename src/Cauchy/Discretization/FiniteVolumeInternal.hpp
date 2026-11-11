@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Cauchy/Boundary/BoundaryPointOperator.hpp"
 // Private shared preparation data. Public callers use FiniteVolume and explicit
 // Workspace/AuxiliaryValues owners; this header is not a mesh or solver API.
 #include "Cauchy/Discretization/FiniteVolume.hpp"
@@ -171,6 +172,7 @@ namespace DNDS::Cauchy
         DomainSettings settings;
         std::shared_ptr<Runtime::CommunicationWorker> communicationWorker;
         EquationSystem equation;
+        BoundaryPointOperator boundaryPoint;
         RigidMotion motion;
         Riemann::RiemannFlux flux;
         FiniteVolumeDetail::FluxKernelPolicy fluxPolicy;
@@ -249,7 +251,7 @@ namespace DNDS::Cauchy
             return *thermalBounds;
         }
         Data(ssp<Geom::UnstructuredMesh> source, DomainSettings controls, EquationSystem physics)
-            : mesh(std::move(source)), settings(std::move(controls)), equation(std::move(physics)), motion(settings.motion, settings.mesh.dimension), flux(Riemann::RiemannFlux::Resolve(settings.numerics.flux)),
+            : mesh(std::move(source)), settings(std::move(controls)), equation(std::move(physics)), boundaryPoint(equation), motion(settings.motion, settings.mesh.dimension), flux(Riemann::RiemannFlux::Resolve(settings.numerics.flux)),
               fluxPolicy(FiniteVolumeDetail::ResolveFluxKernelPolicy(settings, flux)),
               boundary(settings.boundaries, equation), metrics(CFV::FiniteVolumePlan::ConstructMetrics(mesh, MetricOptions(settings))),
               // Only the variational family owns Taylor bases, reconstruction

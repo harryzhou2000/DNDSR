@@ -1,5 +1,6 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
+#include "Cauchy/Boundary/BoundaryPointOperator.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Discretization/FiniteVolumeKernels.hpp"
 #include "Cauchy/Discretization/WallDistanceSamples.hpp"
@@ -610,11 +611,11 @@ TEST_CASE("Zero-SA wall convection retains the interior SA viscous jump")
     point.state << 1, 0, 0, 0, 2.5, .02, 0;
     point.gradient.setZero();
     // The constant face state does not remove source gradients. Each axis
-    // has one wall target (.01 after the direct-FV ghost-to-face average)
+    // has one prescribed reconstruction face target (zero)
     // at distance .25 and one unchanged neighbor at distance .5. Equal-area
-    // inverse-distance LS gives |d(rhoNuTilde)/dx| = .02 on each axis.
+    // inverse-distance LS gives |d(rhoNuTilde)/dx| = .04 on each axis.
     // Its sign changes between corners; this uniform SA source uses its norm.
-    point.gradient.col(5).setConstant(.02);
+    point.gradient.col(5).setConstant(.04);
     point.molecularViscosity = .001;
     point.gamma = 1.4;
     point.cp = 3.5;
@@ -643,6 +644,7 @@ TEST_CASE("SA boundary samples use wall reflection and frame-relative incoming f
     settings.boundaries["8"].ransConservative = {{"rhoNuTilde", .07}};
     const auto equation = Equation(settings);
     const C::BoundarySystem boundaries(settings.boundaries, equation);
+    const C::BoundaryPointOperator boundaryPoint(equation);
     auto evaluator = equation.MakePointEvaluator({}, {});
     C::FiniteVolumeDetail::Sample sample{};
     sample.normal = {1, 0, 0};
@@ -658,20 +660,32 @@ TEST_CASE("SA boundary samples use wall reflection and frame-relative incoming f
     C::RigidFrame frame;
     sample.boundary = boundaries.At(7);
     reset();
-    C::EquationFVDetail::BoundaryValue(point, 0, -1, 0, sample, evaluator, frame, 0, true, {&equation.RANS(), 5});
+    boundaryPoint.Evaluate(point.values, sample.boundary, sample.boundaryPoint,
+                           {sample.normal[0], sample.normal[1], sample.normal[2]},
+                           {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]},
+                           evaluator, frame, 0, C::BoundaryPointStateKind::ExteriorState);
     CHECK(point.values[5] == -.02);
     reset();
-    C::EquationFVDetail::BoundaryValue(point, 0, -1, 0, sample, evaluator, frame, 0, false, {&equation.RANS(), 5});
+    boundaryPoint.Evaluate(point.values, sample.boundary, sample.boundaryPoint,
+                           {sample.normal[0], sample.normal[1], sample.normal[2]},
+                           {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]},
+                           evaluator, frame, 0, C::BoundaryPointStateKind::FaceTrace);
     CHECK(point.values[5] == 0);
     sample.boundary = boundaries.At(8);
     reset();
-    C::EquationFVDetail::BoundaryValue(point, 0, -1, 0, sample, evaluator, frame, 0, true, {&equation.RANS(), 5});
+    boundaryPoint.Evaluate(point.values, sample.boundary, sample.boundaryPoint,
+                           {sample.normal[0], sample.normal[1], sample.normal[2]},
+                           {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]},
+                           evaluator, frame, 0, C::BoundaryPointStateKind::ExteriorState);
     CHECK(point.values[5] == .02);
     // The same absolute flow becomes inflow when the boundary moves faster.
     frame.moving = true;
     frame.centerVelocity = {.2, 0, 0};
     reset();
-    C::EquationFVDetail::BoundaryValue(point, 0, -1, 0, sample, evaluator, frame, 0, true, {&equation.RANS(), 5});
+    boundaryPoint.Evaluate(point.values, sample.boundary, sample.boundaryPoint,
+                           {sample.normal[0], sample.normal[1], sample.normal[2]},
+                           {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]},
+                           evaluator, frame, 0, C::BoundaryPointStateKind::ExteriorState);
     CHECK(point.values[5] == .07);
     settings.boundaries["8"].ransConservative.clear();
     CHECK_THROWS(C::BoundarySystem(settings.boundaries, equation));
@@ -697,6 +711,7 @@ TEST_CASE("Two-equation boundary points use mean wall distance and the correct t
             auto setup = C::EquationSetup::Resolve(settings.equation);
             const auto &equation = setup.equation;
             const auto &model = equation.RANS();
+            const C::BoundaryPointOperator boundaryPoint(equation);
             auto evaluator = equation.MakePointEvaluator(setup.workers ? setup.workers->Acquire() : DNDS::Physics::Chemistry::ChemicalWorkerPool::Lease{}, {true});
             const int ns = material ? equation.Mixture().SpeciesNumber() - 1 : 0;
             C::EquationFVDetail::PointScratch mean(7 + ns), inside(7 + ns);
@@ -743,8 +758,14 @@ TEST_CASE("Two-equation boundary points use mean wall distance and the correct t
                 for (bool exterior : {false, true})
                 {
                     auto point = inside;
-                    C::EquationFVDetail::BoundaryValue(point, 0, 7, ns, sample, evaluator, frame, 0, exterior,
-                                                       {&model, 5, &mean, distance});
+                    boundaryPoint.Evaluate(
+                        point.values, sample.boundary, sample.boundaryPoint,
+                        {sample.normal[0], sample.normal[1], sample.normal[2]},
+                        {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]},
+                        evaluator, frame, 0,
+                        exterior ? C::BoundaryPointStateKind::ExteriorState
+                                 : C::BoundaryPointStateKind::FaceTrace,
+                        DNDS::OptionalRef<const std::vector<DNDS::real>>(mean.values), distance);
                     const double densityRatio = isothermal ? point.values[0] / inside.values[0] : 1;
                     CHECK(point.values[5] == doctest::Approx(exterior ? -.03 * densityRatio : 0));
                     CHECK(point.values[6] == doctest::Approx(exterior ? 2 * target - .4 : target).epsilon(2e-11));
@@ -754,7 +775,11 @@ TEST_CASE("Two-equation boundary points use mean wall distance and the correct t
                 }
             }
             auto point = inside;
-            CHECK_THROWS(C::EquationFVDetail::BoundaryValue(point, 0, 7, ns, sample, evaluator, frame, 0, true, {&model, 5}));
+            CHECK_THROWS(boundaryPoint.Evaluate(
+                point.values, sample.boundary, sample.boundaryPoint,
+                {sample.normal[0], sample.normal[1], sample.normal[2]},
+                {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]},
+                evaluator, frame, 0, C::BoundaryPointStateKind::ExteriorState));
             CHECK(point.values == inside.values);
             settings.boundaries["7"].kind = "farfield";
             settings.boundaries["7"].massFractions = material ? std::map<std::string, double>{{"H2", .03}, {"O2", .23}} : std::map<std::string, double>{};
@@ -762,7 +787,11 @@ TEST_CASE("Two-equation boundary points use mean wall distance and the correct t
             sample.boundary = C::BoundarySystem(settings.boundaries, equation).At(7);
             frame.moving = true;
             frame.centerVelocity = {.2, 0, 0};
-            C::EquationFVDetail::BoundaryValue(point, 0, 7, ns, sample, evaluator, frame, 0, true, {&model, 5});
+            boundaryPoint.Evaluate(
+                point.values, sample.boundary, sample.boundaryPoint,
+                {sample.normal[0], sample.normal[1], sample.normal[2]},
+                {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]},
+                evaluator, frame, 0, C::BoundaryPointStateKind::ExteriorState);
             CHECK(point.values[5] == .11);
             CHECK(point.values[6] == 2.3);
         }

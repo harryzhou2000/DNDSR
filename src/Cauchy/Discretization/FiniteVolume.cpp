@@ -1693,18 +1693,22 @@ namespace DNDS::Cauchy
                     }
                     if (ransModel)
                         RANSStateView{ransModel->Kind(), ransModel->ComponentNumber()}.RepairReconstruction(ransMean[sample.cell], point.values.data() + ransFirst);
-                    BoundaryValue(point, flowFirst, speciesFirst, owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() - 1 : 0,
-                                  sample, evaluator, frame, time, true,
-                                  {ransModel, ransFirst, &cellMean, wallRead ? wallValues.cellMean(sample.cell, 0) : 0}, incoming);
+                    owner->boundaryPoint.Evaluate(
+                        point.values, sample.boundary, sample.boundaryPoint,
+                        {sample.normal[0], sample.normal[1], sample.normal[2]},
+                        {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]},
+                        evaluator, frame, time,
+                        direct ? BoundaryPointStateKind::FaceTrace
+                               : BoundaryPointStateKind::ExteriorState,
+                        OptionalRef<const std::vector<real>>(cellMean.values),
+                        wallRead ? wallValues.cellMean(sample.cell, 0) : 0,
+                        incoming);
 #ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
                     // Euler's reconstruction callback uses fixUL=true: its
                     // returned SA target is zero, rather than a negative ghost.
                     if (ransModel && ransModel->Kind() == Physics::RANS::ModelKind::SA && sample.boundary.kind == BoundaryKind::NoSlipWall)
                         point.values[ransFirst] = 0;
 #endif
-                    if (owner->settings.numerics.reconstruction != "variational" && sample.boundary.kind != BoundaryKind::Interface)
-                        for (index j = 0; j < state.ComponentNumber(); ++j)
-                            point.values[j] = .5 * (cellMean.values[j] + point.values[j]);
                     for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
                     {
                         const auto target = output.Block(iBlock);
@@ -1995,12 +1999,6 @@ namespace DNDS::Cauchy
             if (owner->wallDistance)
                 wallRead.emplace(owner->wallDistance->AcquireRead());
             const auto wallValues = wallRead ? wallRead->HostView() : WallDistanceView{};
-            const auto boundaryInput = [&](const FiniteVolumeDetail::Sample &sample)
-            {
-                if (ransModel && ransModel->ComponentNumber() == 2)
-                    gatherMean(sample.cell, cellMean);
-                return RANSBoundaryInput{ransModel, ransFirst, &cellMean, wallRead ? wallValues.cellMean(sample.cell, 0) : 0};
-            };
             CFV::Math::SmallMatrix basisScratch;
             const auto reconstruct = [&](index iCell, const FiniteVolumeDetail::Sample &sample, int side, PointScratch &point)
             {
@@ -2099,8 +2097,20 @@ namespace DNDS::Cauchy
                     {
                         right.values = left.values;
                         right.gradient = left.gradient;
-                        BoundaryValue(right, flowFirst, speciesFirst, independent, sample, evaluator, frame, time, true,
-                                      boundaryInput(sample), incoming);
+                        OptionalRef<const std::vector<real>> boundaryMean;
+                        if (ransModel && ransModel->ComponentNumber() == 2)
+                        {
+                            gatherMean(sample.cell, cellMean);
+                            boundaryMean.Emplace(cellMean.values);
+                        }
+                        owner->boundaryPoint.Evaluate(
+                            right.values, sample.boundary, sample.boundaryPoint,
+                            {sample.normal[0], sample.normal[1], sample.normal[2]},
+                            {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]},
+                            evaluator, frame, time,
+                            BoundaryPointStateKind::ExteriorState, boundaryMean,
+                            wallRead ? wallValues.cellMean(sample.cell, 0) : 0,
+                            incoming);
 #ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
                         if (ransModel && ransModel->Kind() == Physics::RANS::ModelKind::SA && sample.boundary.kind == BoundaryKind::NoSlipWall)
                         {
@@ -4405,6 +4415,13 @@ namespace DNDS::Cauchy
     {
         DNDS_check_throw_info(work.work && work.work->owner == _data, "foreign equation mean workspace");
         work.work->incoming = AliasBoundaryInputs(input);
+    }
+    std::optional<BoundaryInputs> FiniteVolume::PreparedBoundaryInputs(
+        const Workspace &work) const
+    {
+        DNDS_check_throw_info(work.owner == _data,
+                              "foreign equation workspace");
+        return work.incoming;
     }
 
     index FiniteVolume::LastFaceFallbacks(const Workspace &work) const

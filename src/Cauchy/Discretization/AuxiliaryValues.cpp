@@ -159,15 +159,17 @@ namespace DNDS::Cauchy
                 const auto &sample = _data->samples[_data->boundaryEntries[_data->gradientBoundaryPoints[iPoint]]];
                 Gather(blocks, sample.cell, mean);
                 point.values = mean.values;
-                BoundaryValue(point, flowFirst, speciesFirst, independent, sample, *evaluator, frame, time, true,
-                              {model, ransFirst, &mean, walls ? wall.cellMean(sample.cell, 0) : 0}, incoming);
+                _data->boundaryPoint.Evaluate(
+                    point.values, sample.boundary, sample.boundaryPoint,
+                    {sample.normal[0], sample.normal[1], sample.normal[2]},
+                    {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]},
+                    *evaluator, frame, time, BoundaryPointStateKind::FaceTrace,
+                    OptionalRef<const std::vector<real>>(mean.values),
+                    walls ? wall.cellMean(sample.cell, 0) : 0, incoming);
 #ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
                 if (model && model->Kind() == Physics::RANS::ModelKind::SA && sample.boundary.kind == BoundaryKind::NoSlipWall)
                     point.values[ransFirst] = 0;
 #endif
-                if (sample.boundary.kind != BoundaryKind::Interface)
-                    for (index j = 0; j < state.ComponentNumber(); ++j)
-                        point.values[j] = .5 * (mean.values[j] + point.values[j]);
                 first = 0;
                 for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
                 {
@@ -538,8 +540,16 @@ namespace DNDS::Cauchy
                         // interface supplies its explicitly published remote
                         // point state.
                         if (sample.boundary.kind == BoundaryKind::Interface)
-                            for (int j = 0; j < 5; ++j)
-                                right.values[flowFirst + j] = incoming(sample.boundaryPoint, j);
+                            data->boundaryPoint.Evaluate(
+                                right.values, sample.boundary,
+                                sample.boundaryPoint,
+                                {sample.normal[0], sample.normal[1],
+                                 sample.normal[2]},
+                                {sample.ownPoint[0], sample.ownPoint[1],
+                                 sample.ownPoint[2]},
+                                evaluator, frame, time,
+                                BoundaryPointStateKind::FaceTrace, {}, 0,
+                                incoming);
                     }
                     else
                     {
