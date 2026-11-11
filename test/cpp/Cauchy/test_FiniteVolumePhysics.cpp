@@ -639,6 +639,53 @@ namespace
     };
 }
 
+TEST_CASE("Direct P1 mixture PP shares one thermal factor across split flow and species storage")
+{
+    MixtureFixture mixture;
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 8);
+    C::DomainSettings settings;
+    settings.numerics.reconstruction = "gradient";
+    settings.numerics.gradient = "leastSquares";
+    settings.numerics.limiter = "none";
+    settings.numerics.positivity = true;
+    settings.numerics.positivityBetaCutoff = 0;
+    settings.numerics.faceFallback = false;
+    settings.numerics.viscousGradient = "polynomial";
+    C::FiniteVolume fv(mesh, settings, mixture.equation);
+    auto state = mixture.State(fv.Metrics().Space(), 1);
+    mixture.Fill(state, fv.Metrics(), false);
+    {
+        auto write = state.WriteOwned();
+        const auto flow = write.Block("flow");
+        constexpr double oldKinetic = .5 * (.04 + .0016 + .0009);
+        for (I iCell = 0; iCell < flow.RowCount(); ++iCell)
+        {
+            const double rho = flow(iCell, 0);
+            const double velocity = fv.Metrics().GetCellCent(iCell)[0] < .5
+                                        ? -6
+                                        : 6;
+            flow(iCell, 1) = rho * velocity;
+            flow(iCell, 2) = flow(iCell, 3) = 0;
+            flow(iCell, 4) += .5 * rho * velocity * velocity -
+                              rho * oldKinetic;
+        }
+    }
+    auto reconstruction = fv.BuildReconstructionState(state);
+    const auto storage = fv.InspectReconstructionStorage(*reconstruction);
+    CHECK_FALSE(storage.polynomialPlan);
+    CHECK(storage.coefficientFields == 0);
+    CHECK(storage.coefficientTransferBindings == 0);
+    auto workspace = fv.BuildWorkspace(state, mixture.workers);
+    R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
+    const auto stream = engine.CreateCPUStream();
+    CHECK_NOTHROW(fv.PrepareReconstruction(
+        state, *reconstruction, *workspace, engine, stream));
+    const auto [limited, beta] = fv.PositivityReconstructionStats(*workspace);
+    CHECK(limited > 0);
+    CHECK(beta >= 0);
+    CHECK(beta < 1);
+}
+
 TEST_CASE("Distributed prescribed mixture boundaries match independent nonconstant FV fluxes across layouts and launchers")
 {
     MixtureFixture mixture;

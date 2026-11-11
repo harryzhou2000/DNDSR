@@ -171,7 +171,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(reconstruction, "constant, gradient, or variational reconstruction");
             DNDS_FIELD(gradient, "leastSquares, greenGauss, or ggmp");
             DNDS_FIELD(flux, "Numerical inviscid flux family");
-            DNDS_FIELD(limiter, "none, WBAP or native LVR; positivity is checked separately");
+            DNDS_FIELD(limiter, "none, direct-gradient Barth, WBAP, or native LVR; positivity is checked separately");
             DNDS_FIELD(reconstructionIterations, "Fixed local VR sweeps per residual");
             DNDS_FIELD(reconstructionTolerance, "Relative Jacobi update tolerance; zero uses the fixed sweep count");
             DNDS_FIELD(characteristicLimiter, "Use equation-provided cell-mean face characteristics for 3WBAP");

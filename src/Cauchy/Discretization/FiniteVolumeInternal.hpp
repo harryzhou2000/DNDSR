@@ -211,6 +211,9 @@ namespace DNDS::Cauchy
         std::optional<CFV::PolynomialSamplingPlan> positivitySamples;
         std::shared_ptr<const LimitedVRGeometry> limitedVRGeometry;
         std::vector<index> positivityOffsets;
+        /// Cell-center displacements for direct-P1 trace/volume PP checks.
+        /// Shares positivityOffsets with polynomial sampling but owns no basis.
+        std::vector<Geom::tPoint> positivityDisplacements;
         std::optional<ThermalBounds> thermalBounds;
         std::optional<WallDistanceSamples> wallDistance;
         Runtime::Array<real> ransCellLength;
@@ -249,10 +252,10 @@ namespace DNDS::Cauchy
             : mesh(std::move(source)), settings(std::move(controls)), equation(std::move(physics)), motion(settings.motion, settings.mesh.dimension), flux(Riemann::RiemannFlux::Resolve(settings.numerics.flux)),
               fluxPolicy(FiniteVolumeDetail::ResolveFluxKernelPolicy(settings, flux)),
               boundary(settings.boundaries, equation), metrics(CFV::FiniteVolumePlan::ConstructMetrics(mesh, MetricOptions(settings))),
-              // The constant family is already fully metrics-only. Explicit
-              // P1 still retains its compatibility modal bridge until the
-              // gradient-native PP/Barth package removes that final user.
-              reconstruction(settings.numerics.reconstruction != "constant"
+              // Only the variational family owns Taylor bases, reconstruction
+              // matrices and modal coefficient storage. Direct P0/P1 consume
+              // means or physical gradients without a compatibility plan.
+              reconstruction(settings.numerics.reconstruction == "variational"
                                  ? std::make_optional(CFV::VariationalReconstructionPlan::ConstructRecCoeff(
                                        metrics, settings.numerics.cfv,
                                        FiniteVolumeDetail::ReconstructionSupport(settings)))

@@ -358,6 +358,7 @@ TEST_CASE("Euler reconstruction PP selects a mean or progressively truncated ref
                 settings.numerics.positivityCompressToMean = compressToMean;
                 settings.numerics.positivityVolumePoints = volumePoints;
                 settings.numerics.positivityBetaCutoff = 0;
+                settings.numerics.reconstruction = "variational";
                 settings.numerics.cfv.maxOrder = 3;
                 C::FiniteVolume fv(mesh, settings, C::EquationSystem::Resolve(settings.equation));
                 const auto shape = layout == 0 ? R::RowLayout::Dense(0, 5) : layout == 1 ? R::RowLayout::ColMajor(0, 5)
@@ -656,7 +657,7 @@ TEST_CASE("Cauchy communication worker preserves nonconstant P3 RHS")
     }
 }
 
-TEST_CASE("Native Cauchy flow5 residual preserves constant state across layouts reconstruction and workers")
+TEST_CASE("Cauchy P0 explicit P1 and degree-one VR retain their distinct storage across layouts and workers")
 {
     const auto mesh = CFVTest::CartesianHexes(mpi, 3);
     for (const std::string method : {"constant", "gradient", "variational"})
@@ -674,11 +675,12 @@ TEST_CASE("Native Cauchy flow5 residual preserves constant state across layouts 
             const auto equation = C::EquationSystem::Resolve(settings.equation);
             C::FiniteVolume fv(mesh, settings, equation);
             const auto polynomial = fv.PolynomialReconstruction();
-            CHECK(bool(polynomial) == (method != "constant"));
+            CHECK(bool(polynomial) == (method == "variational"));
             if (polynomial)
             {
                 CHECK(polynomial->Capabilities().sweeps == (method == "variational"));
                 CHECK_FALSE(polynomial->Capabilities().linearSystem);
+                CHECK(polynomial->NRecDOF() > 0);
             }
             const auto physical = layout == 0 ? R::RowLayout::Dense(0, 5, 8) : layout == 1 ? R::RowLayout::ColMajor(0, 5, {8, 1})
                                                                                            : R::RowLayout::TiledColMajor(0, 5, 32);
@@ -693,8 +695,8 @@ TEST_CASE("Native Cauchy flow5 residual preserves constant state across layouts 
             auto logical = Bind(fv, state), output = Bind(fv, residual);
             auto reconstruction = fv.BuildReconstructionState(logical);
             const auto storage = fv.InspectReconstructionStorage(*reconstruction);
-            CHECK(storage.polynomialPlan == (method != "constant"));
-            if (method != "constant")
+            CHECK(storage.polynomialPlan == (method == "variational"));
+            if (method == "variational")
             {
                 CHECK(storage.coefficientFields > 0);
                 CHECK(storage.coefficientTransferBindings > 0);
@@ -718,6 +720,66 @@ TEST_CASE("Native Cauchy flow5 residual preserves constant state across layouts 
             }
         }
 }
+
+TEST_CASE("Cauchy direct P1 owns Barth and thermal PP without variational storage")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 8);
+    const auto run = [&](const std::string &limiter, bool positivity)
+    {
+        C::DomainSettings settings;
+        settings.numerics.reconstruction = "gradient";
+        settings.numerics.gradient = "leastSquares";
+        settings.numerics.limiter = limiter;
+        settings.numerics.positivity = positivity;
+        settings.numerics.positivityBetaCutoff = 0;
+        settings.numerics.faceFallback = false;
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto state = fv.Metrics().BuildField(
+            R::RowLayout::ColMajor(0, 5, {8, 1}));
+        {
+            auto write = state.Owned().Write();
+            const auto values = write.View<R::UniformTableRows>();
+            for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+            {
+                const auto point = fv.Metrics().GetCellCent(iCell);
+                const DNDS::real velocity = point[0] < .5 ? -10 : 10;
+                const auto value = equation.Gas().Conservative(
+                    {1, velocity, 0, 0, .01});
+                for (int j = 0; j < 5; ++j)
+                    values(iCell, j) = value[j];
+            }
+        }
+        auto logical = Bind(fv, state);
+        auto reconstruction = fv.BuildReconstructionState(logical);
+        const auto storage = fv.InspectReconstructionStorage(*reconstruction);
+        CHECK_FALSE(storage.polynomialPlan);
+        CHECK(storage.coefficientFields == 0);
+        CHECK(storage.coefficientTransferBindings == 0);
+        CHECK(storage.aliasesEquationState);
+        auto workspace = fv.BuildWorkspace(logical);
+        R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateCPUStream();
+        CHECK_NOTHROW(fv.PrepareReconstruction(
+            logical, *reconstruction, *workspace, engine, stream));
+        return fv.PositivityReconstructionStats(*workspace);
+    };
+
+    const auto ppOnly = run("none", true);
+    CHECK(ppOnly.first > 0);
+    CHECK(ppOnly.second > 0);
+    CHECK(ppOnly.second < 1);
+
+    // Barth is a Cauchy equation policy applied before thermal PP. For this
+    // momentum jump it bounds the P1 traces by adjacent conservative states,
+    // so the subsequent thermodynamic projection is inactive.
+    const auto barthAndPP = run("Barth", true);
+    CHECK(barthAndPP.first == 0);
+    CHECK(barthAndPP.second == 1);
+    CHECK(run("Barth", false) ==
+          std::pair<DNDS::index, DNDS::real>{0, 1});
+}
+
 TEST_CASE("Native viscous Cauchy residual reproduces linear Couette heat production")
 {
     const auto mesh = CFVTest::CartesianHexes(mpi, 7);
@@ -767,16 +829,12 @@ TEST_CASE("Native viscous Cauchy residual reproduces linear Couette heat product
     const auto stream = engine.CreateCPUStream();
     fv.Evaluate(logical, output, *reconstruction, *work, engine, stream);
     inviscid.Evaluate(inviscidLogical, inviscidOutput, *inviscidReconstruction, *inviscidWork, engine, stream);
-    {
-        // The unfiltered direct-P1 publication is the physical-gradient field.
-        // Modal storage remains an unused compatibility placeholder and must
-        // not receive the former gradient -> coefficient -> gradient round trip.
-        const auto coefficients = fv.FluxReconstruction(*reconstruction, *work).CoupledField().Owned().Read();
-        const auto values = coefficients.View<R::UniformTableRows>();
-        for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
-            for (DNDS::index j = 0; j < values.Width(); ++j)
-                CHECK(values(iCell, j) == 0);
-    }
+    // Direct P1 owns no compatibility modal payload or coefficient transfer.
+    const auto storage = fv.InspectReconstructionStorage(*reconstruction);
+    CHECK_FALSE(storage.polynomialPlan);
+    CHECK(storage.coefficientFields == 0);
+    CHECK(storage.coefficientTransferBindings == 0);
+    CHECK(storage.aliasesEquationState);
     const auto read = residual.Owned().Read();
     const auto base = inviscidResidual.Owned().Read();
     DNDS::index tested = 0;

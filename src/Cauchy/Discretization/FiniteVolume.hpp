@@ -245,11 +245,11 @@ namespace DNDS::Cauchy
             index coefficientFields = 0;
             index coefficientTransferBindings = 0;
         };
-        /// Managed selection of the polynomial actually consumed by flux,
-        /// source and Jacobian operators. It retains the finite-volume owner,
-        /// the warm-source and selected array handles, and their publication
-        /// versions. Unfiltered profiles select the warm coefficients directly;
-        /// limiter/PP profiles select their distinct finalized allocation.
+        /// Managed selection of the reconstruction publication consumed by
+        /// flux, source and Jacobian operators. Variational modes retain the
+        /// warm-source and selected polynomial handles; direct P0/P1 retain the
+        /// equation-state alias while Workspace publishes physical gradients.
+        /// Every selected handle and publication version remains validated.
         class FinalizedReconstruction
         {
             friend class FiniteVolume;
@@ -318,8 +318,9 @@ namespace DNDS::Cauchy
         ReconstructionRestore ReserveReconstructionRestore(std::shared_ptr<ReconstructionState> state, const EquationDofs &guess,
                                                            std::optional<std::reference_wrapper<const Runtime::Array<real>>> limitedVRHistory = std::nullopt,
                                                            bool collectiveChecks = true) const;
-        /// Allocate the durable warm coefficients and their communication
-        /// bindings independently of the reusable scratch workspace.
+        /// Allocate durable variational coefficients and their communication
+        /// bindings independently of reusable scratch. Direct P0/P1 allocate
+        /// neither and retain only a managed equation-state alias.
         std::shared_ptr<ReconstructionState> BuildReconstructionState(EquationDofs &state) const;
         /// Inspect one compatible reconstruction state without acquiring array
         /// access or entering MPI. P0/P1 must report all modal counts as zero.
@@ -418,9 +419,11 @@ namespace DNDS::Cauchy
         /// (infinity); constant/gradient reconstruction reports zero.
         int LastReconstructionIterations(const Workspace &workspace) const;
         real LastReconstructionUpdate(const Workspace &workspace) const;
-        /// Owned-only polynomial projection. Standalone use starts from the
-        /// unlimited guess; Evaluate preserves its preceding WBAP result.
-        /// No halo transfer occurs here. Caller serializes workspace/state.
+        /// Owned-only variational-polynomial projection. Direct-gradient PP is
+        /// a Cauchy reconstruction stage performed by PrepareReconstruction or
+        /// Evaluate after the physical gradient limiter. Standalone polynomial
+        /// use starts from the unlimited guess; Evaluate preserves its preceding
+        /// WBAP result. No halo transfer occurs here. Caller serializes use.
         void LimitReconstructionPP(const EquationDofs &state, ReconstructionState &reconstruction, Workspace &workspace) const;
         /// Collective count/min snapshot; no implicit refresh or mutation.
         std::pair<index, real> PositivityReconstructionStats(const Workspace &workspace) const;

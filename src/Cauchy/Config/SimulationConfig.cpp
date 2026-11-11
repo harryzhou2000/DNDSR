@@ -397,7 +397,7 @@ namespace DNDS::Cauchy
                     "extended equation thermodynamic flux preparation/face fallback");
             require(!s.numerics.riemann.useStencil || (!flux.UsesTransverseSignal() && !flux.UsesPressureStencil()),
                     "extended equation wave/pressure stencil auxiliary inputs");
-            require(s.numerics.limiter == "none" ||
+            require(s.numerics.limiter == "none" || s.numerics.limiter == "Barth" ||
                         (s.numerics.limiter == "WBAP" && (!s.numerics.characteristicLimiter || !mixture)),
                     "extended equation limiter");
             require(s.equation.transport != "NewtonianFourier" || s.numerics.viscousGradient == "polynomial", "extended equation viscous gradient");
@@ -411,8 +411,13 @@ namespace DNDS::Cauchy
         require(s.implicit.sourceJacobianMode != "rhsQuadrature" || s.equation.source != "none" || rans, "rhsQuadrature source Jacobian requires an active volume source");
         require(s.numerics.gradient == "leastSquares" || s.numerics.gradient == "greenGauss" || s.numerics.gradient == "ggmp", "gradient " + s.numerics.gradient);
         require(s.numerics.viscousGradient == "primitive" || s.numerics.viscousGradient == "polynomial", "viscous gradient " + s.numerics.viscousGradient);
-        require(s.numerics.limiter == "none" || s.numerics.limiter == "WBAP" || s.numerics.limiter == "LVR", "limiter " + s.numerics.limiter);
-        require(s.numerics.limiter != "WBAP" || s.numerics.reconstruction != "constant", "WBAP needs polynomial reconstruction");
+        require(s.numerics.limiter == "none" || s.numerics.limiter == "Barth" ||
+                    s.numerics.limiter == "WBAP" || s.numerics.limiter == "LVR",
+                "limiter " + s.numerics.limiter);
+        require(s.numerics.limiter != "Barth" || s.numerics.reconstruction == "gradient",
+                "Barth needs direct gradient reconstruction");
+        require(s.numerics.limiter != "WBAP" || s.numerics.reconstruction != "constant",
+                "WBAP needs gradient or variational reconstruction");
         require(s.numerics.limiter != "LVR" || (s.numerics.reconstruction == "variational" && s.numerics.cfv.maxOrder >= 2), "LVR needs degree2/3 variational reconstruction");
         require(!s.implicit.multigrid.levels || (s.numerics.reconstruction == "variational" && s.numerics.cfv.maxOrder >= 2), "polynomial FAS requires high-order variational reconstruction");
         for (const auto &[zone, condition] : s.boundaries)
