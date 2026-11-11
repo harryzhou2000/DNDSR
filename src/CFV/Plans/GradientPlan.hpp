@@ -4,12 +4,32 @@
 
 namespace DNDS::CFV
 {
+    namespace Detail
+    {
+        struct GradientIdentity
+        {
+        };
+    }
     enum class GradientMethod
     {
         GreenGauss,
         LeastSquares,
         GGMP
     };
+
+    /// Optional equation-variable transform for one-level physical-gradient
+    /// WBAP. Spatial gradient-frame rotation remains a separate mesh operation.
+    /// `count == 0` is a valid disabled descriptor and owns no matrix buffers.
+    struct GradientFaceCharacteristicTransform
+    {
+        index first = 0, count = 0;
+        Runtime::Array<real> forward, inverse;
+        std::shared_ptr<const Detail::GradientIdentity> plan;
+        uint64_t forwardVersion = 0, inverseVersion = 0;
+        uint64_t forwardIdentity = 0, inverseIdentity = 0;
+    };
+    using GradientFaceCharacteristicTransformRef =
+        std::optional<std::reference_wrapper<const GradientFaceCharacteristicTransform>>;
 
     /// Independent cell-centered FV gradient preparation. BC inputs are physical
     /// face-quadrature values, not reflected ghost states. LS minimizes residuals
@@ -20,9 +40,11 @@ namespace DNDS::CFV
     {
         struct Data
         {
+            std::shared_ptr<const Detail::GradientIdentity> identity =
+                std::make_shared<const Detail::GradientIdentity>();
             FiniteVolumePlan metrics;
             Geom::EntityWorkPartition partition;
-            Runtime::Array<index> offsets, neighbors, boundaryIds;
+            Runtime::Array<index> offsets, neighbors, faces, boundaryIds;
             Runtime::Array<real> weights, rotations;
             std::vector<BoundaryQuadraturePoint> boundary;
             Data(FiniteVolumePlan plan) : metrics(std::move(plan)), partition(metrics.CellWorkPartition()) {}
@@ -36,6 +58,8 @@ namespace DNDS::CFV
         index NumBoundaryQuadrature() const;
         BoundaryQuadraturePoint GetBoundaryQuadrature(index iPoint) const;
         Runtime::Array<real> BuildBoundaryValues(index components) const;
+        GradientFaceCharacteristicTransform BuildFaceTransform(index first, index count) const;
+        void FinalizeFaceTransform(GradientFaceCharacteristicTransform &transform) const;
         /// Convert owned gradients to linear Taylor coefficients and zero all
         /// higher modes. Zero-mean basis moments preserve cell averages. This
         /// is an explicit overwrite, not a limiter or second reconstruction.
@@ -56,5 +80,17 @@ namespace DNDS::CFV
         /// an output are serialized. Output must be distinct from all inputs.
         void Evaluate(const FVField &mean, const Runtime::Array<real> &boundaryValues, FVField &gradient,
                       const std::vector<index> &periodicVectorStarts = {}, ReconstructionRegion region = ReconstructionRegion::All) const;
+        /// Apply one physical-gradient 3WBAP level. Neighbor gradients are first
+        /// mapped into the center cell's periodic spatial/component frame. A
+        /// nonempty characteristic range is transformed per spatial direction;
+        /// all remaining components are scalar-limited. Output owned rows are
+        /// replaced and remain halo-stale. No polynomial modes or secondary
+        /// reconstruction matrices are constructed.
+        void LimitWBAP3(const FVField &input, FVField &output,
+                        const std::vector<index> &periodicVectorStarts = {},
+                        GradientFaceCharacteristicTransformRef transform = std::nullopt,
+                        ReconstructionRegion region = ReconstructionRegion::All,
+                        LimiterIndicatorRef indicator = std::nullopt,
+                        real threshold = 0, real centerWeight = 10) const;
     };
 }

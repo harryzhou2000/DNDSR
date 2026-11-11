@@ -209,6 +209,108 @@ TEST_CASE("Gradient core phases exclude active MPI ghost writes across table lay
     }
 }
 
+TEST_CASE("Physical-gradient WBAP is direct, characteristic-optional, and split-equivalent")
+{
+    auto fixture = G::OverlapTest::BuildNativeFixture(mpi, mpi.size > 2, 12);
+    auto metrics = C::FiniteVolumePlan::ConstructMetrics(fixture.mesh);
+    auto plan = C::GradientPlan::Prepare(*fixture.mesh, metrics);
+    const I dim = metrics.Dimension();
+    auto input = metrics.BuildField(dim), direct = metrics.BuildField(dim),
+         identity = metrics.BuildField(dim), split = metrics.BuildField(dim), inactive = metrics.BuildField(dim);
+    {
+        auto write = input.Owned().Write();
+        const auto values = write.View<R::UniformTableRows>();
+        for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+        {
+            const auto global = metrics.Cells().LocalToGlobal(iCell);
+            for (I d = 0; d < dim; ++d)
+                values(iCell, d) = 0.25 + 0.07 * double((global * 11 + d * 17) % 23);
+        }
+    }
+    metrics.BindHalo(input).Begin().Wait();
+
+    const auto disabled = plan.BuildFaceTransform(0, 0);
+    CHECK(disabled.count == 0);
+    CHECK(disabled.forward.RowCount() == 0);
+    CHECK(disabled.inverse.RowCount() == 0);
+    plan.LimitWBAP3(input, direct, {}, std::cref(disabled));
+    auto enabled = plan.BuildFaceTransform(0, 1);
+    plan.LimitWBAP3(input, identity, {}, std::cref(enabled));
+
+    // Independent scalar oracle: one face sample per neighbor, followed by the
+    // central multiway WBAP aggregation. It deliberately does not call CFV's
+    // WBAP helper or inspect GradientPlan's private prepared rows.
+    {
+        auto meshRead = fixture.mesh->AcquireRead(G::MeshReadRequirements::CellFlux());
+        const auto mesh = meshRead.HostView();
+        auto owned = input.Owned().Read(), ghost = input.Ghost().Read();
+        R::PairReadView<double, R::AccessBoundsChecks, R::UniformTableRows> values{
+            owned.View<R::UniformTableRows>(), ghost.View<R::UniformTableRows>()};
+        auto actualRead = direct.Owned().Read(), transformedRead = identity.Owned().Read();
+        const auto actual = actualRead.View<R::UniformTableRows>();
+        const auto transformed = transformedRead.View<R::UniformTableRows>();
+        const double epsilon = std::pow(DNDS::verySmallReal, .25);
+        const auto pair = [epsilon](double center, double other)
+        {
+            if (other == 0)
+                return 0.;
+            const double ratio = center / (std::abs(other) + epsilon) * ((other > 0) - (other < 0));
+            const double r2 = ratio * ratio;
+            return center * (1 + r2 * ratio) / (1 + r2 * r2);
+        };
+        for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+            for (I d = 0; d < dim; ++d)
+            {
+                const double center = values(iCell, d);
+                double up = 10, down = 10, valid = 1;
+                const auto cellFaces = mesh.CellFaces(iCell);
+                for (I slot = 0; slot < I(cellFaces.size()); ++slot)
+                {
+                    const I neighbor = mesh.CellFaceOther(iCell, cellFaces[slot], DNDS::rowsize(slot));
+                    if (neighbor == DNDS::UnInitIndex)
+                        continue;
+                    const double limited = pair(center, values(neighbor, d));
+                    const double ratio = center / (std::abs(limited) + epsilon) * ((limited > 0) - (limited < 0));
+                    up += ratio * ratio * ratio;
+                    down += ratio * ratio * ratio * ratio;
+                    if (limited == 0)
+                        valid = 0;
+                }
+                const double expected = center * valid * up / down;
+                CHECK(actual(iCell, d) == doctest::Approx(expected).epsilon(1e-13));
+                CHECK(transformed(iCell, d) == actual(iCell, d));
+            }
+    }
+
+    R::Array<double> activation(R::RowLayout::Dense(metrics.NumCell(), 1));
+    {
+        auto write = activation.Write();
+        for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+            write.View()(iCell, 0) = -1;
+    }
+    plan.LimitWBAP3(input, inactive, {}, std::nullopt, C::ReconstructionRegion::All,
+                    std::cref(activation), 0);
+    {
+        auto sourceRead = input.Owned().Read(), inactiveRead = inactive.Owned().Read();
+        const auto source = sourceRead.View<R::UniformTableRows>();
+        const auto actual = inactiveRead.View<R::UniformTableRows>();
+        for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+            for (I d = 0; d < dim; ++d)
+                CHECK(actual(iCell, d) == source(iCell, d));
+    }
+
+    plan.LimitWBAP3(input, split, {}, std::nullopt, C::ReconstructionRegion::Core);
+    plan.LimitWBAP3(input, split, {}, std::nullopt, C::ReconstructionRegion::HaloDependent);
+    {
+        auto referenceRead = direct.Owned().Read(), splitRead = split.Owned().Read();
+        const auto reference = referenceRead.View<R::UniformTableRows>();
+        const auto actual = splitRead.View<R::UniformTableRows>();
+        for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+            for (I d = 0; d < dim; ++d)
+                CHECK(actual(iCell, d) == reference(iCell, d));
+    }
+}
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);

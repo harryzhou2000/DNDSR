@@ -32,15 +32,16 @@ namespace DNDS::CFV
             }
         data->offsets = R::Array<index>(R::RowLayout::Dense(metrics.NumCell() + 1, 1));
         data->neighbors = R::Array<index>(R::RowLayout::Dense(entries, 1));
+        data->faces = R::Array<index>(R::RowLayout::Dense(entries, 1));
         data->boundaryIds = R::Array<index>(R::RowLayout::Dense(entries, 1));
         data->weights = R::Array<real>(R::RowLayout::Dense(entries, 3));
         data->rotations = R::Array<real>(R::RowLayout::Dense(entries, 9));
         data->boundary.resize(size_t(boundaryCount));
-        auto offsetWrite = data->offsets.Write(), neighborWrite = data->neighbors.Write(), boundaryWrite = data->boundaryIds.Write();
+        auto offsetWrite = data->offsets.Write(), neighborWrite = data->neighbors.Write(), faceWrite = data->faces.Write(), boundaryWrite = data->boundaryIds.Write();
         auto weightWrite = data->weights.Write();
         auto rotationWrite = data->rotations.Write();
         const auto rotations = rotationWrite.View<R::FixedRows<9>>();
-        const auto offsets = offsetWrite.View<R::FixedRows<1>>(), neighbors = neighborWrite.View<R::FixedRows<1>>(), boundaries = boundaryWrite.View<R::FixedRows<1>>();
+        const auto offsets = offsetWrite.View<R::FixedRows<1>>(), neighbors = neighborWrite.View<R::FixedRows<1>>(), faces = faceWrite.View<R::FixedRows<1>>(), boundaries = boundaryWrite.View<R::FixedRows<1>>();
         const auto weights = weightWrite.View<R::FixedRows<3>>();
         index next = 0, nextBoundary = 0;
         for (index iCell = 0; iCell < metrics.NumCell(); ++iCell)
@@ -84,6 +85,7 @@ namespace DNDS::CFV
                     design.row(local) = displacement.head(dim).transpose() / length * quadratureScale;
                     lengths[local] = quadratureScale / length;
                     neighbors(next, 0) = other;
+                    faces(next, 0) = face;
                     Eigen::Map<tGPoint>(rotations[next].data()) = rotation;
                     boundaries(next, 0) = UnInitIndex;
                     if (other == UnInitIndex)
