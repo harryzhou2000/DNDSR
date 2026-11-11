@@ -166,12 +166,12 @@ int main(int argc, char **argv)
                 const auto thermo = auxiliary.meanThermodynamics->Read();
                 auto output = rawResidual.Owned().Write();
                 C::RHSReadViews reads;
-                reads.mean = {u.View<R::UniformTableRows>(), ug.View<R::UniformTableRows>()};
+                reads.mean = {u.View<C::RHSFlowRows>(), ug.View<C::RHSFlowRows>()};
                 reads.coefficients = {r.View<R::UniformTableRows>(), rg.View<R::UniformTableRows>()};
                 reads.auxiliary.meanThermodynamics = thermo.View<R::UniformTableRows>();
                 C::RHSLocalDiagnostics diagnostics;
                 C::RHSWriteViews writes;
-                writes.residual = output.View<R::UniformTableRows>();
+                writes.residual = output.View<C::RHSFlowRows>();
                 rawRHS = measure([&]
                                  { diagnostics.Merge(rhs.ApplyBorrowedChecked(reads, writes)); }, repetitions);
                 DNDS_check_throw_info(diagnostics.FaceFallbacks() == 0, "benchmark encountered an inadmissible reconstructed face");

@@ -1979,13 +1979,13 @@ TEST_CASE("Optional derived auxiliaries refresh owned rows during halo exchange 
     const auto &coefficients = fv.FluxReconstruction(*reconstruction, *work).CoupledField();
     auto recRead = coefficients.Owned().Read(), recGhost = coefficients.Ghost().Read();
     C::RHSReadViews input;
-    input.mean = {meanRead.View<R::UniformTableRows>(), meanGhost.View<R::UniformTableRows>()};
+    input.mean = {meanRead.View<C::RHSFlowRows>(), meanGhost.View<C::RHSFlowRows>()};
     input.coefficients = {recRead.View<R::UniformTableRows>(), recGhost.View<R::UniformTableRows>()};
     input.auxiliary.meanThermodynamics = C::MeanThermodynamicView::Derived(owned, std::cref(ghost));
     C::RHSLocalDiagnostics diagnostics;
     {
         auto write = result.Owned().Write();
-        diagnostics.Merge(fv.AcquireRHSOperator().ApplyBorrowedChecked(input, {write.View<R::UniformTableRows>()}));
+        diagnostics.Merge(fv.AcquireRHSOperator().ApplyBorrowedChecked(input, {write.View<C::RHSFlowRows>()}));
     }
     auto actual = result.Owned().Read(), expected = baseline.Owned().Read();
     const auto a = actual.View<R::UniformTableRows>(), b = expected.View<R::UniformTableRows>();
@@ -2241,7 +2241,7 @@ TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen in
         auto mean = state.Owned().Read(), meanGhost = state.Ghost().Read(), rec = coefficients.Owned().Read();
         auto thermo = auxiliary.meanThermodynamics->Read();
         C::RHSReadViews input;
-        input.mean = {mean.View<R::UniformTableRows>(), meanGhost.View<R::UniformTableRows>()};
+        input.mean = {mean.View<C::RHSFlowRows>(), meanGhost.View<C::RHSFlowRows>()};
         input.coefficients.owned = rec.View<R::UniformTableRows>();
         input.auxiliary.meanThermodynamics = thermo.View<R::UniformTableRows>();
         std::array<std::optional<R::Array<DNDS::real>::ReadLease>, 4> held;
@@ -2260,21 +2260,21 @@ TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen in
             auto ghost = coefficients.Ghost().Read();
             input.coefficients.ghost = ghost.View<R::UniformTableRows>();
             auto output = full.Owned().Write();
-            diagnostics.Merge(rhs.ApplyBorrowedChecked(input, {output.View<R::UniformTableRows>()}));
+            diagnostics.Merge(rhs.ApplyBorrowedChecked(input, {output.View<C::RHSFlowRows>()}));
             auto uncached = input;
             uncached.auxiliary.meanThermodynamics.reset();
-            diagnostics.Merge(rhs.ApplyBorrowedChecked(uncached, {output.View<R::UniformTableRows>()}));
+            diagnostics.Merge(rhs.ApplyBorrowedChecked(uncached, {output.View<C::RHSFlowRows>()}));
             auto missing = input;
             if (auxiliary.cellWaveJump)
             {
                 missing.auxiliary.cellWaveJump.reset();
-                CHECK_THROWS(rhs.ApplyBorrowedChecked(missing, {output.View<R::UniformTableRows>()}));
+                CHECK_THROWS(rhs.ApplyBorrowedChecked(missing, {output.View<C::RHSFlowRows>()}));
             }
             if (auxiliary.cellPressureMinimum)
             {
                 missing = input;
                 missing.auxiliary.cellPressureMinimum.reset();
-                CHECK_THROWS(rhs.ApplyBorrowedChecked(missing, {output.View<R::UniformTableRows>()}));
+                CHECK_THROWS(rhs.ApplyBorrowedChecked(missing, {output.View<C::RHSFlowRows>()}));
             }
         }
         {
@@ -2287,11 +2287,11 @@ TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen in
             if (core.auxiliary.cellPressureMinimum)
                 core.auxiliary.cellPressureMinimum->ghost = {};
             auto transfer = fv.Metrics().BindHalo(coefficients).Begin();
-            diagnostics.Merge(rhs.ApplyBorrowedChecked(core, {output.View<R::UniformTableRows>()}, DNDS::CFV::ReconstructionRegion::Core));
+            diagnostics.Merge(rhs.ApplyBorrowedChecked(core, {output.View<C::RHSFlowRows>()}, DNDS::CFV::ReconstructionRegion::Core));
             transfer.Wait();
             auto ghost = coefficients.Ghost().Read();
             input.coefficients.ghost = ghost.View<R::UniformTableRows>();
-            diagnostics.Merge(rhs.ApplyBorrowedChecked(input, {output.View<R::UniformTableRows>()}, DNDS::CFV::ReconstructionRegion::HaloDependent));
+            diagnostics.Merge(rhs.ApplyBorrowedChecked(input, {output.View<C::RHSFlowRows>()}, DNDS::CFV::ReconstructionRegion::HaloDependent));
         }
         auto a = reference.Owned().Read(), b = full.Owned().Read(), c = split.Owned().Read();
         for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
@@ -2326,7 +2326,7 @@ TEST_CASE("Stateless RHS consumes packed auxiliary views and preserves frozen in
                 modified.auxiliary.cellPressureMinimum = replacement;
             {
                 auto output = changed.Owned().Write();
-                diagnostics.Merge(rhs.ApplyBorrowedChecked(modified, {output.View<R::UniformTableRows>()}));
+                diagnostics.Merge(rhs.ApplyBorrowedChecked(modified, {output.View<C::RHSFlowRows>()}));
             }
             auto changedRead = changed.Owned().Read();
             int differs = 0;
@@ -2383,17 +2383,17 @@ TEST_CASE("Direct FV consumes physical gradients without coefficients and splits
         auto faces = fv.BuildFaceFluxBuffer(5);
         const auto u = mean.Owned().Read(), ug = mean.Ghost().Read(), grad = gradient.Owned().Read(), gg = gradient.Ghost().Read();
         C::RHSReadViews input;
-        input.mean = {u.View<R::UniformTableRows>(), ug.View<R::UniformTableRows>()};
+        input.mean = {u.View<C::RHSFlowRows>(), ug.View<C::RHSFlowRows>()};
         if (!p0)
             input.conservativeGradient = C::RHSFieldView{grad.View<R::UniformTableRows>(), gg.View<R::UniformTableRows>()};
         C::RHSLocalDiagnostics diagnostics;
         const auto op = fv.AcquireRHSOperator();
         {
             auto a = combined.Owned().Write(), b = split.Owned().Write(), face = faces.Write();
-            C::RHSWriteViews out{a.View<R::UniformTableRows>()};
+            C::RHSWriteViews out{a.View<C::RHSFlowRows>()};
             diagnostics.Merge(op.ApplyBorrowedChecked(input, out, DNDS::CFV::ReconstructionRegion::All, .3));
-            out.residual = b.View<R::UniformTableRows>();
-            out.faceFlux = face.View<R::UniformTableRows>();
+            out.residual = b.View<C::RHSFlowRows>();
+            out.faceFlux = face.View<C::RHSFlowRows>();
             diagnostics.Merge(op.ApplyFlux(input, out, DNDS::CFV::ReconstructionRegion::All, .3));
             op.AddSource(input, out, DNDS::CFV::ReconstructionRegion::All, .3);
             if (!p0)
@@ -2465,14 +2465,14 @@ TEST_CASE("RHS checked and production-fatal policies share normal arithmetic")
     fv.BindHalo(mean).Begin().Wait();
     const auto owned = mean.Owned().Read(), ghost = mean.Ghost().Read();
     C::RHSReadViews input;
-    input.mean = {owned.View<R::UniformTableRows>(), ghost.View<R::UniformTableRows>()};
+    input.mean = {owned.View<C::RHSFlowRows>(), ghost.View<C::RHSFlowRows>()};
     input.includeViscosity = false;
     const auto rhs = fv.AcquireRHSOperator();
     C::RHSKernelDiagnostics checkedDiagnostics, fatalDiagnostics;
     {
         auto a = checked.Owned().Write(), b = fatal.Owned().Write();
-        checkedDiagnostics = rhs.ApplyBorrowedChecked(input, {a.View<R::UniformTableRows>()});
-        fatalDiagnostics = rhs.ApplyBorrowedFatal(input, {b.View<R::UniformTableRows>()});
+        checkedDiagnostics = rhs.ApplyBorrowedChecked(input, {a.View<C::RHSFlowRows>()});
+        fatalDiagnostics = rhs.ApplyBorrowedFatal(input, {b.View<C::RHSFlowRows>()});
     }
     const auto a = checked.Owned().Read(), b = fatal.Owned().Read();
     for (DNDS::index iCell = 0; iCell < a.View().RowCount(); ++iCell)

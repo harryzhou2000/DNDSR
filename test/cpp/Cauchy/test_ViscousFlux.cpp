@@ -101,22 +101,22 @@ TEST_CASE("P3 viscous face derivatives reproduce polynomial heat conduction and 
             const auto stream = engine.CreateCPUStream();
             auto owned = mean.Owned().Read(), recOwned = coefficients.Owned().Read();
             C::RHSReadViews input;
-            input.mean.owned = owned.View<R::UniformTableRows>();
+            input.mean.owned = owned.View<C::RHSFlowRows>();
             input.coefficients.owned = recOwned.View<R::UniformTableRows>();
             C::RHSLocalDiagnostics diagnostics;
             auto splitWrite = split.Owned().Write();
             auto meanOperation = meanHalo.Begin(), recOperation = recHalo.Begin();
-            engine.Submit(stream, [rhs, input, output = splitWrite.View<R::UniformTableRows>(), diagnostics = std::ref(diagnostics)](auto)
+            engine.Submit(stream, [rhs, input, output = splitWrite.View<C::RHSFlowRows>(), diagnostics = std::ref(diagnostics)](auto)
                           { diagnostics.get().Merge(rhs.ApplyBorrowedChecked(input, {output}, DNDS::CFV::ReconstructionRegion::Core)); });
             meanOperation.Wait();
             recOperation.Wait();
             auto ghost = mean.Ghost().Read(), recGhost = coefficients.Ghost().Read();
-            input.mean.ghost = ghost.View<R::UniformTableRows>();
+            input.mean.ghost = ghost.View<C::RHSFlowRows>();
             input.coefficients.ghost = recGhost.View<R::UniformTableRows>();
-            engine.Submit(stream, [rhs, input, output = splitWrite.View<R::UniformTableRows>(), diagnostics = std::ref(diagnostics)](auto)
+            engine.Submit(stream, [rhs, input, output = splitWrite.View<C::RHSFlowRows>(), diagnostics = std::ref(diagnostics)](auto)
                           { diagnostics.get().Merge(rhs.ApplyBorrowedChecked(input, {output}, DNDS::CFV::ReconstructionRegion::HaloDependent)); });
             auto fullWrite = full.Owned().Write(), inviscidWrite = inviscid.Owned().Write();
-            engine.Submit(stream, [rhs, input, output = fullWrite.View<R::UniformTableRows>(), base = inviscidWrite.View<R::UniformTableRows>(), diagnostics = std::ref(diagnostics)](auto) mutable
+            engine.Submit(stream, [rhs, input, output = fullWrite.View<C::RHSFlowRows>(), base = inviscidWrite.View<C::RHSFlowRows>(), diagnostics = std::ref(diagnostics)](auto) mutable
                           {
                 diagnostics.get().Merge(rhs.ApplyBorrowedChecked(input, {output}));
                 input.includeViscosity = false;
@@ -200,7 +200,7 @@ TEST_CASE("Polynomial viscosity exchanges the selected limited or unlimited coef
                 const auto u = mean.Owned().Read(), ug = mean.Ghost().Read(), c = flux.Owned().Read(), cg = flux.Ghost().Read();
                 const auto v = guess.Owned().Read(), vg = guess.Ghost().Read();
                 C::RHSReadViews input;
-                input.mean = {u.View<R::UniformTableRows>(), ug.View<R::UniformTableRows>()};
+                input.mean = {u.View<C::RHSFlowRows>(), ug.View<C::RHSFlowRows>()};
                 input.coefficients = {c.View<R::UniformTableRows>(), cg.View<R::UniformTableRows>()};
                 if (!limited)
                     input.viscousCoefficients = C::RHSFieldView{v.View<R::UniformTableRows>(), vg.View<R::UniformTableRows>()};
@@ -208,16 +208,16 @@ TEST_CASE("Polynomial viscosity exchanges the selected limited or unlimited coef
                 {
                     auto write = expected.Owned().Write();
                     const auto rhs = fv.AcquireRHSOperator();
-                    diagnostics.Merge(rhs.ApplyBorrowedChecked(input, {write.View<R::UniformTableRows>()}));
+                    diagnostics.Merge(rhs.ApplyBorrowedChecked(input, {write.View<C::RHSFlowRows>()}));
                     auto bad = input;
                     bad.viscousCoefficients = C::RHSFieldView{};
-                    CHECK_THROWS(rhs.ApplyBorrowedChecked(bad, {write.View<R::UniformTableRows>()}));
+                    CHECK_THROWS(rhs.ApplyBorrowedChecked(bad, {write.View<C::RHSFlowRows>()}));
                 }
                 if (!limited)
                 {
                     auto write = alternative.Owned().Write();
                     input.viscousCoefficients.reset();
-                    diagnostics.Merge(fv.AcquireRHSOperator().ApplyBorrowedChecked(input, {write.View<R::UniformTableRows>()}));
+                    diagnostics.Merge(fv.AcquireRHSOperator().ApplyBorrowedChecked(input, {write.View<C::RHSFlowRows>()}));
                 }
                 const auto a = actual.Owned().Read(), b = expected.Owned().Read(), other = alternative.Owned().Read();
                 int differs = 0;
@@ -343,12 +343,12 @@ TEST_CASE("Polynomial wall viscosity has the Euler normal jump and noGRP switch"
         {
             const auto u = mean.Owned().Read(), ug = mean.Ghost().Read(), c = coefficients.Owned().Read(), cg = coefficients.Ghost().Read();
             C::RHSReadViews input;
-            input.mean = {u.View<R::UniformTableRows>(), ug.View<R::UniformTableRows>()};
+            input.mean = {u.View<C::RHSFlowRows>(), ug.View<C::RHSFlowRows>()};
             input.coefficients = {c.View<R::UniformTableRows>(), cg.View<R::UniformTableRows>()};
             input.includeViscosity = false;
             auto output = inviscid.Owned().Write();
             C::RHSLocalDiagnostics diagnostics;
-            diagnostics.Merge(fv.AcquireRHSOperator().ApplyBorrowedChecked(input, {output.View<R::UniformTableRows>()}));
+            diagnostics.Merge(fv.AcquireRHSOperator().ApplyBorrowedChecked(input, {output.View<C::RHSFlowRows>()}));
             CHECK(diagnostics.FaceFallbacks() == 0);
         }
         const auto actual = residual.Owned().Read(), base = inviscid.Owned().Read();
@@ -402,15 +402,15 @@ TEST_CASE("Nonzero quadratic temperature does not introduce viscosity at Euler o
         }
         const auto u = mean.Owned().Read(), ug = mean.Ghost().Read(), c = coefficient.Owned().Read(), cg = coefficient.Ghost().Read();
         C::RHSReadViews input;
-        input.mean = {u.View<R::UniformTableRows>(), ug.View<R::UniformTableRows>()};
+        input.mean = {u.View<C::RHSFlowRows>(), ug.View<C::RHSFlowRows>()};
         input.coefficients = {c.View<R::UniformTableRows>(), cg.View<R::UniformTableRows>()};
         const auto rhs = fv.AcquireRHSOperator();
         C::RHSLocalDiagnostics diagnostics;
         {
             auto output = residual.Owned().Write(), base = inviscid.Owned().Write();
-            diagnostics.Merge(rhs.ApplyBorrowedChecked(input, {output.View<R::UniformTableRows>()}));
+            diagnostics.Merge(rhs.ApplyBorrowedChecked(input, {output.View<C::RHSFlowRows>()}));
             input.includeViscosity = false;
-            diagnostics.Merge(rhs.ApplyBorrowedChecked(input, {base.View<R::UniformTableRows>()}));
+            diagnostics.Merge(rhs.ApplyBorrowedChecked(input, {base.View<C::RHSFlowRows>()}));
         }
         const auto a = residual.Owned().Read(), b = inviscid.Owned().Read();
         for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)

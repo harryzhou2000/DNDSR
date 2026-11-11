@@ -102,11 +102,11 @@ int main(int argc, char **argv)
             const auto rec = coefficients.Owned().Read(), rg = coefficients.Ghost().Read();
             auto write = residual.Owned().Write();
             C::RHSReadViews input;
-            input.mean = {u.View<R::UniformTableRows>(), ug.View<R::UniformTableRows>()};
+            input.mean = {u.View<C::RHSFlowRows>(), ug.View<C::RHSFlowRows>()};
             input.coefficients = {rec.View<R::UniformTableRows>(), rg.View<R::UniformTableRows>()};
             C::RHSLocalDiagnostics diagnostics;
             C::RHSWriteViews output;
-            output.residual = write.View<R::UniformTableRows>();
+            output.residual = write.View<C::RHSFlowRows>();
             diagnostics.Merge(op.ApplyBorrowedChecked(input, output));
             DNDS_check_throw_info(diagnostics.FaceFallbacks() == 0, "unexpected RHS face fallback");
         };

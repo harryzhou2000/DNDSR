@@ -114,11 +114,13 @@ namespace DNDS::Cauchy
         // face derivatives; higher orders retain their selected formulation.
         const bool polynomialViscosity = viscous && (data->settings.numerics.firstOrderConvection || data->settings.numerics.viscousGradient == "polynomial");
         const auto viscousCoefficient = input.viscousCoefficients.value_or(input.coefficients);
-        const auto &mean = input.mean, &coefficient = input.coefficients, &gradientInput = input.primitiveGradient;
+        const auto &mean = input.mean;
+        const auto &coefficient = input.coefficients;
+        const auto &gradientInput = input.primitiveGradient;
         const auto result = output.residual;
         const bool produceLow = bool(output.lowOrder), hasThermo = bool(input.auxiliary.meanThermodynamics);
         const bool useWave = bool(input.auxiliary.cellWaveJump), usePressure = bool(input.auxiliary.cellPressureMinimum);
-        const auto lowOutput = output.lowOrder.value_or(RHSOutputView{});
+        const auto lowOutput = output.lowOrder.value_or(RHSFlowOutputView{});
         const auto thermo = input.auxiliary.meanThermodynamics.value_or(RHSScalarView{});
         const auto waveInput = input.auxiliary.cellWaveJump.value_or(RHSFieldView{});
         const auto pressureInput = input.auxiliary.cellPressureMinimum.value_or(RHSFieldView{});
@@ -133,7 +135,7 @@ namespace DNDS::Cauchy
                                  region == CFV::ReconstructionRegion::HaloDependent,
                              "invalid RHS region");
         const bool needGhost = region != CFV::ReconstructionRegion::Core && !data->partition.HaloDependent().empty();
-        const auto checkField = [&](const RHSFieldView &field, index width)
+        const auto checkField = [&](const auto &field, index width)
         {
             RequireKernel<fatal>(field.owned.RowCount() == data->metrics.NumCell() && field.owned.Width() == width,
                                  "RHS owned input shape differs");

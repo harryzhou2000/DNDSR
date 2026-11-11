@@ -205,7 +205,7 @@ namespace DNDS::Cauchy
         const auto sourceDerivative = frame.NegativeSourceJacobian();
         const real rotationBound = Geom::tPoint{frame.angularVelocity[0], frame.angularVelocity[1], frame.angularVelocity[2]}.norm();
         const auto owned = state.Owned().Read(), ghost = state.Ghost().Read(), face = faceArray.Read(), pseudo = inversePseudoTime.Read();
-        const RHSFieldView mean{owned.View<R::UniformTableRows>(), ghost.View<R::UniformTableRows>()};
+        const RHSFlowFieldView mean{owned.View<RHSFlowRows>(), ghost.View<RHSFlowRows>()};
         RHSAuxiliaryViews packet;
         std::array<std::optional<R::Array<real>::ReadLease>, 5> retained;
         std::optional<DerivedFields::ReadScope> derivedOwned, derivedGhost;

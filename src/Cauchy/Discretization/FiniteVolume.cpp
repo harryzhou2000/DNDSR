@@ -783,6 +783,17 @@ namespace DNDS::Cauchy
                 return {slot.owned->View<R::UniformTableRows>(),
                         slot.ghost ? slot.ghost->View<R::UniformTableRows>() : RHSScalarView{}};
             }
+            RHSFlowFieldView ReadFlowField(const CFV::FVField &field)
+            {
+                DNDS_check_throw_info(fieldCount < fields.size(),
+                                      "prepared RHS access capacity exceeded");
+                auto &slot = fields[fieldCount++];
+                slot.owned.emplace(field.Owned().Read());
+                if (ghosts)
+                    slot.ghost.emplace(field.Ghost().Read());
+                return {slot.owned->View<RHSFlowRows>(),
+                        slot.ghost ? slot.ghost->View<RHSFlowRows>() : decltype(slot.owned->View<RHSFlowRows>()){}};
+            }
         };
         RHSLocalDiagnostics diagnostics;
         std::array<index, 2> faceFallbacks{};
@@ -1336,7 +1347,7 @@ namespace DNDS::Cauchy
             const bool ghosts = region != CFV::ReconstructionRegion::Core;
             RHSAccessScope scope(ghosts);
             auto &input = scope.input;
-            input.mean = scope.ReadField(state.PhysicalField(0));
+            input.mean = scope.ReadFlowField(state.PhysicalField(0));
             input.includeViscosity = !meanOnly;
             input.meanOnly = meanOnly;
             if (owner->settings.numerics.reconstruction == "variational")
@@ -1382,16 +1393,16 @@ namespace DNDS::Cauchy
             if (incoming.data)
                 input.boundary = incoming;
             scope.result.emplace(result.PhysicalField(0).Owned().Write());
-            scope.output.residual = scope.result->View<R::UniformTableRows>();
+            scope.output.residual = scope.result->View<RHSFlowRows>();
             if (lowOrderResidual)
             {
                 scope.lowOrder.emplace(lowOrderResidual->PhysicalField(0).Owned().Write());
-                scope.output.lowOrder = scope.lowOrder->View<R::UniformTableRows>();
+                scope.output.lowOrder = scope.lowOrder->View<RHSFlowRows>();
             }
             if (faceOutput)
             {
                 scope.face.emplace(faceOutput->get().Write());
-                scope.output.faceFlux = scope.face->View<R::UniformTableRows>();
+                scope.output.faceFlux = scope.face->View<RHSFlowRows>();
             }
             diagnostics.Merge(fixedFlowRHS->ApplyFluxBorrowedFatal(input, scope.output, region, time));
         }

@@ -95,8 +95,11 @@ namespace DNDS::Cauchy
         std::optional<Runtime::Array<real>> _faceScratch;
     };
     using RHSFieldView = Runtime::PairReadView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
+    using RHSFlowRows = Runtime::FixedWidthRows<Runtime::UniformTableRows, 5>;
+    using RHSFlowFieldView = Runtime::PairReadView<real, Runtime::AccessBoundsChecks, RHSFlowRows>;
     using RHSScalarView = Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
     using RHSOutputView = Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
+    using RHSFlowOutputView = Runtime::ArrayView<real, Runtime::AccessBoundsChecks, RHSFlowRows>;
     /// One kernel region's plain, movable diagnostics. The cell loop updates
     /// only this local value and returns it for one final merge. A future OMP
     /// implementation can reduce the same value per thread; no atomic belongs
@@ -169,7 +172,8 @@ namespace DNDS::Cauchy
     };
     struct RHSReadViews
     {
-        RHSFieldView mean, coefficients, primitiveGradient;
+        RHSFlowFieldView mean;
+        RHSFieldView coefficients, primitiveGradient;
         RHSAuxiliaryViews auxiliary;
         /// Euler's physical-dt trial ignores viscosity while retaining the
         /// configured boundary/convective flux policy. Gradients may be absent
@@ -189,12 +193,12 @@ namespace DNDS::Cauchy
     /// as a value and merged after each core/dependent operation completes.
     struct RHSWriteViews
     {
-        RHSOutputView residual;
-        std::optional<RHSOutputView> lowOrder;
+        RHSFlowOutputView residual;
+        std::optional<RHSFlowOutputView> lowOrder;
         /// Optional integrated negative outward flux in AuxiliaryFaces() order,
         /// in the prepared anchor cell's axes. Selected faces are overwritten;
         /// core/dependent sets can overlap. No source term is included.
-        std::optional<RHSOutputView> faceFlux;
+        std::optional<RHSFlowOutputView> faceFlux;
     };
     /// CPU cell-centered discretization. Preparation retains immutable geometry,
     /// incidence, quadrature and polynomial data. Each simultaneous residual
