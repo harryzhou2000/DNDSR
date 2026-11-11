@@ -533,6 +533,11 @@ namespace DNDS::Cauchy
         /// Durable warm/unlimited coefficients advanced by the reconstruction
         /// iteration. They are solver state, never workspace scratch.
         EquationDofs coefficients;
+        /// A distinct finalized allocation is required only when a limiter or
+        /// reconstruction PP mutates a polynomial derived from the warm guess.
+        /// Otherwise fluxCoefficients is a shallow managed alias of coefficients:
+        /// it retains the same allocation without a second payload or copy.
+        bool distinctFinalized = false;
         /// Durable finalized polynomial consumed by flux/source/Jacobian
         /// operators after limiter and PP. DITR stages need independent copies
         /// even while serially sharing every temporary workspace allocation.
@@ -541,6 +546,7 @@ namespace DNDS::Cauchy
         /// require an Evaluate/PrepareReconstruction after the warm guess
         /// changes; unfiltered profiles can republish by a direct owned copy.
         std::optional<EquationDofOperations::Binding> finalizedFrom;
+        std::optional<EquationDofOperations::Binding> finalizedPublication;
         std::vector<Algebra::DofHalo<>> meanHalo;
         uint64_t meanEpoch = 0;
         std::vector<R::TransferBinding> coefficientHalo, fluxHalo;
@@ -548,19 +554,48 @@ namespace DNDS::Cauchy
 
         bool FinalizedCurrent() const
         {
-            if (!finalizedFrom || finalizedFrom->snapshot.PhysicalFieldNumber() != coefficients.PhysicalFieldNumber())
-                return false;
-            for (index iField = 0; iField < coefficients.PhysicalFieldNumber(); ++iField)
+            const auto current = [](const EquationDofOperations::Binding &binding, const EquationDofs &values)
             {
-                const auto &saved = finalizedFrom->snapshot.PhysicalField(iField).Owned();
-                const auto &current = coefficients.PhysicalField(iField).Owned();
-                if (saved.SharedStorage() != current.SharedStorage() ||
-                    finalizedFrom->versions[size_t(iField)] != current.Version())
+                if (binding.snapshot.PhysicalFieldNumber() != values.PhysicalFieldNumber())
                     return false;
-            }
-            return true;
+                for (index iField = 0; iField < values.PhysicalFieldNumber(); ++iField)
+                {
+                    const auto &saved = binding.snapshot.PhysicalField(iField).Owned();
+                    const auto &value = values.PhysicalField(iField).Owned();
+                    if (saved.SharedStorage() != value.SharedStorage() ||
+                        binding.versions[size_t(iField)] != value.Version())
+                        return false;
+                }
+                return true;
+            };
+            if (!finalizedFrom || !finalizedPublication)
+                return false;
+            return current(*finalizedFrom, coefficients) &&
+                   current(*finalizedPublication, FinalizedValues());
         }
-        void PublishFinalized() { finalizedFrom.emplace(coefficients); }
+        void PublishFinalized()
+        {
+            finalizedFrom.emplace(coefficients);
+            finalizedPublication.emplace(FinalizedValues());
+        }
+        const EquationDofs &FinalizedValues() const
+        {
+            return distinctFinalized ? fluxCoefficients : coefficients;
+        }
+        EquationDofs &FinalizedValues()
+        {
+            return distinctFinalized ? fluxCoefficients : coefficients;
+        }
+        EquationDofs &MutableFinalized()
+        {
+            DNDS_check_throw_info(distinctFinalized,
+                                  "unfiltered reconstruction has no mutable finalized scratch");
+            return fluxCoefficients;
+        }
+        std::vector<R::TransferBinding> &FinalizedHalo()
+        {
+            return distinctFinalized ? fluxHalo : coefficientHalo;
+        }
 
         static EquationDofs BuildCoefficients(const Data &data, const EquationDofs &state)
         {
@@ -577,15 +612,21 @@ namespace DNDS::Cauchy
         }
         ReconstructionState(std::shared_ptr<const Data> data, EquationDofs &state)
             : owner(std::move(data)), binding(state), coefficients(BuildCoefficients(*owner, state)),
-              fluxCoefficients(BuildCoefficients(*owner, state))
+              distinctFinalized(owner->settings.numerics.limiter == "WBAP" ||
+                                bool(owner->limitedVRGeometry) || owner->settings.numerics.positivity),
+              fluxCoefficients(distinctFinalized ? BuildCoefficients(*owner, state)
+                                                 : coefficients.NumericAlias())
         {
             for (index iField = 0; iField < coefficients.PhysicalFieldNumber(); ++iField)
             {
                 Algebra::Fill(coefficients.PhysicalField(iField), 0.);
-                Algebra::Fill(fluxCoefficients.PhysicalField(iField), 0.);
                 meanHalo.push_back(owner->BindTrackedHalo(state.PhysicalField(iField)));
                 coefficientHalo.push_back(owner->BindHalo(coefficients.PhysicalField(iField)));
-                fluxHalo.push_back(owner->BindHalo(fluxCoefficients.PhysicalField(iField)));
+                if (distinctFinalized)
+                {
+                    Algebra::Fill(fluxCoefficients.PhysicalField(iField), 0.);
+                    fluxHalo.push_back(owner->BindHalo(fluxCoefficients.PhysicalField(iField)));
+                }
             }
             if (owner->limitedVRGeometry)
             {
@@ -595,9 +636,40 @@ namespace DNDS::Cauchy
                 for (index iCell = 0; iCell < values.RowCount(); ++iCell)
                     values(iCell, 0) = values(iCell, 1) = 0;
             }
-            finalizedFrom.emplace(coefficients);
+            PublishFinalized();
         }
     };
+    FiniteVolume::FinalizedReconstruction::FinalizedReconstruction(
+        std::shared_ptr<const Data> owner, const EquationDofs &source,
+        const EquationDofs &values, bool distinct)
+        : _owner(std::move(owner)), _source(source.NumericAlias()),
+          _values(values.NumericAlias()), _distinct(distinct)
+    {
+        for (index iField = 0; iField < _source.PhysicalFieldNumber(); ++iField)
+            _sourceVersions.push_back(_source.PhysicalField(iField).Owned().Version());
+        for (index iField = 0; iField < _values.PhysicalFieldNumber(); ++iField)
+            _valueVersions.push_back(_values.PhysicalField(iField).Owned().Version());
+    }
+    void FiniteVolume::FinalizedReconstruction::Validate() const
+    {
+        DNDS_check_throw_info(_owner &&
+                                  _sourceVersions.size() == size_t(_source.PhysicalFieldNumber()) &&
+                                  _valueVersions.size() == size_t(_values.PhysicalFieldNumber()),
+                              "invalid finalized reconstruction publication");
+        for (index iField = 0; iField < _source.PhysicalFieldNumber(); ++iField)
+            DNDS_check_throw_info(_sourceVersions[size_t(iField)] ==
+                                      _source.PhysicalField(iField).Owned().Version(),
+                                  "warm reconstruction changed after finalization");
+        for (index iField = 0; iField < _values.PhysicalFieldNumber(); ++iField)
+            DNDS_check_throw_info(_valueVersions[size_t(iField)] ==
+                                      _values.PhysicalField(iField).Owned().Version(),
+                                  "finalized reconstruction changed after publication");
+    }
+    const EquationDofs &FiniteVolume::FinalizedReconstruction::Values() const
+    {
+        Validate();
+        return _values;
+    }
     struct FiniteVolume::Workspace
     {
         R::SessionAccess session;
@@ -2443,7 +2515,7 @@ namespace DNDS::Cauchy
     {
         auto reconstructionSession = reconstruction.session.Acquire();
         auto workspaceSession = work.session.Acquire();
-        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, reconstruction.fluxCoefficients);
+        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, reconstruction.FinalizedValues());
         const MPIInfo mpi(Metrics().Communicator());
         reconstruction.binding.Check(state);
         const auto local = [&](auto &&action)
@@ -2458,7 +2530,6 @@ namespace DNDS::Cauchy
                                   bool(work.limitedVR) || _data->settings.numerics.positivity;
             DNDS_check_throw_info(!filtered,
                                   "correction source sampling requires a current limited/PP reconstruction publication");
-            EquationDofOperations::Copy(reconstruction.fluxCoefficients, reconstruction.coefficients);
             reconstruction.PublishFinalized(); });
         if (work.meanGradients)
         {
@@ -2527,7 +2598,7 @@ namespace DNDS::Cauchy
         auto reconstructionSession = reconstruction.session.Acquire();
         auto workspaceSession = work.session.Acquire();
         auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients,
-                                                            reconstruction.fluxCoefficients);
+                                                            reconstruction.FinalizedValues());
         Metrics().Communication()->LocalStage([&]
                                               {
             ValidateWorkspace(state, work);
@@ -2538,8 +2609,6 @@ namespace DNDS::Cauchy
                                       bool(work.limitedVR) || _data->settings.numerics.positivity;
                 DNDS_check_throw_info(!filtered,
                                       "source refresh requires a current limited/PP reconstruction publication");
-                EquationDofOperations::Copy(reconstruction.fluxCoefficients,
-                                            reconstruction.coefficients);
                 reconstruction.PublishFinalized();
             }
             if (work.SourceSamplesCurrent(state, time)) return;
@@ -2776,10 +2845,18 @@ namespace DNDS::Cauchy
         _data->reconstruction.FinalizeFaceTransform(transform);
         return fallbacks;
     }
+    FiniteVolume::FinalizedReconstruction FiniteVolume::AcquireFinalizedReconstruction(
+        const ReconstructionState &state) const
+    {
+        DNDS_check_throw_info(state.owner == _data, "foreign equation reconstruction state");
+        DNDS_check_throw_info(state.FinalizedCurrent(), "reconstruction has no current finalized publication");
+        return {_data, state.coefficients, state.FinalizedValues(), state.distinctFinalized};
+    }
     const EquationDofs &FiniteVolume::FluxReconstruction(const ReconstructionState &state, const Workspace &work) const
     {
         DNDS_check_throw_info(state.owner == _data && work.owner == _data, "foreign equation reconstruction state or workspace");
-        return state.fluxCoefficients;
+        DNDS_check_throw_info(state.FinalizedCurrent(), "reconstruction has no current finalized publication");
+        return state.FinalizedValues();
     }
     void FiniteVolume::RestoreReconstructionGuess(ReconstructionState &state, const EquationDofs &guess,
                                                   std::optional<std::reference_wrapper<const Runtime::Array<real>>> limitedVRHistory) const
@@ -2788,7 +2865,10 @@ namespace DNDS::Cauchy
         restore.Commit();
         if (_data->settings.numerics.limiter == "WBAP" || _data->limitedVRGeometry ||
             _data->settings.numerics.positivity)
+        {
             state.finalizedFrom.reset();
+            state.finalizedPublication.reset();
+        }
         else
             state.PublishFinalized();
     }
@@ -2803,7 +2883,7 @@ namespace DNDS::Cauchy
                                  ? std::optional(std::cref(*source.limitedVRHistory))
                                  : std::nullopt;
         auto restore = ReserveReconstructionRestoreImpl(destination, source.coefficients, history, {}, true,
-                                                        std::cref(source.fluxCoefficients));
+                                                        std::cref(source.FinalizedValues()));
         restore.Commit();
         destination.PublishFinalized();
     }
@@ -2877,13 +2957,16 @@ namespace DNDS::Cauchy
                 reservation->session = state.session.Acquire();
                 DNDS_check_throw_info(state.owner == _data, "foreign equation reconstruction state");
                 state.coefficients.RequireCompatible(guess);
-                state.fluxCoefficients.RequireCompatible(guess);
                 EquationDofOperations::RequireDistinct(state.coefficients, guess);
-                EquationDofOperations::RequireDistinct(state.fluxCoefficients, guess);
-                const auto &finalInput = finalized ? finalized->get() : guess;
-                state.fluxCoefficients.RequireCompatible(finalInput);
-                EquationDofOperations::RequireDistinct(state.coefficients, finalInput);
-                EquationDofOperations::RequireDistinct(state.fluxCoefficients, finalInput);
+                const auto &finalInput = state.distinctFinalized && finalized ? finalized->get() : guess;
+                if (state.distinctFinalized)
+                {
+                    state.fluxCoefficients.RequireCompatible(guess);
+                    EquationDofOperations::RequireDistinct(state.fluxCoefficients, guess);
+                    state.fluxCoefficients.RequireCompatible(finalInput);
+                    EquationDofOperations::RequireDistinct(state.coefficients, finalInput);
+                    EquationDofOperations::RequireDistinct(state.fluxCoefficients, finalInput);
+                }
                 DNDS_check_throw_info(state.limitedVRHistory || !historyInput,
                                       "LVR history requires an active matching reconstruction state");
                 if (historyInput)
@@ -2898,9 +2981,10 @@ namespace DNDS::Cauchy
                         DNDS_check_throw_info(!Algebra::Detail::Overlaps(historyInput->Storage(),
                                                                          state.coefficients.PhysicalField(iField).Owned().Storage()),
                                               "LVR history aliases reconstruction output");
-                        DNDS_check_throw_info(!Algebra::Detail::Overlaps(historyInput->Storage(),
-                                                                         state.fluxCoefficients.PhysicalField(iField).Owned().Storage()),
-                                              "LVR history aliases finalized reconstruction output");
+                        if (state.distinctFinalized)
+                            DNDS_check_throw_info(!Algebra::Detail::Overlaps(historyInput->Storage(),
+                                                                             state.fluxCoefficients.PhysicalField(iField).Owned().Storage()),
+                                                  "LVR history aliases finalized reconstruction output");
                     }
                     DNDS_check_throw_info(!Algebra::Detail::Overlaps(historyInput->Storage(), state.limitedVRHistory->Storage()),
                                           "LVR history aliases its destination");
@@ -2914,8 +2998,8 @@ namespace DNDS::Cauchy
                                                   "LVR history exceeds its valid branch cap");
                 }
                 reservation->source.emplace(guess.ReadOwned());
-                if (finalized)
-                    reservation->fluxSource.emplace(finalized->get().ReadOwned());
+                if (state.distinctFinalized && finalized)
+                    reservation->fluxSource.emplace(finalInput.ReadOwned());
                 for (index iBlock = 0; iBlock < guess.BlockNumber(); ++iBlock)
                 {
                     const auto input = reservation->source->Block(iBlock);
@@ -2923,19 +3007,24 @@ namespace DNDS::Cauchy
                         for (index j = 0; j < input.ComponentNumber(); ++j)
                             DNDS_check_throw_info(std::isfinite(input(iCell, j)), "nonfinite equation reconstruction guess");
                     reservation->input.push_back(input.owned);
-                    const auto fluxInput = finalized ? reservation->fluxSource->Block(iBlock) : input;
-                    for (index iCell = 0; iCell < fluxInput.owned.RowCount(); ++iCell)
-                        for (index j = 0; j < fluxInput.ComponentNumber(); ++j)
-                            DNDS_check_throw_info(std::isfinite(fluxInput(iCell, j)),
-                                                  "nonfinite finalized equation reconstruction");
-                    reservation->fluxInput.push_back(fluxInput.owned);
+                    if (state.distinctFinalized)
+                    {
+                        const auto fluxInput = finalized ? reservation->fluxSource->Block(iBlock) : input;
+                        for (index iCell = 0; iCell < fluxInput.owned.RowCount(); ++iCell)
+                            for (index j = 0; j < fluxInput.ComponentNumber(); ++j)
+                                DNDS_check_throw_info(std::isfinite(fluxInput(iCell, j)),
+                                                      "nonfinite finalized equation reconstruction");
+                        reservation->fluxInput.push_back(fluxInput.owned);
+                    }
                 }
                 reservation->destination.emplace(state.coefficients.WriteOwned());
-                reservation->fluxDestination.emplace(state.fluxCoefficients.WriteOwned());
+                if (state.distinctFinalized)
+                    reservation->fluxDestination.emplace(state.fluxCoefficients.WriteOwned());
                 for (index iBlock = 0; iBlock < guess.BlockNumber(); ++iBlock)
                 {
                     reservation->output.push_back(reservation->destination->Block(iBlock));
-                    reservation->fluxOutput.push_back(reservation->fluxDestination->Block(iBlock));
+                    if (state.distinctFinalized)
+                        reservation->fluxOutput.push_back(reservation->fluxDestination->Block(iBlock));
                 }
                 if (historyInput)
                     reservation->historySource.emplace(historyInput->Read());
@@ -2950,14 +3039,17 @@ namespace DNDS::Cauchy
             {
                 const auto input = reservation->input[iBlock];
                 const auto output = reservation->output[iBlock];
-                const auto fluxInput = reservation->fluxInput[iBlock];
-                const auto fluxOutput = reservation->fluxOutput[iBlock];
                 for (index iCell = 0; iCell < output.RowCount(); ++iCell)
                     for (index j = 0; j < output.ComponentNumber(); ++j)
-                    {
                         output(iCell, j) = input(iCell, j);
-                        fluxOutput(iCell, j) = fluxInput(iCell, j);
-                    }
+                if (!reservation->fluxOutput.empty())
+                {
+                    const auto fluxInput = reservation->fluxInput[iBlock];
+                    const auto fluxOutput = reservation->fluxOutput[iBlock];
+                    for (index iCell = 0; iCell < fluxOutput.RowCount(); ++iCell)
+                        for (index j = 0; j < fluxOutput.ComponentNumber(); ++j)
+                            fluxOutput(iCell, j) = fluxInput(iCell, j);
+                }
             }
             if (reservation->historyDestination)
             {
@@ -2990,7 +3082,8 @@ namespace DNDS::Cauchy
         try
         {
             coefficients.emplace(state.coefficients.WriteOwned());
-            fluxCoefficients.emplace(state.fluxCoefficients.WriteOwned());
+            if (state.distinctFinalized)
+                fluxCoefficients.emplace(state.fluxCoefficients.WriteOwned());
             temporary.reserve(work.fields.size());
             for (auto &field : work.fields)
                 temporary.emplace_back(field.reconstruction.temporary.Owned().Write());
@@ -3021,6 +3114,7 @@ namespace DNDS::Cauchy
                 for (index j = 0; j < values.ComponentNumber(); ++j)
                     values(iCell, j) = 0;
         }
+        if (fluxCoefficients)
         {
             const auto layout = fluxCoefficients->ComponentLayout();
             const auto values = layout.View();
@@ -3048,6 +3142,7 @@ namespace DNDS::Cauchy
         work.rhsState.reset();
         work.rhsCoefficients.reset();
         state.finalizedFrom.reset();
+        state.finalizedPublication.reset();
     }
     int FiniteVolume::LastReconstructionIterations(const Workspace &work) const
     {
@@ -3068,7 +3163,7 @@ namespace DNDS::Cauchy
             ValidateWorkspace(state, work);
             DNDS_check_throw_info(work.positivity, "equation reconstruction PP was not requested");
             DNDS_check_throw_info(reconstruction.owner == _data, "foreign equation reconstruction state");
-            work.positivity->Apply(state, reconstruction.coefficients, reconstruction.fluxCoefficients, true);
+            work.positivity->Apply(state, reconstruction.coefficients, reconstruction.MutableFinalized(), true);
             reconstruction.PublishFinalized(); });
     }
     std::pair<index, real> FiniteVolume::PositivityReconstructionStats(const Workspace &work) const
@@ -3102,13 +3197,13 @@ namespace DNDS::Cauchy
         ValidateWorkspace(state, work);
         auto reconstructionSession = reconstruction.session.Acquire();
         auto session = work.session.Acquire();
-        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, reconstruction.fluxCoefficients);
+        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, reconstruction.FinalizedValues());
         Metrics().Communication()->LocalStage([&]
                                               {
             DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == R::Device::Host(),
                                   "sampling refresh requires the workspace CPU engine");
             PreflightHalo(state);
-            PreflightHalo(reconstruction.fluxCoefficients); });
+            PreflightHalo(reconstruction.FinalizedValues()); });
         ++reconstruction.meanEpoch;
         std::vector<Algebra::DofHalo<>::Operation> means;
         means.reserve(reconstruction.meanHalo.size());
@@ -3121,7 +3216,7 @@ namespace DNDS::Cauchy
                                                   {
                 for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                     reconstruction.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), reconstruction.meanEpoch); });
-        for (auto &binding : reconstruction.fluxHalo)
+        for (auto &binding : reconstruction.FinalizedHalo())
         {
             auto operation = engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream);
             operation.Wait();
@@ -3142,7 +3237,7 @@ namespace DNDS::Cauchy
             auxiliary = std::ref(*work.rhsAuxiliary);
         auto reconstructionSession = reconstruction.session.Acquire();
         auto session = work.session.Acquire();
-        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, reconstruction.fluxCoefficients);
+        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, reconstruction.FinalizedValues());
         const Workspace::PhaseTime timing(work, Workspace::TotalPhase);
         work.sourceState.reset();
         work.sourceCoefficients.reset();
@@ -3192,10 +3287,10 @@ namespace DNDS::Cauchy
                 state.RequireCompatible(output);
                 EquationDofOperations::RequireDistinct(state, output);
                 EquationDofOperations::RequireDistinct(reconstruction.coefficients, output);
-                EquationDofOperations::RequireDistinct(reconstruction.fluxCoefficients, output);
+                EquationDofOperations::RequireDistinct(reconstruction.FinalizedValues(), output);
                 auto write = output.WriteOwned(); write.CancelUnmodified();
             }
-            PreflightHalo(state); PreflightHalo(reconstruction.coefficients); PreflightHalo(reconstruction.fluxCoefficients);
+            PreflightHalo(state); PreflightHalo(reconstruction.coefficients); PreflightHalo(reconstruction.FinalizedValues());
             DNDS_check_throw_info(!HasInterfaces() || work.incoming,
                                   "FV evaluation needs a ready interface packet");
             if (work.incoming)
@@ -3408,9 +3503,10 @@ namespace DNDS::Cauchy
                 schedule.Join();
                 for (index iField = 0; iField < index(work.fields.size()); ++iField)
                     Algebra::Fill(reconstruction.coefficients.PhysicalField(iField), 0.); });
-        const bool useFluxScratch = numerics.limiter == "WBAP" || bool(work.limitedVR) || bool(work.positivity);
-        local([&]
-              { EquationDofOperations::Copy(reconstruction.fluxCoefficients, reconstruction.coefficients); });
+        const bool useFluxScratch = reconstruction.distinctFinalized;
+        if (useFluxScratch)
+            local([&]
+                  { EquationDofOperations::Copy(reconstruction.MutableFinalized(), reconstruction.coefficients); });
         if (numerics.limiter == "WBAP")
         {
             if (work.flowCharacteristic && !work.limitedVR)
@@ -3423,12 +3519,12 @@ namespace DNDS::Cauchy
                               state.PhysicalField(flow.physicalField), *work.flowCharacteristic, flow.firstComponent); });
             for (int order = numerics.cfv.maxOrder; order >= 1; --order)
             {
-                auto operations = schedule.Begin(reconstruction.fluxHalo);
+                auto operations = schedule.Begin(reconstruction.FinalizedHalo());
                 const auto limit = [&, order](CFV::ReconstructionRegion region)
                 {
                     for (index iField = 0; iField < index(work.fields.size()); ++iField)
                         _data->reconstruction.SubmitLimiterWBAP_3OrderTo(
-                            engine, stream, reconstruction.fluxCoefficients.PhysicalField(iField), work.fields[iField].reconstruction, order,
+                            engine, stream, reconstruction.MutableFinalized().PhysicalField(iField), work.fields[iField].reconstruction, order,
                             iField == work.flowCharacteristicField && work.flowCharacteristic
                                 ? CFV::FaceCharacteristicTransformRef(std::cref(*work.flowCharacteristic))
                                 : std::nullopt,
@@ -3442,7 +3538,7 @@ namespace DNDS::Cauchy
                       { schedule.Join(); });
                 for (index iField = 0; iField < index(work.fields.size()); ++iField)
                     _data->reconstruction.SubmitCommitReconstruction(engine, stream,
-                                                                     reconstruction.fluxCoefficients.PhysicalField(iField),
+                                                                     reconstruction.MutableFinalized().PhysicalField(iField),
                                                                      work.fields[iField].reconstruction);
                 local([&]
                       { schedule.Join(); });
@@ -3451,10 +3547,10 @@ namespace DNDS::Cauchy
         if (work.positivity)
             local([&]
                   { const Workspace::PhaseTime timing(work, Workspace::PPPhase);
-                    work.positivity->Apply(state, reconstruction.coefficients, reconstruction.fluxCoefficients, false); });
+                    work.positivity->Apply(state, reconstruction.coefficients, reconstruction.MutableFinalized(), false); });
         local([&]
               { reconstruction.PublishFinalized(); });
-        auto operations = schedule.Begin(reconstruction.fluxHalo);
+        auto operations = schedule.Begin(reconstruction.FinalizedHalo());
         std::vector<R::TransferOperation> unlimitedViscousOperations;
         if (useFluxScratch && _data->equation.Viscous() && numerics.viscousGradient == "polynomial" && !numerics.viscousLimited)
             unlimitedViscousOperations = schedule.Begin(reconstruction.coefficientHalo);
@@ -3493,7 +3589,7 @@ namespace DNDS::Cauchy
                   { work.PublishSourceState(state, time); });
         work.boundaryMomentumCurrent = bool(residual);
         work.rhsState.emplace(state.NumericAlias());
-        work.rhsCoefficients.emplace(reconstruction.fluxCoefficients);
+        work.rhsCoefficients.emplace(reconstruction.FinalizedValues());
         work.rhsTime = time;
     }
 
@@ -3513,13 +3609,15 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(reconstruction.owner == _data, "foreign equation reconstruction state");
         auto reconstructionSession = reconstruction.session.Acquire();
         auto workspaceSession = work.session.Acquire();
-        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, reconstruction.fluxCoefficients);
+        const auto finalized = AcquireFinalizedReconstruction(reconstruction);
+        const auto &finalValues = finalized.Values();
+        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, finalValues);
         state.RequireCompatible(residual);
         EquationDofOperations::RequireDistinct(state, residual);
-        EquationDofOperations::RequireDistinct(reconstruction.fluxCoefficients, residual);
+        EquationDofOperations::RequireDistinct(finalValues, residual);
         DNDS_check_throw_info(work.rhsState && work.rhsCoefficients && work.rhsTime == time, "flux needs a completed spatial preparation at this time");
         work.rhsState->Check(state, true);
-        DNDS_check_throw_info(work.rhsCoefficients->Current(reconstruction.fluxCoefficients),
+        DNDS_check_throw_info(work.rhsCoefficients->Current(finalValues),
                               "flux reconstruction changed after spatial preparation");
         DNDS_check_throw_info(region == CFV::ReconstructionRegion::All || region == CFV::ReconstructionRegion::Core ||
                                   region == CFV::ReconstructionRegion::HaloDependent,
@@ -3530,7 +3628,7 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(output.GetDevice() == R::Device::Host() && !output.Layout().IsVariable() &&
                                       output.RowCount() == index(_data->stencilFaces.size()) && output.Layout().Width() == state.ComponentNumber(),
                                   "equation face output shape/device differs");
-            for (const auto *fields : std::array<const EquationDofs *, 3>{&state, &residual, &reconstruction.fluxCoefficients})
+            for (const auto *fields : std::array<const EquationDofs *, 3>{&state, &residual, &finalValues})
                 for (index iField = 0; iField < fields->PhysicalFieldNumber(); ++iField)
                     DNDS_check_throw_info(!Algebra::Detail::Overlaps(output.Storage(), fields->PhysicalField(iField).Owned().Storage()) &&
                                               !Algebra::Detail::Overlaps(output.Storage(), fields->PhysicalField(iField).Ghost().Storage()),
@@ -3560,13 +3658,15 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(reconstruction.owner == _data, "foreign equation reconstruction state");
         auto reconstructionSession = reconstruction.session.Acquire();
         auto workspaceSession = work.session.Acquire();
-        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, reconstruction.fluxCoefficients);
+        const auto finalized = AcquireFinalizedReconstruction(reconstruction);
+        const auto &finalValues = finalized.Values();
+        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, finalValues);
         state.RequireCompatible(residual);
         EquationDofOperations::RequireDistinct(state, residual);
-        EquationDofOperations::RequireDistinct(reconstruction.fluxCoefficients, residual);
+        EquationDofOperations::RequireDistinct(finalValues, residual);
         DNDS_check_throw_info(work.rhsState && work.rhsCoefficients && work.rhsTime == time, "source needs a completed spatial preparation at this time");
         work.rhsState->Check(state, true);
-        DNDS_check_throw_info(work.rhsCoefficients->Current(reconstruction.fluxCoefficients),
+        DNDS_check_throw_info(work.rhsCoefficients->Current(finalValues),
                               "source reconstruction changed after spatial preparation");
         auto evaluator = _data->equation.MakePointEvaluator(work.workers ? work.workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{},
                                                             {true, false, false, work.chemical, false});
@@ -3650,14 +3750,15 @@ namespace DNDS::Cauchy
         auto &work = context.workspace.get();
         auto reconstructionSession = reconstruction.session.Acquire();
         auto workspaceSession = work.session.Acquire();
-        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients,
-                                                            reconstruction.fluxCoefficients);
+        const auto finalized = AcquireFinalizedReconstruction(reconstruction);
+        const auto &finalValues = finalized.Values();
+        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, finalValues);
         DNDS_check_throw_info(work.owner == _data && (work.chemical || work.ransFirst >= 0), "foreign or source-free reconstruction");
         if (!work.sourceSampling)
             return;
         DNDS_check_throw_info(work.sourceState && work.sourceCoefficients && work.sourceTime == time, "source quadrature requires a current completed sample publication");
         work.sourceState->Check(state, true);
-        DNDS_check_throw_info(work.sourceCoefficients->Current(reconstruction.fluxCoefficients),
+        DNDS_check_throw_info(work.sourceCoefficients->Current(finalValues),
                               "source reconstruction changed after sample publication");
     }
     bool FiniteVolume::AddEquationSourceJacobian(const EquationDofs &state,
@@ -3671,8 +3772,9 @@ namespace DNDS::Cauchy
         auto &work = context.workspace.get();
         auto reconstructionSession = reconstruction.session.Acquire();
         auto workspaceSession = work.session.Acquire();
-        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients,
-                                                            reconstruction.fluxCoefficients);
+        const auto finalized = AcquireFinalizedReconstruction(reconstruction);
+        const auto &finalValues = finalized.Values();
+        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, finalValues);
         return work.AddMeanSourceJacobian(state, diagonal, storage, scale, evaluator, linearization);
     }
 }

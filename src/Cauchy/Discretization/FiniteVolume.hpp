@@ -229,6 +229,30 @@ namespace DNDS::Cauchy
         struct Workspace;
         struct MeanWorkspace;
         struct ReconstructionState;
+        /// Managed selection of the polynomial actually consumed by flux,
+        /// source and Jacobian operators. It retains the finite-volume owner,
+        /// the warm-source and selected array handles, and their publication
+        /// versions. Unfiltered profiles select the warm coefficients directly;
+        /// limiter/PP profiles select their distinct finalized allocation.
+        class FinalizedReconstruction
+        {
+            friend class FiniteVolume;
+            std::shared_ptr<const Data> _owner;
+            EquationDofs _source, _values;
+            std::vector<uint64_t> _sourceVersions, _valueVersions;
+            bool _distinct = false;
+            FinalizedReconstruction(std::shared_ptr<const Data> owner,
+                                    const EquationDofs &source,
+                                    const EquationDofs &values, bool distinct);
+
+        public:
+            /// Validate retained storage identity/version without MPI or access.
+            void Validate() const;
+            /// Selected finalized values. Validation is performed once here;
+            /// the caller then acquires ordinary read leases for execution.
+            const EquationDofs &Values() const;
+            bool UsesDistinctStorage() const { return _distinct; }
+        };
         /// Synchronous managed borrow of one durable reconstruction publication
         /// and the scratch that sampled it. Split flux/source/Jacobian calls
         /// must name both; Workspace never retains the coefficient allocation.
@@ -365,6 +389,9 @@ namespace DNDS::Cauchy
         std::optional<Runtime::Array<real>> LimitedVRAlpha(const Workspace &workspace) const;
         /// Local reset; caller coordinates failures and joins workspace work.
         void ResetReconstruction(ReconstructionState &state, Workspace &workspace) const;
+        FinalizedReconstruction AcquireFinalizedReconstruction(const ReconstructionState &state) const;
+        /// Compatibility facade for existing synchronous checkpoint/output
+        /// code. New split operators retain `FinalizedReconstruction` instead.
         const EquationDofs &FluxReconstruction(const ReconstructionState &state, const Workspace &workspace) const;
         /// Latest complete equation evaluation's global coefficient-update
         /// norm. No extra reduction occurs when reading these diagnostics.

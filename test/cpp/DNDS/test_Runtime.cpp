@@ -6,9 +6,42 @@
 #include "DNDS/Legacy/Array.hpp"
 #include "DNDS/Runtime/Storage/Version.hpp"
 #include "DNDS/Runtime/Array/Field.hpp"
+#include "DNDS/Core/OptionalRef.hpp"
+#include <functional>
 #include <thread>
+#include <type_traits>
 
 using namespace DNDS::Runtime;
+
+static_assert(std::is_constructible_v<DNDS::OptionalRef<const int>, DNDS::OptionalRef<int>>);
+static_assert(!std::is_constructible_v<DNDS::OptionalRef<int>, DNDS::OptionalRef<const int>>);
+
+TEST_CASE("OptionalRef preserves constness and checked synchronous rebinding")
+{
+    int first = 3, second = 7;
+    DNDS::OptionalRef<int> value;
+    CHECK_FALSE(value.HasValue());
+    CHECK(value.Get() == nullptr);
+    CHECK_THROWS(value.Value());
+    CHECK_THROWS(*value);
+    CHECK_THROWS(value.operator->());
+
+    value.Emplace(first);
+    CHECK(value.HasValue());
+    CHECK(&value.Value() == &first);
+    *value = 5;
+    CHECK(first == 5);
+
+    DNDS::OptionalRef<const int> readOnly(value);
+    CHECK(readOnly.Value() == 5);
+    DNDS::OptionalRef<const int> wrapped(std::cref(second));
+    CHECK(wrapped.Value() == 7);
+
+    value.emplace(second); // Retain the legacy spelling while callers migrate.
+    CHECK(value.get() == &second);
+    value.reset();
+    CHECK_FALSE(value.has_value());
+}
 
 namespace
 {

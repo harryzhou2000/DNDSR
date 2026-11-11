@@ -63,6 +63,40 @@ TEST_CASE("Finite-volume workspace identity follows its shared plan and rejects 
     C::FiniteVolume replacement(mesh, settings, equation);
     CHECK_THROWS_WITH_AS(replacement.ValidateWorkspace(*bound, *saved), doctest::Contains("foreign"), std::exception);
 }
+TEST_CASE("Finalized reconstruction aliases unfiltered storage and retains publication provenance")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 3);
+    for (const bool filtered : {false, true})
+    {
+        C::DomainSettings settings;
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 1;
+        settings.numerics.reconstructionIterations = 0;
+        settings.numerics.limiter = filtered ? "WBAP" : "none";
+        settings.numerics.positivity = false;
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        auto field = fv.Metrics().BuildField(5);
+        auto logical = Bind(fv, field);
+        auto reconstruction = fv.BuildReconstructionState(logical);
+        const auto publication = fv.AcquireFinalizedReconstruction(*reconstruction);
+        CHECK(publication.UsesDistinctStorage() == filtered);
+        const auto &warm = fv.ReconstructionGuess(*reconstruction);
+        const auto &selected = publication.Values();
+        REQUIRE(warm.PhysicalFieldNumber() == selected.PhysicalFieldNumber());
+        for (DNDS::index iField = 0; iField < warm.PhysicalFieldNumber(); ++iField)
+        {
+            CHECK((warm.PhysicalField(iField).Owned().SharedStorage() ==
+                   selected.PhysicalField(iField).Owned().SharedStorage()) == !filtered);
+            CHECK((warm.PhysicalField(iField).Ghost().SharedStorage() ==
+                   selected.PhysicalField(iField).Ghost().SharedStorage()) == !filtered);
+        }
+        auto replacement = C::EquationDofOperations::NewVector(warm);
+        C::EquationDofOperations::Fill(replacement, .125);
+        fv.RestoreReconstructionGuess(*reconstruction, replacement);
+        CHECK_THROWS_WITH_AS(publication.Validate(), doctest::Contains("changed"), std::exception);
+    }
+}
 TEST_CASE("One finite-volume scratch workspace serves independent durable reconstruction states")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 4);
