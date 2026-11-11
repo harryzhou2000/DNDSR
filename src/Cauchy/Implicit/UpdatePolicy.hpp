@@ -29,14 +29,11 @@ namespace DNDS::Cauchy
         Json Metadata() const;
     };
 
-    /// Bound callbacks for one nonlinear solve. Arithmetic, leases and MPI
-    /// remain owned by the finite-volume/nonlinear adapters; policy owns only
-    /// update order and residual-observation timing.
-    struct UpdatePolicyProblem
+    /// Solver/operator callbacks for one nonlinear solve. Arithmetic, leases
+    /// and MPI remain owned by these adapters; the controller supplies the
+    /// immutable settings/schema/rank binding separately.
+    struct NonlinearProblem
     {
-        const ImplicitSettings *settings = nullptr;
-        const EquationSchema *schema = nullptr;
-        int rank = 0, stage = 0;
         NonlinearSolveControl control;
         NonlinearIterationReport initial;
         real reconstructionTolerance = 0;
@@ -46,7 +43,17 @@ namespace DNDS::Cauchy
         /// Perform exactly one named coupled-stage correction and its
         /// method-owned completion. The policy determines invocation order.
         std::function<void(int, NonlinearIterationReport &)> advanceStage;
+    };
 
+    /// Complete setup-time binding consumed by an update policy. Callers make
+    /// this only through NonlinearController, so policies cannot substitute
+    /// another equation schema or implicit-control snapshot.
+    struct BoundNonlinearProblem
+    {
+        const ImplicitSettings *settings = nullptr;
+        const EquationSchema *schema = nullptr;
+        int rank = 0, stage = 0;
+        NonlinearProblem operations;
         void Validate(const UpdatePolicyDescriptor &descriptor) const;
     };
 
@@ -55,7 +62,7 @@ namespace DNDS::Cauchy
     public:
         virtual ~UpdatePolicy() = default;
         virtual const UpdatePolicyDescriptor &Descriptor() const = 0;
-        virtual NonlinearIterationReport Execute(UpdatePolicyProblem problem) const = 0;
+        virtual NonlinearIterationReport Execute(BoundNonlinearProblem problem) const = 0;
     };
 
     /// Process-local setup registry. Registration is serialized and intended

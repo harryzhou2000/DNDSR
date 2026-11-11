@@ -550,7 +550,8 @@ namespace DNDS::Cauchy
     }
     std::array<real, 14> Domain::Diagnostics(const DomainSettings &settings, const std::vector<int> &forceZones)
     {
-        EvaluateObservation();
+        const auto snapshot = CaptureStateSnapshot(true);
+        EvaluateObservation(snapshot);
         std::array<real, 14> result{};
         result[13] = std::numeric_limits<real>::max();
         result[2] = result[3] = std::numeric_limits<real>::max();
@@ -560,13 +561,13 @@ namespace DNDS::Cauchy
             const auto &workers = _execution.ChemicalWorkers();
             auto evaluator = _problem.equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {});
             const auto geometry = _problem.finiteVolume.Metrics().AcquireRead(); const auto metric = geometry.HostView();
-            const auto read = _state.accepted.ReadOwned(), residual = _execution.observationState->ReadOwned();
+            const auto read = snapshot.Means().ReadOwned(), residual = _execution.observationState->ReadOwned();
             const auto flow = read.Block("flow");
             const auto layout = residual.ComponentLayout(); const auto rhs = layout.View();
             const int independent = _problem.equation.HasMixture() ? _problem.equation.Mixture().SpeciesNumber() - 1 : 0;
             std::optional<EquationBlockReadView> species;
             if (independent) species.emplace(read.Block("species"));
-            const index width = _state.accepted.ComponentNumber();
+            const index width = snapshot.Means().ComponentNumber();
             auto rhoY = evaluator.SpeciesInput();
             for (index iCell = 0; iCell < _problem.finiteVolume.Metrics().NumCell(); ++iCell)
             {
@@ -600,7 +601,7 @@ namespace DNDS::Cauchy
         result[9] = _problem.finiteVolume.LastReconstructionUpdate(*_execution.observationWorkspace);
         if (!_problem.equation.HasMixture() && !_problem.equation.HasRANS() && settings.initialProfile.kind == "isentropicVortex")
         {
-            const auto error = _problem.finiteVolume.Error(_state.accepted, settings.initialProfile, settings.initialPrimitive, _state.time);
+            const auto error = _problem.finiteVolume.Error(snapshot.Means(), settings.initialProfile, settings.initialPrimitive, snapshot.Time());
             for (int i = 0; i < 3; ++i)
                 result[10 + i] = error[i][0];
         }
@@ -608,8 +609,9 @@ namespace DNDS::Cauchy
     }
     void Domain::WriteVisualization(const std::string &prefix, int hdfDeflateLevel)
     {
-        EvaluateObservation();
-        _problem.finiteVolume.WriteVisualization(*_execution.observationInput, *_execution.observationReconstruction, *_execution.observationWorkspace, prefix, _state.time, hdfDeflateLevel, _execution.ChemicalWorkers());
+        const auto snapshot = CaptureStateSnapshot(true);
+        EvaluateObservation(snapshot);
+        _problem.finiteVolume.WriteVisualization(*_execution.observationInput, *_execution.observationReconstruction, *_execution.observationWorkspace, prefix, snapshot.Time(), hdfDeflateLevel, _execution.ChemicalWorkers());
     }
     void Domain::WriteInternalVisualization(const std::string &prefix, int hdfDeflateLevel)
     {
@@ -643,7 +645,12 @@ namespace DNDS::Cauchy
         _problem.finiteVolume.WriteVisualization(*_execution.observationInput, *_execution.observationReconstruction, *_execution.observationWorkspace, prefix, _state.progressTime,
                                                  hdfDeflateLevel, _execution.ChemicalWorkers());
     }
-    void Domain::EvaluateObservation()
+    DomainStateSnapshot Domain::CaptureStateSnapshot(
+        bool includeReconstruction) const
+    {
+        return DomainStateSnapshot(*this, includeReconstruction);
+    }
+    void Domain::EvaluateObservation(const DomainStateSnapshot &snapshot)
     {
         if (!_execution.observationWorkspace)
         {
@@ -651,8 +658,8 @@ namespace DNDS::Cauchy
             std::optional<EquationDofs> residual;
             MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
                             {
-                input.emplace(EquationDofOperations::NewVector(_state.accepted));
-                residual.emplace(EquationDofOperations::NewVector(_state.accepted)); });
+                input.emplace(EquationDofOperations::NewVector(snapshot.Means()));
+                residual.emplace(EquationDofOperations::NewVector(snapshot.Means())); });
             auto workspace = _problem.finiteVolume.BuildWorkspace(*input, _execution.ChemicalWorkers());
             auto reconstruction = _problem.finiteVolume.BuildReconstructionState(*input);
             _execution.observationInput = std::move(input);
@@ -671,15 +678,17 @@ namespace DNDS::Cauchy
         MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
                         {
             _execution.JoinPrimary();
-            EquationDofOperations::Copy(*_execution.observationInput, _state.accepted); });
+            EquationDofOperations::Copy(*_execution.observationInput, snapshot.Means()); });
         if (_problem.finiteVolume.PolynomialReconstruction())
         {
-            const auto &guess = _state.restoreReconstruction ? *_state.reconstructionBackup
-                                                             : _problem.finiteVolume.ReconstructionGuess(*_state.reconstruction);
-            _problem.finiteVolume.RestoreReconstructionGuess(*_execution.observationReconstruction, guess);
+            DNDS_check_throw_info(snapshot.Reconstruction(),
+                                  "observation snapshot lacks polynomial reconstruction");
+            _problem.finiteVolume.RestoreReconstructionGuess(
+                *_execution.observationReconstruction,
+                *snapshot.Reconstruction());
         }
         _problem.finiteVolume.Execute(*_execution.observationInput, *_execution.observationReconstruction,
                                       *_execution.observationWorkspace, _execution.Context(),
-                                      FiniteVolumeEvaluation::Spatial(*_execution.observationState, _state.time));
+                                      FiniteVolumeEvaluation::Spatial(*_execution.observationState, snapshot.Time()));
     }
 }

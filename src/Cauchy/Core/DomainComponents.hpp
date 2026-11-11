@@ -3,7 +3,7 @@
 #include "Cauchy/Core/DomainExecutionContext.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
-#include "Cauchy/Implicit/UpdatePolicy.hpp"
+#include "Cauchy/Implicit/NonlinearController.hpp"
 #include "Cauchy/Multigrid/PolynomialMultigrid.hpp"
 #include "Cauchy/Physics/EquationPositivity.hpp"
 #include "Cauchy/State/EquationTimeStepper.hpp"
@@ -90,7 +90,7 @@ namespace DNDS::Cauchy
             coupledFactory;
         Runtime::ArrayStorage::Shared coupledMiddleOwner;
         std::optional<EquationDofs> coupledResidual;
-        std::unique_ptr<UpdatePolicy> updatePolicy;
+        std::unique_ptr<NonlinearController> nonlinearController;
         DomainExecutionContext context;
 
         DomainExecution(const DomainProblem &problem, DomainState &state,

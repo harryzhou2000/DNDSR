@@ -18,16 +18,17 @@ namespace DNDS::Cauchy
                 return _descriptor;
             }
             NonlinearIterationReport Execute(
-                UpdatePolicyProblem problem) const override
+                BoundNonlinearProblem problem) const override
             {
                 problem.Validate(_descriptor);
+                auto &op = problem.operations;
                 return NonlinearDetail::Iterate(
                     *problem.settings, *problem.schema, problem.rank,
-                    problem.stage, problem.control, std::move(problem.initial),
-                    problem.reconstructionTolerance, problem.evaluate,
-                    problem.measure, problem.reconstruction,
+                    problem.stage, op.control, std::move(op.initial),
+                    op.reconstructionTolerance, op.evaluate,
+                    op.measure, op.reconstruction,
                     [&](auto &report)
-                    { problem.advanceStage(0, report); },
+                    { op.advanceStage(0, report); },
                     _descriptor.observation);
             }
         };
@@ -44,20 +45,21 @@ namespace DNDS::Cauchy
                 return _descriptor;
             }
             NonlinearIterationReport Execute(
-                UpdatePolicyProblem problem) const override
+                BoundNonlinearProblem problem) const override
             {
                 problem.Validate(_descriptor);
+                auto &op = problem.operations;
                 return NonlinearDetail::Iterate(
                     *problem.settings, *problem.schema, problem.rank,
-                    problem.stage, problem.control, std::move(problem.initial),
-                    problem.reconstructionTolerance, problem.evaluate,
-                    problem.measure, problem.reconstruction,
+                    problem.stage, op.control, std::move(op.initial),
+                    op.reconstructionTolerance, op.evaluate,
+                    op.measure, op.reconstruction,
                     [&](auto &report)
                     {
                         for (int coupledStage = 0;
                              coupledStage < _descriptor.coupledStages;
                              ++coupledStage)
-                            problem.advanceStage(coupledStage, report);
+                            op.advanceStage(coupledStage, report);
                     },
                     _descriptor.observation);
             }
@@ -116,14 +118,16 @@ namespace DNDS::Cauchy
                      : "afterUpdate"},
                 {"method_stopping_residual", methodStoppingResidual}};
     }
-    void UpdatePolicyProblem::Validate(
+    void BoundNonlinearProblem::Validate(
         const UpdatePolicyDescriptor &descriptor) const
     {
+        const auto &op = operations;
         DNDS_check_throw_info(
-            settings && schema && evaluate && measure && reconstruction &&
-                advanceStage && descriptor.coupledStages > 0 &&
-                std::isfinite(reconstructionTolerance) &&
-                reconstructionTolerance >= 0,
+            settings && schema && op.evaluate && op.measure &&
+                op.reconstruction && op.advanceStage &&
+                descriptor.coupledStages > 0 &&
+                std::isfinite(op.reconstructionTolerance) &&
+                op.reconstructionTolerance >= 0,
             "incomplete nonlinear update-policy problem");
     }
     void UpdatePolicyRegistry::Register(UpdatePolicyDescriptor descriptor,

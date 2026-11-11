@@ -13,7 +13,7 @@
 #include "Cauchy/Implicit/PositivityReduction.hpp"
 #include "Cauchy/Core/LocalStage.hpp"
 #include "Cauchy/Implicit/LinearScaling.hpp"
-#include "Cauchy/Implicit/UpdatePolicy.hpp"
+#include "Cauchy/Implicit/NonlinearController.hpp"
 #include <exception>
 
 namespace DNDS::Cauchy
@@ -115,7 +115,7 @@ namespace DNDS::Cauchy
         real reconstructionTolerance;
         index flowFirst = -1, speciesFirst = -1, ransFirst = -1;
         NonlinearSolveState nonlinearState;
-        std::unique_ptr<UpdatePolicy> updatePolicy;
+        std::unique_ptr<NonlinearController> controller;
 
         Data(const FiniteVolume &fv, EquationDofs &state,
              std::shared_ptr<FiniteVolume::ReconstructionState> reconstructionState,
@@ -131,9 +131,11 @@ namespace DNDS::Cauchy
                                             (settings.jacobianAction == "directEvaluated" || settings.jacobianAction == "semiMatrixFree") ? OffDiagonalStorage::DirectEvaluated : OffDiagonalStorage::Assembled)),
               positivity(controls.numerics.positivity), reconstructionTolerance(settings.requireConvergedReconstruction && controls.numerics.reconstruction == "variational" ? controls.numerics.reconstructionTolerance : 0)
         {
-            updatePolicy = UpdatePolicyRegistry::Resolve(
-                "singleStageImplicit",
-                {1, NonlinearDetail::ResidualObservation::BeforeUpdate, false});
+            controller = std::make_unique<NonlinearController>(
+                settings, state.Schema(), mpi.rank, "singleStageImplicit",
+                UpdatePolicyRequirements{
+                    1, NonlinearDetail::ResidualObservation::BeforeUpdate,
+                    false});
             AuxiliaryRequest request;
             // This solve always needs face spectra. Prepare each mean's
             // p/a/diffusion bound once, then consume it across incident faces;
@@ -565,16 +567,15 @@ namespace DNDS::Cauchy
             stateSnapshot.reconstructionUpdateMeasured = report.reconstructionUpdateMeasured;
             return report;
         }
-        return data.updatePolicy->Execute(
-            {&data.settings, &state.Schema(), data.mpi.rank, stage,
-             std::move(control), std::move(initial),
-             data.reconstructionTolerance, evaluate, measure, reconstruction,
-             [advance](int coupledStage, auto &report)
-             {
-                 DNDS_check_throw_info(coupledStage == 0,
-                                       "single-stage nonlinear policy requested another stage");
-                 advance(report);
-             }});
+        return data.controller->Execute(
+            stage, {std::move(control), std::move(initial),
+                    data.reconstructionTolerance, evaluate, measure, reconstruction,
+                    [advance](int coupledStage, auto &report)
+                    {
+                        DNDS_check_throw_info(coupledStage == 0,
+                                              "single-stage nonlinear policy requested another stage");
+                        advance(report);
+                    }});
     }
     std::pair<int, real> NonlinearSolver::ReconstructionStats() const
     {

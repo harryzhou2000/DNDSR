@@ -49,7 +49,7 @@ namespace
             return _descriptor;
         }
         C::NonlinearIterationReport Execute(
-            C::UpdatePolicyProblem problem) const override
+            C::BoundNonlinearProblem problem) const override
         {
             problem.Validate(_descriptor);
             C::NonlinearIterationReport result;

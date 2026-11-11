@@ -26,12 +26,12 @@ namespace DNDS::Cauchy
     }
     Json Domain::UpdatePolicyMetadata() const
     {
-        if (!_execution.updatePolicy)
+        if (!_execution.nonlinearController)
             return {{"name", "explicit"},
                     {"coupled_stages", 0},
                     {"residual_observation", "none"},
                     {"method_stopping_residual", false}};
-        return _execution.updatePolicy->Descriptor().Metadata();
+        return _execution.nonlinearController->Policy().Metadata();
     }
     void Domain::InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh)
     {
@@ -52,12 +52,14 @@ namespace DNDS::Cauchy
                           _implicitControls = time.method == "ditr" ? time.ditr.ResolveControls(settings.implicit) : settings.implicit;
                           _ditrComponents = _problem.equation.Schema().ResolveComponents(settings.implicit.residualComponents);
                           const bool ditr = time.method == "ditr";
-                          _execution.updatePolicy = UpdatePolicyRegistry::Resolve(
+                          _execution.nonlinearController = std::make_unique<NonlinearController>(
+                              _implicitControls, _problem.equation.Schema(), mpi.rank,
                               _implicitControls.updatePolicy,
-                              {ditr ? 2 : 1,
-                               ditr ? NonlinearDetail::ResidualObservation::AfterUpdate
-                                    : NonlinearDetail::ResidualObservation::BeforeUpdate,
-                               ditr}); });
+                              UpdatePolicyRequirements{
+                                  ditr ? 2 : 1,
+                                  ditr ? NonlinearDetail::ResidualObservation::AfterUpdate
+                                       : NonlinearDetail::ResidualObservation::BeforeUpdate,
+                                  ditr}); });
         _execution.coupledFactory = [this, mesh, settings, mpi](EquationDofs &middle)
         {
             const auto reconstruction = _problem.finiteVolume.BuildReconstructionState(middle);
@@ -191,13 +193,13 @@ namespace DNDS::Cauchy
         else
             DNDS_check_throw_info(_state.coupledNonlinear.convergenceComponents == settings.residualComponents,
                                   "restored DITR convergence components differ");
-        DNDS_check_throw_info(_execution.updatePolicy,
+        DNDS_check_throw_info(_execution.nonlinearController,
                               "DITR update policy was not resolved");
-        const auto report = _execution.updatePolicy->Execute(
-            {&settings, &endpoint.Schema(), mpi.rank, 0, std::move(coupledControl),
-             std::move(initial), _coupledReconstructionTolerance, [&]
-             { method.AssembleStoppingResidual(endpoint, *_execution.coupledResidual); }, [&](auto &norms)
-             {
+        const auto report = _execution.nonlinearController->Execute(
+            0, {std::move(coupledControl), std::move(initial),
+                _coupledReconstructionTolerance, [&]
+                { method.AssembleStoppingResidual(endpoint, *_execution.coupledResidual); }, [&](auto &norms)
+                {
             std::vector<real> sum(norms.size() + 1, 0);
             MPI::LocalStage(mpi, [&]
             {
@@ -219,11 +221,11 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(std::isfinite(sum.back()) && sum.back() > 0, "invalid DITR global volume");
             for (index j = 0; j < index(norms.size()); ++j)
                 norms[j] = settings.normOrder == 1 ? sum[j] : std::sqrt(sum[j]); }, [&]
-             {
+                {
             const auto a = _coupledMiddle->reconstruction();
             const auto b = _execution.implicit->ReconstructionStats();
             return std::make_pair(std::max(a.first, b.first), std::max(a.second, b.second)); }, [&](int coupledStage, auto &iteration)
-             {
+                {
                 SetTimeStage(coupledStage);
                 const auto equation = method.PrepareCoupledStage(endpoint, coupledStage);
                 const auto &c = equation.coefficients;

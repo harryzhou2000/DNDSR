@@ -3,6 +3,7 @@
 #include "Cauchy/Core/StepResult.hpp"
 #include "Cauchy/Core/DomainComponents.hpp"
 #include "Cauchy/Core/CoordinatedSchedule.hpp"
+#include "Cauchy/Core/DomainStateSnapshot.hpp"
 #include "Cauchy/Physics/EquationSetup.hpp"
 #include "Cauchy/Physics/EquationRANS.hpp"
 #include "Cauchy/IO/CheckpointTransaction.hpp"
@@ -21,6 +22,7 @@ namespace DNDS::Cauchy
     class Domain
     {
         friend class DomainController;
+        friend class DomainStateSnapshot;
         DomainProblem _problem;
         DomainState _state;
         DomainExecution _execution;
@@ -46,7 +48,7 @@ namespace DNDS::Cauchy
         void ChemicalHalfStep(const EquationDofs &input, EquationDofs &output, real dt);
         void FinishChemicalStep();
         void PublishTrial(real time, StateEpoch epoch);
-        void EvaluateObservation();
+        void EvaluateObservation(const DomainStateSnapshot &snapshot);
         void InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh);
         void ConfigureTimeStep(const TimeSettings &time, int compressionPower);
         StepResult PrepareImplicitStep(real dt);
@@ -86,6 +88,11 @@ namespace DNDS::Cauchy
         /// it is the only orchestration API allowed to reserve or publish a
         /// coordinated trial candidate.
         DomainController Controller();
+        /// Pin one accepted generation for synchronous or asynchronous output.
+        /// The returned zero-copy snapshot blocks accepted-state publication
+        /// until all copies are released.
+        DomainStateSnapshot CaptureStateSnapshot(
+            bool includeReconstruction = false) const;
         const std::string &Name() const { return _problem.name; }
         const EquationSystem &Equation() const { return _problem.equation; }
         const FiniteVolume &Discretization() const { return _problem.finiteVolume; }

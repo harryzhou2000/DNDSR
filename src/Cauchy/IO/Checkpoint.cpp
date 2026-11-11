@@ -427,22 +427,21 @@ namespace DNDS::Cauchy
     {
         const MPIInfo mpi(_problem.finiteVolume.Metrics().Communicator());
         includeReconstruction = includeReconstruction && bool(_problem.finiteVolume.PolynomialReconstruction());
-        const bool history = _state.timeStepper && _state.timeStepper->Method() == "bdf2" && _state.timeStepper->HasHistory();
-        const bool limitedVRHistory = includeReconstruction && bool(_problem.finiteVolume.LimitedVRHistory(*_state.reconstruction));
+        const auto snapshot = CaptureStateSnapshot(includeReconstruction);
+        const bool history = bool(snapshot.PreviousState());
+        const bool limitedVRHistory = bool(snapshot.LimitedVRHistory());
         int flags[]{int(includeReconstruction), -int(includeReconstruction), int(history), -int(history), int(limitedVRHistory), -int(limitedVRHistory)};
         MPI::AllreduceInPlace<MPI::Reduction::Min>(
             MPI::ContiguousView<int>{flags, 6}, mpi.comm);
         DNDS_check_throw_info(flags[0] == -flags[1] && flags[2] == -flags[3] && flags[4] == -flags[5], "checkpoint optional sections differ between ranks");
-        Json metadata{{"schema_version", 1}, {"mesh_envelope", 2}, {"flow", EquationMetadata(_problem.equation)}, {"reconstruction", _problem.finiteVolume.ReconstructionMetadata()}, {"time_method", _state.timeStepper ? _state.timeStepper->Method() : "ssprk3"}, {"history", history}, {"limited_vr_history", limitedVRHistory}, {"limited_vr_history_schema", 1}, {"frame", FrameMetadata(_problem.finiteVolume, _state.time)}};
+        Json metadata{{"schema_version", 1}, {"mesh_envelope", 2}, {"flow", EquationMetadata(_problem.equation)}, {"reconstruction", _problem.finiteVolume.ReconstructionMetadata()}, {"time_method", snapshot.TimeMethod()}, {"history", history}, {"limited_vr_history", limitedVRHistory}, {"limited_vr_history_schema", 1}, {"frame", FrameMetadata(_problem.finiteVolume, snapshot.Time())}};
         metadata["restart_scope"] = "accepted_step";
-        metadata["update_policy"] = UpdatePolicyMetadata();
-        metadata["nonlinear_state"] = _state.timeStepper && _state.timeStepper->Method() == "ditr"
-                                          ? _state.coupledNonlinear.ToJson()
-                                          : (_execution.implicit ? _execution.implicit->StateJson() : NonlinearSolveState{}.ToJson());
-        metadata["state_storage"] = DescribeEquationStorage(_state.accepted);
+        metadata["update_policy"] = snapshot.UpdatePolicy();
+        metadata["nonlinear_state"] = snapshot.NonlinearState();
+        metadata["state_storage"] = DescribeEquationStorage(snapshot.Means());
         if (includeReconstruction)
-            metadata["reconstruction_storage"] = DescribeEquationStorage(_problem.finiteVolume.ReconstructionGuess(*_state.reconstruction));
-        metadata["source_integration"] = _sourceStrang ? "strang" : "coupled";
+            metadata["reconstruction_storage"] = DescribeEquationStorage(*snapshot.Reconstruction());
+        metadata["source_integration"] = snapshot.SourceStrang() ? "strang" : "coupled";
         auto serializer = std::make_shared<Serializer::SerializerH5>(mpi);
         serializer->OpenFile(path, false);
         serializer->WriteInt("cauchy_format", 5);
@@ -450,10 +449,10 @@ namespace DNDS::Cauchy
         serializer->WriteString("metadata_json", metadata.dump());
         if (!outputController.is_null())
             serializer->WriteString("output_controller_json", outputController.dump());
-        serializer->WriteString("domain_name", _problem.name);
-        serializer->WriteReal("accepted_time", _state.time);
-        serializer->WriteReal("last_accepted_dt", _state.lastAcceptedDt);
-        serializer->WriteIndex("accepted_step", index(_state.epoch.acceptedStep));
+        serializer->WriteString("domain_name", snapshot.Name());
+        serializer->WriteReal("accepted_time", snapshot.Time());
+        serializer->WriteReal("last_accepted_dt", snapshot.LastAcceptedDt());
+        serializer->WriteIndex("accepted_step", index(snapshot.Epoch().acceptedStep));
         Runtime::WriteArray(CellIds(*this), serializer, "cell_ids", mpi);
         std::optional<MeshEnvelope> envelope;
         MPI::LocalStage(mpi, [&]
@@ -461,15 +460,15 @@ namespace DNDS::Cauchy
         Runtime::WriteArray(envelope->topology, serializer, "mesh_topology", mpi);
         Runtime::WriteArray(envelope->coordinates, serializer, "mesh_coordinates", mpi);
         Runtime::WriteArray(envelope->periodicTransforms, serializer, "periodic_transforms", mpi);
-        WriteEquationArrays(_state.accepted, serializer, "state_field_", mpi);
+        WriteEquationArrays(snapshot.Means(), serializer, "state_field_", mpi);
         if (includeReconstruction)
-            WriteEquationArrays(_state.restoreReconstruction ? *_state.reconstructionBackup : _problem.finiteVolume.ReconstructionGuess(*_state.reconstruction), serializer, "reconstruction_field_", mpi);
+            WriteEquationArrays(*snapshot.Reconstruction(), serializer, "reconstruction_field_", mpi);
         if (limitedVRHistory)
-            Runtime::WriteArray(_state.restoreReconstruction ? *_state.limitedVRBackup : *_problem.finiteVolume.LimitedVRHistory(*_state.reconstruction), serializer, "limited_vr_history", mpi);
+            Runtime::WriteArray(*snapshot.LimitedVRHistory(), serializer, "limited_vr_history", mpi);
         if (history)
         {
-            serializer->WriteReal("history_dt", _state.timeStepper->PreviousDt());
-            WriteEquationArrays(_state.timeStepper->PreviousState(), serializer, "history_field_", mpi);
+            serializer->WriteReal("history_dt", snapshot.PreviousDt());
+            WriteEquationArrays(*snapshot.PreviousState(), serializer, "history_field_", mpi);
         }
         serializer->CloseFile();
     }
@@ -479,6 +478,7 @@ namespace DNDS::Cauchy
     {
         const MPIInfo mpi(_problem.finiteVolume.Metrics().Communicator());
         const bool polynomial = bool(_problem.finiteVolume.PolynomialReconstruction());
+        const auto acceptedSnapshot = CaptureStateSnapshot(polynomial);
         std::optional<EquationTimeStepper::ActiveCheckpoint> active;
         MPI::LocalStage(mpi, [&]
                         {
@@ -490,8 +490,8 @@ namespace DNDS::Cauchy
         MPI::LocalStage(mpi, [&]
                         { DNDS_check_throw_info(!ditr || (_coupledMiddle && _coupledMiddle->state),
                                                 "DITR internal checkpoint lacks its midpoint reconstruction"); });
-        const bool acceptedHistory = _state.timeStepper->Method() == "bdf2" && _state.timeStepper->HasHistory();
-        const bool acceptedLimitedVR = polynomial && bool(_state.limitedVRBackup);
+        const bool acceptedHistory = bool(acceptedSnapshot.PreviousState());
+        const bool acceptedLimitedVR = polynomial && bool(acceptedSnapshot.LimitedVRHistory());
         const bool endpointLimitedVR = polynomial && bool(_problem.finiteVolume.LimitedVRHistory(*_state.reconstruction));
         const bool middleLimitedVR = polynomial && ditr && bool(_problem.finiteVolume.LimitedVRHistory(*_coupledMiddle->state));
         Json timePayloads = Json::array();
@@ -528,21 +528,21 @@ namespace DNDS::Cauchy
                       {"history", acceptedHistory},
                       {"limited_vr_history", acceptedLimitedVR},
                       {"limited_vr_history_schema", 1},
-                      {"frame", FrameMetadata(_problem.finiteVolume, _state.time)},
+                      {"frame", FrameMetadata(_problem.finiteVolume, acceptedSnapshot.Time())},
                       {"restart_scope", "exact_internal"},
-                      {"update_policy", UpdatePolicyMetadata()},
+                      {"update_policy", acceptedSnapshot.UpdatePolicy()},
                       {"nonlinear_state", state.ToJson()},
                       {"trial_epoch", trialEpoch},
                       {"trial_dt", _state.trialDt},
                       {"progress_time", _state.progressTime},
                       {"time_state", timeState},
-                      {"state_storage", DescribeEquationStorage(_state.accepted)},
+                      {"state_storage", DescribeEquationStorage(acceptedSnapshot.Means())},
                       {"endpoint_limited_vr_history", endpointLimitedVR},
                       {"middle_limited_vr_history", middleLimitedVR},
                       {"source_integration", _sourceStrang ? "strang" : "coupled"}};
         if (polynomial)
         {
-            metadata["reconstruction_storage"] = DescribeEquationStorage(*_state.reconstructionBackup);
+            metadata["reconstruction_storage"] = DescribeEquationStorage(*acceptedSnapshot.Reconstruction());
             metadata["endpoint_warm_storage"] = DescribeEquationStorage(_problem.finiteVolume.ReconstructionGuess(*_state.reconstruction));
             metadata["endpoint_final_storage"] = DescribeEquationStorage(_problem.finiteVolume.FluxReconstruction(*_state.reconstruction, *_execution.workspace));
         }
@@ -559,10 +559,10 @@ namespace DNDS::Cauchy
         serializer->WriteString("metadata_json", metadata.dump());
         if (!outputController.is_null())
             serializer->WriteString("output_controller_json", outputController.dump());
-        serializer->WriteString("domain_name", _problem.name);
-        serializer->WriteReal("accepted_time", _state.time);
-        serializer->WriteReal("last_accepted_dt", _state.lastAcceptedDt);
-        serializer->WriteIndex("accepted_step", index(_state.epoch.acceptedStep));
+        serializer->WriteString("domain_name", acceptedSnapshot.Name());
+        serializer->WriteReal("accepted_time", acceptedSnapshot.Time());
+        serializer->WriteReal("last_accepted_dt", acceptedSnapshot.LastAcceptedDt());
+        serializer->WriteIndex("accepted_step", index(acceptedSnapshot.Epoch().acceptedStep));
         Runtime::WriteArray(CellIds(*this), serializer, "cell_ids", mpi);
         std::optional<MeshEnvelope> envelope;
         MPI::LocalStage(mpi, [&]
@@ -570,15 +570,15 @@ namespace DNDS::Cauchy
         Runtime::WriteArray(envelope->topology, serializer, "mesh_topology", mpi);
         Runtime::WriteArray(envelope->coordinates, serializer, "mesh_coordinates", mpi);
         Runtime::WriteArray(envelope->periodicTransforms, serializer, "periodic_transforms", mpi);
-        WriteEquationArrays(_state.accepted, serializer, "state_field_", mpi);
+        WriteEquationArrays(acceptedSnapshot.Means(), serializer, "state_field_", mpi);
         if (polynomial)
-            WriteEquationArrays(*_state.reconstructionBackup, serializer, "reconstruction_field_", mpi);
+            WriteEquationArrays(*acceptedSnapshot.Reconstruction(), serializer, "reconstruction_field_", mpi);
         if (acceptedLimitedVR)
-            Runtime::WriteArray(*_state.limitedVRBackup, serializer, "limited_vr_history", mpi);
+            Runtime::WriteArray(*acceptedSnapshot.LimitedVRHistory(), serializer, "limited_vr_history", mpi);
         if (acceptedHistory)
         {
-            serializer->WriteReal("history_dt", _state.timeStepper->PreviousDt());
-            WriteEquationArrays(_state.timeStepper->PreviousState(), serializer, "history_field_", mpi);
+            serializer->WriteReal("history_dt", acceptedSnapshot.PreviousDt());
+            WriteEquationArrays(*acceptedSnapshot.PreviousState(), serializer, "history_field_", mpi);
         }
         for (index i = 0; i < index(active->fields.size()); ++i)
             WriteEquationArrays(active->fields[size_t(i)], serializer,

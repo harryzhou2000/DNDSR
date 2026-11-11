@@ -52,6 +52,26 @@ namespace
         MPI_Barrier(mpi.comm);
     }
 }
+
+TEST_CASE("Accepted domain snapshots pin one immutable mean generation")
+{
+    C::DomainSettings settings;
+    C::Domain domain("snapshot", CauchyTest::PeriodicQuads(mpi, 3), settings);
+    {
+        const auto snapshot = domain.CaptureStateSnapshot();
+        const auto retained = snapshot;
+        CHECK(snapshot.Name() == "snapshot");
+        CHECK(snapshot.Time() == doctest::Approx(0));
+        CHECK(snapshot.Epoch().acceptedStep == 0);
+        CHECK(snapshot.Means().ComponentNumber() == domain.Dofs().ComponentNumber());
+        CHECK_FALSE(snapshot.Reconstruction());
+        CHECK_THROWS(domain.Dofs().WriteOwned());
+        CHECK(retained.Means().PhysicalField(0).Owned().SharedStorage() ==
+              snapshot.Means().PhysicalField(0).Owned().SharedStorage());
+    }
+    auto write = domain.Dofs().WriteOwned();
+    write.CancelUnmodified();
+}
 TEST_CASE("Equation archive remaps coupled and split fields without confusing component ranges")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 3);
