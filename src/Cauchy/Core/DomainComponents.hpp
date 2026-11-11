@@ -54,9 +54,9 @@ namespace DNDS::Cauchy
                     const std::vector<real> &initialConservative);
     };
 
-    /// Current two-stage nonlinear operator bundle. Durable midpoint/end
-    /// reconstruction state remains explicit while the callable portion will
-    /// migrate behind UpdatePolicy in the next controller phase.
+    /// Two-stage nonlinear operator bundle consumed by the registered DITR
+    /// update policy. Durable midpoint/end reconstruction state remains owned
+    /// by Domain/time-method storage; these callables are synchronous borrows.
     struct DomainCoupledStageOperator
     {
         EquationTimeStepper::Evaluate evaluate;

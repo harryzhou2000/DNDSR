@@ -283,8 +283,14 @@ namespace DNDS::Cauchy
             _state.progressTime = time;
             SetTimeStage(stage);
             const auto progress = ProgressControl();
-            return RecordImplicitStage(_execution.multigrid ? _execution.multigrid->Solve(source, mass, scale, time, stage, progress)
-                                                            : _execution.implicit->Solve(state, source, mass, scale, time, stage, progress));
+            return RecordImplicitStage(
+                _execution.multigrid
+                    ? _execution.multigrid->SolveWithController(
+                          *_execution.nonlinearController, source, mass, scale,
+                          time, stage, progress)
+                    : _execution.implicit->SolveWithController(
+                          *_execution.nonlinearController, state, source, mass,
+                          scale, time, stage, progress));
         };
         const auto coupled = [&](EquationTimeStepper::DITR &method, EquationDofs &endpoint)
         { return SolveCoupledImplicit(method, endpoint, false); };
@@ -348,8 +354,14 @@ namespace DNDS::Cauchy
                 SetTimeStage(stage);
                 auto control = ProgressControl();
                 control.resume = true;
-                return RecordImplicitStage(_execution.multigrid ? _execution.multigrid->Solve(source, mass, scale, time, stage, control)
-                                                                : _execution.implicit->Solve(state, source, mass, scale, time, stage, control));
+                return RecordImplicitStage(
+                    _execution.multigrid
+                        ? _execution.multigrid->SolveWithController(
+                              *_execution.nonlinearController, source, mass,
+                              scale, time, stage, control)
+                        : _execution.implicit->SolveWithController(
+                              *_execution.nonlinearController, state, source,
+                              mass, scale, time, stage, control));
             };
             prepared = _state.timeStepper->SolvePreparedStage(restored, _state.trial, resumeSolve);
             if (prepared)
@@ -366,8 +378,16 @@ namespace DNDS::Cauchy
                             _state.progressTime = time;
                             SetTimeStage(stage);
                             const auto control = ProgressControl();
-                            return RecordImplicitStage(_execution.multigrid ? _execution.multigrid->Solve(source, mass, scale, time, stage, control)
-                                                                            : _execution.implicit->Solve(state, source, mass, scale, time, stage, control));
+                            return RecordImplicitStage(
+                                _execution.multigrid
+                                    ? _execution.multigrid->SolveWithController(
+                                          *_execution.nonlinearController,
+                                          source, mass, scale, time, stage,
+                                          control)
+                                    : _execution.implicit->SolveWithController(
+                                          *_execution.nonlinearController,
+                                          state, source, mass, scale, time,
+                                          stage, control));
                         };
                         accepted = _state.timeStepper->SolvePreparedStage(equation, _state.trial, normalSolve);
                     }

@@ -4,6 +4,7 @@
 
 namespace DNDS::Cauchy
 {
+    class NonlinearController;
     class DomainExecutionContext;
     /// Same-cell FAS hierarchy: high-order VR -> direct-gradient O2 -> first
     /// order convection. All levels retain viscous gradients/physical BCs.
@@ -49,6 +50,10 @@ namespace DNDS::Cauchy
         /// mutable VR warm guesses; they are reset by restriction every cycle.
         NonlinearIterationReport Solve(const EquationDofs &source, real mass, real rhsScale, real time, int stage = 0,
                                        NonlinearSolveControl control = {});
+        NonlinearIterationReport SolveWithController(
+            const NonlinearController &controller, const EquationDofs &source,
+            real mass, real rhsScale, real time, int stage = 0,
+            NonlinearSolveControl control = {});
         /// One finest update, with bounded CorrectOnce smoothing at each level.
         /// No convergence loop/reference reset; pseudoCFL comes from the caller.
         /// Other-stage inputs in source must remain frozen throughout the cycle.

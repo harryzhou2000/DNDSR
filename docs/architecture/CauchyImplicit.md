@@ -126,8 +126,11 @@ the already validated time method/configuration.
 The registry is a setup-time extension point. A focused test registers another
 compatible one-stage policy without modifying `NonlinearSolver` or `Domain` and
 rejects the same policy under a two-stage DITR requirement. p-FAS smoothers do
-not resolve or nest this finest policy: they continue to call bounded
-`CorrectOnce` operations inside the selected outer update.
+not resolve or nest the finest policy: they continue to call bounded
+`CorrectOnce` operations inside a cycle. The finest p-FAS `ApplyCycle` is a
+correction provider invoked by the same domain-owned `NonlinearController` as a
+non-multigrid correction. Standalone pMG retains a prepared one-stage fallback
+controller for its operator/Python facade.
 
 Production one-domain and multi-domain stepping now share
 `SimulationController`. `StateTimeStepper::BeginCoupled` initializes DITR's
@@ -150,6 +153,13 @@ claim convergence. Input halos may be stale; the physical evaluation handles
 its exchanges. Output guarantees owned values only. Calls remain synchronous
 and serialized against the bound state/workspace/engine.
 
+The nonlinear loop itself has one production entry:
+`NonlinearController::Execute`. Policies implement only `Advance`, naming the
+ordered one-stage or midpoint/endpoint corrections. They cannot replace
+convergence/reference state, CFL progression, caps, progress/checkpoint
+publication or resume semantics. `NonlinearDetail::Iterate` is the controller's
+implementation utility rather than a second production orchestration route.
+
 Nonlinear, linear and pMG sessions are move-only. Their mutable implementations
 reserve an operation-level exclusion ticket, outside numerical loops. The finest
 pMG session is an explicit retained alias; a cycle holds its ticket while nested
@@ -170,8 +180,9 @@ bundle; nonmembers supply none and still enter the collective coupling schedule.
 
 `PolynomialMultigrid::ApplyCycle` is one finest update. Its bounded smoothers
 call `CorrectOnce`; they do not restart convergence policy or pseudo-CFL growth.
-The compatibility `Solve` frontend uses the same `NonlinearDetail::Iterate`
-controller as direct solves. `iterations` counts finest V-cycles;
+The production `SolveWithController` frontend uses the domain's prepared
+`NonlinearController`; the standalone `Solve` facade uses an equivalent
+prepared one-stage fallback. `iterations` counts finest V-cycles;
 `levelCorrections` separately counts level smoothing work. `multigrid.cycles`
 remains the cap for this compatibility frontend. Source coefficients and frozen
 other-stage terms are unchanged throughout a cycle. Temporal-pMG is deferred.

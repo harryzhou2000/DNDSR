@@ -531,8 +531,16 @@ namespace DNDS::Cauchy
                                                                              {
                                                                                  _state.progressTime = time;
                                                                                  SetTimeStage(stage);
-                                                                                 return RecordImplicitStage(_execution.multigrid ? _execution.multigrid->Solve(source, mass, rhsScale, time, stage, ProgressControl())
-                                                                                                                                 : _execution.implicit->Solve(trial, source, mass, rhsScale, time, stage, ProgressControl()));
+                                                                                 return RecordImplicitStage(
+                                                                                     _execution.multigrid
+                                                                                         ? _execution.multigrid->SolveWithController(
+                                                                                               *_execution.nonlinearController,
+                                                                                               source, mass, rhsScale, time,
+                                                                                               stage, ProgressControl())
+                                                                                         : _execution.implicit->SolveWithController(
+                                                                                               *_execution.nonlinearController,
+                                                                                               trial, source, mass, rhsScale,
+                                                                                               time, stage, ProgressControl()));
                                                                              });
                 if (!accepted)
                     return StepResult::Rejected("coordinated implicit stage reached its correction cap");

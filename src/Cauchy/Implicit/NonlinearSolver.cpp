@@ -282,7 +282,16 @@ namespace DNDS::Cauchy
     NonlinearIterationReport NonlinearSolver::Solve(EquationDofs &state, const EquationDofs &source,
                                                     real mass, real rhsScale, real time, int stage, NonlinearSolveControl control)
     {
-        return Execute(state, source, mass, rhsScale, time, stage, std::move(control), false, {});
+        return Execute(state, source, mass, rhsScale, time, stage,
+                       std::move(control), false, {});
+    }
+    NonlinearIterationReport NonlinearSolver::SolveWithController(
+        const NonlinearController &controller, EquationDofs &state,
+        const EquationDofs &source, real mass, real rhsScale, real time,
+        int stage, NonlinearSolveControl control)
+    {
+        return Execute(state, source, mass, rhsScale, time, stage,
+                       std::move(control), false, {}, std::cref(controller));
     }
     NonlinearIterationReport NonlinearSolver::CorrectOnce(EquationDofs &state, const EquationDofs &source,
                                                           real mass, real rhsScale, real time, int stage,
@@ -327,7 +336,8 @@ namespace DNDS::Cauchy
     NonlinearIterationReport NonlinearSolver::Execute(EquationDofs &state, const EquationDofs &source,
                                                       real mass, real rhsScale, real time, int stage,
                                                       NonlinearSolveControl control, bool singleCorrection,
-                                                      OptionalRef<const EquationDofs> cachedRate)
+                                                      OptionalRef<const EquationDofs> cachedRate,
+                                                      OptionalRef<const NonlinearController> controller)
     {
         DNDS_check_throw_info(_data, "nonlinear session was moved");
         auto session = _data->session.Acquire(_nestedSession.lock());
@@ -567,7 +577,9 @@ namespace DNDS::Cauchy
             stateSnapshot.reconstructionUpdateMeasured = report.reconstructionUpdateMeasured;
             return report;
         }
-        return data.controller->Execute(
+        const auto &activeController = controller ? *controller
+                                                  : *data.controller;
+        return activeController.Execute(
             stage, {std::move(control), std::move(initial),
                     data.reconstructionTolerance, evaluate, measure, reconstruction,
                     [advance](int coupledStage, auto &report)

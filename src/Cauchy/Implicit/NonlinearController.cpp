@@ -16,7 +16,14 @@ namespace DNDS::Cauchy
     NonlinearIterationReport NonlinearController::Execute(
         int stage, NonlinearProblem problem) const
     {
-        return _policy->Execute(
-            {&_settings, &_schema, _rank, stage, std::move(problem)});
+        const auto &descriptor = _policy->Descriptor();
+        problem.Validate(descriptor);
+        return NonlinearDetail::Iterate(
+            _settings, _schema, _rank, stage, problem.control,
+            std::move(problem.initial), problem.reconstructionTolerance,
+            problem.evaluate, problem.measure, problem.reconstruction,
+            [&](auto &report)
+            { _policy->Advance(problem, report); },
+            descriptor.observation);
     }
 }

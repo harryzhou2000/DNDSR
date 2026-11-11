@@ -4,6 +4,7 @@
 #include "Cauchy/Implicit/PositivityReduction.hpp"
 #include "Cauchy/Implicit/ResidualConvergence.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
+#include "Cauchy/Implicit/NonlinearController.hpp"
 #include "Cauchy/Implicit/UpdatePolicy.hpp"
 #include "Cauchy/Implicit/LinearScaling.hpp"
 #include "CartesianFixture.hpp"
@@ -44,17 +45,17 @@ namespace
             C::NonlinearDetail::ResidualObservation::BeforeUpdate, false};
 
     public:
+        inline static int visits = 0;
         const C::UpdatePolicyDescriptor &Descriptor() const override
         {
             return _descriptor;
         }
-        C::NonlinearIterationReport Execute(
-            C::BoundNonlinearProblem problem) const override
+        void Advance(C::NonlinearProblem &problem,
+                     C::NonlinearIterationReport &report) const override
         {
             problem.Validate(_descriptor);
-            C::NonlinearIterationReport result;
-            result.iterations = 17;
-            return result;
+            ++visits;
+            problem.advanceStage(0, report);
         }
     };
 }
@@ -70,6 +71,28 @@ TEST_CASE("Update policies register without changing nonlinear orchestration")
         "testRegisteredOneStage", compatible);
     CHECK(policy->Descriptor().name == "testRegisteredOneStage");
     CHECK(policy->Descriptor().Metadata().at("coupled_stages") == 1);
+
+    C::ImplicitSettings settings;
+    settings.iterations = settings.minIterations = 1;
+    settings.absoluteTolerance = 1e-12;
+    settings.relativeTolerance = 0;
+    const auto schema = C::EquationSystem::Resolve(C::EquationSettings{}).Schema();
+    C::NonlinearController controller(settings, schema, mpi.rank,
+                                      "testRegisteredOneStage", compatible);
+    double value = 1;
+    RegisteredOneStagePolicy::visits = 0;
+    const auto report = controller.Execute(
+        0, {{}, C::NonlinearIterationReport{}, 0, [] {}, [&](auto &norms)
+            { std::fill(norms.begin(), norms.end(), value); },
+            []
+            { return std::make_pair(0, 0.); },
+            [&](int stage, auto &)
+            {
+                CHECK(stage == 0);
+                value = 0;
+            }});
+    CHECK(report.converged);
+    CHECK(RegisteredOneStagePolicy::visits == 1);
 
     const C::UpdatePolicyRequirements incompatible{
         2, C::NonlinearDetail::ResidualObservation::AfterUpdate, true};
@@ -151,15 +174,24 @@ TEST_CASE("Shared nonlinear controller observes coupled updates once and advance
     std::vector<int> visits;
     std::vector<double> cfl;
     double value = 1;
-    const auto report = C::NonlinearDetail::Iterate(settings, schema, mpi.rank, 0, {}, C::NonlinearIterationReport{}, 0, [&]
-                                                    { visits.push_back(2); }, [&](auto &norms)
-                                                    { norms[0] = value; visits.push_back(3); }, []
-                                                    { return std::make_pair(0, 0.); }, [&](auto &current)
-                                                    {
-            cfl.push_back(current.pseudoCFL);
-            visits.push_back(0); // Intermediate correction + refresh.
-            visits.push_back(1); // Endpoint correction + refresh.
-            value *= .5; }, C::NonlinearDetail::ResidualObservation::AfterUpdate);
+    C::NonlinearController controller(
+        settings, schema, mpi.rank, "ditrSequential2Stage",
+        {2, C::NonlinearDetail::ResidualObservation::AfterUpdate, true});
+    const auto report = controller.Execute(
+        0, {{}, C::NonlinearIterationReport{}, 0, [&]
+            { visits.push_back(2); },
+            [&](auto &norms)
+            { norms[0] = value; visits.push_back(3); },
+            []
+            { return std::make_pair(0, 0.); },
+            [&](int coupledStage, auto &current)
+            {
+                if (coupledStage == 0)
+                    cfl.push_back(current.pseudoCFL);
+                visits.push_back(coupledStage);
+                if (coupledStage == 1)
+                    value *= .5;
+            }});
     CHECK(report.converged);
     CHECK(report.iterations == 2);
     CHECK(report.initialResidual[0] == .5);
@@ -181,10 +213,21 @@ TEST_CASE("Nonlinear controller resumes after a completed correction without res
     const auto schema = C::EquationSystem::Resolve(C::EquationSettings{}).Schema();
     const auto run = [&](double &value, C::NonlinearSolveControl control)
     {
-        return C::NonlinearDetail::Iterate(settings, schema, mpi.rank, 0, control, C::NonlinearIterationReport{}, 0, [] {}, [&](auto &norms)
-                                           { std::fill(norms.begin(), norms.end(), value); }, []
-                                           { return std::make_pair(0, 0.); }, [&](auto &)
-                                           { value *= .5; });
+        C::NonlinearController controller(
+            settings, schema, mpi.rank, "singleStageImplicit",
+            {1, C::NonlinearDetail::ResidualObservation::BeforeUpdate, false});
+        return controller.Execute(
+            0, {std::move(control), C::NonlinearIterationReport{}, 0,
+                [] {},
+                [&](auto &norms)
+                { std::fill(norms.begin(), norms.end(), value); },
+                []
+                { return std::make_pair(0, 0.); },
+                [&](int coupledStage, auto &)
+                {
+                    CHECK(coupledStage == 0);
+                    value *= .5;
+                }});
     };
 
     double uninterruptedValue = 1;
@@ -232,9 +275,18 @@ TEST_CASE("Cauchy nonlinear progress reports completed iterations and zero-based
     C::NonlinearSolveControl control;
     control.progress = [&](const auto &progress)
     { captured.push_back(progress); };
-    const auto report = C::NonlinearDetail::Iterate(settings, schema, mpi.rank, 0, control, C::NonlinearIterationReport{}, 0, [] {}, [](auto &norms)
-                                                    { norms[0] = 1; }, []
-                                                    { return std::make_pair(0, 0.); }, [](auto &) {});
+    C::NonlinearController controller(
+        settings, schema, mpi.rank, "singleStageImplicit",
+        {1, C::NonlinearDetail::ResidualObservation::BeforeUpdate, false});
+    const auto report = controller.Execute(
+        0, {std::move(control), C::NonlinearIterationReport{}, 0,
+            [] {},
+            [](auto &norms)
+            { norms[0] = 1; },
+            []
+            { return std::make_pair(0, 0.); },
+            [](int coupledStage, auto &)
+            { CHECK(coupledStage == 0); }});
     CHECK(report.converged);
     REQUIRE(captured.size() == 2);
     CHECK(captured[0].stage == 0);

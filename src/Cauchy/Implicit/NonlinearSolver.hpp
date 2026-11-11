@@ -7,6 +7,7 @@
 namespace DNDS::Cauchy
 {
     class DomainExecutionContext;
+    class NonlinearController;
     /// Live nonlinear controller state. This object contains only small,
     /// JSON-serializable values; field payloads and runtime resources belong to
     /// the checkpoint bundle and execution context respectively.
@@ -142,7 +143,8 @@ namespace DNDS::Cauchy
         NonlinearIterationReport Execute(EquationDofs &state, const EquationDofs &source,
                                          real mass, real rhsScale, real time, int stage,
                                          NonlinearSolveControl control, bool singleCorrection,
-                                         OptionalRef<const EquationDofs> cachedRate);
+                                         OptionalRef<const EquationDofs> cachedRate,
+                                         OptionalRef<const NonlinearController> controller = {});
 
     public:
         NonlinearSolver(const NonlinearSolver &) = delete;
@@ -168,6 +170,14 @@ namespace DNDS::Cauchy
                         const Algebra::ComponentSelection &residualSelection);
         NonlinearIterationReport Solve(EquationDofs &state, const EquationDofs &source, real mass, real rhsScale, real time,
                                        int stage = 0, NonlinearSolveControl control = {});
+        /// Execute the full nonlinear loop through a domain/time-method-owned
+        /// controller. This is the production orchestration path; the ordinary
+        /// Solve overload retains the solver-local one-stage controller for
+        /// standalone operator/debug use.
+        NonlinearIterationReport SolveWithController(
+            const NonlinearController &controller, EquationDofs &state,
+            const EquationDofs &source, real mass, real rhsScale, real time,
+            int stage = 0, NonlinearSolveControl control = {});
         /// One bounded correction retaining split allocation/layout and
         /// EOS/source/PP dispatch. No nested solve.
         NonlinearIterationReport CorrectOnce(EquationDofs &state, const EquationDofs &source, real mass, real rhsScale, real time,

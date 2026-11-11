@@ -43,17 +43,6 @@ namespace DNDS::Cauchy
         /// Perform exactly one named coupled-stage correction and its
         /// method-owned completion. The policy determines invocation order.
         std::function<void(int, NonlinearIterationReport &)> advanceStage;
-    };
-
-    /// Complete setup-time binding consumed by an update policy. Callers make
-    /// this only through NonlinearController, so policies cannot substitute
-    /// another equation schema or implicit-control snapshot.
-    struct BoundNonlinearProblem
-    {
-        const ImplicitSettings *settings = nullptr;
-        const EquationSchema *schema = nullptr;
-        int rank = 0, stage = 0;
-        NonlinearProblem operations;
         void Validate(const UpdatePolicyDescriptor &descriptor) const;
     };
 
@@ -62,7 +51,11 @@ namespace DNDS::Cauchy
     public:
         virtual ~UpdatePolicy() = default;
         virtual const UpdatePolicyDescriptor &Descriptor() const = 0;
-        virtual NonlinearIterationReport Execute(BoundNonlinearProblem problem) const = 0;
+        /// Apply one policy-defined nonlinear update. Iteration counts,
+        /// convergence, CFL progression, progress and restart state remain in
+        /// NonlinearController and cannot be replaced by a policy.
+        virtual void Advance(NonlinearProblem &problem,
+                             NonlinearIterationReport &report) const = 0;
     };
 
     /// Process-local setup registry. Registration is serialized and intended
