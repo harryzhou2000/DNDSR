@@ -734,6 +734,10 @@ namespace DNDS::Cauchy
         // WBAP/PP consume their explicit polynomial projection; the direct RHS
         // reads only these physical gradients and never evaluates a Taylor basis.
         std::vector<CFV::FVField> directGradients, directViscousGradients;
+        /// Unfiltered explicit P1 keeps the GradientPlan publication directly;
+        /// no gradient-to-modal-to-gradient round trip or coefficient halo.
+        bool nativeDirectGradient = false;
+        std::vector<R::TransferBinding> directGradientHalo;
         /// Legacy-compatible primitive-gradient viscosity is prepared inside
         /// this workspace but consumed by the same fixed-flow RHS leaf.
         std::optional<CFV::FVField> primitive, primitiveGradient;
@@ -1117,17 +1121,31 @@ namespace DNDS::Cauchy
                 flowCharacteristic.emplace(owner->reconstruction.BuildFaceTransform(flow.firstComponent, 5));
             }
             if (owner->settings.numerics.reconstruction != "variational")
+            {
+                nativeDirectGradient = !meanOnly && owner->settings.numerics.reconstruction == "gradient" &&
+                                       owner->settings.numerics.limiter == "none" &&
+                                       !owner->settings.numerics.positivity;
                 for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                 {
-                    directGradients.push_back(owner->metrics.BuildField(
-                        FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owner->metrics.NumCell(),
-                                                        state.PhysicalField(iField).Width() * owner->metrics.Dimension())));
+                    if (nativeDirectGradient)
+                    {
+                        DNDS_check_throw_info(fields[iField].gradient,
+                                              "explicit P1 has no prepared physical-gradient publication");
+                        directGradients.push_back(*fields[iField].gradient);
+                        directGradientHalo.push_back(owner->BindHalo(
+                            directGradients.back(), "cauchy-direct-gradient"));
+                    }
+                    else
+                        directGradients.push_back(owner->metrics.BuildField(
+                            FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owner->metrics.NumCell(),
+                                                            state.PhysicalField(iField).Width() * owner->metrics.Dimension())));
                     if (owner->equation.Viscous() && owner->settings.numerics.viscousGradient == "polynomial" &&
-                        !owner->settings.numerics.viscousLimited)
+                        !owner->settings.numerics.viscousLimited && !nativeDirectGradient)
                         directViscousGradients.push_back(owner->metrics.BuildField(
                             FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owner->metrics.NumCell(),
                                                             state.PhysicalField(iField).Width() * owner->metrics.Dimension())));
                 }
+            }
             if (!meanOnly && owner->equation.Viscous() && owner->settings.numerics.viscousGradient == "primitive")
             {
                 DNDS_check_throw_info(!owner->equation.HasMixture() && !owner->equation.HasRANS() &&
@@ -1152,6 +1170,20 @@ namespace DNDS::Cauchy
                 return;
             for (index iField = 0; iField < index(fields.size()); ++iField)
             {
+                if (nativeDirectGradient)
+                {
+                    if (ransFirst >= 0)
+                    {
+                        const auto &source = ghost ? directGradients[iField].Ghost()
+                                                   : directGradients[iField].Owned();
+                        const auto read = source.Read();
+                        auto &published = directGradientPublications[iField][ghost ? 1 : 0];
+                        published = {source.SharedStorage(), source.SharedStorage(),
+                                     source.ShapeVersion(), source.Version(),
+                                     source.ShapeVersion(), source.Version()};
+                    }
+                    continue;
+                }
                 const bool fromGradientField = owner->settings.numerics.reconstruction == "constant" && fields[iField].gradient;
                 // Constant face fluxes never read remote source gradients.
                 if (fromGradientField && ghost)
@@ -3446,7 +3478,7 @@ namespace DNDS::Cauchy
                 for (index iField = 0; iField < index(work.fields.size()); ++iField)
                 {
                     auto &field = work.fields[iField];
-                    if (numerics.reconstruction == "gradient")
+                    if (numerics.reconstruction == "gradient" && !work.nativeDirectGradient)
                         _data->gradient.ConvertToCoefficients(*field.gradient, _data->reconstruction,
                                                              reconstruction.coefficients.PhysicalField(iField));
                     else
@@ -3580,7 +3612,9 @@ namespace DNDS::Cauchy
                     work.positivity->Apply(state, reconstruction.coefficients, reconstruction.MutableFinalized(), false); });
         local([&]
               { reconstruction.PublishFinalized(); });
-        auto operations = schedule.Begin(reconstruction.FinalizedHalo());
+        auto operations = work.nativeDirectGradient
+                              ? schedule.Begin(work.directGradientHalo)
+                              : schedule.Begin(reconstruction.FinalizedHalo());
         std::vector<R::TransferOperation> unlimitedViscousOperations;
         if (useFluxScratch && _data->equation.Viscous() && numerics.viscousGradient == "polynomial" && !numerics.viscousLimited)
             unlimitedViscousOperations = schedule.Begin(reconstruction.coefficientHalo);

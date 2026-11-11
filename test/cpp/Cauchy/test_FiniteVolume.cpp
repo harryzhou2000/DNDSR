@@ -745,6 +745,16 @@ TEST_CASE("Native viscous Cauchy residual reproduces linear Couette heat product
     const auto stream = engine.CreateCPUStream();
     fv.Evaluate(logical, output, *reconstruction, *work, engine, stream);
     inviscid.Evaluate(inviscidLogical, inviscidOutput, *inviscidReconstruction, *inviscidWork, engine, stream);
+    {
+        // The unfiltered direct-P1 publication is the physical-gradient field.
+        // Modal storage remains an unused compatibility placeholder and must
+        // not receive the former gradient -> coefficient -> gradient round trip.
+        const auto coefficients = fv.FluxReconstruction(*reconstruction, *work).CoupledField().Owned().Read();
+        const auto values = coefficients.View<R::UniformTableRows>();
+        for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+            for (DNDS::index j = 0; j < values.Width(); ++j)
+                CHECK(values(iCell, j) == 0);
+    }
     const auto read = residual.Owned().Read();
     const auto base = inviscidResidual.Owned().Read();
     DNDS::index tested = 0;
