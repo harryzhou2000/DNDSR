@@ -305,6 +305,19 @@ TEST_CASE("Mixture thermal references enforce a requested temperature through ac
     const Eigen::VectorXd middle = .3 * one + .7 * two;
     for (int c = 0; c < 2; ++c)
         CHECK(bounds.Reference(middle, c) == doctest::Approx(.3 * bounds.Reference(one, c) + .7 * bounds.Reference(two, c)).epsilon(1e-14));
+
+    // A nonconstant polynomial base is selected by the locked conservative
+    // flow/species thermal condition, not by a raw pointwise simplex test.
+    // Property evaluation may repair this temporary composition; the mean
+    // remains separately simplex-valid.
+    Eigen::MatrixXd base(2, fixture.components), higher(2, fixture.components);
+    base.row(0) = base.row(1) = one.transpose();
+    higher = base;
+    higher(0, 5) = -one[0] * 1e-12;
+    const C::EquationPositivityDetail::PointRow<Eigen::MatrixXd> speciesOnly{higher, 0};
+    CHECK_FALSE(bounds.Admissible(speciesOnly));
+    CHECK(bounds.Admissible(speciesOnly, false));
+    CHECK(bounds.ReconstructionFraction(one, base, higher, 0, 2, 1, 0) == 1);
 }
 TEST_CASE("Attached RANS leaves mixture thermal bounds and chemical Jacobian columns unchanged")
 {

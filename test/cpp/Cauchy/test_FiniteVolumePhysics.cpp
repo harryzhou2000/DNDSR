@@ -1158,6 +1158,7 @@ TEST_CASE("Configured mixture Domains advance every block through production tim
             for (const auto &report : domain.LastImplicitStages())
             {
                 INFO("method=" << config.Time().method << " variant=" << config.Time().ditr.variant << " iterations=" << report.iterations << " target=" << report.residualTargetRatio
+                               << " min_increment_alpha=" << report.minimumIncrementAlpha << " increment_limited=" << report.incrementLimited
                                << " residual=" << C::Json(report.residual).dump() << " initial=" << C::Json(report.initialResidual).dump());
                 CHECK(report.converged);
                 CHECK(report.residual.size() == size_t(mixture.species + 4));
@@ -2017,7 +2018,10 @@ TEST_CASE("Equation implicit PP compresses RHS or pseudo-time and repairs specie
             for (I iCell = 0; iCell < species.RowCount(); ++iCell)
                 species(iCell, 0) = -100;
         }
-        CHECK_NOTHROW(solver.ApplyCorrection(state, increment));
+        std::pair<DNDS::index, DNDS::real> correction;
+        CHECK_NOTHROW(correction = solver.ApplyCorrection(state, increment));
+        CHECK(correction.first > 0);
+        CHECK(correction.second < 1);
         {
             const auto read = state.ReadOwned(), before = old.ReadOwned();
             const auto flow = read.Block("flow"), prior = before.Block("flow"), species = read.Block("species");

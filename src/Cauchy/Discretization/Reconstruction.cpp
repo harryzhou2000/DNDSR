@@ -85,7 +85,7 @@ namespace DNDS::Cauchy
         template <class Values>
         bool ReferenceGood(const Values &values, index q, const EquationThermalView &bounds) const
         {
-            return bounds.Admissible(EquationPositivityDetail::PointRow<Values>{values, q});
+            return bounds.Admissible(EquationPositivityDetail::PointRow<Values>{values, q}, false);
         }
     };
     FiniteVolume::PositivityWorkspace::PositivityWorkspace(std::shared_ptr<const Data> owner,

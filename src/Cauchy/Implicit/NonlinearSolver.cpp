@@ -626,69 +626,107 @@ namespace DNDS::Cauchy
             const index components = state.ComponentNumber();
             const auto apply = [&](auto mean, auto delta, auto candidate)
             {
-            for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
-            {
-                const EquationPositivityDetail::PointRow<decltype(mean)> old{mean, iCell};
-                struct SelectedIncrement
+                std::vector<real> repairedSpecies(static_cast<size_t>(independent), 0);
+                for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
                 {
-                    decltype(delta) values; index row; real scale; const uint8_t *active;
-                    real operator[](index j) const { return !active || active[j] ? scale * values(row, j) : 0; }
-                } change{delta, iCell, scale, active.empty() ? nullptr : active.data()};
-                real fraction = 1;
-                if (data.positivity)
-                {
-                    const real alpha = bounds.IncrementFraction(old, change, data.settings.positivity.incrementRelax, 2, data.settings.positivity.compressionPower);
-                    DNDS_check_throw_info(std::isfinite(alpha) && alpha >= 0 && alpha <= 1, "invalid equation increment PP fraction");
-                    if (alpha < 1) { ++limited; minimum = std::min(minimum, alpha); }
+                    const EquationPositivityDetail::PointRow<decltype(mean)> old{mean, iCell};
+                    struct SelectedIncrement
+                    {
+                        decltype(delta) values;
+                        index row;
+                        real scale;
+                        const uint8_t *active;
+                        real operator[](index j) const { return !active || active[j] ? scale * values(row, j) : 0; }
+                    } change{delta, iCell, scale, active.empty() ? nullptr : active.data()};
+                    real alpha = 1;
+                    if (data.positivity)
+                    {
+                        alpha = bounds.IncrementFraction(old, change, data.settings.positivity.incrementRelax, 2,
+                                                         data.settings.positivity.compressionPower);
+                        DNDS_check_throw_info(std::isfinite(alpha) && alpha >= 0 && alpha <= 1,
+                                              "invalid equation increment PP fraction");
+                    }
                     struct LimitedIncrement
                     {
-                        const SelectedIncrement &values; real factor;
+                        const SelectedIncrement &values;
+                        real factor;
                         real operator[](index j) const { return factor * values[j]; }
                     } limitedChange{change, alpha};
-                    const real fix = bounds.FixFraction(old, limitedChange);
-                    DNDS_check_throw_info(std::isfinite(fix) && fix >= 0 && fix <= 1, "invalid equation final increment repair");
-                    fraction = alpha * fix;
-                }
-                for (index j = 0; j < components; ++j)
-                {
-                    candidate(iCell, j) = selection.Includes(j) ? mean(iCell, j) + fraction * change[j] : mean(iCell, j);
-                    // Exponential scalar repair must not hide an infinite or
-                    // NaN linear correction behind a finite floor.
-                    DNDS_check_throw_info(std::isfinite(candidate(iCell, j)), "nonfinite equation correction candidate");
-                }
-                if (data.rans)
-                {
-                    std::array<real, 2> oldRANS{}, changeRANS{}, nextRANS{};
-                    for (int j = 0; j < data.rans->components; ++j)
+                    if (data.positivity && independent)
                     {
-                        oldRANS[j] = mean(iCell, data.ransFirst + j);
-                        changeRANS[j] = fraction * change[data.ransFirst + j];
+                        for (index k = 0; k < independent; ++k)
+                            repairedSpecies[size_t(k)] = old[data.speciesFirst + k] + limitedChange[data.speciesFirst + k];
+                        struct SpeciesScratch
+                        {
+                            real *values;
+                            real &operator[](index k) const { return values[k]; }
+                        } species{repairedSpecies.data()};
+                        Physics::Chemistry::RepairSpeciesDensities(
+                            old[data.flowFirst] + limitedChange[data.flowFirst], species, independent);
                     }
-                    DNDS_check_throw_info(data.rans->Admissible(oldRANS), "RANS correction requires an admissible old mean");
-                    // Preserve Euler's order: whole-vector thermal compression,
-                    // then component-wise RANS repair of that scaled increment.
-                    data.rans->RepairIncrement(oldRANS, changeRANS);
-                    for (int j = 0; j < data.rans->components; ++j) nextRANS[j] = oldRANS[j] + changeRANS[j];
-                    data.rans->RepairMean(candidate(iCell, data.flowFirst), nextRANS);
-                    for (int j = 0; j < data.rans->components; ++j)
+                    struct StoredIncrement
                     {
-                        const index component = data.ransFirst + j;
-                        candidate(iCell, component) = nextRANS[j];
-                        if (!selection.Includes(component)) frozen = frozen && nextRANS[j] == oldRANS[j];
+                        const LimitedIncrement &values;
+                        const decltype(old) &oldState;
+                        const std::vector<real> *species;
+                        index first, count;
+                        real operator[](index j) const
+                        {
+                            return species && j >= first && j < first + count
+                                       ? (*species)[size_t(j - first)] - oldState[j]
+                                       : values[j];
+                        }
+                    } storedChange{limitedChange, old,
+                                   data.positivity && independent ? &repairedSpecies : nullptr,
+                                   data.speciesFirst, independent};
+                    real fix = 1;
+                    if (data.positivity)
+                    {
+                        fix = bounds.FixFraction(old, storedChange);
+                        DNDS_check_throw_info(std::isfinite(fix) && fix >= 0 && fix <= 1,
+                                              "invalid equation final increment repair");
+                        const real combined = alpha * fix;
+                        if (combined < 1)
+                        {
+                            ++limited;
+                            minimum = std::min(minimum, combined);
+                        }
                     }
-                }
-                if (data.positivity && independent)
-                {
-                    struct SpeciesRow
-                    {
-                        decltype(candidate) values; index row, first;
-                        real &operator[](index k) const { return values(row, first + k); }
-                    } species{candidate, iCell, data.speciesFirst};
-                    Physics::Chemistry::RepairSpeciesDensities(candidate(iCell, data.flowFirst), species, independent);
                     for (index j = 0; j < components; ++j)
-                        if (!selection.Includes(j)) frozen = frozen && candidate(iCell, j) == mean(iCell, j);
+                    {
+                        candidate(iCell, j) = mean(iCell, j) + fix * storedChange[j];
+                        if (!selection.Includes(j))
+                            frozen = frozen && candidate(iCell, j) == mean(iCell, j);
+                        // Exponential scalar repair must not hide an infinite or
+                        // NaN linear correction behind a finite floor.
+                        DNDS_check_throw_info(std::isfinite(candidate(iCell, j)),
+                                              "nonfinite equation correction candidate");
+                    }
+                    if (data.rans)
+                    {
+                        std::array<real, 2> oldRANS{}, changeRANS{}, nextRANS{};
+                        for (int j = 0; j < data.rans->components; ++j)
+                        {
+                            oldRANS[j] = mean(iCell, data.ransFirst + j);
+                            changeRANS[j] = fix * storedChange[data.ransFirst + j];
+                        }
+                        DNDS_check_throw_info(data.rans->Admissible(oldRANS),
+                                              "RANS correction requires an admissible old mean");
+                        // Preserve Euler's order: whole-vector thermal compression,
+                        // then component-wise RANS repair of that scaled increment.
+                        data.rans->RepairIncrement(oldRANS, changeRANS);
+                        for (int j = 0; j < data.rans->components; ++j)
+                            nextRANS[j] = oldRANS[j] + changeRANS[j];
+                        data.rans->RepairMean(candidate(iCell, data.flowFirst), nextRANS);
+                        for (int j = 0; j < data.rans->components; ++j)
+                        {
+                            const index component = data.ransFirst + j;
+                            candidate(iCell, component) = nextRANS[j];
+                            if (!selection.Includes(component))
+                                frozen = frozen && nextRANS[j] == oldRANS[j];
+                        }
+                    }
                 }
-            }
             };
             // Resolve a complete ordered AoS parent once, while all original
             // payload/shape leases remain held. The same scalar PP/repair

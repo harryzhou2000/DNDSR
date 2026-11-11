@@ -145,13 +145,13 @@ namespace DNDS::Cauchy
             real energy = 1;
             for (int c = 0; c < 2; ++c)
             {
-                const real oldEnergy = Sensible(state, c, true), newEnergy = Sensible(next, c, true);
+                const real oldEnergy = Sensible(state, c), newEnergy = Sensible(next, c);
                 if (!std::isfinite(oldEnergy) || !std::isfinite(newEnergy))
                     return std::numeric_limits<real>::quiet_NaN();
                 const real floor = newEnergy < oldEnergy ? floors[c] + (oldEnergy - floors[c]) * (1 - relax) : floors[c];
                 if (newEnergy < floor)
                 {
-                    const real value = InternalEnergyCompression(Flow(state), delta, floor, Reference(state, c, true), Reference(next, c, true));
+                    const real value = InternalEnergyCompression(Flow(state), delta, floor, Reference(state, c), Reference(next, c));
                     if (!std::isfinite(value))
                         return value;
                     energy = std::min(energy, value);
@@ -163,8 +163,10 @@ namespace DNDS::Cauchy
         /// Euler final density/energy increment repair (.99 safety, .9 pull-up).
         /// Returns the whole-increment multiplier, or NaN if pull-up fails.
         /// Callers must reject a nonfinite result, scale all components, then
-        /// perform the separate RANS/species repairs and validate the combined
-        /// state. This function neither mutates a row nor repairs species.
+        /// perform the separate RANS repair and validate the combined state.
+        /// The supplied increment must already point to the exact stored-species
+        /// target. This function uses the raw affine mixture reference and never
+        /// performs or assumes another composition projection.
         template <class Row, class Increment>
         DNDS_DEVICE_CALLABLE real FixFraction(const Row &state, const Increment &increment) const
         {
@@ -175,32 +177,32 @@ namespace DNDS::Cauchy
             for (int c = 0; c < 2; ++c)
             {
                 SegmentRow<Row, Increment> next{state, increment, fraction};
-                if (!std::isfinite(Sensible(next, c, true)))
+                if (!std::isfinite(Sensible(next, c)))
                     return std::numeric_limits<real>::quiet_NaN();
-                if (Sensible(next, c, true) <= floors[c])
+                if (Sensible(next, c) <= floors[c])
                 {
                     auto delta = Flow(increment);
                     for (auto &value : delta)
                         value *= fraction;
-                    const real alpha = InternalEnergyCompression(Flow(state), delta, floors[c], Reference(state, c, true), Reference(next, c, true));
+                    const real alpha = InternalEnergyCompression(Flow(state), delta, floors[c], Reference(state, c), Reference(next, c));
                     if (!std::isfinite(alpha))
                         return alpha;
                     fraction *= alpha * .99;
                     for (int iteration = 0; iteration < 1000; ++iteration)
                     {
                         next.fraction = fraction;
-                        if (Sensible(next, c, true) >= floors[c])
+                        if (Sensible(next, c) >= floors[c])
                             break;
                         fraction *= .9;
                     }
                     next.fraction = fraction;
-                    if (!(Sensible(next, c, true) >= floors[c]))
+                    if (!(Sensible(next, c) >= floors[c]))
                         return std::numeric_limits<real>::quiet_NaN();
                 }
             }
             const SegmentRow<Row, Increment> final{state, increment, fraction};
             for (int c = 0; c < 2; ++c)
-                if (!(Sensible(final, c, true) >= floors[c]))
+                if (!(Sensible(final, c) >= floors[c]))
                     return std::numeric_limits<real>::quiet_NaN();
             return fraction;
         }
@@ -219,7 +221,7 @@ namespace DNDS::Cauchy
             using namespace EquationPositivityDetail;
             bool good = true;
             for (index q = begin; q < end; ++q)
-                good = good && Admissible(PointRow<HigherValues>{higherValues, q});
+                good = good && Admissible(PointRow<HigherValues>{higherValues, q}, false);
             if (good && densityLimit == 1)
                 return 1;
             real density = densityLimit;
