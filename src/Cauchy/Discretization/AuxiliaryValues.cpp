@@ -109,7 +109,8 @@ namespace DNDS::Cauchy
             {
                 boundary = AliasBoundaryInputs(inputs.boundary->get());
                 ValidateBoundaryInputs(*boundary, time);
-                boundaryRead.emplace(boundary->flow.Read());
+                boundaryRead.emplace(
+                    boundary->QuadratureValues().CoupledField().Owned().Read());
                 incoming = boundaryRead->View<R::UniformTableRows>();
                 inputs.boundary = std::cref(*boundary);
             }
@@ -364,7 +365,8 @@ namespace DNDS::Cauchy
             if (inputs.boundary)
             {
                 boundary = inputs.boundary->get();
-                boundaryRead.emplace(boundary->flow.Read());
+                boundaryRead.emplace(
+                    boundary->QuadratureValues().CoupledField().Owned().Read());
                 incoming = boundaryRead->View<R::UniformTableRows>();
             }
             if (data->equation.HasRANS() && data->equation.RANS().ComponentNumber() == 2)
@@ -706,9 +708,16 @@ namespace DNDS::Cauchy
                     for (const auto *input : {&state.PhysicalField(iField).Owned(), &state.PhysicalField(iField).Ghost()})
                         DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), arrays[k]->Storage()), "equation auxiliary output aliases state");
                 if (inputs.boundary)
-                    for (const auto *input : {&inputs.boundary->get().flow, &inputs.boundary->get().faceFlow})
-                        DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), arrays[k]->Storage()),
-                                              "equation auxiliary output aliases interface input");
+                    for (const auto *packet : {
+                             &inputs.boundary->get().QuadratureValues(),
+                             &inputs.boundary->get().FaceCenterValues()})
+                        for (index iField = 0;
+                             iField < packet->PhysicalFieldNumber(); ++iField)
+                            DNDS_check_throw_info(
+                                !Algebra::Detail::Overlaps(
+                                    packet->PhysicalField(iField).Owned().Storage(),
+                                    arrays[k]->Storage()),
+                                "equation auxiliary output aliases interface input");
                 if (inputs.meanGradients)
                     for (const auto &field : inputs.meanGradients->get().fields)
                         for (const auto *input : {&field.Owned(), &field.Ghost()})

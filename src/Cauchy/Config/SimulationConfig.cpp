@@ -426,7 +426,9 @@ namespace DNDS::Cauchy
             require(condition.kind != "doubleMachBottom" || condition.profile.kind == "doubleMachReflection", "DMR bottom requires its analytic shock profile");
             require(condition.thermal == "adiabatic" || condition.thermal == "isothermal", "thermal BC " + condition.thermal);
             require(condition.wallVelocityFrame == "mesh" || condition.wallVelocityFrame == "ground", "wall velocity frame " + condition.wallVelocityFrame);
-            require(!extended || (condition.kind != "interface" && condition.kind != "doubleMachBottom" && (condition.kind != "analytic" || condition.profile.kind == "constant")),
+            require(!extended || (condition.kind != "doubleMachBottom" &&
+                                  (condition.kind != "analytic" ||
+                                   condition.profile.kind == "constant")),
                     "extended equation boundary profile " + condition.kind);
             require(condition.kind != "noSlipWall" || s.equation.transport == "NewtonianFourier", "no-slip wall needs viscous transport");
         }

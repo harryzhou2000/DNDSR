@@ -56,10 +56,16 @@ namespace DNDS::Cauchy
         if (!_config.Interfaces().empty())
         {
             std::vector<std::optional<FiniteVolume>> local(_domains.size());
+            std::vector<std::optional<Physics::Chemistry::ChemicalWorkerPool>>
+                workers(_domains.size());
             for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                 if (_domains[iDomain])
+                {
                     local[iDomain] = _domains[iDomain]->_fv;
-            _interfaces = std::make_unique<InterfaceCoupling>(_config, _placement.ControlContext(), local);
+                    workers[iDomain] = _domains[iDomain]->ChemicalWorkers();
+                }
+            _interfaces = std::make_unique<InterfaceCoupling>(
+                _config, _placement.ControlContext(), local, workers);
             // Establish accepted-time traces before CFL/diagnostics or the
             // first trial. Domain trial fields initially equal accepted means.
             // Separate packet allocations preserve these traces on rejection.
@@ -76,10 +82,9 @@ namespace DNDS::Cauchy
                 std::vector<InterfaceDomainInput> ports(_domains.size());
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                     if (auto &domain = _domains[iDomain])
-                        ports[iDomain] = {CFV::DonorInputs(domain->_trial.CoupledField(),
-                                                           (prepared ? domain->_fv.FluxReconstruction(*domain->_reconstruction, *domain->_workspace)
-                                                                     : domain->_fv.ReconstructionGuess(*domain->_reconstruction))
-                                                               .CoupledField())};
+                        ports[iDomain] = {domain->_fv.PublishInterfaceDonor(
+                            domain->_trial, *domain->_reconstruction,
+                            *domain->_workspace, prepared)};
                 _interfaces->Refresh(ports, 0, {});
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                     if (_domains[iDomain])
@@ -170,10 +175,9 @@ namespace DNDS::Cauchy
                 std::vector<InterfaceDomainInput> inputs(_domains.size());
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                     if (auto &domain = _domains[iDomain])
-                        inputs[iDomain] = {CFV::DonorInputs(domain->_trial.CoupledField(),
-                                                            (prepared ? domain->_fv.FluxReconstruction(*domain->_reconstruction, *domain->_workspace)
-                                                                      : domain->_fv.ReconstructionGuess(*domain->_reconstruction))
-                                                                .CoupledField())};
+                        inputs[iDomain] = {domain->_fv.PublishInterfaceDonor(
+                            domain->_trial, *domain->_reconstruction,
+                            *domain->_workspace, prepared)};
                 return inputs;
             };
             const auto refresh = [&](real time, int stage, bool prepared, bool acceptedSnapshot = false)

@@ -25,6 +25,7 @@ namespace DNDS::Geom
 
 namespace DNDS::Cauchy
 {
+    class InterfaceCoupling;
     namespace EquationFVDetail
     {
         struct MeanLinearizationOutput;
@@ -234,6 +235,40 @@ namespace DNDS::Cauchy
         struct Workspace;
         struct MeanWorkspace;
         struct ReconstructionState;
+        /// Immutable managed donor snapshot for one interface sampling round.
+        /// It retains equation arrays and their finite-volume owner; the
+        /// coupling adapter validates recorded versions before reading. Direct
+        /// P0, physical-gradient P1 and variational coefficients are distinct
+        /// prepared modes, hidden from Simulation orchestration.
+        class InterfaceDonorPublication
+        {
+            friend class FiniteVolume;
+            friend class InterfaceCoupling;
+            enum class Kind
+            {
+                Constant,
+                Gradient,
+                Variational
+            };
+            std::shared_ptr<const Data> _owner;
+            EquationDofs _means;
+            std::optional<EquationDofs> _coefficients;
+            std::vector<CFV::FVField> _gradients;
+            std::vector<uint64_t> _meanVersions, _reconstructionVersions;
+            Kind _kind = Kind::Constant;
+            InterfaceDonorPublication(std::shared_ptr<const Data> owner,
+                                      EquationDofs means)
+                : _owner(std::move(owner)), _means(std::move(means)) {}
+
+        public:
+            /// Local validation only; no leases, MPI, sampling or refresh.
+            void Validate() const;
+            const EquationSchema &Schema() const { return _means.Schema(); }
+            index PhysicalFieldNumber() const
+            {
+                return _means.PhysicalFieldNumber();
+            }
+        };
         /// Local structural report for allocation/transfer acceptance gates.
         /// Counts describe modal reconstruction only; the independent mean
         /// halo belongs to the equation state and is intentionally excluded.
@@ -339,6 +374,21 @@ namespace DNDS::Cauchy
         std::shared_ptr<Workspace> BuildWorkspace(EquationDofs &state,
                                                   std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
                                                   WorkspaceOptions options = WorkspaceOptions()) const;
+        /// Freeze one donor publication after predictor halos or complete
+        /// reconstruction. `prepared=false` deliberately selects P0 for direct
+        /// P1, breaking the initial interface/reconstruction dependency cycle;
+        /// variational mode uses its warm guess as the historical predictor.
+        InterfaceDonorPublication PublishInterfaceDonor(
+            const EquationDofs &state,
+            const ReconstructionState &reconstruction,
+            const Workspace &workspace, bool prepared) const;
+        /// Checkpoint-restore adapter for an independently staged variational
+        /// warm guess. This preserves two-phase restart commit: interface
+        /// sampling may validate the candidate without mutating the live
+        /// ReconstructionState. Ordinary execution uses PublishInterfaceDonor.
+        InterfaceDonorPublication PublishVariationalInterfaceDonor(
+            const EquationDofs &state,
+            const EquationDofs &coefficients) const;
         /// Separate typed scratch for Euler's zero-reconstruction physical-dt
         /// trial. Shares geometry and kernels, never the ordinary warm guess.
         /// Includes configured volume/rotation sources, ignores viscous faces.
@@ -604,7 +654,9 @@ namespace DNDS::Cauchy
         /// owner handle through the solver's read-only mesh facade.
         Geom::BoundaryPatch BuildBoundaryPatch(int zone) const;
         bool HasInterfaces() const;
-        BoundaryInputs BuildBoundaryInputs() const;
+        BoundaryInputs BuildBoundaryInputs(
+            std::optional<Physics::Chemistry::ChemicalWorkerPool> workers =
+                std::nullopt) const;
         /// Synchronous local point operations, no MPI. Begin withdraws the
         /// publication; publish checks complete admissible interface rows only.
         void BeginBoundaryUpdate(BoundaryInputs &input) const;
@@ -613,10 +665,9 @@ namespace DNDS::Cauchy
         /// Share a packet with another FV level only after proving identical
         /// boundary point order/geometry. No interpolation or payload copy.
         BoundaryInputs AliasBoundaryInputs(const BoundaryInputs &input) const;
-        /// Equation-orchestration entry. The initial interface implementation
-        /// is available for the operator-local perfect-gas flow5 specialization;
-        /// extended physical systems fail explicitly until their trace kernels
-        /// are supplied.
+        /// Equation-orchestration entry. The packet is a complete canonical
+        /// logical row regardless of physical field grouping; the FV operator
+        /// selects its equation/EOS/RANS leaf only after binding that row.
         void SetBoundaryInputs(Workspace &workspace, const BoundaryInputs &input) const;
         void SetBoundaryInputs(MeanWorkspace &workspace, const BoundaryInputs &input) const;
         /// Allocate the requested members once. Cell reductions without matching

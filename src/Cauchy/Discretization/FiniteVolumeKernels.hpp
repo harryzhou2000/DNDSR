@@ -126,11 +126,17 @@ namespace DNDS::Cauchy::EquationFVDetail
         DNDS_check_throw_info((rans.first >= 0) == bool(components), "boundary RANS block/model differs");
         if (sample.boundary.kind == BoundaryKind::Interface)
         {
-            DNDS_check_throw_info(incoming.data && !independent && !components && sample.boundaryPoint >= 0 &&
-                                      sample.boundaryPoint < incoming.RowCount(),
-                                  "interface boundary needs a complete flow5 packet");
-            for (int j = 0; j < 5; ++j)
-                point.values[flowFirst + j] = incoming(sample.boundaryPoint, j);
+            DNDS_check_throw_info(
+                incoming.data && sample.boundaryPoint >= 0 &&
+                    sample.boundaryPoint < incoming.RowCount() &&
+                    incoming.Width() == index(point.values.size()),
+                "interface boundary needs one complete logical equation row");
+            // The coupling controller has already transformed every declared
+            // vector triple into receiver axes. Reconstruction and flux paths
+            // consume the same frozen complete row; no physical BC arithmetic
+            // or mutable-left-state convention applies to an interface trace.
+            for (index j = 0; j < index(point.values.size()); ++j)
+                point.values[size_t(j)] = incoming(sample.boundaryPoint, j);
             return;
         }
         const bool twoEquationWall = components == 2 && sample.boundary.kind == BoundaryKind::NoSlipWall;

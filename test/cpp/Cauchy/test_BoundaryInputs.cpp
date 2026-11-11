@@ -119,7 +119,7 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
         CHECK_THROWS(coupled.PublishBoundaryInputs(incoming, time));
     const auto frame = coupled.Motion().At(time);
     {
-        auto write = incoming.flow.Write();
+        auto write = incoming.QuadratureValues().WriteOwned();
         const auto fill = [&](const auto &points, const auto &values)
         {
             for (I iPoint = 0; iPoint < I(points.size()); ++iPoint)
@@ -129,15 +129,15 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
                     values(iPoint, j) = state[j];
             }
         };
-        fill(coupled.BoundaryPoints(), write.View<R::UniformTableRows>());
+        fill(coupled.BoundaryPoints(), write.Block("flow"));
         // Quadrature values alone cannot publish a packet for centered
         // Jacobians: the donor must explicitly sample the face centers too.
     }
     if (!coupled.BoundaryFaces().empty())
         CHECK_THROWS(coupled.PublishBoundaryInputs(incoming, time));
     {
-        auto write = incoming.faceFlow.Write();
-        const auto values = write.View<R::UniformTableRows>();
+        auto write = incoming.FaceCenterValues().WriteOwned();
+        const auto values = write.Block("flow");
         const auto &points = coupled.BoundaryFaces();
         for (I iFace = 0; iFace < I(points.size()); ++iFace)
         {
@@ -190,12 +190,14 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
     settings.numerics.cfv.maxOrder = 1;
     C::FiniteVolume coarse(mesh, settings, equation);
     const auto alias = coarse.AliasBoundaryInputs(incoming);
-    CHECK(alias.flow.SharedStorage() == incoming.flow.SharedStorage());
-    CHECK(alias.faceFlow.SharedStorage() == incoming.faceFlow.SharedStorage());
+    CHECK(alias.QuadratureValues().CoupledField().Owned().SharedStorage() ==
+          incoming.QuadratureValues().CoupledField().Owned().SharedStorage());
+    CHECK(alias.FaceCenterValues().CoupledField().Owned().SharedStorage() ==
+          incoming.FaceCenterValues().CoupledField().Owned().SharedStorage());
     CHECK_NOTHROW(coarse.ValidateBoundaryInputs(alias, time));
     CHECK(alias.Epoch().stage == 2);
     {
-        auto write = incoming.faceFlow.Write(); // Either table's debug write invalidates publication.
+        auto write = incoming.FaceCenterValues().WriteOwned(); // Either table's debug write invalidates publication.
     }
     CHECK_THROWS(coupled.ValidateAuxValues(equationB, auxB, time));
 }

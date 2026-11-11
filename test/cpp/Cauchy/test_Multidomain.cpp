@@ -294,6 +294,122 @@ TEST_CASE("P3 flow5 crosses a posed disk interface with dense and sparse distrib
         }
     }
 }
+TEST_CASE("P0 and physical-gradient P1 publish complete multidomain traces without modal storage")
+{
+    for (const std::string reconstruction : {"constant", "gradient"})
+        for (const bool split : {false, true})
+        {
+            if (split && mpi.size == 1)
+                continue;
+            CAPTURE(reconstruction);
+            CAPTURE(split);
+            C::Json input{
+                {"domains", Domains(split)},
+                {"time", {{"method", "ssprk3"}}},
+                {"defaults",
+                 {{"initialPrimitive", {1, .1, .2, .03, 1}},
+                  {"initialProfile",
+                   {{"kind", "isentropicVortex"}, {"strength", .2}, {"period", 10}}},
+                  {"boundaries", {{"101", {{"kind", "interface"}}}}},
+                  {"numerics",
+                   {{"reconstruction", reconstruction},
+                    {"flux", "rusanov"},
+                    {"limiter", reconstruction == "gradient" ? "Barth" : "none"},
+                    {"positivity", false}}}}},
+                {"interfaces",
+                 C::Json::array(
+                     {{{"donor", "outer"},
+                       {"receiver", "disk"},
+                       {"donorZone", 101},
+                       {"receiverZone", 101},
+                       {"maxGap", .03}},
+                      {{"donor", "disk"},
+                       {"receiver", "outer"},
+                       {"donorZone", 101},
+                       {"receiverZone", 101},
+                       {"maxGap", .03}}})}};
+            input["domains"][1]["overrides"] = {
+                {"motion",
+                 {{"angularVelocity", {0, 0, .02}}, {"center", {5, 5, 0}}}}};
+            const auto factory = [](I iDomain, const auto &, const auto &domainMPI)
+            { return CauchyTest::VortexPatch(domainMPI, iDomain == 1, 8, 20); };
+            C::Simulation simulation(
+                C::SimulationConfig::ResolveCollective(input, mpi.comm), mpi.comm,
+                factory);
+            REQUIRE(simulation.Advance(.001).accepted);
+            const auto diagnostics = simulation.GetInterfaceDiagnostics();
+            CHECK(diagnostics.queryPoints > 0);
+            CHECK(diagnostics.maximumGap <= .03);
+            for (I iDomain = 0; iDomain < 2; ++iDomain)
+                if (simulation.Local(iDomain))
+                    CHECK(simulation.GetDomain(iDomain)
+                              .Discretization()
+                              .Admissible(simulation.GetDomain(iDomain).Dofs()));
+        }
+}
+TEST_CASE("Split flow and SA fields cross a rotating interface as one equation packet")
+{
+    if (mpi.size < 2)
+        return;
+    C::Json input{
+        {"domains", Domains(true)},
+        {"time", {{"method", "ssprk3"}}},
+        {"defaults",
+         {{"equation",
+           {{"transport", "NewtonianFourier"},
+            {"viscosity", 1e-3},
+            {"rans", {{"model", "SA"}}}}},
+          {"execution",
+           {{"fieldGrouping", "equationBlocks"}, {"layout", "soa"}}},
+          {"initialPrimitive", {1, .1, .2, .03, 1}},
+          {"initialRANS", {{"rhoNuTilde", .01}}},
+          {"boundaries", {{"101", {{"kind", "interface"}}}}},
+          {"numerics",
+           {{"reconstruction", "gradient"},
+            {"gradient", "leastSquares"},
+            {"viscousGradient", "polynomial"},
+            {"flux", "rusanov"},
+            {"faceFallback", false},
+            {"limiter", "Barth"},
+            {"positivity", false}}}}},
+        {"interfaces",
+         C::Json::array(
+             {{{"donor", "outer"},
+               {"receiver", "disk"},
+               {"donorZone", 101},
+               {"receiverZone", 101},
+               {"maxGap", .03}},
+              {{"donor", "disk"},
+               {"receiver", "outer"},
+               {"donorZone", 101},
+               {"receiverZone", 101},
+               {"maxGap", .03}}})}};
+    input["domains"][1]["overrides"] = {
+        {"motion",
+         {{"angularVelocity", {0, 0, .02}}, {"center", {5, 5, 0}}}}};
+    const auto factory = [](I iDomain, const auto &, const auto &domainMPI)
+    { return CauchyTest::VortexPatch(domainMPI, iDomain == 1, 8, 20); };
+    C::Simulation simulation(
+        C::SimulationConfig::ResolveCollective(input, mpi.comm), mpi.comm,
+        factory);
+    REQUIRE(simulation.Advance(1e-4).accepted);
+    for (I iDomain = 0; iDomain < 2; ++iDomain)
+        if (simulation.Local(iDomain))
+        {
+            const auto &domain = simulation.GetDomain(iDomain);
+            CHECK(domain.Dofs().PhysicalFieldNumber() == 2);
+            const auto read = domain.Dofs().ReadOwned();
+            const auto flow = read.Block("flow");
+            const auto rans = read.Block("rans");
+            for (I iCell = 0; iCell < flow.owned.RowCount(); ++iCell)
+            {
+                CHECK(std::isfinite(flow.owned(iCell, 0)));
+                CHECK(std::isfinite(rans.owned(iCell, 0)));
+                CHECK(flow.owned(iCell, 0) > 0);
+                CHECK(rans.owned(iCell, 0) >= 0);
+            }
+        }
+}
 int main(int argc, char **argv)
 {
     if (DNDS::MPI::Init_thread(&argc, &argv) != MPI_SUCCESS)

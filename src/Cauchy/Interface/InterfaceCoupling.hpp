@@ -6,11 +6,13 @@
 
 namespace DNDS::Cauchy
 {
-    /// Optional sharing donor bundle. Nonmembers leave values empty; all
-    /// coupling ranks still enter the same matching schedule.
+    /// Optional managed donor publication. Nonmembers leave values empty; all
+    /// coupling ranks still enter the same matching schedule. Reconstruction
+    /// representation and physical-field grouping remain private to FV and the
+    /// coupling adapter instead of leaking into Simulation orchestration.
     struct InterfaceDomainInput
     {
-        std::optional<CFV::DonorInputs> values;
+        std::optional<FiniteVolume::InterfaceDonorPublication> values;
     };
 
     /// Physical adapter over Geom matching and CFV point interpolation. It owns
@@ -29,7 +31,8 @@ namespace DNDS::Cauchy
         InterfaceCoupling(InterfaceCoupling &&) noexcept = default;
         InterfaceCoupling &operator=(InterfaceCoupling &&) noexcept = default;
         InterfaceCoupling(const SimulationConfig &config, std::shared_ptr<Runtime::CommunicationContext> coupling,
-                          const std::vector<std::optional<FiniteVolume>> &localDomains);
+                          const std::vector<std::optional<FiniteVolume>> &localDomains,
+                          const std::vector<std::optional<Physics::Chemistry::ChemicalWorkerPool>> &workers = {});
         /// Rebuild maps only when stage-time poses change. Two refreshes at one
         /// time reuse the exact map, sampling workspace and persistent return
         /// binding. Source inputs are frozen for the complete round before any

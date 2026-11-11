@@ -19,17 +19,27 @@ TEST_CASE("Distributed polynomial sampling evaluates on cell owners and returns 
     settings.maxOrder = 1;
     auto reconstruction = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
     auto mean = metrics.BuildField(2);
+    auto constantMean = metrics.BuildField(2);
+    auto gradients = metrics.BuildField(2 * metrics.Dimension());
     auto coefficients = metrics.BuildField(2 * reconstruction.NRecDOF());
     {
         auto geometry = metrics.AcquireRead();
         const auto view = geometry.HostView();
         auto u = mean.Owned().Write();
+        auto c = constantMean.Owned().Write();
+        auto g = gradients.Owned().Write();
         auto r = coefficients.Owned().Write();
         for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
         {
             const auto center = view.GetCellCent(iCell);
             u.View()(iCell, 0) = 1 + 2 * center[0] - 0.5 * center[1] + 10 * mpi.rank;
             u.View()(iCell, 1) = -3 + 0.7 * center[0] + 4 * center[1] + 3 * mpi.rank;
+            c.View()(iCell, 0) = 100 + mpi.rank;
+            c.View()(iCell, 1) = -200 + 3 * mpi.rank;
+            g.View()(iCell, 0) = 2;
+            g.View()(iCell, 1) = -.5;
+            g.View()(iCell, 2) = .7;
+            g.View()(iCell, 3) = 4;
             const double scale = view.cells(iCell, 7);
             r.View()(iCell, 0) = 2 * scale;
             r.View()(iCell, 1) = -0.5 * scale;
@@ -38,6 +48,8 @@ TEST_CASE("Distributed polynomial sampling evaluates on cell owners and returns 
         }
     }
     metrics.BindHalo(mean).Begin().Wait();
+    metrics.BindHalo(constantMean).Begin().Wait();
+    metrics.BindHalo(gradients).Begin().Wait();
     metrics.BindHalo(coefficients).Begin().Wait();
     std::vector<I> selected(size_t(mesh->Entities(G::EntityKind::Bnd).NumOwned()));
     std::iota(selected.begin(), selected.end(), I(0));
@@ -100,6 +112,45 @@ TEST_CASE("Distributed polynomial sampling evaluates on cell owners and returns 
                 const auto p = match.geometry.donorPoint;
                 CHECK(read.View()(iQuery, 0) == doctest::Approx(1.25 + 2 * p[0] - 0.5 * p[1] + 10 * match.donorRank).epsilon(1e-12));
                 CHECK(read.View()(iQuery, 1) == doctest::Approx(-2.75 + 0.7 * p[0] + 4 * p[1] + 3 * match.donorRank).epsilon(1e-12));
+            }
+            // The same geometric/sparse-return plan supports a metrics-only
+            // P0 donor and a direct physical-gradient P1 donor. Neither path
+            // allocates or fabricates variational coefficients.
+            R::Array<double> directValues(R::RowLayout::Dense(3, 2));
+            auto directWork = sampler.BuildWorkspace(2);
+            auto directBinding = sampler.BindResult(
+                directWork, directValues, R::TransferMode::Persistent, 1);
+            sampler.EvaluateDonors(
+                std::make_optional(C::DonorInputs(constantMean)), directWork);
+            directBinding.Begin().Wait();
+            {
+                auto direct = directValues.Read();
+                for (I iQuery = 0; iQuery < 3; ++iQuery)
+                {
+                    const auto match = map.Get(iQuery);
+                    CHECK(direct.View()(iQuery, 0) == 100 + match.donorRank);
+                    CHECK(direct.View()(iQuery, 1) == -200 + 3 * match.donorRank);
+                }
+            }
+            sampler.EvaluateDonors(
+                std::make_optional(C::DonorInputs::Gradient(mean, gradients)),
+                directWork);
+            directBinding.Begin().Wait();
+            {
+                auto direct = directValues.Read();
+                for (I iQuery = 0; iQuery < 3; ++iQuery)
+                {
+                    const auto match = map.Get(iQuery);
+                    const auto p = match.geometry.donorPoint;
+                    CHECK(direct.View()(iQuery, 0) ==
+                          doctest::Approx(1 + 2 * p[0] - .5 * p[1] +
+                                          10 * match.donorRank)
+                              .epsilon(1e-12));
+                    CHECK(direct.View()(iQuery, 1) ==
+                          doctest::Approx(-3 + .7 * p[0] + 4 * p[1] +
+                                          3 * match.donorRank)
+                              .epsilon(1e-12));
+                }
             }
         }
     }

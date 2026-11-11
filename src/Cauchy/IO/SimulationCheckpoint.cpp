@@ -203,28 +203,35 @@ namespace DNDS::Cauchy
         {
             // Prepare separate donor coefficients and complete their halos.
             // The accepted workspace/guess remains untouched until commit.
-            std::vector<std::optional<CFV::FVField>> coefficients;
             std::vector<InterfaceDomainInput> ports;
             MPI::LocalStage(control, [&]
-                            { coefficients.resize(_domains.size()); ports.resize(_domains.size()); });
+                            { ports.resize(_domains.size()); });
             LocalDomains(_placement, [&](index iDomain)
                          {
                 auto &domain = GetDomain(iDomain);
-                const auto &candidate = *checkpoints[iDomain];
+                auto &candidate = *checkpoints[iDomain];
                 const MPIInfo mpi(_placement.Context(iDomain)->Communicator());
                 MPI::LocalStage(mpi, [&]
                                 {
-                    DNDS_check_throw_info(bool(candidate.equationGuess), "interface checkpoint requires a flow5 reconstruction");
-                    const auto &guess = candidate.equationGuess->CoupledField().Owned();
-                    coefficients[iDomain].emplace(domain._fv.Metrics().BuildField(guess.Layout()));
-                    const auto read = guess.Read(); auto write = coefficients[iDomain]->Owned().Write();
-                    const auto input = read.View<Runtime::UniformTableRows>(); const auto output = write.View<Runtime::UniformTableRows>();
-                    for (index iCell = 0; iCell < output.RowCount(); ++iCell)
-                        for (index j = 0; j < output.RowSize(iCell); ++j) output(iCell, j) = input(iCell, j); });
-                auto &means = domain._trial.CoupledField();
-                domain._fv.BindHalo(means).Begin().Wait();
-                domain._fv.BindHalo(*coefficients[iDomain]).Begin().Wait();
-                ports[iDomain] = {CFV::DonorInputs(means, *coefficients[iDomain])}; });
+                    DNDS_check_throw_info(
+                        bool(candidate.equationGuess),
+                        "interface checkpoint requires a variational reconstruction candidate"); });
+                std::vector<Runtime::TransferOperation> means, coefficients;
+                for (index iField = 0;
+                     iField < domain._trial.PhysicalFieldNumber(); ++iField)
+                {
+                    means.push_back(domain._fv.BindHalo(
+                        domain._trial.PhysicalField(iField)).Begin());
+                    coefficients.push_back(domain._fv.BindHalo(
+                        candidate.equationGuess->PhysicalField(iField)).Begin());
+                }
+                for (auto &operation : means)
+                    operation.Wait();
+                for (auto &operation : coefficients)
+                    operation.Wait();
+                ports[iDomain] = {
+                    domain._fv.PublishVariationalInterfaceDonor(
+                        domain._trial, *candidate.equationGuess)}; });
             StateEpoch epoch;
             epoch.acceptedStep = uint64_t(step);
             _interfaces->Refresh(ports, time, epoch);

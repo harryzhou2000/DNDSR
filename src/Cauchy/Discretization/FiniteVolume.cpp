@@ -1275,7 +1275,7 @@ namespace DNDS::Cauchy
                 primitiveGradientHalo.emplace(owner->BindHalo(*primitiveGradient, "cauchy-primitive-gradient"));
             }
             BuildSourceSampling(state);
-            if (ransFirst >= 0)
+            if (nativeDirectGradient || ransFirst >= 0)
                 directGradientPublications.resize(directGradients.size());
         }
         void BindHalos(EquationDofs &state)
@@ -1292,16 +1292,13 @@ namespace DNDS::Cauchy
             {
                 if (nativeDirectGradient)
                 {
-                    if (ransFirst >= 0)
-                    {
-                        const auto &source = ghost ? directGradients[iField].Ghost()
-                                                   : directGradients[iField].Owned();
-                        const auto read = source.Read();
-                        auto &published = directGradientPublications[iField][ghost ? 1 : 0];
-                        published = {source.SharedStorage(), source.SharedStorage(),
-                                     source.ShapeVersion(), source.Version(),
-                                     source.ShapeVersion(), source.Version()};
-                    }
+                    const auto &source = ghost ? directGradients[iField].Ghost()
+                                               : directGradients[iField].Owned();
+                    const auto read = source.Read();
+                    auto &published = directGradientPublications[iField][ghost ? 1 : 0];
+                    published = {source.SharedStorage(), source.SharedStorage(),
+                                 source.ShapeVersion(), source.Version(),
+                                 source.ShapeVersion(), source.Version()};
                     continue;
                 }
                 const bool fromGradientField = owner->settings.numerics.reconstruction == "constant" && fields[iField].gradient;
@@ -3170,8 +3167,6 @@ namespace DNDS::Cauchy
             _data->equation.ValidateStateSchema(state);
             _data->equation.ResolveKernelProfile(state.Device());
             DNDS_check_throw_info(state.Space().Same(Metrics().Space()), "equation FV state belongs to another row space");
-            DNDS_check_throw_info(!HasInterfaces() || flow5Profile,
-                                  "interface packets currently provide only one coupled flow5 state");
             DNDS_check_throw_info(options.rhsKernel != RHSKernelPolicy::FixedFlow5 || flow5Profile,
                                   "fixed flow5 RHS kernel requires one perfect-gas flow5 physical field");
             DNDS_check_throw_info((n.reconstruction == "constant" || n.reconstruction == "gradient" || n.reconstruction == "variational") &&
@@ -3246,6 +3241,145 @@ namespace DNDS::Cauchy
             result.coefficientTransferBindings = index(state.coefficientHalo.size() +
                                                        state.fluxHalo.size());
         }
+        return result;
+    }
+    void FiniteVolume::InterfaceDonorPublication::Validate() const
+    {
+        DNDS_check_throw_info(_owner &&
+                                  _meanVersions.size() ==
+                                      size_t(_means.PhysicalFieldNumber()),
+                              "invalid interface donor publication");
+        _owner->equation.ValidateStateSchema(_means);
+        for (index iField = 0; iField < _means.PhysicalFieldNumber(); ++iField)
+        {
+            _owner->metrics.ValidateField(
+                _means.PhysicalField(iField),
+                _means.PhysicalField(iField).Width());
+            DNDS_check_throw_info(
+                _meanVersions[size_t(iField)] ==
+                    _means.PhysicalField(iField).Owned().Version(),
+                "interface donor mean changed after publication");
+        }
+        if (_kind == Kind::Variational)
+        {
+            DNDS_check_throw_info(_owner->reconstruction && _coefficients &&
+                                      _reconstructionVersions.size() ==
+                                          size_t(_coefficients->PhysicalFieldNumber()),
+                                  "variational interface donor is incomplete");
+            for (index iField = 0; iField < _coefficients->PhysicalFieldNumber();
+                 ++iField)
+            {
+                DNDS_check_throw_info(
+                    _coefficients->Fields().Name(iField) ==
+                            _means.Fields().Name(iField) &&
+                        _coefficients->PhysicalField(iField).Width() ==
+                            _means.PhysicalField(iField).Width() *
+                                _owner->reconstruction->NRecDOF(),
+                    "variational interface donor field grouping differs");
+                _owner->metrics.ValidateField(
+                    _coefficients->PhysicalField(iField),
+                    _coefficients->PhysicalField(iField).Width());
+                DNDS_check_throw_info(
+                    _reconstructionVersions[size_t(iField)] ==
+                        _coefficients->PhysicalField(iField).Owned().Version(),
+                    "interface donor coefficients changed after publication");
+            }
+        }
+        if (_kind == Kind::Gradient)
+        {
+            DNDS_check_throw_info(
+                _gradients.size() == size_t(_means.PhysicalFieldNumber()) &&
+                    _reconstructionVersions.size() == _gradients.size(),
+                "gradient interface donor is incomplete");
+            for (index iField = 0; iField < index(_gradients.size()); ++iField)
+            {
+                _owner->metrics.ValidateField(
+                    _gradients[size_t(iField)],
+                    _means.PhysicalField(iField).Width() *
+                        _owner->metrics.Dimension());
+                DNDS_check_throw_info(
+                    _reconstructionVersions[size_t(iField)] ==
+                        _gradients[size_t(iField)].Owned().Version(),
+                    "interface donor gradient changed after publication");
+            }
+        }
+    }
+    FiniteVolume::InterfaceDonorPublication FiniteVolume::PublishInterfaceDonor(
+        const EquationDofs &state, const ReconstructionState &reconstruction,
+        const Workspace &work, bool prepared) const
+    {
+        ValidateWorkspace(state, work);
+        DNDS_check_throw_info(reconstruction.owner == _data,
+                              "foreign interface reconstruction state");
+        reconstruction.binding.Check(state);
+        InterfaceDonorPublication result(_data, state.NumericAlias());
+        for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+            result._meanVersions.push_back(
+                state.PhysicalField(iField).Owned().Version());
+        if (_data->settings.numerics.reconstruction == "variational")
+        {
+            const auto &values = prepared ? reconstruction.FinalizedValues()
+                                          : reconstruction.coefficients;
+            if (prepared)
+                DNDS_check_throw_info(reconstruction.FinalizedCurrent(),
+                                      "interface donor reconstruction is stale");
+            result._kind = InterfaceDonorPublication::Kind::Variational;
+            result._coefficients = values.NumericAlias();
+            for (index iField = 0; iField < values.PhysicalFieldNumber(); ++iField)
+                result._reconstructionVersions.push_back(
+                    values.PhysicalField(iField).Owned().Version());
+        }
+        else if (prepared &&
+                 _data->settings.numerics.reconstruction == "gradient")
+        {
+            DNDS_check_throw_info(
+                work.nativeDirectGradient &&
+                    work.directGradients.size() ==
+                        size_t(state.PhysicalFieldNumber()) &&
+                    work.directGradientPublications.size() ==
+                        work.directGradients.size(),
+                "interface donor gradient publication is unavailable");
+            result._kind = InterfaceDonorPublication::Kind::Gradient;
+            result._gradients = work.directGradients;
+            for (index iField = 0; iField < index(work.directGradients.size());
+                 ++iField)
+            {
+                const auto &field = work.directGradients[size_t(iField)].Owned();
+                const auto &publication =
+                    work.directGradientPublications[size_t(iField)][0];
+                DNDS_check_throw_info(
+                    publication.output.lock() == field.SharedStorage() &&
+                        publication.outputShape == field.ShapeVersion() &&
+                        publication.outputVersion == field.Version(),
+                    "interface donor gradient publication is stale");
+                result._reconstructionVersions.push_back(field.Version());
+            }
+        }
+        result.Validate();
+        return result;
+    }
+    FiniteVolume::InterfaceDonorPublication
+    FiniteVolume::PublishVariationalInterfaceDonor(
+        const EquationDofs &state, const EquationDofs &coefficients) const
+    {
+        _data->equation.ValidateStateSchema(state);
+        DNDS_check_throw_info(
+            _data->reconstruction && state.Space().Same(Metrics().Space()) &&
+                coefficients.Space().Same(state.Space()) &&
+                coefficients.Device() == state.Device() &&
+                coefficients.PhysicalFieldNumber() == state.PhysicalFieldNumber(),
+            "checkpoint interface donor needs compatible variational fields");
+        InterfaceDonorPublication result(_data, state.NumericAlias());
+        result._kind = InterfaceDonorPublication::Kind::Variational;
+        result._coefficients = coefficients.NumericAlias();
+        for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+        {
+            result._meanVersions.push_back(
+                state.PhysicalField(iField).Owned().Version());
+            result._reconstructionVersions.push_back(
+                coefficients.PhysicalField(iField).Owned().Version());
+        }
+        result.Validate();
         return result;
     }
     void FiniteVolume::ValidateWorkspace(const EquationDofs &state, const Workspace &work) const
@@ -3791,7 +3925,8 @@ namespace DNDS::Cauchy
             if (work.incoming)
             {
                 ValidateBoundaryInputs(*work.incoming, time);
-                incomingRead.emplace(work.incoming->flow.Read());
+                incomingRead.emplace(
+                    work.incoming->QuadratureValues().CoupledField().Owned().Read());
                 incoming = incomingRead->View<R::UniformTableRows>();
             }
             _data->partition.Validate();
@@ -4198,7 +4333,8 @@ namespace DNDS::Cauchy
         if (work.incoming)
         {
             ValidateBoundaryInputs(*work.incoming, time);
-            incomingRead.emplace(work.incoming->flow.Read());
+            incomingRead.emplace(
+                work.incoming->QuadratureValues().CoupledField().Owned().Read());
             incoming = incomingRead->View<R::UniformTableRows>();
         }
         auto evaluator = _data->equation.MakePointEvaluator(work.workers ? work.workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{},

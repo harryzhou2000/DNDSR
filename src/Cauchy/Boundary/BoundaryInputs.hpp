@@ -1,13 +1,14 @@
 #pragma once
 
-#include "Cauchy/Physics/FlowState.hpp"
+#include "Cauchy/Physics/EquationSystem.hpp"
+#include "Cauchy/State/EquationDofs.hpp"
 #include "Cauchy/Core/StateEpoch.hpp"
-#include "DNDS/Runtime/Array/Array.hpp"
 #include <optional>
 
 namespace DNDS::Cauchy
 {
     class FiniteVolume;
+    class EquationThermalPolicy;
     namespace Detail
     {
         struct BoundaryPointLayout;
@@ -21,12 +22,12 @@ namespace DNDS::Cauchy
         Vector3 point, normal;
         bool interface;
     };
-    /// Explicit incoming boundary packet, currently flow5 in receiver axes.
-    /// flow holds RHS quadrature rows, faceFlow holds independently sampled
-    /// face-center rows for approximate Jacobians. Neither is an average of
-    /// the other. Both are published together; only interface rows are required.
-    /// More equation blocks can accompany flow without entering its allocation.
-    /// The coupling controller owns matching, interpolation and transfers.
+    /// Explicit incoming equation packet in receiver axes. QuadratureValues()
+    /// holds RHS/reconstruction rows; FaceCenterValues() holds independently
+    /// sampled approximate-Jacobian rows. Neither is an average of the other.
+    /// Both carry the complete schema in canonical logical order and are
+    /// published atomically; only interface rows are required. The coupling
+    /// controller owns matching, interpolation and transfers.
     ///
     /// BeginBoundaryUpdate clears interface rows to NaN and withdraws the old
     /// publication; fill/transfer every required row, then PublishBoundaryInputs.
@@ -36,22 +37,36 @@ namespace DNDS::Cauchy
     /// invalidates old copies through native allocation/shape generations.
     struct BoundaryInputs
     {
-        Runtime::Array<real> flow;
-        Runtime::Array<real> faceFlow;
-
     private:
         friend class FiniteVolume;
+        EquationDofs _quadrature;
+        EquationDofs _faceCenters;
+        EquationPropertyKey _property;
+        std::shared_ptr<const EquationThermalPolicy> _thermal;
         std::shared_ptr<const Detail::BoundaryPointLayout> _layout;
         struct Publication
         {
             real time;
             StateEpoch epoch;
-            uint64_t version, shape, faceVersion, faceShape;
+            std::vector<uint64_t> versions, shapes, faceVersions, faceShapes;
         };
         std::optional<Publication> _publication;
         bool _updating = false;
+        BoundaryInputs(EquationDofs quadrature, EquationDofs faceCenters,
+                       EquationPropertyKey property,
+                       std::shared_ptr<const EquationThermalPolicy> thermal)
+            : _quadrature(std::move(quadrature)),
+              _faceCenters(std::move(faceCenters)),
+              _property(std::move(property)), _thermal(std::move(thermal)) {}
 
     public:
+        /// Managed complete equation rows. Mutable access is intentional for a
+        /// begun controller update; any later write invalidates publication by
+        /// native array generations. No raw pointer escapes this packet API.
+        EquationDofs &QuadratureValues() { return _quadrature; }
+        const EquationDofs &QuadratureValues() const { return _quadrature; }
+        EquationDofs &FaceCenterValues() { return _faceCenters; }
+        const EquationDofs &FaceCenterValues() const { return _faceCenters; }
         /// Describes the frozen source snapshot supplied by the controller;
         /// these queries never refresh a field or assert current donor state.
         real Time() const

@@ -185,8 +185,11 @@ namespace DNDS::Cauchy
         const auto boundary = PreparedBoundaryInputs(auxiliary);
         if (boundary)
         {
-            checkAlias(boundary->flow);
-            checkAlias(boundary->faceFlow);
+            for (const auto *packet : {&boundary->QuadratureValues(),
+                                       &boundary->FaceCenterValues()})
+                for (index iField = 0; iField < packet->PhysicalFieldNumber();
+                     ++iField)
+                    checkAlias(packet->PhysicalField(iField).Owned());
         }
         if (auxiliary.meanThermodynamics)
             checkAlias(*auxiliary.meanThermodynamics);
@@ -213,7 +216,8 @@ namespace DNDS::Cauchy
         RHSScalarView incoming;
         if (boundary)
         {
-            boundaryRead.emplace(boundary->faceFlow.Read());
+            boundaryRead.emplace(
+                boundary->FaceCenterValues().CoupledField().Owned().Read());
             incoming = boundaryRead->View<R::UniformTableRows>();
         }
         if (auxiliary.meanThermodynamics)

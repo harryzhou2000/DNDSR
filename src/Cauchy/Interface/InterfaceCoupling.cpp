@@ -10,6 +10,13 @@ namespace DNDS::Cauchy
     {
         struct Connection
         {
+            struct DonorField
+            {
+                std::vector<index> logicalComponents;
+                std::optional<CFV::DistributedSamplingWorkspace> workspace;
+                R::Array<real> values;
+                std::optional<R::TransferBinding> result;
+            };
             index donor, receiver;
             InterfaceSettings settings;
             std::shared_ptr<R::CommunicationContext> context;
@@ -24,9 +31,10 @@ namespace DNDS::Cauchy
             std::vector<ReceiverRow> receiverRows;
             std::optional<std::pair<Geom::RigidPose, Geom::RigidPose>> poses;
             std::optional<CFV::DistributedInterfaceSamplingPlan> sampling;
-            std::optional<CFV::DistributedSamplingWorkspace> workspace;
-            R::Array<real> values;
-            std::optional<R::TransferBinding> result;
+            std::vector<DonorField> fields;
+            /// Collective, immutable donor physical grouping: mode, logical
+            /// component count, then one logical-component map per field.
+            std::vector<index> donorDescriptor;
             std::vector<index> lastDonors;
         };
         mutable std::mutex operationMutex;
@@ -44,6 +52,7 @@ namespace DNDS::Cauchy
         std::shared_ptr<R::CommunicationContext> control;
         MPIInfo mpi;
         std::vector<std::optional<FiniteVolume>> discrete;
+        std::vector<std::optional<Physics::Chemistry::ChemicalWorkerPool>> workers;
         std::vector<RigidMotion> motion;
         std::vector<std::optional<BoundaryInputs>> incoming;
         std::vector<std::optional<BoundaryInputs>> accepted;
@@ -58,8 +67,11 @@ namespace DNDS::Cauchy
             mpi = MPIInfo(control->Communicator());
         }
     };
-    InterfaceCoupling::InterfaceCoupling(const SimulationConfig &config, std::shared_ptr<R::CommunicationContext> context,
-                                         const std::vector<std::optional<FiniteVolume>> &localDomains)
+    InterfaceCoupling::InterfaceCoupling(
+        const SimulationConfig &config,
+        std::shared_ptr<R::CommunicationContext> context,
+        const std::vector<std::optional<FiniteVolume>> &localDomains,
+        const std::vector<std::optional<Physics::Chemistry::ChemicalWorkerPool>> &workers)
         : _data(std::make_shared<Data>(std::move(context)))
     {
         auto &data = *_data;
@@ -68,6 +80,11 @@ namespace DNDS::Cauchy
                         {
             DNDS_check_throw_info(localDomains.size()==config.Domains().size(),"interface domain descriptor count differs");
             data.discrete.resize(localDomains.size());
+            data.workers = workers;
+            if (data.workers.empty())
+                data.workers.resize(localDomains.size());
+            DNDS_check_throw_info(data.workers.size() == localDomains.size(),
+                                  "interface chemistry-worker descriptor count differs");
             data.incoming.resize(localDomains.size());
             data.accepted.resize(localDomains.size());
             for(const auto &domain:config.Domains()) data.motion.emplace_back(domain.settings.motion,domain.settings.mesh.dimension);
@@ -75,7 +92,8 @@ namespace DNDS::Cauchy
                 if(localDomains[iDomain])
                 {
                     data.discrete[iDomain]=*localDomains[iDomain];
-                    if(localDomains[iDomain]->HasInterfaces()) data.incoming[iDomain]=localDomains[iDomain]->BuildBoundaryInputs();
+                    if(localDomains[iDomain]->HasInterfaces())
+                        data.incoming[iDomain]=localDomains[iDomain]->BuildBoundaryInputs(data.workers[iDomain]);
                 } });
         for (const auto &settings : config.Interfaces())
         {
@@ -89,6 +107,10 @@ namespace DNDS::Cauchy
             };
             connection.donor = domainIndex(settings.donor);
             connection.receiver = domainIndex(settings.receiver);
+            DNDS_check_throw_info(
+                config.Root().at("domains").at(size_t(connection.donor)).at("settings").at("equation") ==
+                    config.Root().at("domains").at(size_t(connection.receiver)).at("settings").at("equation"),
+                "interface donor and receiver need identical equation, material and scaling settings");
             // Independent connection protocols intentionally isolate their
             // query/result namespaces; this is not a lifetime-only duplication.
             connection.context = R::CommunicationContext::Duplicate(coupling);
@@ -163,9 +185,12 @@ namespace DNDS::Cauchy
                 const auto &input=domains[iDomain];
                 DNDS_check_throw_info(bool(input.values)==bool(data.discrete[iDomain]),
                                       "interface refresh has incomplete or changed domain participation");
+                if (input.values)
+                    input.values->Validate();
                 if(data.discrete[iDomain]&&data.discrete[iDomain]->HasInterfaces())
                 {
-                    if(!data.incoming[iDomain]) data.incoming[iDomain]=data.discrete[iDomain]->BuildBoundaryInputs();
+                    if(!data.incoming[iDomain])
+                        data.incoming[iDomain]=data.discrete[iDomain]->BuildBoundaryInputs(data.workers[iDomain]);
                     else data.discrete[iDomain]->BeginBoundaryUpdate(*data.incoming[iDomain]);
                 }
             } });
@@ -177,11 +202,93 @@ namespace DNDS::Cauchy
             const auto receiverPose = data.motion[connection.receiver].At(time).pose;
             const auto samePose = [](const auto &a, const auto &b)
             { return a.rotation == b.rotation && a.translation == b.translation; };
+            const auto describe = [](const FiniteVolume::InterfaceDonorPublication &publication)
+            {
+                const auto &values = publication._means;
+                std::vector<std::vector<index>> logical(
+                    size_t(values.PhysicalFieldNumber()));
+                for (index iField = 0; iField < values.PhysicalFieldNumber();
+                     ++iField)
+                    logical[size_t(iField)].assign(
+                        values.PhysicalField(iField).Width(), -1);
+                index first = 0;
+                for (index iBlock = 0; iBlock < values.BlockNumber(); ++iBlock)
+                {
+                    const auto location = values.LocateBlock(iBlock);
+                    for (index j = 0; j < location.componentNumber; ++j)
+                        logical[size_t(location.physicalField)]
+                               [size_t(location.firstComponent + j)] = first + j;
+                    first += location.componentNumber;
+                }
+                std::vector<index> result{first, values.PhysicalFieldNumber()};
+                for (const auto &field : logical)
+                    result.push_back(index(field.size()));
+                for (const auto &field : logical)
+                    result.insert(result.end(), field.begin(), field.end());
+                return result;
+            };
+            const auto &publication = domains[connection.donor].values;
+            std::vector<index> localDescriptor;
+            if (publication)
+                localDescriptor = describe(*publication);
+            int descriptorRoot = publication ? data.mpi.rank : data.mpi.size;
+            MPI::Allreduce(MPI_IN_PLACE, &descriptorRoot, 1, MPI_INT, MPI_MIN,
+                           data.mpi.comm);
+            DNDS_check_throw_info(descriptorRoot >= 0 && descriptorRoot < data.mpi.size,
+                                  "interface connection has no donor publication");
+            int descriptorSize = data.mpi.rank == descriptorRoot
+                                     ? int(localDescriptor.size())
+                                     : 0;
+            MPI::Bcast(&descriptorSize, 1, MPI_INT, descriptorRoot, data.mpi.comm);
+            DNDS_check_throw_info(descriptorSize >= 2,
+                                  "invalid interface donor field descriptor");
+            std::vector<index> descriptor(static_cast<size_t>(descriptorSize),
+                                          index{});
+            if (data.mpi.rank == descriptorRoot)
+                descriptor = localDescriptor;
+            MPI::Bcast(descriptor.data(), descriptorSize, MPI_INT64_T,
+                       descriptorRoot, data.mpi.comm);
+            MPI::LocalStage(data.mpi, [&]
+                            {
+                if (publication)
+                    DNDS_check_throw_info(
+                        localDescriptor == descriptor,
+                        "interface donor ranks use different physical field grouping");
+                const index fields = descriptor[1];
+                DNDS_check_throw_info(
+                    fields > 0 && descriptor.size() >= size_t(2 + fields),
+                    "invalid interface donor field count");
+                index described = 0;
+                for (index iField = 0; iField < fields; ++iField)
+                {
+                    const index width = descriptor[size_t(2 + iField)];
+                    DNDS_check_throw_info(width > 0 &&
+                                              described <= descriptor[0] - width,
+                                          "invalid interface donor field width");
+                    described += width;
+                }
+                DNDS_check_throw_info(
+                    described == descriptor[0] &&
+                        descriptor.size() == size_t(2 + fields + described),
+                    "interface donor descriptor does not cover its equation");
+                if (receiver)
+                    DNDS_check_throw_info(
+                        data.incoming[connection.receiver]
+                                ->QuadratureValues()
+                                .ComponentNumber() == descriptor[0],
+                        "interface donor and receiver equation schemas differ");
+                if (!connection.donorDescriptor.empty())
+                    DNDS_check_throw_info(
+                        connection.donorDescriptor == descriptor,
+                        "interface donor physical grouping changed after setup"); });
+            if (connection.donorDescriptor.empty())
+                connection.donorDescriptor = descriptor;
             if (!connection.poses || !samePose(connection.poses->first, donorPose) || !samePose(connection.poses->second, receiverPose))
             {
                 R::Array<real> points;
                 R::Array<index> ids;
                 std::optional<Geom::BoundaryPatch> patch;
+                std::optional<CFV::FiniteVolumePlan> metrics;
                 std::optional<CFV::VariationalReconstructionPlan> reconstruction;
                 MPI::LocalStage(data.mpi, [&]
                                 {
@@ -190,6 +297,7 @@ namespace DNDS::Cauchy
                     if(donor)
                     {
                         patch=connection.patch->WithPose(donorPose);
+                        metrics=donor->Metrics();
                         const auto polynomial=donor->PolynomialReconstruction();
                         if(polynomial) reconstruction=*polynomial;
                     }
@@ -223,41 +331,132 @@ namespace DNDS::Cauchy
                     }
                     connection.lastDonors=std::move(donors);
                     ++data.mapBuilds; });
-                connection.result.reset();
-                connection.sampling.emplace(std::move(reconstruction), std::move(map));
+                connection.fields.clear();
+                connection.sampling.reset();
+                connection.sampling.emplace(std::move(metrics),
+                                            std::move(reconstruction),
+                                            std::move(map));
                 MPI::LocalStage(data.mpi, [&]
                                 {
-                    connection.workspace=connection.sampling->BuildWorkspace(5);
-                    connection.values=R::Array<real>(R::RowLayout::Dense(connection.receiverRows.size(),5)); });
-                connection.result = connection.sampling->BindResult(*connection.workspace, connection.values);
+                    const index fields = connection.donorDescriptor[1];
+                    index offset = 2 + fields;
+                    connection.fields.resize(size_t(fields));
+                    for (index iField = 0; iField < fields; ++iField)
+                    {
+                        auto &field = connection.fields[size_t(iField)];
+                        const index width =
+                            connection.donorDescriptor[size_t(2 + iField)];
+                        field.logicalComponents.assign(
+                            connection.donorDescriptor.begin() + offset,
+                            connection.donorDescriptor.begin() + offset + width);
+                        offset += width;
+                        field.workspace =
+                            connection.sampling->BuildWorkspace(width);
+                        field.values = R::Array<real>(R::RowLayout::Dense(
+                            connection.receiverRows.size(), width));
+                    } });
+                for (index iField = 0;
+                     iField < index(connection.fields.size()); ++iField)
+                {
+                    auto &field = connection.fields[size_t(iField)];
+                    field.result = connection.sampling->BindResult(
+                        *field.workspace, field.values,
+                        R::TransferMode::Persistent, int(iField));
+                }
                 connection.poses = std::make_pair(donorPose, receiverPose);
             }
-            const auto &input = domains[connection.donor];
             MPI::LocalStage(data.mpi, [&]
-                            { connection.sampling->EvaluateDonors(input.values, *connection.workspace); });
-            connection.result->Begin().Wait();
+                            {
+                for (index iField = 0;
+                     iField < index(connection.fields.size()); ++iField)
+                {
+                    std::optional<CFV::DonorInputs> input;
+                    if (publication)
+                    {
+                        const auto &mean = publication->_means.PhysicalField(iField);
+                        switch (publication->_kind)
+                        {
+                        case FiniteVolume::InterfaceDonorPublication::Kind::Constant:
+                            input.emplace(mean);
+                            break;
+                        case FiniteVolume::InterfaceDonorPublication::Kind::Gradient:
+                            input.emplace(CFV::DonorInputs::Gradient(
+                                mean, publication->_gradients[size_t(iField)]));
+                            break;
+                        case FiniteVolume::InterfaceDonorPublication::Kind::Variational:
+                            input.emplace(
+                                mean,
+                                publication->_coefficients->PhysicalField(iField));
+                            break;
+                        }
+                    }
+                    connection.sampling->EvaluateDonors(
+                        input,
+                        *connection.fields[size_t(iField)].workspace);
+                } });
+            std::vector<R::TransferOperation> transfers;
+            transfers.reserve(connection.fields.size());
+            for (auto &field : connection.fields)
+                transfers.push_back(field.result->Begin());
+            for (auto &transfer : transfers)
+                transfer.Wait();
             MPI::LocalStage(data.mpi, [&]
                             {
                 if(!receiver) return;
-                // Values are absolute momentum in the donor mesh axes. Density
-                // and absolute total energy need no moving-grid correction.
+                // Every schema-declared vector triple is absolute and expressed
+                // in donor axes. Scalars (including absolute total energy) are
+                // invariant under this rigid change of coordinate axes.
                 const auto donorFrame=data.motion[connection.donor].At(time);
                 const auto receiverFrame=data.motion[connection.receiver].At(time);
-                const auto read=connection.values.Read();
-                auto write=data.incoming[connection.receiver]->flow.Write();
-                auto faceWrite=data.incoming[connection.receiver]->faceFlow.Write();
-                const auto values=read.View<R::UniformTableRows>();
-                const auto output=write.View<R::UniformTableRows>();
-                const auto faceOutput=faceWrite.View<R::UniformTableRows>();
+                std::vector<R::Array<real>::ReadLease> reads;
+                reads.reserve(connection.fields.size());
+                for (const auto &field : connection.fields)
+                    reads.push_back(field.values.Read());
+                auto write = data.incoming[connection.receiver]
+                                 ->QuadratureValues()
+                                 .WriteOwned();
+                auto faceWrite = data.incoming[connection.receiver]
+                                     ->FaceCenterValues()
+                                     .WriteOwned();
+                const auto outputLayout = write.ComponentLayout();
+                const auto faceOutputLayout = faceWrite.ComponentLayout();
+                const auto output = outputLayout.View();
+                const auto faceOutput = faceOutputLayout.View();
                 for(index iPoint=0;iPoint<index(connection.receiverRows.size());++iPoint)
                 {
-                    FlowState value;
-                    for(int j=0;j<5;++j) value[j]=values(iPoint,j);
-                    value=receiverFrame.LocalState(donorFrame.WorldState(value));
                     const auto row = connection.receiverRows[iPoint];
-                    for(int j=0;j<5;++j)
-                        if (row.faceCenter) faceOutput(row.row,j)=value[j];
-                        else output(row.row,j)=value[j];
+                    const auto destination = row.faceCenter ? faceOutput : output;
+                    for (index iField = 0;
+                         iField < index(connection.fields.size()); ++iField)
+                    {
+                        const auto values =
+                            reads[size_t(iField)]
+                                .View<R::UniformTableRows>();
+                        const auto &logical =
+                            connection.fields[size_t(iField)].logicalComponents;
+                        for (index j = 0; j < index(logical.size()); ++j)
+                            destination(row.row, logical[size_t(j)]) =
+                                values(iPoint, j);
+                    }
+                    index first = 0;
+                    for (const auto &block : data.incoming[connection.receiver]
+                                                 ->QuadratureValues()
+                                                 .Schema()
+                                                 .blocks)
+                    {
+                        for (const index start : block.vectorStarts)
+                        {
+                            Vector3 value{
+                                destination(row.row, first + start),
+                                destination(row.row, first + start + 1),
+                                destination(row.row, first + start + 2)};
+                            value = receiverFrame.LocalVector(
+                                donorFrame.WorldVector(value));
+                            for (int d = 0; d < 3; ++d)
+                                destination(row.row, first + start + d) = value[d];
+                        }
+                        first += index(block.components.size());
+                    }
                 } });
         }
         MPI::LocalStage(data.mpi, [&]
