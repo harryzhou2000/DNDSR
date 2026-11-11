@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cauchy/Implicit/LinearProblem.hpp"
+#include "DNDS/Core/OptionalRef.hpp"
 #include "Solver/FieldGMRES.hpp"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
 
@@ -72,7 +73,7 @@ namespace DNDS::Cauchy
         /// positivity are checked once per solve;
         /// no physics or mean-state reduction occurs inside the linear solver.
         Linear::LinearIterationReport Solve(const Field &rhs,
-                                            std::optional<std::reference_wrapper<const Field>> initialGuess = std::nullopt,
+                                            OptionalRef<const Field> initialGuess = {},
                                             const std::vector<real> &componentScales = {});
         /// Sharing result handle; storage survives session destruction but may be
         /// overwritten by the next Solve. Copy values explicitly for history. Always inspect its
@@ -108,7 +109,7 @@ namespace DNDS::Cauchy
         DofLinearSolver &operator=(DofLinearSolver &&) noexcept = default;
         /// Same optional frozen component-scale metric as LinearSolver.
         Linear::LinearIterationReport Solve(const EquationDofs &rhs,
-                                            std::optional<std::reference_wrapper<const EquationDofs>> initialGuess = std::nullopt,
+                                            OptionalRef<const EquationDofs> initialGuess = {},
                                             const std::vector<real> &componentScales = {});
         EquationDofs Solution() const;
     };

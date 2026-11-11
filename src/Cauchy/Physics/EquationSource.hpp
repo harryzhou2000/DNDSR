@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cauchy/State/DerivedFields.hpp"
+#include "DNDS/Core/OptionalRef.hpp"
 #include "Physics/Chemistry/ReactorStepSettings.hpp"
 
 namespace DNDS::Cauchy
@@ -26,9 +27,9 @@ namespace DNDS::Cauchy
     /// work if launched asynchronously. No implicit device/host fallback.
     void EvaluateChemicalSource(const EquationSystem &equation, const EquationDofs &state,
                                 EquationDofs &values, Physics::Chemistry::ChemicalWorkerPool::Lease worker,
-                                std::optional<std::reference_wrapper<Runtime::Array<real>>> jacobian = std::nullopt,
+                                OptionalRef<Runtime::Array<real>> jacobian = {},
                                 real sourceScale = 1,
-                                std::optional<std::reference_wrapper<const DerivedFields>> temperatureGuess = std::nullopt);
+                                OptionalRef<const DerivedFields> temperatureGuess = {});
     /// Existing Euler constant-volume CVODE step on owned logical rows, with
     /// distinct input/output allocations and any uniform physical layouts.
     /// Replaces every output component: flow5 and nonchemical blocks are copied

@@ -15,6 +15,9 @@ using namespace DNDS::Runtime;
 
 static_assert(std::is_constructible_v<DNDS::OptionalRef<const int>, DNDS::OptionalRef<int>>);
 static_assert(!std::is_constructible_v<DNDS::OptionalRef<int>, DNDS::OptionalRef<const int>>);
+static_assert(std::is_convertible_v<std::reference_wrapper<int>, DNDS::OptionalRef<int>>);
+static_assert(std::is_convertible_v<std::reference_wrapper<const int>, DNDS::OptionalRef<const int>>);
+static_assert(!std::is_convertible_v<int &, DNDS::OptionalRef<int>>);
 
 TEST_CASE("OptionalRef preserves constness and checked synchronous rebinding")
 {

@@ -29,8 +29,12 @@ namespace DNDS
 
         explicit OptionalRef(T &ref) noexcept : _ptr(&ref) {}
 
+        /// `std::ref`/`std::cref` is already an explicit borrow marker at the
+        /// call site, so permit it to migrate directly from
+        /// optional<reference_wrapper<T>> APIs. Plain T& construction remains
+        /// explicit to prevent an unmarked lifetime borrow.
         template <class U, std::enable_if_t<std::is_convertible_v<U *, T *>, int> = 0>
-        explicit OptionalRef(std::reference_wrapper<U> ref) noexcept : _ptr(&ref.get()) {}
+        OptionalRef(std::reference_wrapper<U> ref) noexcept : _ptr(&ref.get()) {}
 
         /// Permit the usual mutable-to-const borrow conversion without allowing
         /// const removal or unrelated reference types.

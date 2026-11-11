@@ -72,9 +72,9 @@ namespace DNDS::Cauchy::NonlinearDetail
             if (_seconds)
                 _start = Clock::now();
         }
-        PhaseTimer(const std::optional<std::reference_wrapper<NonlinearProfile>> &profile,
+        PhaseTimer(OptionalRef<NonlinearProfile> profile,
                    NonlinearProfile::Phase phase)
-            : PhaseTimer(profile ? &profile->get() : nullptr, phase) {}
+            : PhaseTimer(profile.Get(), phase) {}
         PhaseTimer(const PhaseTimer &) = delete;
         PhaseTimer &operator=(const PhaseTimer &) = delete;
         ~PhaseTimer()
@@ -119,10 +119,10 @@ namespace DNDS::Cauchy::NonlinearDetail
         index firstIteration = afterUpdate ? 1 : 0;
         if (control.resume)
         {
-            DNDS_check_throw_info(control.state && control.state->get().schemaVersion == 1 &&
-                                      control.state->get().iteration >= 0 && !control.state->get().rejected,
+            DNDS_check_throw_info(control.state && control.state->schemaVersion == 1 &&
+                                      control.state->iteration >= 0 && !control.state->rejected,
                                   "nonlinear resume needs a valid live controller state");
-            const auto &state = control.state->get();
+            const auto &state = *control.state;
             DNDS_check_throw_info(state.stage == stage && state.residual.size() == report.residual.size() &&
                                       state.initialResidual.size() == report.residual.size() &&
                                       state.referenceResidual.size() == report.residual.size() &&
@@ -159,7 +159,7 @@ namespace DNDS::Cauchy::NonlinearDetail
             report.pseudoCFL = control.initialPseudoCFL == 0 ? settings.pseudoCFL : control.initialPseudoCFL;
             if (control.state)
             {
-                auto &state = control.state->get();
+                auto &state = *control.state;
                 state.stage = stage;
                 state.coupledStage = -1;
                 state.iteration = 0;
@@ -177,7 +177,7 @@ namespace DNDS::Cauchy::NonlinearDetail
                 const PhaseTimer timer(control.profile, NonlinearProfile::Residual);
                 evaluate();
                 if (control.profile)
-                    ++control.profile->get().residualEvaluations;
+                    ++control.profile->residualEvaluations;
             }
             std::tie(report.reconstructionIterations, report.reconstructionRelativeUpdate) = reconstruction();
             report.reconstructionUpdateMeasured = std::isfinite(report.reconstructionRelativeUpdate);
@@ -221,7 +221,7 @@ namespace DNDS::Cauchy::NonlinearDetail
                                                  report.reconstructionUpdateMeasured};
                 if (control.state)
                 {
-                    auto &state = control.state->get();
+                    auto &state = *control.state;
                     state.iteration = iteration;
                     state.converged = progress.converged;
                     state.terminal = progress.terminal;
@@ -250,7 +250,7 @@ namespace DNDS::Cauchy::NonlinearDetail
                     if (control.quiescent)
                     {
                         DNDS_check_throw_info(control.state, "quiescent nonlinear observer needs live controller state");
-                        control.quiescent(control.state->get());
+                        control.quiescent(*control.state);
                     }
                     return report;
                 }
@@ -259,11 +259,11 @@ namespace DNDS::Cauchy::NonlinearDetail
                 advance(report);
             report.pseudoCFL = std::min(settings.maxPseudoCFL, report.pseudoCFL * settings.pseudoGrowth);
             if (control.state)
-                control.state->get().pseudoCFL = report.pseudoCFL;
+                control.state->pseudoCFL = report.pseudoCFL;
             if (control.quiescent)
             {
                 DNDS_check_throw_info(control.state, "quiescent nonlinear observer needs live controller state");
-                control.quiescent(control.state->get());
+                control.quiescent(*control.state);
             }
         }
         return report;

@@ -311,8 +311,9 @@ namespace DNDS::Cauchy::Bindings
                  [](DofLinearSolver &solver, const EquationDofs &rhs, const EquationDofs *initialGuess,
                     const std::vector<real> &componentScales)
         {
-            return solver.Solve(rhs, initialGuess ? std::optional(std::cref(*initialGuess)) : std::nullopt,
-                                componentScales);
+            return solver.Solve(
+                rhs, initialGuess ? OptionalRef<const EquationDofs>(*initialGuess) : OptionalRef<const EquationDofs>{},
+                componentScales);
         },
                  py::arg("rhs"), py::arg("initial_guess") = nullptr, py::arg("component_scales") = std::vector<real>{},
                  py::call_guard<py::gil_scoped_release>(), Collective)
@@ -448,7 +449,8 @@ namespace DNDS::Cauchy::Bindings
                 buffer.emplace(faces->AsArray<real>());
             py::gil_scoped_release release;
             op.fv.EvaluateFlux(u, r, *w.reconstruction, *w.value, CFV::ReconstructionRegion::All, t,
-                               buffer ? std::optional(std::ref(*buffer)) : std::nullopt);
+                               buffer ? OptionalRef<Runtime::Array<real>>(*buffer)
+                                      : OptionalRef<Runtime::Array<real>>{});
         },
                 py::arg("state"), py::arg("residual"), py::arg("workspace"), py::arg("face_flux") = nullptr,
                 py::arg("time") = 0,

@@ -422,7 +422,7 @@ namespace DNDS::Cauchy
             }
             const Field &Solution() const { return gmres ? gmres->Solution() : *solution; }
             Linear::LinearIterationReport Solve(
-                const Field &rhs, std::optional<std::reference_wrapper<const Field>> initialGuess,
+                const Field &rhs, OptionalRef<const Field> initialGuess,
                 const std::vector<real> &componentScales)
             {
                 struct FinishProfile
@@ -459,8 +459,8 @@ namespace DNDS::Cauchy
             });
             if (initialGuess)
             {
-                Ops::CheckCompatible(rhs, initialGuess->get());
-                CheckIdle(initialGuess->get(), false);
+                Ops::CheckCompatible(rhs, *initialGuess);
+                CheckIdle(*initialGuess, false);
             }
             for (const auto &input : data.inputs)
             {
@@ -482,13 +482,13 @@ namespace DNDS::Cauchy
                         return data.gmres->Solve(rhs, [&](Field &x, Field &y)
                                                  { data.Apply(x, y); }, [&](const Field &x, Field &y)
                                                  { data.Precondition(x, y); }, [&](const Field &x, const auto &probes)
-                                                 { return data.Products(x, probes); }, {data.settings.maxIterations, data.settings.relativeTolerance, data.settings.absoluteTolerance}, initialGuess ? &initialGuess->get() : nullptr);
+                                                 { return data.Products(x, probes); }, {data.settings.maxIterations, data.settings.relativeTolerance, data.settings.absoluteTolerance}, initialGuess.Get());
                     auto &x = *data.solution;
                     const bool directFirstILU = !initialGuess && data.settings.method == "ilu" && data.settings.stopping == "fixedCount";
                     data.Stage([&]
                                {
                 const LinearProfile::Scope timing(data.profile, LinearProfile::Algebra);
-                if (initialGuess) Ops::CopyGuess(x, initialGuess->get());
+                if (initialGuess) Ops::CopyGuess(x, *initialGuess);
                 else if (data.settings.method != "sgs" && data.settings.method != "jacobi" && !directFirstILU) Clear(x); });
                     Linear::LinearIterationReport report;
                     // Defect formation is independent of stopping/reporting:
@@ -691,7 +691,7 @@ namespace DNDS::Cauchy
         return _data->Solution();
     }
     Linear::LinearIterationReport LinearSolver::Solve(
-        const Field &rhs, std::optional<std::reference_wrapper<const Field>> initialGuess,
+        const Field &rhs, OptionalRef<const Field> initialGuess,
         const std::vector<real> &componentScales)
     {
         DNDS_check_throw_info(_data, "linear solver was moved");
@@ -699,7 +699,7 @@ namespace DNDS::Cauchy
         return _data->Solve(rhs, initialGuess, componentScales);
     }
     Linear::LinearIterationReport DofLinearSolver::Solve(
-        const EquationDofs &rhs, std::optional<std::reference_wrapper<const EquationDofs>> initialGuess,
+        const EquationDofs &rhs, OptionalRef<const EquationDofs> initialGuess,
         const std::vector<real> &componentScales)
     {
         DNDS_check_throw_info(_data, "linear solver was moved");

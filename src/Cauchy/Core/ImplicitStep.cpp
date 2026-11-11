@@ -117,7 +117,9 @@ namespace DNDS::Cauchy
                         {
             if (_restoreReconstruction)
                 _fv.RestoreReconstructionGuess(*_reconstruction, *_reconstructionBackup,
-                                               _limitedVRBackup ? std::optional(std::cref(*_limitedVRBackup)) : std::nullopt);
+                                               _limitedVRBackup
+                                                   ? OptionalRef<const Runtime::Array<real>>(*_limitedVRBackup)
+                                                   : OptionalRef<const Runtime::Array<real>>{});
             else
             {
                 const auto &guess = _fv.ReconstructionGuess(*_reconstruction);
@@ -157,7 +159,7 @@ namespace DNDS::Cauchy
         NonlinearIterationReport initial;
         initial.residual.resize(size_t(endpoint.ComponentNumber()));
         auto coupledControl = ProgressControl();
-        coupledControl.state = std::ref(_coupledNonlinearState);
+        coupledControl.state.Emplace(_coupledNonlinearState);
         coupledControl.resume = resume;
         if (!resume)
         {

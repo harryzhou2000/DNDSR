@@ -75,10 +75,10 @@ def main():
 
     evaluation = (
         "void FiniteVolume::EvaluateImpl(EquationDofs &state,\n"
-        "std::optional<std::reference_wrapper<EquationDofs>> residual,\n"
+        "OptionalRef<EquationDofs> residual,\n"
         "ReconstructionState &reconstruction, Workspace &work, R::EagerEngine &engine,\n"
         "const R::ExecutionStream &stream, real time,\n"
-        "std::optional<std::reference_wrapper<AuxiliaryValues>> auxiliary) const\n    {")
+        "OptionalRef<AuxiliaryValues> auxiliary) const\n    {")
     text = insert_after_once(
         text, evaluation,
         "        ::DiagnosticTiming::Level diagnosticLevel(_data->settings.numerics.firstOrderConvection ? 2 : _data->settings.numerics.reconstruction == \"variational\" ? 0 : 1);\n"
@@ -86,9 +86,9 @@ def main():
         "        ::DiagnosticTiming::AuxiliaryTrace evaluationTrace(auxiliary && !work.meanGradients, 0, ::DiagnosticTiming::currentLevel);\n")
     text = replace_once(
         text,
-        "                      auxiliaryPreparation.emplace(BeginAuxValues(state, auxiliary->get(), time, work.workers, inputs)); });",
+        "                      auxiliaryPreparation.emplace(BeginAuxValues(state, *auxiliary, time, work.workers, inputs)); });",
         "                      ::DiagnosticTiming::Scope scope(::DiagnosticTiming::Block::AuxiliaryPrepare);\n"
-        "                      auxiliaryPreparation.emplace(BeginAuxValues(state, auxiliary->get(), time, work.workers, inputs)); });")
+        "                      auxiliaryPreparation.emplace(BeginAuxValues(state, *auxiliary, time, work.workers, inputs)); });")
     text = insert_before_once(
         text, "        for (auto &halo : reconstruction.meanHalo)\n"
               "            meanOperations.push_back(halo.Begin(reconstruction.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));",
@@ -113,7 +113,7 @@ def main():
         "                ::DiagnosticTiming::Scope scope(::DiagnosticTiming::Block::AuxiliaryCompute);\n"
         "                evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::ComputeBegin);\n")
     text = insert_after_once(
-        text, "                auxiliaryPreparation->Finish(auxiliary->get()); });",
+        text, "                auxiliaryPreparation->Finish(*auxiliary); });",
         "                evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::ComputeEnd);\n")
 
     refresh = r"if\s*\(work\.SourceSamplesCurrent\(state,\s*time\)\)\s*return;"
@@ -125,17 +125,23 @@ def main():
     if count != 3:
         raise ValueError(f"expected three correction source refresh guards, got {count}")
 
-    for phase, block in (("Gradient", "Gradient"), ("PP", "PolynomialPP"),
-                         ("RHS", "FaceRHS"), ("Sampling", "SourceSampling"),
-                         ("Source", "VolumeSource")):
+    # Direct-gradient and variational PP are mutually exclusive production
+    # leaves but intentionally share one diagnostic block. Keep both anchors so
+    # neither path can disappear from the generated instrumentation silently.
+    for phase, block, expected in (("Gradient", "Gradient", 1),
+                                   ("PP", "PolynomialPP", 2),
+                                   ("RHS", "FaceRHS", 1),
+                                   ("Sampling", "SourceSampling", 1),
+                                   ("Source", "VolumeSource", 1)):
         expression = (r"const\s+(?:Workspace::)?PhaseTime\s+timing\("
                       r"(\*this|work),\s*(?:Workspace::)?" + phase + r"Phase\);")
         text, count = re.subn(
             expression,
             lambda match: f"::DiagnosticTiming::Scope detailScope(::DiagnosticTiming::Block::{block});\n" + match.group(0),
             text)
-        if count != 1:
-            raise ValueError(f"FV detail scope {phase} expected once, got {count}")
+        if count != expected:
+            raise ValueError(
+                f"FV detail scope {phase} expected {expected}, got {count}")
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256(args.source.read_bytes()).hexdigest()

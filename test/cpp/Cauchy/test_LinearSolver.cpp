@@ -225,7 +225,7 @@ TEST_CASE("Jacobi matches independent frozen-remote local-sweep oracle")
                         expected = std::move(next);
                     }
                 }
-                const auto report = solver.Solve(fixture.rhs, warm ? std::optional(std::cref(fixture.rhs)) : std::nullopt);
+                const auto report = solver.Solve(fixture.rhs, warm ? DNDS::OptionalRef<const C::LinearSolver::Field>(fixture.rhs) : DNDS::OptionalRef<const C::LinearSolver::Field>{});
                 REQUIRE(report.usable);
                 CHECK(report.jacobiSweeps == 2 * localSweeps);
                 CHECK(report.jacobiInputExchanges == (warm ? 2 : 1));
@@ -251,7 +251,7 @@ TEST_CASE("Jacobi matches independent frozen-remote local-sweep oracle")
                 }
                 C::DofLinearSolver splitSolver(fixture.problem, split, [&](Field &field)
                                                { return fixture.Bind(field); }, settings, {false, true});
-                REQUIRE(splitSolver.Solve(split, warm ? std::optional(std::cref(split)) : std::nullopt).usable);
+                REQUIRE(splitSolver.Solve(split, warm ? DNDS::OptionalRef<const C::EquationDofs>(split) : DNDS::OptionalRef<const C::EquationDofs>{}).usable);
                 const auto splitRead = splitSolver.Solution().ReadOwned();
                 const auto splitLayout = splitRead.ComponentLayout();
                 const auto result = solver.Solution().Owned().Read();
@@ -525,7 +525,7 @@ TEST_CASE("GMRES fixed ILU corrections match one Arnoldi step of the distributed
             for (int i = 0; i < count; ++i)
                 weightedZ[i] /= scales[i % 5], weightedAction[i] /= scales[i % 5];
         const Eigen::VectorXd expected = z * (weightedAction.dot(weightedZ) / weightedAction.squaredNorm());
-        const auto first = physical.Solve(fixture.rhs, std::nullopt, scales), second = logical.Solve(logicalRHS, std::nullopt, scales);
+        const auto first = physical.Solve(fixture.rhs, {}, scales), second = logical.Solve(logicalRHS, {}, scales);
         REQUIRE(first.usable);
         REQUIRE(second.usable);
         CHECK(first.iterations == 1);
@@ -607,12 +607,12 @@ TEST_CASE("Fixed-count stationary corrections preserve iterates without diagnost
         const auto rhsVersion = fixture.rhs.Owned().Version();
         for (bool warm : {false, true})
         {
-            const auto checked = reference.Solve(fixture.rhs, warm ? std::optional(std::cref(fixture.rhs)) : std::nullopt);
-            const auto checkedLogical = logicalReference.Solve(logicalRHS, warm ? std::optional(std::cref(logicalRHS)) : std::nullopt);
+            const auto checked = reference.Solve(fixture.rhs, warm ? DNDS::OptionalRef<const C::LinearSolver::Field>(fixture.rhs) : DNDS::OptionalRef<const C::LinearSolver::Field>{});
+            const auto checkedLogical = logicalReference.Solve(logicalRHS, warm ? DNDS::OptionalRef<const C::EquationDofs>(logicalRHS) : DNDS::OptionalRef<const C::EquationDofs>{});
             REQUIRE(checked.iterations == 2);
             REQUIRE(checkedLogical.iterations == 2);
-            const auto report = fixed.Solve(fixture.rhs, warm ? std::optional(std::cref(fixture.rhs)) : std::nullopt);
-            const auto equationReport = logical.Solve(logicalRHS, warm ? std::optional(std::cref(logicalRHS)) : std::nullopt);
+            const auto report = fixed.Solve(fixture.rhs, warm ? DNDS::OptionalRef<const C::LinearSolver::Field>(fixture.rhs) : DNDS::OptionalRef<const C::LinearSolver::Field>{});
+            const auto equationReport = logical.Solve(logicalRHS, warm ? DNDS::OptionalRef<const C::EquationDofs>(logicalRHS) : DNDS::OptionalRef<const C::EquationDofs>{});
             for (const auto *value : {&report, &equationReport})
             {
                 CHECK(value->stop == DNDS::Linear::LinearStop::FixedCount);

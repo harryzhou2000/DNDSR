@@ -1935,8 +1935,8 @@ namespace DNDS::Cauchy
             }
         }
         void ApplyFixedFlowRHS(const EquationDofs &state, EquationDofs &result, CFV::ReconstructionRegion region,
-                               real time, std::optional<std::reference_wrapper<const AuxiliaryValues>> auxiliary,
-                               std::optional<std::reference_wrapper<R::Array<real>>> faceOutput,
+                               real time, OptionalRef<const AuxiliaryValues> auxiliary,
+                               OptionalRef<R::Array<real>> faceOutput,
                                RHSScalarView incoming)
         {
             DNDS_assert_info(fixedFlowRHS && state.PhysicalFieldNumber() == 1 && result.PhysicalFieldNumber() == 1 &&
@@ -1968,7 +1968,7 @@ namespace DNDS::Cauchy
                 input.primitiveGradient = scope.ReadField(*primitiveGradient);
             if (auxiliary)
             {
-                const auto &values = auxiliary->get();
+                const auto &values = *auxiliary;
                 if (values.meanThermodynamics)
                 {
                     scope.thermodynamics.emplace(values.meanThermodynamics->Read());
@@ -2002,15 +2002,15 @@ namespace DNDS::Cauchy
             }
             if (faceOutput)
             {
-                scope.face.emplace(faceOutput->get().Write());
+                scope.face.emplace(faceOutput->Write());
                 scope.output.faceFlux = scope.face->View<RHSFlowRows>();
             }
             diagnostics.Merge(fixedFlowRHS->ApplyFluxBorrowedFatal(input, scope.output, region, time));
         }
         void ApplyRHS(const EquationDofs &state, EquationDofs &result, CFV::ReconstructionRegion region,
                       EquationPointEvaluator &evaluator, real time,
-                      std::optional<std::reference_wrapper<const AuxiliaryValues>> auxiliary = std::nullopt,
-                      std::optional<std::reference_wrapper<R::Array<real>>> faceOutput = std::nullopt,
+                      OptionalRef<const AuxiliaryValues> auxiliary = {},
+                      OptionalRef<R::Array<real>> faceOutput = {},
                       RHSScalarView incoming = {})
         {
             const PhaseTime timing(*this, RHSPhase);
@@ -2052,10 +2052,10 @@ namespace DNDS::Cauchy
         template <class Input, class Output>
         void ApplyRHSRows(const EquationDofs &state, CFV::ReconstructionRegion region,
                           EquationPointEvaluator &evaluator, real time,
-                          std::optional<std::reference_wrapper<const AuxiliaryValues>> auxiliary,
+                          OptionalRef<const AuxiliaryValues> auxiliary,
                           const EquationDofs::ReadScope &mean, Input owned, Input remote, Output destination,
                           Output lowDestination, bool produceLow,
-                          std::optional<std::reference_wrapper<R::Array<real>>> faceOutput, RHSScalarView incoming)
+                          OptionalRef<R::Array<real>> faceOutput, RHSScalarView incoming)
         {
             index localFallbacks = 0;
             auto geometry = owner->metrics.AcquireRead();
@@ -2069,9 +2069,9 @@ namespace DNDS::Cauchy
             // read views. These means are not reconstructed thermodynamics.
             std::optional<R::Array<real>::ReadLease> meanProperties;
             std::optional<RHSScalarView> preparedMean;
-            if (auxiliary && auxiliary->get().meanThermodynamics)
+            if (auxiliary && auxiliary->meanThermodynamics)
             {
-                meanProperties.emplace(auxiliary->get().meanThermodynamics->Read());
+                meanProperties.emplace(auxiliary->meanThermodynamics->Read());
                 preparedMean.emplace(meanProperties->View<R::UniformTableRows>());
             }
             std::array<std::optional<R::Array<real>::ReadLease>, 4> stencilReads;
@@ -2088,8 +2088,8 @@ namespace DNDS::Cauchy
             };
             if (auxiliary)
             {
-                readStencil(auxiliary->get().cellWaveJump, 0, waveJump);
-                readStencil(auxiliary->get().cellPressureMinimum, 2, pressureMinimum);
+                readStencil(auxiliary->cellWaveJump, 0, waveJump);
+                readStencil(auxiliary->cellPressureMinimum, 2, pressureMinimum);
             }
             std::optional<EquationDofs::ReadScope> rec, viscousRec;
             std::vector<EquationBlockReadView> recBlocks, viscousRecBlocks;
@@ -2141,7 +2141,7 @@ namespace DNDS::Cauchy
             }
             auto boundaryWrite = boundaryMomentumFlux.Write();
             const auto wallFlux = boundaryWrite.View<R::FixedRows<3>>();
-            auto faceWrite = (faceOutput ? faceOutput->get() : faceFlux).Write();
+            auto faceWrite = (faceOutput ? *faceOutput : faceFlux).Write();
             const auto faceValues = faceWrite.View<R::UniformTableRows>();
             std::optional<R::Array<real>::WriteLease> lowFaceWrite;
             decltype(faceWrite.View<R::UniformTableRows>()) lowFaceValues;
@@ -2170,8 +2170,8 @@ namespace DNDS::Cauchy
             const auto &baseFluxSettings = fluxPolicy.settings;
             const bool useWaveJump = owner->settings.numerics.riemann.useStencil && fluxPolicy.transverseSignal;
             const bool usePressureMinimum = owner->settings.numerics.riemann.useStencil && fluxPolicy.pressureStencil;
-            const bool preparedWaveJump = auxiliary && bool(auxiliary->get().cellWaveJump);
-            const bool preparedPressureMinimum = auxiliary && bool(auxiliary->get().cellPressureMinimum);
+            const bool preparedWaveJump = auxiliary && bool(auxiliary->cellWaveJump);
+            const bool preparedPressureMinimum = auxiliary && bool(auxiliary->cellPressureMinimum);
             DNDS_check_throw_info((!useWaveJump || preparedWaveJump) && (!usePressureMinimum || preparedPressureMinimum),
                                   "required equation RHS stencil auxiliary is absent");
             const int species = owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() : 0;
@@ -3038,9 +3038,9 @@ namespace DNDS::Cauchy
         /// source Jacobian or refreshes publication provenance only. The
         /// default Jacobian continues to sample its own center gradients.
         void PrepareVolumeSource(const EquationDofs &state,
-                                 std::optional<std::reference_wrapper<EquationDofs>> result,
+                                 OptionalRef<EquationDofs> result,
                                  EquationPointEvaluator &evaluator, real time = 0,
-                                 std::optional<std::reference_wrapper<EquationDofs>> lowOrder = std::nullopt)
+                                 OptionalRef<EquationDofs> lowOrder = {})
         {
             const PhaseTime timing(*this, SourcePhase);
             // Kinematic and constitutive sources share this additive entrance;
@@ -3049,13 +3049,13 @@ namespace DNDS::Cauchy
             if (result && frame.moving)
             {
                 const auto read = state.ReadOwned();
-                auto write = result->get().WriteOwned();
+                auto write = result->WriteOwned();
                 std::optional<EquationDofs::WriteScope> lowWrite;
                 if (lowOrder)
                 {
-                    state.RequireCompatible(lowOrder->get());
-                    EquationDofOperations::RequireDistinct(result->get(), lowOrder->get());
-                    lowWrite.emplace(lowOrder->get().WriteOwned());
+                    state.RequireCompatible(*lowOrder);
+                    EquationDofOperations::RequireDistinct(*result, *lowOrder);
+                    lowWrite.emplace(lowOrder->WriteOwned());
                 }
                 const auto flow = read.Block("flow");
                 const auto output = write.Block("flow");
@@ -3123,7 +3123,7 @@ namespace DNDS::Cauchy
             const auto lengths = lengthRead ? lengthRead->View<R::FixedRows<1>>() : R::ArrayView<const real, R::AccessBoundsChecks, R::FixedRows<1>>{};
             std::optional<EquationDofs::WriteScope> output;
             if (result)
-                output.emplace(result->get().WriteOwned());
+                output.emplace(result->WriteOwned());
             const auto speciesOutput = result && speciesFirst >= 0 ? output->Block("species") : EquationBlockArrayView<real>{};
             const auto ransOutput = result && ransFirst >= 0 ? output->Block("rans") : EquationBlockArrayView<real>{};
             const int independent = owner->equation.HasMixture() ? owner->equation.Mixture().SpeciesNumber() - 1 : 0;
@@ -3220,7 +3220,7 @@ namespace DNDS::Cauchy
                   {
                 if (work.SourceSamplesCurrent(state, time)) return;
                 auto evaluator = _data->equation.MakePointEvaluator(work.workers ? work.workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {true});
-                work.PrepareVolumeSource(state, std::nullopt, evaluator, time);
+                work.PrepareVolumeSource(state, {}, evaluator, time);
                 work.PublishSourceState(state, time); });
             return;
         }
@@ -3262,7 +3262,7 @@ namespace DNDS::Cauchy
                 {
                     auto evaluator = _data->equation.MakePointEvaluator(work.workers ? work.workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{},
                                                                         {true, false, false, false, false});
-                    work.PrepareVolumeSource(state, std::nullopt, evaluator, time);
+                    work.PrepareVolumeSource(state, {}, evaluator, time);
                 }
                 else work.SampleSourceState(state, time);
                 work.PublishSourceState(state, time);
@@ -3296,7 +3296,7 @@ namespace DNDS::Cauchy
                     work.workers ? work.workers->Acquire()
                                  : Physics::Chemistry::ChemicalWorkerPool::Lease{},
                     {true, false, false, false, false});
-                work.PrepareVolumeSource(state, std::nullopt, evaluator, time);
+                work.PrepareVolumeSource(state, {}, evaluator, time);
             }
             else
                 work.SampleSourceState(state, time);
@@ -3723,7 +3723,7 @@ namespace DNDS::Cauchy
         return state.FinalizedValues();
     }
     void FiniteVolume::RestoreReconstructionGuess(ReconstructionState &state, const EquationDofs &guess,
-                                                  std::optional<std::reference_wrapper<const Runtime::Array<real>>> limitedVRHistory) const
+                                                  OptionalRef<const Runtime::Array<real>> limitedVRHistory) const
     {
         auto restore = ReserveReconstructionRestoreImpl(state, guess, limitedVRHistory, {});
         restore.Commit();
@@ -3744,19 +3744,19 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(source.FinalizedCurrent(),
                               "source reconstruction has no current finalized polynomial");
         const auto history = source.limitedVRHistory
-                                 ? std::optional(std::cref(*source.limitedVRHistory))
-                                 : std::nullopt;
+                                 ? OptionalRef<const R::Array<real>>(*source.limitedVRHistory)
+                                 : OptionalRef<const R::Array<real>>{};
         auto restore = ReserveReconstructionRestoreImpl(destination, source.coefficients, history, {}, true,
-                                                        std::cref(source.FinalizedValues()));
+                                                        OptionalRef<const EquationDofs>(source.FinalizedValues()));
         restore.Commit();
         destination.PublishFinalized();
     }
     void FiniteVolume::RestoreReconstructionState(ReconstructionState &state,
                                                   const EquationDofs &warm, const EquationDofs &finalized,
-                                                  std::optional<std::reference_wrapper<const Runtime::Array<real>>> limitedVRHistory) const
+                                                  OptionalRef<const Runtime::Array<real>> limitedVRHistory) const
     {
         auto restore = ReserveReconstructionRestoreImpl(state, warm, limitedVRHistory, {}, true,
-                                                        std::cref(finalized));
+                                                        OptionalRef<const EquationDofs>(finalized));
         restore.Commit();
         state.PublishFinalized();
     }
@@ -3771,7 +3771,7 @@ namespace DNDS::Cauchy
         return work.limitedVR ? std::optional<R::Array<real>>(work.limitedVR->alpha) : std::nullopt;
     }
     FiniteVolume::ReconstructionRestore FiniteVolume::ReserveReconstructionRestore(std::shared_ptr<ReconstructionState> state, const EquationDofs &guess,
-                                                                                   std::optional<std::reference_wrapper<const Runtime::Array<real>>> limitedVRHistory,
+                                                                                   OptionalRef<const Runtime::Array<real>> limitedVRHistory,
                                                                                    bool collectiveChecks) const
     {
         const auto validate = [&]
@@ -3782,11 +3782,11 @@ namespace DNDS::Cauchy
         return ReserveReconstructionRestoreImpl(reference, guess, limitedVRHistory, std::move(state), collectiveChecks);
     }
     FiniteVolume::ReconstructionRestore FiniteVolume::ReserveReconstructionRestoreImpl(ReconstructionState &state, const EquationDofs &guess,
-                                                                                       std::optional<std::reference_wrapper<const Runtime::Array<real>>> limitedVRHistory,
+                                                                                       OptionalRef<const Runtime::Array<real>> limitedVRHistory,
                                                                                        std::shared_ptr<ReconstructionState> retained, bool collectiveChecks,
-                                                                                       std::optional<std::reference_wrapper<const EquationDofs>> finalized) const
+                                                                                       OptionalRef<const EquationDofs> finalized) const
     {
-        const auto *historyInput = limitedVRHistory ? &limitedVRHistory->get() : nullptr;
+        const auto *historyInput = limitedVRHistory.Get();
         const auto stage = [&](const auto &run)
         {
             R::CommunicationDetail::LocalStage(Metrics().Communicator(), collectiveChecks && _data->settings.implicit.collectiveChecks,
@@ -3822,7 +3822,7 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(state.owner == _data, "foreign equation reconstruction state");
                 state.coefficients.RequireCompatible(guess);
                 EquationDofOperations::RequireDistinct(state.coefficients, guess);
-                const auto &finalInput = state.distinctFinalized && finalized ? finalized->get() : guess;
+                const auto &finalInput = state.distinctFinalized && finalized ? *finalized : guess;
                 if (state.distinctFinalized)
                 {
                     state.fluxCoefficients.RequireCompatible(guess);
@@ -4048,18 +4048,19 @@ namespace DNDS::Cauchy
     void FiniteVolume::Evaluate(EquationDofs &state, EquationDofs &residual, ReconstructionState &reconstruction, Workspace &work,
                                 R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
-        EvaluateImpl(state, std::ref(residual), reconstruction, work, engine, stream, time);
+        EvaluateImpl(state, OptionalRef<EquationDofs>(residual), reconstruction, work, engine, stream, time);
     }
     void FiniteVolume::Evaluate(EquationDofs &state, EquationDofs &residual, ReconstructionState &reconstruction, Workspace &work,
                                 AuxiliaryValues &auxiliary, R::EagerEngine &engine,
                                 const R::ExecutionStream &stream, real time) const
     {
-        EvaluateImpl(state, std::ref(residual), reconstruction, work, engine, stream, time, std::ref(auxiliary));
+        EvaluateImpl(state, OptionalRef<EquationDofs>(residual), reconstruction, work, engine, stream, time,
+                     OptionalRef<AuxiliaryValues>(auxiliary));
     }
     void FiniteVolume::PrepareReconstruction(EquationDofs &state, ReconstructionState &reconstruction, Workspace &work, R::EagerEngine &engine,
                                              const R::ExecutionStream &stream, real time) const
     {
-        EvaluateImpl(state, std::nullopt, reconstruction, work, engine, stream, time);
+        EvaluateImpl(state, {}, reconstruction, work, engine, stream, time);
     }
     void FiniteVolume::RefreshSamplingInputs(EquationDofs &state, ReconstructionState &reconstruction, Workspace &work, R::EagerEngine &engine,
                                              const R::ExecutionStream &stream) const
@@ -4095,16 +4096,16 @@ namespace DNDS::Cauchy
     void FiniteVolume::EvaluateMean(EquationDofs &state, EquationDofs &residual, MeanWorkspace &work,
                                     R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
     {
-        EvaluateImpl(state, std::ref(residual), *work.reconstruction, *work.work, engine, stream, time);
+        EvaluateImpl(state, OptionalRef<EquationDofs>(residual), *work.reconstruction, *work.work, engine, stream, time);
     }
     void FiniteVolume::EvaluateImpl(EquationDofs &state,
-                                    std::optional<std::reference_wrapper<EquationDofs>> residual,
+                                    OptionalRef<EquationDofs> residual,
                                     ReconstructionState &reconstruction, Workspace &work, R::EagerEngine &engine,
                                     const R::ExecutionStream &stream, real time,
-                                    std::optional<std::reference_wrapper<AuxiliaryValues>> auxiliary) const
+                                    OptionalRef<AuxiliaryValues> auxiliary) const
     {
         if (!auxiliary && work.rhsAuxiliary)
-            auxiliary = std::ref(*work.rhsAuxiliary);
+            auxiliary.Emplace(*work.rhsAuxiliary);
         auto reconstructionSession = reconstruction.session.Acquire();
         auto session = work.session.Acquire();
         auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, reconstruction.FinalizedValues());
@@ -4152,7 +4153,7 @@ namespace DNDS::Cauchy
             reconstruction.binding.Check(state);
             if (residual)
             {
-                auto &output = residual->get();
+                auto &output = *residual;
                 _data->equation.ValidateStateSchema(output);
                 state.RequireCompatible(output);
                 EquationDofOperations::RequireDistinct(state, output);
@@ -4179,7 +4180,7 @@ namespace DNDS::Cauchy
                       AuxiliaryInputs inputs;
                       if (work.incoming)
                           inputs.boundary.Emplace(*work.incoming);
-                      auxiliaryPreparation.emplace(BeginAuxValues(state, auxiliary->get(), time, work.workers, inputs)); });
+                      auxiliaryPreparation.emplace(BeginAuxValues(state, *auxiliary, time, work.workers, inputs)); });
         const bool overlap = _data->settings.execution.overlap;
         OperatorSchedule schedule(engine, stream, overlap);
         const auto rest = schedule.DependentRegion();
@@ -4258,7 +4259,7 @@ namespace DNDS::Cauchy
             schedule.Submit([&]
                             {
                 auxiliaryPreparation->Apply(rest);
-                auxiliaryPreparation->Finish(auxiliary->get()); });
+                auxiliaryPreparation->Finish(*auxiliary); });
             local([&]
                   { schedule.Join(); });
         }
@@ -4269,7 +4270,7 @@ namespace DNDS::Cauchy
             AuxiliaryInputs inputs;
             if (work.incoming)
                 inputs.boundary.Emplace(*work.incoming);
-            PrepareAuxValues(state, auxiliary->get(), *work.meanGradients, engine, stream, time, work.workers, inputs);
+            PrepareAuxValues(state, *auxiliary, *work.meanGradients, engine, stream, time, work.workers, inputs);
         }
         if (deferredEvaluator)
         {
@@ -4490,9 +4491,8 @@ namespace DNDS::Cauchy
                         { work.RefreshDirectGradients(state, false, time); });
         if (overlap && residual)
             schedule.Submit([&]
-                            { work.ApplyRHS(state, residual->get(), CFV::ReconstructionRegion::Core, *evaluator, time,
-                                            auxiliary ? std::optional(std::cref(auxiliary->get())) : std::nullopt,
-                                            std::nullopt, incoming); });
+                            { work.ApplyRHS(state, *residual, CFV::ReconstructionRegion::Core, *evaluator, time,
+                                            OptionalRef<const AuxiliaryValues>(auxiliary), {}, incoming); });
         OperatorSchedule::Wait(operations);
         OperatorSchedule::Wait(unlimitedViscousOperations);
         OperatorSchedule::Wait(directViscousOperations);
@@ -4503,15 +4503,14 @@ namespace DNDS::Cauchy
         if (residual)
         {
             schedule.Submit([&, rest]
-                            { work.ApplyRHS(state, residual->get(), rest, *evaluator, time,
-                                            auxiliary ? std::optional(std::cref(auxiliary->get())) : std::nullopt,
-                                            std::nullopt, incoming); });
+                            { work.ApplyRHS(state, *residual, rest, *evaluator, time,
+                                            OptionalRef<const AuxiliaryValues>(auxiliary), {}, incoming); });
             schedule.Submit([&]
                             { work.PrepareVolumeSource(
-                                  state, std::ref(residual->get()), *evaluator, time,
+                                  state, OptionalRef<EquationDofs>(*residual), *evaluator, time,
                                   work.lowOrderResidual
-                                      ? std::optional<std::reference_wrapper<EquationDofs>>(std::ref(*work.lowOrderResidual))
-                                      : std::nullopt); });
+                                      ? OptionalRef<EquationDofs>(*work.lowOrderResidual)
+                                      : OptionalRef<EquationDofs>{}); });
         }
         local([&]
               { schedule.Join(); });
@@ -4533,8 +4532,8 @@ namespace DNDS::Cauchy
     void FiniteVolume::EvaluateFlux(const EquationDofs &state, EquationDofs &residual,
                                     const ReconstructionState &reconstruction, Workspace &work,
                                     CFV::ReconstructionRegion region, real time,
-                                    std::optional<std::reference_wrapper<R::Array<real>>> faceOutput,
-                                    std::optional<std::reference_wrapper<const AuxiliaryValues>> auxiliary) const
+                                    OptionalRef<R::Array<real>> faceOutput,
+                                    OptionalRef<const AuxiliaryValues> auxiliary) const
     {
         ValidateWorkspace(state, work);
         DNDS_check_throw_info(reconstruction.owner == _data, "foreign equation reconstruction state");
@@ -4555,7 +4554,7 @@ namespace DNDS::Cauchy
                               "unknown flux region");
         if (faceOutput)
         {
-            const auto &output = faceOutput->get();
+            const auto &output = *faceOutput;
             DNDS_check_throw_info(output.GetDevice() == R::Device::Host() && !output.Layout().IsVariable() &&
                                       output.RowCount() == index(_data->stencilFaces.size()) && output.Layout().Width() == state.ComponentNumber(),
                                   "equation face output shape/device differs");
@@ -4566,7 +4565,7 @@ namespace DNDS::Cauchy
                                           "face output aliases equation fields");
         }
         if (auxiliary)
-            ValidateAuxValues(state, auxiliary->get(), time);
+            ValidateAuxValues(state, *auxiliary, time);
         std::optional<R::Array<real>::ReadLease> incomingRead;
         RHSScalarView incoming;
         DNDS_check_throw_info(!HasInterfaces() || work.incoming,

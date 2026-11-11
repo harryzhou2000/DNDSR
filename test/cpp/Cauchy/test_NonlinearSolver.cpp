@@ -148,13 +148,13 @@ TEST_CASE("Nonlinear controller resumes after a completed correction without res
     double uninterruptedValue = 1;
     C::NonlinearSolveState uninterruptedState;
     C::NonlinearSolveControl uninterrupted;
-    uninterrupted.state = std::ref(uninterruptedState);
+    uninterrupted.state.Emplace(uninterruptedState);
     const auto expected = run(uninterruptedValue, uninterrupted);
 
     double resumedValue = 1;
     C::NonlinearSolveState saved;
     C::NonlinearSolveControl interrupted;
-    interrupted.state = std::ref(saved);
+    interrupted.state.Emplace(saved);
     interrupted.quiescent = [&](const auto &state)
     {
         if (state.iteration == 1)
@@ -166,7 +166,7 @@ TEST_CASE("Nonlinear controller resumes after a completed correction without res
     CHECK(resumedValue == .25);
 
     C::NonlinearSolveControl resume;
-    resume.state = std::ref(saved);
+    resume.state.Emplace(saved);
     resume.resume = true;
     const auto actual = run(resumedValue, resume);
     CHECK(actual.converged == expected.converged);

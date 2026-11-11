@@ -246,12 +246,12 @@ namespace DNDS::Cauchy
     NonlinearIterationReport NonlinearSolver::Solve(EquationDofs &state, const EquationDofs &source,
                                                     real mass, real rhsScale, real time, int stage, NonlinearSolveControl control)
     {
-        return Execute(state, source, mass, rhsScale, time, stage, std::move(control), false, std::nullopt);
+        return Execute(state, source, mass, rhsScale, time, stage, std::move(control), false, {});
     }
     NonlinearIterationReport NonlinearSolver::CorrectOnce(EquationDofs &state, const EquationDofs &source,
                                                           real mass, real rhsScale, real time, int stage,
                                                           NonlinearSolveControl control,
-                                                          std::optional<std::reference_wrapper<const EquationDofs>> cachedRate)
+                                                          OptionalRef<const EquationDofs> cachedRate)
     {
         control.correctionLimit = 1;
         return Execute(state, source, mass, rhsScale, time, stage, std::move(control), true, cachedRate);
@@ -291,15 +291,15 @@ namespace DNDS::Cauchy
     NonlinearIterationReport NonlinearSolver::Execute(EquationDofs &state, const EquationDofs &source,
                                                       real mass, real rhsScale, real time, int stage,
                                                       NonlinearSolveControl control, bool singleCorrection,
-                                                      std::optional<std::reference_wrapper<const EquationDofs>> cachedRate)
+                                                      OptionalRef<const EquationDofs> cachedRate)
     {
         DNDS_check_throw_info(_data, "nonlinear session was moved");
         auto session = _data->session.Acquire(_nestedSession.lock());
         auto &data = *_data;
         auto engine = data.stream.LockEngine();
         if (control.profile)
-            control.profile->get() = {};
-        auto *profile = control.profile ? &control.profile->get() : nullptr;
+            *control.profile = {};
+        auto *profile = control.profile.Get();
         const NonlinearDetail::PhaseTimer total(profile, NonlinearProfile::Total);
         const index nv = data.binding.snapshot.ComponentNumber();
         Algebra::ComponentSelection selection(nv);
@@ -312,8 +312,8 @@ namespace DNDS::Cauchy
                 data.binding.Check(state);
                 if (cachedRate)
                 {
-                    state.RequireCompatible(cachedRate->get());
-                    EquationDofOperations::RequireDistinct(data.spatial, cachedRate->get());
+                    state.RequireCompatible(*cachedRate);
+                    EquationDofOperations::RequireDistinct(data.spatial, *cachedRate);
                 }
                 data.ValidateMeans(state);
                 EquationDofOperations::CheckCompatible(state, source);
@@ -361,7 +361,7 @@ namespace DNDS::Cauchy
                                                       *data.workspace, time);
             data.Stage([&]
                        {
-                const auto read = cachedRate->get().ReadOwned(); auto write = data.spatial.WriteOwned();
+                const auto read = cachedRate->ReadOwned(); auto write = data.spatial.WriteOwned();
                 for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
                 {
                     const auto rate = read.Block(iBlock).owned;
@@ -481,7 +481,7 @@ namespace DNDS::Cauchy
                 {
                     const NonlinearDetail::PhaseTimer timer(profile, NonlinearProfile::LinearSolve);
                     const auto scales = NonlinearDetail::LinearScales(data.settings, state, data.discrete.Metrics());
-                    report.lastLinear = data.linear->Solve(data.defect, std::nullopt, scales);
+                    report.lastLinear = data.linear->Solve(data.defect, {}, scales);
                     report.linearIterations += report.lastLinear.iterations;
                     DNDS_check_throw_info(report.lastLinear.usable, "equation implicit linear correction is unusable");
                 }
@@ -500,7 +500,7 @@ namespace DNDS::Cauchy
                 const NonlinearDetail::PhaseTimer timer(profile, NonlinearProfile::Residual);
                 evaluate();
                 if (control.profile)
-                    ++control.profile->get().residualEvaluations;
+                    ++control.profile->residualEvaluations;
             }
             measure(report.residual);
             std::tie(report.reconstructionIterations, report.reconstructionRelativeUpdate) = reconstruction();
@@ -564,7 +564,7 @@ namespace DNDS::Cauchy
         else
             DNDS_check_throw_info(_data->nonlinearState.convergenceComponents == _data->settings.residualComponents,
                                   "restored nonlinear convergence components differ from current controls");
-        control.state = std::ref(_data->nonlinearState);
+        control.state.Emplace(_data->nonlinearState);
     }
     bool NonlinearSolver::ReconstructionConverged() const
     {
@@ -786,7 +786,7 @@ namespace DNDS::Cauchy
         return {limited, minimum};
     }
     void NonlinearSolver::EvaluateEquation(EquationDofs &state, EquationDofs &value, real mass, real rhsScale, real time,
-                                           std::optional<std::reference_wrapper<EquationDofs>> rate)
+                                           OptionalRef<EquationDofs> rate)
     {
         DNDS_check_throw_info(_data, "nonlinear session was moved");
         auto session = _data->session.Acquire(_nestedSession.lock());
@@ -801,10 +801,10 @@ namespace DNDS::Cauchy
             auto write = value.WriteOwned(); write.CancelUnmodified();
             if (rate)
             {
-                EquationDofOperations::CheckCompatible(state, rate->get());
+                EquationDofOperations::CheckCompatible(state, *rate);
                 for (const auto *input : {&state, &value, &data.spatial})
-                    EquationDofOperations::RequireDistinct(*input, rate->get());
-                auto rateWrite = rate->get().WriteOwned(); rateWrite.CancelUnmodified();
+                    EquationDofOperations::RequireDistinct(*input, *rate);
+                auto rateWrite = rate->WriteOwned(); rateWrite.CancelUnmodified();
             } });
         data.discrete.Evaluate(state, data.spatial, *data.reconstruction, *data.workspace, data.auxiliary, engine, data.stream, time);
         data.PublishAuxiliary(state, time);
@@ -816,7 +816,7 @@ namespace DNDS::Cauchy
             const auto mean = ul.View(), residual = rl.View(); const auto output = wl.View();
             std::optional<EquationDofs::WriteScope> rateWrite;
             std::optional<Algebra::DofComponentLayout<real>> rateLayout;
-            if (rate) rateWrite.emplace(rate->get().WriteOwned());
+            if (rate) rateWrite.emplace(rate->WriteOwned());
             if (rateWrite) rateLayout.emplace(rateWrite->ComponentLayout());
             const auto spatialRate = rateLayout ? rateLayout->View() : Algebra::DofComponentView<real>{};
             if (rate)

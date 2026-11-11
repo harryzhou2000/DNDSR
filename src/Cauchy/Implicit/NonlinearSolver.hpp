@@ -74,7 +74,7 @@ namespace DNDS::Cauchy
         real initialPseudoCFL = 0;  // 0 starts at the configured stage CFL
         /// Null means no clock queries or extra communication. A provided
         /// output resets per call and retains partial timings on exceptions.
-        std::optional<std::reference_wrapper<NonlinearProfile>> profile = std::nullopt;
+        OptionalRef<NonlinearProfile> profile;
         /// Empty updates all components. A subset solves the principal
         /// linear system with all other means frozen, including through PP.
         /// This never changes the separately configured convergence selection.
@@ -86,7 +86,7 @@ namespace DNDS::Cauchy
         std::function<void(const NonlinearProgress &)> progress;
         /// Optional live controller publication. Iterate updates it before the
         /// progress observer, so checkpoint/console/CSV see one state source.
-        std::optional<std::reference_wrapper<NonlinearSolveState>> state;
+        OptionalRef<NonlinearSolveState> state;
         /// Called at a restart-safe boundary after the current correction (or
         /// at a terminal observation) and after the next pseudo-CFL is
         /// published. It may synchronously serialize the supplied small state.
@@ -141,7 +141,7 @@ namespace DNDS::Cauchy
         NonlinearIterationReport Execute(EquationDofs &state, const EquationDofs &source,
                                          real mass, real rhsScale, real time, int stage,
                                          NonlinearSolveControl control, bool singleCorrection,
-                                         std::optional<std::reference_wrapper<const EquationDofs>> cachedRate);
+                                         OptionalRef<const EquationDofs> cachedRate);
 
     public:
         NonlinearSolver(const NonlinearSolver &) = delete;
@@ -163,7 +163,7 @@ namespace DNDS::Cauchy
         /// EOS/source/PP dispatch. No nested solve.
         NonlinearIterationReport CorrectOnce(EquationDofs &state, const EquationDofs &source, real mass, real rhsScale, real time,
                                              int stage = 0, NonlinearSolveControl control = {},
-                                             std::optional<std::reference_wrapper<const EquationDofs>> cachedRate = std::nullopt);
+                                             OptionalRef<const EquationDofs> cachedRate = {});
         /// Evaluate dU/dt with aux preparation before reconstruction/RHS and
         /// retain that publication for a subsequent cached CorrectOnce.
         /// Pointwise volume normalization writes owned values only. State/rate
@@ -178,7 +178,7 @@ namespace DNDS::Cauchy
         /// changing owned means. Polynomial FAS uses this same operator.
         /// Optional rate follows the field adapter's distinct-output contract.
         void EvaluateEquation(EquationDofs &state, EquationDofs &value, real mass, real rhsScale, real time,
-                              std::optional<std::reference_wrapper<EquationDofs>> rate = std::nullopt);
+                              OptionalRef<EquationDofs> rate = {});
         /// Caller agrees scale/selection and releases conflicting views before
         /// entry. Candidate EOS/raw-species checks precede any state mutation.
         /// With PP enabled, use Euler relaxed/common increment compression,

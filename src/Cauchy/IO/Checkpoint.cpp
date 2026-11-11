@@ -1014,7 +1014,9 @@ namespace DNDS::Cauchy
                                   "checkpoint lacks a unified equation reconstruction candidate");
             checkpoint.reconstruction.emplace(_fv.ReserveReconstructionRestore(
                 _reconstruction, *checkpoint.equationGuess,
-                checkpoint.limitedVRHistory ? std::optional(std::cref(*checkpoint.limitedVRHistory)) : std::nullopt,
+                checkpoint.limitedVRHistory
+                    ? OptionalRef<const Runtime::Array<real>>(*checkpoint.limitedVRHistory)
+                    : OptionalRef<const Runtime::Array<real>>{},
                 collectiveChecks));
         }
     }
@@ -1079,7 +1081,9 @@ namespace DNDS::Cauchy
         if (polynomial)
             _fv.RestoreReconstructionState(*_reconstruction, *checkpoint.endpointWarm,
                                            *checkpoint.endpointFinal,
-                                           checkpoint.endpointHistory ? std::optional(std::cref(*checkpoint.endpointHistory)) : std::nullopt);
+                                           checkpoint.endpointHistory
+                                               ? OptionalRef<const Runtime::Array<real>>(*checkpoint.endpointHistory)
+                                               : OptionalRef<const Runtime::Array<real>>{});
         if (checkpoint.ditr)
         {
             DNDS_check_throw_info(!polynomial || (checkpoint.middleWarm && checkpoint.middleFinal),
@@ -1090,7 +1094,9 @@ namespace DNDS::Cauchy
             if (polynomial)
                 _fv.RestoreReconstructionState(*_coupledMiddle->state, *checkpoint.middleWarm,
                                                *checkpoint.middleFinal,
-                                               checkpoint.middleHistory ? std::optional(std::cref(*checkpoint.middleHistory)) : std::nullopt);
+                                               checkpoint.middleHistory
+                                                   ? OptionalRef<const Runtime::Array<real>>(*checkpoint.middleHistory)
+                                                   : OptionalRef<const Runtime::Array<real>>{});
             _coupledNonlinearState = checkpoint.nonlinear;
         }
         else

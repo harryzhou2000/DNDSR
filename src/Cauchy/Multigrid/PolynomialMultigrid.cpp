@@ -243,20 +243,20 @@ namespace DNDS::Cauchy
                 {
                     for (index correction = 0; correction < count; ++correction)
                     {
-                        std::optional<std::reference_wrapper<const State>> rate;
+                        OptionalRef<const State> rate;
                         if (cached && cached->stateStamp)
                         {
                             cached->stateStamp->Check(u, true);
                             DNDS_check_throw_info(cached->time == time && cached->scale == rhsScale,
                                                   "FAS spatial rate belongs to another time/equation scale");
-                            rate = std::cref(cached->rate);
+                            rate.Emplace(cached->rate);
                             if (profileEnabled)
                                 ++cachedRateUses[level];
                         }
                         NonlinearProfile timing;
-                        NonlinearSolveControl control{1, smootherCFL[level], std::nullopt, components};
+                        NonlinearSolveControl control{1, smootherCFL[level], {}, components};
                         if (profileEnabled)
-                            control.profile = std::ref(timing);
+                            control.profile.Emplace(timing);
                         const auto step = relax->CorrectOnce(u, source, mass, rhsScale, time, stage,
                                                              std::move(control), rate);
                         if (cached)
@@ -292,8 +292,8 @@ namespace DNDS::Cauchy
             {
                 const real start = profileEnabled ? MPI_Wtime() : 0;
                 solver.EvaluateEquation(input, output, equationMass, rhsScale, time,
-                                        cached ? std::optional<std::reference_wrapper<State>>(std::ref(cached->rate))
-                                               : std::nullopt);
+                                        cached ? OptionalRef<State>(cached->rate)
+                                               : OptionalRef<State>{});
                 if (cached)
                 {
                     cached->stateStamp.emplace(input);
@@ -443,7 +443,7 @@ namespace DNDS::Cauchy
                 return norms;
             }
             Report ApplyCycle(const State &source, real mass, real rhsScale, real time, int stage, real pseudoCFL,
-                              std::optional<std::reference_wrapper<const State>> rate = std::nullopt)
+                              OptionalRef<const State> rate = {})
             {
                 BindEquation(source, mass, rhsScale, time, stage, pseudoCFL);
                 if (!cycle)
@@ -453,8 +453,8 @@ namespace DNDS::Cauchy
                     // Same contract as CorrectOnce: an external method owns
                     // time/stage/VR provenance. Internal Solve passes only the
                     // immediately preceding measured state, checked below.
-                    if (&rate->get() != &fineRate->rate)
-                        Operations::Copy(fineRate->rate, rate->get());
+                    if (rate.Get() != &fineRate->rate)
+                        Operations::Copy(fineRate->rate, *rate);
                     fineRate->stateStamp.emplace(state);
                     fineRate->time = time;
                     fineRate->scale = rhsScale;
@@ -560,7 +560,7 @@ namespace DNDS::Cauchy
     }
     NonlinearIterationReport PolynomialMultigrid::ApplyCycle(
         const EquationDofs &source, real mass, real rhsScale, real time, int stage, real pseudoCFL,
-        std::optional<std::reference_wrapper<const EquationDofs>> rate)
+        OptionalRef<const EquationDofs> rate)
     {
         auto session = _data->fineSolver.ReserveForMultigrid();
         return _data->ApplyCycle(source, mass, rhsScale, time, stage, pseudoCFL, rate);
