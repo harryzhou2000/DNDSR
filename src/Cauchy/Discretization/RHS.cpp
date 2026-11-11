@@ -48,7 +48,11 @@ namespace DNDS::Cauchy
             : data(std::move(owner)), geometry(data->metrics.AcquireRead())
         {
             if (data->settings.numerics.reconstruction == "variational")
-                basis.emplace(data->reconstruction.AcquireBasisRead());
+            {
+                DNDS_check_throw_info(data->reconstruction,
+                                      "polynomial RHS needs variational reconstruction");
+                basis.emplace(data->reconstruction->AcquireBasisRead());
+            }
             data->partition.Validate();
         }
     };
@@ -98,7 +102,8 @@ namespace DNDS::Cauchy
         RequireKernel<fatal>(_read && std::isfinite(time), "invalid RHS operator or time");
         const auto &data = _read->data;
         const auto metric = _read->geometry.HostView();
-        const int modes = data->reconstruction.NRecDOF(), dim = data->metrics.Dimension();
+        const int modes = data->reconstruction ? data->reconstruction->NRecDOF() : 0;
+        const int dim = data->metrics.Dimension();
         const auto &gas = data->equation.Gas();
         const auto &thermalBounds = data->PerfectGasBounds();
         const auto frame = data->motion.At(time);

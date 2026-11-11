@@ -176,7 +176,9 @@ namespace DNDS::Cauchy
         FiniteVolumeDetail::FluxKernelPolicy fluxPolicy;
         BoundarySystem boundary;
         CFV::FiniteVolumePlan metrics;
-        CFV::VariationalReconstructionPlan reconstruction;
+        /// Present only for the variational family. Constant/P0 and explicit
+        /// physical-gradient P1 own no Taylor basis, VR matrices or modal plan.
+        std::optional<CFV::VariationalReconstructionPlan> reconstruction;
         CFV::GradientPlan gradient;
         Geom::EntityWorkPartition partition;
         std::vector<index> offsets;
@@ -247,7 +249,14 @@ namespace DNDS::Cauchy
             : mesh(std::move(source)), settings(std::move(controls)), equation(std::move(physics)), motion(settings.motion, settings.mesh.dimension), flux(Riemann::RiemannFlux::Resolve(settings.numerics.flux)),
               fluxPolicy(FiniteVolumeDetail::ResolveFluxKernelPolicy(settings, flux)),
               boundary(settings.boundaries, equation), metrics(CFV::FiniteVolumePlan::ConstructMetrics(mesh, MetricOptions(settings))),
-              reconstruction(CFV::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings.numerics.cfv, FiniteVolumeDetail::ReconstructionSupport(settings))),
+              // The constant family is already fully metrics-only. Explicit
+              // P1 still retains its compatibility modal bridge until the
+              // gradient-native PP/Barth package removes that final user.
+              reconstruction(settings.numerics.reconstruction != "constant"
+                                 ? std::make_optional(CFV::VariationalReconstructionPlan::ConstructRecCoeff(
+                                       metrics, settings.numerics.cfv,
+                                       FiniteVolumeDetail::ReconstructionSupport(settings)))
+                                 : std::nullopt),
               gradient(CFV::GradientPlan::Prepare(*mesh, metrics, settings.numerics.gradient == "greenGauss" ? CFV::GradientMethod::GreenGauss : settings.numerics.gradient == "ggmp" ? CFV::GradientMethod::GGMP
                                                                                                                                                                                       : CFV::GradientMethod::LeastSquares)),
               partition(metrics.CellWorkPartition())

@@ -103,7 +103,7 @@ namespace
         const auto equation = C::EquationSystem::Resolve(settings.equation);
         C::FiniteVolume fv(mesh, settings, equation);
         const auto &metrics = fv.Metrics();
-        const auto &reconstruction = fv.Reconstruction();
+        const auto &reconstruction = fv.PolynomialReconstruction().Value();
         auto mean = metrics.BuildField(5);
         auto logicalMean = C::EquationDofs::Coupled(equation.Schema(), mean);
         auto work = reconstruction.BuildWorkspace(5);

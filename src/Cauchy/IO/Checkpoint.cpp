@@ -426,6 +426,7 @@ namespace DNDS::Cauchy
                                  const Json &outputController) const
     {
         const MPIInfo mpi(_fv.Metrics().Communicator());
+        includeReconstruction = includeReconstruction && bool(_fv.PolynomialReconstruction());
         const bool history = _timeStepper && _timeStepper->Method() == "bdf2" && _timeStepper->HasHistory();
         const bool limitedVRHistory = includeReconstruction && bool(_fv.LimitedVRHistory(*_reconstruction));
         int flags[]{int(includeReconstruction), -int(includeReconstruction), int(history), -int(history), int(limitedVRHistory), -int(limitedVRHistory)};
@@ -475,10 +476,11 @@ namespace DNDS::Cauchy
                                          const Json &outputController) const
     {
         const MPIInfo mpi(_fv.Metrics().Communicator());
+        const bool polynomial = bool(_fv.PolynomialReconstruction());
         std::optional<EquationTimeStepper::ActiveCheckpoint> active;
         MPI::LocalStage(mpi, [&]
                         {
-            DNDS_check_throw_info(_timeStepper && _restoreReconstruction && _reconstructionBackup &&
+            DNDS_check_throw_info(_timeStepper && (!polynomial || (_restoreReconstruction && _reconstructionBackup)) &&
                                       _trialEpoch.trial && state.stage >= 0 && state.iteration >= 0,
                                   "exact internal checkpoint has no active implicit trial");
             active.emplace(_timeStepper->CaptureActive(_trial)); });
@@ -487,9 +489,9 @@ namespace DNDS::Cauchy
                         { DNDS_check_throw_info(!ditr || (_coupledMiddle && _coupledMiddle->state),
                                                 "DITR internal checkpoint lacks its midpoint reconstruction"); });
         const bool acceptedHistory = _timeStepper->Method() == "bdf2" && _timeStepper->HasHistory();
-        const bool acceptedLimitedVR = bool(_limitedVRBackup);
-        const bool endpointLimitedVR = bool(_fv.LimitedVRHistory(*_reconstruction));
-        const bool middleLimitedVR = ditr && bool(_fv.LimitedVRHistory(*_coupledMiddle->state));
+        const bool acceptedLimitedVR = polynomial && bool(_limitedVRBackup);
+        const bool endpointLimitedVR = polynomial && bool(_fv.LimitedVRHistory(*_reconstruction));
+        const bool middleLimitedVR = polynomial && ditr && bool(_fv.LimitedVRHistory(*_coupledMiddle->state));
         Json timePayloads = Json::array();
         for (index i = 0; i < index(active->fields.size()); ++i)
             timePayloads.push_back({{"name", active->names[size_t(i)]},
@@ -519,6 +521,7 @@ namespace DNDS::Cauchy
                       {"mesh_envelope", 2},
                       {"flow", EquationMetadata(_equation)},
                       {"reconstruction", _fv.ReconstructionMetadata()},
+                      {"polynomial_reconstruction", polynomial},
                       {"time_method", _timeStepper->Method()},
                       {"history", acceptedHistory},
                       {"limited_vr_history", acceptedLimitedVR},
@@ -531,13 +534,16 @@ namespace DNDS::Cauchy
                       {"progress_time", _progressTime},
                       {"time_state", timeState},
                       {"state_storage", DescribeEquationStorage(_accepted)},
-                      {"reconstruction_storage", DescribeEquationStorage(*_reconstructionBackup)},
-                      {"endpoint_warm_storage", DescribeEquationStorage(_fv.ReconstructionGuess(*_reconstruction))},
-                      {"endpoint_final_storage", DescribeEquationStorage(_fv.FluxReconstruction(*_reconstruction, *_workspace))},
                       {"endpoint_limited_vr_history", endpointLimitedVR},
                       {"middle_limited_vr_history", middleLimitedVR},
                       {"source_integration", _sourceStrang ? "strang" : "coupled"}};
-        if (ditr)
+        if (polynomial)
+        {
+            metadata["reconstruction_storage"] = DescribeEquationStorage(*_reconstructionBackup);
+            metadata["endpoint_warm_storage"] = DescribeEquationStorage(_fv.ReconstructionGuess(*_reconstruction));
+            metadata["endpoint_final_storage"] = DescribeEquationStorage(_fv.FluxReconstruction(*_reconstruction, *_workspace));
+        }
+        if (polynomial && ditr)
         {
             metadata["middle_warm_storage"] = DescribeEquationStorage(_fv.ReconstructionGuess(*_coupledMiddle->state));
             metadata["middle_final_storage"] = DescribeEquationStorage(_fv.FluxReconstruction(*_coupledMiddle->state, *_workspace));
@@ -562,7 +568,8 @@ namespace DNDS::Cauchy
         Runtime::WriteArray(envelope->coordinates, serializer, "mesh_coordinates", mpi);
         Runtime::WriteArray(envelope->periodicTransforms, serializer, "periodic_transforms", mpi);
         WriteEquationArrays(_accepted, serializer, "state_field_", mpi);
-        WriteEquationArrays(*_reconstructionBackup, serializer, "reconstruction_field_", mpi);
+        if (polynomial)
+            WriteEquationArrays(*_reconstructionBackup, serializer, "reconstruction_field_", mpi);
         if (acceptedLimitedVR)
             Runtime::WriteArray(*_limitedVRBackup, serializer, "limited_vr_history", mpi);
         if (acceptedHistory)
@@ -573,20 +580,23 @@ namespace DNDS::Cauchy
         for (index i = 0; i < index(active->fields.size()); ++i)
             WriteEquationArrays(active->fields[size_t(i)], serializer,
                                 "internal_time_" + std::to_string(i) + "_field_", mpi);
-        WriteEquationArrays(_fv.ReconstructionGuess(*_reconstruction), serializer,
-                            "internal_endpoint_warm_field_", mpi);
-        WriteEquationArrays(_fv.FluxReconstruction(*_reconstruction, *_workspace), serializer,
-                            "internal_endpoint_final_field_", mpi);
-        if (const auto history = _fv.LimitedVRHistory(*_reconstruction))
-            Runtime::WriteArray(*history, serializer, "internal_endpoint_limited_vr_history", mpi);
-        if (ditr)
+        if (polynomial)
         {
-            WriteEquationArrays(_fv.ReconstructionGuess(*_coupledMiddle->state), serializer,
-                                "internal_middle_warm_field_", mpi);
-            WriteEquationArrays(_fv.FluxReconstruction(*_coupledMiddle->state, *_workspace), serializer,
-                                "internal_middle_final_field_", mpi);
-            if (const auto history = _fv.LimitedVRHistory(*_coupledMiddle->state))
-                Runtime::WriteArray(*history, serializer, "internal_middle_limited_vr_history", mpi);
+            WriteEquationArrays(_fv.ReconstructionGuess(*_reconstruction), serializer,
+                                "internal_endpoint_warm_field_", mpi);
+            WriteEquationArrays(_fv.FluxReconstruction(*_reconstruction, *_workspace), serializer,
+                                "internal_endpoint_final_field_", mpi);
+            if (const auto history = _fv.LimitedVRHistory(*_reconstruction))
+                Runtime::WriteArray(*history, serializer, "internal_endpoint_limited_vr_history", mpi);
+            if (ditr)
+            {
+                WriteEquationArrays(_fv.ReconstructionGuess(*_coupledMiddle->state), serializer,
+                                    "internal_middle_warm_field_", mpi);
+                WriteEquationArrays(_fv.FluxReconstruction(*_coupledMiddle->state, *_workspace), serializer,
+                                    "internal_middle_final_field_", mpi);
+                if (const auto history = _fv.LimitedVRHistory(*_coupledMiddle->state))
+                    Runtime::WriteArray(*history, serializer, "internal_middle_limited_vr_history", mpi);
+            }
         }
         serializer->CloseFile();
     }
@@ -859,10 +869,12 @@ namespace DNDS::Cauchy
         serializer->ReadString("resolved_config", serializedConfig);
         const auto metadata = Json::parse(serializedMetadata, nullptr, false);
         const auto storedConfig = Json::parse(serializedConfig, nullptr, false);
+        const bool polynomial = bool(_fv.PolynomialReconstruction());
         int valid = format == 1 && metadata.is_object() && storedConfig.is_object() &&
                     metadata.value("restart_scope", std::string{}) == "exact_internal" &&
                     CompatibleConfig(storedConfig) == CompatibleConfig(resolved) && _timeStepper &&
                     metadata.value("time_method", std::string{}) == _timeStepper->Method() &&
+                    metadata.value("polynomial_reconstruction", true) == polynomial &&
                     metadata.value("reconstruction", Json()) == _fv.ReconstructionMetadata();
         MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
         DNDS_check_throw_info(valid, "Cauchy exact internal checkpoint metadata differs");
@@ -928,8 +940,11 @@ namespace DNDS::Cauchy
             archive.Restore(*field, route, context);
             return std::move(*field);
         };
-        result->endpointWarm.emplace(restoreReconstruction("internal_endpoint_warm_field_", metadata.at("endpoint_warm_storage")));
-        result->endpointFinal.emplace(restoreReconstruction("internal_endpoint_final_field_", metadata.at("endpoint_final_storage")));
+        if (polynomial)
+        {
+            result->endpointWarm.emplace(restoreReconstruction("internal_endpoint_warm_field_", metadata.at("endpoint_warm_storage")));
+            result->endpointFinal.emplace(restoreReconstruction("internal_endpoint_final_field_", metadata.at("endpoint_final_storage")));
+        }
         const auto entries = serializer->ListCurrentPath();
         const auto restoreHistory = [&](const std::string &name) -> std::optional<Runtime::Array<real>>
         {
@@ -942,9 +957,10 @@ namespace DNDS::Cauchy
             transfer(source, *destination);
             return destination;
         };
-        result->endpointHistory = restoreHistory("internal_endpoint_limited_vr_history");
+        if (polynomial)
+            result->endpointHistory = restoreHistory("internal_endpoint_limited_vr_history");
         result->ditr = result->time.method == "ditr";
-        if (result->ditr)
+        if (polynomial && result->ditr)
         {
             result->middleWarm.emplace(restoreReconstruction("internal_middle_warm_field_", metadata.at("middle_warm_storage")));
             result->middleFinal.emplace(restoreReconstruction("internal_middle_final_field_", metadata.at("middle_final_storage")));
@@ -992,18 +1008,23 @@ namespace DNDS::Cauchy
             MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), reserve);
         else
             reserve();
-        DNDS_check_throw_info(bool(checkpoint.equationGuess), "checkpoint lacks a unified equation reconstruction candidate");
-        checkpoint.reconstruction.emplace(_fv.ReserveReconstructionRestore(
-            _reconstruction, *checkpoint.equationGuess,
-            checkpoint.limitedVRHistory ? std::optional(std::cref(*checkpoint.limitedVRHistory)) : std::nullopt,
-            collectiveChecks));
+        if (_fv.PolynomialReconstruction())
+        {
+            DNDS_check_throw_info(bool(checkpoint.equationGuess),
+                                  "checkpoint lacks a unified equation reconstruction candidate");
+            checkpoint.reconstruction.emplace(_fv.ReserveReconstructionRestore(
+                _reconstruction, *checkpoint.equationGuess,
+                checkpoint.limitedVRHistory ? std::optional(std::cref(*checkpoint.limitedVRHistory)) : std::nullopt,
+                collectiveChecks));
+        }
     }
     void Domain::CommitCheckpointRead(CheckpointRead &checkpoint)
     {
         // Every participating domain/rank has reserved before this point.
         // The retained views and finite scalar copies need no allocation, MPI
         // or further user-input validation during publication.
-        checkpoint.reconstruction->Commit();
+        if (checkpoint.reconstruction)
+            checkpoint.reconstruction->Commit();
         checkpoint.committed = true;
         for (index iBlock = 0; iBlock < index(checkpoint.input.size()); ++iBlock)
         {
@@ -1029,35 +1050,47 @@ namespace DNDS::Cauchy
     }
     void Domain::CommitInternalCheckpointRead(InternalCheckpointRead &checkpoint)
     {
-        DNDS_check_throw_info(_timeStepper && checkpoint.endpointWarm && checkpoint.endpointFinal &&
+        const bool polynomial = bool(_fv.PolynomialReconstruction());
+        DNDS_check_throw_info(_timeStepper &&
+                                  (!polynomial || (checkpoint.endpointWarm && checkpoint.endpointFinal)) &&
                                   checkpoint.trialEpoch.acceptedStep == _epoch.acceptedStep,
                               "internal checkpoint cannot follow the restored accepted state");
-        const auto &acceptedGuess = _fv.ReconstructionGuess(*_reconstruction);
-        if (!_reconstructionBackup)
-            _reconstructionBackup.emplace(EquationDofOperations::NewVector(acceptedGuess));
-        EquationDofOperations::Copy(*_reconstructionBackup, acceptedGuess);
-        if (const auto history = _fv.LimitedVRHistory(*_reconstruction))
+        if (polynomial)
         {
-            if (!_limitedVRBackup)
-                _limitedVRBackup.emplace(history->Layout());
-            _limitedVRBackup->CopyFrom(*history).Wait();
+            const auto &acceptedGuess = _fv.ReconstructionGuess(*_reconstruction);
+            if (!_reconstructionBackup)
+                _reconstructionBackup.emplace(EquationDofOperations::NewVector(acceptedGuess));
+            EquationDofOperations::Copy(*_reconstructionBackup, acceptedGuess);
+            if (const auto history = _fv.LimitedVRHistory(*_reconstruction))
+            {
+                if (!_limitedVRBackup)
+                    _limitedVRBackup.emplace(history->Layout());
+                _limitedVRBackup->CopyFrom(*history).Wait();
+            }
+            else
+                _limitedVRBackup.reset();
         }
         else
+        {
+            _reconstructionBackup.reset();
             _limitedVRBackup.reset();
+        }
         _timeStepper->RestoreActive(checkpoint.time, _trial);
-        _fv.RestoreReconstructionState(*_reconstruction, *checkpoint.endpointWarm,
-                                       *checkpoint.endpointFinal,
-                                       checkpoint.endpointHistory ? std::optional(std::cref(*checkpoint.endpointHistory)) : std::nullopt);
+        if (polynomial)
+            _fv.RestoreReconstructionState(*_reconstruction, *checkpoint.endpointWarm,
+                                           *checkpoint.endpointFinal,
+                                           checkpoint.endpointHistory ? std::optional(std::cref(*checkpoint.endpointHistory)) : std::nullopt);
         if (checkpoint.ditr)
         {
-            DNDS_check_throw_info(checkpoint.middleWarm && checkpoint.middleFinal,
+            DNDS_check_throw_info(!polynomial || (checkpoint.middleWarm && checkpoint.middleFinal),
                                   "DITR internal checkpoint lacks midpoint reconstruction");
             auto &middle = _timeStepper->CoupledMethod().IntermediateState();
             _coupledMiddle = _coupledFactory(middle);
             _coupledMiddleOwner = middle.PhysicalField(0).Owned().SharedStorage();
-            _fv.RestoreReconstructionState(*_coupledMiddle->state, *checkpoint.middleWarm,
-                                           *checkpoint.middleFinal,
-                                           checkpoint.middleHistory ? std::optional(std::cref(*checkpoint.middleHistory)) : std::nullopt);
+            if (polynomial)
+                _fv.RestoreReconstructionState(*_coupledMiddle->state, *checkpoint.middleWarm,
+                                               *checkpoint.middleFinal,
+                                               checkpoint.middleHistory ? std::optional(std::cref(*checkpoint.middleHistory)) : std::nullopt);
             _coupledNonlinearState = checkpoint.nonlinear;
         }
         else
@@ -1066,7 +1099,7 @@ namespace DNDS::Cauchy
         _trialDt = checkpoint.trialDt;
         _progressTime = checkpoint.progressTime;
         _trialReady = false;
-        _restoreReconstruction = true;
+        _restoreReconstruction = polynomial;
         _internalResume = true;
         _coordinatedPrepared = false;
         _stageEquation.reset();

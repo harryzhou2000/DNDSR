@@ -195,7 +195,7 @@ int main(int argc, char **argv)
             {
                 auto write = reconstruction->coefficients.PhysicalField(0).Owned().Write();
                 const auto values = write.View<R::UniformTableRows>();
-                const int modes = fv.Reconstruction().NRecDOF();
+                const int modes = fv.PolynomialReconstruction()->NRecDOF();
                 for (I iCell = 0; iCell < values.RowCount(); ++iCell)
                     for (int j = 0; j < 6; ++j)
                         for (int mode = 0; mode < modes; ++mode)
@@ -349,7 +349,7 @@ int main(int argc, char **argv)
                     }
                 const auto coefficientRead = reconstruction->coefficients.PhysicalField(0).Ghost().Read();
                 const auto rec = coefficientRead.View<R::UniformTableRows>();
-                const int modes = fv.Reconstruction().NRecDOF();
+                const int modes = fv.PolynomialReconstruction()->NRecDOF();
                 for (I iCell = 0; iCell < rec.RowCount(); ++iCell)
                     for (int j = 0; j < 6; ++j)
                         for (int mode = 0; mode < modes; ++mode)

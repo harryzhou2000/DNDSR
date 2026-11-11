@@ -111,6 +111,8 @@ namespace DNDS::Cauchy
     }
     void Domain::PreserveReconstructionGuess()
     {
+        if (!_fv.PolynomialReconstruction())
+            return;
         MPI::LocalStage(MPIInfo(_fv.Metrics().Communicator()), [&]
                         {
             if (_restoreReconstruction)

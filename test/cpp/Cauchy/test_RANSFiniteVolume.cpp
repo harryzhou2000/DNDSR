@@ -1157,7 +1157,7 @@ TEST_CASE("P3 thermal reconstruction compression preserves admissible RANS linea
             auto work = fv.BuildWorkspace(state);
             auto guess = fv.ReconstructionGuess(*reconstruction);
             C::EquationDofOperations::Fill(guess, 0);
-            const int modes = fv.Reconstruction().NRecDOF();
+            const int modes = fv.PolynomialReconstruction()->NRecDOF();
             {
                 auto write = guess.WriteOwned();
                 const auto flow = write.Block("flow"), rans = write.Block("rans");
@@ -1213,7 +1213,7 @@ TEST_CASE("SA reference-quality failure preserves thermally admissible uncompres
         auto work = fv.BuildWorkspace(state);
         auto guess = fv.ReconstructionGuess(*reconstruction);
         C::EquationDofOperations::Fill(guess, 0);
-        const int modes = fv.Reconstruction().NRecDOF();
+        const int modes = fv.PolynomialReconstruction()->NRecDOF();
         const I cells = fv.Metrics().NumCell();
         R::Array<I> pointCells(R::RowLayout::Dense(cells, 1));
         R::Array<double> points(R::RowLayout::Dense(cells, 3));
@@ -1237,7 +1237,7 @@ TEST_CASE("SA reference-quality failure preserves thermally admissible uncompres
         // Independent face-midpoint sample proves reference-quality failure;
         // the build's SA policy still permits the uncompressed polynomial.
         const auto location = state.LocateBlock("rans");
-        DNDS::CFV::PolynomialSamplingPlan sampler(fv.Reconstruction(), pointCells, points, false);
+        DNDS::CFV::PolynomialSamplingPlan sampler(*fv.PolynomialReconstruction(), pointCells, points, false);
         R::Array<double> values(R::RowLayout::Dense(cells, I(state.PhysicalField(location.physicalField).Width())));
         sampler.Evaluate(state.PhysicalField(location.physicalField), guess.PhysicalField(location.physicalField), values);
         {
@@ -1289,7 +1289,7 @@ TEST_CASE("RANS reconstruction PP preserves flow and scalar polynomials independ
                 auto work = fv.BuildWorkspace(state);
                 auto guess = fv.ReconstructionGuess(*reconstruction);
                 C::EquationDofOperations::Fill(guess, 0);
-                const int modes = fv.Reconstruction().NRecDOF();
+                const int modes = fv.PolynomialReconstruction()->NRecDOF();
                 const I cells = fv.Metrics().NumCell();
                 {
                     auto write = guess.WriteOwned();
@@ -1324,7 +1324,7 @@ TEST_CASE("RANS reconstruction PP preserves flow and scalar polynomials independ
                         }
                 }
                 const auto location = state.LocateBlock("rans");
-                DNDS::CFV::PolynomialSamplingPlan sampler(fv.Reconstruction(), pointCells, points, false);
+                DNDS::CFV::PolynomialSamplingPlan sampler(*fv.PolynomialReconstruction(), pointCells, points, false);
                 R::Array<double> values(R::RowLayout::Dense(4 * cells, I(state.PhysicalField(location.physicalField).Width())));
                 sampler.Evaluate(state.PhysicalField(location.physicalField), guess.PhysicalField(location.physicalField), values);
                 std::vector<double> expected(size_t(cells), 1);

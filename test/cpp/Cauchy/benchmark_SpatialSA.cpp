@@ -130,13 +130,13 @@ int main(int argc, char **argv)
         auto auxiliary = fv.BuildAuxiliaryValues(request);
         auto meanHalo = fv.Metrics().BindHalo(state.PhysicalField(0));
         auto waveHalo = fv.Metrics().BindHalo(*auxiliary.cellWaveJump);
-        auto coefficients = fv.Metrics().BuildField(6 * fv.Reconstruction().NRecDOF());
+        auto coefficients = fv.Metrics().BuildField(6 * fv.PolynomialReconstruction()->NRecDOF());
         DNDS::Algebra::Fill(coefficients, 0.);
         if (operation == "halo")
         {
             auto write = coefficients.Owned().Write();
             const auto values = write.View<R::UniformTableRows>();
-            const int modes = fv.Reconstruction().NRecDOF();
+            const int modes = fv.PolynomialReconstruction()->NRecDOF();
             for (I iCell = 0; iCell < values.RowCount(); ++iCell)
                 for (int j = 0; j < 6; ++j)
                     for (int mode = 0; mode < modes; ++mode)
@@ -200,7 +200,7 @@ int main(int argc, char **argv)
                         error = std::max(error, std::abs(actual - expected));
                         magnitude = std::max(magnitude, std::abs(expected));
                     }
-                    const int modes = fv.Reconstruction().NRecDOF();
+                    const int modes = fv.PolynomialReconstruction()->NRecDOF();
                     for (int j = 0; j < 6; ++j)
                         for (int mode = 0; mode < modes; ++mode)
                         {

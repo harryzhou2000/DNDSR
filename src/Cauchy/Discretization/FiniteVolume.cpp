@@ -309,7 +309,6 @@ namespace DNDS::Cauchy
         };
         collectFaces(data->partition.Core(), data->rhsCoreFaces);
         collectFaces(data->partition.HaloDependent(), data->rhsDependentFaces);
-        data->boundaryEntries.resize(size_t(data->reconstruction.NumBoundaryQuadrature()));
         data->boundaryLayout=std::make_shared<Detail::BoundaryPointLayout>();
         data->boundaryLayout->mesh=data->mesh;
         data->boundaryLayout->stamp=data->mesh->versions.Stamp(R::Change::Topology|R::Change::Geometry|R::Change::Distribution|R::Change::Layout);
@@ -324,17 +323,18 @@ namespace DNDS::Cauchy
                     {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]},
                     {sample.normal[0], sample.normal[1], sample.normal[2]}, sample.boundary.kind == BoundaryKind::Interface});
             }
-        for (index iPoint = 0; iPoint < data->reconstruction.NumBoundaryQuadrature(); ++iPoint)
+        // Boundary trace rows belong to the FV face-quadrature publication,
+        // not to variational reconstruction. Derive their stable order from
+        // the canonical cell-incidence samples so P0/P1 need no Taylor plan.
+        for (index entry = 0; entry < index(data->samples.size()); ++entry)
         {
-            const auto point = data->reconstruction.GetBoundaryQuadrature(iPoint);
-            const auto globalPoint = metric.FaceQuadratureBegin(point.face) + point.quadrature;
-            auto &entry = data->boundaryEntries[iPoint];
-            entry = data->offsets[point.cell];
-            while (entry < data->offsets[point.cell + 1] && data->samples[entry].point != globalPoint) ++entry;
-            DNDS_check_throw_info(entry < data->offsets[point.cell + 1], "boundary quadrature missing from cell incidences");
             auto &sample=data->samples[entry];
-            sample.boundaryPoint=iPoint;
-            data->boundaryLayout->points.push_back({point.cell,point.face,point.quadrature,sample.zone,
+            if (sample.other != UnInitIndex)
+                continue;
+            sample.boundaryPoint=index(data->boundaryEntries.size());
+            data->boundaryEntries.push_back(entry);
+            data->boundaryLayout->points.push_back({sample.cell,sample.face,
+                int(sample.point-metric.FaceQuadratureBegin(sample.face)),sample.zone,
                 {sample.ownPoint[0],sample.ownPoint[1],sample.ownPoint[2]},
                 {sample.normal[0],sample.normal[1],sample.normal[2]},sample.boundary.kind==BoundaryKind::Interface});
         }
@@ -384,7 +384,8 @@ namespace DNDS::Cauchy
                     }
                 }
             }
-            data->positivitySamples.emplace(data->reconstruction, cells, points, false);
+            if (data->reconstruction)
+                data->positivitySamples.emplace(*data->reconstruction, cells, points, false);
         }
         if (limitedVR) data->limitedVRGeometry = std::make_shared<LimitedVRGeometry>(*data); });
         // Zone presence is a domain-global property; do not reject a condition
@@ -403,7 +404,11 @@ namespace DNDS::Cauchy
     R::TransferBinding FiniteVolume::BindHalo(CFV::FVField &field) const { return _data->BindHalo(field); }
     const EquationSystem &FiniteVolume::Equation() const { return _data->equation; }
     const DomainSettings &FiniteVolume::Settings() const { return _data->settings; }
-    const CFV::VariationalReconstructionPlan &FiniteVolume::Reconstruction() const { return _data->reconstruction; }
+    OptionalRef<const CFV::VariationalReconstructionPlan> FiniteVolume::PolynomialReconstruction() const
+    {
+        return _data->reconstruction ? OptionalRef<const CFV::VariationalReconstructionPlan>(*_data->reconstruction)
+                                     : OptionalRef<const CFV::VariationalReconstructionPlan>();
+    }
     const Geom::UnstructuredMesh &FiniteVolume::Mesh() const { return *_data->mesh; }
     const RigidMotion &FiniteVolume::Motion() const { return _data->motion; }
 
@@ -416,7 +421,13 @@ namespace DNDS::Cauchy
             components += index(block.components.size());
             blocks.push_back({{"name", block.name}, {"components", block.components.size()}});
         }
-        return {{"dimension", Metrics().Dimension()}, {"coefficient_dofs", _data->reconstruction.NRecDOF()}, {"components", components}, {"blocks", std::move(blocks)}, {"coefficient_role", "unlimitedGuess"}, {"cfv", _data->settings.numerics.cfv}};
+        return {{"dimension", Metrics().Dimension()},
+                {"family", _data->settings.numerics.reconstruction},
+                {"coefficient_dofs", _data->reconstruction ? _data->reconstruction->NRecDOF() : 0},
+                {"components", components},
+                {"blocks", std::move(blocks)},
+                {"coefficient_role", "unlimitedGuess"},
+                {"cfv", _data->settings.numerics.cfv}};
     }
     namespace
     {
@@ -599,31 +610,39 @@ namespace DNDS::Cauchy
 
         static EquationDofs BuildCoefficients(const Data &data, const EquationDofs &state)
         {
+            // Direct P0/P1 publications consume means/physical gradients. Keep
+            // only a managed alias for the common schedule; allocate no modal
+            // payload and bind no coefficient transfer.
+            if (!data.reconstruction)
+                return state.NumericAlias();
             Algebra::DofBundle fields(state.Space());
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             {
                 const auto &physical = state.PhysicalField(iField);
-                fields.Add(state.Fields().Name(iField), data.reconstruction.BuildCoefficients(
+                fields.Add(state.Fields().Name(iField), data.reconstruction->BuildCoefficients(
                                                             index(physical.Width()),
                                                             FiniteVolumeDetail::FieldLayout(physical.Owned().Layout(), data.metrics.NumCell(),
-                                                                                            index(physical.Width()) * data.reconstruction.NRecDOF())));
+                                                                                            index(physical.Width()) * data.reconstruction->NRecDOF())));
             }
-            return BindFields(state, std::move(fields), data.reconstruction.NRecDOF());
+            return BindFields(state, std::move(fields), data.reconstruction->NRecDOF());
         }
         ReconstructionState(std::shared_ptr<const Data> data, EquationDofs &state)
             : owner(std::move(data)), binding(state), coefficients(BuildCoefficients(*owner, state)),
-              distinctFinalized((owner->settings.numerics.limiter == "WBAP" &&
-                                 !(owner->settings.numerics.reconstruction == "gradient" &&
-                                   !owner->settings.numerics.positivity)) ||
-                                bool(owner->limitedVRGeometry) || owner->settings.numerics.positivity),
+              distinctFinalized(owner->reconstruction && ((owner->settings.numerics.limiter == "WBAP" &&
+                                                           !(owner->settings.numerics.reconstruction == "gradient" &&
+                                                             !owner->settings.numerics.positivity)) ||
+                                                          bool(owner->limitedVRGeometry) || owner->settings.numerics.positivity)),
               fluxCoefficients(distinctFinalized ? BuildCoefficients(*owner, state)
                                                  : coefficients.NumericAlias())
         {
             for (index iField = 0; iField < coefficients.PhysicalFieldNumber(); ++iField)
             {
-                Algebra::Fill(coefficients.PhysicalField(iField), 0.);
                 meanHalo.push_back(owner->BindTrackedHalo(state.PhysicalField(iField)));
-                coefficientHalo.push_back(owner->BindHalo(coefficients.PhysicalField(iField)));
+                if (owner->reconstruction)
+                {
+                    Algebra::Fill(coefficients.PhysicalField(iField), 0.);
+                    coefficientHalo.push_back(owner->BindHalo(coefficients.PhysicalField(iField)));
+                }
                 if (distinctFinalized)
                 {
                     Algebra::Fill(fluxCoefficients.PhysicalField(iField), 0.);
@@ -677,8 +696,9 @@ namespace DNDS::Cauchy
         R::SessionAccess session;
         struct Field
         {
-            CFV::ReconstructionWorkspace reconstruction;
-            CFV::ReconstructionBoundaryValues boundary;
+            std::optional<CFV::ReconstructionWorkspace> reconstruction;
+            std::optional<CFV::ReconstructionBoundaryValues> reconstructionBoundary;
+            Runtime::Array<real> boundaryValues;
             std::optional<CFV::FVField> gradient;
             std::optional<R::Array<real>> gradientBoundary;
             std::vector<index> vectorStarts;
@@ -946,13 +966,23 @@ namespace DNDS::Cauchy
                             vectors.push_back(location.firstComponent + first);
                 }
                 std::sort(vectors.begin(), vectors.end());
-                Field field{data.reconstruction.BuildWorkspace(index(physical.Width()),
-                                                               FiniteVolumeDetail::FieldLayout(physical.Owned().Layout(), data.metrics.NumCell(), index(physical.Width()) * data.reconstruction.NRecDOF()), vectors),
-                            data.reconstruction.BuildBoundaryValues(index(physical.Width())),
-                            {},
-                            {},
-                            vectors};
-                Algebra::Fill(field.reconstruction.temporary, 0.);
+                Field field;
+                field.vectorStarts = vectors;
+                field.boundaryValues = R::Array<real>(R::RowLayout::Dense(
+                    index(data.boundaryEntries.size()), index(physical.Width())));
+                if (data.reconstruction)
+                {
+                    field.reconstruction.emplace(data.reconstruction->BuildWorkspace(
+                        index(physical.Width()),
+                        FiniteVolumeDetail::FieldLayout(
+                            physical.Owned().Layout(), data.metrics.NumCell(),
+                            index(physical.Width()) * data.reconstruction->NRecDOF()),
+                        vectors));
+                    field.reconstructionBoundary.emplace(
+                        data.reconstruction->BuildBoundaryValues(index(physical.Width())));
+                    field.boundaryValues = field.reconstructionBoundary->values;
+                    Algebra::Fill(field.reconstruction->temporary, 0.);
+                }
                 if (!meanOnly && (data.settings.numerics.reconstruction == "gradient" ||
                                   (data.equation.HasRANS() && data.settings.numerics.reconstruction == "constant")))
                 {
@@ -1008,7 +1038,8 @@ namespace DNDS::Cauchy
                     }
                 }
             }
-            sourceSampling.emplace(owner->reconstruction, cells, points, owner->equation.HasRANS());
+            if (owner->reconstruction)
+                sourceSampling.emplace(*owner->reconstruction, cells, points, owner->equation.HasRANS());
             sourceValuesAreMeans = owner->settings.numerics.reconstruction != "variational" && count == owner->metrics.NumCell();
             for (index iCell = 0; sourceValuesAreMeans && iCell < owner->metrics.NumCell(); ++iCell)
                 sourceValuesAreMeans = sourceOffsets[iCell] == iCell && sourceOffsets[iCell + 1] == iCell + 1;
@@ -1044,7 +1075,8 @@ namespace DNDS::Cauchy
                             pointWrite.View()(iCell, d) = center[d];
                     }
                 }
-                sourceJacobianSampling.emplace(owner->reconstruction, centerCells, centers);
+                if (owner->reconstruction)
+                    sourceJacobianSampling.emplace(*owner->reconstruction, centerCells, centers);
                 for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                 {
                     sourceJacobianGradients.emplace_back();
@@ -1058,7 +1090,7 @@ namespace DNDS::Cauchy
             const Algebra::DofSpace space(size_t(rows), 0, "equation boundary quadrature");
             Algebra::DofBundle bundle(space);
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
-                bundle.Add(state.Fields().Name(iField), CFV::FVField(space, fields[iField].boundary.values,
+                bundle.Add(state.Fields().Name(iField), CFV::FVField(space, fields[iField].boundaryValues,
                                                                      R::Array<real>(R::RowLayout::Dense(0, state.PhysicalField(iField).Width()))));
             return BindFields(state, std::move(bundle), 1);
         }
@@ -1066,13 +1098,13 @@ namespace DNDS::Cauchy
                   std::optional<Physics::Chemistry::ChemicalWorkerPool> pool, bool meanTrial)
             : owner(std::move(data)), meanOnly(meanTrial), componentNumber(state.ComponentNumber()), physicalFieldNumber(state.PhysicalFieldNumber()),
               fields(BuildFields(*owner, state, meanOnly)),
-              boundary(BindBoundary(state, fields, owner->reconstruction.NumBoundaryQuadrature())),
+              boundary(BindBoundary(state, fields, index(owner->boundaryEntries.size()))),
               thermal(owner->equation, owner->settings.numerics.densityFloor, owner->settings.numerics.temperatureFloor,
                       owner->settings.numerics.sensibleEnergyFloor, owner->settings.numerics.pressureFloor,
                       pool ? pool->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}),
               diagnostics(owner->forceZones),
               workers(std::move(pool)),
-              boundaryMomentumFlux(R::RowLayout::Dense(owner->reconstruction.NumBoundaryQuadrature(), 3)),
+              boundaryMomentumFlux(R::RowLayout::Dense(index(owner->boundaryEntries.size()), 3)),
               faceFlux(R::RowLayout::Dense(index(owner->stencilFaces.size()), state.ComponentNumber())),
               chemical(owner->settings.equation.source == "chemical")
         {
@@ -1092,11 +1124,14 @@ namespace DNDS::Cauchy
             }
             if (!meanOnly && owner->settings.numerics.positivity)
             {
-                // Positivity retains only its own reference/sample buffers.
-                // This construction prototype is discarded immediately; the
-                // actual finalized coefficients belong to ReconstructionState.
-                auto coefficientPrototype = ReconstructionState::BuildCoefficients(*owner, state);
-                positivity = std::make_shared<PositivityWorkspace>(owner, state, coefficientPrototype, workers);
+                if (owner->reconstruction)
+                {
+                    // Polynomial positivity retains only its own reference and
+                    // sample buffers. Direct P0/P1 policies do not manufacture
+                    // a modal prototype merely to reuse this implementation.
+                    auto coefficientPrototype = ReconstructionState::BuildCoefficients(*owner, state);
+                    positivity = std::make_shared<PositivityWorkspace>(owner, state, coefficientPrototype, workers);
+                }
                 // Conservative explicit flux blending is currently the
                 // established pure-flow policy. Extended RANS/species stages
                 // reject and retry their raw update instead of constructing a
@@ -1113,7 +1148,9 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(!owner->equation.HasMixture() && !owner->equation.HasRANS() &&
                                           state.ComponentNumber() == 5 && state.PhysicalFieldNumber() == 1,
                                       "LVR requires one coupled perfect-gas flow5 field");
-                limitedVR = std::make_unique<LimitedVRWorkspace>(*owner, fields.front().reconstruction);
+                DNDS_check_throw_info(fields.front().reconstruction,
+                                      "LVR requires a variational reconstruction workspace");
+                limitedVR = std::make_unique<LimitedVRWorkspace>(*owner, *fields.front().reconstruction);
             }
             nativeDirectGradient = !meanOnly && owner->settings.numerics.reconstruction == "gradient" &&
                                    !owner->settings.numerics.positivity &&
@@ -1127,13 +1164,16 @@ namespace DNDS::Cauchy
                 flowCharacteristicField = flow.physicalField;
                 if (nativeDirectGradient)
                     gradientFlowCharacteristic.emplace(owner->gradient.BuildFaceTransform(flow.firstComponent, 5));
-                else
-                    flowCharacteristic.emplace(owner->reconstruction.BuildFaceTransform(flow.firstComponent, 5));
+                else if (owner->reconstruction)
+                    flowCharacteristic.emplace(owner->reconstruction->BuildFaceTransform(flow.firstComponent, 5));
             }
             if (owner->settings.numerics.reconstruction != "variational")
             {
                 for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                 {
+                    if (owner->settings.numerics.reconstruction == "constant" &&
+                        !fields[iField].gradient)
+                        continue;
                     if (nativeDirectGradient)
                     {
                         DNDS_check_throw_info(fields[iField].gradient,
@@ -1185,6 +1225,8 @@ namespace DNDS::Cauchy
         {
             if (owner->settings.numerics.reconstruction == "variational")
                 return;
+            if (owner->settings.numerics.reconstruction == "constant" && directGradients.empty())
+                return;
             for (index iField = 0; iField < index(fields.size()); ++iField)
             {
                 if (nativeDirectGradient)
@@ -1205,6 +1247,11 @@ namespace DNDS::Cauchy
                 // Constant face fluxes never read remote source gradients.
                 if (fromGradientField && ghost)
                     continue;
+                // Pure P0 has no polynomial or physical-gradient publication.
+                // Its directGradients slot is retained only for the common
+                // workspace shape; no modal zero field is manufactured.
+                if (owner->settings.numerics.reconstruction == "constant" && !fromGradientField)
+                    continue;
                 const auto refresh = [&]
                 {
                     if (fromGradientField)
@@ -1218,8 +1265,12 @@ namespace DNDS::Cauchy
                         engine.Synchronize();
                     }
                     else
-                        owner->gradient.ExtractLinearGradients(FluxCoefficients().PhysicalField(iField), owner->reconstruction,
+                    {
+                        DNDS_check_throw_info(owner->reconstruction,
+                                              "modal gradient extraction requires variational reconstruction");
+                        owner->gradient.ExtractLinearGradients(FluxCoefficients().PhysicalField(iField), *owner->reconstruction,
                                                                directGradients[iField], ghost);
+                    }
                 };
                 // Only RANS source sampling repeats this pass. Flow-only and
                 // chemical-only paths retain their original preparation path.
@@ -1260,8 +1311,12 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(directViscousGradients.size() == fields.size(),
                                       "unlimited direct viscous-gradient fields are incomplete");
                 for (index iField = 0; iField < index(fields.size()); ++iField)
-                    owner->gradient.ExtractLinearGradients(Coefficients().PhysicalField(iField), owner->reconstruction,
+                {
+                    DNDS_check_throw_info(owner->reconstruction,
+                                          "modal viscous-gradient extraction requires variational reconstruction");
+                    owner->gradient.ExtractLinearGradients(Coefficients().PhysicalField(iField), *owner->reconstruction,
                                                            directViscousGradients[iField], ghost);
+                }
             }
         }
 
@@ -1304,7 +1359,7 @@ namespace DNDS::Cauchy
             std::optional<CFV::ReconstructionBasisRead> basisRead;
             const bool direct = owner->settings.numerics.reconstruction != "variational";
             if (!direct)
-                basisRead.emplace(owner->reconstruction.AcquireBasisRead());
+                basisRead.emplace(owner->reconstruction->AcquireBasisRead());
             CFV::Math::SmallMatrix scratch;
             PointScratch point(state.ComponentNumber()), cellMean(state.ComponentNumber());
             const auto *ransModel = owner->equation.HasRANS() ? &owner->equation.RANS() : nullptr;
@@ -1314,7 +1369,7 @@ namespace DNDS::Cauchy
                 wallRead.emplace(owner->wallDistance->AcquireRead());
             const auto wallValues = wallRead ? wallRead->HostView() : WallDistanceView{};
             const auto frame = owner->motion.At(time);
-            const int modes = owner->reconstruction.NRecDOF();
+            const int modes = owner->reconstruction ? owner->reconstruction->NRecDOF() : 0;
             {
                 auto output = boundary.WriteOwned();
                 for (index iPoint = 0; iPoint < index(owner->boundaryEntries.size()); ++iPoint)
@@ -1360,7 +1415,7 @@ namespace DNDS::Cauchy
             for (auto &field : fields)
                 if (field.gradientBoundary)
                 {
-                    const auto source = field.boundary.values.Read();
+                    const auto source = field.boundaryValues.Read();
                     auto target = field.gradientBoundary->Write();
                     const auto a = source.View<R::UniformTableRows>();
                     const auto b = target.View<R::UniformTableRows>();
@@ -1511,7 +1566,7 @@ namespace DNDS::Cauchy
             std::optional<CFV::ReconstructionBasisRead> basisRead;
             const bool direct = owner->settings.numerics.reconstruction != "variational";
             if (!direct)
-                basisRead.emplace(owner->reconstruction.AcquireBasisRead());
+                basisRead.emplace(owner->reconstruction->AcquireBasisRead());
             const bool ghosts = region != CFV::ReconstructionRegion::Core;
             // Preparation owns writes; the point kernel holds only numeric
             // read views. These means are not reconstructed thermodynamics.
@@ -1607,7 +1662,8 @@ namespace DNDS::Cauchy
                     point.values[j] = iCell < owned.RowCount() ? owned(iCell, j) : remote(iCell - owned.RowCount(), j);
                 point.gradient.setZero();
             };
-            const int modes = owner->reconstruction.NRecDOF(), dim = owner->metrics.Dimension();
+            const int modes = owner->reconstruction ? owner->reconstruction->NRecDOF() : 0;
+            const int dim = owner->metrics.Dimension();
             const bool viscous = !meanOnly && owner->equation.Viscous();
             const auto &fluxPolicy = owner->fluxPolicy;
             const bool noRsOnWall = fluxPolicy.noRsOnWall;
@@ -2076,7 +2132,7 @@ namespace DNDS::Cauchy
             const PhaseTime timing(*this, SamplingPhase);
             sourceState.reset();
             sourceCoefficients.reset();
-            if (!sourceSampling)
+            if (sourceOffsets.empty())
                 return;
             // P0 face convection/viscosity does not disable these derivatives.
             // Direct-FV sources consume physical gradients without a basis.
@@ -2280,7 +2336,7 @@ namespace DNDS::Cauchy
                                    DiagonalStorage storage, real scale, EquationPointEvaluator &evaluator,
                                    const MeanLinearizationOutput *linearization = nullptr) const
         {
-            if (!sourceSampling)
+            if (sourceOffsets.empty())
                 return false;
             if (owner->settings.implicit.sourceJacobianMode == "rhsQuadrature")
                 return AddRHSQuadratureSourceJacobian(state, diagonal, storage, scale, evaluator, linearization);
@@ -2401,7 +2457,7 @@ namespace DNDS::Cauchy
 
         void PublishSourceState(const EquationDofs &state, real time)
         {
-            if (!sourceSampling)
+            if (sourceOffsets.empty())
                 return;
             sourceState.emplace(state.NumericAlias());
             sourceCoefficients.emplace(FluxCoefficients());
@@ -2414,7 +2470,7 @@ namespace DNDS::Cauchy
         /// has not published its next generation yet and must still exclude us.
         bool SourceSamplesCurrent(const EquationDofs &state, real time) const
         {
-            if (!sourceSampling)
+            if (sourceOffsets.empty())
                 return true;
             if (!sourceState || !sourceCoefficients || sourceTime != time)
                 return false;
@@ -2477,7 +2533,7 @@ namespace DNDS::Cauchy
                     }
                 }
             }
-            if (!sourceSampling)
+            if (sourceOffsets.empty())
                 return;
             SampleSourceState(state);
             if (!result)
@@ -2858,8 +2914,33 @@ namespace DNDS::Cauchy
     }
     const EquationDofs &FiniteVolume::ReconstructionGuess(const ReconstructionState &state) const
     {
-        DNDS_check_throw_info(state.owner == _data, "foreign equation reconstruction state");
+        DNDS_check_throw_info(state.owner == _data,
+                              "foreign equation reconstruction state");
         return state.coefficients;
+    }
+    FiniteVolume::ReconstructionStorageInfo FiniteVolume::InspectReconstructionStorage(
+        const ReconstructionState &state) const
+    {
+        DNDS_check_throw_info(state.owner == _data,
+                              "foreign equation reconstruction state");
+        ReconstructionStorageInfo result;
+        result.polynomialPlan = bool(_data->reconstruction);
+        result.distinctFinalized = state.distinctFinalized;
+        result.aliasesEquationState = !result.polynomialPlan;
+        for (index iField = 0; result.aliasesEquationState &&
+                               iField < state.coefficients.PhysicalFieldNumber();
+             ++iField)
+            result.aliasesEquationState =
+                state.coefficients.PhysicalField(iField).Owned().SharedStorage() ==
+                state.binding.snapshot.PhysicalField(iField).Owned().SharedStorage();
+        if (result.polynomialPlan)
+        {
+            result.coefficientFields = state.coefficients.PhysicalFieldNumber() *
+                                       (state.distinctFinalized ? 2 : 1);
+            result.coefficientTransferBindings = index(state.coefficientHalo.size() +
+                                                       state.fluxHalo.size());
+        }
+        return result;
     }
     void FiniteVolume::ValidateWorkspace(const EquationDofs &state, const Workspace &work) const
     {
@@ -2870,7 +2951,7 @@ namespace DNDS::Cauchy
                                   state.PhysicalFieldNumber() == work.physicalFieldNumber,
                               "equation workspace schema or row space differs");
         for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
-            DNDS_check_throw_info(state.PhysicalField(iField).Width() == work.fields[iField].reconstruction.components,
+            DNDS_check_throw_info(state.PhysicalField(iField).Width() == work.fields[iField].boundaryValues.Layout().Width(),
                                   "equation workspace physical field width differs");
     }
     bool FiniteVolume::HasRoeJacobianKernel(const Workspace &work) const
@@ -2931,7 +3012,9 @@ namespace DNDS::Cauchy
                               "flow characteristic range differs from its physical field");
         const auto fallbacks = PrepareFaceCharacteristicMatrices(
             state, firstComponent, transform.forward, transform.inverse);
-        _data->reconstruction.FinalizeFaceTransform(transform);
+        DNDS_check_throw_info(_data->reconstruction,
+                              "modal characteristic transform requires variational reconstruction");
+        _data->reconstruction->FinalizeFaceTransform(transform);
         return fallbacks;
     }
     index FiniteVolume::PrepareFaceCharacteristics(
@@ -3181,12 +3264,14 @@ namespace DNDS::Cauchy
         std::optional<R::Array<real>::WriteLease> previous, alpha;
         try
         {
-            coefficients.emplace(state.coefficients.WriteOwned());
+            if (_data->reconstruction)
+                coefficients.emplace(state.coefficients.WriteOwned());
             if (state.distinctFinalized)
                 fluxCoefficients.emplace(state.fluxCoefficients.WriteOwned());
             temporary.reserve(work.fields.size());
             for (auto &field : work.fields)
-                temporary.emplace_back(field.reconstruction.temporary.Owned().Write());
+                if (field.reconstruction)
+                    temporary.emplace_back(field.reconstruction->temporary.Owned().Write());
             if (work.limitedVR)
             {
                 previous.emplace(state.limitedVRHistory->Write());
@@ -3207,6 +3292,7 @@ namespace DNDS::Cauchy
                 alpha->CancelUnmodified();
             throw;
         }
+        if (coefficients)
         {
             const auto layout = coefficients->ComponentLayout();
             const auto values = layout.View();
@@ -3417,18 +3503,24 @@ namespace DNDS::Cauchy
             if (work.limitedVR)
             {
                 auto &field = work.fields.front();
-                _data->reconstruction.SubmitReconstructionIterLimitedTo(
+                DNDS_check_throw_info(_data->reconstruction && field.reconstruction &&
+                                          field.reconstructionBoundary,
+                                      "limited VR schedule lacks polynomial workspace");
+                _data->reconstruction->SubmitReconstructionIterLimitedTo(
                     engine, stream, state.CoupledField(), reconstruction.coefficients.CoupledField(),
-                    field.reconstruction, field.boundary, work.limitedVR->targetCoefficients,
+                    *field.reconstruction, *field.reconstructionBoundary, work.limitedVR->targetCoefficients,
                     work.limitedVR->alpha, region);
                 return;
             }
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             {
                 auto &field = work.fields[iField];
-                _data->reconstruction.SubmitReconstructionIterTo(
+                DNDS_check_throw_info(_data->reconstruction && field.reconstruction &&
+                                          field.reconstructionBoundary,
+                                      "VR schedule lacks polynomial workspace");
+                _data->reconstruction->SubmitReconstructionIterTo(
                     engine, stream, state.PhysicalField(iField), reconstruction.coefficients.PhysicalField(iField),
-                    field.reconstruction, field.boundary, region);
+                    *field.reconstruction, *field.reconstructionBoundary, region);
             }
         };
         const auto gradient = [&](CFV::ReconstructionRegion region)
@@ -3517,9 +3609,13 @@ namespace DNDS::Cauchy
                 {
                     auto &field = work.fields[iField];
                     if (numerics.reconstruction == "gradient" && !work.nativeDirectGradient)
-                        _data->gradient.ConvertToCoefficients(*field.gradient, _data->reconstruction,
+                    {
+                        DNDS_check_throw_info(_data->reconstruction,
+                                              "gradient-to-modal conversion requires a polynomial plan");
+                        _data->gradient.ConvertToCoefficients(*field.gradient, *_data->reconstruction,
                                                              reconstruction.coefficients.PhysicalField(iField));
-                    else
+                    }
+                    else if (_data->reconstruction)
                         Algebra::Fill(reconstruction.coefficients.PhysicalField(iField), 0.);
                 } });
             local([&]
@@ -3573,7 +3669,9 @@ namespace DNDS::Cauchy
                         for (index iField = 0; iField < index(work.fields.size()); ++iField)
                         {
                             const auto aRead = reconstruction.coefficients.PhysicalField(iField).Owned().Read();
-                            const auto bRead = work.fields[iField].reconstruction.temporary.Owned().Read();
+                            DNDS_check_throw_info(work.fields[iField].reconstruction,
+                                                  "VR convergence check lacks workspace");
+                            const auto bRead = work.fields[iField].reconstruction->temporary.Owned().Read();
                             const auto a = aRead.View<R::UniformTableRows>(), b = bRead.View<R::UniformTableRows>();
                             for (index iCell = 0; iCell < a.RowCount(); ++iCell)
                                 for (index j = 0; j < a.Width(); ++j)
@@ -3587,9 +3685,9 @@ namespace DNDS::Cauchy
                     converged = work.relativeUpdate <= numerics.reconstructionTolerance;
                 }
                 for (index iField = 0; iField < index(work.fields.size()); ++iField)
-                    _data->reconstruction.SubmitCommitReconstruction(engine, stream,
-                                                                     reconstruction.coefficients.PhysicalField(iField),
-                                                                     work.fields[iField].reconstruction);
+                    _data->reconstruction->SubmitCommitReconstruction(engine, stream,
+                                                                      reconstruction.coefficients.PhysicalField(iField),
+                                                                      *work.fields[iField].reconstruction);
                 local([&]
                       { schedule.Join(); });
                 work.iterations = iteration + 1;
@@ -3597,7 +3695,7 @@ namespace DNDS::Cauchy
                     break;
             }
         }
-        else if (!directGradientWork)
+        else if (!directGradientWork && _data->reconstruction)
             local([&]
                   {
                 schedule.Join();
@@ -3656,9 +3754,9 @@ namespace DNDS::Cauchy
                     const auto limit = [&, order](CFV::ReconstructionRegion region)
                     {
                         for (index iField = 0; iField < index(work.fields.size()); ++iField)
-                            _data->reconstruction.SubmitLimiterWBAP_3OrderTo(
+                            _data->reconstruction->SubmitLimiterWBAP_3OrderTo(
                                 engine, stream, reconstruction.MutableFinalized().PhysicalField(iField),
-                                work.fields[iField].reconstruction, order,
+                                *work.fields[iField].reconstruction, order,
                                 iField == work.flowCharacteristicField && work.flowCharacteristic
                                     ? CFV::FaceCharacteristicTransformRef(std::cref(*work.flowCharacteristic))
                                     : std::nullopt,
@@ -3671,9 +3769,9 @@ namespace DNDS::Cauchy
                     local([&]
                           { schedule.Join(); });
                     for (index iField = 0; iField < index(work.fields.size()); ++iField)
-                        _data->reconstruction.SubmitCommitReconstruction(
+                        _data->reconstruction->SubmitCommitReconstruction(
                             engine, stream, reconstruction.MutableFinalized().PhysicalField(iField),
-                            work.fields[iField].reconstruction);
+                            *work.fields[iField].reconstruction);
                     local([&]
                           { schedule.Join(); });
                 }

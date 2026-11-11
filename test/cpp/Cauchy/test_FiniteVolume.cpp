@@ -662,6 +662,8 @@ TEST_CASE("Native Cauchy flow5 residual preserves constant state across layouts 
     for (const std::string method : {"constant", "gradient", "variational"})
         for (int layout = 0; layout < 3; ++layout)
         {
+            CAPTURE(method);
+            CAPTURE(layout);
             C::DomainSettings settings;
             settings.mesh.dimension = 3;
             settings.boundaries["7"].kind = "farfield";
@@ -671,8 +673,13 @@ TEST_CASE("Native Cauchy flow5 residual preserves constant state across layouts 
             settings.numerics.cfv.boundaryDerivativeWeights = {1, 0, 0, 0};
             const auto equation = C::EquationSystem::Resolve(settings.equation);
             C::FiniteVolume fv(mesh, settings, equation);
-            CHECK(fv.Reconstruction().Capabilities().sweeps == (method == "variational"));
-            CHECK_FALSE(fv.Reconstruction().Capabilities().linearSystem);
+            const auto polynomial = fv.PolynomialReconstruction();
+            CHECK(bool(polynomial) == (method != "constant"));
+            if (polynomial)
+            {
+                CHECK(polynomial->Capabilities().sweeps == (method == "variational"));
+                CHECK_FALSE(polynomial->Capabilities().linearSystem);
+            }
             const auto physical = layout == 0 ? R::RowLayout::Dense(0, 5, 8) : layout == 1 ? R::RowLayout::ColMajor(0, 5, {8, 1})
                                                                                            : R::RowLayout::TiledColMajor(0, 5, 32);
             auto state = fv.Metrics().BuildField(physical), residual = fv.Metrics().BuildField(physical);
@@ -685,9 +692,24 @@ TEST_CASE("Native Cauchy flow5 residual preserves constant state across layouts 
             }
             auto logical = Bind(fv, state), output = Bind(fv, residual);
             auto reconstruction = fv.BuildReconstructionState(logical);
+            const auto storage = fv.InspectReconstructionStorage(*reconstruction);
+            CHECK(storage.polynomialPlan == (method != "constant"));
+            if (method != "constant")
+            {
+                CHECK(storage.coefficientFields > 0);
+                CHECK(storage.coefficientTransferBindings > 0);
+            }
+            else
+            {
+                CHECK(storage.coefficientFields == 0);
+                CHECK(storage.coefficientTransferBindings == 0);
+                CHECK_FALSE(storage.distinctFinalized);
+                CHECK(storage.aliasesEquationState);
+            }
             auto workspace = fv.BuildWorkspace(logical);
             for (int workers : {0, 2})
             {
+                CAPTURE(workers);
                 R::EagerEngine engine(workers, std::make_shared<R::AccessTrackingContext>());
                 const auto stream = engine.CreateCPUStream();
                 fv.Evaluate(logical, output, *reconstruction, *workspace, engine, stream);

@@ -699,7 +699,8 @@ namespace DNDS::Cauchy
     {
         const MPIInfo mpi(_fv.Metrics().Communicator());
         MPI::LocalStage(mpi, [&]
-                        { DNDS_check_throw_info(_timeStepper && _trialEpoch.trial && _restoreReconstruction &&
+                        { DNDS_check_throw_info(_timeStepper && _trialEpoch.trial &&
+                                                    (!_fv.PolynomialReconstruction() || _restoreReconstruction) &&
                                                     std::isfinite(_progressTime),
                                                 "Cauchy internal visualization has no active implicit trial"); });
         if (!_observationWorkspace)
@@ -717,8 +718,9 @@ namespace DNDS::Cauchy
                         {
             _stream.Record().WaitHost();
             EquationDofOperations::Copy(*_observationInput, _trial); });
-        _fv.RestoreReconstructionGuess(*_observationReconstruction,
-                                       _fv.ReconstructionGuess(*_reconstruction));
+        if (_fv.PolynomialReconstruction())
+            _fv.RestoreReconstructionGuess(*_observationReconstruction,
+                                           _fv.ReconstructionGuess(*_reconstruction));
         _fv.Evaluate(*_observationInput, *_observationState, *_observationReconstruction,
                      *_observationWorkspace, _engine, _stream, _progressTime);
         _fv.WriteVisualization(*_observationInput, *_observationReconstruction, *_observationWorkspace, prefix, _progressTime,
@@ -753,8 +755,12 @@ namespace DNDS::Cauchy
                         {
             _stream.Record().WaitHost();
             EquationDofOperations::Copy(*_observationInput, _accepted); });
-        const auto &guess = _restoreReconstruction ? *_reconstructionBackup : _fv.ReconstructionGuess(*_reconstruction);
-        _fv.RestoreReconstructionGuess(*_observationReconstruction, guess);
+        if (_fv.PolynomialReconstruction())
+        {
+            const auto &guess = _restoreReconstruction ? *_reconstructionBackup
+                                                       : _fv.ReconstructionGuess(*_reconstruction);
+            _fv.RestoreReconstructionGuess(*_observationReconstruction, guess);
+        }
         _fv.Evaluate(*_observationInput, *_observationState, *_observationReconstruction, *_observationWorkspace, _engine, _stream, _time);
     }
 }

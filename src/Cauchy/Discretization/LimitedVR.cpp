@@ -61,7 +61,9 @@ namespace DNDS::Cauchy
                 faces.push_back({sample.cell, sample.other, normal, sample.rotation});
             }
         }
-        sampling.emplace(data.reconstruction, cells, points, false);
+        DNDS_check_throw_info(data.reconstruction,
+                              "LVR geometry requires variational reconstruction");
+        sampling.emplace(*data.reconstruction, cells, points, false);
         // Gradient methods share this quadrature registry. Prove the reuse of
         // the ordinary conservative BC buffer once, not by matching row count.
         DNDS_check_throw_info(gradient.NumBoundaryQuadrature() == data.gradient.NumBoundaryQuadrature(), "LVR gradient boundary registry differs");
@@ -73,8 +75,8 @@ namespace DNDS::Cauchy
         }
     }
     FiniteVolume::LimitedVRWorkspace::LimitedVRWorkspace(const Data &data, const CFV::ReconstructionWorkspace &prototype)
-        : target(data.reconstruction.BuildWorkspace(prototype.components, prototype.temporary.Owned().Layout(), prototype.periodicVectorStarts)),
-          targetCoefficients(data.reconstruction.BuildCoefficients(prototype.components, prototype.temporary.Owned().Layout())),
+        : target(data.reconstruction->BuildWorkspace(prototype.components, prototype.temporary.Owned().Layout(), prototype.periodicVectorStarts)),
+          targetCoefficients(data.reconstruction->BuildCoefficients(prototype.components, prototype.temporary.Owned().Layout())),
           gradients(data.metrics.BuildField(prototype.components * data.metrics.Dimension())), scalars(data.metrics.BuildField(2)),
           branches(data.metrics.BuildField(3)), seeds(data.metrics.BuildField(3)), temporary(data.metrics.BuildField(3)),
           base(R::RowLayout::Dense(data.metrics.NumCell(), 2)),
@@ -107,17 +109,17 @@ namespace DNDS::Cauchy
         const auto begin = [&](R::TransferBinding &binding)
         { return engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream); };
         MPI::LocalStage(mpi, [&]
-                        { geometry.gradient.ConvertToCoefficients(gradients, data.reconstruction, targetCoefficients); });
+                        { geometry.gradient.ConvertToCoefficients(gradients, *data.reconstruction, targetCoefficients); });
         {
             auto transfer = begin(targetHalo);
             if (overlap)
-                data.reconstruction.SubmitLimiterWBAP_3OrderTo(engine, stream, targetCoefficients, target, 1, transform,
-                                                               CFV::ReconstructionRegion::Core);
+                data.reconstruction->SubmitLimiterWBAP_3OrderTo(engine, stream, targetCoefficients, target, 1, transform,
+                                                                CFV::ReconstructionRegion::Core);
             transfer.Wait();
-            data.reconstruction.SubmitLimiterWBAP_3OrderTo(
+            data.reconstruction->SubmitLimiterWBAP_3OrderTo(
                 engine, stream, targetCoefficients, target, 1, transform,
                 overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
-            data.reconstruction.SubmitCommitReconstruction(engine, stream, targetCoefficients, target);
+            data.reconstruction->SubmitCommitReconstruction(engine, stream, targetCoefficients, target);
             stream.Record().WaitHost();
         }
         // Reuse the Euler common-beta mathematics on a mean-based O2 target,

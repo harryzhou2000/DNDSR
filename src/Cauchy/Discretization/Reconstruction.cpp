@@ -99,7 +99,9 @@ namespace DNDS::Cauchy
         const auto &n = data.owner->settings.numerics;
         const auto bounds = data.policy.View();
         const index cells = data.owner->metrics.NumCell(), points = data.owner->positivitySamples->Size();
-        const int modes = data.owner->reconstruction.NRecDOF();
+        DNDS_check_throw_info(data.owner->reconstruction,
+                              "polynomial positivity requires variational reconstruction");
+        const int modes = data.owner->reconstruction->NRecDOF();
         if (refresh)
             EquationDofOperations::Copy(flux, unlimited);
         const auto meanScope = input.ReadOwned();

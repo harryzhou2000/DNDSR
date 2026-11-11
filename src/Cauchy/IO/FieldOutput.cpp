@@ -84,13 +84,20 @@ namespace DNDS::Cauchy
             surface << "cell_id,zone,x,y,z,nx,ny,nz,weight,rho,p,u,v,w,T";
             if (species) for (const auto &name : equation.Mixture().SpeciesNames()) surface << ",Y:" << name;
             surface << '\n' << std::setprecision(17);
-            const auto &coefficients = FluxReconstruction(reconstruction, workspace);
-            const auto rec = coefficients.ReadOwned();
-            const auto recBlocks = BlockViews(coefficients, rec);
-            auto basis = _data->reconstruction.AcquireBasisRead();
+            std::optional<EquationDofs> coefficients;
+            std::optional<EquationDofs::ReadScope> rec;
+            std::vector<EquationBlockReadView> recBlocks;
+            std::optional<CFV::ReconstructionBasisRead> basis;
+            if (_data->reconstruction)
+            {
+                coefficients.emplace(FluxReconstruction(reconstruction, workspace).NumericAlias());
+                rec.emplace(coefficients->ReadOwned());
+                recBlocks = BlockViews(*coefficients, *rec);
+                basis.emplace(_data->reconstruction->AcquireBasisRead());
+            }
             auto geometry = Metrics().AcquireRead(); const auto metric = geometry.HostView();
             CFV::Math::SmallMatrix scratch;
-            const int modes = _data->reconstruction.NRecDOF();
+            const int modes = _data->reconstruction ? _data->reconstruction->NRecDOF() : 0;
             const auto frame = _data->motion.At(time);
             const auto *ransModel = equation.HasRANS() ? &equation.RANS() : nullptr;
             const auto ransMean = ransModel ? means.Block("rans") : EquationBlockReadView{};
@@ -102,11 +109,14 @@ namespace DNDS::Cauchy
             {
                 if (sample.other != UnInitIndex) continue;
                 Gather(blocks, sample.cell, point);
-                const auto b = basis.FaceBasis(sample.face, sample.side, sample.point, 0, scratch);
-                for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
-                    for (index j = 0; j < blocks[iBlock].ComponentNumber(); ++j)
-                        for (int mode = 0; mode < modes; ++mode)
-                            point.values[first[iBlock] + j] += recBlocks[iBlock](sample.cell, j * modes + mode) * b(0, mode);
+                if (basis)
+                {
+                    const auto b = basis->FaceBasis(sample.face, sample.side, sample.point, 0, scratch);
+                    for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+                        for (index j = 0; j < blocks[iBlock].ComponentNumber(); ++j)
+                            for (int mode = 0; mode < modes; ++mode)
+                                point.values[first[iBlock] + j] += recBlocks[iBlock](sample.cell, j * modes + mode) * b(0, mode);
+                }
                 if (!thermal->View().Admissible(point.values)) Gather(blocks, sample.cell, point);
                 if (ransModel)
                     RANSStateView{ransModel->Kind(), ransModel->ComponentNumber()}.RepairReconstruction(ransMean[sample.cell], point.values.data() + ransFirst);

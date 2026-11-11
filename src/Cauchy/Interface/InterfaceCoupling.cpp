@@ -190,7 +190,8 @@ namespace DNDS::Cauchy
                     if(donor)
                     {
                         patch=connection.patch->WithPose(donorPose);
-                        reconstruction=donor->Reconstruction();
+                        const auto polynomial=donor->PolynomialReconstruction();
+                        if(polynomial) reconstruction=*polynomial;
                     }
                     if(receiver)
                     {

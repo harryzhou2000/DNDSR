@@ -37,7 +37,7 @@ int main(int argc, char **argv)
         settings.equation.viscosity = viscous ? .001 : 0;
         const auto equation = C::EquationSystem::Resolve(settings.equation);
         C::FiniteVolume fv(mesh, settings, equation);
-        auto mean = fv.Metrics().BuildField(5), coefficients = fv.Metrics().BuildField(5 * fv.Reconstruction().NRecDOF());
+        auto mean = fv.Metrics().BuildField(5), coefficients = fv.Metrics().BuildField(5 * fv.PolynomialReconstruction()->NRecDOF());
         auto residual = fv.Metrics().BuildField(5);
         A::Fill(coefficients, 0.);
 

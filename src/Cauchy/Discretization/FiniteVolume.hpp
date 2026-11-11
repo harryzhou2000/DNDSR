@@ -4,6 +4,7 @@
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/State/EquationDofs.hpp"
 #include "Cauchy/State/DerivedFields.hpp"
+#include "DNDS/Core/OptionalRef.hpp"
 #include "Cauchy/Boundary/BoundarySystem.hpp"
 #include "Cauchy/Boundary/BoundaryInputs.hpp"
 #include "Cauchy/Implicit/LinearProblem.hpp"
@@ -233,6 +234,17 @@ namespace DNDS::Cauchy
         struct Workspace;
         struct MeanWorkspace;
         struct ReconstructionState;
+        /// Local structural report for allocation/transfer acceptance gates.
+        /// Counts describe modal reconstruction only; the independent mean
+        /// halo belongs to the equation state and is intentionally excluded.
+        struct ReconstructionStorageInfo
+        {
+            bool polynomialPlan = false;
+            bool distinctFinalized = false;
+            bool aliasesEquationState = false;
+            index coefficientFields = 0;
+            index coefficientTransferBindings = 0;
+        };
         /// Managed selection of the polynomial actually consumed by flux,
         /// source and Jacobian operators. It retains the finite-volume owner,
         /// the warm-source and selected array handles, and their publication
@@ -309,6 +321,9 @@ namespace DNDS::Cauchy
         /// Allocate the durable warm coefficients and their communication
         /// bindings independently of the reusable scratch workspace.
         std::shared_ptr<ReconstructionState> BuildReconstructionState(EquationDofs &state) const;
+        /// Inspect one compatible reconstruction state without acquiring array
+        /// access or entering MPI. P0/P1 must report all modal counts as zero.
+        ReconstructionStorageInfo InspectReconstructionStorage(const ReconstructionState &state) const;
         /// Full logical-state CPU workspace on the same geometry/CFV plans.
         /// Each physical field keeps its layout and shared row routing; no
         /// whole-state packing is performed. Matching schema/physical grouping
@@ -573,7 +588,9 @@ namespace DNDS::Cauchy
         /// for a split Domain. Custom controllers copy this for their own
         /// nonlinear/hierarchy controls; changing a copy cannot mutate this plan.
         const DomainSettings &Settings() const;
-        const CFV::VariationalReconstructionPlan &Reconstruction() const;
+        /// Variational-only polynomial publication. P0 and explicit P1 return
+        /// an empty borrow and construct no hidden Taylor/VR plan.
+        OptionalRef<const CFV::VariationalReconstructionPlan> PolynomialReconstruction() const;
         const Geom::UnstructuredMesh &Mesh() const;
         const RigidMotion &Motion() const;
         const std::vector<BoundaryPoint> &BoundaryPoints() const;

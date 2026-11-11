@@ -1573,7 +1573,7 @@ TEST_CASE("Nonconstant assembled mixture diffusion matches an independent face i
                 pw.View()(q, d) = queryPoints[q][d];
         }
     }
-    DNDS::CFV::PolynomialSamplingPlan sampling(diffusion.Reconstruction(), cells, points);
+    DNDS::CFV::PolynomialSamplingPlan sampling(*diffusion.PolynomialReconstruction(), cells, points);
     std::vector<R::Array<double>> samples;
     for (int derivative = 0; derivative < 3; ++derivative)
     {
@@ -1675,7 +1675,7 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
         C::EquationDofOperations::Fill(coefficients, 0);
         auto write = coefficients.WriteOwned();
         const auto flow = write.Block("flow");
-        const I modes = fv->Reconstruction().NRecDOF();
+        const I modes = fv->PolynomialReconstruction()->NRecDOF();
         for (I iCell = 0; iCell < flow.RowCount(); ++iCell)
             flow(iCell, 4 * modes) = .4 * (1 + .25 * std::sin(6.283185307179586 * fv->Metrics().GetCellCent(iCell)[0]));
     }
@@ -1737,7 +1737,7 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
                     pw.View()(q, 2) = 0;
                 }
     }
-    DNDS::CFV::PolynomialSamplingPlan sampling(withSource.Reconstruction(), cells, points, false);
+    DNDS::CFV::PolynomialSamplingPlan sampling(*withSource.PolynomialReconstruction(), cells, points, false);
     R::Array<double> sampled(R::RowLayout::Dense(count, mixture.species + 4));
     sampling.Evaluate(b.PhysicalField(0), withSource.FluxReconstruction(*reconstructionB, *wb).PhysicalField(0), sampled);
     const auto sampledRead = sampled.Read(), meanRead = b.PhysicalField(0).Owned().Read();
@@ -1827,7 +1827,7 @@ TEST_CASE("Nonuniform chemical volume sampling agrees with independent Cartesian
         auto write = changed.Write();
         const auto coefficients = write.View<R::UniformTableRows>();
         if (coefficients.RowCount())
-            coefficients(0, 4 * withSource.Reconstruction().NRecDOF()) += 1e-8;
+            coefficients(0, 4 * withSource.PolynomialReconstruction()->NRecDOF()) += 1e-8;
     }
     CHECK_THROWS(withSource.PrepareJacobian(
         b, auxiliaryB, inverseTau, *matrixB, controls, 0, mixture.workers,
@@ -1857,7 +1857,7 @@ TEST_CASE("Equation P3 positivity protects actual EOS samples and preserves unli
         auto reconstruction = fv.BuildReconstructionState(state);
         auto work = fv.BuildWorkspace(state, mixture.workers);
         auto guess = fv.ReconstructionGuess(*reconstruction);
-        const int modes = fv.Reconstruction().NRecDOF();
+        const int modes = fv.PolynomialReconstruction()->NRecDOF();
         {
             auto write = guess.WriteOwned();
             const auto flow = write.Block("flow");
@@ -1911,7 +1911,7 @@ TEST_CASE("Equation P3 positivity protects actual EOS samples and preserves unli
                 }
             }
         }
-        DNDS::CFV::PolynomialSamplingPlan sampler(fv.Reconstruction(), cells, points, false);
+        DNDS::CFV::PolynomialSamplingPlan sampler(*fv.PolynomialReconstruction(), cells, points, false);
         std::vector<R::Array<double>> values;
         for (I f = 0; f < state.PhysicalFieldNumber(); ++f)
         {
