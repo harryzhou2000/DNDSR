@@ -3500,22 +3500,13 @@ namespace DNDS::Euler
                 Eigen::Vector<real, Eigen::Dynamic> eInternalS = (recBase(EigenAll, I4) - ek - rhoE_base_q);
                 if (eInternalS.minCoeff() < rhoeSensibleEps)
                     return false;
-                // Species positivity: required because mixtureBaseInternalRhoE (used by
-                // gammaEq in fluxFace) clips negative rhoY_k, increasing base energy and
-                // lowering sensible energy relative to mixtureBaseInternalRhoERaw.
-                if constexpr (Traits::isExtended)
-                {
-                    if (phys_.hasChemicalSource())
-                    {
-                        int Ns1 = phys_.nSpecies() - 1;
-                        int Isp = nVars - Ns1;
-                        auto speciesBlock = recBase(EigenAll, Eigen::seqN(Isp, Ns1));
-                        if (speciesBlock.minCoeff() < 0)
-                            return false;
-                        if ((speciesBlock.rowwise().sum().array() > recBase(EigenAll, 0).array()).any())
-                            return false;
-                    }
-                }
+                // Nonconstant polynomial bases are selected by the locked
+                // flow/species thermal condition, not by the raw species
+                // simplex. Point-property evaluation repairs a temporary
+                // composition; forcing another order reduction for a
+                // species-only violation needlessly discards flow accuracy.
+                // The cell mean simplex was asserted above and remains the
+                // constant target when beta later tends to zero.
                 return true;
             };
             if (checkRecBaseGood())
