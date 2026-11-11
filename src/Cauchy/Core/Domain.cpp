@@ -385,7 +385,6 @@ namespace DNDS::Cauchy
     }
     void Domain::BeginCoordinatedStep(real dt)
     {
-        DNDS_check_throw_info(!_state.timeStepper || _state.timeStepper->SupportsStageSequence(), "multi-domain DITR needs an external coupled midpoint/end iteration controller");
         BeginTrial(dt);
         _lastImplicit.clear();
         _lastCoupledIterations = 0;
@@ -393,8 +392,117 @@ namespace DNDS::Cauchy
         _state.coordinatedStage = 0;
         _state.coordinatedPrepared = false;
         _state.stageEquation.reset();
+        for (auto &input : _execution.coupledInterfaceInputs)
+            input.reset();
         if (_state.timeStepper)
-            _state.timeStepper->BeginStages(_state.initial, _state.trial, _state.time, dt, _steady);
+        {
+            if (_state.timeStepper->SupportsStageSequence())
+                _state.timeStepper->BeginStages(
+                    _state.initial, _state.trial, _state.time, dt, _steady);
+            else
+            {
+                const auto evaluate = [this](EquationDofs &state,
+                                             EquationDofs &rate, real time,
+                                             int stage)
+                {
+                    EvaluateImplicitRate(state, rate, *_execution.workspace,
+                                         time, stage);
+                };
+                _state.timeStepper->BeginCoupled(
+                    _state.initial, _state.trial, _state.time, dt, evaluate);
+                PrepareCoupledImplicit(_state.timeStepper->CoupledMethod(),
+                                       false);
+            }
+        }
+    }
+    bool Domain::CoordinatedStepIsCoupled() const
+    {
+        return _state.timeStepper &&
+               !_state.timeStepper->SupportsStageSequence();
+    }
+    real Domain::CoupledStageTime(int coupledStage) const
+    {
+        DNDS_check_throw_info(CoordinatedStepIsCoupled(),
+                              "domain has no active coupled stage group");
+        return _state.timeStepper->CoupledMethod().CoupledStageTime(
+            coupledStage);
+    }
+    void Domain::PrepareCoupledInterface(int coupledStage, bool reconstructed)
+    {
+        DNDS_check_throw_info(CoordinatedStepIsCoupled() &&
+                                  (coupledStage == 0 || coupledStage == 1) &&
+                                  _coupledMiddle,
+                              "invalid coupled interface preparation");
+        auto &method = _state.timeStepper->CoupledMethod();
+        auto &state = coupledStage == 0 ? method.IntermediateState()
+                                        : _state.trial;
+        auto &reconstruction = coupledStage == 0 ? *_coupledMiddle->state
+                                                 : *_state.reconstruction;
+        _problem.finiteVolume.Execute(
+            state, reconstruction, *_execution.workspace,
+            _execution.Context(),
+            reconstructed
+                ? FiniteVolumeEvaluation::Reconstruction(
+                      method.CoupledStageTime(coupledStage))
+                : FiniteVolumeEvaluation::Sampling());
+    }
+    FiniteVolume::InterfaceDonorPublication
+    Domain::PublishCoupledInterfaceDonor(int coupledStage, bool reconstructed)
+    {
+        DNDS_check_throw_info(CoordinatedStepIsCoupled() &&
+                                  (coupledStage == 0 || coupledStage == 1) &&
+                                  _coupledMiddle,
+                              "invalid coupled interface publication");
+        auto &method = _state.timeStepper->CoupledMethod();
+        auto &state = coupledStage == 0 ? method.IntermediateState()
+                                        : _state.trial;
+        auto &reconstruction = coupledStage == 0 ? *_coupledMiddle->state
+                                                 : *_state.reconstruction;
+        return _problem.finiteVolume.PublishInterfaceDonor(
+            state, reconstruction, *_execution.workspace, reconstructed);
+    }
+    void Domain::BindCoupledInterfaceInputs(int coupledStage,
+                                            const BoundaryInputs &input)
+    {
+        DNDS_check_throw_info(coupledStage == 0 || coupledStage == 1,
+                              "invalid coupled interface slot");
+        _execution.coupledInterfaceInputs[size_t(coupledStage)] =
+            _problem.finiteVolume.FreezeBoundaryInputs(input);
+        ActivateCoupledInterface(coupledStage);
+    }
+    void Domain::ActivateCoupledInterface(int coupledStage)
+    {
+        DNDS_check_throw_info(coupledStage == 0 || coupledStage == 1,
+                              "invalid coupled interface activation");
+        const auto &input =
+            _execution.coupledInterfaceInputs[size_t(coupledStage)];
+        if (_problem.finiteVolume.HasInterfaces())
+            DNDS_check_throw_info(input,
+                                  "coupled stage has no frozen interface packet");
+        if (!input)
+            return;
+        BindInterfaceInputs(*input);
+        if (coupledStage == 0 && _coupledMiddle &&
+            _coupledMiddle->bindBoundary)
+            _coupledMiddle->bindBoundary(*input);
+    }
+    StepResult Domain::SolveCoordinatedCoupledStep()
+    {
+        DNDS_check_throw_info(CoordinatedStepIsCoupled(),
+                              "domain has no begun coupled stage group");
+        const bool accepted = _state.timeStepper->RunCoupled(
+            _state.trial, [this](auto &method, auto &endpoint)
+            { return SolveCoupledImplicit(method, endpoint, false); });
+        if (!accepted)
+            return StepResult::Rejected(
+                "coordinated DITR stage group reached its correction cap");
+        FinishChemicalStep();
+        if (!Admissible(_state.trial))
+            return StepResult::Rejected(
+                "coordinated DITR candidate is inadmissible");
+        _state.trialTime = _state.time + _state.trialDt;
+        _state.trialReady = true;
+        return {};
     }
     real Domain::PrepareCoordinatedStage(int stage)
     {

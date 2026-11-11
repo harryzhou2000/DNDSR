@@ -155,7 +155,7 @@ TEST_CASE("Multi-domain BDF2 restart reserves every domain and redistributes by 
 }
 TEST_CASE("Coordinated domains retain single-domain time equations and atomic publication")
 {
-    for (const std::string method : {"ssprk3", "bdf2", "esdirk4"})
+    for (const std::string method : {"ssprk3", "bdf2", "esdirk4", "ditr"})
     {
         CAPTURE(method);
         C::Json input{{"domains", Domains(mpi.size > 1)}, {"time", {{"method", method}}}, {"defaults", {{"numerics", {{"reconstruction", "constant"}, {"flux", "rusanov"}}}, {"initialPrimitive", {1, .1, .2, .03, 1}}, {"initialProfile", {{"kind", "isentropicVortex"}, {"strength", .2}, {"period", 10}}}, {"implicit", {{"iterations", 30}, {"absoluteTolerance", 1e-12}}}}}};
@@ -346,6 +346,63 @@ TEST_CASE("P0 and physical-gradient P1 publish complete multidomain traces witho
                               .Discretization()
                               .Admissible(simulation.GetDomain(iDomain).Dofs()));
         }
+}
+TEST_CASE("DITR freezes distinct rotating midpoint and endpoint interface packets")
+{
+    for (const bool split : {false, true})
+    {
+        if (split && mpi.size == 1)
+            continue;
+        CAPTURE(split);
+        C::Json input{
+            {"domains", Domains(split)},
+            {"time", {{"method", "ditr"}}},
+            {"defaults",
+             {{"initialPrimitive", {1, .1, .2, .03, 1}},
+              {"initialProfile",
+               {{"kind", "isentropicVortex"},
+                {"strength", .2},
+                {"period", 10}}},
+              {"boundaries", {{"101", {{"kind", "interface"}}}}},
+              {"implicit", {{"iterations", 3}}},
+              {"numerics",
+               {{"reconstruction", "gradient"},
+                {"gradient", "leastSquares"},
+                {"flux", "rusanov"},
+                {"limiter", "Barth"},
+                {"positivity", false}}}}},
+            {"interfaces",
+             C::Json::array(
+                 {{{"donor", "outer"},
+                   {"receiver", "disk"},
+                   {"donorZone", 101},
+                   {"receiverZone", 101},
+                   {"maxGap", .03}},
+                  {{"donor", "disk"},
+                   {"receiver", "outer"},
+                   {"donorZone", 101},
+                   {"receiverZone", 101},
+                   {"maxGap", .03}}})}};
+        input["domains"][1]["overrides"] = {
+            {"motion",
+             {{"angularVelocity", {0, 0, .02}}, {"center", {5, 5, 0}}}}};
+        const auto factory = [](I iDomain, const auto &, const auto &domainMPI)
+        { return CauchyTest::VortexPatch(domainMPI, iDomain == 1, 8, 20); };
+        C::Simulation simulation(
+            C::SimulationConfig::ResolveCollective(input, mpi.comm), mpi.comm,
+            factory);
+        REQUIRE(simulation.Advance(1e-4).accepted);
+        const auto diagnostics = simulation.GetInterfaceDiagnostics();
+        CHECK(diagnostics.queryPoints > 0);
+        CHECK(diagnostics.maximumGap <= .03);
+        for (I iDomain = 0; iDomain < 2; ++iDomain)
+            if (simulation.Local(iDomain))
+            {
+                const auto &domain = simulation.GetDomain(iDomain);
+                CHECK(domain.LastCoupledIterations() > 0);
+                CHECK(domain.Discretization().Admissible(domain.Dofs()));
+            }
+    }
 }
 TEST_CASE("Split flow and SA fields cross a rotating interface as one equation packet")
 {

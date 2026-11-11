@@ -53,6 +53,8 @@ namespace DNDS::Cauchy
         void ConfigureTimeStep(const TimeSettings &time, int compressionPower);
         StepResult PrepareImplicitStep(real dt);
         StepResult ResumeImplicitStep();
+        void PrepareCoupledImplicit(EquationTimeStepper::DITR &method,
+                                    bool resume);
         bool SolveCoupledImplicit(EquationTimeStepper::DITR &method, EquationDofs &endpoint, bool resume);
         NonlinearSolveControl ProgressControl() const;
         void SetTimeStage(int stage);
@@ -73,6 +75,15 @@ namespace DNDS::Cauchy
         StepResult SolveCoordinatedStage();
         StepResult CompleteCoordinatedStage();
         int CoordinatedStageNumber() const;
+        bool CoordinatedStepIsCoupled() const;
+        real CoupledStageTime(int coupledStage) const;
+        void PrepareCoupledInterface(int coupledStage, bool reconstructed);
+        FiniteVolume::InterfaceDonorPublication PublishCoupledInterfaceDonor(
+            int coupledStage, bool reconstructed);
+        void BindCoupledInterfaceInputs(int coupledStage,
+                                        const BoundaryInputs &input);
+        void ActivateCoupledInterface(int coupledStage);
+        StepResult SolveCoordinatedCoupledStep();
         void BindInterfaceInputs(const BoundaryInputs &input);
         void CommitReserved(EquationDofs::WriteScope &destination, EquationDofs::ReadScope &source);
         std::unique_ptr<IO::DomainCheckpointRead> PrepareCheckpointRead(const std::string &path, const Json &resolved);

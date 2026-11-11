@@ -47,7 +47,9 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(std::abs(expected - acceptedTarget) <= tolerance,
                                   "exact accepted time is inconsistent with the requested timestep");
         }
-        if (_placement.DomainNumber() != 1 || _interfaces || _placement.Group(0).ranks.size() != size_t(_placement.Size()))
+        // A one-domain simulation is the degenerate coordinated case. Keep one
+        // accepted-step transaction and one stage cursor regardless of rank
+        // placement; standalone Domain::Advance remains a debugging oracle.
         {
             uint64_t trialIdentifier = 0;
             const auto localPhase = [&](const auto &action, const std::string &name)
@@ -75,25 +77,41 @@ namespace DNDS::Cauchy
                 ready = MPI::AllreduceValue<MPI::Reduction::Min>(ready, _placement.Control());
                 return ready ? StepResult{} : StepResult::Rejected("coordinated " + name + " rejected; accepted states unchanged: " + error);
             };
-            const auto ports = [&](bool prepared)
+            const auto ports = [&](bool prepared,
+                                   std::optional<int> coupledStage)
             {
                 std::vector<InterfaceDomainInput> inputs(_domains.size());
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
                     if (auto &domain = _domains[iDomain])
-                        inputs[iDomain] = {domain->Controller().PublishInterfaceDonor(prepared)};
+                        inputs[iDomain] = {
+                            coupledStage
+                                ? domain->Controller().PublishCoupledInterfaceDonor(
+                                      *coupledStage, prepared)
+                                : domain->Controller().PublishInterfaceDonor(
+                                      prepared)};
                 return inputs;
             };
-            const auto refresh = [&](real time, int stage, bool prepared, bool acceptedSnapshot = false)
+            const auto refresh = [&](real time, int stage, bool prepared,
+                                     bool acceptedSnapshot = false,
+                                     std::optional<int> coupledStage = {})
             {
                 StateEpoch epoch;
                 epoch.acceptedStep = _step + uint64_t(acceptedSnapshot);
                 epoch.trial = trialIdentifier;
-                epoch.stage = stage;
+                epoch.stage = coupledStage ? 0 : stage;
+                epoch.coupledStage = coupledStage.value_or(0);
                 epoch.couplingIteration = prepared ? 1 : 0;
-                _interfaces->Refresh(ports(prepared), time, epoch);
+                _interfaces->Refresh(ports(prepared, coupledStage), time, epoch);
                 localPhase([&](index iDomain, Domain &domain)
                            {
-                    if(const auto input=_interfaces->Inputs(iDomain)) domain.Controller().BindInterfaceInputs(*input); }, "interface binding");
+                    if (const auto input = _interfaces->Inputs(iDomain))
+                    {
+                        if (coupledStage)
+                            domain.Controller().BindCoupledInterfaceInputs(
+                                *coupledStage, *input);
+                        else
+                            domain.Controller().BindInterfaceInputs(*input);
+                    } }, "interface binding");
             };
             std::vector<std::optional<DomainController::CandidateReservation>> candidates(_domains.size());
             const auto prepareAndCommit = [&]() -> StepResult
@@ -109,39 +127,134 @@ namespace DNDS::Cauchy
                 if (Local(0))
                     trialIdentifier = _domains[0]->Controller().TrialIdentifier();
                 MPI_Bcast(&trialIdentifier, 1, MPI_UINT64_T, _placement.SimulationRank(0, 0), _placement.Control());
-                int stages = Local(0) ? _domains[0]->Controller().StageNumber() : 0;
-                MPI_Bcast(&stages, 1, MPI_INT, _placement.SimulationRank(0, 0), _placement.Control());
-                for (int stage = 0; stage < stages; ++stage)
+                int coupled = Local(0)
+                                  ? int(_domains[0]->Controller().StepIsCoupled())
+                                  : 0;
+                MPI_Bcast(&coupled, 1, MPI_INT,
+                          _placement.SimulationRank(0, 0),
+                          _placement.Control());
+                localPhase([&](index, Domain &domain)
+                           { DNDS_check_throw_info(
+                                 int(domain.Controller().StepIsCoupled()) == coupled,
+                                 "domain time-method stage groups differ"); },
+                           "stage-group agreement");
+                if (coupled)
                 {
-                    real stageTime = 0;
-                    std::vector<real> localTimes(_domains.size(), 0);
-                    localPhase([&](index iDomain, Domain &domain)
-                               {
-                        auto control = domain.Controller();
-                        DNDS_check_throw_info(control.StageNumber()==stages,"domain stage counts differ");
-                        localTimes[iDomain]=control.PrepareStage(stage); }, "stage preparation");
-                    if (Local(0))
-                        stageTime = localTimes[0];
-                    MPI_Bcast(&stageTime, 1, MPI_DOUBLE, _placement.SimulationRank(0, 0), _placement.Control());
-                    localPhase([&](index iDomain, Domain &)
-                               { DNDS_check_throw_info(localTimes[iDomain] == stageTime, "domain stage times differ"); }, "stage-time agreement");
-                    if (_interfaces)
+                    for (int coupledStage = 0; coupledStage < 2;
+                         ++coupledStage)
                     {
-                        localPhase([](index, Domain &domain)
-                                   { domain.Controller().PrepareInterfaceSampling(); }, "predictor halos");
-                        refresh(stageTime, stage, false);
-                        localPhase([&](index, Domain &domain)
-                                   { domain.Controller().PrepareInterfaceReconstruction(stageTime); }, "interface reconstruction");
-                        refresh(stageTime, stage, true);
+                        real stageTime = 0;
+                        std::vector<real> localTimes(_domains.size(), 0);
+                        localPhase([&](index iDomain, Domain &domain)
+                                   { localTimes[iDomain] = domain.Controller()
+                                                               .CoupledStageTime(
+                                                                   coupledStage); },
+                                   "coupled stage-time preparation");
+                        if (Local(0))
+                            stageTime = localTimes[0];
+                        MPI_Bcast(&stageTime, 1, MPI_DOUBLE,
+                                  _placement.SimulationRank(0, 0),
+                                  _placement.Control());
+                        localPhase([&](index iDomain, Domain &)
+                                   { DNDS_check_throw_info(
+                                         localTimes[iDomain] == stageTime,
+                                         "domain coupled-stage times differ"); },
+                                   "coupled stage-time agreement");
+                        if (_interfaces)
+                        {
+                            localPhase(
+                                [&](index, Domain &domain)
+                                {
+                                    domain.Controller()
+                                        .PrepareCoupledInterface(coupledStage,
+                                                                 false);
+                                },
+                                "coupled predictor halos");
+                            refresh(stageTime, 0, false, false,
+                                    coupledStage);
+                            localPhase(
+                                [&](index, Domain &domain)
+                                {
+                                    domain.Controller()
+                                        .PrepareCoupledInterface(coupledStage,
+                                                                 true);
+                                },
+                                "coupled interface reconstruction");
+                            refresh(stageTime, 0, true, false,
+                                    coupledStage);
+                        }
                     }
-                    if (auto result = localPhase([](index, Domain &domain)
-                                                 { return domain.Controller().SolveStage(); }, "stage solve");
+                    if (auto result = localPhase(
+                            [](index, Domain &domain)
+                            { return domain.Controller().SolveCoupledStep(); },
+                            "coupled stage-group solve");
                         !result)
                         return result;
-                    if (auto result = localPhase([](index, Domain &domain)
-                                                 { return domain.Controller().CompleteStage(); }, "stage completion");
-                        !result)
-                        return result;
+                }
+                else
+                {
+                    int stages = Local(0)
+                                     ? _domains[0]->Controller().StageNumber()
+                                     : 0;
+                    MPI_Bcast(&stages, 1, MPI_INT,
+                              _placement.SimulationRank(0, 0),
+                              _placement.Control());
+                    for (int stage = 0; stage < stages; ++stage)
+                    {
+                        real stageTime = 0;
+                        std::vector<real> localTimes(_domains.size(), 0);
+                        localPhase([&](index iDomain, Domain &domain)
+                                   {
+                            auto control = domain.Controller();
+                            DNDS_check_throw_info(
+                                control.StageNumber() == stages,
+                                "domain stage counts differ");
+                            localTimes[iDomain] =
+                                control.PrepareStage(stage); },
+                                   "stage preparation");
+                        if (Local(0))
+                            stageTime = localTimes[0];
+                        MPI_Bcast(&stageTime, 1, MPI_DOUBLE,
+                                  _placement.SimulationRank(0, 0),
+                                  _placement.Control());
+                        localPhase([&](index iDomain, Domain &)
+                                   { DNDS_check_throw_info(
+                                         localTimes[iDomain] == stageTime,
+                                         "domain stage times differ"); },
+                                   "stage-time agreement");
+                        if (_interfaces)
+                        {
+                            localPhase(
+                                [](index, Domain &domain)
+                                {
+                                    domain.Controller()
+                                        .PrepareInterfaceSampling();
+                                },
+                                "predictor halos");
+                            refresh(stageTime, stage, false);
+                            localPhase(
+                                [&](index, Domain &domain)
+                                {
+                                    domain.Controller()
+                                        .PrepareInterfaceReconstruction(
+                                            stageTime);
+                                },
+                                "interface reconstruction");
+                            refresh(stageTime, stage, true);
+                        }
+                        if (auto result = localPhase(
+                                [](index, Domain &domain)
+                                { return domain.Controller().SolveStage(); },
+                                "stage solve");
+                            !result)
+                            return result;
+                        if (auto result = localPhase(
+                                [](index, Domain &domain)
+                                { return domain.Controller().CompleteStage(); },
+                                "stage completion");
+                            !result)
+                            return result;
+                    }
                 }
                 if (_interfaces)
                 {
@@ -215,31 +328,5 @@ namespace DNDS::Cauchy
             ++_step;
             return {};
         }
-        for (auto &domain : _domains)
-            if (domain)
-            {
-                MPI::LocalStage(MPIInfo(domain->Discretization().Metrics().Communicator()), [&]
-                                { DNDS_check_throw_info(domain->Time() == _time && domain->Epoch().acceptedStep == _step,
-                                                        "domain was advanced outside its Simulation; use the coordinated frontend"); });
-                if (auto result = domain->PrepareStep(dt); !result)
-                {
-                    domain->DiscardStep();
-                    return result;
-                }
-            }
-        // Commit is serialized and collectively preflighted inside each domain.
-        // External debug writers/aliases must be released before this call.
-        for (auto &domain : _domains)
-            if (domain)
-                domain->CommitStep();
-        if (!_config.Time().steady)
-        {
-            _time = acceptedTime.value_or(_time + dt);
-            for (auto &domain : _domains)
-                if (domain)
-                    domain->Controller().SnapAcceptedTime(_time);
-        }
-        ++_step;
-        return {};
     }
 }

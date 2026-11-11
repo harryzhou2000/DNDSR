@@ -606,7 +606,6 @@ namespace DNDS::Cauchy
         for (const auto &domain : data->domains)
             for (const auto &[zone, condition] : domain.settings.boundaries)
                 DNDS_check_throw_info(condition.kind != "interface" || receivers.count({domain.placement.name, std::stoi(zone)}), "interface boundary has no incoming connection");
-        DNDS_check_throw_info(data->interfaces.empty() || data->time.steady || data->time.method != "ditr", "multi-domain DITR requires coupled midpoint/end coordination");
         const std::vector<std::string> timeMethods{"ssprk3", "bdf1", "bdf2", "trapz", "esdirk2", "esdirk3", "esdirk4", "ditr"};
         DNDS_check_throw_info(std::find(timeMethods.begin(), timeMethods.end(), data->time.method) != timeMethods.end() && std::isfinite(data->time.dt) && data->time.dt > 0 && data->time.steps >= 0 &&
                                   std::isfinite(data->time.tEnd) && data->time.tEnd >= 0 && data->time.finalTime == -1 && std::isfinite(data->time.cfl) && data->time.cfl >= 0 &&

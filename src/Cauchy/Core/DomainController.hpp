@@ -83,11 +83,19 @@ namespace DNDS::Cauchy
         /// decides whether this participates in a collective preflight.
         void RequireAcceptedClock(real time, uint64_t acceptedStep) const;
         void BeginStep(real dt);
+        bool StepIsCoupled() const;
         uint64_t TrialIdentifier() const;
         int StageNumber() const;
         real PrepareStage(int stage);
         StepResult SolveStage();
         StepResult CompleteStage();
+        real CoupledStageTime(int coupledStage) const;
+        void PrepareCoupledInterface(int coupledStage, bool reconstructed);
+        FiniteVolume::InterfaceDonorPublication PublishCoupledInterfaceDonor(
+            int coupledStage, bool reconstructed);
+        void BindCoupledInterfaceInputs(int coupledStage,
+                                        const BoundaryInputs &input);
+        StepResult SolveCoupledStep();
         /// Prepare predictor halos without reconstructing a new polynomial.
         void PrepareInterfaceSampling();
         /// Prepare the finalized reconstruction at the named physical time.

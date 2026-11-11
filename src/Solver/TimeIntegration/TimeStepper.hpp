@@ -166,6 +166,12 @@ namespace DNDS::ODE
             DNDS_check_throw_info(_ditr, "this time method has no coupled problem");
             return *_ditr;
         }
+        const DITR &CoupledMethod() const
+        {
+            DNDS_check_throw_info(_ditr,
+                                  "this time method has no coupled problem");
+            return *_ditr;
+        }
         real PreviousDt() const { return _bdf ? _bdf->PreviousDt() : 0; }
         /// DITR owns a coupled midpoint/end iteration, not a one-pass tableau.
         /// Its external coordination must use that coupled protocol explicitly.
@@ -252,6 +258,35 @@ namespace DNDS::ODE
                 _stagesActive = false;
             }
         }
+        /// Begin a coupled DITR trial without entering its nonlinear update.
+        /// This split lets an external simulation controller construct distinct
+        /// frozen midpoint/endpoint interface packets before either correction.
+        void BeginCoupled(const Field &initial, Field &trial, real time, real dt,
+                          const Evaluate &evaluate)
+        {
+            Discard();
+            RunLocal([&]
+                     {
+                DNDS_check_throw_info(
+                    _ditr && evaluate && std::isfinite(time) &&
+                        std::isfinite(dt) && dt > 0 && std::isfinite(time + dt) &&
+                        time + dt > time,
+                    "invalid coupled time trial controls");
+                BeginInitial(initial, trial); });
+            _pendingDt = dt;
+            _startTime = time;
+            _ditr->Begin(initial, trial, time, dt, evaluate);
+        }
+        /// Execute the already-begun coupled update. False leaves method-owned
+        /// midpoint/rate scratch active only until the caller discards the trial.
+        bool RunCoupled(Field &trial, const SolveCoupled &coupled)
+        {
+            RunLocal([&]
+                     { DNDS_check_throw_info(_ditr && coupled && !_pending,
+                                             "no begun DITR trial, or trial already solved"); });
+            _pending = coupled(*_ditr, trial);
+            return _pending;
+        }
         /// Preparation is serialized and synchronous. All participating ranks
         /// must call it with agreed controls and callbacks that coordinate local
         /// failures before communication. Callbacks may inspect dynamic state.
@@ -266,11 +301,8 @@ namespace DNDS::ODE
             _pendingDt = dt;
             if (_ditr)
             {
-                RunLocal([&]
-                         { BeginInitial(initial, trial); });
-                _ditr->Begin(initial, trial, time, dt, evaluate);
-                _pending = coupled(*_ditr, trial);
-                return _pending;
+                BeginCoupled(initial, trial, time, dt, evaluate);
+                return RunCoupled(trial, coupled);
             }
             BeginStages(initial, trial, time, dt);
             for (int stage = 0; stage < StageNumber(); ++stage)

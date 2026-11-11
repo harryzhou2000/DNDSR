@@ -95,6 +95,10 @@ namespace DNDS::Cauchy
     {
         _domain->BeginCoordinatedStep(dt);
     }
+    bool DomainController::StepIsCoupled() const
+    {
+        return _domain->CoordinatedStepIsCoupled();
+    }
     uint64_t DomainController::TrialIdentifier() const
     {
         return _domain->_state.trialEpoch.trial;
@@ -114,6 +118,31 @@ namespace DNDS::Cauchy
     StepResult DomainController::CompleteStage()
     {
         return _domain->CompleteCoordinatedStage();
+    }
+    real DomainController::CoupledStageTime(int coupledStage) const
+    {
+        return _domain->CoupledStageTime(coupledStage);
+    }
+    void DomainController::PrepareCoupledInterface(int coupledStage,
+                                                   bool reconstructed)
+    {
+        _domain->PrepareCoupledInterface(coupledStage, reconstructed);
+    }
+    FiniteVolume::InterfaceDonorPublication
+    DomainController::PublishCoupledInterfaceDonor(int coupledStage,
+                                                   bool reconstructed)
+    {
+        return _domain->PublishCoupledInterfaceDonor(coupledStage,
+                                                     reconstructed);
+    }
+    void DomainController::BindCoupledInterfaceInputs(
+        int coupledStage, const BoundaryInputs &input)
+    {
+        _domain->BindCoupledInterfaceInputs(coupledStage, input);
+    }
+    StepResult DomainController::SolveCoupledStep()
+    {
+        return _domain->SolveCoordinatedCoupledStep();
     }
     void DomainController::PrepareInterfaceSampling()
     {

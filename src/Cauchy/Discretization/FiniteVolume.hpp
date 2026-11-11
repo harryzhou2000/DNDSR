@@ -712,6 +712,10 @@ namespace DNDS::Cauchy
         BoundaryInputs BuildBoundaryInputs(
             std::optional<Physics::Chemistry::ChemicalWorkerPool> workers =
                 std::nullopt) const;
+        /// Deep-copy one published packet into independent immutable storage.
+        /// Use this when several physical/coupled stages must coexist while the
+        /// interface coordinator reuses its mutable incoming allocation.
+        BoundaryInputs FreezeBoundaryInputs(const BoundaryInputs &input) const;
         /// Synchronous local point operations, no MPI. Begin withdraws the
         /// publication; publish checks complete admissible interface rows only.
         void BeginBoundaryUpdate(BoundaryInputs &input) const;

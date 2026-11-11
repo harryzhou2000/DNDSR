@@ -221,10 +221,17 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
     CHECK(alias.Epoch().stage == 2);
     REQUIRE(alias.InterfaceSources().size() == 1);
     CHECK(alias.InterfaceSources()[0].routeOwner == routeOwner);
+    const auto frozen = coupled.FreezeBoundaryInputs(incoming);
+    CHECK(frozen.QuadratureValues().CoupledField().Owned().SharedStorage() !=
+          incoming.QuadratureValues().CoupledField().Owned().SharedStorage());
+    CHECK(frozen.FaceCenterValues().CoupledField().Owned().SharedStorage() !=
+          incoming.FaceCenterValues().CoupledField().Owned().SharedStorage());
+    CHECK_NOTHROW(coupled.ValidateBoundaryInputs(frozen, time));
     {
         auto write = incoming.FaceCenterValues().WriteOwned(); // Either table's debug write invalidates publication.
     }
     CHECK_THROWS(coupled.ValidateAuxValues(equationB, auxB, time));
+    CHECK_NOTHROW(coupled.ValidateBoundaryInputs(frozen, time));
 }
 int main(int argc, char **argv)
 {

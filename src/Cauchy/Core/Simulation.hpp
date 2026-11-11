@@ -41,8 +41,9 @@ namespace DNDS::Cauchy
         InterfaceDiagnostics GetInterfaceDiagnostics() const;
         /// Prepare all stage inputs, refresh frozen traces, then solve local
         /// domains. All accepted destinations are reserved before any domain
-        /// publishes. Process failure recovery is unsupported. DITR currently
-        /// retains its single-domain coupled-iteration driver.
+        /// publishes. Process failure recovery is unsupported. DITR prepares
+        /// distinct frozen midpoint/endpoint interface packets, then runs its
+        /// registered sequential two-stage nonlinear policy.
         /// If acceptedTime is present, it is the exact controller target for
         /// this step (normally an output time or tEnd). The numerical solve
         /// still uses dt; successful publication snaps every accepted clock to

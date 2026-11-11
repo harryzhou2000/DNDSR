@@ -8,6 +8,9 @@
 #include "Cauchy/Physics/EquationPositivity.hpp"
 #include "Cauchy/State/EquationTimeStepper.hpp"
 
+#include <array>
+#include <limits>
+
 namespace DNDS::Cauchy
 {
     /// Long-lived physical/discretization definition of one domain. Mutable
@@ -62,6 +65,7 @@ namespace DNDS::Cauchy
             const EquationDofs &, real)>
             correct;
         std::function<std::pair<int, real>()> reconstruction;
+        std::function<void(const BoundaryInputs &)> bindBoundary;
         std::shared_ptr<FiniteVolume::ReconstructionState> state;
     };
 
@@ -86,9 +90,11 @@ namespace DNDS::Cauchy
         std::shared_ptr<FiniteVolume::MeanWorkspace> timePPWorkspace;
         std::optional<EquationDofs> timePPResidual;
         std::optional<BoundaryInputs> interfaceInputs;
+        std::array<std::optional<BoundaryInputs>, 2> coupledInterfaceInputs;
         std::function<DomainCoupledStageOperator(EquationDofs &)>
             coupledFactory;
         Runtime::ArrayStorage::Shared coupledMiddleOwner;
+        uint64_t coupledPreparedTrial = std::numeric_limits<uint64_t>::max();
         std::optional<EquationDofs> coupledResidual;
         std::unique_ptr<NonlinearController> nonlinearController;
         DomainExecutionContext context;

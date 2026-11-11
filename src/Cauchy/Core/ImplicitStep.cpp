@@ -89,6 +89,11 @@ namespace DNDS::Cauchy
                 },
                 [solver]
                 { return solver->ReconstructionStats(); },
+                [multigrid](const BoundaryInputs &input)
+                {
+                    if (multigrid)
+                        multigrid->SetBoundaryInputs(input);
+                },
                 reconstruction};
         };
         MPI::LocalStage(mpi, [&]
@@ -157,16 +162,28 @@ namespace DNDS::Cauchy
                 _state.restoreReconstruction = true;
             } });
     }
-    bool Domain::SolveCoupledImplicit(EquationTimeStepper::DITR &method, EquationDofs &endpoint, bool resume)
+    void Domain::PrepareCoupledImplicit(EquationTimeStepper::DITR &method,
+                                        bool resume)
     {
         const auto owner = method.IntermediateState().PhysicalField(0).Owned().SharedStorage();
         if (!_coupledMiddle || _execution.coupledMiddleOwner != owner)
         {
             _coupledMiddle = _execution.coupledFactory(method.IntermediateState());
             _execution.coupledMiddleOwner = owner;
+            _execution.coupledPreparedTrial =
+                std::numeric_limits<uint64_t>::max();
         }
-        if (!resume)
+        if (!resume &&
+            _execution.coupledPreparedTrial != _state.trialEpoch.trial)
+        {
             _problem.finiteVolume.CopyReconstructionState(*_coupledMiddle->state, *_state.reconstruction);
+            _execution.coupledPreparedTrial = _state.trialEpoch.trial;
+        }
+    }
+    bool Domain::SolveCoupledImplicit(EquationTimeStepper::DITR &method,
+                                      EquationDofs &endpoint, bool resume)
+    {
+        PrepareCoupledImplicit(method, resume);
         const MPIInfo mpi(_problem.finiteVolume.Metrics().Communicator());
         MPI::LocalStage(mpi, [&]
                         {
@@ -227,6 +244,7 @@ namespace DNDS::Cauchy
             return std::make_pair(std::max(a.first, b.first), std::max(a.second, b.second)); }, [&](int coupledStage, auto &iteration)
                 {
                 SetTimeStage(coupledStage);
+                ActivateCoupledInterface(coupledStage);
                 const auto equation = method.PrepareCoupledStage(endpoint, coupledStage);
                 const auto &c = equation.coefficients;
                 _state.progressTime = c.time;

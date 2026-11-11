@@ -86,6 +86,13 @@ namespace DNDS::ODE
         const State &IntermediateRate() const { return _middleRate; }
         const State &EndpointRate() const { return _endRate; }
         const State &ResidualOther() const { return _resOther; }
+        real CoupledStageTime(int coupledStage) const
+        {
+            DNDS_check_throw_info(
+                _active && (coupledStage == 0 || coupledStage == 1),
+                "DITR stage time needs an active midpoint or endpoint");
+            return _time + (coupledStage == 0 ? _fraction : 1) * _dt;
+        }
         ActiveControl CheckpointControl() const
         {
             DNDS_check_throw_info(_active && !_prepared && _nextCoupledStage == 0,

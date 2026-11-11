@@ -118,14 +118,14 @@ TEST_CASE("Halo freshness audits are opt-in and the collective check switch over
     CHECK(disabled.Domains()[0].settings.execution.haloFreshnessChecks);
     CHECK_FALSE(disabled.Domains()[0].settings.CheckHaloFreshness());
 }
-TEST_CASE("Interface capability checks honor the steady BDF1 override")
+TEST_CASE("Interface capability checks admit coordinated DITR and honor the steady BDF1 override")
 {
     C::Json input{{"domains", C::Json::array({{{"name", "a"}}, {{"name", "b"}}})},
                   {"defaults", {{"boundaries", {{"101", {{"kind", "interface"}}}}}}},
                   {"interfaces", C::Json::array({{{"donor", "a"}, {"receiver", "b"}, {"donorZone", 101}, {"receiverZone", 101}},
                                                  {{"donor", "b"}, {"receiver", "a"}, {"donorZone", 101}, {"receiverZone", 101}}})},
                   {"time", {{"method", "ditr"}}}};
-    CHECK_THROWS(C::SimulationConfig::Resolve(input, 1));
+    CHECK(C::SimulationConfig::Resolve(input, 1).Time().method == "ditr");
     input["time"]["steady"] = true;
     CHECK(C::SimulationConfig::Resolve(input, 1).Time().method == "bdf1");
 }

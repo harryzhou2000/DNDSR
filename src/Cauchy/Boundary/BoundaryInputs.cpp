@@ -100,6 +100,22 @@ namespace DNDS::Cauchy
         BeginBoundaryUpdate(input);
         return input;
     }
+    BoundaryInputs FiniteVolume::FreezeBoundaryInputs(
+        const BoundaryInputs &input) const
+    {
+        ValidateBoundaryInputs(input, input.Time());
+        BoundaryInputs frozen(
+            EquationDofOperations::NewVector(input._quadrature),
+            EquationDofOperations::NewVector(input._faceCenters),
+            input._property, input._thermal);
+        frozen._layout = _data->boundaryLayout;
+        BeginBoundaryUpdate(frozen);
+        EquationDofOperations::Copy(frozen._quadrature, input._quadrature);
+        EquationDofOperations::Copy(frozen._faceCenters, input._faceCenters);
+        PublishBoundaryInputs(frozen, input.Time(), input.Epoch(),
+                              input.InterfaceSources());
+        return frozen;
+    }
     void FiniteVolume::ValidateBoundaryLayout(const BoundaryInputs &input) const
     {
         Metrics().Validate();
