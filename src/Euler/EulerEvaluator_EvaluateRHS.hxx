@@ -7,6 +7,7 @@
  *  boundary integration recording, and optional direct 2nd-order reconstruction modes.
  */
 #pragma once
+#include <optional>
 #include "Euler/EulerEvaluator.hpp"
 #include "DNDS/Core/ScopedValueAlternator.hpp"
 #include <fmt/core.h>
@@ -90,11 +91,13 @@ namespace DNDS::Euler
         const bool direct2ndRec1stConv = flags & RHS_Direct_2nd_Rec_1st_Conv;
         const bool direct2ndUseLimiter = flags & RHS_Direct_2nd_Rec_use_limiter;
         const bool direct2ndRec_already_have_uGradBufNoLim = flags & RHS_Direct_2nd_Rec_already_have_uGradBufNoLim;
+        const bool direct2ndRec_already_have_uGradBuf = flags & RHS_Direct_2nd_Rec_already_have_uGradBuf;
         const bool recoverIncFScale = flags & RHS_Recover_IncFScale;
         const bool ignoreReactiveSource = (flags & RHS_Ignore_Reactive_Source) && Traits::isExtended;
         const bool ignoreReactiveSourceJacobian = (flags & RHS_Ignore_Reactive_Source_Jacobian) && Traits::isExtended;
 
         DNDS_assert(direct2ndRec1stConv ? direct2ndRec : true);
+        DNDS_assert(!direct2ndRec_already_have_uGradBuf || (direct2ndRec && direct2ndRec_already_have_uGradBufNoLim));
         auto rsType = settings.rsType;
 
         // recover the upwind factor if using direct2ndRec
@@ -129,38 +132,26 @@ namespace DNDS::Euler
         // direct2ndRec = true;
         if (direct2ndRec)
         {
-            typename TVFV::template TFBoundary<nVarsFixed>
-                FBoundary = [&](const TU &UL, const TU &UMean, index iCell, index iFace, int ig,
-                                const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
-            {
-                TVec normOutV = normOut(Seq012);
-                Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(normOutV);
-                bool compressed = false;
-                TU ULfixed = this->CompressRecPart(
-                    UMean,
-                    UL - UMean,
-                    compressed);
-                return this->generateBoundaryValue(ULfixed, UMean, iCell, iFace, ig, normOutV, normBase, pPhy, t, bType, true, 1);
-            };
+            auto FBoundary = GetGradientBoundary(t);
             if (!direct2ndRec_already_have_uGradBufNoLim)
             {
                 vfv->DoReconstruction2ndGrad(uGradBufNoLim, u, FBoundary, settings.direct2ndRecMethod, reconstructionMask);
                 uGradBufNoLim.trans.startPersistentPull(); // this can be safely put before LimiterUGradCall
             }
             // uGradBuf = uGradBufNoLim;
-            if (!direct2ndRec1stConv)
+            if (!direct2ndRec1stConv && !direct2ndRec_already_have_uGradBuf)
             {
                 this->LimiterUGrad(u, uGradBufNoLim, uGradBuf, direct2ndUseLimiter ? LIMITER_UGRAD_No_Flags : LIMITER_UGRAD_Disable_Shock_Limiter);
                 reconstructionMask.Apply(uGradBuf);
             }
-            if (!direct2ndRec1stConv)
+            if (!direct2ndRec1stConv && !direct2ndRec_already_have_uGradBuf)
                 uGradBuf.trans.startPersistentPull();
             if (!direct2ndRec_already_have_uGradBufNoLim)
                 uGradBufNoLim.trans.waitPersistentPull(); // todo: utilize the uGradBufNoLim to match the implicit reconstruction's "useViscousLimited": false
-            if (!direct2ndRec1stConv)
-                uGradBuf.trans.waitPersistentPull();
-            else
+            if (direct2ndRec1stConv)
                 uGradBuf = uGradBufNoLim;
+            else if (!direct2ndRec_already_have_uGradBuf)
+                uGradBuf.trans.waitPersistentPull();
         }
 
 #if defined(DNDS_DIST_MT_USE_OMP)
@@ -275,6 +266,11 @@ namespace DNDS::Euler
                         ULxyUnlim = ULxy;
 
                     TU URxy, URxyUnlim;
+                    // The jump correction is relative to the polynomial trace,
+                    // before fixUL may replace the physical left SA face value.
+                    std::optional<TU> ULxyBeforeBC;
+                    if (settings.useSourceGradFixGG)
+                        ULxyBeforeBC.emplace(ULxy);
 #ifndef DNDS_FV_EULEREVALUATOR_IGNORE_VISCOUS_TERM
                     TDiffU GradULxy, GradURxy;
                     GradULxy.resize(Eigen::NoChange, cnvars);
@@ -457,7 +453,7 @@ namespace DNDS::Euler
 #endif
                     if (settings.useSourceGradFixGG)
                     {
-                        faceGradFix += 0.5 * unitNorm * (URxy - ULxy).transpose() * ((direct2ndRec ? vfv->GetFaceArea(iFace) / vfv->GetFaceParamArea(iFace) : vfv->GetFaceJacobiDet(iFace, iG)) * w);
+                        faceGradFix += unitNorm * (0.5 * (URxy - ULxyBeforeBC.value()) + 0.5 * (ULxy - ULxyBeforeBC.value())).transpose() * ((direct2ndRec ? vfv->GetFaceArea(iFace) / vfv->GetFaceParamArea(iFace) : vfv->GetFaceJacobiDet(iFace, iG)) * w);
                     }
                     if (faceBCType == EulerBCType::BCWallInvis ||
                         // faceBCType == EulerBCType::BCIn ||

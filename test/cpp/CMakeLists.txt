@@ -984,9 +984,10 @@ if(DNDS_USE_CANTERA)
         euler_library_NS_SA euler_library_fast_NS_SA cfv geom dnds ${DNDS_EXTERNAL_LIBS})
 endif()
 
-# EulerEvaluator pipeline test: needs full Euler libraries for NS, NS_SA, NS_3D
+# EulerEvaluator pipeline test: full NS/SA/3D libraries plus the public
+# two-equation face-flux probe.
 euler_add_mpi_test(evaluator_pipeline "Euler/test_EulerEvaluator.cpp"
-    "euler_library_NS;euler_library_fast_NS;euler_library_NS_SA;euler_library_fast_NS_SA;euler_library_NS_3D;euler_library_fast_NS_3D;cfv;geom;dnds")
+    "euler_library_NS;euler_library_fast_NS;euler_library_NS_SA;euler_library_fast_NS_SA;euler_library_NS_3D;euler_library_fast_NS_3D;euler_library_fast_NS_2EQ;cfv;geom;dnds")
 foreach(NP ${DNDS_TEST_NP_LIST})
     if(TEST euler_evaluator_pipeline_np${NP})
         _dnds_maybe_set_timeout(euler_evaluator_pipeline_np${NP} ${DNDS_TEST_TIMEOUT_PIPELINE})

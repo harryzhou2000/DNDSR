@@ -10,6 +10,22 @@ compute node or losing source provenance on a slow shared filesystem.
 
 ## Routing Boundary
 
+For DNDSR execution, use the helper repository at `running/clusters` when
+available, or an operator-supplied helper location. Read its `AGENTS.md` and
+selected `cluster-<ssh-alias>/` profile, including environment, build and
+launcher notes. The helper is optional: if it or a matching profile is absent,
+establish the same cluster contract from operator instructions, existing
+verified environment/launcher scripts, and live read-only inspection. Ask only
+for unresolved facts needed for the next action; absence of the helper alone
+does not block execution or authorize provisioning. Treat available helper
+profiles as read-only references. Ordinary
+execution does not authorize editing helper profiles or provisioning shell,
+SSH, tools, or environments. Provisioning is a separately authorized task;
+when using the helper, follow its `.agents/skills/cluster-setup/SKILL.md` and
+`setup/` protocol.
+Resolve the user-supplied canonical root independently for each login; two SSH
+aliases on the same hardware can have separate homes and Slurm associations.
+
 Use this skill when the machine requires `sbatch`, `srun`, `salloc`, or an
 equivalent scheduler. Use `numerical-experiment` for local or direct-SSH
 execution. For scheduled numerical experiments, use both skills: this skill
@@ -33,6 +49,23 @@ Before compiling or submitting, establish:
 
 If fields are missing, inspect and prepare without launching. Ask at the first
 operation whose correctness depends on the missing value.
+
+## Node Selection and Performance Comparisons
+
+Let the scheduler choose the first available node meeting the requested
+resources. **Never pin a particular node unless the user explicitly requests
+node pinning for the current work.** This applies to submission and later job
+updates, including `--nodelist`, `-w`, `ReqNodeList`, and equivalent constraints.
+A pilot's node, a tighter runtime estimate, or a desire to match hardware does
+not authorize pinning. Node counts, resource requests and MPI CPU/core binding
+remain ordinary allocation settings.
+
+Assume uniform performance across eligible cluster nodes for ordinary runs.
+For more delicate performance comparisons, run the compared workloads serially
+within one allocation, so they share its hardware without competing with one
+another. Do not turn that comparison procedure into a named-node requirement
+for later production runs. Record the actual allocated nodes and qualify timing
+estimates; keep the declared wall-time bounds.
 
 ## Subagent Policy
 
@@ -109,6 +142,13 @@ or other external side effects by itself.
    reconfiguration is demonstrably necessary.
 6. Compile only where the cluster contract allows it. If compute allocation is
    required, compile inside `srun` or `salloc`, never on the login node.
+   Use the same profile environment for compilation and execution. Check the
+   underlying compiler selected by both MPI wrappers: `CC=mpicc CXX=mpicxx`
+   alone does not select it. For AOCC-default Open MPI with GCC, preserve the
+   profile's `OMPI_CC=gcc OMPI_CXX=g++` overrides and GCC runtime library paths.
+   Follow the profile's build parallelism and generator choices; preserve an
+   existing build's generator. Record wrapper versions and library resolution,
+   and print runtime modules and threading in the job log.
 7. Materialize a run-specific submission script and config record. Print the
    absolute log directory, exact command, source commit, and scheduler request
    before submission. For a multi-job campaign, submit and confirm one
@@ -163,8 +203,17 @@ so a standalone build cannot silently import the canonical checkout's modules.
 
 ## Cluster Profiles
 
-- For `ssh thtj1`, read [references/thtj1.md](references/thtj1.md). Its DNDSR
-  compilation must use `srun` on `debug6`; do not compile on the login node.
+- Use an available `running/clusters/cluster-<ssh-alias>/` profile for current
+  build policy and compute allocation. Without one, establish those policies
+  from operator instructions and verified site documentation or scripts.
+  Avoid computation on login nodes; compilation there is allowed when the
+  established cluster policy permits it.
+- For `ssh thtj1`, [references/thtj1.md](references/thtj1.md) retains historical
+  operational evidence. Reconcile it with the current cluster contract rather
+  than treating its older build policy as a universal requirement.
+- Report profile corrections to the operator. Editing helper profiles or
+  provisioning environments requires a separately authorized maintenance task;
+  ordinary execution does not authorize those changes.
 
 ## Safety
 

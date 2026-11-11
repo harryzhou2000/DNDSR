@@ -106,6 +106,19 @@ The [legacy connectivity test-purpose ledger](dev/mesh_connectivity_test_port_20
 records all 47 original cases, independent expected answers and explicit
 replacements for retired containers.
 
+The [2026-11-05 Euler gradient correction](dev/euler_gradient_buffers_2026-11-05.md)
+documents limited-gradient preparation, explicit reuse and boundary-stage timing.
+
+The [Euler RANS reconstruction PP correction](dev/euler_rans_reconstruction_pp_2026-11-05.md)
+separates spatial flow beta from scalar limiting and preserves coupled increment scaling.
+
+The [SST convergence audit](dev/euler_sst_convergence_2026-11-05.md)
+records source linearization, wall perturbation checks and O2 numerical trials.
+
+The [GG boundary-target correction](dev/euler_gg_boundary_targets_2026-11-05.md)
+documents mutable wall traces, immutable means, preserved VR semantics and
+EulerP scalar neighbour/boundary indexing.
+
 ## Core Modules
 
 | Module     | Directory    | Description                                              |

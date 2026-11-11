@@ -910,23 +910,22 @@ namespace DNDS::Euler
 
         bool dont_update_lambda01234 = flags & DT_Dont_update_lambda01234;
 
-        { // 2nd order reconstruction
-            typename TVFV::template TFBoundary<nVarsFixed>
-                FBoundary = [&](const TU &UL, const TU &UMean, index iCell, index iFace, int ig,
-                                const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
-            {
-                TVec normOutV = normOut(Seq012);
-                Eigen::Matrix<real, dim, dim> normBase = Geom::NormBuildLocalBaseV<dim>(normOutV);
-                bool compressed = false;
-                TU ULfixed = this->CompressRecPart(
-                    UMean,
-                    UL - UMean,
-                    compressed);
-                return this->generateBoundaryValue(ULfixed, UMean, iCell, iFace, ig, normOutV, normBase, pPhy, t, bType, true, 1);
-            };
+        { // Prepare both buffers: the face estimate below consumes the limited one.
+            // Previously only uGradBufNoLim was refreshed here, leaving uGradBuf
+            // from a preceding RHS/LVR call (or initialization).
+            auto FBoundary = GetGradientBoundary(t);
             vfv->DoReconstruction2ndGrad(uGradBufNoLim, u, FBoundary, settings.direct2ndRecMethod, reconstructionMask);
             uGradBufNoLim.trans.startPersistentPull();
+            // Limit owned rows while the unlimited halo is in flight. LimiterUGrad
+            // reads neighbour means, but only the current cell's gradient.
+            LimiterUGrad(u, uGradBufNoLim, uGradBuf,
+                         flags & DT_Disable_Gradient_Shock_Limiter
+                             ? LIMITER_UGRAD_Disable_Shock_Limiter
+                             : LIMITER_UGRAD_No_Flags);
+            reconstructionMask.Apply(uGradBuf);
+            uGradBuf.trans.startPersistentPull();
             uGradBufNoLim.trans.waitPersistentPull();
+            uGradBuf.trans.waitPersistentPull();
         }
         TDiffU GradULxy, GradURxy;
 #if defined(DNDS_DIST_MT_USE_OMP)
@@ -1643,8 +1642,11 @@ namespace DNDS::Euler
                 ((vnL * ULxy(I4 + 2, EigenAll).array() + vnR * URxy(I4 + 2, EigenAll).array()) -
                  (URxy(I4 + 2, EigenAll).array() - ULxy(I4 + 2, EigenAll).array()) * lambdaFaceCC.array()) *
                 0.5;
-            finc(1, EigenAll).array() += UMeanXy(I4 + 1, EigenAll).array() * (2. / 3.); //! k's normal stress
-            finc(I4, EigenAll).array() += UMeanXy(I4 + 1, EigenAll).array() * (2. / 3.) * UMeanXy(1, EigenAll).array() / UMeanXy(0, EigenAll).array();
+            // finc is already in global coordinates: contract k's isotropic stress
+            // with each physical normal. Stress work uses fluid velocity, also in ALE.
+            finc(Seq123, EigenAll).array() += unitNorm.array().rowwise() * (UMeanXy(I4 + 1, EigenAll).array() * (2. / 3.));
+            finc(I4, EigenAll).array() += UMeanXy(I4 + 1, EigenAll).array() * (2. / 3.) *
+                (UMeanXy(Seq123, EigenAll).array() * unitNorm.array()).colwise().sum() / UMeanXy(0, EigenAll).array();
         }
         if constexpr (Traits::isExtended)
         {
@@ -1984,28 +1986,7 @@ namespace DNDS::Euler
         if (useRecArrays && (settings.ransSource2nd || settings.source2nd))
         {
             DNDS_assert(pU);
-            cellGrad2nd.setZero(Eigen::NoChange, uCell.size());
-            TU uC = uCell;
-            auto c2f = mesh->CellFaces(iCell);
-            for (rowsize ic2f = 0; ic2f < c2f.size(); ++ic2f)
-            {
-                index iFace = c2f[ic2f];
-                index iCellOther = mesh->CellFaceOther(iCell, iFace, ic2f);
-                rowsize if2c = mesh->CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
-                TVec uNorm = vfv->GetFaceNormFromCell(iFace, iCell, if2c, -1)(Seq012) *
-                             (if2c ? -1 : 1);
-                TU uR;
-                if (iCellOther != UnInitIndex)
-                    uR = (*pU)[iCellOther], this->UFromOtherCell(uR, iFace, iCell, iCellOther, if2c);
-                else
-                    uR = generateBoundaryValue(
-                        uC, uC, iCell, iFace, -1,
-                        uNorm, Geom::NormBuildLocalBaseV<dim>(uNorm),
-                        vfv->GetFaceQuadraturePPhys(iFace, -1),
-                        t, mesh->GetFaceZone(iFace), true, 0);
-                cellGrad2nd += vfv->GetFaceArea(iFace) * uNorm * (uR - uC).transpose() * 0.5;
-            }
-            cellGrad2nd /= vfv->GetCellVol(iCell);
+            cellGrad2nd = EvaluateSourceGradientGG(uCell, *pU, iCell, t);
         }
 
         TDiffU cellGradFix;
@@ -2688,7 +2669,16 @@ namespace DNDS::Euler
         }
 
         if (linMode == 1)
+        {
+            // The turbulence wall values are prescribed (frozen here), so
+            // delta(qGhost) = -delta(qInterior). Returning before applying
+            // this reflection cancels their wall penalty in the Roe Jacobian.
+            if constexpr (Traits::hasSA)
+                URxy(I4 + 1) *= -1;
+            if constexpr (Traits::has2EQ)
+                URxy({I4 + 1, I4 + 2}) *= -1;
             return URxy;
+        }
 
         if (bTypeEuler == EulerBCType::BCWallIsothermal)
         {

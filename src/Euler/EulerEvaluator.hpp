@@ -433,8 +433,9 @@ namespace DNDS::Euler
 
     public:
         /******************************************************/
-        static const uint64_t DT_No_Flags = 0x0ull;                     ///< No flags for EvaluateDt.
-        static const uint64_t DT_Dont_update_lambda01234 = 0x1ull << 0; ///< Skip recomputation of per-face eigenvalues lambda0/123/4.
+        static const uint64_t DT_No_Flags = 0x0ull;                            ///< No flags for EvaluateDt.
+        static const uint64_t DT_Dont_update_lambda01234 = 0x1ull << 0;        ///< Skip recomputation of per-face eigenvalues lambda0/123/4.
+        static const uint64_t DT_Disable_Gradient_Shock_Limiter = 0x1ull << 1; ///< Prepare PP-only gradients, matching direct FV without shock limiting.
         /**
          * @brief Estimate the local or global time step for each cell.
          *
@@ -442,6 +443,10 @@ namespace DNDS::Euler
          * of inviscid and viscous fluxes, and optionally enforces a global minimum.
          * Updates per-face eigenvalue arrays (lambda0, lambda123, lambda4) unless
          * DT_Dont_update_lambda01234 is set.
+         * Prepares and exchanges both uGradBufNoLim and uGradBuf for the supplied
+         * mean field and boundary time. The spectral estimate uses uGradBuf.
+         * By default it includes shock limiting; DT_Disable_Gradient_Shock_Limiter
+         * retains only the gradient positivity limiter.
          *
          * @param[out] dt        Per-cell time step array (overwritten).
          * @param[in]  u         Cell-centered conservative variable DOFs.
@@ -474,10 +479,11 @@ namespace DNDS::Euler
         static const uint64_t RHS_Direct_2nd_Rec = 0x1ull << 8;                             ///< Use direct 2nd-order reconstruction.
         static const uint64_t RHS_Direct_2nd_Rec_1st_Conv = 0x1ull << 9;                    ///< 2nd-order rec with 1st-order convection.
         static const uint64_t RHS_Direct_2nd_Rec_use_limiter = 0x1ull << 10;                ///< Apply limiter when using direct 2nd rec.
-        static const uint64_t RHS_Direct_2nd_Rec_already_have_uGradBufNoLim = 0x1ull << 11; ///< uGradBufNoLim is already computed.
+        static const uint64_t RHS_Direct_2nd_Rec_already_have_uGradBufNoLim = 0x1ull << 11; ///< Reuse prepared and exchanged unlimited gradients; caller guarantees identical U, boundary time, method and mask.
         static const uint64_t RHS_Recover_IncFScale = 0x1ull << 12;                         ///< Recover incremental face scaling.
         static const uint64_t RHS_Ignore_Reactive_Source_Jacobian = 0x1ull << 13;           ///< Evaluate reactive source RHS but omit its JSource part.
         static const uint64_t RHS_Ignore_Reactive_Source = 0x1ull << 14;                    ///< Omit reactive source RHS and Jacobian.
+        static const uint64_t RHS_Direct_2nd_Rec_already_have_uGradBuf = 0x1ull << 15;      ///< Also reuse prepared/exchanged limited gradients, with the same limiter mode; requires the unlimited reuse flag.
         /// @}
 
         /**
@@ -501,6 +507,10 @@ namespace DNDS::Euler
          *                              chemical source is multiplied by @f$1-\chi_i@f$; exact
          *                              @f$\chi_i=1@f$ bypasses chemistry evaluation for that cell.
          * @param[in]  reconstructionMask Optional caller-owned constraint for direct reconstruction in this call; not retained.
+         * @note Reuse flags are explicit caller promises, without freshness checking.
+         * Both owned and ghost U must be unchanged. Buffers must be exchanged and
+         * unmodified since preparation, with matching boundary data/time, method,
+         * mask and (for limited reuse) shock-limiter mode. Otherwise omit the flags.
          */
         void EvaluateRHS(
             ArrayDOFV<nVarsFixed> &rhs,
@@ -809,7 +819,9 @@ namespace DNDS::Euler
          * @brief Apply slope limiter to the gradient field.
          *
          * Limits the reconstructed gradient (uGrad) to produce a monotonicity-preserving
-         * gradient (uGradNew). Supports WBAP and CWBAP limiter variants.
+         * gradient (uGradNew). Applies componentwise Barth limiting and the
+         * sensible-internal-energy positivity correction. The shock-limiter
+         * flag disables Barth limiting while retaining positivity protection.
          *
          * @param[in]  u         Cell-centered conservative DOFs.
          * @param[in]  uGrad     Input (unlimited) gradient array.
@@ -818,6 +830,10 @@ namespace DNDS::Euler
          */
         void LimiterUGrad(ArrayDOFV<nVarsFixed> &u, ArrayGRADV<nVarsFixed, gDim> &uGrad, ArrayGRADV<nVarsFixed, gDim> &uGradNew,
                           uint64_t flags = LIMITER_UGRAD_No_Flags);
+
+        static const uint64_t LVR_No_Flags = 0x0ull;
+        static const uint64_t LVR_Already_Have_UGradBufNoLim = 0x1ull << 0; ///< Reuse prepared/exchanged unlimited gradients for this same U, method and mask.
+        static const uint64_t LVR_Already_Have_UGradBuf = 0x1ull << 1;      ///< Reuse shock-limited gradients for the Barth reference; requires unlimited reuse.
 
         /**
          * @brief Build the limited GG O2 target and cellwise LVR penalty fraction.
@@ -839,7 +855,14 @@ namespace DNDS::Euler
          * @param refreshWeakAlpha Recompute the weak branch; false holds its old values.
          * @param resetWeakAlpha Start a new stage with the fresh weak gate rather than
          *                       applying its relaxation/decay to the preceding stage.
+         * @param FBoundary Gradient-boundary callback from GetGradientBoundary,
+         *                  using an effective ghost rather than the raw VR BC value.
          * @param reconstructionMask Optional caller-owned static constraint on reference gradients/modes for this call only.
+         * @param flags Explicit LVR_* reuse promises. Owned and ghost U, boundary
+         *              data, method and mask must be unchanged since preparation;
+         *              limited reuse also requires shock limiting. Estimator reuse
+         *              may use an earlier boundary time by caller choice. No freshness
+         *              checking is performed. Reuse includes completed halo exchanges.
          */
         void BuildLimitedVRO2(
             ArrayDOFV<nVarsFixed> &u,
@@ -857,7 +880,7 @@ namespace DNDS::Euler
             bool refreshWeakAlpha,
             bool resetWeakAlpha,
             const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary,
-            CFV::ReconstructionMaskView reconstructionMask = {});
+            CFV::ReconstructionMaskView reconstructionMask = {}, uint64_t flags = LVR_No_Flags);
 
         static const int EvaluateURecBeta_DEFAULT = 0x00;          ///< Default: evaluate beta without compression.
         static const int EvaluateURecBeta_COMPRESS_TO_MEAN = 0x01; ///< Compress reconstruction toward cell mean to enforce positivity.
@@ -865,13 +888,19 @@ namespace DNDS::Euler
         /**
          * @brief Evaluate the positivity-preserving reconstruction limiter (beta).
          *
-         * For each cell, computes the maximum compression factor beta such that
-         * u_mean + beta * uRec remains physically realizable (positive density and sensible internal energy).
+         * Selects an admissible flow/species base B and updates the target H as
+         * B + beta*(H-B), preserving positive density and sensible internal energy
+         * at the checked quadratures. COMPRESS_TO_MEAN selects P0 as B; otherwise
+         * the existing staged lower-order base search is used.
+         * RANS coefficients are corrected independently of flow base selection and
+         * beta, including the early exit for admissible flow. Two-equation scalars
+         * use a mean-preserving nonnegative reconstruction; SA keeps the selected
+         * USE_NS_SA_NUT_REDUCED_ORDER policy. Flow fallback never overwrites RANS.
          *
          * @param[in]  u          Cell-centered conservative DOFs.
-         * @param[in]  uRec       Reconstruction coefficients.
-         * @param[out] uRecBeta   Per-cell compression factor in [0,1].
-         * @param[out] nLim       Number of cells where beta < 1 (local with LOCAL_STATS).
+         * @param[in,out] uRec    Reconstruction coefficients, limited in place.
+         * @param[out] uRecBeta   Flow/species compression factor in [0,1].
+         * @param[out] nLim       Number of cells where flow beta < 1 (local with LOCAL_STATS); excludes scalar-only limiting.
          * @param[out] betaMin    Global minimum beta value (local with LOCAL_STATS).
          * @param[in]  flag       Bitwise combination of COMPRESS_TO_MEAN and LOCAL_STATS; zero uses the default policy.
          */
@@ -1186,6 +1215,40 @@ namespace DNDS::Euler
             SourceFilter filter = SourceFilter::All,
             OptionalRef<ArrayDOFV<1>> cellTWarm = {},
             real reactiveSplitCoupledScale = 1.0);
+
+        /** @brief Legacy unweighted source GG gradient, with immutable cell means.
+         *
+         * Interior faces use half the neighbour-minus-mean jump, including
+         * periodic transforms. Boundary faces use the average of the post-BC
+         * left/right states minus the original mean. No distance weighting,
+         * limiting, halo exchange or mean-state mutation is performed.
+         */
+        TDiffU EvaluateSourceGradientGG(const TU &mean, ArrayDOFV<nVarsFixed> &u,
+                                        index iCell, real t)
+        {
+            TDiffU gradient;
+            gradient.setZero(dim, nVars);
+            const auto c2f = mesh->CellFaces(iCell);
+            for (rowsize ic2f = 0; ic2f < c2f.size(); ++ic2f)
+            {
+                const index iFace = c2f[ic2f];
+                const index other = mesh->CellFaceOther(iCell, iFace, ic2f);
+                const int side = mesh->CellIsFaceBack(iCell, iFace, ic2f) ? 0 : 1;
+                const TVec normal = vfv->GetFaceNormFromCell(iFace, iCell, side, -1).template head<dim>() * (side ? -1 : 1);
+                TU right;
+                if (other != UnInitIndex)
+                {
+                    right = u[other];
+                    UFromOtherCell(right, iFace, iCell, other, side);
+                }
+                else
+                    right = generateBoundaryValueForGradient(mean, iCell, iFace, -1, normal,
+                                                             vfv->GetFaceQuadraturePPhys(iFace, -1), t,
+                                                             mesh->GetFaceZone(iFace), 0);
+                gradient += .5 * vfv->GetFaceArea(iFace) * normal * (right - mean).transpose();
+            }
+            return gradient / vfv->GetCellVol(iCell);
+        }
 
         /**
          * @brief Evaluate the cell-integrated source term for a single cell.
@@ -1624,7 +1687,7 @@ namespace DNDS::Euler
          * @param[in]     pPhysics  Physical coordinates of the evaluation point.
          * @param[in]     t         Current simulation time.
          * @param[in]     btype     Boundary type ID.
-         * @param[in]     fixUL     If true, do not modify the left state.
+         * @param[in]     fixUL     If true, permit the handler to modify the left face state (zero SA at a viscous wall). Never pass a stored mean as mutable ULxy.
          * @param[in]     geomMode  Geometry evaluation mode (0=standard).
          * @param[in]     linMode   Linearization mode (0=nonlinear, nonzero=linearized about ULMeanXy).
          * @return Ghost (right) state for the Riemann solver.
@@ -1641,6 +1704,33 @@ namespace DNDS::Euler
             bool fixUL = false,
             int geomMode = 0,
             int linMode = 0);
+
+        /** @brief Effective ghost for GG/GGMP/least-squares gradient boundaries.
+         *
+         * A fresh left copy may be changed by fixUL. Return right+left-mean,
+         * so half its jump from mean equals the post-BC face average minus
+         * mean. This adapter is not the high-order VR boundary protocol.
+         */
+        TU generateBoundaryValueForGradient(const TU &mean, index iCell, index iFace, int iG,
+                                            const TVec &normal, const Geom::tPoint &point, real t,
+                                            Geom::t_index btype, int geomMode = 1)
+        {
+            TU left = mean;
+            TU right = generateBoundaryValue(left, mean, iCell, iFace, iG, normal,
+                                             Geom::NormBuildLocalBaseV<dim>(normal), point,
+                                             t, btype, true, geomMode);
+            return right + (left - mean);
+        }
+
+        /// Boundary callback only for direct gradient reconstruction, including LVR's O2 reference.
+        typename TVFV::template TFBoundary<nVarsFixed> GetGradientBoundary(real t)
+        {
+            return [this, t](const auto &, const auto &mean, index iCell, index iFace, int iG,
+                             const Geom::tPoint &normal, const Geom::tPoint &point, Geom::t_index btype) -> TU
+            {
+                return generateBoundaryValueForGradient(mean, iCell, iFace, iG, normal.template head<dim>(), point, t, btype);
+            };
+        }
 
     private:
         /// @name Per-BC-type handlers (called by generateBoundaryValue)
@@ -2475,7 +2565,7 @@ namespace DNDS::Euler
             bool refreshWeakAlpha,                                                                                        \
             bool resetWeakAlpha,                                                                                          \
             const typename TVFV::template TFBoundary<nVarsFixed> &FBoundary,                                              \
-            CFV::ReconstructionMaskView reconstructionMask);                                                              \
+            CFV::ReconstructionMaskView reconstructionMask, uint64_t flags);                                              \
                                                                                                                           \
         ext template void EulerEvaluator<model>::EvaluateURecBeta(                                                        \
             ArrayDOFV<nVarsFixed> &u,                                                                                     \

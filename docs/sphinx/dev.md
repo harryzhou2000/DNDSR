@@ -21,6 +21,8 @@ These documents describe implemented or in-progress architecture:
 /dev/mesh_refactoring_plan
 /dev/cfv_refactoring_plan
 /dev/euler_refactoring_plan
+/dev/euler_gradient_buffers_2026-11-05
+/dev/euler_rans_reconstruction_pp_2026-11-05
 /dev/review_2026-04-09_dev-harry-refac1
 ```
 

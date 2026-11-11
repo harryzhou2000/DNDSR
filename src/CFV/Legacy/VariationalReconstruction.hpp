@@ -975,8 +975,12 @@ namespace DNDS::CFV
          * explicit 2nd order FV reconstruction
          * \param uRec output, reconstructed gradients
          * \param u input, mean values
-         * \param FBoundary see TFBoundary
-         * \param method currently 1==2nd-order-GaussGreen
+         * \param FBoundary Effective ghost value for a jump from the immutable mean.
+         *        If a BC changes its left state, return right+leftAfter-mean,
+         *        so the boundary target is (right+leftAfter)/2. High-order VR's
+         *        raw boundary-value callback is a different contract.
+         * \param method 1=Green-Gauss (subs2ndOrderGGScheme controls interior
+         *        weighting), 11=GGMP, 2=least squares.
          */
         template <int nVarsFixed = 5>
         void DoReconstruction2ndGrad(

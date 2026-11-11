@@ -179,9 +179,9 @@ namespace DNDS::EulerP
                     real uI = uScalar[iVarS].father(iCell);
                     real uOther = 0.;
                     if (iCellOther != UnInitIndex)
-                        uOther = uScalar[iVarS](iCell);
+                        uOther = uScalar[iVarS](iCellOther);
                     else
-                        uOther = faceBCScalarBuffer[iVarS](iCell);
+                        uOther = faceBCScalarBuffer[iVarS](iFace);
                     uScalarGrad[iVarS].father[iCell].noalias() += norm * (uOther - uI);
                 }
             }

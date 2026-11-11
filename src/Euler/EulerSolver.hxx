@@ -201,8 +201,16 @@ namespace DNDS::Euler
                 ArrayDOFV<nVarsFixed> &crhs,
                 ArrayDOFV<nVarsFixed> &cx,
                 ArrayDOFV<1> &dTau,
-                int iter, real ct, int uPos, int reconstructionFlag)
+                int iter, real ct, int uPos, int reconstructionFlag, bool reuseDtGradients = false)
         {
+            // Opt in only at a visible fdtau(cx) -> frhs(cx) sequence below.
+            // No permission or freshness state survives this call. Ordinary ODE
+            // callbacks default to recomputation, including explicit-first stages.
+            const real rhsTime = tSimu + ct * curDtImplicit;
+            uint64_t gradientReuseFlags = reuseDtGradients && tSimu == rhsTime
+                                              ? TEval::RHS_Direct_2nd_Rec_already_have_uGradBufNoLim |
+                                                    TEval::RHS_Direct_2nd_Rec_already_have_uGradBuf
+                                              : TEval::RHS_No_Flags;
             cx.trans.startPersistentPull();
             cx.trans.waitPersistentPull(); // for hermite3
             auto &uRecC = config.timeMarchControl.timeMarchIsTwoStage() && uPos == 1 ? uRec1 : uRec;
@@ -225,6 +233,12 @@ namespace DNDS::Euler
                     compressed);
                 return eval.generateBoundaryValue(ULfixed, UMean, iCell, iFace, ig, normOutV, normBase, pPhy, tSimu + ct * curDtImplicit, bType, true, 1);
             };
+            auto FBoundaryGG = eval.GetGradientBoundary(rhsTime);
+            // The degree-one substitution calls a gradient reconstruction;
+            // high-order VR retains its original boundary-value protocol.
+            const auto &FBoundaryRec = vfv->getSettings().maxOrder == 1 && vfv->getSettings().subs2ndOrder != 0
+                                           ? FBoundaryGG
+                                           : FBoundary;
             typename TVFV::template TFBoundaryDiff<nVarsFixed>
                 FBoundaryDiff = [&](const TU &UL, const TU &dU, const TU &UMean, index iCell, index iFace, int ig,
                                     const Geom::tPoint &normOut, const Geom::tPoint &pPhy, const Geom::t_index bType) -> TU
@@ -244,10 +258,12 @@ namespace DNDS::Euler
                        eval.generateBoundaryValue(ULfixed, UMean, iCell, iFace, ig, normOutV, normBase, pPhy, tSimu + ct * curDtImplicit, bType, true, 1);
             };
 
-            eval.FixUMaxFilter(cx);
+            eval.FixUMaxFilter(cx); // Currently a no-op; invalidate reuse if this starts modifying U.
             if ((iter > config.convergenceControl.nAnchorUpdateStart &&
                  (iter - config.convergenceControl.nAnchorUpdateStart - 1) % config.convergenceControl.nAnchorUpdate == 0))
             {
+                reuseDtGradients = false;
+                gradientReuseFlags = TEval::RHS_No_Flags;
                 eval.updateBCAnchors(cx, uRecC);
                 eval.updateBCProfiles(cx, uRecC);
                 eval.updateBCProfilesPressureRadialEq();
@@ -285,7 +301,27 @@ namespace DNDS::Euler
                                       config.limiterControl.limitedVR,
                                       !config.limiterControl.limitedVR.weakFreezeWithinImplicitStage || limitedVRStageStart,
                                       limitedVRStageStart,
-                                      FBoundary, reconstructionMask);
+                                      FBoundaryGG, reconstructionMask,
+                                      reuseDtGradients ? TEval::LVR_Already_Have_UGradBufNoLim |
+                                                             TEval::LVR_Already_Have_UGradBuf
+                                                       : TEval::LVR_No_Flags);
+                gradientReuseFlags = TEval::RHS_No_Flags;
+                const auto &lvrSettings = config.limiterControl.limitedVR;
+                const bool lvrPreparedGradients = lvrSettings.alphaMax != 0 || lvrSettings.contactAlphaMax != 0 || lvrSettings.weakAlphaMax != 0;
+                if (config.implicitReconstructionControl.useExplicit && lvrPreparedGradients && (!reuseDtGradients || rhsTime == tSimu))
+                {
+                    // A precise direct-FV RHS may reuse the same-U LVR producer
+                    // in this scope. LVR does not always need/exchange ghost gradients.
+                    eval.uGradBufNoLim.trans.startPersistentPull();
+                    eval.uGradBufNoLim.trans.waitPersistentPull();
+                    gradientReuseFlags = TEval::RHS_Direct_2nd_Rec_already_have_uGradBufNoLim;
+                    if (config.limiterControl.limitedVR.o2ReferenceLimiter == O2ReferenceLimiter::Barth)
+                    {
+                        eval.uGradBuf.trans.startPersistentPull();
+                        eval.uGradBuf.trans.waitPersistentPull();
+                        gradientReuseFlags |= TEval::RHS_Direct_2nd_Rec_already_have_uGradBuf;
+                    }
+                }
             }
 
             DNDS_MPI_InsertCheck(mpi, " Lambda RHS: StartRec");
@@ -314,12 +350,12 @@ namespace DNDS::Euler
 
                     if (useLimitedVR)
                         vfv->DoReconstructionIterLimited(
-                            uRecC, uRecNew, cx, FBoundary,
+                            uRecC, uRecNew, cx, FBoundaryRec,
                             uRecO2, lvrAlpha_, false, reconstructionMask);
                     else
                         vfv->DoReconstructionIter(
                             uRecC, uRecNew, cx,
-                            FBoundary,
+                            FBoundaryRec,
                             false, false, false, reconstructionMask);
 
                     uRecC.trans.startPersistentPull();
@@ -361,7 +397,7 @@ namespace DNDS::Euler
                 {
                     vfv->DoReconstructionIter(
                         uRecC, uRecNew, cx,
-                        FBoundary,
+                        FBoundaryRec,
                         true, true, false, reconstructionMask);
                     uRecNew.trans.startPersistentPull();
                     uRecNew.trans.waitPersistentPull();
@@ -426,7 +462,7 @@ namespace DNDS::Euler
                 uRecNew = uRecBC; // last version of B
                 vfv->DoReconstructionIter(
                     uRecC, uRecBC, cx,
-                    FBoundary, true, true, true, reconstructionMask); // puts rhs of reconstruction A^-1b into uRecBC
+                    FBoundaryRec, true, true, true, reconstructionMask); // puts rhs of reconstruction A^-1b into uRecBC
                 if (iter > 2)
                 {
                     if (config.implicitReconstructionControl.fpcgResetScheme == 0)
@@ -468,7 +504,7 @@ namespace DNDS::Euler
                         {
                             vfv->DoReconstructionIter(
                                 x, res, cx,
-                                FBoundary, true, true, false, reconstructionMask);
+                                FBoundaryRec, true, true, false, reconstructionMask);
                             res.trans.startPersistentPull();
                             res.trans.waitPersistentPull();
                             res *= -1;
@@ -510,7 +546,7 @@ namespace DNDS::Euler
                 std::vector<int> mask;
                 mask.resize(1);
                 mask[0] = 5;
-                vfv->DoReconstruction2nd(uRec, u, FBoundary, 1, mask, reconstructionMask);
+                vfv->DoReconstruction2nd(uRec, u, FBoundaryGG, 1, mask, reconstructionMask);
             }
             if (model == NS_2EQ || model == NS_2EQ_3D)
             {
@@ -518,7 +554,7 @@ namespace DNDS::Euler
                 mask.resize(2);
                 mask[0] = 5;
                 mask[1] = 6;
-                vfv->DoReconstruction2nd(uRec, u, FBoundary, 1, mask, reconstructionMask);
+                vfv->DoReconstruction2nd(uRec, u, FBoundaryGG, 1, mask, reconstructionMask);
             }
             Timer().StopTimer(PerformanceTimer::Reconstruction);
             if (gradIsZero)
@@ -715,7 +751,7 @@ namespace DNDS::Euler
                 eval.EvaluateRHS(crhs, JSourceC, cx, uRecC /* dummy*/, uRecC /* dummy*/,
                                  betaPPC /* dummy*/, alphaPP_tmp /* dummy*/, false, tSimu + ct * curDtImplicit,
                                  TEval::RHS_Direct_2nd_Rec | (config.limiterControl.useLimiter ? TEval::RHS_Direct_2nd_Rec_use_limiter : TEval::RHS_No_Flags) |
-                                     sourceTauSplittingRHSFlag,
+                                     sourceTauSplittingRHSFlag | gradientReuseFlags,
                                  warmT, reactiveSplitChi, reconstructionMask);
             else if (config.limiterControl.useLimiter || config.limiterControl.usePPRecLimiter) // todo: opt to using limited for uRecUnlim
                 eval.EvaluateRHS(crhs, JSourceC, cx, config.limiterControl.useViscousLimited ? uRecLimited : uRecC, uRecLimited,
@@ -745,14 +781,18 @@ namespace DNDS::Euler
                 ArrayDOFV<nVarsFixed> &crhs,
                 ArrayDOFV<nVarsFixed> &cx,
                 ArrayDOFV<1> &dTau,
-                int iter, real ct, int uPos)
+                int iter, real ct, int uPos, bool reuseDtGradients = false)
         {
             if (config.timeMarchControl.timeMarchIsTwoStage() && uPos == 2) // special for two stage (HM3):
             {
+                const auto gradientFlags = reuseDtGradients && tSimu == tSimu + ct * curDtImplicit
+                                               ? TEval::RHS_Direct_2nd_Rec_already_have_uGradBufNoLim |
+                                                     TEval::RHS_Direct_2nd_Rec_already_have_uGradBuf
+                                               : TEval::RHS_No_Flags;
                 // ! mind that JSource, betaPP uses as uPos == 0
                 return eval.EvaluateRHS(crhs, JSource, cx, uRecNew, uRecNew, betaPP, alphaPP_tmp, false, tSimu + ct * curDtImplicit,
                                         TEval::RHS_Direct_2nd_Rec | TEval::RHS_Dont_Record_Bud_Flux | TEval::RHS_Dont_Update_Integration |
-                                            TEval::RHS_Direct_2nd_Rec_already_have_uGradBufNoLim | //! uGradBufNoLim already existent in fdtau
+                                            gradientFlags |
                                             (config.limiterControl.useLimiter ? TEval::RHS_Direct_2nd_Rec_use_limiter : TEval::RHS_No_Flags) |
                                             sourceTauSplittingRHSFlag,
                                         warmT, reactiveSplitChi, reconstructionMask);
@@ -768,7 +808,7 @@ namespace DNDS::Euler
                 //                             TEval::RHS_Direct_2nd_Rec_already_have_uGradBufNoLim | //! uGradBufNoLim already existent in fdtau
                 //                             (config.limiterControl.useLimiter ? TEval::RHS_Direct_2nd_Rec_use_limiter : TEval::RHS_No_Flags));
             }
-            return frhsOuter(crhs, cx, dTau, iter, ct, uPos, 1); // reconstructionFlag == 1
+            return frhsOuter(crhs, cx, dTau, iter, ct, uPos, 1, reuseDtGradients); // reconstructionFlag == 1
         };
 
         auto fdtau = [&](ArrayDOFV<nVarsFixed> &cx, ArrayDOFV<1> &dTau, real alphaDiag, int uPos)
@@ -779,7 +819,9 @@ namespace DNDS::Euler
             // uRec.trans.startPersistentPull();
             // uRec.trans.waitPersistentPull();
             auto &uRecC = config.timeMarchControl.timeMarchIsTwoStage() && uPos == 1 ? uRec1 : uRec;
-            eval.EvaluateDt(dTau, cx, uRecC, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt, tSimu, 0, warmT, reconstructionMask);
+            eval.EvaluateDt(dTau, cx, uRecC, CFLNow, curDtMin, 1e100, config.implicitCFLControl.useLocalDt, tSimu,
+                            config.limiterControl.useLimiter ? TEval::DT_No_Flags : TEval::DT_Disable_Gradient_Shock_Limiter,
+                            warmT, reconstructionMask);
             for (int iS = 1; iS <= config.implicitCFLControl.nSmoothDTau; iS++)
             {
                 // ArrayDOFV<1> dTauNew = dTau; //TODO: copying is still unusable; consider doing copiers on the level of ArrayDOFV and ArrayRecV
@@ -941,7 +983,7 @@ namespace DNDS::Euler
                 fincrement(uStar, cxInc, 1.0, uPos);
 
                 fdtau(uStar, dTau, alphaDiag, uPos);
-                frhs(rhsRebuilt, uStar, dTau, iter, ct, uPos);
+                frhs(rhsRebuilt, uStar, dTau, iter, ct, uPos, true);
 
                 resRebuilt = rhsRebuilt;
                 resRebuilt *= alphaDiag;
@@ -1018,14 +1060,14 @@ namespace DNDS::Euler
                     }
 
                     // from uMG1 to rhsTemp - JSourceTmp
-                    auto call_evaluate_rhs = [&]()
+                    auto call_evaluate_rhs = [&](uint64_t gradientFlags = TEval::RHS_No_Flags)
                     {
                         if (mgLevel == 1)
                             eval.EvaluateRHS(rhsTemp, JSourceTmp, uMG1,
                                              config.limiterControl.useViscousLimited ? uRecNew : uRec /*dummy*/, uRec /*dummy*/,
                                              betaPP /*dummy*/, alphaPP /*dummy*/, false, tSimu + dt * ct,
                                              TEval::RHS_Direct_2nd_Rec | TEval::RHS_Dont_Record_Bud_Flux | TEval::RHS_Dont_Update_Integration |
-                                                 TEval::RHS_Direct_2nd_Rec_already_have_uGradBufNoLim | //! uGradBufNoLim already existent in fdtau
+                                                 gradientFlags |
                                                  (config.limiterControl.useLimiter ? TEval::RHS_Direct_2nd_Rec_use_limiter : TEval::RHS_No_Flags) |
                                                  TEval::RHS_Recover_IncFScale |
                                                  sourceTauSplittingRHSFlag,
@@ -1039,7 +1081,7 @@ namespace DNDS::Euler
                                                  TEval::RHS_Dont_Record_Bud_Flux |
                                                  TEval::RHS_Dont_Update_Integration |
                                                  (TEval::RHS_Ignore_Viscosity * use_1st_conv_ignore_vis) |
-                                                 TEval::RHS_Direct_2nd_Rec_already_have_uGradBufNoLim | //! uGradBufNoLim already existent in fdtau
+                                                 gradientFlags |
                                                  (config.limiterControl.useLimiter ? TEval::RHS_Direct_2nd_Rec_use_limiter : TEval::RHS_No_Flags) |
                                                  TEval::RHS_Recover_IncFScale |
                                                  sourceTauSplittingRHSFlag,
@@ -1053,9 +1095,19 @@ namespace DNDS::Euler
 
                         // if (curMGIter > 1 && mgLevel == mgLevelMax) // this is used for checking lusgs-1lusgs == 2xlusgs
                         {
+                            uint64_t gradientFlags = TEval::RHS_No_Flags;
                             if (iIterMG > 1)
+                            {
                                 fdtau(uMG1, dTauC, alphaDiag, uPos); //! warning! dTauC is overwritten
-                            call_evaluate_rhs();
+                                // Same U, no intervening updates. RHS requires its
+                                // exact boundary time; lambda may use tSimu instead.
+                                if (tSimu == tSimu + dt * ct)
+                                    gradientFlags = TEval::RHS_Direct_2nd_Rec_already_have_uGradBufNoLim |
+                                                    TEval::RHS_Direct_2nd_Rec_already_have_uGradBuf;
+                            }
+                            // First projection and post-increment recursive calls
+                            // have no same-U producer in this scope: recompute.
+                            call_evaluate_rhs(gradientFlags);
                             rhsTemp.trans.startPersistentPull();
                             rhsTemp.trans.waitPersistentPull();
                             if (iIterMG == 1)
@@ -1108,7 +1160,7 @@ namespace DNDS::Euler
                 };
 
                 fdtau(x_upper, dTauC, alphaDiag, uPos); // warning: fdtau resets lambda01234, crucial if useRoeJacobian
-                frhs(rhsBuf, x_upper, dTauC, iter, ct, uPos);
+                frhs(rhsBuf, x_upper, dTauC, iter, ct, uPos, true);
                 rhsBuf.trans.startPersistentPull();
                 rhsBuf.trans.waitPersistentPull();
                 solve_multigrid_impl(x_upper, rhsBuf, resOther, mgLevelInit, mgLevelMax, solve_multigrid_impl);
