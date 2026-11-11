@@ -25,6 +25,7 @@ namespace DNDS::Geom
 
 namespace DNDS::Cauchy
 {
+    class DomainExecutionContext;
     class InterfaceCoupling;
     namespace EquationFVDetail
     {
@@ -96,6 +97,44 @@ namespace DNDS::Cauchy
         // Only needed when a cell reduction is requested without its matching
         // public face output. Columns: spectral sum, wave jump, pressure min.
         std::optional<Runtime::Array<real>> _faceScratch;
+    };
+    /// Named phase selection for one prepared finite-volume execution.
+    enum class FiniteVolumeEvaluationMode
+    {
+        SpatialResidual,
+        ReconstructionOnly,
+        SamplingInputs
+    };
+    /// @brief Explicit finite-volume phase request used by solver orchestration.
+    ///
+    /// `SpatialResidual` replaces the supplied residual and may publish named
+    /// auxiliary buffers. `ReconstructionOnly` performs the same mean/gradient/
+    /// limiter preparation without flux/source evaluation. `SamplingInputs`
+    /// refreshes only state/finalized-reconstruction halos for interface
+    /// sampling. The request owns no arrays; its OptionalRef operands are valid
+    /// only for this synchronous call. DomainExecutionContext retains backend
+    /// resources and every queued operation retains its numerical owners.
+    struct FiniteVolumeEvaluation
+    {
+        FiniteVolumeEvaluationMode mode = FiniteVolumeEvaluationMode::SpatialResidual;
+        OptionalRef<EquationDofs> residual;
+        OptionalRef<AuxiliaryValues> auxiliary;
+        real time = 0;
+
+        static FiniteVolumeEvaluation Spatial(EquationDofs &output, real time = 0,
+                                              OptionalRef<AuxiliaryValues> auxiliary = {})
+        {
+            return {FiniteVolumeEvaluationMode::SpatialResidual,
+                    OptionalRef<EquationDofs>(output), auxiliary, time};
+        }
+        static FiniteVolumeEvaluation Reconstruction(real time = 0)
+        {
+            return {FiniteVolumeEvaluationMode::ReconstructionOnly, {}, {}, time};
+        }
+        static FiniteVolumeEvaluation Sampling()
+        {
+            return {FiniteVolumeEvaluationMode::SamplingInputs, {}, {}, 0};
+        }
     };
     using RHSFieldView = Runtime::PairReadView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>;
     using RHSFlowRows = Runtime::FixedWidthRows<Runtime::UniformTableRows, 5>;
@@ -436,6 +475,16 @@ namespace DNDS::Cauchy
                                    const Runtime::ExecutionStream &stream, real time = 0) const;
         void RefreshSamplingInputs(EquationDofs &state, ReconstructionState &reconstruction, Workspace &workspace, Runtime::EagerEngine &engine,
                                    const Runtime::ExecutionStream &stream) const;
+        /// @brief Canonical solver-facing FV phase entry.
+        /// @pre `context` owns the primary stream and outlives this call.
+        /// @pre Request operands are compatible, nonaliased and retained until
+        ///      synchronous completion.
+        /// @post Spatial residual/reconstruction/sampling effects match the
+        ///       corresponding compatibility entry above; no extra collective
+        ///       or backend-dependent orchestration branch is introduced.
+        void Execute(EquationDofs &state, ReconstructionState &reconstruction,
+                     Workspace &workspace, DomainExecutionContext &context,
+                     FiniteVolumeEvaluation evaluation) const;
         /// Same synchronous collective/access contract as Evaluate. Only this
         /// trial's private scratch and distinct residual are written; state
         /// owned values and ordinary reconstruction are unchanged.

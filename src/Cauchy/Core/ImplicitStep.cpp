@@ -49,11 +49,14 @@ namespace DNDS::Cauchy
             // loop, so they reuse one allocation-independent scratch workspace.
             // Their means, halos and durable reconstruction states stay distinct.
             const auto workspace = _workspace;
-            const auto solver = std::make_shared<NonlinearSolver>(_fv, middle, reconstruction, workspace, _engine, _stream, settings,
-                                                                  Algebra::ComponentSelection(middle.ComponentNumber(), _ditrComponents), _workers);
+            const auto solver = std::make_shared<NonlinearSolver>(
+                _fv, middle, reconstruction, workspace,
+                _execution, settings,
+                Algebra::ComponentSelection(middle.ComponentNumber(), _ditrComponents));
             std::shared_ptr<PolynomialMultigrid> multigrid;
             if (settings.implicit.multigrid.levels)
-                multigrid = std::make_shared<PolynomialMultigrid>(mesh, _fv, middle, *solver, _engine, _stream, settings, _workers);
+                multigrid = std::make_shared<PolynomialMultigrid>(
+                    mesh, _fv, middle, *solver, _execution, settings);
             return CoupledStageOperator{
                 [this, solver](auto &state, auto &rate, real time, int stage)
                 { SetTimeStage(stage); solver->EvaluateRate(state, rate, time); },
@@ -73,10 +76,13 @@ namespace DNDS::Cauchy
         MPI::LocalStage(mpi, [&]
                         { _timeStepper = std::make_unique<EquationTimeStepper>(_trial, _steady ? "bdf1" : time.method, [mpi, checks = settings.implicit.collectiveChecks](const auto &run)
                                                                                { if (checks) MPI::LocalStage(mpi, run); else run(); }, ODE::DITRSettings{time.ditr.fraction, time.ditr.theta, time.ditr.variant == "U2R1" ? ODE::DITRVariant::U2R1 : ODE::DITRVariant::U2R2}); });
-        _implicit = std::make_unique<NonlinearSolver>(_fv, _trial, _reconstruction, _workspace, _engine, _stream, settings,
-                                                      Algebra::ComponentSelection(_trial.ComponentNumber(), _ditrComponents), _workers);
+        _implicit = std::make_unique<NonlinearSolver>(
+            _fv, _trial, _reconstruction, _workspace,
+            _execution, settings,
+            Algebra::ComponentSelection(_trial.ComponentNumber(), _ditrComponents));
         if (settings.implicit.multigrid.levels)
-            _multigrid = std::make_unique<PolynomialMultigrid>(mesh, _fv, _trial, *_implicit, _engine, _stream, settings, _workers);
+            _multigrid = std::make_unique<PolynomialMultigrid>(
+                mesh, _fv, _trial, *_implicit, _execution, settings);
     }
     void Domain::EvaluateImplicitRate(EquationDofs &state, EquationDofs &rate, FiniteVolume::Workspace &workspace, real time, int stage)
     {

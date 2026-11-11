@@ -3,6 +3,7 @@
 #include "DNDS/Algebra/DofHalo.hpp"
 #include "Cauchy/Discretization/FiniteVolumeKernels.hpp"
 #include "Cauchy/Discretization/LimitedVRInternal.hpp"
+#include "Cauchy/Core/DomainExecutionContext.hpp"
 #include "Cauchy/Core/OperatorSchedule.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/Physics/EquationTransport.hpp"
@@ -4110,6 +4111,40 @@ namespace DNDS::Cauchy
             auto operation = engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream);
             operation.Wait();
         }
+    }
+    void FiniteVolume::Execute(EquationDofs &state,
+                               ReconstructionState &reconstruction,
+                               Workspace &work,
+                               DomainExecutionContext &context,
+                               FiniteVolumeEvaluation evaluation) const
+    {
+        auto &engine = context.Engine();
+        const auto &stream = context.PrimaryStream();
+        switch (evaluation.mode)
+        {
+        case FiniteVolumeEvaluationMode::SpatialResidual:
+            DNDS_check_throw_info(evaluation.residual,
+                                  "spatial FV evaluation requires a residual output");
+            if (evaluation.auxiliary)
+                Evaluate(state, *evaluation.residual, reconstruction, work,
+                         *evaluation.auxiliary, engine, stream, evaluation.time);
+            else
+                Evaluate(state, *evaluation.residual, reconstruction, work,
+                         engine, stream, evaluation.time);
+            return;
+        case FiniteVolumeEvaluationMode::ReconstructionOnly:
+            DNDS_check_throw_info(!evaluation.residual && !evaluation.auxiliary,
+                                  "reconstruction-only FV evaluation has no residual or auxiliary output");
+            PrepareReconstruction(state, reconstruction, work, engine, stream,
+                                  evaluation.time);
+            return;
+        case FiniteVolumeEvaluationMode::SamplingInputs:
+            DNDS_check_throw_info(!evaluation.residual && !evaluation.auxiliary,
+                                  "sampling-input FV evaluation has no residual or auxiliary output");
+            RefreshSamplingInputs(state, reconstruction, work, engine, stream);
+            return;
+        }
+        DNDS_check_throw_info(false, "unknown finite-volume evaluation mode");
     }
     void FiniteVolume::EvaluateMean(EquationDofs &state, EquationDofs &residual, MeanWorkspace &work,
                                     R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const

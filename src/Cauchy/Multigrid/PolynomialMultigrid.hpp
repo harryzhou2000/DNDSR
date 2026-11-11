@@ -4,6 +4,7 @@
 
 namespace DNDS::Cauchy
 {
+    class DomainExecutionContext;
     /// Same-cell FAS hierarchy: high-order VR -> direct-gradient O2 -> first
     /// order convection. All levels retain viscous gradients/physical BCs.
     /// Normalized state, residual and correction maps are identity on means.
@@ -38,6 +39,11 @@ namespace DNDS::Cauchy
         PolynomialMultigrid(ssp<Geom::UnstructuredMesh> mesh, const FiniteVolume &fine, EquationDofs &state,
                             NonlinearSolver &fineSolver, Runtime::EagerEngine &engine, Runtime::ExecutionStream stream,
                             const DomainSettings &settings, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt);
+        /// Orchestration constructor retaining the domain execution owner.
+        PolynomialMultigrid(ssp<Geom::UnstructuredMesh> mesh, const FiniteVolume &fine,
+                            EquationDofs &state, NonlinearSolver &fineSolver,
+                            DomainExecutionContext context,
+                            const DomainSettings &settings);
         /// Accept only the original finest uncompressed equation, never the
         /// coarse FAS forcing. Caps return unconverged. Coarse levels have no
         /// mutable VR warm guesses; they are reset by restriction every cycle.

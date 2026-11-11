@@ -1,5 +1,7 @@
-#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Multigrid/PolynomialMultigrid.hpp"
+
+#include "Cauchy/Core/DomainExecutionContext.hpp"
+#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Solver/FAS.hpp"
@@ -143,6 +145,9 @@ namespace DNDS::Cauchy
             using Level = Multigrid::StateFASLevel<State>;
             using Transfer = Multigrid::StateFASTransfer<State>;
             using Cycle = Multigrid::StateFASCycle<State, Operations>;
+            // Declared before hierarchy resources so it is destroyed after all
+            // streams, solvers and scratch which may refer to its runtime.
+            std::optional<DomainExecutionContext> executionOwner;
             struct SpatialRate
             {
                 State rate;
@@ -552,6 +557,16 @@ namespace DNDS::Cauchy
         MPI::LocalStage(MPIInfo(fine.Metrics().Communicator()), [&]
                         { _data = std::make_shared<Data>(fine, state, solver, settings); });
         _data->Build(mesh, engine, stream, settings, workers);
+    }
+    PolynomialMultigrid::PolynomialMultigrid(
+        ssp<Geom::UnstructuredMesh> mesh, const FiniteVolume &fine,
+        EquationDofs &state, NonlinearSolver &solver,
+        DomainExecutionContext context, const DomainSettings &settings)
+        : PolynomialMultigrid(std::move(mesh), fine, state, solver,
+                              context.Engine(), context.PrimaryStream(), settings,
+                              context.ChemicalWorkers())
+    {
+        _data->executionOwner.emplace(std::move(context));
     }
     NonlinearIterationReport PolynomialMultigrid::Solve(const EquationDofs &source, real mass, real rhsScale, real time, int stage,
                                                         NonlinearSolveControl control)

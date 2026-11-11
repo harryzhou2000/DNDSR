@@ -75,9 +75,13 @@ namespace DNDS::Cauchy
                     if (domain)
                     {
                         if (prepared)
-                            domain->_fv.PrepareReconstruction(domain->_trial, *domain->_reconstruction, *domain->_workspace, domain->_engine, domain->_stream, 0);
+                            domain->_fv.Execute(domain->_trial, *domain->_reconstruction,
+                                                *domain->_workspace, domain->_execution,
+                                                FiniteVolumeEvaluation::Reconstruction(0));
                         else
-                            domain->_fv.RefreshSamplingInputs(domain->_trial, *domain->_reconstruction, *domain->_workspace, domain->_engine, domain->_stream);
+                            domain->_fv.Execute(domain->_trial, *domain->_reconstruction,
+                                                *domain->_workspace, domain->_execution,
+                                                FiniteVolumeEvaluation::Sampling());
                     }
                 std::vector<InterfaceDomainInput> ports(_domains.size());
                 for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
@@ -227,10 +231,14 @@ namespace DNDS::Cauchy
                     if (_interfaces)
                     {
                         localPhase([](index, Domain &domain)
-                                   { domain._fv.RefreshSamplingInputs(domain._trial, *domain._reconstruction, *domain._workspace, domain._engine, domain._stream); }, "predictor halos");
+                                   { domain._fv.Execute(domain._trial, *domain._reconstruction,
+                                                        *domain._workspace, domain._execution,
+                                                        FiniteVolumeEvaluation::Sampling()); }, "predictor halos");
                         refresh(stageTime, stage, false);
                         localPhase([&](index, Domain &domain)
-                                   { domain._fv.PrepareReconstruction(domain._trial, *domain._reconstruction, *domain._workspace, domain._engine, domain._stream, stageTime); }, "interface reconstruction");
+                                   { domain._fv.Execute(domain._trial, *domain._reconstruction,
+                                                        *domain._workspace, domain._execution,
+                                                        FiniteVolumeEvaluation::Reconstruction(stageTime)); }, "interface reconstruction");
                         refresh(stageTime, stage, true);
                     }
                     if (auto result = localPhase([](index, Domain &domain)
@@ -245,7 +253,9 @@ namespace DNDS::Cauchy
                 if (_interfaces)
                 {
                     localPhase([](index, Domain &domain)
-                               { domain._fv.RefreshSamplingInputs(domain._trial, *domain._reconstruction, *domain._workspace, domain._engine, domain._stream); }, "accepted-time predictor halos");
+                               { domain._fv.Execute(domain._trial, *domain._reconstruction,
+                                                    *domain._workspace, domain._execution,
+                                                    FiniteVolumeEvaluation::Sampling()); }, "accepted-time predictor halos");
                     refresh(_config.Time().steady ? _time : _time + dt, 0, false, true);
                 }
                 // Only local lease acquisition belongs in this control-stage

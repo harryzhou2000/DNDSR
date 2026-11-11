@@ -1,3 +1,6 @@
+#include "Cauchy/Implicit/NonlinearSolver.hpp"
+
+#include "Cauchy/Core/DomainExecutionContext.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
@@ -84,6 +87,9 @@ namespace DNDS::Cauchy
     }
     struct NonlinearSolver::Data
     {
+        // Declared first so it is destroyed last, after every stream, solver,
+        // workspace and retained operation handle in this bound problem.
+        std::optional<DomainExecutionContext> executionOwner;
         R::SessionAccess session;
         FiniteVolume discrete;
         std::shared_ptr<FiniteVolume::ReconstructionState> reconstruction;
@@ -157,6 +163,18 @@ namespace DNDS::Cauchy
         {
             linear = std::make_unique<DofLinearSolver>(problem, state, [&](auto &field)
                                                        { return discrete.BindHalo(field); }, NonlinearDetail::ResolveLinear(settings), LinearExecution{overlap, settings.collectiveChecks});
+        }
+        void EvaluateSpatial(EquationDofs &state, real time,
+                             R::EagerEngine &fallbackEngine)
+        {
+            if (executionOwner)
+                discrete.Execute(state, *reconstruction, *workspace,
+                                 *executionOwner,
+                                 FiniteVolumeEvaluation::Spatial(spatial, time,
+                                                                 std::ref(auxiliary)));
+            else
+                discrete.Evaluate(state, spatial, *reconstruction, *workspace,
+                                  auxiliary, fallbackEngine, stream, time);
         }
         void PublishAuxiliary(const EquationDofs &state, real time)
         {
@@ -240,6 +258,20 @@ namespace DNDS::Cauchy
         _data->PrepareLinear(state, settings.execution.overlap);
     }
 
+    NonlinearSolver::NonlinearSolver(
+        const FiniteVolume &discrete, EquationDofs &state,
+        std::shared_ptr<FiniteVolume::ReconstructionState> reconstruction,
+        std::shared_ptr<FiniteVolume::Workspace> workspace,
+        DomainExecutionContext context, const DomainSettings &settings,
+        const Algebra::ComponentSelection &residualSelection)
+        : NonlinearSolver(discrete, state, std::move(reconstruction),
+                          std::move(workspace), context.Engine(),
+                          context.PrimaryStream(), settings, residualSelection,
+                          context.ChemicalWorkers())
+    {
+        _data->executionOwner.emplace(std::move(context));
+    }
+
     NonlinearIterationReport NonlinearSolver::Solve(EquationDofs &state, const EquationDofs &source,
                                                     real mass, real rhsScale, real time, int stage, NonlinearSolveControl control)
     {
@@ -266,7 +298,7 @@ namespace DNDS::Cauchy
             for (const auto *input : {&state, &data.spatial})
                 EquationDofOperations::RequireDistinct(*input, rate);
             auto write = rate.WriteOwned(); write.CancelUnmodified(); });
-        data.discrete.Evaluate(state, data.spatial, *data.reconstruction, *data.workspace, data.auxiliary, engine, data.stream, time);
+        data.EvaluateSpatial(state, time, engine);
         data.PublishAuxiliary(state, time);
         data.Stage([&]
                    {
@@ -340,7 +372,7 @@ namespace DNDS::Cauchy
         {
             if (!cachedRate)
             {
-                data.discrete.Evaluate(state, data.spatial, *data.reconstruction, *data.workspace, data.auxiliary, engine, data.stream, time);
+                data.EvaluateSpatial(state, time, engine);
                 data.PublishAuxiliary(state, time);
                 return;
             }
@@ -801,7 +833,7 @@ namespace DNDS::Cauchy
                     EquationDofOperations::RequireDistinct(*input, *rate);
                 auto rateWrite = rate->WriteOwned(); rateWrite.CancelUnmodified();
             } });
-        data.discrete.Evaluate(state, data.spatial, *data.reconstruction, *data.workspace, data.auxiliary, engine, data.stream, time);
+        data.EvaluateSpatial(state, time, engine);
         data.PublishAuxiliary(state, time);
         data.Stage([&]
                    {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cauchy/Core/StepResult.hpp"
+#include "Cauchy/Core/DomainExecutionContext.hpp"
 
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Core/CoordinatedSchedule.hpp"
@@ -26,7 +27,7 @@ namespace DNDS::Cauchy
         friend class Simulation;
         std::string _name;
         EquationSystem _equation;
-        std::optional<Physics::Chemistry::ChemicalWorkerPool> _workers;
+        DomainExecutionContext _execution;
         FiniteVolume _fv;
         EquationDofs _accepted, _trial;
         EquationDofs _residualState;
@@ -36,9 +37,6 @@ namespace DNDS::Cauchy
         std::optional<EquationDofs> _reconstructionBackup, _observationInput, _observationState;
         std::optional<Runtime::Array<real>> _limitedVRBackup;
         std::optional<EquationAdmissibilityPolicy> _admissibility;
-        /// Logical-const diagnostics may enqueue work on the domain stream.
-        mutable Runtime::EagerEngine _engine;
-        Runtime::ExecutionStream _stream;
         std::unique_ptr<NonlinearSolver> _implicit;
         std::unique_ptr<PolynomialMultigrid> _multigrid;
         std::unique_ptr<EquationTimeStepper> _timeStepper;
@@ -164,7 +162,10 @@ namespace DNDS::Cauchy
         /// Shared worker capacity for standalone native operators. A copy
         /// retains the pool, never an acquired worker. Serialize operator and
         /// Domain use or provide sufficient capacity; no implicit pool exists.
-        std::optional<Physics::Chemistry::ChemicalWorkerPool> ChemicalWorkers() const { return _workers; }
+        std::optional<Physics::Chemistry::ChemicalWorkerPool> ChemicalWorkers() const
+        {
+            return _execution.ChemicalWorkers();
+        }
         EquationDofs &Dofs() { return _accepted; }
         const EquationDofs &Dofs() const { return _accepted; }
         /// Synchronous local point refresh using this domain's explicit worker

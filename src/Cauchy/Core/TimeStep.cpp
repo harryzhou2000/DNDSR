@@ -37,13 +37,14 @@ namespace DNDS::Cauchy
             std::optional<EquationDofs> residual;
             MPI::LocalStage(mpi, [&]
                             { residual.emplace(EquationDofOperations::NewVector(_accepted)); });
-            auto work = _fv.BuildMeanWorkspace(_accepted, _workers);
+            auto work = _fv.BuildMeanWorkspace(_accepted, _execution.ChemicalWorkers());
             _timePPResidual = std::move(residual);
             _timePPWorkspace = std::move(work);
             if (_interfaceInputs)
                 _fv.SetBoundaryInputs(*_timePPWorkspace, *_interfaceInputs);
         }
-        _fv.EvaluateMean(_accepted, *_timePPResidual, *_timePPWorkspace, _engine, _stream, _time);
+        _fv.EvaluateMean(_accepted, *_timePPResidual, *_timePPWorkspace,
+                         _execution.Engine(), _execution.PrimaryStream(), _time);
         result = _fv.LimitPhysicalStep(_accepted, *_timePPResidual,
                                        _admissibility->View().thermal, requestedDt,
                                        _timePP.relax, _timePP.scale, _timeCompressionPower);

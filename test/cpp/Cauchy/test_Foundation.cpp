@@ -1,8 +1,10 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/Core/CoordinatedSchedule.hpp"
+#include "Cauchy/Core/DomainExecutionContext.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "DNDS/Algebra/DofBundle.hpp"
+#include <atomic>
 #include <numeric>
 
 namespace C = DNDS::Cauchy;
@@ -32,6 +34,27 @@ TEST_CASE("Cauchy configuration preflight coordinates invalid or differing rank 
         CHECK_THROWS(C::SimulationConfig::ResolveCollective(different, MPI_COMM_WORLD));
     }
     CHECK_NOTHROW(C::SimulationConfig::ResolveCollective(C::Json::object(), MPI_COMM_WORLD));
+}
+TEST_CASE("Domain execution contexts retain one engine stream and backend lifetime")
+{
+    C::ExecutionSettings settings;
+    settings.hostThreads = 1;
+    settings.checkAccess = true;
+    std::optional<C::DomainExecutionContext> retained;
+    {
+        C::DomainExecutionContext context(settings);
+        CHECK(context.Engine().Owns(context.PrimaryStream()));
+        CHECK(context.Engine().ChecksAccess());
+        retained.emplace(context);
+    }
+    std::atomic<int> completed{0};
+    retained->Engine().Submit(retained->PrimaryStream(),
+                              [&](R::ExecutionContext)
+                              { completed = 1; });
+    retained->JoinPrimary();
+    CHECK(completed.load() == 1);
+    settings.device = "cuda";
+    CHECK_THROWS(C::DomainExecutionContext(settings));
 }
 TEST_CASE("Cauchy domain placement preserves rank namespaces and isolates shared groups")
 {

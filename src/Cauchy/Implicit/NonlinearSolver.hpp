@@ -6,6 +6,7 @@
 
 namespace DNDS::Cauchy
 {
+    class DomainExecutionContext;
     /// Live nonlinear controller state. This object contains only small,
     /// JSON-serializable values; field payloads and runtime resources belong to
     /// the checkpoint bundle and execution context respectively.
@@ -157,6 +158,14 @@ namespace DNDS::Cauchy
                         Runtime::EagerEngine &engine, Runtime::ExecutionStream stream, const DomainSettings &settings,
                         const Algebra::ComponentSelection &residualSelection,
                         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt);
+        /// Solver-orchestration constructor. Retains the complete domain
+        /// execution owner so stream/runtime/worker resources outlive every
+        /// operation record and any hierarchy alias.
+        NonlinearSolver(const FiniteVolume &discrete, EquationDofs &state,
+                        std::shared_ptr<FiniteVolume::ReconstructionState> reconstruction,
+                        std::shared_ptr<FiniteVolume::Workspace> workspace,
+                        DomainExecutionContext context, const DomainSettings &settings,
+                        const Algebra::ComponentSelection &residualSelection);
         NonlinearIterationReport Solve(EquationDofs &state, const EquationDofs &source, real mass, real rhsScale, real time,
                                        int stage = 0, NonlinearSolveControl control = {});
         /// One bounded correction retaining split allocation/layout and
