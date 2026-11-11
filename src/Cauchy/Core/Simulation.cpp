@@ -115,7 +115,9 @@ namespace DNDS::Cauchy
             initialize(true);
             _interfaces->Commit();
         }
-        _controller = std::make_unique<SimulationController>(*this);
+        _controller = std::make_unique<SimulationController>(
+            SimulationControlAccess{_config, _placement, _domains, _interfaces,
+                                    _time, _step});
     }
 
     Simulation::~Simulation() = default;

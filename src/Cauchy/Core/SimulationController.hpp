@@ -3,11 +3,12 @@
 #include "Cauchy/Core/StepResult.hpp"
 #include "DNDS/Core/Defines.hpp"
 
+#include <memory>
 #include <optional>
 
 namespace DNDS::Cauchy
 {
-    class Simulation;
+    struct SimulationControlAccess;
 
     /// Sole owner of cross-domain accepted-step ordering. Simulation retains
     /// this controller; it borrows the facade's already-owned domains,
@@ -15,11 +16,14 @@ namespace DNDS::Cauchy
     /// remains behind DomainController transactions.
     class SimulationController
     {
-        Simulation &_simulation;
+        struct Data;
+        std::unique_ptr<Data> _data;
 
     public:
-        explicit SimulationController(Simulation &simulation)
-            : _simulation(simulation) {}
+        explicit SimulationController(SimulationControlAccess access);
+        ~SimulationController();
+        SimulationController(const SimulationController &) = delete;
+        SimulationController &operator=(const SimulationController &) = delete;
         [[nodiscard]] StepResult Advance(
             real dt, std::optional<real> acceptedTime = {});
     };

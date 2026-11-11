@@ -7,6 +7,19 @@ namespace DNDS::Cauchy
 {
     class InterfaceCoupling;
     class SimulationController;
+    /// Explicit synchronous borrow passed to SimulationController. The facade
+    /// owns every referenced object and destroys the controller first; no
+    /// controller API receives a Simulation pointer or unrestricted friend
+    /// access.
+    struct SimulationControlAccess
+    {
+        const SimulationConfig &config;
+        DomainPlacement &placement;
+        std::vector<std::unique_ptr<Domain>> &domains;
+        std::unique_ptr<InterfaceCoupling> &interfaces;
+        real &time;
+        uint64_t &step;
+    };
     /// Coordinated CPU frontend. Only local domains have runtime objects.
     /// Local domain phases run serially on shared ranks and concurrently on
     /// disjoint communicators. Physical stages share one clock and consume a
@@ -16,15 +29,15 @@ namespace DNDS::Cauchy
     /// A rejected StepResult certifies a collectively agreed numerical retry.
     class Simulation
     {
-        friend class SimulationController;
         SimulationConfig _config;
         DomainPlacement _placement;
         std::vector<std::unique_ptr<Domain>> _domains;
         std::unique_ptr<InterfaceCoupling> _interfaces;
-        std::unique_ptr<SimulationController> _controller;
         real _time = 0;
         uint64_t _step = 0;
         std::optional<Json> _restoredOutputController;
+        // Declared last so the borrow-only controller is destroyed first.
+        std::unique_ptr<SimulationController> _controller;
 
     public:
         using MeshFactory = std::function<ssp<Geom::UnstructuredMesh>(index, const DomainConfig &, const MPIInfo &)>;

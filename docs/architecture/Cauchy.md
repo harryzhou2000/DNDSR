@@ -82,6 +82,10 @@ accepted-step loop for both one-domain and multi-domain runs. A one-domain run
 is the degenerate coordinated case, not a production shortcut through
 `Domain::PrepareStep`; the standalone `Domain` frontend remains a synchronous
 debugging/Python and numerical-oracle path.
+`SimulationController` receives a named `SimulationControlAccess` bundle of
+references whose owner is the facade; it neither retains a `Simulation*` nor
+uses unrestricted friend access. The controller is declared last and destroyed
+first, before any referenced placement/domain/interface state.
 
 Serialized BDF/DIRK stages and coupled DITR groups use the same candidate
 reservation/commit transaction. For DITR with interfaces, the controller first

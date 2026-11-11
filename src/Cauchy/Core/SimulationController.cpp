@@ -11,17 +11,35 @@
 
 namespace DNDS::Cauchy
 {
+    struct SimulationController::Data
+    {
+        SimulationControlAccess simulation;
+
+        explicit Data(SimulationControlAccess access)
+            : simulation(access) {}
+    };
+
+    SimulationController::SimulationController(SimulationControlAccess access)
+        : _data(std::make_unique<Data>(access)) {}
+    SimulationController::~SimulationController() = default;
+
     StepResult SimulationController::Advance(real dt,
                                              std::optional<real> acceptedTime)
     {
-        auto &_config = _simulation._config;
-        auto &_placement = _simulation._placement;
-        auto &_domains = _simulation._domains;
-        auto &_interfaces = _simulation._interfaces;
-        auto &_time = _simulation._time;
-        auto &_step = _simulation._step;
+        auto &simulation = _data->simulation;
+        const auto &_config = simulation.config;
+        auto &_placement = simulation.placement;
+        auto &_domains = simulation.domains;
+        auto &_interfaces = simulation.interfaces;
+        auto &_time = simulation.time;
+        auto &_step = simulation.step;
         const auto Local = [&](index domain)
-        { return _simulation.Local(domain); };
+        {
+            DNDS_check_throw_info(domain >= 0 &&
+                                      domain < index(_domains.size()),
+                                  "invalid Cauchy domain index");
+            return bool(_domains[size_t(domain)]);
+        };
         real limits[2]{dt, -dt};
         int valid = std::isfinite(dt) && dt > 0;
         valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, _placement.Control());
