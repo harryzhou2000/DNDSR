@@ -141,8 +141,11 @@ namespace DNDS::CFV
             if (capabilities.inverseDiagnostics)
                 data->inverseConditions.emplace(R::RowLayout::Dense(nCell, 4));
             data->neighborRotation = R::Array<real>(R::RowLayout::Dense(incidences, 9));
+            data->neighborRotationActive = R::Array<uint8_t>(R::RowLayout::Dense(incidences, 1));
             auto rotationWrite = data->neighborRotation.Write();
+            auto rotationActiveWrite = data->neighborRotationActive.Write();
             const auto rotations = rotationWrite.View<R::FixedRows<9>>();
+            const auto rotationActive = rotationActiveWrite.View<R::FixedRows<1>>();
             OptionalTableWriter rawMatrixWrite(data->rawMatrixB), rawVectorWrite(data->rawVectorB), rawInjectionWrite(data->rawBoundaryInjection);
             const auto rawMatrices = rawMatrixWrite.values, rawVectors = rawVectorWrite.values, rawInjections = rawInjectionWrite.values;
             OptionalTableWriter localMatrixWrite(data->localMatrix), localInverseWrite(data->localInverse);
@@ -395,7 +398,8 @@ namespace DNDS::CFV
                     faces(iEntry, 0) = iFace, neighbors(iEntry, 0) = other;
                     const tGPoint rotation = Detail::OtherFrameInCell(mesh, iFace, side);
                     Eigen::Map<tGPoint>(rotations[iEntry].data()) = rotation;
-                    data->hasRotatedPeriodicity |= !rotation.isApprox(tGPoint::Identity(), 1e-14);
+                    rotationActive(iEntry, 0) = !rotation.isApprox(tGPoint::Identity(), 1e-14);
+                    data->hasRotatedPeriodicity |= bool(rotationActive(iEntry, 0));
                     bOffsets(iEntry, 0) = iBoundary;
                     if (capabilities.wbap)
                     {

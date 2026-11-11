@@ -133,6 +133,7 @@ namespace DNDS::CFV
         DNDS_REC_STORAGE(faces);
         DNDS_REC_STORAGE(boundaryOffsets);
         DNDS_REC_STORAGE(neighborRotation);
+        DNDS_REC_STORAGE(neighborRotationActive);
         DNDS_REC_STORAGE(boundaryPoints);
 #undef DNDS_REC_STORAGE
 #define DNDS_REC_OPTIONAL_STORAGE(name) optional(#name, _data->name)
@@ -348,6 +349,7 @@ namespace DNDS::CFV
         add(_data->neighbors, R::AccessMode::Read);
         add(_data->boundaryOffsets, R::AccessMode::Read);
         add(_data->neighborRotation, R::AccessMode::Read);
+        add(_data->neighborRotationActive, R::AccessMode::Read);
         for (const auto *array : {&*_data->matrixAInvB, &*_data->vectorAInvB, &*_data->boundaryInjection})
             add(*array, R::AccessMode::Read);
         auto plan = *this;
@@ -389,6 +391,7 @@ namespace DNDS::CFV
         add(_data->neighbors, R::AccessMode::Read);
         add(_data->boundaryOffsets, R::AccessMode::Read);
         add(_data->neighborRotation, R::AccessMode::Read);
+        add(_data->neighborRotationActive, R::AccessMode::Read);
         for (const auto *array : {&*_data->matrixAInvB, &*_data->vectorAInvB, &*_data->boundaryInjection})
             add(*array, R::AccessMode::Read);
         auto plan = *this;
@@ -470,7 +473,9 @@ namespace DNDS::CFV
         const real relax = _data->settings.jacobiRelax;
         Math::SmallMatrix rotatedRec;
         auto rotationRead = _data->neighborRotation.Read();
+        auto rotationActiveRead = _data->neighborRotationActive.Read();
         const auto rotations = rotationRead.View<R::FixedRows<9>>();
+        const auto rotationActive = rotationActiveRead.View<R::FixedRows<1>>();
         const auto nextMatrices = Algebra::MakeEigenRowMatrices(next, n, nv);
         const auto currentMatrices = Algebra::MakeEigenRowMatrices(current, n, nv);
         std::optional<decltype(Algebra::MakeEigenRowMatrices(current, n, nv))> targetMatrices;
@@ -498,6 +503,7 @@ namespace DNDS::CFV
                 const index other = neighbors(iEntry, 0);
                 if (other != UnInitIndex)
                 {
+                    const bool rotatedEntry = _data->hasRotatedPeriodicity && rotationActive(iEntry, 0);
                     // SOR reads completed predecessors from a separate output,
                     // leaving the whole input immutable for direct MPI sends.
                     const auto otherCoefficients = other < Metrics().NumCell()
@@ -507,7 +513,7 @@ namespace DNDS::CFV
                     // pullback, already included in the prepared B block.
                     // Apply scalar columns directly, then correct vector blocks.
                     output.noalias() += scale * ConstMap(matrices[iEntry].data(), n, n) * otherCoefficients;
-                    if (_data->hasRotatedPeriodicity)
+                    if (rotatedEntry)
                         for (auto first : work.periodicVectorStarts)
                         {
                             const Eigen::Map<const Geom::tGPoint> rotation(rotations[iEntry].data());
@@ -517,7 +523,7 @@ namespace DNDS::CFV
                     for (index variable = 0; variable < nv; ++variable)
                     {
                         real value = u(other, variable);
-                        if (_data->hasRotatedPeriodicity)
+                        if (rotatedEntry)
                             for (auto first : work.periodicVectorStarts)
                                 if (variable >= first && variable < first + 3)
                                 {
@@ -677,7 +683,9 @@ namespace DNDS::CFV
             const auto offsets = offsetRead.View<R::FixedRows<1>>(), neighbors = neighborRead.View<R::FixedRows<1>>(), faces = faceRead.View<R::FixedRows<1>>();
             const auto secondary = secondaryRead.View<R::TableRows>();
             auto rotationRead = _data->neighborRotation.Read();
+            auto rotationActiveRead = _data->neighborRotationActive.Read();
             const auto rotations = rotationRead.View<R::FixedRows<9>>();
+            const auto rotationActive = rotationActiveRead.View<R::FixedRows<1>>();
             std::optional<R::Array<real>::ReadLease> forward, inverse;
             if (selectedTransform)
                 forward.emplace(selectedTransform->forward.Read()), inverse.emplace(selectedTransform->inverse.Read());
@@ -704,7 +712,7 @@ namespace DNDS::CFV
                     center = out.middleRows(begin, modes);
                     other.noalias() = ConstMap(secondary[iEntry].data(), n, n).middleRows(begin, modes) * recMatrices[neighbor];
                     const auto iFace = faces(iEntry, 0);
-                    if (_data->hasRotatedPeriodicity)
+                    if (_data->hasRotatedPeriodicity && rotationActive(iEntry, 0))
                         for (auto first : work.periodicVectorStarts)
                         {
                             const Eigen::Map<const Geom::tGPoint> rotation(rotations[iEntry].data());
@@ -783,6 +791,7 @@ namespace DNDS::CFV
         add(_data->neighbors, R::AccessMode::Read);
         add(_data->faces, R::AccessMode::Read);
         add(_data->neighborRotation, R::AccessMode::Read);
+        add(_data->neighborRotationActive, R::AccessMode::Read);
         add(*_data->secondary, R::AccessMode::Read);
         std::optional<FaceCharacteristicTransform> retainedTransform;
         if (transform)

@@ -27,7 +27,9 @@ namespace DNDS::CFV::Detail
                         for (index j = 0; j < plan.n; ++j)
                             product += plan.matrixAInvB(entry, j * plan.n + mode) * input(other, component * plan.n + j);
                         value += plan.relax * product;
-                        const auto first = plan.rotated ? blocks.First(component) : -1;
+                        const auto first = plan.rotated && plan.rotationActive(entry, 0)
+                                               ? blocks.First(component)
+                                               : -1;
                         if (first >= 0)
                         {
                             real correction = 0;
@@ -111,7 +113,7 @@ namespace DNDS::CFV::Detail
                     scratch(row + 1, i) = value;
                 }
                 __syncthreads();
-                if (plan.rotated)
+                if (plan.rotated && plan.rotationActive(entry, 0))
                 {
                     for (index i = threadIdx.x; i < count; i += blockDim.x)
                     {

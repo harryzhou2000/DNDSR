@@ -166,8 +166,10 @@ namespace DNDS::CFV
         auto outWrite = gradient.Owned().Write();
         auto offsets = _data->offsets.Read(), neighbors = _data->neighbors.Read(), boundaryIds = _data->boundaryIds.Read();
         auto weights = _data->weights.Read();
+        auto rotationActiveRead = _data->rotationActive.Read();
         auto rotationRead = _data->rotations.Read();
         const auto rotations = rotationRead.View<R::FixedRows<9>>();
+        const auto rotationActive = rotationActiveRead.View<R::FixedRows<1>>();
         const auto offset = offsets.View<R::FixedRows<1>>(), neighbor = neighbors.View<R::FixedRows<1>>(), bnd = boundaryIds.View<R::FixedRows<1>>();
         const auto w = weights.View<R::FixedRows<3>>();
         const auto bv = boundary.View<R::TableRows>();
@@ -176,22 +178,27 @@ namespace DNDS::CFV
         {
             std::fill(output[iCell].begin(), output[iCell].end(), 0);
             for (index entry = offset(iCell, 0); entry < offset(iCell + 1, 0); ++entry)
+            {
+                const auto other = neighbor(entry, 0);
+                const bool rotated = other != UnInitIndex && _data->hasRotatedFrames &&
+                                     rotationActive(entry, 0);
                 for (index component = 0; component < components; ++component)
                 {
-                    real value = neighbor(entry, 0) == UnInitIndex ? bv(bnd(entry, 0), component) : u(neighbor(entry, 0), component);
-                    if (neighbor(entry, 0) != UnInitIndex)
+                    real value = other == UnInitIndex ? bv(bnd(entry, 0), component) : u(other, component);
+                    if (rotated)
                         for (auto first : periodicVectorStarts)
                             if (component >= first && component < first + 3)
                             {
                                 const Eigen::Map<const Geom::tGPoint> rotation(rotations[entry].data());
                                 value = 0;
                                 for (int d = 0; d < 3; ++d)
-                                    value += rotation(component - first, d) * u(neighbor(entry, 0), first + d);
+                                    value += rotation(component - first, d) * u(other, first + d);
                             }
                     const real difference = value - u(iCell, component);
                     for (index d = 0; d < dim; ++d)
                         output(iCell, component * dim + d) += w(entry, d) * difference;
                 }
+            }
         };
         if (region == ReconstructionRegion::All)
             for (index iCell = 0; iCell < _data->metrics.NumCell(); ++iCell)
@@ -281,10 +288,12 @@ namespace DNDS::CFV
         auto outputWrite = output.Owned().Write();
         const auto result = outputWrite.View<R::UniformTableRows>();
         auto offsetRead = _data->offsets.Read(), neighborRead = _data->neighbors.Read(), faceRead = _data->faces.Read();
+        auto rotationActiveRead = _data->rotationActive.Read();
         auto rotationRead = _data->rotations.Read();
         const auto offsets = offsetRead.View<R::FixedRows<1>>(), neighbors = neighborRead.View<R::FixedRows<1>>(),
                    faces = faceRead.View<R::FixedRows<1>>();
         const auto rotations = rotationRead.View<R::FixedRows<9>>();
+        const auto rotationActive = rotationActiveRead.View<R::FixedRows<1>>();
         std::optional<R::Array<real>::ReadLease> forwardRead, inverseRead;
         if (selectedTransform)
         {
@@ -333,22 +342,27 @@ namespace DNDS::CFV
                 lastFace = iFace;
                 if (neighbor == UnInitIndex)
                     continue;
-                const Eigen::Map<const Geom::tGPoint> rotation(rotations[entry].data());
-                for (index component = 0; component < components; ++component)
+                if (!_data->hasRotatedFrames || !rotationActive(entry, 0))
+                    std::copy(values[neighbor].begin(), values[neighbor].end(), other.begin());
+                else
                 {
-                    const index first = vectorStart(component);
-                    for (index d = 0; d < dim; ++d)
+                    const Eigen::Map<const Geom::tGPoint> rotation(rotations[entry].data());
+                    for (index component = 0; component < components; ++component)
                     {
-                        real value = 0;
-                        if (first == UnInitIndex)
-                            for (index k = 0; k < dim; ++k)
-                                value += rotation(d, k) * values(neighbor, component * dim + k);
-                        else
-                            for (index v = 0; v < 3; ++v)
+                        const index first = vectorStart(component);
+                        for (index d = 0; d < dim; ++d)
+                        {
+                            real value = 0;
+                            if (first == UnInitIndex)
                                 for (index k = 0; k < dim; ++k)
-                                    value += rotation(component - first, v) *
-                                             values(neighbor, (first + v) * dim + k) * rotation(d, k);
-                        other[size_t(component * dim + d)] = value;
+                                    value += rotation(d, k) * values(neighbor, component * dim + k);
+                            else
+                                for (index v = 0; v < 3; ++v)
+                                    for (index k = 0; k < dim; ++k)
+                                        value += rotation(component - first, v) *
+                                                 values(neighbor, (first + v) * dim + k) * rotation(d, k);
+                            other[size_t(component * dim + d)] = value;
+                        }
                     }
                 }
                 if (selectedTransform)

@@ -68,6 +68,10 @@ namespace DNDS::CFV::Detail
         // the truncated local inverse projects out small, nonzero modes.
         std::optional<Runtime::Array<real>> rawMatrixB, rawVectorB, rawBoundaryInjection;
         Runtime::Array<real> neighborRotation;
+        /// Setup-time incidence classification. A byte avoids hot-loop matrix
+        /// comparisons and distinguishes ordinary/translated faces in a mesh
+        /// that also contains genuinely rotated periodic incidences.
+        Runtime::Array<uint8_t> neighborRotationActive;
         bool hasRotatedPeriodicity = false;
         // Dirichlet injection already multiplied by A^{-1} and quadrature weight.
         std::optional<Runtime::Array<real>> boundaryInjection;

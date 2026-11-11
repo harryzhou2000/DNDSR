@@ -83,7 +83,9 @@ namespace DNDS::CFV::Detail
                                 real value = 0;
                                 if (component < components && kb < N)
                                 {
-                                    const auto first = plan.rotated ? vectors.First(component) : -1;
+                                    const auto first = plan.rotated && plan.rotationActive(entry, 0)
+                                                           ? vectors.First(component)
+                                                           : -1;
                                     if (first >= 0)
                                         for (index d = 0; d < 3; ++d)
                                             value += plan.rotation(entry, d * 3 + component - first) * input(plan.neighbors(entry, 0), (first + d) * N + kb);
@@ -117,7 +119,7 @@ namespace DNDS::CFV::Detail
                             if (other != UnInitIndex)
                             {
                                 real otherMean = mean(other, component);
-                                if (first >= 0)
+                                if (first >= 0 && plan.rotationActive(entry, 0))
                                 {
                                     otherMean = 0;
                                     for (index d = 0; d < 3; ++d)

@@ -9,6 +9,7 @@ namespace DNDS::CFV::Detail
     struct ReconstructionDeviceView
     {
         Runtime::ArrayView<const index> offsets, neighbors, faces, boundaryOffsets;
+        Runtime::ArrayView<const uint8_t> rotationActive;
         Runtime::ArrayView<const real> matrixAInvB, vectorAInvB, secondary, boundaryInjection, rotation;
         Runtime::ArrayView<const index> core, dependent;
         index owned = 0, n = 0;

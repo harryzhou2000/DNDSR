@@ -29,10 +29,12 @@ namespace DNDS::CFV
             std::vector<ResidentBufferInfo> buffers;
             std::vector<R::Array<real>> realArrays;
             std::vector<R::Array<index>> indexArrays;
+            std::vector<R::Array<uint8_t>> byteArrays;
             // Immutable device read leases are retained with the publication;
             // scheduled commands retain the publication through completion.
             std::vector<R::Array<real>::ReadLease> realReads;
             std::vector<R::Array<index>::ReadLease> indexReads;
+            std::vector<R::Array<uint8_t>::ReadLease> byteReads;
             R::Array<real> empty;
             ReconstructionDeviceView view;
             FiniteVolumeHostView metricView;
@@ -55,11 +57,18 @@ namespace DNDS::CFV
                     realReads.push_back(realArrays.back().Read({device, nullptr}));
                     return realReads.back().View();
                 }
-                else
+                else if constexpr (std::is_same_v<T, index>)
                 {
                     indexArrays.push_back(std::move(array));
                     indexReads.push_back(indexArrays.back().Read({device, nullptr}));
                     return indexReads.back().View();
+                }
+                else
+                {
+                    static_assert(std::is_same_v<T, uint8_t>);
+                    byteArrays.push_back(std::move(array));
+                    byteReads.push_back(byteArrays.back().Read({device, nullptr}));
+                    return byteReads.back().View();
                 }
             }
         };
@@ -238,6 +247,7 @@ namespace DNDS::CFV
         view.boundaryInjection = result->Add("boundaryInjection", *host.boundaryInjection, context);
 #undef DNDS_REC_ADD
         view.rotation = result->Add("neighborRotation", host.neighborRotation, context);
+        view.rotationActive = result->Add("neighborRotationActive", host.neighborRotationActive, context);
         for (bool core : {true, false})
         {
             const auto &list = core ? host.workPartition->Core() : host.workPartition->HaloDependent();

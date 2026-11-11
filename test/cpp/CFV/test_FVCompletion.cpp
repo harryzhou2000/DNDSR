@@ -67,11 +67,39 @@ TEST_CASE("Rotated periodic sector preserves vector linear fields across distrib
                                                                                        .scale(1));
     }
     grad.Evaluate(mean, gradBC, gradient, {0});
-    auto read = gradient.Owned().Read();
-    for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
-        for (I component = 0; component < 4; ++component)
-            for (I d = 0; d < 2; ++d)
-                CHECK(read.View()(iCell, component * 2 + d) == doctest::Approx(component == d ? 1. : 0.).epsilon(1e-10).scale(1));
+    {
+        auto read = gradient.Owned().Read();
+        for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+            for (I component = 0; component < 4; ++component)
+                for (I d = 0; d < 2; ++d)
+                    CHECK(read.View()(iCell, component * 2 + d) == doctest::Approx(component == d ? 1. : 0.).epsilon(1e-10).scale(1));
+    }
+    // The vector field [x,y,0] has identity gradient. Across the 90-degree
+    // periodic image it remains I only when the equation and derivative axes
+    // are both transformed: R I R^T = I.
+    metrics.BindHalo(gradient).Begin().Wait();
+    auto limitedGradient = metrics.BuildField(8);
+    grad.LimitWBAP3(gradient, limitedGradient, {0});
+    {
+        auto read = limitedGradient.Owned().Read();
+        for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+            for (I component = 0; component < 4; ++component)
+                for (I d = 0; d < 2; ++d)
+                    CHECK(read.View()(iCell, component * 2 + d) == doctest::Approx(component == d ? 1. : 0.).epsilon(1e-10).scale(1));
+    }
+    metrics.BindHalo(coefficients).Begin().Wait();
+    plan.DoLimiterWBAP_3Order(coefficients, work, 1);
+    {
+        auto geometry = metrics.AcquireRead();
+        auto read = coefficients.Owned().Read();
+        for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+            for (I component = 0; component < 4; ++component)
+                for (I mode = 0; mode < plan.NRecDOF(); ++mode)
+                    CHECK(read.View()(iCell, component * plan.NRecDOF() + mode) == doctest::Approx(
+                                                                                       component < 2 && mode == component ? geometry.HostView().cells(iCell, 7) : 0)
+                                                                                       .epsilon(1e-10)
+                                                                                       .scale(1));
+    }
     CHECK_THROWS(plan.BuildWorkspace(4, {2}));
 }
 

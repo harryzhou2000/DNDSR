@@ -34,13 +34,16 @@ namespace DNDS::CFV
         data->neighbors = R::Array<index>(R::RowLayout::Dense(entries, 1));
         data->faces = R::Array<index>(R::RowLayout::Dense(entries, 1));
         data->boundaryIds = R::Array<index>(R::RowLayout::Dense(entries, 1));
+        data->rotationActive = R::Array<uint8_t>(R::RowLayout::Dense(entries, 1));
         data->weights = R::Array<real>(R::RowLayout::Dense(entries, 3));
         data->rotations = R::Array<real>(R::RowLayout::Dense(entries, 9));
         data->boundary.resize(size_t(boundaryCount));
         auto offsetWrite = data->offsets.Write(), neighborWrite = data->neighbors.Write(), faceWrite = data->faces.Write(), boundaryWrite = data->boundaryIds.Write();
         auto weightWrite = data->weights.Write();
+        auto rotationActiveWrite = data->rotationActive.Write();
         auto rotationWrite = data->rotations.Write();
         const auto rotations = rotationWrite.View<R::FixedRows<9>>();
+        const auto rotationActive = rotationActiveWrite.View<R::FixedRows<1>>();
         const auto offsets = offsetWrite.View<R::FixedRows<1>>(), neighbors = neighborWrite.View<R::FixedRows<1>>(), faces = faceWrite.View<R::FixedRows<1>>(), boundaries = boundaryWrite.View<R::FixedRows<1>>();
         const auto weights = weightWrite.View<R::FixedRows<3>>();
         index next = 0, nextBoundary = 0;
@@ -87,6 +90,8 @@ namespace DNDS::CFV
                     neighbors(next, 0) = other;
                     faces(next, 0) = face;
                     Eigen::Map<tGPoint>(rotations[next].data()) = rotation;
+                    rotationActive(next, 0) = !rotation.isApprox(tGPoint::Identity(), 1e-14);
+                    data->hasRotatedFrames |= bool(rotationActive(next, 0));
                     boundaries(next, 0) = UnInitIndex;
                     if (other == UnInitIndex)
                     {

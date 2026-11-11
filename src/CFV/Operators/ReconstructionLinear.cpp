@@ -25,7 +25,9 @@ namespace DNDS::CFV
         const auto y = write.View<R::UniformTableRows>();
         auto offsetRead = _data->offsets.Read(), neighborRead = _data->neighbors.Read();
         auto rotationRead = _data->neighborRotation.Read();
+        auto rotationActiveRead = _data->neighborRotationActive.Read();
         const auto rotations = rotationRead.View<R::FixedRows<9>>();
+        const auto rotationActive = rotationActiveRead.View<R::FixedRows<1>>();
         auto matrixRead = _data->rawMatrixB->Read(), diagonalRead = _data->localMatrix->Read();
         const auto offsets = offsetRead.View<R::FixedRows<1>>(), neighbors = neighborRead.View<R::FixedRows<1>>();
         const auto matrices = matrixRead.View<R::TableRows>(), diagonals = diagonalRead.View<R::TableRows>();
@@ -41,7 +43,7 @@ namespace DNDS::CFV
                 if (neighbor == UnInitIndex)
                     continue;
                 other = xMatrices[neighbor];
-                if (_data->hasRotatedPeriodicity)
+                if (_data->hasRotatedPeriodicity && rotationActive(iEntry, 0))
                     for (auto first : periodicVectorStarts)
                     {
                         const Eigen::Map<const Geom::tGPoint> rotation(rotations[iEntry].data());
@@ -72,7 +74,9 @@ namespace DNDS::CFV
         const auto y = write.View<R::UniformTableRows>();
         auto offsetRead = _data->offsets.Read(), neighborRead = _data->neighbors.Read(), boundaryOffsetRead = _data->boundaryOffsets.Read();
         auto rotationRead = _data->neighborRotation.Read();
+        auto rotationActiveRead = _data->neighborRotationActive.Read();
         const auto rotations = rotationRead.View<R::FixedRows<9>>();
+        const auto rotationActive = rotationActiveRead.View<R::FixedRows<1>>();
         auto vectorRead = _data->rawVectorB->Read(), injectionRead = _data->rawBoundaryInjection->Read();
         const auto offsets = offsetRead.View<R::FixedRows<1>>(), neighbors = neighborRead.View<R::FixedRows<1>>(), boundaryOffsets = boundaryOffsetRead.View<R::FixedRows<1>>();
         const auto vectors = vectorRead.View<R::TableRows>(), injections = injectionRead.View<R::TableRows>();
@@ -84,11 +88,13 @@ namespace DNDS::CFV
             for (index iEntry = offsets(iCell, 0); iEntry < offsets(iCell + 1, 0); ++iEntry)
             {
                 const index neighbor = neighbors(iEntry, 0);
+                const bool rotatedEntry = neighbor != UnInitIndex && _data->hasRotatedPeriodicity &&
+                                          rotationActive(iEntry, 0);
                 for (index component = 0; component < components; ++component)
                     if (neighbor != UnInitIndex)
                     {
                         real value = u(neighbor, component);
-                        if (_data->hasRotatedPeriodicity)
+                        if (rotatedEntry)
                             for (auto first : periodicVectorStarts)
                                 if (component >= first && component < first + 3)
                                 {

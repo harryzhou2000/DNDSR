@@ -45,7 +45,9 @@ namespace DNDS::CFV
             FiniteVolumePlan metrics;
             Geom::EntityWorkPartition partition;
             Runtime::Array<index> offsets, neighbors, faces, boundaryIds;
+            Runtime::Array<uint8_t> rotationActive;
             Runtime::Array<real> weights, rotations;
+            bool hasRotatedFrames = false;
             std::vector<BoundaryQuadraturePoint> boundary;
             Data(FiniteVolumePlan plan) : metrics(std::move(plan)), partition(metrics.CellWorkPartition()) {}
         };
