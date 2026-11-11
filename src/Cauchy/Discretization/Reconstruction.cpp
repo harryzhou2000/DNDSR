@@ -105,6 +105,12 @@ namespace DNDS::Cauchy
         const auto clippedPolicy = n.positivityClippedReferencePolicy == "backtracking"
                                        ? ReconstructionClippedReferencePolicy::Backtracking
                                        : ReconstructionClippedReferencePolicy::FallbackToBase;
+        // PP POLICY -- modal publication. Flow5 and transported species select
+        // one lower-order base and one common beta; no species-simplex bound
+        // enters that beta and RANS is repaired independently. The analytic
+        // ratio uses raw affine rhoY, while final sampled-point acceptance uses
+        // the temporary clipped composition seen by EOS/T. Neither path writes
+        // that temporary composition back into these coefficients.
         const index cells = data.owner->metrics.NumCell(), points = data.owner->positivitySamples->Size();
         DNDS_check_throw_info(data.owner->reconstruction,
                               "polynomial positivity requires variational reconstruction");

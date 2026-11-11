@@ -847,6 +847,10 @@ namespace DNDS::Euler
             auto &JSourceC = config.timeMarchControl.timeMarchIsTwoStage() && uPos == 1 ? JSource1 : JSource;
             nLimInc = 0;
             alphaMinInc = 1;
+            // PP POLICY -- forecast one whole-vector flow/species factor from
+            // Euler's tolerant clipped composition. This is not acceptance:
+            // AddFixedIncrement performs exact stored-species repair followed
+            // by the final mean-state line search and detached RANS repair.
             eval.EvaluateCellRHSAlpha(cx, uRecC, betaPPC, cxInc, alphaPP_tmp, nLimInc, alphaMinInc, config.timeMarchControl.incrementPPRelax,
                                       2, TEval::EvaluateCellRHSAlpha_DEFAULT);
             if (nLimInc)
@@ -907,6 +911,8 @@ namespace DNDS::Euler
                 rhsTemp *= config.timeMarchControl.rhsFPPScale;
                 index nLimFRes = 0;
                 real alphaMinFRes = 1;
+                // PP POLICY -- RHS forecast only. The clipped composition
+                // estimates one coupled scalar and never projects stored rhoY.
                 eval.EvaluateCellRHSAlpha(cx, uRecC, betaPPC, rhsTemp, alphaPP_tmp, nLimFRes, alphaMinFRes, config.timeMarchControl.rhsFPPRelax,
                                           2, config.timeMarchControl.rhsFPPMode == 1 ? TEval::EvaluateCellRHSAlpha_DEFAULT : TEval::EvaluateCellRHSAlpha_MIN_IF_NOT_ONE);
                 if (nLimFRes)
@@ -926,6 +932,8 @@ namespace DNDS::Euler
                 rhsTemp *= config.timeMarchControl.rhsFPPScale;
                 index nLimFRes = 0;
                 real alphaMinFRes = 1;
+                // PP POLICY -- same clipped-composition forecast as mode 1;
+                // this branch restricts dTau instead of scaling the RHS.
                 eval.EvaluateCellRHSAlpha(cx, uRecC, betaPPC, rhsTemp, alphaPP_tmp, nLimFRes, alphaMinFRes, config.timeMarchControl.rhsFPPRelax,
                                           2, TEval::EvaluateCellRHSAlpha_DEFAULT);
                 if (nLimFRes)
@@ -1350,6 +1358,9 @@ namespace DNDS::Euler
             renewRhsIncPart(); // un-fixed now
             // rhsIncPart.trans.startPersistentPull();
             // rhsIncPart.trans.waitPersistentPull(); //seems not needed
+            // PP POLICY -- residual forecast/redistribution. Expansion below
+            // changes an existing alpha field only; final acceptance remains in
+            // AddFixedIncrement/CompressInc and does not occur in either call.
             eval.EvaluateCellRHSAlpha(xPrev, uRecC, betaPPC, rhsIncPart, alphaPP_tmp, nLimAlpha, minAlpha, 1.,
                                       2, TEval::EvaluateCellRHSAlpha_MIN_IF_NOT_ONE);
             alphaPP_tmp.trans.startPersistentPull();
@@ -1481,6 +1492,8 @@ namespace DNDS::Euler
                 rhsTemp *= curDtImplicit * config.timeMarchControl.dtPPLimitScale;
                 index nLim = 0;
                 real minLim = 1;
+                // PP POLICY -- physical-dt forecast. Only the reported global
+                // factor limits dt; this probe does not mutate or accept a mean.
                 eval.EvaluateCellRHSAlpha(u, uRec, alphaPP, rhsTemp, alphaPP_tmp, nLim, minLim, config.timeMarchControl.dtPPLimitRelax,
                                           1, TEval::EvaluateCellRHSAlpha_DEFAULT); // using compress = 1, only minLim is used as output
                 if (nLim)
@@ -1548,6 +1561,9 @@ namespace DNDS::Euler
                     odeVBDF->LimitDt_StepPPV2(
                         u, [&](ArrayDOFV<nVarsFixed> &u, ArrayDOFV<nVarsFixed> &uInc) -> real
                         {
+                            // PP POLICY -- VBDF physical-step forecast only;
+                            // the ODE controller consumes minAlpha as a scalar
+                            // dt bound and this callback stores no repaired state.
                             eval.EvaluateCellRHSAlpha(u, uRec, alphaPP, uInc, alphaPP_tmp, nLimAlpha, minAlpha, 1.,
                                                     1, TEval::EvaluateCellRHSAlpha_MIN_IF_NOT_ONE); // using compress == 1, only minAlpha is used
                             return minAlpha; },

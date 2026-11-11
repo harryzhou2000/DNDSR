@@ -1666,6 +1666,10 @@ namespace DNDS::Cauchy
             const auto rans = owner->equation.HasRANS()
                                   ? ResolveRANSReconstructionPolicy(owner->equation)
                                   : RANSReconstructionView{};
+            // PP POLICY -- direct-P1 publication. This is the same locked
+            // flow5/species beta and clipped EOS/T endpoint as modal PP, applied
+            // directly to physical gradients. It imposes no simplex bound on
+            // raw rhoY gradients; RANS uses its separate model scalar.
             struct PointValues
             {
                 const std::vector<real> *values;

@@ -660,6 +660,59 @@ TEST_CASE("Finite-volume admissibility uses one prepared complete mixture policy
     CHECK_FALSE(fv.Admissible(state, policy));
 }
 
+TEST_CASE("Mixture interface packets retain complete equation rows and reject a non-simplex publication")
+{
+    MixtureFixture mixture;
+    const auto mesh = CFVTest::CartesianHexes(mpi, 4);
+    C::DomainSettings settings;
+    settings.mesh.dimension = 3;
+    settings.boundaries["7"].kind = "interface";
+    settings.numerics.reconstruction = "gradient";
+    settings.numerics.faceFallback = false;
+    C::FiniteVolume fv(mesh, settings, mixture.equation);
+    auto state = mixture.State(fv.Metrics().Space(), 2);
+    mixture.Fill(state, fv.Metrics(), false);
+    auto packet = fv.BuildBoundaryInputs(mixture.workers);
+    const auto fill = [&](const auto &points, C::EquationDofs &destination)
+    {
+        const auto input = state.ReadOwned();
+        const auto sourceLayout = input.ComponentLayout();
+        const auto source = sourceLayout.View();
+        auto output = destination.WriteOwned();
+        const auto destinationLayout = output.ComponentLayout();
+        const auto values = destinationLayout.View();
+        REQUIRE(values.ComponentNumber() == source.ComponentNumber());
+        for (I iPoint = 0; iPoint < I(points.size()); ++iPoint)
+            for (I j = 0; j < values.ComponentNumber(); ++j)
+                values(iPoint, j) = source(points[size_t(iPoint)].cell, j);
+    };
+    fill(fv.BoundaryPoints(), packet.QuadratureValues());
+    fill(fv.BoundaryFaces(), packet.FaceCenterValues());
+    CHECK_NOTHROW(fv.PublishBoundaryInputs(packet, .25));
+    CHECK_NOTHROW(fv.ValidateBoundaryInputs(packet, .25));
+
+    fv.BeginBoundaryUpdate(packet);
+    fill(fv.BoundaryPoints(), packet.QuadratureValues());
+    fill(fv.BoundaryFaces(), packet.FaceCenterValues());
+    bool corrupted = false;
+    {
+        auto write = packet.QuadratureValues().WriteOwned();
+        const auto flow = write.Block("flow"), species = write.Block("species");
+        const auto &points = fv.BoundaryPoints();
+        for (I iPoint = 0; iPoint < I(points.size()); ++iPoint)
+            if (points[size_t(iPoint)].interface)
+            {
+                species(iPoint, 0) = -.01 * flow(iPoint, 0);
+                corrupted = true;
+                break;
+            }
+    }
+    if (corrupted)
+        CHECK_THROWS(fv.PublishBoundaryInputs(packet, .25));
+    else
+        CHECK_NOTHROW(fv.PublishBoundaryInputs(packet, .25));
+}
+
 TEST_CASE("Direct P1 mixture PP shares one thermal factor across split flow and species storage")
 {
     MixtureFixture mixture;

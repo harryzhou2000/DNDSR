@@ -145,6 +145,11 @@ namespace DNDS::Cauchy
     {
         ValidateBoundaryLayout(input);
         DNDS_check_throw_info(input._updating && std::isfinite(time), "boundary publication needs a begun update and finite physical time");
+        // PP POLICY -- an interface packet is a frozen complete mean-like point
+        // state, not a raw reconstruction polynomial. Flow/species therefore
+        // satisfy the stored-state simplex and clipped EOS/T invariant, while
+        // RANS uses its independent model bounds. Sampling never writes a
+        // temporary EOS composition back into these transported packet values.
         const auto validate = [&](const EquationDofs &values,
                                   const auto &points)
         {
