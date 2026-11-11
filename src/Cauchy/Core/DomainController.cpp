@@ -4,12 +4,12 @@ namespace DNDS::Cauchy
 {
     struct DomainController::CandidateReservation::Data
     {
-        Domain *domain = nullptr;
+        std::reference_wrapper<Domain> domain;
         std::unique_ptr<EquationDofs::WriteScope> destination;
         std::unique_ptr<EquationDofs::ReadScope> source;
         bool committed = false;
 
-        explicit Data(Domain &owner) : domain(&owner) {}
+        explicit Data(Domain &owner) : domain(owner) {}
         ~Data()
         {
             if (!committed && destination)
@@ -19,18 +19,18 @@ namespace DNDS::Cauchy
 
     struct DomainController::CheckpointCandidate::Data
     {
-        Domain *domain = nullptr;
+        std::reference_wrapper<Domain> domain;
         std::unique_ptr<IO::DomainCheckpointRead> candidate;
         Data(Domain &owner, std::unique_ptr<IO::DomainCheckpointRead> value)
-            : domain(&owner), candidate(std::move(value)) {}
+            : domain(owner), candidate(std::move(value)) {}
     };
 
     struct DomainController::InternalCheckpointCandidate::Data
     {
-        Domain *domain = nullptr;
+        std::reference_wrapper<Domain> domain;
         std::unique_ptr<IO::DomainInternalCheckpointRead> candidate;
         Data(Domain &owner, std::unique_ptr<IO::DomainInternalCheckpointRead> value)
-            : domain(&owner), candidate(std::move(value)) {}
+            : domain(owner), candidate(std::move(value)) {}
     };
 
     DomainController::CandidateReservation::CandidateReservation(
@@ -193,7 +193,8 @@ namespace DNDS::Cauchy
     void DomainController::CommitCandidate(CandidateReservation &reservation)
     {
         DNDS_check_throw_info(
-            reservation._data && reservation._data->domain == _domain &&
+            reservation._data &&
+                &reservation._data->domain.get() == _domain.Get() &&
                 !reservation._data->committed && reservation._data->destination &&
                 reservation._data->source,
             "invalid or already committed domain candidate reservation");
@@ -229,7 +230,8 @@ namespace DNDS::Cauchy
         CheckpointCandidate &candidate)
     {
         DNDS_check_throw_info(
-            candidate._data && candidate._data->domain == _domain &&
+            candidate._data &&
+                &candidate._data->domain.get() == _domain.Get() &&
                 candidate._data->candidate &&
                 candidate._data->candidate->equationGuess,
             "interface checkpoint requires a variational reconstruction candidate");
@@ -256,7 +258,8 @@ namespace DNDS::Cauchy
                                              bool collectiveChecks)
     {
         DNDS_check_throw_info(candidate._data &&
-                                  candidate._data->domain == _domain &&
+                                  &candidate._data->domain.get() ==
+                                      _domain.Get() &&
                                   candidate._data->candidate,
                               "checkpoint candidate belongs to another domain");
         _domain->ReserveCheckpointRead(*candidate._data->candidate,
@@ -265,7 +268,8 @@ namespace DNDS::Cauchy
     void DomainController::CommitCheckpoint(CheckpointCandidate &candidate)
     {
         DNDS_check_throw_info(candidate._data &&
-                                  candidate._data->domain == _domain &&
+                                  &candidate._data->domain.get() ==
+                                      _domain.Get() &&
                                   candidate._data->candidate,
                               "checkpoint candidate belongs to another domain");
         _domain->CommitCheckpointRead(*candidate._data->candidate);
@@ -274,7 +278,8 @@ namespace DNDS::Cauchy
         InternalCheckpointCandidate &candidate)
     {
         DNDS_check_throw_info(candidate._data &&
-                                  candidate._data->domain == _domain &&
+                                  &candidate._data->domain.get() ==
+                                      _domain.Get() &&
                                   candidate._data->candidate,
                               "internal checkpoint candidate belongs to another domain");
         _domain->CommitInternalCheckpointRead(*candidate._data->candidate);

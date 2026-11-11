@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cauchy/Core/Domain.hpp"
+#include "DNDS/Core/OptionalRef.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -15,8 +16,8 @@ namespace DNDS::Cauchy
     /// the simulation level.
     class DomainController
     {
-        Domain *_domain = nullptr;
-        explicit DomainController(Domain &domain) : _domain(&domain) {}
+        OptionalRef<Domain> _domain;
+        explicit DomainController(Domain &domain) : _domain(domain) {}
         friend class Domain;
 
     public:
