@@ -122,18 +122,21 @@ namespace DNDS::Cauchy
     {
         real limits[2]{dt, -dt};
         int valid = std::isfinite(dt) && dt > 0;
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _placement.Control());
+        valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, _placement.Control());
         DNDS_check_throw_info(valid, "invalid coordinated Cauchy timestep");
-        MPI_Allreduce(MPI_IN_PLACE, limits, 2, MPI_DOUBLE, MPI_MIN, _placement.Control());
+        MPI::AllreduceInPlace<MPI::Reduction::Min>(
+            MPI::ContiguousView<real>{limits, 2}, _placement.Control());
         DNDS_check_throw_info(limits[0] == -limits[1], "simulation ranks requested different timesteps");
         int targetFlags[2]{int(acceptedTime.has_value()), -int(acceptedTime.has_value())};
-        MPI_Allreduce(MPI_IN_PLACE, targetFlags, 2, MPI_INT, MPI_MIN, _placement.Control());
+        MPI::AllreduceInPlace<MPI::Reduction::Min>(
+            MPI::ContiguousView<int>{targetFlags, 2}, _placement.Control());
         DNDS_check_throw_info(targetFlags[0] == -targetFlags[1], "simulation ranks disagree on exact accepted-time snapping");
         real acceptedTarget = acceptedTime.value_or(0);
         if (acceptedTime)
         {
             real targets[2]{acceptedTarget, -acceptedTarget};
-            MPI_Allreduce(MPI_IN_PLACE, targets, 2, MPI_DOUBLE, MPI_MIN, _placement.Control());
+            MPI::AllreduceInPlace<MPI::Reduction::Min>(
+                MPI::ContiguousView<real>{targets, 2}, _placement.Control());
             DNDS_check_throw_info(targets[0] == -targets[1] && std::isfinite(acceptedTarget) && acceptedTarget > _time,
                                   "simulation ranks requested different or invalid exact accepted times");
             const real expected = _time + dt;
@@ -167,7 +170,7 @@ namespace DNDS::Cauchy
                         else
                             action(iDomain, *_domains[iDomain]);
                     }
-                MPI_Allreduce(MPI_IN_PLACE, &ready, 1, MPI_INT, MPI_MIN, _placement.Control());
+                ready = MPI::AllreduceValue<MPI::Reduction::Min>(ready, _placement.Control());
                 return ready ? StepResult{} : StepResult::Rejected("coordinated " + name + " rejected; accepted states unchanged: " + error);
             };
             const auto ports = [&](bool prepared)

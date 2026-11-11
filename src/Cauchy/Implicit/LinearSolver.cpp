@@ -395,7 +395,9 @@ namespace DNDS::Cauchy
                 std::vector<real> local, global(probes.size());
                 Stage([&]
                       { local = Ops::LocalProducts(x, probes, inverseComponentScales); });
-                MPI_Allreduce(local.data(), global.data(), int(global.size()), MPI_DOUBLE, MPI_SUM, mpi.comm);
+                MPI::AllreduceInto<MPI::Reduction::Sum>(
+                    MPI::ContiguousView<const real>{local.data(), local.size()},
+                    MPI::ContiguousView<real>{global.data(), global.size()}, mpi.comm);
                 return global;
             }
             bool Finite(const Field &x) const
@@ -405,7 +407,7 @@ namespace DNDS::Cauchy
                 Stage([&]
                       { valid = Ops::LocalFinite(x); });
                 if (execution.collectiveChecks)
-                    MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+                    valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, mpi.comm);
                 else if (!valid)
                 {
                     // Unchecked production execution cannot return a local
@@ -626,10 +628,10 @@ namespace DNDS::Cauchy
             auto lowest = integers, highest = integers;
             const std::array<real, 2> tolerances{settings.relativeTolerance, settings.absoluteTolerance};
             auto lowTolerance = tolerances, highTolerance = tolerances;
-            MPI_Allreduce(MPI_IN_PLACE, lowest.data(), int(lowest.size()), MPI_INT64_T, MPI_MIN, mpi.comm);
-            MPI_Allreduce(MPI_IN_PLACE, highest.data(), int(highest.size()), MPI_INT64_T, MPI_MAX, mpi.comm);
-            MPI_Allreduce(MPI_IN_PLACE, lowTolerance.data(), 2, MPI_DOUBLE, MPI_MIN, mpi.comm);
-            MPI_Allreduce(MPI_IN_PLACE, highTolerance.data(), 2, MPI_DOUBLE, MPI_MAX, mpi.comm);
+            MPI::AllreduceInPlace<MPI::Reduction::Min>(lowest, mpi.comm);
+            MPI::AllreduceInPlace<MPI::Reduction::Max>(highest, mpi.comm);
+            MPI::AllreduceInPlace<MPI::Reduction::Min>(lowTolerance, mpi.comm);
+            MPI::AllreduceInPlace<MPI::Reduction::Max>(highTolerance, mpi.comm);
             DNDS_check_throw_info(lowest == highest && lowTolerance == highTolerance, "linear solver controls differ between domain ranks");
             Ops::Agree(prototype, mpi.comm);
             std::shared_ptr<Data> data;

@@ -178,6 +178,38 @@ TEST_CASE("MPI Allreduce")
 
         CHECK(result == doctest::Approx(static_cast<DNDS::real>(mpi.size - 1)));
     }
+
+    SUBCASE("bounded typed scalar and fixed-array reductions")
+    {
+        const auto sum = MPI::AllreduceValue<MPI::Reduction::Sum>(mpi.rank + 1, mpi.comm);
+        CHECK(sum == expected);
+
+        std::array<DNDS::real, 2> extrema{DNDS::real(mpi.rank), DNDS::real(-mpi.rank)};
+        MPI::AllreduceInPlace<MPI::Reduction::Max>(extrema, mpi.comm);
+        CHECK(extrema[0] == doctest::Approx(DNDS::real(mpi.size - 1)));
+        CHECK(extrema[1] == doctest::Approx(0));
+
+        const bool allValid = MPI::AllreduceValue<MPI::Reduction::LogicalAnd>(mpi.rank >= 0, mpi.comm);
+        CHECK(allValid);
+        const auto rankMask = MPI::AllreduceValue<MPI::Reduction::BitOr>(uint64_t(1) << (mpi.rank % 63), mpi.comm);
+        CHECK((rankMask & 1) != 0);
+    }
+
+    SUBCASE("bounded typed dynamic input/output reductions")
+    {
+        std::vector<DNDS::index> local{mpi.rank + 1, 1};
+        std::vector<DNDS::index> result(local.size(), 0);
+        MPI::AllreduceInto<MPI::Reduction::Sum>(
+            MPI::ContiguousView<const DNDS::index>{local.data(), local.size()},
+            MPI::ContiguousView<DNDS::index>{result.data(), result.size()}, mpi.comm);
+        CHECK(result[0] == expected);
+        CHECK(result[1] == mpi.size);
+
+        MPI::AllreduceInPlace<MPI::Reduction::Min>(
+            MPI::ContiguousView<DNDS::index>{local.data(), local.size()}, mpi.comm);
+        CHECK(local[0] == 1);
+        CHECK(local[1] == 1);
+    }
 }
 
 // ---------------------------------------------------------------------------

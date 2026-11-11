@@ -1,6 +1,8 @@
-#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
+
 #include "Cauchy/Physics/StateInput.hpp"
+#include "DNDS/Config/JsonSchema.hpp"
+#include "DNDS/MPI/Failure.hpp"
 #include <set>
 #include <numeric>
 #include <optional>
@@ -16,63 +18,6 @@ namespace DNDS::Cauchy
                 result += c == '~' ? "~0" : c == '/' ? "~1"
                                                      : std::string(1, c);
             return result;
-        }
-        bool MatchesType(const Json &value, const std::string &type)
-        {
-            return type.empty() || (type == "null" && value.is_null()) || (type == "object" && value.is_object()) ||
-                   (type == "array" && value.is_array()) || (type == "string" && value.is_string()) ||
-                   (type == "boolean" && value.is_boolean()) || (type == "integer" && value.is_number_integer()) ||
-                   (type == "number" && value.is_number() && std::isfinite(value.get<real>()));
-        }
-        void Keys(const Json &value, const Json &schema, const std::string &path)
-        {
-            if (schema.contains("oneOf"))
-            {
-                // Input unions distinguish null/array/object. Select by JSON
-                // type without raising diagnostic exceptions on valid input.
-                const Json *selected = nullptr;
-                for (const auto &variant : schema["oneOf"])
-                    if (MatchesType(value, variant.value("type", std::string{})))
-                    {
-                        DNDS_check_throw_info(!selected, "ambiguous Cauchy configuration variant at " + path);
-                        selected = &variant;
-                    }
-                DNDS_check_throw_info(selected, "Cauchy configuration does not match an input variant at " + path);
-                Keys(value, *selected, path);
-                return;
-            }
-            const auto type = schema.value("type", std::string{});
-            DNDS_check_throw_info(MatchesType(value, type), "Cauchy configuration type mismatch at " + path);
-            if (schema.contains("enum"))
-                DNDS_check_throw_info(std::find(schema["enum"].begin(), schema["enum"].end(), value) != schema["enum"].end(), "unknown Cauchy enum value at " + path);
-            if (schema.contains("required"))
-                for (const auto &key : schema["required"])
-                    DNDS_check_throw_info(value.contains(key.get<std::string>()), "missing Cauchy configuration field at " + path + "/" + key.get<std::string>());
-            if (value.is_object())
-                for (const auto &[key, child] : value.items())
-                {
-                    const auto childPath = path + "/" + Escape(key);
-                    if (schema.contains("properties") && schema["properties"].contains(key))
-                        Keys(child, schema["properties"][key], childPath);
-                    else if (schema.contains("additionalProperties") && schema["additionalProperties"].is_object())
-                        Keys(child, schema["additionalProperties"], childPath);
-                    else
-                        DNDS_check_throw_info(false, "unknown Cauchy configuration key " + childPath);
-                }
-            if (value.is_array())
-            {
-                DNDS_check_throw_info(value.size() >= schema.value("minItems", size_t(0)) && value.size() <= schema.value("maxItems", SIZE_MAX),
-                                      "Cauchy array extent mismatch at " + path);
-                if (schema.contains("items"))
-                    for (index i = 0; i < index(value.size()); ++i)
-                    {
-                        const auto &items = schema["items"];
-                        if (items.is_object())
-                            Keys(value[i], items, path + "/" + std::to_string(i));
-                        else if (items.is_array() && i < index(items.size()))
-                            Keys(value[i], items[i], path + "/" + std::to_string(i));
-                    }
-            }
         }
         void Allowed(const Json &value, std::initializer_list<const char *> allowed, const std::string &path)
         {
@@ -326,7 +271,8 @@ namespace DNDS::Cauchy
         const auto found = multigrid.coarseLevelSettings.find(std::to_string(level));
         if (found != multigrid.coarseLevelSettings.end())
         {
-            Keys(found->second.solver, MultigridSmootherSchema(), "/implicit/multigrid/coarseLevelSettings/" + std::to_string(level) + "/solver");
+            Config::ValidatePartialJsonSchema(found->second.solver, MultigridSmootherSchema(),
+                                              "/implicit/multigrid/coarseLevelSettings/" + std::to_string(level) + "/solver");
             Json merged = result;
             merged.merge_patch(found->second.solver);
             result = merged.get<ImplicitSettings>();
@@ -444,10 +390,35 @@ namespace DNDS::Cauchy
         return {{std::string(mixture ? "cpu/idealGasMixture/flow5+species" : "cpu/perfectGas/flow5") + (rans ? "+" + s.equation.rans.model : ""), "cpu/" + s.numerics.flux, "cpu/" + s.equation.transport,
                  "cfv/" + s.numerics.reconstruction, "cfv/" + s.numerics.limiter, "runtime/mpi-direct"}};
     }
+    Json SimulationConfig::InputSchema()
+    {
+        const Json domain{{"type", "object"},
+                          {"additionalProperties", false},
+                          {"required", {"name"}},
+                          {"properties",
+                           {{"name", {{"type", "string"}, {"description", "Unique domain name"}}},
+                            {"ranks", {{"type", "array"}, {"items", {{"type", "integer"}}}, {"minItems", 1}}},
+                            {"profiles", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+                            {"overrides", DomainSettings::schema("Per-domain settings patch")}}}};
+        Json schema{{"$schema", "http://json-schema.org/draft-07/schema#"},
+                    {"title", "DNDSR Cauchy simulation input"},
+                    {"type", "object"},
+                    {"additionalProperties", false},
+                    {"properties",
+                     {{"schemaVersion", {{"type", "integer"}, {"enum", {1}}, {"default", 1}}},
+                      {"profiles", {{"type", "object"}, {"additionalProperties", DomainSettings::schema("Named settings patch")}}},
+                      {"defaults", DomainSettings::schema("Root domain-settings patch")},
+                      {"domains", {{"type", "array"}, {"items", domain}, {"minItems", 1}}},
+                      {"time", TimeSettings::schema("Physical-time settings patch")},
+                      {"output", OutputSettings::schema("Output settings patch")},
+                      {"interfaces", {{"type", "array"}, {"items", InterfaceSettings::schema("Directed interface patch")}}}}}};
+        return schema;
+    }
+
     SimulationConfig SimulationConfig::Resolve(const Json &input, int size, const std::vector<ConfigOverride> &overrides)
     {
         DNDS_check_throw_info(size > 0, "invalid simulation size");
-        Allowed(input, {"schemaVersion", "profiles", "defaults", "domains", "time", "output", "interfaces"}, "");
+        Config::ValidatePartialJsonSchema(input, InputSchema());
         DNDS_check_throw_info(input.value("schemaVersion", 1) == 1, "unsupported Cauchy schema version");
         const auto supplied = [&](const char *section, const char *field)
         {
@@ -474,9 +445,9 @@ namespace DNDS::Cauchy
         const auto profiles = input.value("profiles", Json::object());
         DNDS_check_throw_info(profiles.is_object(), "Cauchy profiles must be named objects");
         for (const auto &[name, patch] : profiles.items())
-            Keys(patch, schema, "/profiles/" + Escape(name));
+            Config::ValidatePartialJsonSchema(patch, schema, "/profiles/" + Escape(name));
         const auto defaults = input.value("defaults", Json::object());
-        Keys(defaults, schema, "/defaults");
+        Config::ValidatePartialJsonSchema(defaults, schema, "/defaults");
         std::vector<int> allRanks(size);
         std::iota(allRanks.begin(), allRanks.end(), 0);
         const auto domains = input.value("domains", Json::array({Json{{"name", "fluid"}, {"ranks", allRanks}}}));
@@ -489,7 +460,6 @@ namespace DNDS::Cauchy
         {
             const auto &source = domains[i];
             const auto path = "/domains/" + std::to_string(i);
-            Allowed(source, {"name", "ranks", "profiles", "overrides"}, path);
             Json settings = DomainSettings{};
             Origin(settings, path + "/settings", "schema default", data->provenance);
             const auto selected = source.value("profiles", std::vector<std::string>{});
@@ -501,7 +471,7 @@ namespace DNDS::Cauchy
             }
             Merge(settings, defaults, path + "/settings", "solver defaults", data->provenance);
             const auto patch = source.value("overrides", Json::object());
-            Keys(patch, schema, path + "/overrides");
+            Config::ValidatePartialJsonSchema(patch, schema, path + "/overrides");
             Merge(settings, patch, path + "/settings", "domain override", data->provenance);
             // Map entries are partial conditions too. Fill defaults without
             // overwriting the per-leaf origin of explicitly supplied values.
@@ -539,7 +509,7 @@ namespace DNDS::Cauchy
             data->root["interfaces"] = Json::array();
             for (const auto &entry : input["interfaces"])
             {
-                Keys(entry, InterfaceSettings::schema(), "/interfaces");
+                Config::ValidatePartialJsonSchema(entry, InterfaceSettings::schema(), "/interfaces");
                 Json resolved = InterfaceSettings{};
                 resolved.update(entry);
                 data->root["interfaces"].push_back(std::move(resolved));
@@ -559,7 +529,7 @@ namespace DNDS::Cauchy
         {
             auto &resolved = data->root["domains"][iDomain];
             Allowed(resolved, {"name", "ranks", "settings"}, "/domains");
-            Keys(resolved.at("settings"), schema, "/domains/settings");
+            Config::ValidatePartialJsonSchema(resolved.at("settings"), schema, "/domains/settings");
             // Coarse levels are dynamic map entries, so root defaults cannot
             // supply their omitted count/solver fields. Expand after CLI patches
             // as well; the solver patch itself stays partial for inheritance.
@@ -586,8 +556,8 @@ namespace DNDS::Cauchy
             ResolvedExecutionPlan::Resolve(domain);
             data->domains.push_back(std::move(domain));
         }
-        Keys(data->root["time"], TimeSettings::schema(), "/time");
-        Keys(data->root["output"], OutputSettings::schema(), "/output");
+        Config::ValidatePartialJsonSchema(data->root["time"], TimeSettings::schema(), "/time");
+        Config::ValidatePartialJsonSchema(data->root["output"], OutputSettings::schema(), "/output");
         data->time = data->root["time"].get<TimeSettings>();
         data->output = data->root["output"].get<OutputSettings>();
         if (data->time.finalTime >= 0)
@@ -614,7 +584,7 @@ namespace DNDS::Cauchy
         std::set<std::pair<std::string, int>> receivers;
         for (const auto &entry : data->root.value("interfaces", Json::array()))
         {
-            Keys(entry, InterfaceSettings::schema(), "/interfaces");
+            Config::ValidatePartialJsonSchema(entry, InterfaceSettings::schema(), "/interfaces");
             auto connection = entry.get<InterfaceSettings>();
             DNDS_check_throw_info(names.count(connection.donor) && names.count(connection.receiver) && connection.donor != connection.receiver,
                                   "interface donor/receiver names must identify distinct configured domains");
@@ -727,14 +697,14 @@ namespace DNDS::Cauchy
             error = exception.what();
             valid = 0;
         }
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, comm);
+        valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, comm);
         DNDS_check_throw_info(valid, "Cauchy configuration rejected on a rank: " + error);
         int length = rank == 0 ? int(serialized.size()) : 0;
         MPI_Bcast(&length, 1, MPI_INT, 0, comm);
         std::string reference = rank == 0 ? serialized : std::string(size_t(length), '\0');
         MPI_Bcast(reference.data(), length, MPI_CHAR, 0, comm);
         valid = reference == serialized;
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, comm);
+        valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, comm);
         MPI::CheckPreflight(valid, "Cauchy resolved configuration differs between simulation ranks");
         return std::move(*result);
     }

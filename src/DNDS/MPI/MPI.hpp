@@ -14,6 +14,7 @@
 /// - MPI::ResourceRecycler, MPISerialDo, InsertCheck
 /// - Sub-communicators, CommStrategy functional impact on ArrayTransformer
 
+#include <array>
 #include <vector>
 #include <fstream>
 #include <optional>
@@ -691,6 +692,196 @@ namespace DNDS::MPI
     /// @brief Wrapper over `MPI_Allreduce`.
     MPI_int Allreduce(const void *sendbuf, void *recvbuf, MPI_int count,
                       MPI_Datatype datatype, MPI_Op op, MPI_Comm comm);
+
+    /// Supported reduction semantics for the bounded typed collective API.
+    /// The operation remains explicit at every call site; unsupported
+    /// operation/scalar combinations are rejected during template
+    /// instantiation rather than delegated to MPI at runtime.
+    enum class Reduction
+    {
+        Sum,
+        Min,
+        Max,
+        LogicalAnd,
+        LogicalOr,
+        BitAnd,
+        BitOr,
+        BitXor
+    };
+
+    /// Non-owning contiguous host view accepted by typed collectives.
+    /// The caller retains the storage until the blocking collective returns.
+    template <class T>
+    struct ContiguousView
+    {
+        T *data = nullptr;
+        size_t size = 0;
+    };
+
+    namespace Detail
+    {
+        template <class T>
+        inline constexpr bool IsMpiScalar =
+            std::is_same_v<std::remove_cv_t<T>, bool> ||
+            (std::is_arithmetic_v<std::remove_cv_t<T>> &&
+             !std::is_same_v<std::remove_cv_t<T>, wchar_t> &&
+             !std::is_same_v<std::remove_cv_t<T>, char16_t> &&
+             !std::is_same_v<std::remove_cv_t<T>, char32_t>);
+
+        template <class T>
+        MPI_Datatype MpiScalarType()
+        {
+            using U = std::remove_cv_t<T>;
+            static_assert(IsMpiScalar<U>, "typed MPI collectives require a supported fundamental scalar");
+            if constexpr (std::is_same_v<U, bool>)
+                return MPI_C_BOOL;
+            else if constexpr (std::is_same_v<U, char>)
+                return MPI_CHAR;
+            else if constexpr (std::is_same_v<U, signed char>)
+                return MPI_SIGNED_CHAR;
+            else if constexpr (std::is_same_v<U, unsigned char>)
+                return MPI_UNSIGNED_CHAR;
+            else if constexpr (std::is_same_v<U, short>)
+                return MPI_SHORT;
+            else if constexpr (std::is_same_v<U, unsigned short>)
+                return MPI_UNSIGNED_SHORT;
+            else if constexpr (std::is_same_v<U, int>)
+                return MPI_INT;
+            else if constexpr (std::is_same_v<U, unsigned int>)
+                return MPI_UNSIGNED;
+            else if constexpr (std::is_same_v<U, long>)
+                return MPI_LONG;
+            else if constexpr (std::is_same_v<U, unsigned long>)
+                return MPI_UNSIGNED_LONG;
+            else if constexpr (std::is_same_v<U, long long>)
+                return MPI_LONG_LONG_INT;
+            else if constexpr (std::is_same_v<U, unsigned long long>)
+                return MPI_UNSIGNED_LONG_LONG;
+            else if constexpr (std::is_same_v<U, float>)
+                return MPI_FLOAT;
+            else if constexpr (std::is_same_v<U, double>)
+                return MPI_DOUBLE;
+            else if constexpr (std::is_same_v<U, long double>)
+                return MPI_LONG_DOUBLE;
+        }
+
+        template <Reduction Op, class T>
+        MPI_Op MpiReductionOperation()
+        {
+            using U = std::remove_cv_t<T>;
+            static_assert(IsMpiScalar<U>, "typed MPI collectives require a supported fundamental scalar");
+            constexpr bool arithmetic = std::is_arithmetic_v<U> && !std::is_same_v<U, bool>;
+            constexpr bool integral = std::is_integral_v<U> && !std::is_same_v<U, bool>;
+            if constexpr (Op == Reduction::Sum)
+            {
+                static_assert(arithmetic, "MPI sum requires a non-bool arithmetic scalar");
+                return MPI_SUM;
+            }
+            else if constexpr (Op == Reduction::Min)
+            {
+                static_assert(arithmetic, "MPI minimum requires a non-bool arithmetic scalar");
+                return MPI_MIN;
+            }
+            else if constexpr (Op == Reduction::Max)
+            {
+                static_assert(arithmetic, "MPI maximum requires a non-bool arithmetic scalar");
+                return MPI_MAX;
+            }
+            else if constexpr (Op == Reduction::LogicalAnd)
+            {
+                static_assert(std::is_same_v<U, bool>, "MPI logical-and requires bool");
+                return MPI_LAND;
+            }
+            else if constexpr (Op == Reduction::LogicalOr)
+            {
+                static_assert(std::is_same_v<U, bool>, "MPI logical-or requires bool");
+                return MPI_LOR;
+            }
+            else if constexpr (Op == Reduction::BitAnd)
+            {
+                static_assert(integral, "MPI bit-and requires a non-bool integral scalar");
+                return MPI_BAND;
+            }
+            else if constexpr (Op == Reduction::BitOr)
+            {
+                static_assert(integral, "MPI bit-or requires a non-bool integral scalar");
+                return MPI_BOR;
+            }
+            else
+            {
+                static_assert(Op == Reduction::BitXor && integral,
+                              "MPI bit-xor requires a non-bool integral scalar");
+                return MPI_BXOR;
+            }
+        }
+
+        inline MPI_int CheckedCollectiveCount(size_t size)
+        {
+            DNDS_check_throw_info(size <= size_t(MAX_MPI_int),
+                                  "typed MPI collective count exceeds MPI_int");
+            return MPI_int(size);
+        }
+    }
+
+    /// @brief Reduce one fundamental scalar and return the all-rank result.
+    /// @tparam Op Explicit reduction semantics, checked against `T`.
+    /// @param local Calling rank's value.
+    /// @param comm Communicator entered collectively by every participating rank.
+    /// @throws std::runtime_error for an MPI error.
+    template <Reduction Op, class T>
+    [[nodiscard]] T AllreduceValue(T local, MPI_Comm comm)
+    {
+        static_assert(Detail::IsMpiScalar<T>, "unsupported typed MPI scalar");
+        T result{};
+        const auto status = Allreduce(&local, &result, 1, Detail::MpiScalarType<T>(),
+                                      Detail::MpiReductionOperation<Op, T>(), comm);
+        DNDS_check_throw_info(status == MPI_SUCCESS, "typed MPI scalar Allreduce failed");
+        return result;
+    }
+
+    /// @brief Reduce a contiguous mutable buffer in place.
+    /// @pre `values.data` is valid for `values.size` host elements until return.
+    /// @throws std::runtime_error for an oversized count or MPI error.
+    template <Reduction Op, class T>
+    void AllreduceInPlace(ContiguousView<T> values, MPI_Comm comm)
+    {
+        static_assert(Detail::IsMpiScalar<T>, "unsupported typed MPI scalar");
+        const auto count = Detail::CheckedCollectiveCount(values.size);
+        DNDS_check_throw_info(values.data || !count, "typed MPI Allreduce received a null nonempty view");
+        // MPI_IN_PLACE is a library-defined sentinel macro whose internal
+        // C-style cast is outside project control.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
+        const auto status = Allreduce(MPI_IN_PLACE, values.data, count,
+                                      Detail::MpiScalarType<T>(),
+                                      Detail::MpiReductionOperation<Op, T>(), comm);
+        DNDS_check_throw_info(status == MPI_SUCCESS, "typed MPI in-place Allreduce failed");
+    }
+
+    /// @brief Reduce a fixed-size array in place without spelling a pointer/count.
+    template <Reduction Op, class T, size_t N>
+    void AllreduceInPlace(std::array<T, N> &values, MPI_Comm comm)
+    {
+        static_assert(N <= size_t(MAX_MPI_int), "fixed typed MPI collective exceeds MPI_int");
+        AllreduceInPlace<Op>(ContiguousView<T>{values.data(), values.size()}, comm);
+    }
+
+    /// @brief Reduce one contiguous input buffer into a distinct output buffer.
+    /// @pre Input and output have equal sizes and remain valid until return.
+    template <Reduction Op, class T>
+    void AllreduceInto(ContiguousView<const T> local, ContiguousView<T> result,
+                       MPI_Comm comm)
+    {
+        static_assert(Detail::IsMpiScalar<T>, "unsupported typed MPI scalar");
+        DNDS_check_throw_info(local.size == result.size,
+                              "typed MPI Allreduce input/output sizes differ");
+        const auto count = Detail::CheckedCollectiveCount(local.size);
+        DNDS_check_throw_info((local.data && result.data) || !count,
+                              "typed MPI Allreduce received a null nonempty view");
+        const auto status = Allreduce(local.data, result.data, count,
+                                      Detail::MpiScalarType<T>(),
+                                      Detail::MpiReductionOperation<Op, T>(), comm);
+        DNDS_check_throw_info(status == MPI_SUCCESS, "typed MPI output Allreduce failed");
+    }
 
     /// @brief Wrapper over `MPI_Scan` (inclusive prefix reduction).
     MPI_int Scan(const void *sendbuf, void *recvbuf, MPI_int count,

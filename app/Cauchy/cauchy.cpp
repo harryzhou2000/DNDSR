@@ -68,6 +68,7 @@ static int Run(int argc, char **argv, double started)
             arguments.add_argument("config").default_value(std::string{}).help("Cauchy JSON input; paths are relative to the working directory");
             arguments.add_argument("-h", "--help").flag();
             arguments.add_argument("--check-config").flag().help("Print resolved configuration without constructing a mesh");
+            arguments.add_argument("--emit-schema").flag().help("Print the canonical raw-input JSON schema without reading a case");
             arguments.add_argument("--restart").default_value(std::string{}).help("Restart from a Cauchy checkpoint");
             arguments.add_argument("-k", "--overwrite_key").append().default_value<std::vector<std::string>>({}).help("Resolved-config JSON pointer to override; pair with -v, may repeat");
             arguments.add_argument("-v", "--overwrite_value").append().default_value<std::vector<std::string>>({}).help("JSON value for the corresponding -k (quote JSON strings)");
@@ -77,6 +78,12 @@ static int Run(int argc, char **argv, double started)
             {
                 if (mpi.rank == 0)
                     std::cout << arguments;
+                return 0;
+            }
+            if (arguments.get<bool>("--emit-schema"))
+            {
+                if (mpi.rank == 0)
+                    std::cout << DNDS::Cauchy::SimulationConfig::InputSchema().dump(2) << '\n';
                 return 0;
             }
             const auto configPath = arguments.get<std::string>("config");
@@ -236,7 +243,7 @@ static int Run(int argc, char **argv, double started)
                            outerTarget;
                 else
                     allReached &= time.steadyTolerance > 0 && domain.Epoch().acceptedStep >= uint64_t(time.steadyMinSteps) && outerTarget; });
-                MPI_Allreduce(MPI_IN_PLACE, &allReached, 1, MPI_INT, MPI_MIN, mpi.comm);
+                allReached = DNDS::MPI::AllreduceValue<DNDS::MPI::Reduction::Min>(allReached, mpi.comm);
                 return bool(allReached);
             };
             // The initial state remains in the CSV history, but console
@@ -261,8 +268,10 @@ static int Run(int argc, char **argv, double started)
                         positions[size_t(2 * iDomain + 1)] = cursor.line;
                         roots[size_t(iDomain)] = 1;
                     } });
-                MPI_Allreduce(MPI_IN_PLACE, positions.data(), int(positions.size()), MPI_INT64_T, MPI_SUM, mpi.comm);
-                MPI_Allreduce(MPI_IN_PLACE, roots.data(), int(roots.size()), MPI_INT, MPI_SUM, mpi.comm);
+                DNDS::MPI::AllreduceInPlace<DNDS::MPI::Reduction::Sum>(
+                    DNDS::MPI::ContiguousView<int64_t>{positions.data(), positions.size()}, mpi.comm);
+                DNDS::MPI::AllreduceInPlace<DNDS::MPI::Reduction::Sum>(
+                    DNDS::MPI::ContiguousView<int>{roots.data(), roots.size()}, mpi.comm);
                 outputState.nextCheckpointTime = nextCheckpointTime;
                 outputState.nextVisualizationTime = nextVisualizationTime;
                 for (DNDS::index iDomain = 0; iDomain < domainCount; ++iDomain)
@@ -376,7 +385,7 @@ static int Run(int argc, char **argv, double started)
             for (DNDS::index step = 0; time.tEnd > 0 ? !DNDS::Cauchy::EquationTimeStepper::ReachedTimeTarget(simulation.Time(), time.tEnd) : step < time.steps; ++step)
             {
                 int stop = time.wallSeconds > 0 && MPI_Wtime() - started >= time.wallSeconds;
-                MPI_Allreduce(MPI_IN_PLACE, &stop, 1, MPI_INT, MPI_MAX, mpi.comm);
+                stop = DNDS::MPI::AllreduceValue<DNDS::MPI::Reduction::Max>(stop, mpi.comm);
                 if (stop)
                 {
                     wallStop = true;
@@ -386,7 +395,7 @@ static int Run(int argc, char **argv, double started)
                 if (time.cfl > 0)
                     visitDomains([&](DNDS::index, auto &domain)
                                  { dt = std::min(dt, domain.StableStep(time.cfl)); });
-                MPI_Allreduce(MPI_IN_PLACE, &dt, 1, MPI_DOUBLE, MPI_MIN, mpi.comm);
+                dt = DNDS::MPI::AllreduceValue<DNDS::MPI::Reduction::Min>(dt, mpi.comm);
                 if (time.positivity.enabled)
                 {
                     visitDomains([&](DNDS::index iDomain, auto &domain)
@@ -394,7 +403,7 @@ static int Run(int argc, char **argv, double started)
                     for (DNDS::index iDomain = 0; iDomain < domainCount; ++iDomain)
                         if (simulation.Local(iDomain))
                             dt = std::min(dt, limits[iDomain].dt);
-                    MPI_Allreduce(MPI_IN_PLACE, &dt, 1, MPI_DOUBLE, MPI_MIN, mpi.comm);
+                    dt = DNDS::MPI::AllreduceValue<DNDS::MPI::Reduction::Min>(dt, mpi.comm);
                 }
                 std::optional<DNDS::real> exactTarget;
                 if (!time.steady)
@@ -486,7 +495,7 @@ static int Run(int argc, char **argv, double started)
         {
             DNDS::MPI::Abort(mpi.comm, "Cauchy: unknown fatal exception");
         }
-        MPI_Allreduce(MPI_IN_PLACE, &status, 1, MPI_INT, MPI_MAX, mpi.comm);
+        status = DNDS::MPI::AllreduceValue<DNDS::MPI::Reduction::Max>(status, mpi.comm);
     }
     return status;
 }

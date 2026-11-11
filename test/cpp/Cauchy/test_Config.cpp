@@ -14,6 +14,30 @@ TEST_CASE("CPU workers require an MPI capability that permits multithreaded exec
     CHECK_NOTHROW(execution.ValidateMPIThreadSupport(MPI_THREAD_MULTIPLE));
 }
 
+TEST_CASE("Cauchy exposes one canonical layered input schema")
+{
+    const auto schema = C::SimulationConfig::InputSchema();
+    CHECK(schema["$schema"] == "http://json-schema.org/draft-07/schema#");
+    CHECK(schema["additionalProperties"] == false);
+    for (const auto *section : {"schemaVersion", "profiles", "defaults", "domains", "time", "output", "interfaces"})
+        CHECK(schema["properties"].contains(section));
+    const auto &domain = schema["properties"]["domains"]["items"];
+    CHECK(domain["required"] == C::Json::array({"name"}));
+    CHECK(domain["additionalProperties"] == false);
+    CHECK(domain["properties"]["overrides"]["additionalProperties"] == false);
+
+    C::Json input{{"profiles", {{"baseline", C::Json(C::DomainSettings{})}}},
+                  {"defaults", C::Json(C::DomainSettings{})},
+                  {"domains", C::Json::array({{{"name", "fluid"}, {"profiles", {"baseline"}}, {"overrides", C::Json::object()}}})},
+                  {"time", C::Json(C::TimeSettings{})},
+                  {"output", C::Json(C::OutputSettings{})},
+                  {"interfaces", C::Json::array()}};
+    CHECK_NOTHROW(C::SimulationConfig::Resolve(input, 1));
+    input["unknownRoot"] = true;
+    CHECK_THROWS_WITH(C::SimulationConfig::Resolve(input, 1),
+                      doctest::Contains("/unknownRoot"));
+}
+
 TEST_CASE("MPI fail-fast launch validation is an explicit execution choice")
 {
     CHECK(C::ExecutionSettings{}.transferPreflight == "collective");

@@ -17,14 +17,17 @@ namespace DNDS::Cauchy
         void AgreeStepControls(const MPIInfo &mpi, real dt, real relax, real scale, int power)
         {
             real values[]{dt, -dt, relax, -relax, scale, -scale, real(power), -real(power)};
-            MPI_Allreduce(MPI_IN_PLACE, values, 8, MPI_DOUBLE, MPI_MIN, mpi.comm);
+            MPI::AllreduceInPlace<MPI::Reduction::Min>(
+                MPI::ContiguousView<real>{values, 8}, mpi.comm);
             for (int j = 0; j < 8; j += 2)
                 DNDS_check_throw_info(values[j] == -values[j + 1], "physical timestep PP controls differ between ranks");
         }
         void ReduceStepLimit(PhysicalStepLimit &result, const MPIInfo &mpi)
         {
-            MPI_Allreduce(MPI_IN_PLACE, &result.minimumAlpha, 1, MPI_DOUBLE, MPI_MIN, mpi.comm);
-            MPI_Allreduce(MPI_IN_PLACE, &result.limitedCells, 1, MPI_INT64_T, MPI_SUM, mpi.comm);
+            result.minimumAlpha = MPI::AllreduceValue<MPI::Reduction::Min>(
+                result.minimumAlpha, mpi.comm);
+            result.limitedCells = MPI::AllreduceValue<MPI::Reduction::Sum>(
+                result.limitedCells, mpi.comm);
             if (result.limitedCells)
                 result.dt *= result.minimumAlpha;
         }

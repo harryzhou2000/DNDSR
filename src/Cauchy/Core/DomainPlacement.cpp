@@ -40,7 +40,7 @@ namespace DNDS::Cauchy
             reference = serialized;
         MPI_Bcast(reference.data(), length, MPI_CHAR, 0, simulation);
         valid &= serialized == reference && length > 0;
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, simulation);
+        valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, simulation);
         MPI::CheckPreflight(valid, "Cauchy domain groups are invalid or differ across simulation ranks");
         for (const auto &group : groups)
         {

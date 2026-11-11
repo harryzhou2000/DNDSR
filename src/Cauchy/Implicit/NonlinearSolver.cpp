@@ -387,7 +387,8 @@ namespace DNDS::Cauchy
                     DispatchCPUEquationLayouts(assemble, ul, rl, bl, wl);
                 });
                 if (singleCorrection) return; // Defect is ready; no stopping norm is needed.
-                MPI_Allreduce(MPI_IN_PLACE, local.data(), int(nv + 1), MPI_DOUBLE, MPI_SUM, data.mpi.comm);
+                MPI::AllreduceInPlace<MPI::Reduction::Sum>(
+                    MPI::ContiguousView<real>{local.data(), size_t(nv + 1)}, data.mpi.comm);
                 DNDS_check_throw_info(std::isfinite(local[nv]) && local[nv] > 0, "invalid global equation stage volume");
                 for (index j = 0; j < nv; ++j)
                 {
@@ -762,7 +763,8 @@ namespace DNDS::Cauchy
                 failure = std::current_exception();
                 agreement[0] = 0;
             }
-            MPI_Allreduce(MPI_IN_PLACE, agreement, 2, MPI_DOUBLE, MPI_MIN, data.mpi.comm);
+            MPI::AllreduceInPlace<MPI::Reduction::Min>(
+                MPI::ContiguousView<real>{agreement, 2}, data.mpi.comm);
             if (failure)
                 std::rethrow_exception(failure);
             DNDS_check_throw_info(agreement[0] == 1, "equation correction candidate rejected on another rank");
@@ -774,7 +776,7 @@ namespace DNDS::Cauchy
                    { EquationDofOperations::Copy(state, data.candidate); });
         if (data.positivity)
         {
-            MPI_Allreduce(MPI_IN_PLACE, &limited, 1, MPI_INT64_T, MPI_SUM, data.mpi.comm);
+            limited = MPI::AllreduceValue<MPI::Reduction::Sum>(limited, data.mpi.comm);
         }
         return {limited, minimum};
     }

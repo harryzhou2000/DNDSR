@@ -57,6 +57,7 @@ Serializer/SerializerBase.cpp
 Serializer/SerializerJSON.cpp
 Serializer/SerializerH5.cpp
 Config/ExprtkWrapper.cpp
+Config/JsonSchema.cpp
 Legacy/Vector.cpp
 Legacy/ArrayDOF_inst/ArrayDOF_op_1.cpp
 Legacy/ArrayDOF_inst/ArrayDOF_op_2.cpp

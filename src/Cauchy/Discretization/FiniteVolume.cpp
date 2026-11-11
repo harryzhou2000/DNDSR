@@ -520,9 +520,12 @@ namespace DNDS::Cauchy
                     errors[2][j] = std::max(errors[2][j], error);
                 }
             } });
-        MPI_Allreduce(MPI_IN_PLACE, &volume, 1, MPI_DOUBLE, MPI_SUM, Metrics().Communicator());
+        volume = MPI::AllreduceValue<MPI::Reduction::Sum>(volume, Metrics().Communicator());
         for (int i = 0; i < 3; ++i)
-            MPI_Allreduce(MPI_IN_PLACE, errors[i].data(), 5, MPI_DOUBLE, i == 2 ? MPI_MAX : MPI_SUM, Metrics().Communicator());
+            if (i == 2)
+                MPI::AllreduceInPlace<MPI::Reduction::Max>(errors[i], Metrics().Communicator());
+            else
+                MPI::AllreduceInPlace<MPI::Reduction::Sum>(errors[i], Metrics().Communicator());
         for (int j = 0; j < 5; ++j)
         {
             errors[0][j] /= volume;
@@ -585,7 +588,7 @@ namespace DNDS::Cauchy
                 valid &= bounds.Admissible(
                     EquationPositivityDetail::PointRow<decltype(values)>{
                         values, iCell}); });
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, Metrics().Communicator());
+        valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, Metrics().Communicator());
         return valid;
     }
     struct FiniteVolume::ReconstructionState
@@ -4055,8 +4058,8 @@ namespace DNDS::Cauchy
                           ? work.positivity->LocalStatistics()
                           : std::pair<index, real>{work.directPPLimited,
                                                    work.directPPMinimum};
-        MPI_Allreduce(MPI_IN_PLACE, &result.first, 1, MPI_INT64_T, MPI_SUM, Metrics().Communicator());
-        MPI_Allreduce(MPI_IN_PLACE, &result.second, 1, MPI_DOUBLE, MPI_MIN, Metrics().Communicator());
+        result.first = MPI::AllreduceValue<MPI::Reduction::Sum>(result.first, Metrics().Communicator());
+        result.second = MPI::AllreduceValue<MPI::Reduction::Min>(result.second, Metrics().Communicator());
         return result;
     }
 
@@ -4381,7 +4384,8 @@ namespace DNDS::Cauchy
                                     norms[0] += delta * delta; norms[1] += b(iCell, j) * b(iCell, j);
                                 }
                         } });
-                    MPI_Allreduce(MPI_IN_PLACE, norms, 2, MPI_DOUBLE, MPI_SUM, mpi.comm);
+                    MPI::AllreduceInPlace<MPI::Reduction::Sum>(
+                        MPI::ContiguousView<real>{norms, 2}, mpi.comm);
                     work.relativeUpdate = std::sqrt(norms[0] / std::max(norms[1], real(1e-300)));
                     converged = work.relativeUpdate <= numerics.reconstructionTolerance;
                 }
@@ -4627,7 +4631,8 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(work.owner == _data && work.boundaryMomentumCurrent,
                                   "fixed-flow boundary force requires a completed RHS evaluation");
             auto force = work.diagnostics.BoundaryForce(zones);
-            MPI_Allreduce(MPI_IN_PLACE, force.data(), 3, MPI_DOUBLE, MPI_SUM, Metrics().Communicator());
+            MPI::AllreduceInPlace<MPI::Reduction::Sum>(
+                MPI::ContiguousView<real>{force.data(), 3}, Metrics().Communicator());
             return force;
         }
         Vector3 force{};
@@ -4646,7 +4651,8 @@ namespace DNDS::Cauchy
                 if (std::find(zones.begin(), zones.end(), sample.zone) != zones.end())
                     for (int d = 0; d < 3; ++d) force[d] += values(iPoint, d);
             } });
-        MPI_Allreduce(MPI_IN_PLACE, force.data(), 3, MPI_DOUBLE, MPI_SUM, mpi.comm);
+        MPI::AllreduceInPlace<MPI::Reduction::Sum>(
+            MPI::ContiguousView<real>{force.data(), 3}, mpi.comm);
         return force;
     }
 
@@ -4675,7 +4681,7 @@ namespace DNDS::Cauchy
         if (work.fixedFlowRHS)
         {
             auto count = work.diagnostics.FaceFallbacks();
-            MPI_Allreduce(MPI_IN_PLACE, &count, 1, MPI_INT64_T, MPI_SUM, Metrics().Communicator());
+            count = MPI::AllreduceValue<MPI::Reduction::Sum>(count, Metrics().Communicator());
             return count;
         }
         return work.faceFallbacks[0] + work.faceFallbacks[1];

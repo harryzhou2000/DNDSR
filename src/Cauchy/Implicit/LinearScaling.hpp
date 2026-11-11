@@ -23,7 +23,8 @@ namespace DNDS::Cauchy::NonlinearDetail
             for (index j = 0; j < components; ++j)
                 sum[j] += volume * std::abs(values(iCell, j));
         }
-        MPI_Allreduce(MPI_IN_PLACE, sum.data(), int(sum.size()), MPI_DOUBLE, MPI_SUM, comm);
+        MPI::AllreduceInPlace<MPI::Reduction::Sum>(
+            MPI::ContiguousView<real>{sum.data(), sum.size()}, comm);
         DNDS_check_throw_info(std::isfinite(sum[components]) && sum[components] > 0, "invalid mean-state metric volume");
         for (index j = 0; j < components; ++j)
             sum[j] /= sum[components] + verySmallReal;

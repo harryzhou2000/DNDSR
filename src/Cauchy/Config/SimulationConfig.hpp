@@ -697,6 +697,9 @@ namespace DNDS::Cauchy
         explicit SimulationConfig(std::shared_ptr<const Data> data) : _data(std::move(data)) {}
 
     public:
+        /// @brief Canonical schema for the layered user input accepted by
+        /// Resolve(). It describes patches, not the fully expanded Root().
+        static Json InputSchema();
         static SimulationConfig Resolve(const Json &input, int simulationSize, const std::vector<ConfigOverride> &overrides = {});
         /// Production entry: coordinate local parsing/capability failures, then
         /// prove exact resolved-root/provenance agreement before mesh collectives.

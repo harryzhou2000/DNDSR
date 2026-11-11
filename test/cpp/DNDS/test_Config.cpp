@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 #include "DNDS/Config/ConfigParam.hpp"
+#include "DNDS/Config/JsonSchema.hpp"
 #include <atomic>
 #include <chrono>
 #include <future>
@@ -66,6 +67,32 @@ TEST_CASE("Audit batch 2: config integer conversion rejects invalid values")
         CHECK(value.wide == std::numeric_limits<uint64_t>::max());
         CHECK(value.custom == int(legacy));
     }
+}
+
+TEST_CASE("Typed config schemas validate complete inputs and layered partial patches")
+{
+    const auto schema = IntegerConfig::schema();
+    CHECK(schema["additionalProperties"] == false);
+    CHECK_NOTHROW(DNDS::Config::ValidatePartialJsonSchema({{"count", 3}}, schema, "/partial"));
+    CHECK_THROWS_WITH(
+        DNDS::Config::ValidatePartialJsonSchema({{"missing", 3}}, schema, "/partial"),
+        doctest::Contains("/partial/missing"));
+    CHECK_THROWS_WITH(
+        DNDS::Config::ValidatePartialJsonSchema({{"count", -1}}, schema, "/partial"),
+        doctest::Contains("minimum"));
+    CHECK_THROWS_WITH(
+        DNDS::Config::ValidatePartialJsonSchema({{"count", "3"}}, schema, "/partial"),
+        doctest::Contains("type mismatch"));
+
+    const Json completeSchema{{"type", "object"},
+                              {"additionalProperties", false},
+                              {"required", {"name"}},
+                              {"properties", {{"name", {{"type", "string"}}}}}};
+    CHECK_NOTHROW(DNDS::Config::ValidatePartialJsonSchema(Json::object(), completeSchema));
+    CHECK_THROWS_WITH(
+        DNDS::Config::ValidateJsonSchema(Json::object(), completeSchema),
+        doctest::Contains("missing configuration field"));
+    CHECK_NOTHROW(DNDS::Config::ValidateJsonSchema({{"name", "fluid"}}, completeSchema));
 }
 
 static std::atomic<bool> registrationEntered{false}, releaseRegistration{false};

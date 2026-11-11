@@ -265,7 +265,7 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(std::isfinite(radius) && radius > 0, "invalid cell spectral sum");
                 dt = std::min(dt, cfl * metric.GetCellVol(iCell) / radius);
             } });
-        MPI_Allreduce(MPI_IN_PLACE, &dt, 1, MPI_DOUBLE, MPI_MIN, Metrics().Communicator());
+        dt = MPI::AllreduceValue<MPI::Reduction::Min>(dt, Metrics().Communicator());
         return dt;
     }
     namespace

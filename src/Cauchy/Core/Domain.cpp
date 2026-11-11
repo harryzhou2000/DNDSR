@@ -27,7 +27,7 @@ namespace DNDS::Cauchy
                 return mesh;
             const auto mpi = mesh->getMPI();
             int available = mesh->HasNodeWallDist();
-            MPI_Allreduce(MPI_IN_PLACE, &available, 1, MPI_INT, MPI_SUM, mpi.comm);
+            available = MPI::AllreduceValue<MPI::Reduction::Sum>(available, mpi.comm);
             DNDS_check_throw_info(available == 0 || available == mpi.size, "RANS nodal wall-field presence differs between ranks");
             if (!available)
                 mesh->BuildNodeWallDist([&](auto zone)
@@ -291,8 +291,9 @@ namespace DNDS::Cauchy
                     const auto fraction = lowSafe ? AdmissibleFraction(base, target, _fv.ThermalConstraints()) : real(1);
                     if (fraction < 1) { ++limited; alpha = std::min(alpha, fraction); }
                 } });
-            MPI_Allreduce(MPI_IN_PLACE, &alpha, 1, MPI_DOUBLE, MPI_MIN, _fv.Metrics().Communicator());
-            MPI_Allreduce(MPI_IN_PLACE, safe, 2, MPI_INT, MPI_MIN, _fv.Metrics().Communicator());
+            alpha = MPI::AllreduceValue<MPI::Reduction::Min>(alpha, _fv.Metrics().Communicator());
+            MPI::AllreduceInPlace<MPI::Reduction::Min>(
+                MPI::ContiguousView<int>{safe, 2}, _fv.Metrics().Communicator());
             if (safe[0])
             {
                 alpha = 1;
@@ -306,7 +307,7 @@ namespace DNDS::Cauchy
                 if (!safe[1])
                     return StepResult::Rejected("global conservative PP blend requires admissible low-order stage; reduce dt");
             }
-            MPI_Allreduce(MPI_IN_PLACE, &limited, 1, MPI_INT64_T, MPI_SUM, _fv.Metrics().Communicator());
+            limited = MPI::AllreduceValue<MPI::Reduction::Sum>(limited, _fv.Metrics().Communicator());
             _lastAlpha = std::min(_lastAlpha, alpha);
             _lastAlphaCells += limited;
         }
@@ -334,11 +335,11 @@ namespace DNDS::Cauchy
     {
         _trialReady = false;
         int valid = std::isfinite(dt) && dt > 0 && (_steady || (std::isfinite(_time + dt) && _time + dt > _time));
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _fv.Metrics().Communicator());
+        valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, _fv.Metrics().Communicator());
         DNDS_check_throw_info(valid, "invalid Cauchy physical timestep");
         real min = dt, max = dt;
-        MPI_Allreduce(MPI_IN_PLACE, &min, 1, MPI_DOUBLE, MPI_MIN, _fv.Metrics().Communicator());
-        MPI_Allreduce(MPI_IN_PLACE, &max, 1, MPI_DOUBLE, MPI_MAX, _fv.Metrics().Communicator());
+        min = MPI::AllreduceValue<MPI::Reduction::Min>(min, _fv.Metrics().Communicator());
+        max = MPI::AllreduceValue<MPI::Reduction::Max>(max, _fv.Metrics().Communicator());
         DNDS_check_throw_info(min == max, "Cauchy timestep differs between domain ranks");
         DNDS_check_throw_info(Admissible(_accepted), "accepted Cauchy mean is inadmissible");
         // Owned read scopes may coexist with a retained accepted-state reader.
@@ -395,7 +396,7 @@ namespace DNDS::Cauchy
         if (_internalResume)
         {
             int valid = _steady || dt == _trialDt;
-            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _fv.Metrics().Communicator());
+            valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, _fv.Metrics().Communicator());
             DNDS_check_throw_info(valid, "resumed exact internal step requires its stored physical dt");
             if (auto result = ResumeImplicitStep(); !result)
                 return result;
@@ -642,10 +643,12 @@ namespace DNDS::Cauchy
                 for (index j = 0; j < width; ++j) result[4] += rhs(iCell, j) * rhs(iCell, j) / volume;
         } });
         const auto comm = _fv.Metrics().Communicator();
-        MPI_Allreduce(MPI_IN_PLACE, result.data(), 2, MPI_DOUBLE, MPI_SUM, comm);
-        MPI_Allreduce(MPI_IN_PLACE, result.data() + 2, 2, MPI_DOUBLE, MPI_MIN, comm);
-        MPI_Allreduce(MPI_IN_PLACE, result.data() + 4, 1, MPI_DOUBLE, MPI_SUM, comm);
-        MPI_Allreduce(MPI_IN_PLACE, result.data() + 13, 1, MPI_DOUBLE, MPI_MIN, comm);
+        MPI::AllreduceInPlace<MPI::Reduction::Sum>(
+            MPI::ContiguousView<real>{result.data(), 2}, comm);
+        MPI::AllreduceInPlace<MPI::Reduction::Min>(
+            MPI::ContiguousView<real>{result.data() + 2, 2}, comm);
+        result[4] = MPI::AllreduceValue<MPI::Reduction::Sum>(result[4], comm);
+        result[13] = MPI::AllreduceValue<MPI::Reduction::Min>(result[13], comm);
         // Report the volume-integrated L2 defect, matching Euler's res0
         // convention rather than a volume-averaged residual.
         result[4] = std::sqrt(result[4]);

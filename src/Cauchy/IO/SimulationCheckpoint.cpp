@@ -63,7 +63,8 @@ namespace DNDS::Cauchy
         AgreePath(control, path);
         AgreeJson(control, outputController);
         int flags[]{int(includeReconstruction), -int(includeReconstruction)};
-        MPI_Allreduce(MPI_IN_PLACE, flags, 2, MPI_INT, MPI_MIN, control.comm);
+        MPI::AllreduceInPlace<MPI::Reduction::Min>(
+            MPI::ContiguousView<int>{flags, 2}, control.comm);
         DNDS_check_throw_info(flags[0] == -flags[1], "simulation checkpoint reconstruction selection differs between ranks");
         MPI::LocalStage(control, [&]
                         {

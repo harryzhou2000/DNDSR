@@ -430,7 +430,8 @@ namespace DNDS::Cauchy
         const bool history = _timeStepper && _timeStepper->Method() == "bdf2" && _timeStepper->HasHistory();
         const bool limitedVRHistory = includeReconstruction && bool(_fv.LimitedVRHistory(*_reconstruction));
         int flags[]{int(includeReconstruction), -int(includeReconstruction), int(history), -int(history), int(limitedVRHistory), -int(limitedVRHistory)};
-        MPI_Allreduce(MPI_IN_PLACE, flags, 6, MPI_INT, MPI_MIN, mpi.comm);
+        MPI::AllreduceInPlace<MPI::Reduction::Min>(
+            MPI::ContiguousView<int>{flags, 6}, mpi.comm);
         DNDS_check_throw_info(flags[0] == -flags[1] && flags[2] == -flags[3] && flags[4] == -flags[5], "checkpoint optional sections differ between ranks");
         Json metadata{{"schema_version", 1}, {"mesh_envelope", 2}, {"flow", EquationMetadata(_equation)}, {"reconstruction", _fv.ReconstructionMetadata()}, {"time_method", _timeStepper ? _timeStepper->Method() : "ssprk3"}, {"history", history}, {"limited_vr_history", limitedVRHistory}, {"limited_vr_history_schema", 1}, {"frame", FrameMetadata(_fv, _time)}};
         metadata["restart_scope"] = "accepted_step";
@@ -702,7 +703,7 @@ namespace DNDS::Cauchy
                                                 !limitedVRHistory->Layout().IsVariable() && limitedVRHistory->Layout().Width() == 2));
         valid = valid && (version < 4 || (metadata.is_object() && metadata.value("limited_vr_history", false) == bool(limitedVRHistory) &&
                                           (!limitedVRHistory || metadata.value("limited_vr_history_schema", 0) == 1)));
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+        valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, mpi.comm);
         if (!valid)
         {
             const auto differences = storedConfig.is_discarded() ? nlohmann::json() : nlohmann::json::diff(CompatibleConfig(storedConfig), CompatibleConfig(resolved));
@@ -755,7 +756,7 @@ namespace DNDS::Cauchy
             int compatible = reconstructionArchive && reconstructionArchive->Compatible(*guess) &&
                              metadata.value("reconstruction", Json()) == _fv.ReconstructionMetadata() &&
                              (!needsLimitedVRHistory || limitedVRHistory);
-            MPI_Allreduce(MPI_IN_PLACE, &compatible, 1, MPI_INT, MPI_MIN, mpi.comm);
+            compatible = MPI::AllreduceValue<MPI::Reduction::Min>(compatible, mpi.comm);
             std::optional<Runtime::Array<real>> mappedLimitedVRHistory;
             if (compatible)
             {
@@ -809,7 +810,8 @@ namespace DNDS::Cauchy
         if (reconstruction)
             for (index iRow = 0; iRow < reconstruction->RowCount(); ++iRow)
                 compatibleReconstruction = compatibleReconstruction && reconstruction->RowSize(iRow) == guessArray.Layout().Width();
-        MPI_Allreduce(MPI_IN_PLACE, &compatibleReconstruction, 1, MPI_INT, MPI_MIN, mpi.comm);
+        compatibleReconstruction = MPI::AllreduceValue<MPI::Reduction::Min>(
+            compatibleReconstruction, mpi.comm);
         std::optional<Runtime::Array<real>> mappedLimitedVRHistory;
         if (compatibleReconstruction)
         {
@@ -876,7 +878,7 @@ namespace DNDS::Cauchy
                     metadata.value("time_method", std::string{}) == _timeStepper->Method() &&
                     metadata.value("polynomial_reconstruction", true) == polynomial &&
                     metadata.value("reconstruction", Json()) == _fv.ReconstructionMetadata();
-        MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, mpi.comm);
+        valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, mpi.comm);
         DNDS_check_throw_info(valid, "Cauchy exact internal checkpoint metadata differs");
         const auto rowCount = StoredRows(serializer, "cell_ids");
         const auto range = EvenSplitRange(mpi.rank, mpi.size, rowCount);

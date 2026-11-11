@@ -92,8 +92,8 @@ namespace DNDS::Cauchy
             std::array<uint64_t, 9> key{stage.epoch.acceptedStep, stage.epoch.trial, stage.epoch.stage, stage.epoch.geometry,
                                         stage.epoch.schema, stage.epoch.coupledStage, timeBits, uint64_t(policy), uint64_t(collectiveChecks)};
             auto minimum = key, maximum = key;
-            MPI_Allreduce(MPI_IN_PLACE, minimum.data(), int(key.size()), MPI_UINT64_T, MPI_MIN, mpi.comm);
-            MPI_Allreduce(MPI_IN_PLACE, maximum.data(), int(key.size()), MPI_UINT64_T, MPI_MAX, mpi.comm);
+            MPI::AllreduceInPlace<MPI::Reduction::Min>(minimum, mpi.comm);
+            MPI::AllreduceInPlace<MPI::Reduction::Max>(maximum, mpi.comm);
             DNDS_check_throw_info(minimum == maximum, "interface stage identity or refresh/check policy differs between participants");
         }
         InterfaceIterationSchedule(const InterfaceIterationSchedule &) = delete;

@@ -27,10 +27,12 @@ namespace DNDS::Cauchy
         const bool valid = limited >= 0 && std::isfinite(minimum) && minimum >= 0 && minimum <= 1 &&
                            (limited ? minimum < 1 : minimum == 1) && code >= 0 && code <= 2;
         index counts[2]{limited, valid ? 0 : 1};
-        MPI_Allreduce(MPI_IN_PLACE, counts, 2, MPI_INT64_T, MPI_SUM, comm);
+        MPI::AllreduceInPlace<MPI::Reduction::Sum>(
+            MPI::ContiguousView<index>{counts, 2}, comm);
         DNDS_check_throw_info(!counts[1] && counts[0] >= 0, "invalid distributed positivity statistics");
         real minima[3]{minimum, real(code), -real(code)};
-        MPI_Allreduce(MPI_IN_PLACE, minima, 3, MPI_DOUBLE, MPI_MIN, comm);
+        MPI::AllreduceInPlace<MPI::Reduction::Min>(
+            MPI::ContiguousView<real>{minima, 3}, comm);
         DNDS_check_throw_info(minima[1] == -minima[2], "positivity reduction policy differs between ranks");
         return {counts[0], minima[0]};
     }

@@ -207,7 +207,8 @@ namespace DNDS::Cauchy
                 }
             }
             index counts[2]{connection.patch ? connection.patch->Size() : 0, index(connection.receiverRows.size())};
-            MPI_Allreduce(MPI_IN_PLACE, counts, 2, MPI_INT64_T, MPI_SUM, coupling);
+            MPI::AllreduceInPlace<MPI::Reduction::Sum>(
+                MPI::ContiguousView<index>{counts, 2}, coupling);
             DNDS_check_throw_info(counts[0] > 0 && counts[1] > 0, "interface donor patch or receiver boundary quadrature is globally empty; check zone IDs");
             data.connections.push_back(std::move(connection));
         }
@@ -238,11 +239,13 @@ namespace DNDS::Cauchy
             result.queryPoints += index(connection.receiverRows.size());
         result.changedDonors = _data->changedDonors;
         index counts[2]{result.queryPoints, result.changedDonors};
-        MPI_Allreduce(MPI_IN_PLACE, counts, 2, MPI_INT64_T, MPI_SUM, _data->mpi.comm);
+        MPI::AllreduceInPlace<MPI::Reduction::Sum>(
+            MPI::ContiguousView<index>{counts, 2}, _data->mpi.comm);
         result.queryPoints = counts[0];
         result.changedDonors = counts[1];
         result.maximumGap = _data->maximumGap;
-        MPI_Allreduce(MPI_IN_PLACE, &result.maximumGap, 1, MPI_DOUBLE, MPI_MAX, _data->mpi.comm);
+        result.maximumGap = MPI::AllreduceValue<MPI::Reduction::Max>(
+            result.maximumGap, _data->mpi.comm);
         result.mapBuilds = _data->mapBuilds;
         return result;
     }

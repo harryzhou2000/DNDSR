@@ -392,8 +392,8 @@ namespace DNDS::Cauchy
                 {
                     MPI::LocalStage(mpi, validate);
                     std::array<real, 4> minimum{equationMass, equationScale, equationTime, pseudoCFL}, maximum = minimum;
-                    MPI_Allreduce(MPI_IN_PLACE, minimum.data(), 4, MPI_DOUBLE, MPI_MIN, mpi.comm);
-                    MPI_Allreduce(MPI_IN_PLACE, maximum.data(), 4, MPI_DOUBLE, MPI_MAX, mpi.comm);
+                    MPI::AllreduceInPlace<MPI::Reduction::Min>(minimum, mpi.comm);
+                    MPI::AllreduceInPlace<MPI::Reduction::Max>(maximum, mpi.comm);
                     DNDS_check_throw_info(minimum == maximum, "polynomial FAS coefficients differ between ranks");
                 }
                 else
@@ -433,7 +433,8 @@ namespace DNDS::Cauchy
                     MPI::LocalStage(mpi, accumulate);
                 else
                     accumulate();
-                MPI_Allreduce(MPI_IN_PLACE, sum.data(), int(sum.size()), MPI_DOUBLE, MPI_SUM, mpi.comm);
+                MPI::AllreduceInPlace<MPI::Reduction::Sum>(
+                    MPI::ContiguousView<real>{sum.data(), sum.size()}, mpi.comm);
                 DNDS_check_throw_info(sum.back() > 0 && std::isfinite(sum.back()), "invalid FAS global volume");
                 for (index j = 0; j < index(norms.size()); ++j)
                 {

@@ -13,7 +13,8 @@ namespace DNDS::Cauchy
         real agreement[]{real(control.enabled), -real(control.enabled), control.relax, -control.relax,
                          control.scale, -control.scale, control.increaseLimit, -control.increaseLimit,
                          real(power), -real(power), real(time.steady), -real(time.steady)};
-        MPI_Allreduce(MPI_IN_PLACE, agreement, 12, MPI_DOUBLE, MPI_MIN, mpi.comm);
+        MPI::AllreduceInPlace<MPI::Reduction::Min>(
+            MPI::ContiguousView<real>{agreement, 12}, mpi.comm);
         for (int j = 0; j < 12; j += 2)
             DNDS_check_throw_info(agreement[j] == -agreement[j + 1], "physical timestep policy differs between domain ranks");
         _timePP = control;
@@ -25,7 +26,8 @@ namespace DNDS::Cauchy
         MPI::LocalStage(mpi, [&]
                         { DNDS_check_throw_info(std::isfinite(requestedDt) && requestedDt > 0, "invalid requested physical timestep"); });
         real agreement[]{requestedDt, -requestedDt};
-        MPI_Allreduce(MPI_IN_PLACE, agreement, 2, MPI_DOUBLE, MPI_MIN, mpi.comm);
+        MPI::AllreduceInPlace<MPI::Reduction::Min>(
+            MPI::ContiguousView<real>{agreement, 2}, mpi.comm);
         DNDS_check_throw_info(agreement[0] == -agreement[1], "requested physical timestep differs between domain ranks");
         PhysicalStepLimit result{requestedDt};
         if (_steady || !_timePP.enabled)

@@ -32,11 +32,11 @@ namespace DNDS::Cauchy
         void Advance(real dt, const std::function<real(index, const std::vector<real> &, const StateEpoch &)> &domain)
         {
             int valid = std::isfinite(dt) && dt > 0;
-            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _placement.Control());
+            valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, _placement.Control());
             DNDS_check_throw_info(valid, "Cauchy timestep is invalid on a rank");
             real minimum = dt, maximum = dt;
-            MPI_Allreduce(MPI_IN_PLACE, &minimum, 1, MPI_DOUBLE, MPI_MIN, _placement.Control());
-            MPI_Allreduce(MPI_IN_PLACE, &maximum, 1, MPI_DOUBLE, MPI_MAX, _placement.Control());
+            minimum = MPI::AllreduceValue<MPI::Reduction::Min>(minimum, _placement.Control());
+            maximum = MPI::AllreduceValue<MPI::Reduction::Max>(maximum, _placement.Control());
             DNDS_check_throw_info(std::isfinite(dt) && minimum > 0 && minimum == maximum, "Cauchy timestep differs between ranks or is invalid");
             auto trial = _epoch;
             trial.trial = ++_nextTrial;
@@ -49,9 +49,10 @@ namespace DNDS::Cauchy
                 if (_placement.DomainRank(iDomain) == 0)
                     candidates[iDomain] = value;
             }
-            MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, _placement.Control());
+            valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, _placement.Control());
             DNDS_check_throw_info(valid, "Cauchy domain round failed; clock and traces were not committed");
-            MPI_Allreduce(MPI_IN_PLACE, candidates.data(), int(candidates.size()), MPI_DOUBLE, MPI_SUM, _placement.Control());
+            MPI::AllreduceInPlace<MPI::Reduction::Sum>(
+                MPI::ContiguousView<real>{candidates.data(), candidates.size()}, _placement.Control());
             _traces = std::move(candidates);
             _time += dt;
             _epoch = trial;

@@ -460,6 +460,7 @@ namespace DNDS
         {
             nlohmann::ordered_json schema;
             schema["type"] = "object";
+            schema["additionalProperties"] = false;
             if (!sectionDescription.empty())
                 schema["description"] = sectionDescription;
             auto &props = schema["properties"] = nlohmann::ordered_json::object();

@@ -33,7 +33,7 @@ namespace DNDS::Cauchy
                         { reference = mpi.rank == 0 ? descriptor : std::string(size_t(count), '\0'); });
         MPI_Bcast(reference.data(), count, MPI_CHAR, 0, communicator);
         int match = descriptor == reference;
-        MPI_Allreduce(MPI_IN_PLACE, &match, 1, MPI_INT, MPI_MIN, communicator);
+        match = MPI::AllreduceValue<MPI::Reduction::Min>(match, communicator);
         DNDS_check_throw_info(match, "equation physical grouping/schema/operation controls differ across ranks");
     }
 }
