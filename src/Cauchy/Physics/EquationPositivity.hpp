@@ -166,8 +166,11 @@ namespace DNDS::Cauchy
             return true;
         }
         /// Accepted mean-state predicate. Unlike reconstruction, a stored mean
-        /// must satisfy the complete species simplex as well as both raw and
-        /// temporary-property energy views.
+        /// must contain the simplex-repaired rhoY that is actually supplied to
+        /// EOS/T; that clipped composition defines the physical invariant. Once
+        /// the simplex holds, Reference() and ClippedReference() are identical.
+        /// The raw check retained here is therefore a matching arithmetic guard,
+        /// not permission to accept a second raw-species representation.
         template <class Row>
         DNDS_DEVICE_CALLABLE bool Admissible(const Row &values, bool requireSpecies = true) const
         {

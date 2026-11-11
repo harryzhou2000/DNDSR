@@ -62,6 +62,12 @@ the validated base on failure; `backtracking` searches an intermediate common
 flow/species beta. Neither policy writes the clipped composition back into
 coefficients, means, halos or flux states.
 
+In short, the reconstruction coefficients and the conservative flux state keep
+the raw polynomial; clipping is a read-only point-property adapter. By contrast,
+final increment repair publishes the simplex-repaired species densities into
+the cell mean itself. There is no raw out-of-simplex mean hidden behind that
+accepted state.
+
 Final mean repair is different: it constructs the exact simplex-repaired species
 target before bounded raw-affine pull-up, and the resulting clipped `rhoY` is the
 actual state stored, exchanged and supplied to EOS/T. Both endpoints of the
