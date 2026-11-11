@@ -193,10 +193,7 @@ namespace DNDS::Cauchy
             };
             // Resolve physical grouping/layout once. This changes only row
             // access; all thermal, species and RANS acceptance checks remain.
-            if (layout.Table() && layout.Flow5())
-                DispatchCPUEquationViews<EquationViewKind::CombinedAoS>(validate, layout);
-            else
-                DispatchCPUEquationViews<>(validate, layout);
+            DispatchCPUEquationLayouts(validate, layout);
         }
     };
 
@@ -387,11 +384,7 @@ namespace DNDS::Cauchy
                     };
                     // An operator-local AoS selection avoids per-component
                     // logical block lookup without packing or changing sums.
-                    if (ul.Table() && rl.Table() && bl.Table() && wl.Table() &&
-                        ul.Flow5() && rl.Flow5() && bl.Flow5() && wl.Flow5())
-                        DispatchCPUEquationViews<EquationViewKind::CombinedAoS>(assemble, ul, rl, bl, wl);
-                    else
-                        DispatchCPUEquationViews<>(assemble, ul, rl, bl, wl);
+                    DispatchCPUEquationLayouts(assemble, ul, rl, bl, wl);
                 });
                 if (singleCorrection) return; // Defect is ready; no stopping norm is needed.
                 MPI_Allreduce(MPI_IN_PLACE, local.data(), int(nv + 1), MPI_DOUBLE, MPI_SUM, data.mpi.comm);

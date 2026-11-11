@@ -108,31 +108,20 @@ namespace DNDS::Cauchy
                 const EquationViewLayout<const real> left(*x, *readX), right(*y, *readY);
                 const auto kernel = [&](auto out, auto u, auto v)
                 { Algebra::ApplyHostRows(operation, out, u, v, a, b); };
-                // This operator opts into just the dynamic-width coupled AoS
-                // family. Other layouts/groupings retain the general kernel.
-                if (destination.Table() && left.Table() && right.Table() && destination.Flow5() && left.Flow5() && right.Flow5())
-                    DispatchCPUEquationViews<EquationViewKind::CombinedAoS>(kernel, destination, left, right);
-                else
-                    DispatchCPUEquationViews<>(kernel, destination, left, right);
+                DispatchCPUEquationLayouts(kernel, destination, left, right);
             }
             else if (readX)
             {
                 const EquationViewLayout<const real> source(*x, *readX);
                 const auto kernel = [&](auto out, auto u)
                 { Algebra::ApplyHostRows(operation, out, u, EquationBlockedView<const real>{}, a, b); };
-                if (destination.Table() && source.Table() && destination.Flow5() && source.Flow5())
-                    DispatchCPUEquationViews<EquationViewKind::CombinedAoS>(kernel, destination, source);
-                else
-                    DispatchCPUEquationViews<>(kernel, destination, source);
+                DispatchCPUEquationLayouts(kernel, destination, source);
             }
             else
             {
                 const auto kernel = [&](auto out)
                 { Algebra::ApplyHostRows(operation, out, EquationBlockedView<const real>{}, EquationBlockedView<const real>{}, a, b); };
-                if (destination.Table() && destination.Flow5())
-                    DispatchCPUEquationViews<EquationViewKind::CombinedAoS>(kernel, destination);
-                else
-                    DispatchCPUEquationViews<>(kernel, destination);
+                DispatchCPUEquationLayouts(kernel, destination);
             }
         }
 
@@ -172,10 +161,7 @@ namespace DNDS::Cauchy
                 const EquationViewLayout<const real> input(*probes[k], readers[k]);
                 const auto kernel = [&](auto u, auto v)
                 { result[k] = Algebra::Detail::AccumulateLocalProduct(u, v, u.RowCount(), u.ComponentNumber(), inverseScales); };
-                if (values.Table() && input.Table() && values.Flow5() && input.Flow5())
-                    DispatchCPUEquationViews<EquationViewKind::CombinedAoS>(kernel, values, input);
-                else
-                    DispatchCPUEquationViews<>(kernel, values, input);
+                DispatchCPUEquationLayouts(kernel, values, input);
             }
             return result;
         }

@@ -445,12 +445,16 @@ Whole-equation kernels use `EquationViewLayout` and
 `DispatchCPUEquationViews<Kind,Width>(kernel, layouts...)` from
 `State/EquationViews.hpp`. The operator hand-builds its preparation branches;
 the helper constructs only the explicitly requested family/width. The default
-is generic. Families and widths 5/6/7 are optional independently per operator,
-and are enabled gradually with correctness/performance evidence. Named row
-blocks resolve in preparation. RHS starts with the generic view. Pointwise
-algebra and products opt into only dynamic-width combined AoS when all operands
-qualify; they retain the generic fallback and the same loop template. Existing
-SGS/action specializations remain local. Matched timing gates each optimization.
+is generic. `DispatchCPUEquationLayouts` is the bounded CPU prologue used by
+whole-equation algebra, products, nonlinear assembly and RHS: when every
+operand is one ordered flow5 allocation it selects row-major AoS,
+column-major SoA, or tiled AoSoA with compile-time tile 8/16/32. A split
+binding, mixed layout, flow4 system or uncommon tile stays on the generic
+strided view. This is one numerical kernel and no payload conversion. Static
+logical widths 5/6/7 remain optional independently per operator and are enabled
+only with correctness/performance evidence. Named row blocks resolve in
+preparation; existing SGS/action specializations remain local. Matched timing
+gates each optimization.
 
 The numerical loop is a shared template. Its operator chooses whether to use
 static width, known AoS indexing, or generic strided access. Explicit view
@@ -462,8 +466,10 @@ EquationDofs (dynamic physical handles + immutable logical bindings)
     Block<5>(flow) / Block(rans) / Block(species) (borrowed views)
       CPU prologue: operator-owned layout/width branches
         AoS 5/6/7       -> fixed-width row views
-        other AoS       -> dynamic-width table views
-        mixed/SoA/AoSoA -> generic strided block views
+        combined AoS    -> dynamic-width, component stride 1
+        combined SoA    -> dynamic-width, one resolved component stride
+        AoSoA 8/16/32   -> dynamic-width, compile-time component stride
+        mixed/split/uncommon tile -> generic strided block views
           one templated numerical kernel
 ```
 

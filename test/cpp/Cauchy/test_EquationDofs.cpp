@@ -139,6 +139,9 @@ static_assert(std::is_trivially_copyable_v<C::EquationBlockReadView>);
 static_assert(C::EquationBlockArrayView<double, R::AccessBoundsChecks, 5, R::TableRows>::RowType::row_width == 5);
 static_assert(C::EquationBlockArrayView<double, R::AccessBoundsChecks, 5, R::TableRows>::RowType::component_stride == 1);
 static_assert(C::EquationBlockArrayView<double, R::AccessBoundsChecks, 5, R::TiledColMajorTable<32>>::RowType::component_stride == 32);
+static_assert(C::EquationBlockedView<double, C::EquationViewKind::CombinedAoS, 5>::component_stride == 1);
+static_assert(C::EquationBlockedView<double, C::EquationViewKind::CombinedSoA, 5>::component_stride == R::DynamicExtent);
+static_assert(C::EquationBlockedView<double, C::EquationViewKind::CombinedAoSoA, 5, 32>::component_stride == 32);
 TEST_CASE("Equation schema mapping uses semantic names instead of component count or ordinal")
 {
     const auto source = Schema(5);
@@ -188,20 +191,42 @@ TEST_CASE("Whole-equation dispatch preserves named blocks and scalar order acros
                     const C::EquationViewLayout<const double> source(input, read);
                     const C::EquationViewLayout<double> target(output, write);
                     const auto kind = source.Combined()
-                                          ? (source.Table() && source.Flow5() ? C::EquationViewKind::CombinedAoS : C::EquationViewKind::Combined)
+                                          ? (source.Table() && source.Flow5()
+                                                 ? C::EquationViewKind::CombinedAoS
+                                             : source.ColMajor() && source.Flow5()
+                                                 ? C::EquationViewKind::CombinedSoA
+                                             : source.TiledColMajor(32) && source.Flow5()
+                                                 ? C::EquationViewKind::CombinedAoSoA
+                                                 : C::EquationViewKind::Combined)
                                       : source.Flow5() ? (source.FlowTable() ? C::EquationViewKind::SeparateFlow5AoS : C::EquationViewKind::SeparateFlow5)
                                                        : C::EquationViewKind::Generic;
+                    const auto automaticKind = source.Combined() && source.Flow5()
+                                                   ? (layout == 0
+                                                          ? C::EquationViewKind::CombinedAoS
+                                                      : layout == 1
+                                                          ? C::EquationViewKind::CombinedSoA
+                                                          : C::EquationViewKind::CombinedAoSoA)
+                                                   : C::EquationViewKind::Generic;
+                    C::DispatchCPUEquationLayouts(
+                        [&](auto u, auto v)
+                        {
+                            CHECK(decltype(u)::kind == automaticKind);
+                            CHECK(decltype(v)::kind == automaticKind);
+                        },
+                        source, target);
                     const auto kernel = [&](auto u, auto v)
                     {
                     using V = decltype(u);
                     using Row = decltype(u[I(0)]);
+                    using BlockRow = decltype(u[I(0)].RANS());
                     static_assert(std::is_trivially_copyable_v<V> && std::is_standard_layout_v<V>);
                     static_assert(std::is_trivially_copyable_v<Row> && std::is_standard_layout_v<Row>);
                     static_assert(Row::row_width == V::row_width && Row::component_stride == V::component_stride);
+                    static_assert(BlockRow::component_stride == V::component_stride);
                     static_assert(Row::has_single_parent == V::combined);
                     CHECK(V::combined == source.Combined());
-                    CHECK((V::flow_width == 5) == (width != 17 && (!source.Combined() || layout == 0)));
-                    CHECK((V::row_width != R::DynamicExtent) == (source.Combined() && layout == 0 && width <= 7));
+                    CHECK((V::flow_width == 5) == (width != 17));
+                    CHECK((V::row_width != R::DynamicExtent) == (source.Combined() && width <= 7));
                     const auto generic = source.View();
                     for (I iCell = 0; iCell < fixture.rows; ++iCell)
                     {
@@ -212,6 +237,13 @@ TEST_CASE("Whole-equation dispatch preserves named blocks and scalar order acros
                         CHECK(row.Flow().size() == (width == 17 ? 4 : 5));
                         CHECK(row.RANS().size() == (width <= 7 ? width - 5 : width == 17 ? 1 : 2));
                         CHECK(row.Species().size() == (width <= 7 ? 0 : width == 17 ? 12 : 14));
+                        if constexpr (Row::has_single_parent)
+                        {
+                            if (!row.RANS().empty())
+                                CHECK(row.RANS().ElementStride() == row.ElementStride());
+                            if (!row.Species().empty())
+                                CHECK(row.Species().ElementStride() == row.ElementStride());
+                        }
                         for (I j = 0; j < width; ++j)
                         {
                             CHECK(row[j] == Value(mpi.rank, iCell, j));
@@ -234,6 +266,28 @@ TEST_CASE("Whole-equation dispatch preserves named blocks and scalar order acros
                             C::DispatchCPUEquationViews<C::EquationViewKind::CombinedAoS, 7>(kernel, source, target);
                         else
                             C::DispatchCPUEquationViews<C::EquationViewKind::CombinedAoS>(kernel, source, target);
+                    }
+                    else if (kind == C::EquationViewKind::CombinedSoA)
+                    {
+                        if (width == 5)
+                            C::DispatchCPUEquationViews<C::EquationViewKind::CombinedSoA, 5>(kernel, source, target);
+                        else if (width == 6)
+                            C::DispatchCPUEquationViews<C::EquationViewKind::CombinedSoA, 6>(kernel, source, target);
+                        else if (width == 7)
+                            C::DispatchCPUEquationViews<C::EquationViewKind::CombinedSoA, 7>(kernel, source, target);
+                        else
+                            C::DispatchCPUEquationViews<C::EquationViewKind::CombinedSoA>(kernel, source, target);
+                    }
+                    else if (kind == C::EquationViewKind::CombinedAoSoA)
+                    {
+                        if (width == 5)
+                            C::DispatchCPUEquationViews<C::EquationViewKind::CombinedAoSoA, 5, 32>(kernel, source, target);
+                        else if (width == 6)
+                            C::DispatchCPUEquationViews<C::EquationViewKind::CombinedAoSoA, 6, 32>(kernel, source, target);
+                        else if (width == 7)
+                            C::DispatchCPUEquationViews<C::EquationViewKind::CombinedAoSoA, 7, 32>(kernel, source, target);
+                        else
+                            C::DispatchCPUEquationViews<C::EquationViewKind::CombinedAoSoA, R::DynamicExtent, 32>(kernel, source, target);
                     }
                     else if (kind == C::EquationViewKind::Combined)
                         C::DispatchCPUEquationViews<C::EquationViewKind::Combined>(kernel, source, target);

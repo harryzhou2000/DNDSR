@@ -2029,11 +2029,8 @@ namespace DNDS::Cauchy
                 const EquationViewLayout<real> lowDestination(*lowOrderResidual, lowOutput);
                 const auto kernel = [&](auto u, auto ghost, auto rhs, auto low)
                 { ApplyRHSRows(state, region, evaluator, time, auxiliary, mean, u, ghost, rhs, low, true, faceOutput, incoming); };
-                if (owned.Table() && remote.Table() && destination.Table() && lowDestination.Table() &&
-                    owned.Flow5() && remote.Flow5() && destination.Flow5() && lowDestination.Flow5())
-                    DispatchCPUEquationViews<EquationViewKind::CombinedAoS>(kernel, owned, remote, destination, lowDestination);
-                else
-                    DispatchCPUEquationViews<>(kernel, owned, remote, destination, lowDestination);
+                DispatchCPUEquationLayouts(kernel, owned, remote, destination,
+                                           lowDestination);
                 return;
             }
             // The disabled low-order view deliberately aliases the high-order
@@ -2041,13 +2038,12 @@ namespace DNDS::Cauchy
             // reads or writes it, avoiding a dummy allocation in non-PP runs.
             const auto kernel = [&](auto u, auto ghost, auto rhs, auto unusedLow)
             { ApplyRHSRows(state, region, evaluator, time, auxiliary, mean, u, ghost, rhs, unusedLow, false, faceOutput, incoming); };
-            // RHS opts into one ordered AoS family. Arbitrary block bindings
-            // and physical layouts keep the same generic numerical loop.
+            // RHS opts into prepared combined physical layout families.
+            // Arbitrary block bindings and uncommon tiles keep the same generic
+            // numerical loop.
             // Ghost shape may be absent during Core; no ghost value is read.
-            if (owned.Table() && remote.Table() && destination.Table() && owned.Flow5() && remote.Flow5() && destination.Flow5())
-                DispatchCPUEquationViews<EquationViewKind::CombinedAoS>(kernel, owned, remote, destination, destination);
-            else
-                DispatchCPUEquationViews<>(kernel, owned, remote, destination, destination);
+            DispatchCPUEquationLayouts(kernel, owned, remote, destination,
+                                       destination);
         }
         template <class Input, class Output>
         void ApplyRHSRows(const EquationDofs &state, CFV::ReconstructionRegion region,
