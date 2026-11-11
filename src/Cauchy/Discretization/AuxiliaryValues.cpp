@@ -107,12 +107,12 @@ namespace DNDS::Cauchy
                                   "mean-gradient preparation needs an incoming interface packet");
             if (inputs.boundary)
             {
-                boundary = AliasBoundaryInputs(inputs.boundary->get());
+                boundary = AliasBoundaryInputs(*inputs.boundary);
                 ValidateBoundaryInputs(*boundary, time);
                 boundaryRead.emplace(
                     boundary->QuadratureValues().CoupledField().Owned().Read());
                 incoming = boundaryRead->View<R::UniformTableRows>();
-                inputs.boundary = std::cref(*boundary);
+                inputs.boundary.Emplace(*boundary);
             }
             evaluator.emplace(_data->equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {true})); });
         auto &work = *gradients._data;
@@ -216,7 +216,7 @@ namespace DNDS::Cauchy
             stage([&]
                   {
                       DNDS_check_throw_info(!inputs.meanGradients, "mean gradient input is owned by this preparation call");
-                      inputs.meanGradients = std::cref(gradients);
+                      inputs.meanGradients.Emplace(gradients);
                       preparation.emplace(BeginAuxValues(state, output, time, workers, inputs)); });
             if (overlap)
                 engine.Submit(stream, [&](auto)
@@ -356,7 +356,7 @@ namespace DNDS::Cauchy
         {
             if (inputs.meanGradients)
             {
-                gradients = inputs.meanGradients->get();
+                gradients = *inputs.meanGradients;
                 DNDS_check_throw_info(gradients->_data, "mean gradient input is uninitialized");
                 gradients->_data->Check(source, gradients->fields, data, time, false);
                 for (const auto &field : gradients->fields)
@@ -366,7 +366,7 @@ namespace DNDS::Cauchy
             }
             if (inputs.boundary)
             {
-                boundary = inputs.boundary->get();
+                boundary = *inputs.boundary;
                 boundaryRead.emplace(
                     boundary->QuadratureValues().CoupledField().Owned().Read());
                 incoming = boundaryRead->View<R::UniformTableRows>();
@@ -507,7 +507,10 @@ namespace DNDS::Cauchy
             std::optional<MeanThermodynamicView> derived;
             if (buffers._derivedThermodynamics)
                 derived.emplace(MeanThermodynamicView::Derived(
-                    *derivedOwned, derivedGhost ? std::optional(std::cref(*derivedGhost)) : std::nullopt));
+                    *derivedOwned,
+                    derivedGhost
+                        ? OptionalRef<const DerivedFields::ReadScope>(*derivedGhost)
+                        : OptionalRef<const DerivedFields::ReadScope>{}));
             EquationFVDetail::PointScratch left(source.ComponentNumber()), right(source.ComponentNumber()), face(source.ComponentNumber());
             const auto *ransModel = data->equation.HasRANS() ? &data->equation.RANS() : nullptr;
             const auto prepared = [&](index iCell, auto &point)
@@ -704,7 +707,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(!HasInterfaces() || inputs.boundary,
                               "equation auxiliary preparation needs an incoming interface packet");
         if (inputs.boundary)
-            ValidateBoundaryInputs(inputs.boundary->get(), time);
+            ValidateBoundaryInputs(*inputs.boundary, time);
         _data->boundary.ValidateEquationProducers(_data->boundaryZones);
         const auto arrays = EquationAuxiliaryArrays(output);
         const index faces = index(_data->stencilFaces.size());
@@ -719,8 +722,8 @@ namespace DNDS::Cauchy
                         DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), arrays[k]->Storage()), "equation auxiliary output aliases state");
                 if (inputs.boundary)
                     for (const auto *packet : {
-                             &inputs.boundary->get().QuadratureValues(),
-                             &inputs.boundary->get().FaceCenterValues()})
+                             &inputs.boundary->QuadratureValues(),
+                             &inputs.boundary->FaceCenterValues()})
                         for (index iField = 0;
                              iField < packet->PhysicalFieldNumber(); ++iField)
                             DNDS_check_throw_info(
@@ -729,7 +732,7 @@ namespace DNDS::Cauchy
                                     arrays[k]->Storage()),
                                 "equation auxiliary output aliases interface input");
                 if (inputs.meanGradients)
-                    for (const auto &field : inputs.meanGradients->get().fields)
+                    for (const auto &field : inputs.meanGradients->fields)
                         for (const auto *input : {&field.Owned(), &field.Ghost()})
                             DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), arrays[k]->Storage()), "equation auxiliary output aliases mean gradients");
                 for (int j = 0; j < k; ++j)

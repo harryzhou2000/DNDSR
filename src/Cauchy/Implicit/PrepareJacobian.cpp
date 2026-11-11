@@ -233,7 +233,9 @@ namespace DNDS::Cauchy
             const auto typed = EquationDofs::Coupled(_data->equation.Schema(), state);
             derivedOwned.emplace(auxiliary.derivedOwned->ReadCurrent(typed, _data->equation));
             derivedGhost.emplace(auxiliary.derivedGhost->ReadCurrent(typed, _data->equation));
-            packet.meanThermodynamics = MeanThermodynamicView::Derived(*derivedOwned, std::cref(*derivedGhost));
+            packet.meanThermodynamics = MeanThermodynamicView::Derived(
+                *derivedOwned,
+                OptionalRef<const DerivedFields::ReadScope>(*derivedGhost));
         }
         const auto bind = [&](const auto &field, int slot, auto &view)
         {

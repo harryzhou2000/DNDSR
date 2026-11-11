@@ -642,7 +642,9 @@ namespace DNDS::Cauchy
                         // the actual accepted/exchanged mean and EOS/T state. Both
                         // endpoints are in the simplex, so the cheaper raw-affine
                         // reference equals the clipped reference along the entire
-                        // line. No projection may follow FixFraction. In contrast,
+                        // line and merely proves the clipped stored-state invariant.
+                        // A raw out-of-simplex mean is never accepted, and no
+                        // projection may follow FixFraction. In contrast,
                         // reconstruction retains raw polynomial rhoY for transport
                         // and clips only its temporary point-property view.
                         for (index k = 0; k < independent; ++k)

@@ -240,8 +240,10 @@ namespace DNDS::Cauchy
         /// stored/exchanged mean and therefore define the EOS/T invariant. Because
         /// both endpoints are in the complete simplex, the raw affine reference
         /// equals that clipped composition everywhere on their connecting line;
-        /// the cheaper raw-affine search therefore proves the clipped-state
-        /// physical invariant without another projection. This is distinct from
+        /// the cheaper raw-affine search is only a proof of the clipped-state
+        /// physical invariant, never permission to retain a raw out-of-simplex
+        /// mean. No projection follows this search because the candidate was
+        /// already repaired before it. This is distinct from
         /// reconstruction, where raw polynomial rhoY is retained and clipping is
         /// only a temporary point-property view. See CauchyPositivity.md.
         template <class Row, class Increment>

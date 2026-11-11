@@ -12,9 +12,9 @@ wall value:
 
 | Consumer | Input/convention |
 |---|---|
-| VR boundary equation | Euler exterior state, evaluated from the current reconstructed point |
+| VR boundary equation | Physical face trace evaluated from the current reconstructed point; never a reflected exterior state |
 | Convective numerical flux | Interior and Euler exterior states |
-| Direct conservative gradients | `(interior + exterior)/2`, equivalent to Euler's half exterior jump over a mirrored centroid distance |
+| Direct conservative gradients | The same physical face trace used by VR |
 | Polynomial viscous flux | Average conservative state, average conservative gradient plus the exterior jump divided by Euler's prepared GRP distance |
 | `noRsOnWall=true` | Replace both convective states by the physical no-slip wall state after forming the viscous jump gradient; use that wall state for flux thermodynamics |
 | Mean auxiliary spectral preparation | Duplicate the owned mean at a physical boundary, as Euler `EvaluateDt` does; interface input is a separate extension |
@@ -22,10 +22,11 @@ wall value:
 | Approximate Roe/LU-SGS BC derivative | Euler `linMode=1`: homogeneous wall reflection before thermal/scalar adjustments, zero for open/prescribed boundaries |
 
 `FaceValue` describes a physical wall value. It is useful for diagnostics and
-the `noRsOnWall` option, but is not the default VR target or conservative-gradient
+the `noRsOnWall` option, and it is the common VR/direct-gradient reconstruction
 trace. In particular, removing wall-normal momentum while retaining pressure
-changes kinetic/total energy; averaging the reflected conservative pair retains
-the pair's energy instead. This distinction matters on the coarse pMG levels.
+changes kinetic/total energy; the trace is intentionally distinct from the
+reflected exterior pair consumed by the Riemann/viscous paths. This distinction
+matters on the coarse pMG levels.
 
 ## Wall states
 
@@ -37,8 +38,9 @@ For interior `rho,u,p`, prescribed wall velocity `uw`, and outward unit normal n
   Heat conduction through the wall is disabled; species diffusion is impermeable.
 - Isothermal no-slip exterior: prescribe `TR=Tw`, `uR=2*uw-u`, `pR=p` and unchanged
   mass fractions. The EOS determines rhoR and total energy. For a perfect/ideal
-  mixture gas, `rhoR=p/(R(Y)*Tw)`. This is applied to VR and convection as well
-  as the viscous exterior, matching Euler's `generateBV_ViscousWall`.
+  mixture gas, `rhoR=p/(R(Y)*Tw)`. This exterior is applied to convection and
+  the viscous jump. Reconstruction instead receives the physical wall trace
+  `u=uw`, `T=Tw`, `p=p_inside` through the same EOS-aware point producer.
 
 There is no extrapolated negative ghost temperature and no unit fallback.
 For an isothermal wall, the arithmetic mean of the two conservative states

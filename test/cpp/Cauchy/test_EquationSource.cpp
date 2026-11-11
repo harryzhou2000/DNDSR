@@ -348,6 +348,21 @@ TEST_CASE("Mixture thermal references enforce a requested temperature through ac
     CHECK_FALSE(bounds.Admissible(speciesOnly));
     CHECK(bounds.Admissible(speciesOnly, false));
     CHECK(bounds.ReconstructionFraction(one, base, higher, 0, 2, 1, 0) == 1);
+    {
+        C::FlowState rawFlow;
+        for (int j = 0; j < 5; ++j)
+            rawFlow[j] = higher(0, j);
+        std::vector<double> rawSpecies(size_t(fixture.species - 1));
+        for (int k = 0; k < fixture.species - 1; ++k)
+            rawSpecies[size_t(k)] = higher(0, 5 + k);
+        const auto before = rawSpecies;
+        auto evaluator = fixture.equation.MakePointEvaluator(fixture.workers.Acquire(), {});
+        const auto properties = evaluator.Evaluate(
+            rawFlow, {rawSpecies.data(), fixture.species - 1});
+        CHECK(std::isfinite(properties.thermo.temperature));
+        CHECK(rawSpecies == before);
+        CHECK(higher(0, 5) < 0);
+    }
 
     // The analytic reconstruction beta uses raw affine energy, while the
     // physical endpoint uses the clipped composition seen by the T solver.

@@ -823,9 +823,111 @@ namespace DNDS::Cauchy
         std::optional<R::TransferBinding> primitiveGradientHalo;
         struct DirectGradientPublication
         {
+            struct BoundaryField
+            {
+                std::weak_ptr<const R::ArrayStorage> storage;
+                uint64_t shape = 0, version = 0;
+            };
             // Weak identities reject rebinding/ABA without retaining old fields.
-            std::weak_ptr<const R::ArrayStorage> input, output;
-            uint64_t inputShape = 0, inputVersion = 0, outputShape = 0, outputVersion = 0;
+            // The workspace/operation owns the arrays and packet; this stamp is
+            // validation metadata, never an asynchronous lifetime mechanism.
+            std::weak_ptr<const R::ArrayStorage> mean, input, output;
+            uint64_t meanShape = 0, meanVersion = 0, inputShape = 0,
+                     inputVersion = 0, outputShape = 0, outputVersion = 0;
+            R::VersionStamp geometry;
+            std::vector<BoundaryField> boundary;
+            real time = std::numeric_limits<real>::quiet_NaN();
+            std::string reconstruction, gradient, limiter;
+
+            void Publish(const Data &plan, const R::Array<real> &meanValues,
+                         const R::Array<real> &inputValues,
+                         const R::Array<real> &outputValues,
+                         const std::optional<BoundaryInputs> &incoming,
+                         real stageTime)
+            {
+                const auto meanRead = meanValues.Read();
+                const auto inputRead = inputValues.Read();
+                const auto outputRead = outputValues.Read();
+                mean = meanValues.SharedStorage();
+                input = inputValues.SharedStorage();
+                output = outputValues.SharedStorage();
+                meanShape = meanValues.ShapeVersion();
+                meanVersion = meanValues.Version();
+                inputShape = inputValues.ShapeVersion();
+                inputVersion = inputValues.Version();
+                outputShape = outputValues.ShapeVersion();
+                outputVersion = outputValues.Version();
+                geometry = plan.boundaryLayout->stamp;
+                boundary.clear();
+                if (plan.hasInterfaces)
+                {
+                    DNDS_check_throw_info(
+                        incoming && incoming->Time() == stageTime,
+                        "direct gradient publication needs the current interface packet");
+                    const auto &values = incoming->QuadratureValues();
+                    boundary.reserve(size_t(values.PhysicalFieldNumber()));
+                    for (index iField = 0;
+                         iField < values.PhysicalFieldNumber(); ++iField)
+                    {
+                        const auto &array = values.PhysicalField(iField).Owned();
+                        const auto read = array.Read();
+                        boundary.push_back({array.SharedStorage(),
+                                            array.ShapeVersion(),
+                                            array.Version()});
+                    }
+                }
+                time = stageTime;
+                reconstruction = plan.settings.numerics.reconstruction;
+                gradient = plan.settings.numerics.gradient;
+                limiter = plan.settings.numerics.limiter;
+            }
+
+            bool Current(const Data &plan, const R::Array<real> &meanValues,
+                         const R::Array<real> &inputValues,
+                         const R::Array<real> &outputValues,
+                         const std::optional<BoundaryInputs> &incoming,
+                         real stageTime) const
+            {
+                // Acquire before reading generations: checking first would
+                // permit a writer to publish a new generation in the gap.
+                const auto meanRead = meanValues.Read();
+                const auto inputRead = inputValues.Read();
+                const auto outputRead = outputValues.Read();
+                if (time != stageTime || !geometry.Valid() ||
+                    reconstruction != plan.settings.numerics.reconstruction ||
+                    gradient != plan.settings.numerics.gradient ||
+                    limiter != plan.settings.numerics.limiter ||
+                    mean.lock() != meanValues.SharedStorage() ||
+                    input.lock() != inputValues.SharedStorage() ||
+                    output.lock() != outputValues.SharedStorage() ||
+                    meanShape != meanValues.ShapeVersion() ||
+                    meanVersion != meanValues.Version() ||
+                    inputShape != inputValues.ShapeVersion() ||
+                    inputVersion != inputValues.Version() ||
+                    outputShape != outputValues.ShapeVersion() ||
+                    outputVersion != outputValues.Version())
+                    return false;
+                if (!plan.hasInterfaces)
+                    return boundary.empty();
+                if (!incoming || incoming->Time() != stageTime ||
+                    boundary.size() !=
+                        size_t(incoming->QuadratureValues()
+                                   .PhysicalFieldNumber()))
+                    return false;
+                const auto &values = incoming->QuadratureValues();
+                for (index iField = 0;
+                     iField < values.PhysicalFieldNumber(); ++iField)
+                {
+                    const auto &array = values.PhysicalField(iField).Owned();
+                    const auto read = array.Read();
+                    const auto &saved = boundary[size_t(iField)];
+                    if (saved.storage.lock() != array.SharedStorage() ||
+                        saved.shape != array.ShapeVersion() ||
+                        saved.version != array.Version())
+                        return false;
+                }
+                return true;
+            }
         };
         std::shared_ptr<PositivityWorkspace> positivity;
         std::unique_ptr<LimitedVRWorkspace> limitedVR;
@@ -1319,7 +1421,8 @@ namespace DNDS::Cauchy
         {
             (void)state;
         }
-        void RefreshDirectGradients(bool ghost)
+        void RefreshDirectGradients(const EquationDofs &state, bool ghost,
+                                    real time)
         {
             if (owner->settings.numerics.reconstruction == "variational")
                 return;
@@ -1329,13 +1432,14 @@ namespace DNDS::Cauchy
             {
                 if (nativeDirectGradient)
                 {
-                    const auto &source = ghost ? directGradients[iField].Ghost()
-                                               : directGradients[iField].Owned();
-                    const auto read = source.Read();
+                    const auto &mean = ghost
+                                           ? state.PhysicalField(iField).Ghost()
+                                           : state.PhysicalField(iField).Owned();
+                    const auto &output = ghost
+                                             ? directGradients[iField].Ghost()
+                                             : directGradients[iField].Owned();
                     auto &published = directGradientPublications[iField][ghost ? 1 : 0];
-                    published = {source.SharedStorage(), source.SharedStorage(),
-                                 source.ShapeVersion(), source.Version(),
-                                 source.ShapeVersion(), source.Version()};
+                    published.Publish(*owner, mean, mean, output, incoming, time);
                     continue;
                 }
                 const bool fromGradientField = owner->settings.numerics.reconstruction == "constant" && fields[iField].gradient;
@@ -1377,29 +1481,24 @@ namespace DNDS::Cauchy
                 const auto &source = fromGradientField ? fields[iField].gradient->Owned()
                                      : ghost           ? FluxCoefficients().PhysicalField(iField).Ghost()
                                                        : FluxCoefficients().PhysicalField(iField).Owned();
+                const auto &mean = ghost ? state.PhysicalField(iField).Ghost()
+                                         : state.PhysicalField(iField).Owned();
                 const auto &destination = ghost ? directGradients[iField].Ghost() : directGradients[iField].Owned();
                 // Pin the input through both the check and a possible refresh:
                 // an unfinished writer has not published its next generation.
-                const auto inputRead = source.Read();
-                const auto inputStorage = source.SharedStorage();
                 auto &published = directGradientPublications[iField][ghost ? 1 : 0];
-                if (published.input.lock() == inputStorage && published.output.lock() == destination.SharedStorage() &&
-                    published.inputShape == source.ShapeVersion() && published.inputVersion == source.Version())
+                if (published.Current(*owner, mean, source, destination,
+                                      incoming, time))
                 {
-                    const auto outputRead = destination.Read();
-                    if (published.outputShape == destination.ShapeVersion() && published.outputVersion == destination.Version())
-                    {
-                        owner->metrics.Validate();
-                        continue;
-                    }
+                    owner->metrics.Validate();
+                    continue;
                 }
                 // The independently callable source path still executes this
                 // on a miss. P0 sources keep their physical gradients, and P1
                 // extracts the final limiter/PP coefficients, never raw slopes.
                 refresh();
-                const auto outputRead = destination.Read();
-                published = {inputStorage, destination.SharedStorage(), source.ShapeVersion(), source.Version(),
-                             destination.ShapeVersion(), destination.Version()};
+                published.Publish(*owner, mean, source, destination, incoming,
+                                  time);
             }
             if (!nativeDirectGradient && !directViscousGradients.empty())
             {
@@ -1787,8 +1886,7 @@ namespace DNDS::Cauchy
                         {sample.normal[0], sample.normal[1], sample.normal[2]},
                         {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]},
                         evaluator, frame, time,
-                        direct ? BoundaryPointStateKind::FaceTrace
-                               : BoundaryPointStateKind::ExteriorState,
+                        BoundaryPointStateKind::FaceTrace,
                         OptionalRef<const std::vector<real>>(cellMean.values),
                         wallRead ? wallValues.cellMean(sample.cell, 0) : 0,
                         incoming);
@@ -1883,7 +1981,10 @@ namespace DNDS::Cauchy
                     if (ghosts && values.derivedGhost)
                         scope.derivedGhost.emplace(values.derivedGhost->ReadCurrent(typed, owner->equation));
                     input.auxiliary.meanThermodynamics.emplace(MeanThermodynamicView::Derived(
-                        *scope.derivedOwned, scope.derivedGhost ? std::optional(std::cref(*scope.derivedGhost)) : std::nullopt));
+                        *scope.derivedOwned,
+                        scope.derivedGhost
+                            ? OptionalRef<const DerivedFields::ReadScope>(*scope.derivedGhost)
+                            : OptionalRef<const DerivedFields::ReadScope>{}));
                 }
                 if (values.cellWaveJump)
                     input.auxiliary.cellWaveJump = scope.ReadField(*values.cellWaveJump);
@@ -2569,7 +2670,7 @@ namespace DNDS::Cauchy
             if (!allowPointFallback && localFallbacks)
                 DNDS_check_throw_info(false, "inadmissible reconstructed face with faceFallback disabled");
         }
-        void SampleSourceState(const EquationDofs &state)
+        void SampleSourceState(const EquationDofs &state, real time)
         {
             const PhaseTime timing(*this, SamplingPhase);
             sourceState.reset();
@@ -2579,7 +2680,7 @@ namespace DNDS::Cauchy
             // P0 face convection/viscosity does not disable these derivatives.
             // Direct-FV sources consume physical gradients without a basis.
             if (ransFirst >= 0 && owner->settings.numerics.reconstruction != "variational")
-                RefreshDirectGradients(false);
+                RefreshDirectGradients(state, false, time);
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             {
                 if (ransFirst >= 0 && owner->settings.numerics.reconstruction == "variational")
@@ -2977,7 +3078,7 @@ namespace DNDS::Cauchy
             }
             if (sourceOffsets.empty())
                 return;
-            SampleSourceState(state);
+            SampleSourceState(state, time);
             if (!result)
                 return;
             std::vector<R::Array<real>::ReadLease> sources;
@@ -3113,13 +3214,13 @@ namespace DNDS::Cauchy
             ValidateWorkspace(state, work);
             AuxiliaryInputs inputs;
             if (work.incoming)
-                inputs.boundary = std::cref(*work.incoming);
+                inputs.boundary.Emplace(*work.incoming);
             PrepareAuxValues(state, auxiliary, *work.meanGradients, engine, stream, time, work.workers, inputs);
             local([&]
                   {
                 if (work.SourceSamplesCurrent(state, time)) return;
                 auto evaluator = _data->equation.MakePointEvaluator(work.workers ? work.workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {true});
-                work.PrepareVolumeSource(state, std::nullopt, evaluator);
+                work.PrepareVolumeSource(state, std::nullopt, evaluator, time);
                 work.PublishSourceState(state, time); });
             return;
         }
@@ -3131,7 +3232,7 @@ namespace DNDS::Cauchy
             PreflightHalo(state);
             AuxiliaryInputs inputs;
             if (work.incoming)
-                inputs.boundary = std::cref(*work.incoming);
+                inputs.boundary.Emplace(*work.incoming);
             preparation.emplace(BeginAuxValues(state, auxiliary, time, work.workers, inputs)); });
         OperatorSchedule schedule(engine, stream, _data->settings.execution.overlap);
         std::vector<Algebra::DofHalo<>::Operation> transfers;
@@ -3161,9 +3262,9 @@ namespace DNDS::Cauchy
                 {
                     auto evaluator = _data->equation.MakePointEvaluator(work.workers ? work.workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{},
                                                                         {true, false, false, false, false});
-                    work.PrepareVolumeSource(state, std::nullopt, evaluator);
+                    work.PrepareVolumeSource(state, std::nullopt, evaluator, time);
                 }
-                else work.SampleSourceState(state);
+                else work.SampleSourceState(state, time);
                 work.PublishSourceState(state, time);
             });
             schedule.Join(); });
@@ -3195,10 +3296,10 @@ namespace DNDS::Cauchy
                     work.workers ? work.workers->Acquire()
                                  : Physics::Chemistry::ChemicalWorkerPool::Lease{},
                     {true, false, false, false, false});
-                work.PrepareVolumeSource(state, std::nullopt, evaluator);
+                work.PrepareVolumeSource(state, std::nullopt, evaluator, time);
             }
             else
-                work.SampleSourceState(state);
+                work.SampleSourceState(state, time);
             work.PublishSourceState(state, time); });
     }
     void FiniteVolume::InitializeConservative(EquationDofs &state, const std::vector<real> &values) const
@@ -3487,9 +3588,10 @@ namespace DNDS::Cauchy
                 const auto &publication =
                     work.directGradientPublications[size_t(iField)][0];
                 DNDS_check_throw_info(
-                    publication.output.lock() == field.SharedStorage() &&
-                        publication.outputShape == field.ShapeVersion() &&
-                        publication.outputVersion == field.Version(),
+                    publication.Current(
+                        *_data, state.PhysicalField(iField).Owned(),
+                        state.PhysicalField(iField).Owned(), field,
+                        work.incoming, work.rhsTime),
                     "interface donor gradient publication is stale");
                 result._reconstructionVersions.push_back(field.Version());
             }
@@ -4076,7 +4178,7 @@ namespace DNDS::Cauchy
                   {
                       AuxiliaryInputs inputs;
                       if (work.incoming)
-                          inputs.boundary = std::cref(*work.incoming);
+                          inputs.boundary.Emplace(*work.incoming);
                       auxiliaryPreparation.emplace(BeginAuxValues(state, auxiliary->get(), time, work.workers, inputs)); });
         const bool overlap = _data->settings.execution.overlap;
         OperatorSchedule schedule(engine, stream, overlap);
@@ -4166,7 +4268,7 @@ namespace DNDS::Cauchy
             // are independent of the reconstruction being computed below.
             AuxiliaryInputs inputs;
             if (work.incoming)
-                inputs.boundary = std::cref(*work.incoming);
+                inputs.boundary.Emplace(*work.incoming);
             PrepareAuxValues(state, auxiliary->get(), *work.meanGradients, engine, stream, time, work.workers, inputs);
         }
         if (deferredEvaluator)
@@ -4385,7 +4487,7 @@ namespace DNDS::Cauchy
         // Publish the direct physical gradients after limiter/PP, once per row.
         // The physical-gradient RHS itself never interprets coefficient data.
         schedule.Submit([&]
-                        { work.RefreshDirectGradients(false); });
+                        { work.RefreshDirectGradients(state, false, time); });
         if (overlap && residual)
             schedule.Submit([&]
                             { work.ApplyRHS(state, residual->get(), CFV::ReconstructionRegion::Core, *evaluator, time,
@@ -4397,7 +4499,7 @@ namespace DNDS::Cauchy
         if (primitiveGradientOperation)
             primitiveGradientOperation->Wait();
         schedule.Submit([&]
-                        { work.RefreshDirectGradients(true); });
+                        { work.RefreshDirectGradients(state, true, time); });
         if (residual)
         {
             schedule.Submit([&, rest]
@@ -4583,7 +4685,7 @@ namespace DNDS::Cauchy
     {
         DNDS_check_throw_info(context.reconstruction,
                               "source Jacobian context has no reconstruction publication");
-        const auto &reconstruction = context.reconstruction->get();
+        const auto &reconstruction = *context.reconstruction;
         auto &work = context.workspace.get();
         auto reconstructionSession = reconstruction.session.Acquire();
         auto workspaceSession = work.session.Acquire();
@@ -4605,7 +4707,7 @@ namespace DNDS::Cauchy
     {
         DNDS_check_throw_info(context.reconstruction,
                               "source Jacobian context has no reconstruction publication");
-        const auto &reconstruction = context.reconstruction->get();
+        const auto &reconstruction = *context.reconstruction;
         auto &work = context.workspace.get();
         auto reconstructionSession = reconstruction.session.Acquire();
         auto workspaceSession = work.session.Acquire();

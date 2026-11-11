@@ -250,8 +250,11 @@ factor and, if needed, successive `.9` pull-ups with a finite iteration cap.
 The repaired rhoY is the actual stored/exchanged mean. Since the repaired target
 and the old mean lie in the complete simplex, their connecting line also lies in
 the simplex; along it the raw species reference and clipped EOS/T composition
-are identical. The raw predicate is therefore also the EOS/T invariant in this
-one operation. Afterwards RANS uses the model-specific exponential
+are identical. The accepted-state invariant is explicitly the **clipped,
+simplex-valid rhoY state consumed by EOS/T**. The raw-affine predicate is only a
+cheaper line-search proof of that clipped invariant in this operation; it does
+not authorize retaining a raw out-of-simplex mean. Afterwards RANS uses the
+model-specific exponential
 negative-update repair (and the SA floor where enabled), then its mean bounds.
 No later species projection may invalidate the line search. The combined state
 is validated after these repairs. Scalar repairs must not silently change a

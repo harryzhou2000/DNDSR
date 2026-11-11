@@ -2071,7 +2071,8 @@ TEST_CASE("Optional derived auxiliaries refresh owned rows during halo exchange 
     C::RHSReadViews input;
     input.mean = {meanRead.View<C::RHSFlowRows>(), meanGhost.View<C::RHSFlowRows>()};
     input.coefficients = {recRead.View<R::UniformTableRows>(), recGhost.View<R::UniformTableRows>()};
-    input.auxiliary.meanThermodynamics = C::MeanThermodynamicView::Derived(owned, std::cref(ghost));
+    input.auxiliary.meanThermodynamics = C::MeanThermodynamicView::Derived(
+        owned, DNDS::OptionalRef<const C::DerivedFields::ReadScope>(ghost));
     C::RHSLocalDiagnostics diagnostics;
     {
         auto write = result.Owned().Write();

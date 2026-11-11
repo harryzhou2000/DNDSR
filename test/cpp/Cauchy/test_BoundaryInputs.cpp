@@ -9,7 +9,7 @@ namespace R = DNDS::Runtime;
 using I = DNDS::index;
 static DNDS::MPIInfo mpi;
 
-TEST_CASE("VR wall targets use reflected exterior states in both flow and equation profiles")
+TEST_CASE("VR wall targets use physical face traces in both flow and equation profiles")
 {
     const auto mesh = CFVTest::CartesianHexes(mpi, 3);
     C::DomainSettings settings;
@@ -47,15 +47,24 @@ TEST_CASE("VR wall targets use reflected exterior states in both flow and equati
         for (I iPoint = 0; iPoint < plan.NumBoundaryQuadrature(); ++iPoint)
         {
             const auto point = plan.GetBoundaryQuadrature(iPoint);
-            double normalMomentum = 0;
-            for (int d = 0; d < 3; ++d)
-                normalMomentum += u(point.cell, 1 + d) * point.normal[d];
-            // Independent stationary slip reflection: rho and rhoE unchanged,
-            // m' = m - 2*(m.n)*n. A projected trace has only half this jump.
+            C::FlowState inside{};
             for (int j = 0; j < 5; ++j)
-                values(iPoint, j) = u(point.cell, j);
+                inside[j] = u(point.cell, j);
+            auto trace = equation.Gas().Primitive(inside);
+            double normalVelocity = 0;
             for (int d = 0; d < 3; ++d)
-                values(iPoint, 1 + d) -= 2 * normalMomentum * point.normal[d];
+                normalVelocity += trace.velocity[d] * point.normal[d];
+            // Independent stationary slip trace: rho and pressure/internal
+            // energy are retained while wall-normal velocity is removed once.
+            // Flux exteriors use twice this velocity jump but are deliberately
+            // not reconstruction boundary data.
+            for (int d = 0; d < 3; ++d)
+                trace.velocity[d] -= normalVelocity * point.normal[d];
+            const auto expectedTrace = equation.Gas().Conservative(
+                {trace.density, trace.velocity[0], trace.velocity[1],
+                 trace.velocity[2], trace.pressure});
+            for (int j = 0; j < 5; ++j)
+                values(iPoint, j) = expectedTrace[j];
         }
     }
     fv.Metrics().BindHalo(state).Begin().Wait();
@@ -180,8 +189,10 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
     request.faceSpectralRadius = true;
     auto auxA = reference.BuildAuxiliaryValues(request), auxB = coupled.BuildAuxiliaryValues(request);
     reference.PrepareAuxValues(equationA, auxA, time);
+    C::AuxiliaryInputs auxiliaryInputs;
+    auxiliaryInputs.boundary.Emplace(incoming);
     coupled.PrepareAuxValues(equationB, auxB, time, std::nullopt,
-                             {std::nullopt, std::cref(incoming)});
+                             auxiliaryInputs);
     R::Array<double> tau(R::RowLayout::Dense(reference.Metrics().NumCell(), 1));
     {
         auto write = tau.Write();

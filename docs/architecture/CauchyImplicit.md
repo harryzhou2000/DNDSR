@@ -363,15 +363,14 @@ Exact replay still requires compatible numerical controls and stored guesses.
 
 ## Polynomial multigrid
 
-VR boundary input follows Euler's reconstruction equation: wall points receive
-the **reflected exterior state**, evaluated from the current polynomial when
-requested. A stationary slip reflection preserves rho and rhoE and reverses
-normal momentum. Direct conservative gradients use the mean of the inside and
-exterior states, while viscous laws use their prepared mean/jump convention.
-See [the boundary convention guide](CauchyBoundary.md). Replacing the reflected
-target with a physical trace halves the momentum jump and changes the conservative-energy boundary
-equation. Flow5 and logical-equation paths use the same convention; analytic
-and inter-domain prescribed point values retain their existing meanings.
+VR and direct-gradient boundary input use one physical face trace evaluated from
+the current polynomial when requested. A stationary slip trace removes the
+relative normal momentum once; the reflected exterior used by the numerical
+flux removes it twice. Viscous laws retain their separately prepared mean/jump
+convention. See [the boundary convention guide](CauchyBoundary.md). Flow5 and
+logical-equation paths use the same trace contract; analytic and inter-domain
+prescribed point values retain their existing meanings. No reconstruction
+kernel branches on a BC kind or stores an exterior-state convention.
 
 `Cauchy/Multigrid/PolynomialMultigrid` connects the generic
 [FAS cycle](FAS.md) to same-cell spatial operators. `implicit.multigrid.levels=0`

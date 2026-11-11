@@ -163,7 +163,7 @@ namespace DNDS::Cauchy
     {
         AuxiliaryInputs inputs;
         if (_interfaceInputs)
-            inputs.boundary = std::cref(*_interfaceInputs);
+            inputs.boundary.Emplace(*_interfaceInputs);
         if (!_timeAuxiliary)
         {
             AuxiliaryRequest request;

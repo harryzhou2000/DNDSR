@@ -51,8 +51,8 @@ namespace DNDS::Cauchy
     /// exchange is performed by BeginAuxValues/AuxiliaryPreparation.
     struct AuxiliaryInputs
     {
-        std::optional<std::reference_wrapper<const MeanGradients>> meanGradients;
-        std::optional<std::reference_wrapper<const BoundaryInputs>> boundary;
+        OptionalRef<const MeanGradients> meanGradients;
+        OptionalRef<const BoundaryInputs> boundary;
     };
     /// Explicit result of physical-step selection. Alpha/count describe the PP
     /// bound before any independent growth cap or subsequent retry halving.
@@ -153,12 +153,12 @@ namespace DNDS::Cauchy
         MeanThermodynamicView(RHSFieldView paired, std::array<int, 3> selected) : values(paired), columns(selected) {}
         static MeanThermodynamicView Derived(
             const DerivedFields::ReadScope &owned,
-            std::optional<std::reference_wrapper<const DerivedFields::ReadScope>> ghost = std::nullopt)
+            OptionalRef<const DerivedFields::ReadScope> ghost = {})
         {
             const std::array<int, 3> selected{owned.Column(DerivedQuantity::Pressure), owned.Column(DerivedQuantity::SoundSpeed), owned.Column(DerivedQuantity::DiffusionBound)};
             if (ghost)
-                DNDS_check_throw_info((selected == std::array<int, 3>{ghost->get().Column(DerivedQuantity::Pressure), ghost->get().Column(DerivedQuantity::SoundSpeed), ghost->get().Column(DerivedQuantity::DiffusionBound)}), "derived owned/ghost property columns differ");
-            return {{owned.View(), ghost ? ghost->get().View() : RHSScalarView{}}, selected};
+                DNDS_check_throw_info((selected == std::array<int, 3>{ghost->Column(DerivedQuantity::Pressure), ghost->Column(DerivedQuantity::SoundSpeed), ghost->Column(DerivedQuantity::DiffusionBound)}), "derived owned/ghost property columns differ");
+            return {{owned.View(), ghost ? ghost->View() : RHSScalarView{}}, selected};
         }
         index RowCount() const { return values.RowCount(); }
         index Width() const { return width; }
@@ -311,10 +311,10 @@ namespace DNDS::Cauchy
         struct JacobianContext
         {
             std::reference_wrapper<Workspace> workspace;
-            std::optional<std::reference_wrapper<const ReconstructionState>> reconstruction;
+            OptionalRef<const ReconstructionState> reconstruction;
             explicit JacobianContext(Workspace &scratch) : workspace(scratch) {}
             JacobianContext(const ReconstructionState &state, Workspace &scratch)
-                : workspace(scratch), reconstruction(std::cref(state)) {}
+                : workspace(scratch), reconstruction(state) {}
         };
         /// Reserved synchronous warm-guess publication. Construction validates
         /// every input and retains its reads, destination writes and workspace.
