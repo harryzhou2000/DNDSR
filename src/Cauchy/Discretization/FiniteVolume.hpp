@@ -726,7 +726,13 @@ namespace DNDS::Cauchy
                                        const Runtime::Array<real>::WriteLease &diagonal, DiagonalStorage storage,
                                        real scale, EquationPointEvaluator &evaluator,
                                        const EquationFVDetail::MeanLinearizationOutput *linearization = nullptr) const;
+        index PrepareFaceCharacteristicMatrices(const CFV::FVField &state, index firstComponent,
+                                                Runtime::Array<real> &forward,
+                                                Runtime::Array<real> &inverse) const;
         index PrepareFaceCharacteristics(const CFV::FVField &state, CFV::FaceCharacteristicTransform &transform,
+                                         index firstComponent = 0) const;
+        index PrepareFaceCharacteristics(const CFV::FVField &state,
+                                         CFV::GradientFaceCharacteristicTransform &transform,
                                          index firstComponent = 0) const;
     };
 }

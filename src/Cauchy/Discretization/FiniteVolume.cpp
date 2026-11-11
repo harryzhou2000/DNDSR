@@ -612,7 +612,9 @@ namespace DNDS::Cauchy
         }
         ReconstructionState(std::shared_ptr<const Data> data, EquationDofs &state)
             : owner(std::move(data)), binding(state), coefficients(BuildCoefficients(*owner, state)),
-              distinctFinalized(owner->settings.numerics.limiter == "WBAP" ||
+              distinctFinalized((owner->settings.numerics.limiter == "WBAP" &&
+                                 !(owner->settings.numerics.reconstruction == "gradient" &&
+                                   !owner->settings.numerics.positivity)) ||
                                 bool(owner->limitedVRGeometry) || owner->settings.numerics.positivity),
               fluxCoefficients(distinctFinalized ? BuildCoefficients(*owner, state)
                                                  : coefficients.NumericAlias())
@@ -737,7 +739,7 @@ namespace DNDS::Cauchy
         /// Unfiltered explicit P1 keeps the GradientPlan publication directly;
         /// no gradient-to-modal-to-gradient round trip or coefficient halo.
         bool nativeDirectGradient = false;
-        std::vector<R::TransferBinding> directGradientHalo;
+        std::vector<R::TransferBinding> directGradientHalo, directGradientInputHalo;
         /// Legacy-compatible primitive-gradient viscosity is prepared inside
         /// this workspace but consumed by the same fixed-flow RHS leaf.
         std::optional<CFV::FVField> primitive, primitiveGradient;
@@ -802,6 +804,7 @@ namespace DNDS::Cauchy
         RHSLocalDiagnostics diagnostics;
         std::array<index, 2> faceFallbacks{};
         std::optional<CFV::FaceCharacteristicTransform> flowCharacteristic;
+        std::optional<CFV::GradientFaceCharacteristicTransform> gradientFlowCharacteristic;
         index flowCharacteristicField = -1;
         index characteristicFallbacks = 0;
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
@@ -1112,26 +1115,40 @@ namespace DNDS::Cauchy
                                       "LVR requires one coupled perfect-gas flow5 field");
                 limitedVR = std::make_unique<LimitedVRWorkspace>(*owner, fields.front().reconstruction);
             }
+            nativeDirectGradient = !meanOnly && owner->settings.numerics.reconstruction == "gradient" &&
+                                   !owner->settings.numerics.positivity &&
+                                   (owner->settings.numerics.limiter == "none" ||
+                                    owner->settings.numerics.limiter == "WBAP");
             if (!meanOnly && (owner->settings.numerics.limiter == "WBAP" || limitedVR) && owner->settings.numerics.characteristicLimiter &&
                 !owner->equation.HasMixture())
             {
                 const auto flow = state.LocateBlock("flow");
                 DNDS_check_throw_info(flow.componentNumber == 5, "characteristic limiter requires one five-component flow block");
                 flowCharacteristicField = flow.physicalField;
-                flowCharacteristic.emplace(owner->reconstruction.BuildFaceTransform(flow.firstComponent, 5));
+                if (nativeDirectGradient)
+                    gradientFlowCharacteristic.emplace(owner->gradient.BuildFaceTransform(flow.firstComponent, 5));
+                else
+                    flowCharacteristic.emplace(owner->reconstruction.BuildFaceTransform(flow.firstComponent, 5));
             }
             if (owner->settings.numerics.reconstruction != "variational")
             {
-                nativeDirectGradient = !meanOnly && owner->settings.numerics.reconstruction == "gradient" &&
-                                       owner->settings.numerics.limiter == "none" &&
-                                       !owner->settings.numerics.positivity;
                 for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                 {
                     if (nativeDirectGradient)
                     {
                         DNDS_check_throw_info(fields[iField].gradient,
                                               "explicit P1 has no prepared physical-gradient publication");
-                        directGradients.push_back(*fields[iField].gradient);
+                        if (owner->settings.numerics.limiter == "none")
+                            directGradients.push_back(*fields[iField].gradient);
+                        else
+                        {
+                            directGradients.push_back(owner->metrics.BuildField(
+                                FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(),
+                                                                owner->metrics.NumCell(),
+                                                                state.PhysicalField(iField).Width() * owner->metrics.Dimension())));
+                            directGradientInputHalo.push_back(owner->BindHalo(
+                                *fields[iField].gradient, "cauchy-direct-gradient-input"));
+                        }
                         directGradientHalo.push_back(owner->BindHalo(
                             directGradients.back(), "cauchy-direct-gradient"));
                     }
@@ -2865,8 +2882,9 @@ namespace DNDS::Cauchy
         return !_data->equation.HasMixture() && !_data->equation.HasRANS() &&
                work.componentNumber == 5 && work.physicalFieldNumber == 1;
     }
-    index FiniteVolume::PrepareFaceCharacteristics(const CFV::FVField &state, CFV::FaceCharacteristicTransform &transform,
-                                                   index firstComponent) const
+    index FiniteVolume::PrepareFaceCharacteristicMatrices(const CFV::FVField &state, index firstComponent,
+                                                          R::Array<real> &forwardMatrices,
+                                                          R::Array<real> &inverseMatrices) const
     {
         auto geometry = Metrics().AcquireRead();
         const auto metric = geometry.HostView();
@@ -2876,8 +2894,7 @@ namespace DNDS::Cauchy
         {
             auto owned = state.Owned().Read(), ghost = state.Ghost().Read();
             const RHSFieldView u{owned.View<R::UniformTableRows>(), ghost.View<R::UniformTableRows>()};
-            DNDS_check_throw_info(firstComponent >= 0 && firstComponent + 5 <= state.Width() &&
-                                      transform.first == firstComponent && transform.count == 5,
+            DNDS_check_throw_info(firstComponent >= 0 && firstComponent + 5 <= state.Width(),
                                   "flow characteristic range differs from its physical field");
             const auto loadFlow = [&](index iCell)
             {
@@ -2886,7 +2903,7 @@ namespace DNDS::Cauchy
                     value[j] = u(iCell, firstComponent + j);
                 return value;
             };
-            auto forward = transform.forward.Write(), inverse = transform.inverse.Write();
+            auto forward = forwardMatrices.Write(), inverse = inverseMatrices.Write();
             const auto l = forward.View<R::TableRows>(), r = inverse.View<R::TableRows>();
             for (auto iFace : _data->stencilFaces)
             {
@@ -2904,7 +2921,28 @@ namespace DNDS::Cauchy
                     l(iFace, j) = matrices.forward[j], r(iFace, j) = matrices.inverse[j];
             }
         }
+        return fallbacks;
+    }
+    index FiniteVolume::PrepareFaceCharacteristics(const CFV::FVField &state,
+                                                   CFV::FaceCharacteristicTransform &transform,
+                                                   index firstComponent) const
+    {
+        DNDS_check_throw_info(transform.first == firstComponent && transform.count == 5,
+                              "flow characteristic range differs from its physical field");
+        const auto fallbacks = PrepareFaceCharacteristicMatrices(
+            state, firstComponent, transform.forward, transform.inverse);
         _data->reconstruction.FinalizeFaceTransform(transform);
+        return fallbacks;
+    }
+    index FiniteVolume::PrepareFaceCharacteristics(
+        const CFV::FVField &state, CFV::GradientFaceCharacteristicTransform &transform,
+        index firstComponent) const
+    {
+        DNDS_check_throw_info(transform.first == firstComponent && transform.count == 5,
+                              "flow gradient characteristic range differs from its physical field");
+        const auto fallbacks = PrepareFaceCharacteristicMatrices(
+            state, firstComponent, transform.forward, transform.inverse);
+        _data->gradient.FinalizeFaceTransform(transform);
         return fallbacks;
     }
     FiniteVolume::FinalizedReconstruction FiniteVolume::AcquireFinalizedReconstruction(
@@ -3571,39 +3609,74 @@ namespace DNDS::Cauchy
                   { EquationDofOperations::Copy(reconstruction.MutableFinalized(), reconstruction.coefficients); });
         if (numerics.limiter == "WBAP")
         {
-            if (work.flowCharacteristic && !work.limitedVR)
-                local([&]
-                      {
-                          const auto flow = state.LocateBlock("flow");
-                          DNDS_check_throw_info(flow.physicalField == work.flowCharacteristicField,
-                                                "characteristic flow allocation changed after workspace setup");
-                          work.characteristicFallbacks = PrepareFaceCharacteristics(
-                              state.PhysicalField(flow.physicalField), *work.flowCharacteristic, flow.firstComponent); });
-            for (int order = numerics.cfv.maxOrder; order >= 1; --order)
+            if (work.nativeDirectGradient)
             {
-                auto operations = schedule.Begin(reconstruction.FinalizedHalo());
-                const auto limit = [&, order](CFV::ReconstructionRegion region)
+                if (work.gradientFlowCharacteristic)
+                    local([&]
+                          {
+                    const auto flow = state.LocateBlock("flow");
+                    DNDS_check_throw_info(flow.physicalField == work.flowCharacteristicField,
+                                          "characteristic flow allocation changed after workspace setup");
+                    work.characteristicFallbacks = PrepareFaceCharacteristics(
+                        state.PhysicalField(flow.physicalField), *work.gradientFlowCharacteristic,
+                        flow.firstComponent); });
+                auto gradientOperations = schedule.Begin(work.directGradientInputHalo);
+                const auto limit = [&](CFV::ReconstructionRegion region)
                 {
                     for (index iField = 0; iField < index(work.fields.size()); ++iField)
-                        _data->reconstruction.SubmitLimiterWBAP_3OrderTo(
-                            engine, stream, reconstruction.MutableFinalized().PhysicalField(iField), work.fields[iField].reconstruction, order,
-                            iField == work.flowCharacteristicField && work.flowCharacteristic
-                                ? CFV::FaceCharacteristicTransformRef(std::cref(*work.flowCharacteristic))
+                        _data->gradient.LimitWBAP3(
+                            *work.fields[iField].gradient, work.directGradients[iField],
+                            work.fields[iField].vectorStarts,
+                            iField == work.flowCharacteristicField && work.gradientFlowCharacteristic
+                                ? CFV::GradientFaceCharacteristicTransformRef(
+                                      std::cref(*work.gradientFlowCharacteristic))
                                 : std::nullopt,
-                            region);
+                            region, std::nullopt, 0, numerics.cfv.WBAP_nStd);
                 };
                 if (overlap)
                     limit(CFV::ReconstructionRegion::Core);
-                OperatorSchedule::Wait(operations);
+                OperatorSchedule::Wait(gradientOperations);
                 limit(rest);
                 local([&]
                       { schedule.Join(); });
-                for (index iField = 0; iField < index(work.fields.size()); ++iField)
-                    _data->reconstruction.SubmitCommitReconstruction(engine, stream,
-                                                                     reconstruction.MutableFinalized().PhysicalField(iField),
-                                                                     work.fields[iField].reconstruction);
-                local([&]
-                      { schedule.Join(); });
+            }
+            else
+            {
+                if (work.flowCharacteristic && !work.limitedVR)
+                    local([&]
+                          {
+                              const auto flow = state.LocateBlock("flow");
+                              DNDS_check_throw_info(flow.physicalField == work.flowCharacteristicField,
+                                                    "characteristic flow allocation changed after workspace setup");
+                              work.characteristicFallbacks = PrepareFaceCharacteristics(
+                                  state.PhysicalField(flow.physicalField), *work.flowCharacteristic, flow.firstComponent); });
+                for (int order = numerics.cfv.maxOrder; order >= 1; --order)
+                {
+                    auto limiterOperations = schedule.Begin(reconstruction.FinalizedHalo());
+                    const auto limit = [&, order](CFV::ReconstructionRegion region)
+                    {
+                        for (index iField = 0; iField < index(work.fields.size()); ++iField)
+                            _data->reconstruction.SubmitLimiterWBAP_3OrderTo(
+                                engine, stream, reconstruction.MutableFinalized().PhysicalField(iField),
+                                work.fields[iField].reconstruction, order,
+                                iField == work.flowCharacteristicField && work.flowCharacteristic
+                                    ? CFV::FaceCharacteristicTransformRef(std::cref(*work.flowCharacteristic))
+                                    : std::nullopt,
+                                region);
+                    };
+                    if (overlap)
+                        limit(CFV::ReconstructionRegion::Core);
+                    OperatorSchedule::Wait(limiterOperations);
+                    limit(rest);
+                    local([&]
+                          { schedule.Join(); });
+                    for (index iField = 0; iField < index(work.fields.size()); ++iField)
+                        _data->reconstruction.SubmitCommitReconstruction(
+                            engine, stream, reconstruction.MutableFinalized().PhysicalField(iField),
+                            work.fields[iField].reconstruction);
+                    local([&]
+                          { schedule.Join(); });
+                }
             }
         }
         if (work.positivity)

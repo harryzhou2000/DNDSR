@@ -2128,6 +2128,61 @@ TEST_CASE("Cauchy overlap and unsplit orchestration agree across CPU launchers")
             }
     }
 }
+
+TEST_CASE("Cauchy P1 characteristic WBAP publishes direct physical gradients")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 12);
+    std::vector<DNDS::real> reference;
+    for (bool overlap : {false, true})
+        for (int workers : {0, 2})
+        {
+            C::DomainSettings settings;
+            settings.execution.overlap = overlap;
+            settings.numerics.reconstruction = "gradient";
+            settings.numerics.gradient = "leastSquares";
+            settings.numerics.cfv.maxOrder = 1;
+            settings.numerics.limiter = "WBAP";
+            settings.numerics.characteristicLimiter = true;
+            settings.numerics.positivity = false;
+            const auto equation = C::EquationSystem::Resolve(settings.equation);
+            C::FiniteVolume fv(mesh, settings, equation);
+            auto state = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
+            {
+                auto write = state.Owned().Write();
+                const auto values = write.View<R::UniformTableRows>();
+                for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+                {
+                    const auto point = fv.Metrics().GetCellCent(iCell);
+                    const auto value = equation.Gas().Conservative(
+                        {1 + .08 * std::sin(5 * point[0]), .25 + .03 * point[1], -.08, .02,
+                         1 + .04 * std::cos(3 * point[1])});
+                    for (int j = 0; j < 5; ++j)
+                        values(iCell, j) = value[j];
+                }
+            }
+            auto logical = Bind(fv, state), output = Bind(fv, residual);
+            auto reconstruction = fv.BuildReconstructionState(logical);
+            auto work = fv.BuildWorkspace(logical);
+            R::EagerEngine engine(workers, std::make_shared<R::AccessTrackingContext>());
+            const auto stream = engine.CreateCPUStream();
+            fv.Evaluate(logical, output, *reconstruction, *work, engine, stream);
+            engine.Synchronize();
+            CHECK(fv.LastCharacteristicFallbacks(*work) == 0);
+            auto read = residual.Owned().Read();
+            const auto values = read.View<R::UniformTableRows>();
+            std::vector<DNDS::real> actual;
+            for (DNDS::index iCell = 0; iCell < values.RowCount(); ++iCell)
+                for (int j = 0; j < 5; ++j)
+                {
+                    REQUIRE(std::isfinite(values(iCell, j)));
+                    actual.push_back(values(iCell, j));
+                }
+            if (!overlap && workers == 0)
+                reference = actual;
+            else
+                CHECK(actual == reference);
+        }
+}
 TEST_CASE("Primitive gradient overlap preserves conservative reconstruction across layouts and CPU launchers")
 {
     // Row strips leave nonempty core/dependent regions even at np8, plus an
