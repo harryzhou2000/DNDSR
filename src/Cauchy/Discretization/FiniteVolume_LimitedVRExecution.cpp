@@ -25,11 +25,23 @@ namespace DNDS::Cauchy
         const auto &controls = data.settings.numerics;
         const auto &gas = data.equation.Gas();
         const bool overlap = data.settings.execution.overlap;
-        OperatorSchedule schedule(engine, stream, communication, overlap);
+        // Admission belongs before queued kernels and matched transfers. A
+        // retained external history reader is a local access error, not a
+        // numerical worker failure that should poison an otherwise reusable
+        // checked-test stream or let peers enter another transfer generation.
+        // Production LocalStage still aborts on failure; only coordinated UTs
+        // may catch this rejection. The domain session and caller's exclusive
+        // mutation contract exclude new external accesses after admission,
+        // just as for the other FV output buffers.
         data.metrics.Communication()->LocalStage([&]
-                                                 { geometry.gradient.ConvertToCoefficients(gradients, *data.reconstruction, targetCoefficients); });
+                                                 {
+            auto probe = previous.Write();
+            probe.CancelUnmodified(); });
+        OperatorSchedule schedule(engine, stream, communication, overlap);
+        schedule.Submit([&]
+                        { geometry.gradient.ConvertToCoefficients(gradients, *data.reconstruction, targetCoefficients); });
         {
-            auto transfer = schedule.Begin(targetHalo);
+            auto transfer = schedule.BeginAfterCompute(targetHalo);
             if (overlap)
                 data.reconstruction->SubmitLimiterWBAP_3OrderTo(engine, stream, targetCoefficients, target, 1, transform,
                                                                 CFV::ReconstructionRegion::Core);
@@ -38,15 +50,14 @@ namespace DNDS::Cauchy
                 engine, stream, targetCoefficients, target, 1, transform,
                 overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
             data.reconstruction->SubmitCommitReconstruction(engine, stream, targetCoefficients, target);
-            schedule.Join();
         }
         // PP POLICY -- this is the pure-flow5 O2 target guard inside LVR,
         // distinct from the later equation-aware high-order publication policy.
         // Reuse the Euler common-beta mathematics on a mean-based O2 target,
         // independently of the final high-order PP policy. No alternate limiter
         // or mean clipping is introduced. All PP samples belong to owned cells.
-        data.metrics.Communication()->LocalStage([&]
-                                                 {
+        schedule.Submit([&]
+                        {
             data.positivitySamples->Evaluate(mean, targetCoefficients, sampledPP);
             auto meanRead = mean.Owned().Read(), pointsRead = sampledPP.Read();
             const auto u = meanRead.View<R::UniformTableRows>(), points = pointsRead.View<R::UniformTableRows>();
@@ -56,11 +67,11 @@ namespace DNDS::Cauchy
                 offsetRead.View<R::FixedRows<1>>(), data.FixedFlowThermalBounds(),
                 controls.positivityBetaPower, controls.positivityBetaCutoff), "LimitLVRTarget"); });
         {
-            auto transfer = schedule.Begin(targetHalo);
+            auto transfer = schedule.BeginAfterCompute(targetHalo);
             // The mean halo is already observed. Derived mean scalars need no
             // extra communication, including their ghost rows.
-            data.metrics.Communication()->LocalStage([&]
-                                                     {
+            schedule.Submit([&]
+                            {
                 const auto fill = [&](const auto &input, auto &output)
                 {
                     auto read = input.Read(); auto write = output.Write();
@@ -70,10 +81,9 @@ namespace DNDS::Cauchy
                 };
                 fill(mean.Owned(), scalars.Owned()); fill(mean.Ghost(), scalars.Ghost()); });
             schedule.Await(transfer);
-            schedule.Join();
         }
-        data.metrics.Communication()->LocalStage([&]
-                                                 {
+        schedule.Submit([&]
+                        {
             geometry.sampling->Evaluate(mean, targetCoefficients, sampledFaces);
             auto values = sampledFaces.Read(), own = mean.Owned().Read(), ghost = mean.Ghost().Read();
             const auto samples = values.View<R::UniformTableRows>();
@@ -85,18 +95,17 @@ namespace DNDS::Cauchy
             RequireNumericalSuccess(CPU::BuildLVRBranches(samples, means, faceRead.View<R::FixedRows<1>>(),
                 gas, data.FixedFlowThermalBounds(), settings, g, baseWrite.View<R::FixedRows<2>>()), "BuildLVRBranches"); });
         {
-            auto transfer = schedule.Begin(branchHalo);
+            auto transfer = schedule.BeginAfterCompute(branchHalo);
             if (overlap)
                 schedule.Submit([&]
                                 { geometry.gates.BuildExtremumSeeds(scalars, branches, previous, seeds, settings, CFV::ReconstructionRegion::Core); });
             schedule.Await(transfer);
             schedule.Submit([&]
                             { geometry.gates.BuildExtremumSeeds(scalars, branches, previous, seeds, settings, overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All); });
-            schedule.Join(); // Current portable-MPI bridge needs ready next-layer inputs.
         }
         const auto maximum = [&](CFV::FVField &input, R::TransferBinding &halo, std::array<bool, 3> active, bool excludeBoundary, bool saturated)
         {
-            auto transfer = schedule.Begin(halo);
+            auto transfer = schedule.BeginAfterCompute(halo);
             if (overlap)
                 schedule.Submit([&, active, excludeBoundary, saturated]
                                 { geometry.gates.NeighborMaximum(input, temporary, active, excludeBoundary, saturated, {settings.alphaMax, settings.contactAlphaMax, 1}, CFV::ReconstructionRegion::Core); });
@@ -106,15 +115,16 @@ namespace DNDS::Cauchy
                 geometry.gates.NeighborMaximum(input, temporary, active, excludeBoundary, saturated, {settings.alphaMax, settings.contactAlphaMax, 1},
                                                overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
                 Algebra::Copy(input, temporary); });
-            schedule.Join();
         };
         const auto merge = [&](int column)
         {
-            auto read = base.Read();
-            auto write = seeds.Owned().Write();
-            const auto b = read.View<R::FixedRows<2>>();
-            const auto s = write.View<R::UniformTableRows>();
-            CPU::MergeLVRBase(b, s, column);
+            schedule.Submit([&, column]
+                            {
+                auto read = base.Read();
+                auto write = seeds.Owned().Write();
+                const auto b = read.View<R::FixedRows<2>>();
+                const auto s = write.View<R::UniformTableRows>();
+                CPU::MergeLVRBase(b, s, column); });
         };
         const int pressureLayers = settings.alphaMax > 0 ? 1 : 0;
         const int contactLayers = settings.variant == "v3" && settings.contactAlphaMax > 0 ? settings.contactLayers : 0;
@@ -130,13 +140,17 @@ namespace DNDS::Cauchy
             if (layer + 1 == contactLayers)
                 merge(1);
         }
-        Algebra::Copy(branches, seeds);
+        schedule.Submit([&]
+                        { Algebra::Copy(branches, seeds); });
         for (int layer = 0; layer < settings.neighborLayers; ++layer)
             maximum(branches, branchHalo, {true, false, false}, false, settings.saturatedOnly);
-        data.metrics.Communication()->LocalStage([&]
-                                                 {
+        schedule.Submit([&]
+                        {
             auto read = branches.Owned().Read(); auto history = previous.Write(), penalty = alpha.Write();
             const auto g = read.View<R::UniformTableRows>(); const auto h = history.View<R::FixedRows<2>>(); const auto a = penalty.View<R::FixedRows<1>>();
             CPU::PublishLVRPenalty(g, h, a); });
+        // Synchronous compound-operator return. Fixed neighborhood layers use
+        // producer-prefix exchanges; no engine drain separates their kernels.
+        schedule.Join();
     }
 }

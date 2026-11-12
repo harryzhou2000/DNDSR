@@ -37,6 +37,15 @@ captureable. Current CPU limiter/PP facades still have an explicit input
 publication boundary; removing their controller-only preparation is separate
 from the fixed-count VR sweep contract.
 
+The LVR compound operator likewise queues target limiting, target sampling,
+gate construction and fixed neighborhood-expansion layers. Producer-prefix
+exchanges order each new layer; the compound operator joins once at return.
+Mean-gradient auxiliary preparation publishes its provenance and hands off
+the chemistry worker on the compute lane before the gradient exchange, rather
+than draining the engine for that metadata update. These remain synchronous
+public CPU operators; their return boundaries and dynamic PP/convergence
+observations are not removed by the fixed-count scheduling contract.
+
 ## Storage classes
 
 1. **Mesh-sized fields:** stencil samples, offsets, face/region selections,

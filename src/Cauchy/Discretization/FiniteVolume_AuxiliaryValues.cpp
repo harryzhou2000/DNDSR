@@ -162,7 +162,6 @@ namespace DNDS::Cauchy
         auto &work = *gradients._data;
         work.origin.reset();
         work.ghostsReady = false;
-        OperatorSchedule schedule(engine, stream, communication, overlap);
         const auto fillBoundary = [&]
         {
             FillMeanGradientBoundary(state, gradients, *evaluator, time,
@@ -174,6 +173,9 @@ namespace DNDS::Cauchy
                 _data->gradient.Evaluate(state.PhysicalField(iField), work.boundary[iField], gradients.fields[iField], work.vectors[iField], region);
         };
         std::optional<AuxiliaryPreparation> preparation;
+        // These closures and the retained preparation must outlive exceptional
+        // schedule retirement as well as ordinary worker completion.
+        OperatorSchedule schedule(engine, stream, communication, overlap);
         try
         {
             auto means = schedule.Begin(work.meanHalo);
@@ -184,10 +186,8 @@ namespace DNDS::Cauchy
             schedule.Await(means);
             schedule.Submit([&]
                             { gradient(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All); });
-            stage([&]
-                  { schedule.Join(); });
-            stage([&]
-                  {
+            schedule.Submit([&]
+                            {
                 work.origin.emplace(state.NumericAlias()); work.time = time;
                 work.sourceGhost.clear(); work.ownedVersion.clear(); work.ghostVersion.clear(); work.ownedShape.clear(); work.ghostShape.clear();
                 for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
@@ -196,16 +196,14 @@ namespace DNDS::Cauchy
                     work.sourceGhost.push_back(state.PhysicalField(iField).Ghost().Version());
                     work.ownedVersion.push_back(field.Owned().Version()); work.ownedShape.push_back(field.Owned().ShapeVersion());
                     work.ghostShape.push_back(field.Ghost().ShapeVersion());
-                } });
-            // Release the boundary worker before auxiliary preparation acquires
-            // its own worker; a one-worker pool is a supported configuration.
-            evaluator.reset();
-            auto halos = schedule.Begin(work.gradientHalo);
-            stage([&]
-                  {
-                      DNDS_check_throw_info(!inputs.meanGradients, "mean gradient input is owned by this preparation call");
-                      inputs.meanGradients.Emplace(gradients);
-                      preparation.emplace(BeginAuxValues(state, output, time, workers, inputs)); });
+                }
+                // Transfer worker ownership and publish provenance in lane
+                // order. No controller read of these values is needed here.
+                evaluator.reset();
+                DNDS_check_throw_info(!inputs.meanGradients, "mean gradient input is owned by this preparation call");
+                inputs.meanGradients.Emplace(gradients);
+                preparation.emplace(BeginAuxValues(state, output, time, workers, inputs)); });
+            auto halos = schedule.BeginAfterCompute(work.gradientHalo);
             if (overlap)
                 schedule.Submit([&]
                                 { preparation->Apply(CFV::ReconstructionRegion::Core); });

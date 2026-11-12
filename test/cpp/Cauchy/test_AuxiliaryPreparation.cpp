@@ -494,15 +494,24 @@ TEST_CASE("FV uses the same queued halo dependency sequence with inline and work
     settings.numerics.reconstructionTolerance = 0;
     settings.numerics.positivity = false;
     settings.execution.overlap = true;
-    bool wbap = false;
+    int expectedDrains = 1;
     SUBCASE("fixed-count VR without a limiter") {}
     SUBCASE("fixed-count P3 VR with characteristic WBAP")
     {
-        wbap = true;
+        expectedDrains = 2;
         settings.numerics.cfv.maxOrder = 3;
         settings.numerics.cfv.intOrder = 5;
         settings.numerics.limiter = "WBAP";
         settings.numerics.characteristicLimiter = true;
+    }
+    SUBCASE("fixed-count P3 LVR with repeated neighborhood expansion")
+    {
+        expectedDrains = 3; // gradient publication, compound LVR return, FV return
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.cfv.intOrder = 5;
+        settings.numerics.limiter = "LVR";
+        settings.numerics.limitedVR.contactLayers = 2;
+        settings.numerics.limitedVR.neighborLayers = 2;
     }
     const auto equation = C::EquationSystem::Resolve(settings.equation);
     C::FiniteVolume fv(mesh, settings, equation);
@@ -520,11 +529,11 @@ TEST_CASE("FV uses the same queued halo dependency sequence with inline and work
         const auto stream = engine.CreateStream(launcher);
         fv.Evaluate(state, output, *reconstruction, *workspace, engine, stream, .25);
         // Fixed-count VR never drains between sweeps; P3 WBAP never drains
-        // between orders. The only drains are the public return and, for WBAP,
-        // the current CPU characteristic-preparation boundary before all orders.
+        // between orders. LVR does not drain between neighborhood layers.
+        // Only the declared public/CPU preparation boundaries count here.
         // Portable MPI producer-prefix observations are a separate backend
         // contract and are deliberately not disguised as full-engine drains.
-        CHECK(std::count(launcher->trace.begin(), launcher->trace.end(), "drain") == (wbap ? 2 : 1));
+        CHECK(std::count(launcher->trace.begin(), launcher->trace.end(), "drain") == expectedDrains);
         std::vector<DNDS::real> values;
         {
             const auto read = residual.Owned().Read();

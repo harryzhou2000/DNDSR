@@ -130,6 +130,10 @@ namespace DNDS::Cauchy
                 _compute.WaitFor(std::move(event));
             events.clear();
         }
+        void Await(Runtime::StreamEvent event) const
+        {
+            _compute.WaitFor(std::move(event));
+        }
         template <class Operation>
         void AwaitPublished(Operation &&operation) const
         {
