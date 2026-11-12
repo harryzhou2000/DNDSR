@@ -5,6 +5,14 @@ Cauchy uses one setup-only resolver for `initialState`, prescribed boundary
 `Physics/StateInput`; the Cauchy adapter binds equation component ordering and
 uses its EOS evaluator. No Euler evaluator is linked into the production path.
 
+The canonical perfect-gas `doubleMachBottom` boundary resolves its physical
+piece at each point: world x < 1/6 supplies the time-dependent DMR analytic
+state; x >= 1/6 uses slip reflection. The equation-state producer supports both
+reconstruction face traces and exterior flux/VR targets. Its approximate
+Jacobian freezes the prescribed piece and reflects the wall piece. Selection
+uses the same world-coordinate predicate for posed frames, without copying
+boundary metadata inside the point loop.
+
 ## Representations and units
 
 ```json

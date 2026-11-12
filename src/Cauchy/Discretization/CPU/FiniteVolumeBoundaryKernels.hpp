@@ -28,6 +28,10 @@ namespace DNDS::Cauchy::CPU
         CFV::ReconstructionBasisEvaluationView basis;
         index componentNumber = 0;
         bool polynomial = false, usePointRows = false, repairRANS = true;
+        /// Point-local repair of an unlimited VR iterate before physical BC
+        /// evaluation. Never modifies means or reconstruction coefficients.
+        bool allowPointFallback = false;
+        ThermalView thermal{};
         /// Resolved by the operator. Mirroring is a VR-only choice, not a
         /// property of polynomial sampling or of the downstream CFV kernel.
         BoundaryPointStateKind stateKind = BoundaryPointStateKind::FaceTrace;

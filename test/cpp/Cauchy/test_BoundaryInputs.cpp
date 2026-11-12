@@ -11,6 +11,46 @@ namespace R = DNDS::Runtime;
 using I = DNDS::index;
 static DNDS::MPIInfo mpi;
 
+TEST_CASE("DMR bottom producer resolves prescribed and reflecting pieces in world coordinates")
+{
+    C::DomainSettings settings;
+    settings.boundaries["4"].kind = "doubleMachBottom";
+    settings.boundaries["4"].profile.kind = "doubleMachReflection";
+    const auto equation = C::EquationSystem::Resolve(settings.equation);
+    C::BoundarySystem boundaries(settings.boundaries, equation);
+    const auto &condition = boundaries.At(4);
+    CHECK_NOTHROW(condition.ValidateEquationProducer());
+    C::BoundaryPointOperator boundary(equation);
+    auto evaluator = equation.MakePointEvaluator({}, {});
+    const auto inside = equation.Gas().Conservative({2, 3, -4, 1, 5});
+    const C::Vector3 normal{0, -1, 0};
+    for (const auto kind : {C::BoundaryPointStateKind::FaceTrace, C::BoundaryPointStateKind::ExteriorState})
+        for (double x : {.1, 1. / 6, .3})
+        {
+            CAPTURE(x);
+            CAPTURE(int(kind));
+            std::vector<DNDS::real> point(inside.begin(), inside.end());
+            REQUIRE(boundary.TryEvaluate(point, condition, 0, normal, {x, 0, 0}, evaluator, {}, 0, kind));
+            const auto expected = x < 1. / 6
+                                      ? C::FlowState{8, 57.157676649772960, -33, 0, 563.5}
+                                      : equation.Gas().Conservative({2, 3, kind == C::BoundaryPointStateKind::FaceTrace ? 0. : 4., 1, 5});
+            for (int j = 0; j < 5; ++j)
+                CHECK(point[j] == doctest::Approx(expected[j]).epsilon(1e-12));
+            Eigen::MatrixXd jacobian(5, 5);
+            REQUIRE(boundary.TryApproximateExteriorJacobian(jacobian, condition,
+                                                            std::vector<DNDS::real>(inside.begin(), inside.end()),
+                                                            normal, {x, 0, 0}, {}, 0));
+            for (int i = 0; i < 5; ++i)
+                for (int j = 0; j < 5; ++j)
+                    CHECK(jacobian(i, j) == (x < 1. / 6 || i != j ? 0. : i == 2 ? -1.
+                                                                                : 1.));
+        }
+    C::RigidMotionSettings motion;
+    motion.translationVelocity = {1, 0, 0};
+    const auto frame = C::RigidMotion(motion, 2).At(.2);
+    CHECK(condition.KindAt({}, DNDS::OptionalRef<const C::RigidFrame>(frame)) == C::BoundaryKind::SlipWall);
+}
+
 TEST_CASE("VR wall target selection preserves the selected physical boundary equation")
 {
     const auto mesh = CFVTest::CartesianHexes(mpi, 3);

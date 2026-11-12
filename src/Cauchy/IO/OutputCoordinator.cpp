@@ -77,7 +77,6 @@ namespace DNDS::Cauchy
             : simulation(simulationIn), config(configIn), mpi(mpiIn),
               started(startedIn), output(config.Output()), time(config.Time()),
               domains(index(config.Domains().size())), plan(output, domains),
-              logger(std::make_shared<OperationalLogger>(output, mpi.rank)),
               progress(size_t(domains)), baselines(size_t(domains), 0),
               internalCheckpointInterval(output.implicit.checkpointInterval),
               internalVisualizationInterval(
@@ -85,6 +84,14 @@ namespace DNDS::Cauchy
                       ? output.implicit.checkpointInterval
                       : output.implicit.visualizationInterval)
         {
+            // A dislocated domain root need not be world rank zero. Let each
+            // actual history writer print its own domain's progress without
+            // gathering residuals or adding collectives to the output path.
+            bool domainProgressWriter = false;
+            for (index iDomain = 0; iDomain < domains; ++iDomain)
+                domainProgressWriter |= simulation.Local(iDomain) &&
+                                        simulation.Placement().DomainRank(iDomain) == 0;
+            logger = std::make_shared<OperationalLogger>(output, mpi.rank, domainProgressWriter);
             const auto &restored = simulation.RestoredOutputController();
             continueOutput = restored && restored->is_object() &&
                              restored->value("prefix", std::string{}) ==
@@ -245,7 +252,7 @@ namespace DNDS::Cauchy
                   {
                       domain.SetProgressObserver(
                           [this, iDomain](const NonlinearProgress &entry)
-                          { progress[size_t(iDomain)]->CaptureIteration(entry); });
+                          { progress[size_t(iDomain)]->CaptureIteration(entry, MPI_Wtime() - started); });
                       domain.SetQuiescentObserver(
                           [this, iDomain](const NonlinearSolveState &nonlinear)
                           { InternalSnapshot(iDomain, nonlinear); }); });
@@ -254,6 +261,12 @@ namespace DNDS::Cauchy
         void InternalSnapshot(index iDomain,
                               const NonlinearSolveState &nonlinear)
         {
+            // Already at a quiescent nonlinear boundary. Emit captured progress
+            // even when internal snapshots are disabled; otherwise a long
+            // steady solve remains silent until its entire step completes.
+            // This local sink operation adds no rank agreement/reduction.
+            // Any exception escapes to the production abort handler.
+            progress[size_t(iDomain)]->FlushIterations();
             const bool ditr = time.method == "ditr";
             const index completedIteration =
                 ditr || nonlinear.terminal ? nonlinear.iteration

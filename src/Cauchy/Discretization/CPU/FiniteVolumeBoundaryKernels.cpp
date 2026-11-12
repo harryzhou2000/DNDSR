@@ -1,6 +1,7 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumeBoundaryKernels.hpp"
 #include "Cauchy/Discretization/RANSReconstruction.hpp"
 #include "CFV/CPU/ReconstructionBasisKernels.hpp"
+#include "Physics/EvaluationStatus.hpp"
 
 namespace DNDS::Cauchy::CPU
 {
@@ -53,22 +54,41 @@ namespace DNDS::Cauchy::CPU
                                 row[j * request.modes + mode] * basis(0, mode);
                 }
             }
+            // PP POLICY -- VR's warm iterate is deliberately unlimited. Like
+            // Euler's FBoundary -> CompressRecPart, repair only the temporary
+            // boundary input before evaluating a physical state. The flux
+            // polynomial's beta limiter runs separately, after reconstruction.
+            // Species bounds are not a polynomial condition: the thermal test
+            // uses temporary clipped composition, as in pointwise RHS physics.
+            if (request.polynomial && request.allowPointFallback &&
+                !request.thermal.ClippedReferenceAdmissible(point))
+                point = cellMean;
             if (request.rans.components && request.repairRANS)
                 RANSReconstructionView{request.rans.kind, request.rans.components}.RepairPoint(
                     request.ransMeans[sample.cell],
                     point.data() + request.ransFirst);
             {
-                if (const auto status = boundary.TryEvaluate(
-                        point, condition, sample.interfaceRow, sample.normal,
-                        sample.location, evaluator, request.frame, request.time,
-                        request.stateKind,
-                        OptionalRef<const std::vector<real>>(cellMean),
-                        request.rans.components == 2
-                            ? request.wallDistance.cellMean(sample.cell, 0)
-                            : 0,
-                        request.incoming);
-                    !status)
-                    return status;
+                const auto evaluate = [&]
+                { return boundary.TryEvaluate(
+                      point, condition, sample.interfaceRow, sample.normal,
+                      sample.location, evaluator, request.frame, request.time,
+                      request.stateKind,
+                      OptionalRef<const std::vector<real>>(cellMean),
+                      request.rans.components == 2
+                          ? request.wallDistance.cellMean(sample.cell, 0)
+                          : 0,
+                      request.incoming); };
+                auto status = evaluate();
+                if (!status && request.polynomial && request.allowPointFallback &&
+                    Physics::AllowsMeanFallback(status))
+                {
+                    // A reported EOS/T failure may retry from the admissible
+                    // mean; malformed BC requests/backend failures must escape.
+                    point = cellMean;
+                    status = evaluate();
+                }
+                if (!status)
+                    return status.At(sample.cell, iPoint);
             }
 #ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
             // Preserve Euler's fixUL=true reconstruction target. RHS exterior

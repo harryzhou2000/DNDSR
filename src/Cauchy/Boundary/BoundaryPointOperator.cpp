@@ -74,11 +74,12 @@ namespace DNDS::Cauchy
             return {};
         }
 
+        const auto kind = condition.KindAt(location, OptionalRef<const RigidFrame>(frame));
         const int ransComponents = _equation.HasRANS()
                                        ? _equation.RANS().ComponentNumber()
                                        : 0;
         const bool twoEquationWall =
-            ransComponents == 2 && condition.kind == BoundaryKind::NoSlipWall;
+            ransComponents == 2 && kind == BoundaryKind::NoSlipWall;
         if (!(
                 !twoEquationWall ||
                 (mean && index(mean->size()) == _components &&
@@ -107,13 +108,13 @@ namespace DNDS::Cauchy
 
         if (!ransComponents)
             return {};
-        if (condition.kind == BoundaryKind::TotalConditionInlet)
+        if (kind == BoundaryKind::TotalConditionInlet)
         {
             for (int j = 0; j < ransComponents; ++j)
                 point[size_t(_ransFirst + j)] = flow[0] * condition.totalRANSPrimitive[j];
             return {};
         }
-        if (condition.kind == BoundaryKind::NoSlipWall)
+        if (kind == BoundaryKind::NoSlipWall)
         {
             std::array<real, 2> target{};
             if (twoEquationWall)
@@ -155,14 +156,13 @@ namespace DNDS::Cauchy
             }
             return {};
         }
-        if (condition.kind == BoundaryKind::Farfield ||
-            condition.kind == BoundaryKind::Analytic)
+        if (kind == BoundaryKind::Farfield || kind == BoundaryKind::Analytic)
         {
             const auto grid = frame.GridVelocity(location);
             real speed = 0;
             for (int d = 0; d < 3; ++d)
                 speed += (inside[1 + d] / inside[0] - grid[d]) * normal[d];
-            if (condition.kind == BoundaryKind::Analytic || speed <= 0)
+            if (kind == BoundaryKind::Analytic || speed <= 0)
                 for (int j = 0; j < ransComponents; ++j)
                     point[size_t(_ransFirst + j)] = condition.prescribedRANS[j];
         }
@@ -198,14 +198,14 @@ namespace DNDS::Cauchy
             for (int row = 0; row < 5; ++row)
                 output(_flowFirst + row, _flowFirst + column) =
                     derivative[size_t(row + 5 * column)];
-        const bool wall = condition.kind == BoundaryKind::SlipWall ||
-                          condition.kind == BoundaryKind::NoSlipWall;
+        const auto kind = condition.KindAt(location, OptionalRef<const RigidFrame>(frame));
+        const bool wall = kind == BoundaryKind::SlipWall || kind == BoundaryKind::NoSlipWall;
         if (!wall)
             return {};
         for (index j = 0; j < _components; ++j)
             if (j < _flowFirst || j >= _flowFirst + 5)
                 output(j, j) = 1;
-        if (condition.kind == BoundaryKind::NoSlipWall &&
+        if (kind == BoundaryKind::NoSlipWall &&
             _equation.HasRANS())
             for (int j = 0; j < _equation.RANS().ComponentNumber(); ++j)
                 output(_ransFirst + j, _ransFirst + j) = -1;

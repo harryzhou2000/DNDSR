@@ -9,6 +9,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(kind == BoundaryKind::Extrapolate || kind == BoundaryKind::Farfield || kind == BoundaryKind::TotalConditionInlet ||
                                   kind == BoundaryKind::SlipWall || kind == BoundaryKind::NoSlipWall ||
                                   kind == BoundaryKind::Interface ||
+                                  (kind == BoundaryKind::DoubleMachBottom && hasPerfectGasState) ||
                                   (kind == BoundaryKind::Analytic &&
                                    (profile.kind == "constant" || hasPerfectGasState)),
                               "requested equation-state boundary producer is not connected");
@@ -20,9 +21,10 @@ namespace DNDS::Cauchy
                                                  const Vector3 &normal, const Vector3 &point, real time,
                                                  OptionalRef<const RigidFrame> frame, bool exterior) noexcept
         {
-            if (condition.kind == BoundaryKind::Extrapolate)
+            const auto kind = condition.KindAt(point, frame);
+            if (kind == BoundaryKind::Extrapolate)
                 return inside;
-            if (condition.kind == BoundaryKind::TotalConditionInlet)
+            if (kind == BoundaryKind::TotalConditionInlet)
             {
                 if (condition.prescribedFractions.size() != size_t(rhoY.nSpecies) || !(inside[0] > 0))
                     return NumericalStatus{NumericalError::InvalidState, 4, -1};
@@ -50,7 +52,7 @@ namespace DNDS::Cauchy
                                                    direction[1] * speed, direction[2] * speed, state.pressure},
                                                   rhoY, state.temperature);
             }
-            if (condition.kind == BoundaryKind::Analytic && condition.profile.kind != "constant")
+            if (kind == BoundaryKind::Analytic && condition.profile.kind != "constant")
             {
                 DNDS_assert_info(condition.hasPerfectGasState && !rhoY.nSpecies,
                                  "nonconstant analytic boundary requires a perfect-gas flow5 profile");
@@ -59,7 +61,7 @@ namespace DNDS::Cauchy
                                                 frame ? frame.Get()->WorldPoint(point) : point, time);
                 return frame ? frame.Get()->LocalState(value) : value;
             }
-            if (condition.kind == BoundaryKind::Farfield || condition.kind == BoundaryKind::Analytic)
+            if (kind == BoundaryKind::Farfield || kind == BoundaryKind::Analytic)
             {
                 if (!(condition.prescribedFractions.size() == size_t(rhoY.nSpecies)))
                     return NumericalStatus{NumericalError::InvalidState, 1, -1};
@@ -70,7 +72,7 @@ namespace DNDS::Cauchy
                     for (int d = 0; d < 3; ++d)
                         primitive[1 + d] = velocity[d];
                 }
-                if (condition.kind == BoundaryKind::Farfield)
+                if (kind == BoundaryKind::Farfield)
                 {
                     PointProperties properties;
                     if (const auto status = evaluator.TryEvaluate(inside, rhoY, 0, {}, properties); !status)
@@ -99,14 +101,14 @@ namespace DNDS::Cauchy
                     rhoY[k] = primitive[0] * condition.prescribedFractions[k];
                 return evaluator.TryFromPrimitive(primitive, rhoY);
             }
-            if (!(condition.kind == BoundaryKind::SlipWall || condition.kind == BoundaryKind::NoSlipWall))
+            if (!(kind == BoundaryKind::SlipWall || kind == BoundaryKind::NoSlipWall))
                 return NumericalStatus{NumericalError::InvalidState, 2, -1};
             const auto wall = condition.WallVelocityAt(point, frame);
             const real rho = inside[0], factor = exterior ? 2 : 1;
             if (!(rho > 0))
                 return NumericalStatus{NumericalError::InvalidState, 3, -1};
             Vector3 velocity{inside[1] / rho, inside[2] / rho, inside[3] / rho}, target = velocity;
-            if (condition.kind == BoundaryKind::SlipWall)
+            if (kind == BoundaryKind::SlipWall)
             {
                 real speed = 0;
                 for (int d = 0; d < 3; ++d)
@@ -117,7 +119,7 @@ namespace DNDS::Cauchy
             else
                 for (int d = 0; d < 3; ++d)
                     target[d] += factor * (wall[d] - velocity[d]);
-            if (condition.kind == BoundaryKind::NoSlipWall && condition.isothermal)
+            if (kind == BoundaryKind::NoSlipWall && condition.isothermal)
             {
                 PointProperties properties;
                 if (const auto status = evaluator.TryEvaluate(inside, rhoY, 0, {}, properties); !status)

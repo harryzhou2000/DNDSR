@@ -272,6 +272,14 @@ Reconstruction optionally chooses a lower-order admissible reference before
 compression. This order fallback can discard higher modes in **all** blocks,
 as in Euler; it is distinct from multiplying the retained polynomial by beta.
 The unlimited VR warm guess remains unchanged; PP updates the flux polynomial.
+Before physical reconstruction BC evaluation, the warm polynomial's sampled
+point is checked separately when positivity or face fallback is enabled.
+An inadmissible temporary point falls back to the cell mean, following Euler's
+`FBoundary -> CompressRecPart` role. The thermal predicate uses a temporary
+clipped composition; raw species coefficients remain unchanged. A reported
+EOS/T failure may also retry from the mean; invalid BC requests and backend
+failures remain errors. This boundary input repair does not replace beta
+limiting, alter the warm guess or repair a mean state.
 Thermal admissibility at sampled points is not a proof of positivity at every
 point inside a cell.
 

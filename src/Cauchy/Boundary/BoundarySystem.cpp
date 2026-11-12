@@ -77,6 +77,15 @@ namespace DNDS::Cauchy
             return gas.Conservative({source.density, source.velocity[0], source.velocity[1], source.velocity[2], normalSpeed > 0 ? far.pressure : local.pressure});
         }
     }
+    BoundaryKind BoundaryCondition::KindAt(const Vector3 &point,
+                                           OptionalRef<const RigidFrame> frame) const noexcept
+    {
+        if (kind != BoundaryKind::DoubleMachBottom)
+            return kind;
+        return (frame ? frame->WorldPoint(point) : point)[0] < 1. / 6
+                   ? BoundaryKind::Analytic
+                   : BoundaryKind::SlipWall;
+    }
     Vector3 BoundaryCondition::WallVelocityAt(
         const Vector3 &point, OptionalRef<const RigidFrame> frame) const
     {
@@ -93,7 +102,7 @@ namespace DNDS::Cauchy
         if (kind == BoundaryKind::DoubleMachBottom)
         {
             auto condition = *this;
-            condition.kind = (frame ? frame.Get()->WorldPoint(point) : point)[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
+            condition.kind = KindAt(point, frame);
             return condition.FaceValue(gas, inside, normal, point, time, frame);
         }
         if (kind == BoundaryKind::Farfield)
@@ -133,7 +142,7 @@ namespace DNDS::Cauchy
         if (kind == BoundaryKind::DoubleMachBottom)
         {
             auto condition = *this;
-            condition.kind = (frame ? frame.Get()->WorldPoint(point) : point)[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
+            condition.kind = KindAt(point, frame);
             return condition.Exterior(gas, inside, normal, point, time, frame);
         }
         if (kind == BoundaryKind::Farfield)
@@ -209,7 +218,7 @@ namespace DNDS::Cauchy
         if (kind == BoundaryKind::DoubleMachBottom)
         {
             auto condition = *this;
-            condition.kind = (frame ? frame.Get()->WorldPoint(point) : point)[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
+            condition.kind = KindAt(point, frame);
             return condition.ExteriorJacobian(gas, inside, normal, point, time, frame);
         }
         for (int j = 0; j < 5; ++j)
@@ -322,9 +331,7 @@ namespace DNDS::Cauchy
         (void)inside;
         // Euler's linMode=1 returns homogeneous wall reflection before its
         // thermal/scalar wall treatment, and zero for prescribed/open BCs.
-        auto wallKind = kind;
-        if (kind == BoundaryKind::DoubleMachBottom)
-            wallKind = (frame ? frame.Get()->WorldPoint(point) : point)[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
+        const auto wallKind = KindAt(point, frame);
         if (wallKind != BoundaryKind::SlipWall && wallKind != BoundaryKind::NoSlipWall)
             return {};
         std::array<real, 25> result{};

@@ -49,6 +49,9 @@ namespace DNDS::Cauchy
         request.logicalFirst = logicalFirst.HostView();
         request.componentNumber = state.ComponentNumber();
         request.polynomial = bool(basisRead);
+        request.allowPointFallback = owner->settings.numerics.positivity ||
+                                     owner->settings.numerics.faceFallback;
+        request.thermal = thermal.View();
         if (basisRead)
             request.basis = basisRead->EvaluationView();
         request.rans = ransModel

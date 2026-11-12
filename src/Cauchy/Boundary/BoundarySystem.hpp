@@ -49,6 +49,11 @@ namespace DNDS::Cauchy
         /// Validate the equation-state producer at operator setup. The legacy
         /// perfect-gas methods retain their existing larger profile set.
         void ValidateEquationProducer() const;
+        /// Resolve spatially composite boundaries without copying descriptor
+        /// storage. DMR prescribes the analytic state at world x < 1/6 and
+        /// applies slip reflection elsewhere, including the junction itself.
+        BoundaryKind KindAt(const Vector3 &point,
+                            OptionalRef<const RigidFrame> frame = {}) const noexcept;
         /// EOS-aware face/exterior state. rhoY is preallocated Ns-1 point
         /// scratch and is replaced only when the BC changes composition or
         /// density. No exchange, Array access, worker acquisition or allocation.

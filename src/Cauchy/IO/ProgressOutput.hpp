@@ -56,7 +56,11 @@ namespace DNDS::Cauchy
         int _globalRank = 0;
 
     public:
-        OperationalLogger(const OutputSettings &settings, int globalRank);
+        /// Domain progress writers may be nonzero world ranks. Grant their
+        /// console sink explicitly; this does not change per-rank file naming
+        /// or perform a collective. Progress cadence remains controller-owned.
+        OperationalLogger(const OutputSettings &settings, int globalRank,
+                          bool domainProgressWriter = false);
         ~OperationalLogger();
         void Info(const std::string &message);
         void Warn(const std::string &message);
@@ -121,7 +125,9 @@ namespace DNDS::Cauchy
                                  std::shared_ptr<OperationalLogger> logger,
                                  std::optional<CsvLogPosition> resume = std::nullopt);
         void BeginAttempt(ProgressLocation location) { _attempt = location; }
-        void CaptureIteration(const NonlinearProgress &progress);
+        /// Capture the frontend's elapsed wall time at observation, not the
+        /// attempt-start time or the later sink-flush time.
+        void CaptureIteration(const NonlinearProgress &progress, real wall);
         void FlushIterations();
         void StageEnd(ProgressLocation location, const NonlinearIterationReport &report);
         void StepEnd(ProgressLocation location, const AcceptedStepProgress &progress, bool forceHistory = false,

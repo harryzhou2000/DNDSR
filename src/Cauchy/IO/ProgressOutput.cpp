@@ -72,10 +72,12 @@ namespace DNDS::Cauchy
     }
     void ProgressHistory::Flush() { _log.Flush(); }
 
-    OperationalLogger::OperationalLogger(const OutputSettings &settings, int globalRank) : _globalRank(globalRank)
+    OperationalLogger::OperationalLogger(const OutputSettings &settings, int globalRank,
+                                         bool domainProgressWriter) : _globalRank(globalRank)
     {
         std::vector<spdlog::sink_ptr> sinks;
-        if (globalRank == 0 && settings.consoleInterval > 0)
+        if ((globalRank == 0 || domainProgressWriter) &&
+            (settings.consoleInterval > 0 || settings.implicit.consoleInterval > 0))
         {
             if (settings.consoleColor == "never")
                 sinks.push_back(std::make_shared<spdlog::sinks::stdout_sink_mt>());
@@ -207,7 +209,7 @@ namespace DNDS::Cauchy
             message << " iteration " << location.iteration;
         message << " residual " << Json(progress.residual).dump()
                 << " target " << progress.residualTargetRatio << " CFL " << progress.pseudoCFL
-                << " VR " << progress.reconstructionIterations << ':';
+                << " wall " << location.wall << " VR " << progress.reconstructionIterations << ':';
         if (progress.reconstructionUpdateMeasured)
             message << progress.reconstructionRelativeUpdate;
         else
@@ -218,11 +220,12 @@ namespace DNDS::Cauchy
             message << (progress.converged ? " converged" : " capped");
         _logger->Info(message.str());
     }
-    void ProgressOutputController::CaptureIteration(const NonlinearProgress &progress)
+    void ProgressOutputController::CaptureIteration(const NonlinearProgress &progress, real wall)
     {
         if (!_writer)
             return;
         auto location = _attempt;
+        location.wall = wall;
         location.stage = progress.stage;
         location.coupledStage = progress.coupledStage;
         location.iteration = progress.iteration;

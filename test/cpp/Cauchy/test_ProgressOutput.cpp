@@ -67,9 +67,9 @@ TEST_CASE("One progress controller constructs iteration stage and step CSV rows"
         progress.residualTargetRatio = .5;
         progress.pseudoCFL = 7;
         progress.iteration = 1; // filtered by the interval
-        output.CaptureIteration(progress);
+        output.CaptureIteration(progress, 2.01);
         progress.iteration = 2;
-        output.CaptureIteration(progress);
+        output.CaptureIteration(progress, 2.02);
         output.FlushIterations();
 
         C::NonlinearIterationReport stage;
@@ -112,6 +112,7 @@ TEST_CASE("One progress controller constructs iteration stage and step CSV rows"
     CHECK(iteration.at("stage") == "1");
     CHECK(iteration.at("coupled_stage") == "0");
     CHECK(iteration.at("iteration") == "2");
+    CHECK(std::stod(iteration.at("wall")) == doctest::Approx(2.02));
     CHECK(iteration.at("attempt") == "1");
     CHECK(iteration.at("status") == "0");
     CHECK(iteration.at("res_rho") == "2.00000000e+00");

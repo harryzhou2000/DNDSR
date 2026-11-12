@@ -42,6 +42,18 @@ nonnegative stage denotes a stage end. Empty cells mean that a quantity does
 not apply; they are not serialized as false zero. Console messages and CSV rows
 are constructed by the same `ProgressOutputController` reports.
 
+Each domain's communicator root writes its history and console progress.
+In dislocated placement this can be a nonzero world rank, so the output
+coordinator explicitly enables its local console sink. World rank zero also
+retains its operational logger. No residual gathering or new collective is
+needed for printing. Either the step or implicit console interval can enable
+the sink; their individual cadences still control which records are printed.
+Monitoring must read all numbered CSV segments, not only the initial file.
+Iteration `wall` records observation time, not attempt start or flush time.
+Captured rows are emitted at each existing quiescent nonlinear boundary even
+if internal checkpoints/visualizations are disabled. This local publication
+adds no collective; production sink exceptions propagate to the abort handler.
+
 ## Controls
 
 The main controls are:
