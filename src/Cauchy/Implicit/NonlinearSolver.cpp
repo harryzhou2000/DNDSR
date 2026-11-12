@@ -501,7 +501,7 @@ namespace DNDS::Cauchy
                            { data.discrete.PrepareJacobian(
                                  active->state, data.auxiliary,
                                  data.inversePseudoTime, *data.problem,
-                                 {active->mass, active->rhsScale, false,
+                                 {active->mass, active->rhsScale, data.settings.roeDissipation,
                                   active->selection.Indices()},
                                  active->time, data.workers,
                                  FiniteVolume::JacobianContext{*data.reconstruction,
@@ -731,7 +731,7 @@ namespace DNDS::Cauchy
                 {
                     const NonlinearDetail::PhaseTimer timer(profile, NonlinearProfile::Jacobian);
                     data.Stage([&] { data.discrete.PrepareJacobian(state, data.auxiliary, data.inversePseudoTime, *data.problem,
-                        {mass, rhsScale, false, selection.Indices()}, time, data.workers,
+                        {mass, rhsScale, data.settings.roeDissipation, selection.Indices()}, time, data.workers,
                         FiniteVolume::JacobianContext{*data.reconstruction, *data.workspace}); });
                 }
                 {
