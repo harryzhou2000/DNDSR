@@ -191,6 +191,17 @@ Interface and prescribed targets remain frozen. Component selection projects
 the fully composed matrix, rather than dropping intermediate couplings before
 the boundary chain rule.
 
+`implicit.boundaryJacobian="eulerScalar"` is an opt-in comparison policy for
+scalar dissipation (`roeDissipation=false`). It retains only the boundary
+spectral diagonal, as in Euler's `LUSGSMatrixInit` when `useRoeJacobian=false`,
+and omits the exterior-state chain rule for every equation component. It
+does not change boundary values, reconstruction, RHS, interior face blocks,
+source blocks or Roe-mode linearization. The default `"physical"` retains
+the full approximation described above. Coarse pMG controls inherit this
+choice unless explicitly overridden. Operator-level users can set
+`JacobianPreparation::scalarBoundaryDerivative=false` (Python:
+`scalar_boundary_derivative=False`).
+
 `AliasBoundaryInputs` can share payload across FV levels after proving identical
 reference mesh, canonical point order, geometry and boundary semantics. This is
 not interpolation and never accepts equal row counts alone. Normal validation

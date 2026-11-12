@@ -167,6 +167,7 @@ namespace DNDS::Cauchy
             updated.push_back(component);
         }
         DNDS_check_throw_info((diagonal == "entries" || diagonal == "block") && (!roeDissipation || diagonal == "block") &&
+                                  (boundaryJacobian == "physical" || boundaryJacobian == "eulerScalar") &&
                                   (jacobianAction == "assembled" || jacobianAction == "directEvaluated" || jacobianAction == "semiMatrixFree") &&
                                   !updatePolicy.empty() &&
                                   iterations > 0 && minIterations >= 0 && minIterations <= iterations && consoleInterval >= 0 &&

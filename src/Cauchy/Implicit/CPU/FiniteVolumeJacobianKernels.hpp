@@ -254,6 +254,7 @@ namespace DNDS::Cauchy::CPU
         index owned = 0, all = 0;
         int independent = 0;
         bool fullBlock = true, directChemicalSource = false, hasWalls = false;
+        bool linearizeBoundary = true;
     };
     /// Initialize mass/rotation and freeze face signals before source addition.
     NumericalStatus InitializeEquationJacobian(const EquationJacobianPreparation &) noexcept;

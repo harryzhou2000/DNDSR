@@ -107,7 +107,7 @@ namespace DNDS::Cauchy::CPU
             snapshot.flowFirst, snapshot.speciesFirst,
             request.linearization.pressureDerivative, request.linearization.pressure, std::nullopt};
         for (index entry = 0;
-             entry < request.stencil.jacobianSamples.RowCount(); ++entry)
+             request.linearizeBoundary && entry < request.stencil.jacobianSamples.RowCount(); ++entry)
         {
             const auto sample = FiniteVolumeDetail::ExpandSample(request.stencil.jacobianSamples(entry, 0), request.conditions);
             if (sample.other != UnInitIndex)
@@ -191,6 +191,13 @@ namespace DNDS::Cauchy::CPU
                 own.diagonal().array() += .5 * request.scale * weight * lambda;
                 if (sample.other == UnInitIndex)
                 {
+                    // Euler's non-Roe diagonal uses only the spectral term
+                    // above, for flow and transported components alike. Keep
+                    // the physical chain rule as the default; the drop-in
+                    // eulerScalar policy isolates this implicit approximation
+                    // without changing reconstruction, RHS or source terms.
+                    if (!request.linearizeBoundary)
+                        continue;
                     // The frozen exterior flux derivative is composed with
                     // dU_exterior/dU_inside. Interface/prescribed targets
                     // return zero; walls retain homogeneous flow reflection,

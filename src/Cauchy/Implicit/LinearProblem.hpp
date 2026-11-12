@@ -31,8 +31,8 @@ namespace DNDS::Cauchy
         SemiMatrixFree = DirectEvaluated // Compatibility spelling.
     };
     /// Integrated residual convention: A=M/dTau+physicalMass*M-residualScale*J_R.
-    /// Roe dissipation requires a full diagonal block; scalar dissipation keeps
-    /// the active Euler diagonal spectral approximation, including in block mode.
+    /// Roe dissipation requires a full diagonal block. Scalar dissipation may
+    /// additionally compose physical boundary derivatives into that diagonal.
     struct JacobianPreparation
     {
         real physicalMass = 0, residualScale = 1;
@@ -42,6 +42,11 @@ namespace DNDS::Cauchy
         /// unselected rows/columns are zero, diagonal is one.
         /// The matching RHS must be zero in those unselected equations.
         std::vector<index> updateComponents;
+        /// False reproduces Euler's non-Roe boundary approximation: retain
+        /// only 0.5*residualScale*faceArea*lambda on the diagonal, with no
+        /// exterior-state chain rule. Interior/source blocks are unchanged.
+        /// This switch does not alter Roe boundary linearization or RHS BCs.
+        bool scalarBoundaryDerivative = true;
     };
 
     /// Frozen rank-owned block rows, including off-rank operator columns. The

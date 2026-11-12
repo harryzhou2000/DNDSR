@@ -253,6 +253,7 @@ namespace DNDS::Cauchy
                                          : WallDistanceView{};
         CPU::EquationJacobianPreparation request{
             *snapshot, stencilRead.View(), metric, {_data->boundaryConditions.data(), index(_data->boundaryConditions.size())}, blockMetadata.HostView(), inputValues, radius, tau, incomingFace, d, snapshotWrite->radius.View<R::TableRows>(), boundaryMeansWrite.View<R::TableRows>(), b, {snapshot->flowFirst, snapshot->speciesFirst, snapshotWrite->derivative.View<R::TableRows>(), snapshotWrite->pressure.View<R::TableRows>(), output.HasAssembledOffDiagonal() ? std::nullopt : std::optional(snapshotWrite->means.View<R::TableRows>())}, wallValues, time, controls.residualScale, controls.physicalMass, owned, all, snapshot->independent, output.DiagonalMode() == DiagonalStorage::Block, chemical && !sourceWorkspace, bool(wallRead)};
+        request.linearizeBoundary = controls.scalarBoundaryDerivative;
         try
         {
             RequireNumericalSuccess(CPU::InitializeEquationJacobian(request), "initialize equation Jacobian");

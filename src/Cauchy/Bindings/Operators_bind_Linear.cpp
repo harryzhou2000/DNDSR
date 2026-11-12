@@ -24,6 +24,7 @@ namespace DNDS::Cauchy::Bindings
             .def_readwrite("physical_mass", &JacobianPreparation::physicalMass)
             .def_readwrite("residual_scale", &JacobianPreparation::residualScale)
             .def_readwrite("roe_dissipation", &JacobianPreparation::roeDissipation)
+            .def_readwrite("scalar_boundary_derivative", &JacobianPreparation::scalarBoundaryDerivative)
             .def_readwrite("update_components", &JacobianPreparation::updateComponents);
         py::class_<LinearProblemContext::DofSGSIteration>(
             m, "DofSGSIteration",
