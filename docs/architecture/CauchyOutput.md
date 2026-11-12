@@ -1,9 +1,12 @@
 # Cauchy output contract
 
-Cauchy resolves one immutable `OutputPlan` before stepping. The plan owns
-cadence inheritance, deterministic names, exact physical-time targets and the
-schemas advertised by manifests. Numerical operators publish typed progress;
-they do not open files or select output cadence.
+Cauchy constructs one `OutputCoordinator` before stepping. It owns the
+immutable `OutputPlan`, progress controllers, logger, append cursors and
+observer lifetime; the executable retains only timestep selection, retry and
+accepted-step control. The plan owns cadence inheritance, deterministic names,
+exact physical-time targets and the schemas advertised by manifests. Numerical
+operators publish typed progress; they do not open files or select output
+cadence.
 
 ## Artifact bundle
 
@@ -108,6 +111,13 @@ nonlinear boundary. Multi-domain exact restart therefore requires a future
 simulation-level coordinated quiescent boundary; Cauchy fails configuration
 instead of emitting a partial archive. Internal visualization remains
 available independently for every implicit domain.
+
+An internal observer is a domain-quiescent callback, not a simulation-wide
+barrier. It flushes and broadcasts only that domain's CSV cursor on the domain
+communicator. It must not enter simulation-control collectives: dislocated
+domains may reach different nonlinear iteration counts. Accepted-step and final
+snapshots are coordinated by `OutputCoordinator` after `Simulation::Advance`
+and may therefore capture all domain cursors with simulation-wide collectives.
 
 Checkpoint controller metadata includes exact-time event ordinals, resolved
 cadence and typed CSV segment cursors. Continuing with the same output prefix

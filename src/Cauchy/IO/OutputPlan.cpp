@@ -111,6 +111,13 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(!token.empty(), "checkpoint token is empty");
         return _settings.prefix + (_domains == 1 ? "-D0" : "") + token + ".h5";
     }
+    std::string OutputPlan::InternalCheckpointPath(
+        index domain, const std::string &token) const
+    {
+        DNDS_check_throw_info(!token.empty(),
+                              "internal checkpoint token is empty");
+        return DomainPrefix(domain) + token + ".h5";
+    }
     std::string OutputPlan::VisualizationPrefix(index domain, const std::string &token) const
     {
         DNDS_check_throw_info(!token.empty(), "visualization token is empty");

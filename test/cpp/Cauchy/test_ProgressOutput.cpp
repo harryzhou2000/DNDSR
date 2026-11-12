@@ -155,6 +155,8 @@ TEST_CASE("Resolved output plan centralizes names cadence inheritance and exact 
     CHECK(plan.CheckpointPath("-S12") == "/tmp/cauchy-plan/case-S12.h5");
     CHECK(plan.VisualizationPrefix(1, "-final") == "/tmp/cauchy-plan/case-D1-final");
     CHECK(plan.SnapshotManifestPath("-S12") == "/tmp/cauchy-plan/case-S12-manifest.json");
+    CHECK(plan.InternalCheckpointPath(1, "-S12_0_3") ==
+          "/tmp/cauchy-plan/case-D1-S12_0_3.h5");
     CHECK(C::OutputPlan::NextTimeOrdinal(.5, .25) == 3);
     CHECK(C::OutputPlan::TimeAt(3, .25) == .75);
 

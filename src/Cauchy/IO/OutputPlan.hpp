@@ -56,6 +56,8 @@ namespace DNDS::Cauchy
         std::string SummaryPath() const;
         std::string RunManifestPath() const;
         std::string CheckpointPath(const std::string &token) const;
+        std::string InternalCheckpointPath(index domain,
+                                           const std::string &token) const;
         std::string VisualizationPrefix(index domain, const std::string &token) const;
         std::string SnapshotManifestPath(const std::string &token) const;
         std::string InternalSnapshotManifestPath(index domain, const std::string &token) const;
