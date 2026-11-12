@@ -3,6 +3,8 @@
 #include "DNDS/Core/Errors.hpp"
 #include "DNDS/Core/Defines.hpp"
 #include "DNDS/Core/CheckedSize.hpp"
+#include "DNDS/Runtime/Execution/Device.hpp"
+#include "DNDS/Runtime/Storage/AllocationDiagnostics.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -11,24 +13,6 @@
 
 namespace DNDS::Runtime
 {
-    enum class MemorySpace
-    {
-        Host,
-        CUDA
-    };
-
-    /// Explicit placement; CUDA remains a valid descriptor in CPU-only builds,
-    /// where attempting to allocate it reports an unsupported capability.
-    struct Device
-    {
-        MemorySpace space = MemorySpace::Host;
-        int ordinal = -1;
-        static Device Host() { return {}; }
-        static Device CUDA(int ordinal) { return {MemorySpace::CUDA, ordinal}; }
-        bool operator==(Device r) const { return space == r.space && ordinal == r.ordinal; }
-        bool operator!=(Device r) const { return !(*this == r); }
-    };
-
     /// Borrowed execution stream. The caller keeps the stream alive until all
     /// leases using it have completed. No implicit host/device movement.
     /// Caller keeps the native stream alive through completion/free and reports
@@ -159,6 +143,8 @@ namespace DNDS::Runtime
         /// External writers must obey the same leases and stream dependencies.
         /// Mark pool/VMM memory explicitly; foreign MPI capability checks cannot
         /// infer allocator semantics from a shared_ptr owner.
+        /// Nonempty CUDA imports verify memory type/device ordinal once. This
+        /// does not discover capacity or replace the producer-readiness contract.
         static Allocation Import(std::shared_ptr<void> owner, size_t bytes,
                                  Device device = Device::Host(), bool writable = true, bool streamOrderedMemory = false);
         size_t Bytes() const;
@@ -292,6 +278,8 @@ namespace DNDS::Runtime
         /// This validates address alignment, not capacity or producer completion.
         bool IsAligned(size_t alignment) const;
         uint64_t Identity() const;
+        /// Add an allocation alias label without retaining storage in diagnostics.
+        void SetDiagnosticName(const std::string &name, AllocationSite site = {}) const;
         /// Weak identity pin for host tracking registries; never retains payload
         /// storage or exposes its pointer. Buffer ranges share this identity.
         std::weak_ptr<void> AccessLifetime() const { return _state; }

@@ -179,6 +179,7 @@ namespace DNDS::Runtime
 #endif
             }
             ~NativeResource() override { Release(_unpublished ? &_construction : nullptr); }
+            bool ExternalProvider() const noexcept override { return false; }
             void Published() { _unpublished = false; }
             bool StreamOrderedMemory() const noexcept override { return _asyncAllocation; }
             void *Data() const noexcept override { return _pointer; }
@@ -321,6 +322,7 @@ namespace DNDS::Runtime
         bool writable = true;
         bool streamOrderedMemory = false;
         mutable std::mutex mutex;
+        ~BufferState() { Detail::ForgetAllocation(identity); }
     };
 
     namespace
@@ -336,7 +338,21 @@ namespace DNDS::Runtime
             state->bytes = resource->Bytes();
             state->device = resource->GetDevice();
             state->streamOrderedMemory = resource->StreamOrderedMemory();
+            const bool external = resource->ExternalProvider();
             state->allocation = Detail::AllocationReference(std::move(resource));
+            if (AllocationDiagnostics::Enabled())
+            {
+                const std::weak_ptr<BufferState> weak = state;
+                Detail::TrackAllocation(state->identity, state->bytes, state->device, external, state->streamOrderedMemory, [weak]
+                                        {
+                    AllocationActivity result;
+                    if (const auto live = weak.lock())
+                    {
+                        std::lock_guard<std::mutex> lock(live->mutex);
+                        result = {live->readers, live->pendingReaders, live->pendingWriters, live->writer};
+                    }
+                    return result; });
+            }
             return state;
         }
     }
@@ -347,6 +363,20 @@ namespace DNDS::Runtime
         DNDS_check_throw_info(owner.use_count() && (!bytes || owner.get()), "runtime: imported allocation requires shared ownership");
         DNDS_check_throw_info(bytes <= UINTPTR_MAX - reinterpret_cast<uintptr_t>(owner.get()), "runtime: imported address range overflow");
         DNDS_check_throw_info(!streamOrderedMemory || device.space == MemorySpace::CUDA, "pool/VMM memory needs a device allocation");
+#ifdef DNDS_USE_CUDA
+        if (bytes && device.space == MemorySpace::CUDA)
+        {
+            // Validate foreign CUDA placement once at import, not at every view
+            // access/launch. Capacity, readiness and owner lifetime remain the
+            // foreign provider's contract; pointer attributes do not prove them.
+            DeviceScope scope(device.ordinal);
+            cudaPointerAttributes attributes{};
+            CheckCUDA(cudaPointerGetAttributes(&attributes, owner.get()));
+            DNDS_check_throw_info((attributes.type == cudaMemoryTypeDevice || attributes.type == cudaMemoryTypeManaged) &&
+                                      attributes.device == device.ordinal,
+                                  "runtime: imported CUDA pointer disagrees with declared placement");
+        }
+#endif
         auto state = MakeState(std::make_unique<SharedResource>(std::move(owner), bytes, device, nullptr, streamOrderedMemory));
         state->writable = writable;
         return Allocation(std::move(state));
@@ -408,6 +438,11 @@ namespace DNDS::Runtime
     size_t Buffer::Bytes() const { return _state ? _bytes : 0; }
     Device Buffer::GetDevice() const { return _state ? _state->device : Device::Host(); }
     uint64_t Buffer::Identity() const { return _state ? _state->identity : 0; }
+    void Buffer::SetDiagnosticName(const std::string &name, AllocationSite site) const
+    {
+        DNDS_check_throw_info(_state, "cannot name an unallocated buffer");
+        Detail::NameAllocation(_state->identity, name, site);
+    }
     uint64_t Buffer::Version() const
     {
         if (!_state)

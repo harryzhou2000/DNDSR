@@ -3,6 +3,7 @@
 #include "Cauchy/IO/OutputCoordinator.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "DNDS/MPI/Failure.hpp"
+#include "DNDS/Core/OMP.hpp"
 #include "argparse.hpp"
 
 #include <algorithm>
@@ -14,6 +15,7 @@
 /// Keep every MPI-owning solver object inside this scope, before DNDS Finalize.
 static int Run(int argc, char **argv, double started)
 {
+    DNDS::OMP::set_full_parallel_OMP();
     int status = 0;
     {
         const DNDS::MPIInfo mpi(MPI_COMM_WORLD);

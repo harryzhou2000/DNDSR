@@ -3,6 +3,7 @@
 #include "Geom/Quadratures/Quadrature.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "DNDS/Math/HardEigen.hpp"
+#include "DNDS/Core/OMP.hpp"
 
 namespace DNDS::CFV
 {
@@ -78,9 +79,11 @@ namespace DNDS::CFV
             data->faceQuadrature = R::Array<real>(R::RowLayout::Dense(count, 7));
             auto cells = data->cell.Write();
             const auto cell = cells.View<R::FixedRows<8>>();
-            tSmallCoords coords;
-            for (index iCell = 0; iCell < view.NumCellProc(); ++iCell)
+            // Immutable process-wide shape tables are fully constructed before
+            // this setup. Each worker owns coordinates and integration scratch.
+            OMP::ForSetupRows(0, view.NumCellProc(), [&](index iCell)
             {
+                tSmallCoords coords;
                 view.GetCoordsOnCell(iCell, coords);
                 const auto element = view.GetCellElement(iCell);
                 Quadrature quadrature(element, intOrder), exact(element, INT_ORDER_MAX);
@@ -116,14 +119,15 @@ namespace DNDS::CFV
                 cell(iCell, 0) = volume;
                 for (int d = 0; d < 3; ++d) cell(iCell, 1 + d) = cent[d], cell(iCell, 4 + d) = bary[d];
                 cell(iCell, 7) = scale;
-            }
+            });
             auto points = data->faceQuadrature.Write();
             const auto point = points.View<R::FixedRows<7>>();
             data->faceMean = R::Array<real>(R::RowLayout::Dense(view.NumFaceProc(), 7));
             auto meanWrite = data->faceMean.Write();
             const auto mean = meanWrite.View<R::FixedRows<7>>();
-            for (index iFace = 0; iFace < view.NumFaceProc(); ++iFace)
+            OMP::ForSetupRows(0, view.NumFaceProc(), [&](index iFace)
             {
+                tSmallCoords coords;
                 view.GetCoordsOnFace(iFace, coords);
                 const auto element = view.GetFaceElement(iFace);
                 real integratedArea = 0;
@@ -174,7 +178,7 @@ namespace DNDS::CFV
                         point(iPoint, d) = center[d], point(iPoint, d + 3) = integratedNormal[d];
                     point(iPoint, 6) = integratedArea;
                 }
-            } });
+            }); });
         data->halo.emplace(data->cells.BuildRowTransferPlan(communication));
         return FiniteVolumePlan(std::move(data));
     }

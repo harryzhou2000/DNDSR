@@ -58,6 +58,16 @@ namespace DNDS::Algebra
         explicit DofBundle(DofSpace space) : _space(std::move(space)) {}
         const DofSpace &Space() const { return _space; }
         index BlockNumber() const { return index(_blocks.size()); }
+        /// Label physical arrays for local allocation diagnostics. Shared
+        /// allocations are counted once even when several bundles name them.
+        void SetName(const std::string &prefix, Runtime::AllocationSite site = {}) const
+        {
+            for (const auto &entry : _blocks)
+            {
+                entry.second.Owned().SetName(prefix + "/" + entry.first + "/owned", site);
+                entry.second.Ghost().SetName(prefix + "/" + entry.first + "/ghost", site);
+            }
+        }
         void Validate() const
         {
             for (index i = 0; i < index(_blocks.size()); ++i)

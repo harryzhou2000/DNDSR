@@ -49,6 +49,7 @@ TEST_CASE("Domain execution contexts retain named lanes and backend lifetime")
             C::DomainExecutionContext context(settings);
             CHECK(context.Engine().Owns(context.ComputeStream()));
             CHECK(context.Engine().Owns(context.CommunicationStream()));
+            CHECK(context.Engine().Owns(context.CopyStream()));
             CHECK(context.Engine().ChecksAccess());
             retained.emplace(context);
         }
@@ -70,7 +71,7 @@ TEST_CASE("Domain execution contexts retain named lanes and backend lifetime")
         CHECK(state.load() == 3);
     }
     C::ExecutionSettings settings;
-    settings.device = "cuda";
+    settings.device = "unavailable-backend";
     CHECK_THROWS(C::DomainExecutionContext(settings));
 }
 TEST_CASE("Prepared operator records retain their owners through execution retirement")

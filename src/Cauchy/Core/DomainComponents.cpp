@@ -135,6 +135,10 @@ namespace DNDS::Cauchy
           initial(EquationDofOperations::NewVector(accepted)),
           reconstruction(problem.finiteVolume.BuildReconstructionState(trial))
     {
+        accepted.Fields().SetName(problem.name + "/accepted", DNDS_ALLOCATION_SITE());
+        trial.Fields().SetName(problem.name + "/trial", DNDS_ALLOCATION_SITE());
+        residual.Fields().SetName(problem.name + "/residual", DNDS_ALLOCATION_SITE());
+        initial.Fields().SetName(problem.name + "/initial", DNDS_ALLOCATION_SITE());
     }
 
     DomainExecution::DomainExecution(

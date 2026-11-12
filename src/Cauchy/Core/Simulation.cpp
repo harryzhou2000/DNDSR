@@ -56,6 +56,10 @@ namespace DNDS::Cauchy
           _placement(comm, _config.RankGroups()),
           _domains(size_t(_placement.DomainNumber()))
     {
+        // Opt-in before mesh/field setup. Do not disable diagnostics belonging
+        // to another live simulation in this process.
+        if (_config.Output().diagnostics.allocations)
+            Runtime::AllocationDiagnostics::Enable();
         if (_config.Time().steady || _config.Time().method != "ssprk3")
         {
             const bool ditr = !_config.Time().steady && _config.Time().method == "ditr";

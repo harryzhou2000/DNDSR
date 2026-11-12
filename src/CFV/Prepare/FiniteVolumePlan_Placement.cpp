@@ -45,11 +45,17 @@ namespace DNDS::CFV
                 : identity(source->identity), device(placement), options(requested), settings(source->settings),
                   capabilities(source->capabilities), inverseDiagnostics(source->inverseDiagnostics), n(source->n),
                   boundaryPoints(source->boundaryPoints.RowCount()),
-                  empty(R::RowLayout::Dense(0, 0), placement) {}
+                  empty(R::RowLayout::Dense(0, 0), placement)
+            {
+                // The placed publication contains sweep/limiter tables only;
+                // retaining a host preparation object is not device support.
+                capabilities.linearSystem = capabilities.localPreconditioner = false;
+            }
             template <class T>
             R::ArrayView<const T> Add(const char *name, const R::Array<T> &input, R::ExecutionContext context)
             {
                 auto array = input.To(device, context);
+                array.SetName(std::string("CFV/") + name, DNDS_ALLOCATION_SITE());
                 buffers.push_back({name, array.Storage().Bytes(), device});
                 if constexpr (std::is_same_v<T, real>)
                 {
@@ -91,7 +97,8 @@ namespace DNDS::CFV
                                       work.temporary.Width() == n * work.components &&
                                       work.temporary.Space().Same(*data->dofs),
                                   "device workspace fields invalid");
-            DNDS_check_throw_info(work.scratch.GetDevice() == data->device && work.scratch.Layout().Kind() == R::RowLayoutKind::Table && work.scratch.RowCount() == work.deviceBlocks * 6 &&
+            const index scratchRows = data->capabilities.wbap ? work.deviceBlocks * 6 : 0;
+            DNDS_check_throw_info(work.scratch.GetDevice() == data->device && work.scratch.Layout().Kind() == R::RowLayoutKind::Table && work.scratch.RowCount() == scratchRows &&
                                       work.scratch.Layout().Width() == n * work.components && work.deviceStatus.GetDevice() == data->device && work.deviceStatus.Layout().Kind() == R::RowLayoutKind::Table &&
                                       work.deviceStatus.RowCount() == 1 && work.deviceStatus.Layout().Width() == 1 &&
                                       work.devicePeriodicVectorStarts.Identity() == work.devicePeriodicIdentity &&
@@ -221,7 +228,6 @@ namespace DNDS::CFV
         DNDS_check_throw_info(false, "CUDA reconstruction is unavailable in this build");
 #endif
         Require(ReconstructionOperation::Sweep);
-        Require(ReconstructionOperation::WBAP);
         Validate();
         DNDS_check_throw_info(device.space == R::MemorySpace::CUDA && context.device == device, "device reconstruction requires explicit CUDA placement/context");
         DNDS_check_throw_info(!Settings().SORInstead, "CUDA SOR requires a logical parallel sweep design and is unsupported");
@@ -243,7 +249,8 @@ namespace DNDS::CFV
         DNDS_REC_ADD(boundaryOffsets);
         view.matrixAInvB = result->Add("matrixAInvB", *host.matrixAInvB, context);
         view.vectorAInvB = result->Add("vectorAInvB", *host.vectorAInvB, context);
-        view.secondary = result->Add("secondary", *host.secondary, context);
+        if (host.capabilities.wbap)
+            view.secondary = result->Add("secondary", *host.secondary, context);
         view.boundaryInjection = result->Add("boundaryInjection", *host.boundaryInjection, context);
 #undef DNDS_REC_ADD
         view.rotation = result->Add("neighborRotation", host.neighborRotation, context);
@@ -358,7 +365,7 @@ namespace DNDS::CFV
         const auto periodicVersion = deviceStarts.Version();
         const auto width = prototype.Width();
         return {BuildDeviceField(std::move(prototype)),
-                R::Array<real>(R::RowLayout::Dense(blocks * 6, width), Device()),
+                R::Array<real>(R::RowLayout::Dense(_device->capabilities.wbap ? blocks * 6 : 0, width), Device()),
                 components,
                 {},
                 std::move(periodic),
@@ -464,6 +471,7 @@ namespace DNDS::CFV
         FaceCharacteristicTransformRef transform, ReconstructionRegion region, const R::Array<real> *indicator,
         real threshold) const
     {
+        Require(ReconstructionOperation::WBAP);
         ValidateDeviceStream(*this, stream);
         ValidateDeviceWorkspace(_device, work, coefficients);
         DNDS_check_throw_info(order >= 1 && order <= Settings().maxOrder && std::isfinite(threshold), "invalid device limiter order/threshold");

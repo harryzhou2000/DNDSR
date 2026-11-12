@@ -15,6 +15,95 @@
 
 namespace R = DNDS::Runtime;
 
+TEST_CASE("Allocation diagnostics count shared capacity once and do not retain arrays")
+{
+    struct DiagnosticsScope
+    {
+        DiagnosticsScope() { R::AllocationDiagnostics::Enable(); }
+        ~DiagnosticsScope() { R::AllocationDiagnostics::Enable(false); }
+    } scope;
+    const auto initial = R::AllocationDiagnostics::Snapshot().liveBytes;
+    std::optional<R::Array<double>::ReadLease> pin;
+    uint64_t identity = 0;
+    {
+        R::Array<double> values(R::RowLayout::Dense(4, 5));
+        values.SetName("D0/U/owned", DNDS_ALLOCATION_SITE());
+        auto alias = values;
+        CHECK(alias.Name() == "D0/U/owned");
+        identity = values.Identity();
+        pin.emplace(values.Read());
+        const auto snapshot = R::AllocationDiagnostics::Snapshot();
+        const auto record = std::find_if(snapshot.allocations.begin(), snapshot.allocations.end(),
+                                         [identity](const auto &entry)
+                                         { return entry.identity == identity; });
+        REQUIRE(record != snapshot.allocations.end());
+        CHECK(record->bytes == 4 * 5 * sizeof(double));
+        CHECK(record->names == std::vector<std::string>{"D0/U/owned"});
+        CHECK(record->activity.readers == 1);
+        CHECK_FALSE(record->externalProvider);
+        CHECK_FALSE(record->function.empty());
+        CHECK(snapshot.liveBytes == initial + record->bytes);
+    }
+    // Only the explicit access retains the payload after both handles die.
+    CHECK(R::AllocationDiagnostics::Snapshot().liveBytes == initial + 4 * 5 * sizeof(double));
+    pin.reset();
+    const auto finished = R::AllocationDiagnostics::Snapshot();
+    CHECK(finished.liveBytes == initial);
+    CHECK(std::none_of(finished.allocations.begin(), finished.allocations.end(),
+                       [identity](const auto &entry)
+                       { return entry.identity == identity; }));
+}
+
+TEST_CASE("Whole-array residency survives projections without changing row access")
+{
+    static_assert(std::is_trivially_copyable_v<R::ArrayView<double>>);
+    static_assert(std::is_standard_layout_v<R::ArrayView<double>>);
+    R::Array<double> values(R::RowLayout::Dense(3, 2));
+    auto access = values.Write();
+    const auto view = access.View<R::FixedRows<2>, true>();
+    CHECK(view.GetDevice() == R::Device::Host());
+    CHECK(view.ConstView().GetDevice() == R::Device::Host());
+    CHECK(view.DynamicView().GetDevice() == R::Device::Host());
+    const R::ArrayView<double, false, R::FixedRows<2>> unchecked = view;
+    CHECK(unchecked.GetDevice() == R::Device::Host());
+    const auto csr = access.View<R::CSRRows>();
+    const auto padded = access.View<R::PaddedRows>();
+    CHECK(csr.GetDevice() == R::Device::Host());
+    CHECK(padded.GetDevice() == R::Device::Host());
+    CHECK_NOTHROW(R::ValidateViewDevices(R::Device::Host(), view, unchecked, csr, padded));
+    view[1][0] = 11.;
+    CHECK(csr(1, 0) == 11.);
+    CHECK(padded[1][0] == 11.);
+
+    CHECK_THROWS(view.ValidateDevice(R::Device::CUDA(0)));
+    auto unbound = view;
+    unbound.device = R::Device::Unspecified();
+    CHECK_THROWS(unbound.ValidateDevice(R::Device::Host()));
+    // Descriptor-only check: no device allocation or dereference is performed.
+    auto foreign = view;
+    foreign.device = R::Device::CUDA(1);
+    CHECK_THROWS(foreign.ValidateDevice(R::Device::CUDA(0)));
+    const R::ArrayView<const double> absent;
+    CHECK_NOTHROW(absent.ValidateDevice(R::Device::CUDA(0)));
+    const R::PairReadView<double, true, R::FixedRows<2>> pair{view.ConstView(), {}};
+    CHECK_NOTHROW(pair.ValidateDevice(R::Device::Host()));
+}
+
+TEST_CASE("Scheduled operands publish placement in borrowed whole-array views")
+{
+    R::Array<double> values(R::RowLayout::Dense(3, 2));
+    R::EagerEngine engine;
+    const auto stream = engine.CreateCPUStream();
+    R::SubmitArrays(engine, stream, [](R::ExecutionContext context, R::ArrayView<double> output)
+                    {
+                        output.ValidateDevice(context.device);
+                        for (DNDS::index iRow = 0; iRow < output.RowCount(); ++iRow)
+                            for (DNDS::index j = 0; j < output.Width(); ++j)
+                                output(iRow, j) = 10 * iRow + j; }, R::Write(values));
+    engine.Synchronize();
+    CHECK(values.Read().View()(2, 1) == 21.);
+}
+
 TEST_CASE("Kernel spans preserve signed slices and metadata publications own their storage")
 {
     static_assert(std::is_trivially_copyable_v<DNDS::SpanView<const int>>);

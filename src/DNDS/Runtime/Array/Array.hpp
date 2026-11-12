@@ -18,6 +18,15 @@ namespace DNDS::Runtime
             RowLayout rows;
             uint64_t DeviceOffsetIdentity() const { return deviceOffsets.Identity(); }
             uint64_t DeviceSizeIdentity() const { return deviceSizes.Identity(); }
+            void SetDiagnosticNames(const std::string &name, AllocationSite site) const
+            {
+                rows.Offsets().SetDiagnosticName(name + "/rowOffsets/host", site);
+                rows.Sizes().SetDiagnosticName(name + "/rowSizes/host", site);
+                if (deviceOffsets.Identity())
+                    deviceOffsets.SetDiagnosticName(name + "/rowOffsets/device", site);
+                if (deviceSizes.Identity())
+                    deviceSizes.SetDiagnosticName(name + "/rowSizes/device", site);
+            }
             std::vector<Buffer> ReleaseBuffers() const { return {deviceOffsets, deviceSizes}; }
             template <class F>
             void VisitAllocations(F &&visit) const
@@ -62,12 +71,16 @@ namespace DNDS::Runtime
             {
                 if (!rows.IsRagged())
                     return nullptr;
+                DNDS_check_throw_info(device == Device::Host() || deviceOffsets.GetDevice() == device,
+                                      "array view: CSR offsets belong to another device");
                 return device.space == MemorySpace::Host ? rows.Offsets().data() : static_cast<const size_t *>(deviceOffsets.LegacyPointer());
             }
             const size_t *Sizes(Device device) const
             {
                 if (!rows.IsPadded())
                     return nullptr;
+                DNDS_check_throw_info(device == Device::Host() || deviceSizes.GetDevice() == device,
+                                      "array view: row sizes belong to another device");
                 return device.space == MemorySpace::Host ? rows.Sizes().data() : static_cast<const size_t *>(deviceSizes.LegacyPointer());
             }
         };
@@ -86,6 +99,7 @@ namespace DNDS::Runtime
         mutable std::mutex _shapeMutex;
         mutable bool _editing = false, _shapeValid = true;
         mutable uint64_t _shapeVersion = 0;
+        mutable std::string _name;
         void CheckPublished() const
         {
             DNDS_check_throw_info(!_editing && _shapeValid, "Array shape is unpublished or failed");
@@ -100,6 +114,21 @@ namespace DNDS::Runtime
 
     public:
         using Shared = std::shared_ptr<const ArrayStorage>;
+        /// Optional diagnostic label shared by handles of this logical storage.
+        /// Naming neither mutates numerical values/shape nor acquires a lease.
+        std::string Name() const
+        {
+            std::lock_guard<std::mutex> lock(_shapeMutex);
+            return _name;
+        }
+        void SetName(std::string name, AllocationSite site = {}) const
+        {
+            std::lock_guard<std::mutex> lock(_shapeMutex);
+            _name = std::move(name);
+            _values.SetDiagnosticName(_name, site);
+            if (_layout)
+                _layout->SetDiagnosticNames(_name, site);
+        }
         std::vector<Buffer> ReleaseBuffers() const
         {
             std::lock_guard<std::mutex> lock(_shapeMutex);
@@ -278,7 +307,7 @@ namespace DNDS::Runtime
         {
             auto flat = _lease.template View<T>();
             const auto &r = _layout->rows;
-            return {flat.data, _layout->Offsets(_lease.GetDevice()), r.RowCount(), r.Width(), r.Stride(), _layout->Sizes(_lease.GetDevice()), r.Kind()};
+            return {flat.data, _layout->Offsets(_lease.GetDevice()), r.RowCount(), r.Width(), r.Stride(), _layout->Sizes(_lease.GetDevice()), r.Kind(), _lease.GetDevice()};
         }
         template <class LayoutPolicy, bool Checked = AccessBoundsChecks>
         ArrayView<Value, Checked, LayoutPolicy> View() const
@@ -369,6 +398,8 @@ namespace DNDS::Runtime
         index Rows() const { return RowCount(); }
         index RowSize(index row) const { return RequireStorage().RowSize(row); }
         Device GetDevice() const { return Storage().GetDevice(); }
+        std::string Name() const { return RequireStorage().Name(); }
+        void SetName(std::string name, AllocationSite site = {}) const { RequireStorage().SetName(std::move(name), site); }
         uint64_t Identity() const { return Storage().Identity(); }
         uint64_t Version() const { return Storage().Version(); }
         bool IsValid() const { return _storage && _storage->IsValid(); }

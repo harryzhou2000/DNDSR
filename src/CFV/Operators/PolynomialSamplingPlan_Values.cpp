@@ -24,13 +24,13 @@ namespace DNDS::CFV::Detail
             // Rebind access shape only after the prologue check; allocation,
             // physical pitch and access ownership remain with the caller.
             const R::ArrayView<const real, R::AccessBoundsChecks, R::FixedRows<width>> means{
-                mean.data, nullptr, mean.rows, width, mean.stride, nullptr, R::RowLayoutKind::Table};
+                mean.data, nullptr, mean.rows, width, mean.stride, nullptr, R::RowLayoutKind::Table, mean.device};
             const R::ArrayView<const real, R::AccessBoundsChecks, R::FixedRows<width * modes>> rec{
-                coefficients.data, nullptr, coefficients.rows, width * modes, coefficients.stride, nullptr, R::RowLayoutKind::Table};
+                coefficients.data, nullptr, coefficients.rows, width * modes, coefficients.stride, nullptr, R::RowLayoutKind::Table, coefficients.device};
             const R::ArrayView<const real, R::AccessBoundsChecks, R::FixedRows<modes>> bases{
-                basis.data, nullptr, basis.rows, modes, basis.stride, nullptr, R::RowLayoutKind::Table};
+                basis.data, nullptr, basis.rows, modes, basis.stride, nullptr, R::RowLayoutKind::Table, basis.device};
             const R::ArrayView<real, R::AccessBoundsChecks, R::FixedRows<width>> values{
-                output.data, nullptr, output.rows, width, output.stride, nullptr, R::RowLayoutKind::Table};
+                output.data, nullptr, output.rows, width, output.stride, nullptr, R::RowLayoutKind::Table, output.device};
             for (index iPoint = 0; iPoint < cells.RowCount(); ++iPoint)
             {
                 const index iCell = cells(iPoint, 0);

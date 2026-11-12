@@ -36,6 +36,8 @@ namespace DNDS::Cauchy
             EquationSystem::Resolve(equation);
         DNDS_check_throw_info(settings.mesh.dimension == 2 || settings.mesh.dimension == 3, "Cauchy geometric dimension must be 2 or 3");
         DNDS_check_throw_info(settings.execution.hostThreads >= 0 && settings.execution.hostThreads <= 1024, "invalid CPU worker count");
+        DNDS_check_throw_info(settings.execution.device != "cuda" || settings.execution.deviceOrdinal >= 0,
+                              "invalid CUDA device ordinal");
         const auto &numerics = settings.numerics;
         DNDS_check_throw_info(numerics.vrBoundaryValue == "physicalTrace" || numerics.vrBoundaryValue == "physicalMirrored",
                               "vrBoundaryValue must be physicalTrace or physicalMirrored");

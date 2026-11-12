@@ -1,4 +1,5 @@
 #include "DNDS/Algebra/DofAlgebra.hpp"
+#include "DNDS/Runtime/Execution/KernelArguments.hpp"
 #include <cuda_runtime.h>
 #include <math_constants.h>
 
@@ -68,6 +69,9 @@ namespace DNDS::Algebra::Detail
     void Launch(Runtime::ExecutionContext context, Pointwise operation, Runtime::ArrayView<T> output,
                 Runtime::ArrayView<const T> x, Runtime::ArrayView<const T> y, double a, double b)
     {
+        DNDS_check_throw_info(context.device.space == Runtime::MemorySpace::CUDA, "CUDA algebra requires a CUDA context");
+        Runtime::ValidateViewDevices(context.device, output, x, y);
+        Runtime::CheckKernelArgumentBudget<decltype(operation), decltype(output), decltype(x), decltype(y), T, T>();
         const auto count = output.rows * output.width;
         if (!count)
             return;
@@ -79,6 +83,9 @@ namespace DNDS::Algebra::Detail
     void LaunchReduction(Runtime::ExecutionContext context, Reduction operation, Runtime::ArrayView<const T> x,
                          Runtime::ArrayView<const T> y, Runtime::ArrayView<double> result)
     {
+        DNDS_check_throw_info(context.device.space == Runtime::MemorySpace::CUDA, "CUDA reduction requires a CUDA context");
+        Runtime::ValidateViewDevices(context.device, x, y, result);
+        Runtime::CheckKernelArgumentBudget<decltype(operation), decltype(x), decltype(y), decltype(result)>();
         const unsigned blocks = unsigned(std::min<size_t>(256, (result.width + 127) / 128));
         ReductionKernel<<<blocks, 128, 0, static_cast<cudaStream_t>(context.stream)>>>(operation, x, y, result);
         DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "DOF algebra reduction CUDA launch failed");

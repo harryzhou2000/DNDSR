@@ -85,6 +85,12 @@ namespace DNDS::Runtime
         }
         const T &back() const { return (*this)[_size - 1]; }
         Device GetDevice() const { return _buffer.GetDevice(); }
+        /// Diagnostic alias only; immutable metadata values/ownership do not change.
+        void SetDiagnosticName(const std::string &name, AllocationSite site = {}) const
+        {
+            if (_buffer.Identity())
+                _buffer.SetDiagnosticName(name, site);
+        }
         /// Explicit immutable publication on another backend. Copies are setup
         /// operations and complete before the returned descriptor is exposed.
         /// This copies object bytes; nested views must already reference the

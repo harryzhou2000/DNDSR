@@ -70,7 +70,7 @@ namespace DNDS::Cauchy
         uint64_t nextCheckpointTime = 0, nextVisualizationTime = 0;
         index internalCheckpointInterval = 0,
               internalVisualizationInterval = 0;
-        bool continueOutput = false, finalized = false;
+        bool continueOutput = false, finalized = false, allocationReportWritten = false;
 
         Data(Simulation &simulationIn, const SimulationConfig &configIn,
              MPIInfo mpiIn, real startedIn)
@@ -104,6 +104,7 @@ namespace DNDS::Cauchy
             InstallObservers();
             if (!continueOutput)
                 Record(0, 0, {}, false, false, true);
+            MaybeReportAllocations();
         }
 
         ~Data()
@@ -122,6 +123,28 @@ namespace DNDS::Cauchy
             for (index iDomain = 0; iDomain < domains; ++iDomain)
                 if (simulation.Local(iDomain))
                     action(iDomain, simulation.GetDomain(iDomain));
+        }
+
+        void ReportAllocations(const std::string &token)
+        {
+            // Explicit host output boundary. Rank-local files require no new
+            // agreement/gather and do not interrupt a queued numerical region.
+            const auto name = output.prefix + "-memory-R" + std::to_string(mpi.rank) + token + ".txt";
+            std::ofstream file(name);
+            DNDS_check_throw_info(bool(file), "cannot open allocation report: " + name);
+            Runtime::AllocationDiagnostics::Snapshot().Dump(file);
+            file << "Untracked provider allocations: AmgX/NCCL/internal pools (unknown bytes)\n";
+            file.flush();
+            DNDS_check_throw_info(bool(file), "failed to write allocation report: " + name);
+        }
+        void MaybeReportAllocations()
+        {
+            if (output.diagnostics.allocations && !allocationReportWritten &&
+                simulation.Step() >= uint64_t(output.diagnostics.allocationWarmupSteps))
+            {
+                ReportAllocations(OutputPlan::StepToken(simulation.Step()));
+                allocationReportWritten = true;
+            }
         }
 
         void InitializeFiles()
@@ -488,6 +511,7 @@ namespace DNDS::Cauchy
             const std::vector<PhysicalStepLimit> &limits, bool useLimits,
             bool printConsole)
         {
+            MaybeReportAllocations();
             const bool reached =
                 Record(dt, retries, limits, useLimits, printConsole, false);
             bool checkpointTimeDue = false, visualizationTimeDue = false;
@@ -533,6 +557,8 @@ namespace DNDS::Cauchy
                                   "Cauchy output coordinator finalized twice");
             finalized = true;
             WriteSnapshot("-final", true, true);
+            if (output.diagnostics.allocations)
+                ReportAllocations("-final");
             Visit([&](index iDomain, Domain &)
                   { progress[size_t(iDomain)]->Flush(); });
             logger->Flush();

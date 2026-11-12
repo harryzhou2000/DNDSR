@@ -2,6 +2,7 @@
 
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "DNDS/MPI/Failure.hpp"
+#include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 
 #include <mutex>
 
@@ -50,16 +51,28 @@ namespace DNDS::Cauchy
         };
         size_t ResolveHostThreads(const ExecutionSettings &settings)
         {
-            DNDS_check_throw_info(settings.device == "cpu",
+            DNDS_check_throw_info(settings.device == "cpu" || settings.device == "cuda",
                                   "domain execution context has no resolved backend for " + settings.device);
+            DNDS_check_throw_info(settings.hostThreads >= 0 && settings.hostThreads <= 1024,
+                                  "invalid domain host worker count");
+            DNDS_check_throw_info(settings.device != "cuda" || settings.deviceOrdinal >= 0,
+                                  "invalid domain CUDA device ordinal");
             return size_t(settings.hostThreads);
+        }
+        Runtime::ExecutionStream CreateDomainStream(Runtime::EagerEngine &engine, const ExecutionSettings &settings)
+        {
+            if (settings.device == "cpu")
+                return engine.CreateCPUStream();
+            // The engine owns the launcher/native stream. These handles share
+            // the context; they do not create a second stream lifetime system.
+            return engine.CreateStream(std::make_shared<Runtime::CUDALauncher>(settings.deviceOrdinal));
         }
     }
     struct DomainExecutionContext::Data
     {
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
         Runtime::EagerEngine engine;
-        Runtime::ExecutionStream compute, communication;
+        Runtime::ExecutionStream compute, communication, copy;
         std::mutex dependencyMutex;
         std::shared_ptr<EvaluationPublication> publication;
 
@@ -70,9 +83,12 @@ namespace DNDS::Cauchy
                      settings.checkAccess
                          ? std::make_shared<Runtime::AccessTrackingContext>()
                          : nullptr),
-              compute(engine.CreateCPUStream()),
-              communication(engine.CreateCPUStream())
+              compute(CreateDomainStream(engine, settings)),
+              communication(CreateDomainStream(engine, settings)),
+              copy(CreateDomainStream(engine, settings))
         {
+            DNDS_check_throw_info(settings.device == "cpu" || !workers,
+                                  "CUDA perfect-gas context cannot retain CPU chemistry workers");
         }
         ~Data()
         {
@@ -122,6 +138,12 @@ namespace DNDS::Cauchy
     {
         DNDS_check_throw_info(_data, "empty domain execution context");
         return _data->communication;
+    }
+
+    const Runtime::ExecutionStream &DomainExecutionContext::CopyStream() const
+    {
+        DNDS_check_throw_info(_data, "empty domain execution context");
+        return _data->copy;
     }
 
     const std::optional<Physics::Chemistry::ChemicalWorkerPool> &

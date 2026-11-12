@@ -143,6 +143,34 @@ TEST_CASE("Device-only reconstruction placement releases host payloads and remai
         for (I iComp = 0; iComp < I(coefficients.Width()); ++iComp)
             CHECK(std::isfinite(hostValues.View()(iRow, iComp)));
 }
+TEST_CASE("CUDA sweep-only publication omits limiter matrices and scratch")
+{
+    auto fixture = G::OverlapTest::BuildNativeFixture(mpi, false);
+    auto metrics = C::FiniteVolumePlan::ConstructMetrics(fixture.mesh);
+    auto host = C::VariationalReconstructionPlan::ConstructRecCoeff(
+        metrics, {}, C::ReconstructionCapabilities::ForSweeps(false));
+    auto resident = host.Place(R::Device::CUDA(0), R::ExecutionContext::CUDA(0));
+    CHECK_FALSE(resident.Capabilities().wbap);
+    CHECK_FALSE(resident.Capabilities().linearSystem);
+    CHECK_FALSE(resident.Capabilities().localPreconditioner);
+    for (const auto &buffer : resident.ResidentBuffers())
+        CHECK(buffer.name != "secondary");
+    auto mean = metrics.BuildField(R::RowLayout::Dense(0, 5), resident.Device());
+    auto coefficients = resident.BuildCoefficients(5);
+    auto work = resident.BuildWorkspace(5);
+    CHECK(work.scratch.RowCount() == 0);
+    const auto boundary = resident.PlaceBoundaryValues(host.BuildBoundaryValues(5));
+    // All zero means/coefs/boundary values need no halo traffic and must be a
+    // fixed point, including ranks with owned/ghost mesh entities.
+    resident.DoReconstructionIter(mean, coefficients, work, boundary);
+    resident.CommitReconstruction(coefficients, work);
+    const auto result = coefficients.Owned().To(R::Device::Host());
+    const auto read = result.Read();
+    for (I iRow = 0; iRow < result.RowCount(); ++iRow)
+        for (I j = 0; j < I(coefficients.Width()); ++j)
+            CHECK(read.View()(iRow, j) == 0);
+    CHECK_THROWS(resident.DoLimiterWBAP_3Order(coefficients, work, 1));
+}
 TEST_CASE("CUDA Jacobi and WBAP agree with CPU for physical DOF layouts and direct MPI split work")
 {
     auto fixture = G::OverlapTest::BuildNativeFixture(mpi, false);

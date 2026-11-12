@@ -61,7 +61,8 @@ namespace DNDS::CFV
     int VariationalReconstructionPlan::NRecDOF() const { return _data ? _data->n : PlacementNRecDOF(); }
     ReconstructionCapabilities VariationalReconstructionPlan::Capabilities() const
     {
-        return _data ? _data->capabilities : PlacementCapabilities();
+        DNDS_check_throw_info(_device || _data, "reconstruction plan is empty");
+        return _device ? PlacementCapabilities() : _data->capabilities;
     }
     void VariationalReconstructionPlan::Require(ReconstructionOperation operation) const
     {
@@ -483,7 +484,7 @@ namespace DNDS::CFV
         if (target)
             targetMatrices.emplace(Algebra::MakeEigenRowMatrices(targetValues, n, nv));
         const R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows> nextRead{
-            next.data, next.offsets, next.rows, next.width, next.stride, next.sizes, next.kind};
+            next.data, next.offsets, next.rows, next.width, next.stride, next.sizes, next.kind, next.device};
         const auto visitedMatrices = Algebra::MakeEigenRowMatrices(nextRead, n, nv);
         const auto ghostMatrices = Algebra::MakeEigenRowMatrices(ghost, n, nv);
         const bool coreFirst = region != ReconstructionRegion::All || Settings().coreFirst;

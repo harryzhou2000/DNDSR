@@ -90,7 +90,7 @@ namespace DNDS::Geom
             // Publication validates the fixed table shape. Kernel access uses
             // its stride directly, with no CSR/padded metadata dispatch.
             const Runtime::ArrayView<const index, false, Runtime::FixedRows<Width>> view{
-                segment.data, nullptr, segment.rows, Width, segment.stride, nullptr};
+                segment.data, nullptr, segment.rows, Width, segment.stride, nullptr, Runtime::RowLayoutKind::Table, segment.device};
             return view[size_t(local)];
         }
 

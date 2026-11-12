@@ -15,6 +15,29 @@ def world():
     return mpi
 
 
+def test_allocation_names_share_storage_without_registry_retention():
+    R.enable_allocation_diagnostics(True)
+    try:
+        value = R.Array(R.RowLayout.dense(17, 5))
+        value.name = "test/mean"
+        alias = value.alias()
+        assert alias.name == "test/mean"
+        alias.name = "test/alias"
+        assert value.name == "test/alias"
+        records = [a for a in R.allocation_snapshot().allocations
+                   if "test/mean" in a.names]
+        assert len(records) == 1
+        assert records[0].bytes == 17 * 5 * 8
+        identity = records[0].identity
+        del value
+        assert any(a.identity == identity for a in R.allocation_snapshot().allocations)
+        del alias
+        gc.collect()
+        assert not any(a.identity == identity for a in R.allocation_snapshot().allocations)
+    finally:
+        R.enable_allocation_diagnostics(False)
+
+
 def test_collective_checkpoint_rejects_one_rank_shape_edit_and_recovers():
     comm = MPI.COMM_WORLD
     mpi = world()

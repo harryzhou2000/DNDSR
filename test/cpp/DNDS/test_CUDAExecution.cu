@@ -11,6 +11,34 @@
 
 namespace R = DNDS::Runtime;
 
+TEST_CASE("CUDA eager operands retain whole-array placement through kernel submission")
+{
+    R::EagerEngine engine;
+    const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+    R::Array<double> source(R::RowLayout::Dense(19, 5));
+    {
+        auto write = source.Write();
+        for (DNDS::index iRow = 0; iRow < 19; ++iRow)
+            for (DNDS::index j = 0; j < 5; ++j)
+                write.View()(iRow, j) = 10 * iRow + j;
+    }
+    auto device = source.To(R::Device::CUDA(0));
+    bool checked = false;
+    R::SubmitArrays(engine, stream, [&checked](R::ExecutionContext context, auto input)
+                    {
+                        input.ValidateDevice(context.device);
+                        CHECK(input.GetDevice() == R::Device::CUDA(0));
+                        CHECK(input.ConstView().GetDevice() == context.device);
+                        CHECK_THROWS(input.ValidateDevice(R::Device::Host()));
+                        checked = true; }, R::Read(device));
+    engine.Close();
+    CHECK(checked);
+    auto result = device.To(R::Device::Host());
+    auto read = result.Read();
+    CHECK(read.View().GetDevice() == R::Device::Host());
+    CHECK(read.View()(18, 4) == 184);
+}
+
 struct Gate
 {
     std::shared_ptr<std::atomic<bool>> open = std::make_shared<std::atomic<bool>>(false);

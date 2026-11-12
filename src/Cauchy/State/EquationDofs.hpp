@@ -40,6 +40,8 @@ namespace DNDS::Cauchy
         using RowType = Runtime::RowSpan<T, Checked, Width, Runtime::DynamicExtent, component_stride>;
         ParentView parent;
         index first = 0, components = 0;
+        DNDS_DEVICE_CALLABLE Runtime::Device GetDevice() const { return parent.GetDevice(); }
+        void ValidateDevice(Runtime::Device expected) const { parent.ValidateDevice(expected); }
         DNDS_DEVICE_CALLABLE index RowCount() const { return parent.RowCount(); }
         DNDS_DEVICE_CALLABLE index ComponentNumber() const
         {
@@ -82,7 +84,7 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(HasTableLayout(), "equation block needs AoS table storage");
             // Keep the complete parent width/pitch, including component ranges
             // within wider coupled rows. An absent ghost has no parent rows.
-            return {{parent.data, nullptr, parent.rows, parent.width, parent.stride, nullptr, parent.kind}, first, components};
+            return {{parent.data, nullptr, parent.rows, parent.width, parent.stride, nullptr, parent.kind, parent.device}, first, components};
         }
     };
 
@@ -90,6 +92,11 @@ namespace DNDS::Cauchy
     struct EquationBlockPairReadView
     {
         EquationBlockArrayView<const real, Runtime::AccessBoundsChecks, Width, ParentPolicy> owned, ghost;
+        void ValidateDevice(Runtime::Device expected) const
+        {
+            owned.ValidateDevice(expected);
+            ghost.ValidateDevice(expected);
+        }
         static constexpr size_t row_width = Width, component_stride = decltype(owned)::component_stride;
         DNDS_DEVICE_CALLABLE index RowCount() const { return owned.RowCount() + ghost.RowCount(); }
         DNDS_DEVICE_CALLABLE index ComponentNumber() const { return owned.ComponentNumber(); }

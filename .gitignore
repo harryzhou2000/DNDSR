@@ -2,6 +2,7 @@
 running
 # building
 build*
+!scripts/build_amgx.py
 !docs/building.md
 !docs/presentations/*/build.sh
 *.exe

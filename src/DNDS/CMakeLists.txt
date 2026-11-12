@@ -43,6 +43,7 @@ Core/Defines.cpp
 Config/EnvReader.cpp
 Device/DeviceStorage.cpp
 Runtime/Storage/Buffer.cpp
+Runtime/Storage/AllocationDiagnostics.cpp
 Runtime/Execution/EagerEngine.cpp
 Runtime/Execution/AccessTracking.cpp
 Runtime/Execution/CUDAExecution.cpp
@@ -51,6 +52,7 @@ Runtime/Storage/ElementSchema.cpp
 Runtime/Communication/RowTransfer.cpp
 Runtime/Communication/NCCLTransfer.cpp
 Algebra/DofAlgebra.cpp
+Algebra/AmgXPreconditioner.cpp
 Diagnostics/Profiling.cpp
 Math/HardEigen.cpp
 Serializer/SerializerBase.cpp
@@ -97,6 +99,12 @@ dnds_add_lib(${LIBNAME} "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
 
 dnds_add_lib(${LIBNAME}_shared "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
     ON ON ON)  # SHARED,FAST, EXCLUDE
+if(DNDS_USE_AMGX)
+    target_link_libraries(${LIBNAME} PRIVATE DNDS::AmgX)
+    target_link_libraries(${LIBNAME}_shared PRIVATE DNDS::AmgX)
+    get_filename_component(_DNDS_AMGX_LIBRARY_DIR "${DNDS_AMGX_LIBRARY}" DIRECTORY)
+    set_property(TARGET ${LIBNAME}_shared APPEND PROPERTY INSTALL_RPATH "${_DNDS_AMGX_LIBRARY_DIR}")
+endif()
 if(DNDS_USE_NCCL)
     # The static-library helper links dependencies INTERFACE-only. This source
     # also needs the provider headers while compiling the library itself.

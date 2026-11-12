@@ -213,6 +213,10 @@ namespace DNDS::CFV::Detail
     void LaunchJacobi(R::ExecutionContext context, ReconstructionDeviceView plan, DeviceWorkSelection selection, DevicePeriodicBlocks blocks,
                       R::PairReadView<real> mean, R::PairReadView<real> input, R::ArrayView<const real> boundary, R::ArrayView<real> output, R::ArrayView<const int> status)
     {
+        DNDS_check_throw_info(context.device.space == R::MemorySpace::CUDA, "CUDA Jacobi requires a CUDA context");
+        R::ValidateViewDevices(context.device, plan, selection, blocks, mean, input, boundary, output, status);
+        R::CheckKernelArgumentBudget<decltype(plan), decltype(selection), decltype(blocks), decltype(mean),
+                                     decltype(input), decltype(boundary), decltype(output), decltype(status)>();
         if (!selection.count)
             return;
         Jacobi<<<unsigned(std::min<index>(selection.count, 256)), 128, 0, static_cast<cudaStream_t>(context.stream)>>>(plan, selection, blocks, mean, input, boundary, output, status);
@@ -222,6 +226,11 @@ namespace DNDS::CFV::Detail
                     R::PairReadView<real> input, R::ArrayView<real> output, R::ArrayView<real> scratch, DeviceCharacteristicView transform,
                     R::ArrayView<const real> indicator, R::ArrayView<int> status, index begin, index modes, real threshold, index blocksCount)
     {
+        DNDS_check_throw_info(context.device.space == R::MemorySpace::CUDA, "CUDA WBAP requires a CUDA context");
+        R::ValidateViewDevices(context.device, plan, selection, blocks, input, output, scratch, transform, indicator, status);
+        R::CheckKernelArgumentBudget<decltype(plan), decltype(selection), decltype(blocks), decltype(input),
+                                     decltype(output), decltype(scratch), decltype(transform), decltype(indicator),
+                                     decltype(status), index, index, real, real>();
         const auto stream = static_cast<cudaStream_t>(context.stream);
         // Status persists through a queued segment; caller explicitly clears it
         // when recovering after an observed error. No host read per submission.
@@ -233,6 +242,9 @@ namespace DNDS::CFV::Detail
     }
     void LaunchCommit(R::ExecutionContext context, R::ArrayView<const real> input, R::ArrayView<real> output, R::ArrayView<const int> status)
     {
+        DNDS_check_throw_info(context.device.space == R::MemorySpace::CUDA, "CUDA commit requires a CUDA context");
+        R::ValidateViewDevices(context.device, input, output, status);
+        R::CheckKernelArgumentBudget<decltype(input), decltype(output), decltype(status)>();
         // Investigate mapping and launch overhead by shape before selecting a
         // copy backend. No universal kernel-versus-memcpy speedup is assumed.
         if (!output.rows || !output.width)

@@ -2,6 +2,7 @@
 #include "DNDS/Core/NumericalStatus.hpp"
 #include "DNDS/Core/Errors.hpp"
 #include "DNDS/Core/Span.hpp"
+#include "DNDS/Core/OMP.hpp"
 #include <cmath>
 #include <array>
 namespace DNDS::Cauchy::CPU
@@ -11,16 +12,18 @@ namespace DNDS::Cauchy::CPU
     template <class Input, class Output>
     void CopyRows(Input input, Output output, index components)
     {
-        for (index iCell = 0; iCell < output.RowCount(); ++iCell)
+        OMP::ForRows(0, output.RowCount(), [&](index iCell)
+                     {
             for (index j = 0; j < components; ++j)
-                output(iCell, j) = input(iCell, j);
+                output(iCell, j) = input(iCell, j); });
     }
     template <class Output>
     void FillRows(Output output, index components, real value)
     {
-        for (index iCell = 0; iCell < output.RowCount(); ++iCell)
+        OMP::ForRows(0, output.RowCount(), [&](index iCell)
+                     {
             for (index j = 0; j < components; ++j)
-                output(iCell, j) = value;
+                output(iCell, j) = value; });
     }
     /// Return the first invalid row; error emission belongs to the caller.
     template <class Input>
@@ -65,9 +68,10 @@ namespace DNDS::Cauchy::CPU
     template <class Input, class Output, class Metric>
     void DivideRowsByVolume(Input input, Output output, const Metric &metric, index components)
     {
-        for (index iCell = 0; iCell < input.RowCount(); ++iCell)
+        OMP::ForRows(0, input.RowCount(), [&](index iCell)
+                     {
             for (index j = 0; j < components; ++j)
-                output(iCell, j) = input(iCell, j) / metric.GetCellVol(iCell);
+                output(iCell, j) = input(iCell, j) / metric.GetCellVol(iCell); });
     }
     template <class Input, class Metric>
     NumericalStatus AccumulateVolumeNorm(Input values, const Metric &metric, index components, int normOrder, SpanView<real> sum) noexcept
@@ -101,8 +105,9 @@ namespace DNDS::Cauchy::CPU
     template <class Output>
     void FillConstantRows(Output rows, SpanView<const real> values)
     {
-        for (index iCell = 0; iCell < rows.RowCount(); ++iCell)
+        OMP::ForRows(0, rows.RowCount(), [&](index iCell)
+                     {
             for (index j = 0; j < values.size(); ++j)
-                rows(iCell, j) = values[j];
+                rows(iCell, j) = values[j]; });
     }
 }

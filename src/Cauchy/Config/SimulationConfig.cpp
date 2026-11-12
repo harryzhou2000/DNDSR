@@ -318,7 +318,8 @@ namespace DNDS::Cauchy
                                   data->output.implicit.checkpointInterval >= 0 && data->output.implicit.visualizationInterval >= -1 &&
                                   (data->output.consoleColor == "auto" || data->output.consoleColor == "always" || data->output.consoleColor == "never") &&
                                   std::find(diagnosticLevels.begin(), diagnosticLevels.end(), data->output.diagnostics.level) != diagnosticLevels.end() &&
-                                  data->output.diagnostics.maxBytes > 0 && data->output.diagnostics.rotatedFiles > 0 && !data->output.prefix.empty(),
+                                  data->output.diagnostics.maxBytes > 0 && data->output.diagnostics.rotatedFiles > 0 &&
+                                  data->output.diagnostics.allocationWarmupSteps >= 0 && !data->output.prefix.empty(),
                               "invalid Cauchy output controls");
         DNDS_check_throw_info(data->output.hdfDeflateLevel >= 0 && data->output.hdfDeflateLevel <= 9, "Cauchy output hdfDeflateLevel must be in [0,9]");
         const auto internalVisualization = data->output.implicit.visualizationInterval < 0

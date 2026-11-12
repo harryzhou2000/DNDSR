@@ -157,6 +157,8 @@ namespace DNDS::Runtime
     };
 
     /// Plain kernel view: no ownership, placement dispatch or tracking per element.
+    /// Placement covers values and offsets/sizes. ValidateDevice is a host-wrapper
+    /// check, never an element-access check. A copied view does not retain storage.
     /// Checked=true is a separate development policy, independent of NDEBUG.
     /// @pre Caller retains the lease/operation through actual use, validates row
     /// and component indices (including stencil indirection), and uses the correct
@@ -177,6 +179,20 @@ namespace DNDS::Runtime
         index rows = 0, width = 0, stride = 0;
         const size_t *sizes = nullptr;
         RowLayoutKind kind = RowLayoutKind::Table;
+        Device device = Device::Unspecified();
+
+        DNDS_DEVICE_CALLABLE Device GetDevice() const { return device; }
+        /// Check borrowed operands before a CPU loop or CUDA launch. Empty
+        /// optional views may be unbound; a nonempty view must have provenance.
+        /// This verifies placement, not pointer lifetime or stream readiness.
+        void ValidateDevice(Device expected) const
+        {
+            DNDS_check_throw_info(expected.IsValid(), "array view: invalid execution device");
+            DNDS_check_throw_info(rows >= 0, "array view: negative row count");
+            if (!rows && device == Device::Unspecified())
+                return;
+            DNDS_check_throw_info(device == expected, "array view: placement mismatch (including device ordinal)");
+        }
 
         DNDS_DEVICE_CALLABLE index Width() const { return width; }
         DNDS_DEVICE_CALLABLE index RowCount() const { return rows; }
@@ -241,17 +257,17 @@ namespace DNDS::Runtime
             return Row(row)[component * ElementStride()];
         }
         DNDS_DEVICE_CALLABLE RowType operator[](index row) const { return {Row(row), RowSize(row), ElementStride()}; }
-        DNDS_DEVICE_CALLABLE ArrayView<T, Checked> DynamicView() const { return {data, offsets, rows, width, stride, sizes, kind}; }
+        DNDS_DEVICE_CALLABLE ArrayView<T, Checked> DynamicView() const { return {data, offsets, rows, width, stride, sizes, kind, device}; }
         /// Read-only projection of the same borrowed storage. This does not
         /// acquire access or extend lifetime; the original scope remains owner.
         DNDS_DEVICE_CALLABLE ArrayView<const std::remove_const_t<T>, Checked, LayoutPolicy> ConstView() const
         {
-            return {data, offsets, rows, width, stride, sizes, kind};
+            return {data, offsets, rows, width, stride, sizes, kind, device};
         }
         template <bool C = Checked, std::enable_if_t<C, int> = 0>
         DNDS_DEVICE_CALLABLE operator ArrayView<T, false, LayoutPolicy>() const
         {
-            return {data, offsets, rows, width, stride, sizes, kind};
+            return {data, offsets, rows, width, stride, sizes, kind, device};
         }
         template <class P = LayoutPolicy, std::enable_if_t<!std::is_same_v<P, RowLayout>, int> = 0>
         DNDS_DEVICE_CALLABLE operator ArrayView<T, Checked>() const { return DynamicView(); }
@@ -274,13 +290,13 @@ namespace DNDS::Runtime
                 if constexpr (Traits::is_dynamic)
                 {
                     Policy::Validate(shape);
-                    return {source.data, source.offsets, source.rows, source.width, source.stride, source.sizes, source.kind};
+                    return {source.data, source.offsets, source.rows, source.width, source.stride, source.sizes, source.kind, source.device};
                 }
                 if (!shape.IsContiguousRows())
                 {
                     Policy::Validate(shape);
                     DNDS_check_throw_info(Traits::layout_kind == shape.Kind(), "noncontiguous rows need a matching physical view");
-                    return {source.data, source.offsets, source.rows, source.width, source.stride, source.sizes, source.kind};
+                    return {source.data, source.offsets, source.rows, source.width, source.stride, source.sizes, source.kind, source.device};
                 }
                 DNDS_check_throw_info(Traits::layout_kind != RowLayoutKind::ColMajorTable && Traits::layout_kind != RowLayoutKind::TiledColMajorTable,
                                       "column-major view requires actual column-major storage");
@@ -310,7 +326,7 @@ namespace DNDS::Runtime
                     DNDS_check_throw_info(width == Traits::row_width, "fixed row width view mismatch");
                 if constexpr (Traits::row_stride != DynamicExtent)
                     DNDS_check_throw_info(stride == Traits::row_stride, "fixed row stride view mismatch");
-                return {source.data, offsets, source.rows, width, stride, sizes, shape.Kind()};
+                return {source.data, offsets, source.rows, width, stride, sizes, shape.Kind(), source.device};
             }
         }
     }
@@ -327,6 +343,12 @@ namespace DNDS::Runtime
         static constexpr size_t row_capacity = Detail::RowPolicyTraits<LayoutPolicy>::row_capacity;
         using RowType = RowSpan<const T, Checked, row_width, row_capacity, Detail::RowPolicyTraits<LayoutPolicy>::component_stride>;
         ArrayView<const T, Checked, LayoutPolicy> owned, ghost;
+        /// Host-wrapper validation; owned and ghost must have compatible placement.
+        void ValidateDevice(Device expected) const
+        {
+            owned.ValidateDevice(expected);
+            ghost.ValidateDevice(expected);
+        }
         DNDS_DEVICE_CALLABLE index RowCount() const { return owned.RowCount() + ghost.RowCount(); }
         DNDS_DEVICE_CALLABLE index Rows() const { return RowCount(); }
         DNDS_DEVICE_CALLABLE const T *Row(index row) const
@@ -356,4 +378,12 @@ namespace DNDS::Runtime
         DNDS_DEVICE_CALLABLE operator PairReadView<T, Checked>() const { return DynamicView(); }
     };
 
+    /// Validate whole-array operands once at a numerical C++ entry boundary.
+    /// Row views/spans deliberately carry no placement and cannot be used here.
+    template <class... Views>
+    void ValidateViewDevices(Device expected, const Views &...views)
+    {
+        DNDS_check_throw_info(expected.IsValid(), "array views: invalid execution device");
+        (views.ValidateDevice(expected), ...);
+    }
 }

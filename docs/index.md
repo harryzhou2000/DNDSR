@@ -21,6 +21,9 @@ distributed gates and the measured gains and regressions by shape.
 
 ## Architecture entry points
 
+The [Plan 61 CUDA inventory](dev/plan61_cuda_inventory.md) tracks the specialized
+perfect-gas device path and its grouped implementation/validation status.
+
 Cauchy development starts at the [solver contracts and ledger](architecture/Cauchy.md).
 The [November 5 pMG and distributed-failure audit](dev/cauchy_pmg_distributed_errors_2026-11-05.md)
 records the coarse-gradient correction, fail-fast boundary and publication checks.
@@ -61,6 +64,8 @@ gates. The placement foundation mock alone is not a fluid validation.
 | Fixed-record setup request/reply routing | [Sparse batch exchange](architecture/SparseBatchExchange.md) |
 | Historical Array/ParArray interface | [Legacy Array infrastructure](architecture/array_infrastructure.md) |
 | Runtime ordering and lifetime responsibilities | [Runtime caller contract](architecture/RuntimeCallerContract.md) |
+| Non-owning allocation names and memory snapshots | [Allocation diagnostics](architecture/AllocationDiagnostics.md) |
+| Optional single-device AMG provider | [AmgX source build](guides/amgx.md) |
 | Optional submission-time dependency checking | [Checked eager execution](architecture/CheckedExecution.md) |
 | Native field algebra | [Native DOF algebra](architecture/NativeDofAlgebra.md) |
 | Native multigrid cycles | [FAS ownership, transfer and callback contracts](architecture/FAS.md) |

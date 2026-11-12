@@ -240,21 +240,22 @@ namespace DNDS
 
     int get_env_DNDS_DIST_OMP_NUM_THREADS()
     {
-        static int ret{-1};
-        if (ret == -1)
+        // Initialization may first occur on an eager CPU worker. C++ local
+        // static initialization serializes the parse; later reads are immutable.
+        static const int ret = []
         {
             const char *env = std::getenv("DNDS_DIST_OMP_NUM_THREADS");
-            ret = 0;
             if (env)
                 try
                 {
-                    ret = std::stoi(env);
+                    return std::stoi(env);
                 }
                 catch (...)
                 {
-                    ret = -1;
+                    return -1;
                 }
-        }
+            return 0;
+        }();
         return ret;
     }
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DNDS/Runtime/Array/ArrayView.hpp"
+#include "DNDS/Runtime/Execution/KernelArguments.hpp"
 
 namespace DNDS::CFV::Detail
 {
@@ -15,22 +16,40 @@ namespace DNDS::CFV::Detail
         index owned = 0, n = 0;
         real relax = 1, wbapCenterWeight = 10;
         bool rotated = false;
+        /// One host launch check for every nested allocation; never called by
+        /// point/row arithmetic. The placed plan retains all borrowed storage.
+        void ValidateDevice(Runtime::Device expected) const
+        {
+            Runtime::ValidateViewDevices(expected, offsets, neighbors, faces, boundaryOffsets, rotationActive,
+                                         matrixAInvB, vectorAInvB, secondary, boundaryInjection, rotation, core, dependent);
+        }
     };
     struct DeviceWorkSelection
     {
         Runtime::ArrayView<const index> rows;
         index count = 0;
         bool indirect = false;
+        void ValidateDevice(Runtime::Device expected) const
+        {
+            if (indirect)
+                rows.ValidateDevice(expected);
+        }
         DNDS_DEVICE_CALLABLE index Cell(index i) const { return indirect ? rows(i, 0) : i; }
     };
     struct DeviceCharacteristicView
     {
         Runtime::ArrayView<const real> forward, inverse;
         index first = 0, count = 0;
+        void ValidateDevice(Runtime::Device expected) const
+        {
+            if (count)
+                Runtime::ValidateViewDevices(expected, forward, inverse);
+        }
     };
     struct DevicePeriodicBlocks
     {
         Runtime::ArrayView<const index> starts;
+        void ValidateDevice(Runtime::Device expected) const { starts.ValidateDevice(expected); }
         DNDS_DEVICE_CALLABLE index First(index component) const
         {
             for (index i = 0; i < starts.RowCount(); ++i)

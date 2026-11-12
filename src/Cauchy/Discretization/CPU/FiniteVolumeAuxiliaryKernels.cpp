@@ -1,5 +1,6 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumeAuxiliaryKernels.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
+#include "DNDS/Core/OMP.hpp"
 #include <limits>
 
 namespace DNDS::Cauchy::CPU
@@ -179,8 +180,8 @@ namespace DNDS::Cauchy::CPU
             return;
         const auto metric = request.metric;
         const real rotationBound = Geom::tPoint{request.frame.angularVelocity[0], request.frame.angularVelocity[1], request.frame.angularVelocity[2]}.norm();
-        for (index iRow = 0; iRow < cells.RowCount(); ++iRow)
-        {
+        OMP::ForRows(0, cells.RowCount(), [&](index iRow)
+                     {
             const index iCell = cells(iRow, 0);
             real sum = 0, wave = 0, pressure = std::numeric_limits<real>::max();
             for (index entry = request.stencil.auxiliaryCellOffsets(iCell, 0);
@@ -200,8 +201,7 @@ namespace DNDS::Cauchy::CPU
             if (request.enabled[5])
                 request.values[5](iCell, 0) = wave;
             if (request.enabled[6])
-                request.values[6](iCell, 0) = pressure;
-        }
+                request.values[6](iCell, 0) = pressure; });
     }
 
 }

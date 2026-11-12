@@ -219,11 +219,11 @@ namespace DNDS::Cauchy
             view.rans = _rans;
             view.species = _species;
             const auto parent = _blocks[0].parent;
-            view.whole = {{parent.data, parent.offsets, parent.rows, parent.width, parent.stride, parent.sizes, parent.kind}, 0, ComponentNumber()};
+            view.whole = {{parent.data, parent.offsets, parent.rows, parent.width, parent.stride, parent.sizes, parent.kind, parent.device}, 0, ComponentNumber()};
             if (_flow >= 0)
             {
                 const auto block = _blocks[_flow];
-                view.flow = {{block.parent.data, block.parent.offsets, block.parent.rows, block.parent.width, block.parent.stride, block.parent.sizes, block.parent.kind}, block.first, block.components};
+                view.flow = {{block.parent.data, block.parent.offsets, block.parent.rows, block.parent.width, block.parent.stride, block.parent.sizes, block.parent.kind, block.parent.device}, block.first, block.components};
                 view.flowFirst = _offsets[_flow];
             }
             return view;

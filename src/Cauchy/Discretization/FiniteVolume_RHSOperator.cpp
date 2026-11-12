@@ -126,6 +126,7 @@ namespace DNDS::Cauchy
         return WithRHSFailurePolicy<policy == FailurePolicy::Abort>([&]
                                                                     {
             DNDS_check_throw_info(_read, "RHS operator was moved");
+            Runtime::ValidateViewDevices(Runtime::Device::Host(), input, output);
             return RequireNumericalSuccess(CPU::EvaluateFlowFlux(_read->Request(time), _read->data->equation, _read->data->flux, input, output, region), "EvaluateFlowFlux"); });
     }
     void FiniteVolume::RHSOperator::AddSource(const RHSReadViews &input, const RHSWriteViews &output,
@@ -141,6 +142,7 @@ namespace DNDS::Cauchy
         WithRHSFailurePolicy<policy == FailurePolicy::Abort>([&]
                                                              {
             DNDS_check_throw_info(_read, "RHS operator was moved");
+            Runtime::ValidateViewDevices(Runtime::Device::Host(), input, output);
             RequireNumericalSuccess(CPU::AddFlowRotationSource(_read->Request(time), input, output, region), "AddFlowRotationSource"); });
     }
 }

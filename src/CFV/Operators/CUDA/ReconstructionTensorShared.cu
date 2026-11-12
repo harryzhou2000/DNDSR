@@ -160,6 +160,10 @@ namespace DNDS::CFV::Detail
                                       R::PairReadView<real> mean, R::PairReadView<real> input, R::ArrayView<const real> boundary,
                                       R::ArrayView<real> output, R::ArrayView<const int> status, bool async)
     {
+        DNDS_check_throw_info(context.device.space == R::MemorySpace::CUDA, "CUDA shared tensor Jacobi requires a CUDA context");
+        R::ValidateViewDevices(context.device, plan, selection, vectors, mean, input, boundary, output, status);
+        R::CheckKernelArgumentBudget<decltype(plan), decltype(selection), decltype(vectors), decltype(mean),
+                                     decltype(input), decltype(boundary), decltype(output), decltype(status)>();
         if (!selection.count)
             return;
 #define DNDS_LAUNCH(N)                                                                                                 \

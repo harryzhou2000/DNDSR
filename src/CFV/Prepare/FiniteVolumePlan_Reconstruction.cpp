@@ -1,6 +1,7 @@
 #include "CFV/Detail/ReconstructionData.hpp"
 #include "Geom/Quadratures/Quadrature.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include "DNDS/Core/OMP.hpp"
 
 namespace DNDS::CFV
 {
@@ -159,8 +160,8 @@ namespace DNDS::CFV
             {
                 cacheWrite.emplace(data->faceBasis.Write());
                 cache = cacheWrite->View<R::TableRows>();
-                for (index iRow = 0; iRow < cache.RowCount(); ++iRow)
-                    std::fill(cache[iRow].begin(), cache[iRow].end(), 0);
+                OMP::ForRows(0, cache.RowCount(), [&](index iRow)
+                    { std::fill(cache[iRow].begin(), cache[iRow].end(), 0); });
             }
             // Only requested face-system blocks exist. This is preparation
             // scratch, released before returning the immutable plan.
@@ -172,15 +173,19 @@ namespace DNDS::CFV
             }
             auto momentWrite = data->moments.Write();
             const auto moment = momentWrite.View<R::TableRows>();
-            SmallMatrix full, left, right, weighted, aL, aR, bLR, secondaryL, secondaryR;
-            tSmallCoords coords;
-            std::vector<tPoint> halfBoxes(size_t(mesh.NumCellProc()));
-            for (index iCell = 0; iCell < mesh.NumCellProc(); ++iCell)
+            R::Array<real> halfBoxStorage(R::RowLayout::Dense(mesh.NumCellProc(), 3));
+            halfBoxStorage.SetName("CFV/setup/halfBoxes", DNDS_ALLOCATION_SITE());
+            data->preparationRuntimeScratchBytes += halfBoxStorage.Storage().Bytes();
+            auto halfBoxWrite = halfBoxStorage.Write();
+            const auto halfBoxes = halfBoxWrite.View<R::FixedRows<3>>();
+            OMP::ForSetupRows(0, mesh.NumCellProc(), [&](index iCell)
             {
+                SmallMatrix full;
+                tSmallCoords coords;
                 std::fill(moment[iCell].begin(), moment[iCell].end(), 0.);
                 mesh.GetCoordsOnCell(iCell, coords);
                 const tPoint bary{cell(iCell, 4), cell(iCell, 5), cell(iCell, 6)};
-                halfBoxes[size_t(iCell)] = (coords.colwise() - bary).array().abs().rowwise().maxCoeff();
+                Eigen::Map<tPoint>(halfBoxes[iCell].data()) = (coords.colwise() - bary).array().abs().rowwise().maxCoeff();
                 const auto element = mesh.GetCellElement(iCell);
                 const Quadrature q(element, INT_ORDER_MAX);
                 const tPoint center{cell(iCell, 1), cell(iCell, 2), cell(iCell, 3)};
@@ -194,17 +199,19 @@ namespace DNDS::CFV
                 }
                 const real volume = moment(iCell, 0);
                 for (int j = 0; j <= n; ++j) moment(iCell, j) /= volume;
-            }
+            });
             OptionalTableWriter systemWrite(systems);
             const auto system = systemWrite.values;
             auto basis = [&](index iCell, const tPoint &p, SmallMatrix &out)
             {
                 polynomial.Reconstruction(out, p, {cell(iCell, 1), cell(iCell, 2), cell(iCell, 3)}, cell(iCell, 7), moment[iCell], degree);
             };
-            for (index iFace = 0; iFace < nFace; ++iFace)
+            OMP::ForSetupRows(0, nFace, [&](index iFace)
             {
-                if (!active[size_t(iFace)]) continue;
-                if (!faceSystem.width && !settings.cacheDiffBase) continue;
+                if (!active[size_t(iFace)]) return;
+                if (!faceSystem.width && !settings.cacheDiffBase) return;
+                SmallMatrix left, right, weighted, aL, aR, bLR, secondaryL, secondaryR;
+                tSmallCoords coords;
                 if (systems) std::fill(system[iFace].begin(), system[iFace].end(), 0.);
                 const auto parents = mesh.FaceCells(iFace);
                 const index iL = parents[0], iR = parents[1];
@@ -261,7 +268,8 @@ namespace DNDS::CFV
                 real length = distance;
                 if (functional.scaleType == ReconstructionFunctionalSettings::LengthScale::MeanAACBB)
                 {
-                    const tPoint box = iR == UnInitIndex ? halfBoxes[size_t(iL)] : (.5 * (halfBoxes[size_t(iL)] + halfBoxes[size_t(iR)])).eval();
+                    const tPoint boxL = Eigen::Map<const tPoint>(halfBoxes[iL].data());
+                    const tPoint box = iR == UnInitIndex ? boxL : (.5 * (boxL + Eigen::Map<const tPoint>(halfBoxes[iR].data()))).eval();
                     length = std::sqrt(box.head(dim).squaredNorm() / dim);
                 }
                 if (functional.scaleType == ReconstructionFunctionalSettings::LengthScale::CellMax)
@@ -335,7 +343,7 @@ namespace DNDS::CFV
                     Eigen::Map<Matrix>(system[iFace].data() + faceSystem.secondary, n, n) = secondaryL;
                     Eigen::Map<Matrix>(system[iFace].data() + faceSystem.secondary + n * n, n, n) = secondaryR;
                 }
-            }
+            });
             auto offsetsWrite = data->offsets.Write(), neighborsWrite = data->neighbors.Write(), facesWrite = data->faces.Write();
             auto bOffsetsWrite = data->boundaryOffsets.Write(), bPointsWrite = data->boundaryPoints.Write();
             OptionalTableWriter matrixWrite(data->matrixAInvB), vectorWrite(data->vectorAInvB), secondaryWrite(data->secondary), injectionWrite(data->boundaryInjection);
@@ -344,14 +352,33 @@ namespace DNDS::CFV
             const auto bPoints = bPointsWrite.View<R::FixedRows<4>>();
             const auto matrices = matrixWrite.values, vectors = vectorWrite.values, secondaries = secondaryWrite.values, injections = injectionWrite.values;
             index iEntry = 0, iBoundary = 0;
-            OptionalTableWriter conditionsWrite(data->inverseConditions);
-            const auto conditions = conditionsWrite.values;
-            data->inverseDiagnostics.cells = nCell;
-            SmallMatrix A, inverse, product, rawMatrixScratch(n, n);
-            Eigen::VectorXd rawVectorScratch(n);
+            // Publish row ranges before independent SVD/fill work. Every cell
+            // writes disjoint incidence and boundary-quadrature rows. No atomics
+            // or concurrent vector growth are needed, and OMP=1 keeps ordering.
             for (index iCell = 0; iCell < nCell; ++iCell)
             {
                 offsets(iCell, 0) = iEntry;
+                const auto c2f = mesh.CellFaces(iCell);
+                for (index slot = 0; slot < c2f.size(); ++slot, ++iEntry)
+                {
+                    bOffsets(iEntry, 0) = iBoundary;
+                    const auto iFace = c2f[slot];
+                    if (mesh.CellFaceOther(iCell, iFace, rowsize(slot)) == UnInitIndex)
+                        iBoundary += faceOffset(iFace + 1, 0) - faceOffset(iFace, 0);
+                }
+            }
+            offsets(nCell, 0) = iEntry;
+            bOffsets(iEntry, 0) = iBoundary;
+            DNDS_check_throw_info(iEntry == incidences && iBoundary == boundaryCount, "VR setup incidence count changed");
+            OptionalTableWriter conditionsWrite(data->inverseConditions);
+            const auto conditions = conditionsWrite.values;
+            data->inverseDiagnostics.cells = nCell;
+            OMP::ForSetupRows(0, nCell, [&](index iCell)
+            {
+                // Setup scratch and Eigen decompositions belong to this cell.
+                SmallMatrix A, inverse, left, rawMatrixScratch(n, n);
+                Eigen::VectorXd rawVectorScratch(n);
+                index iEntry = offsets(iCell, 0), iBoundary = bOffsets(iEntry, 0);
                 A.setZero(n, n);
                 const auto c2f = mesh.CellFaces(iCell);
                 for (index slot = 0; faceSystem.a >= 0 && slot < c2f.size(); ++slot)
@@ -375,17 +402,6 @@ namespace DNDS::CFV
                     Eigen::Map<Matrix>(localInverses[iCell].data(), n, n) = inverse;
                 if (capabilities.inverseDiagnostics)
                 {
-                    auto &summary = data->inverseDiagnostics;
-                    summary.filteredCells += spectrum.rank < n;
-                    summary.discardedModes += n - spectrum.rank;
-                    summary.rankZeroCells += spectrum.rank == 0;
-                    ++summary.rankCounts[size_t(spectrum.rank)];
-                    if (spectrum.rawCondition > summary.maxCondition ||
-                        (spectrum.rawCondition == summary.maxCondition && original(iCell, 0) < summary.maxConditionCell))
-                    {
-                        summary.maxCondition = spectrum.rawCondition;
-                        summary.maxConditionCell = original(iCell, 0);
-                    }
                     conditions(iCell, 0) = spectrum.rank;
                     conditions(iCell, 1) = spectrum.rawCondition;
                     conditions(iCell, 2) = spectrum.retainedCondition;
@@ -399,8 +415,6 @@ namespace DNDS::CFV
                     const tGPoint rotation = Detail::OtherFrameInCell(mesh, iFace, side);
                     Eigen::Map<tGPoint>(rotations[iEntry].data()) = rotation;
                     rotationActive(iEntry, 0) = !rotation.isApprox(tGPoint::Identity(), 1e-14);
-                    data->hasRotatedPeriodicity |= bool(rotationActive(iEntry, 0));
-                    bOffsets(iEntry, 0) = iBoundary;
                     if (capabilities.wbap)
                     {
                         auto secondary = Eigen::Map<Matrix>(secondaries[iEntry].data(), n, n);
@@ -453,8 +467,28 @@ namespace DNDS::CFV
                             bPoints(iBoundary, 2) = iQ - faceOffset(iFace, 0), bPoints(iBoundary, 3) = iQ;
                         }
                 }
-            }
-            offsets(nCell, 0) = iEntry, bOffsets(iEntry, 0) = iBoundary; });
+            });
+            // Deterministic controller merge after the team. These are setup
+            // diagnostics, not atomics inside each inverse/face arithmetic path.
+            for (index i = 0; i < incidences; ++i)
+                data->hasRotatedPeriodicity |= bool(rotationActive(i, 0));
+            if (capabilities.inverseDiagnostics)
+                for (index iCell = 0; iCell < nCell; ++iCell)
+                {
+                    auto &summary = data->inverseDiagnostics;
+                    const auto rank = index(conditions(iCell, 0));
+                    const auto condition = conditions(iCell, 1);
+                    summary.filteredCells += rank < n;
+                    summary.discardedModes += n - rank;
+                    summary.rankZeroCells += rank == 0;
+                    ++summary.rankCounts[size_t(rank)];
+                    if (condition > summary.maxCondition ||
+                        (condition == summary.maxCondition && original(iCell, 0) < summary.maxConditionCell))
+                    {
+                        summary.maxCondition = condition;
+                        summary.maxConditionCell = original(iCell, 0);
+                    }
+                } });
         if (capabilities.inverseDiagnostics)
         {
             auto &summary = data->inverseDiagnostics;

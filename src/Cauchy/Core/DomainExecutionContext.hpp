@@ -34,10 +34,10 @@ namespace DNDS::Cauchy
     /// completion records before worker resources are released. Numerical state
     /// and operator workspaces are intentionally not owned here.
     ///
-    /// The current resolver supports the CPU backend only and fails during
-    /// construction for an unavailable backend. This ownership shape is shared
-    /// by inline and worker CPU execution and is the future device-context
-    /// boundary; orchestration must not branch on those launcher details.
+    /// Resolves inline/worker CPU or CUDA compute, communication and copy lanes.
+    /// Context creation alone does not establish solver kernel availability:
+    /// ResolvedExecutionPlan must validate the complete requested path first.
+    /// Orchestration must not branch on the native launcher details.
     /// Release the last context on its creating controller thread. Teardown
     /// drains the engine, then publishes an unconsumed interface dependency;
     /// dependency callbacks must not retain this context (directly or through a
@@ -62,6 +62,9 @@ namespace DNDS::Cauchy
         /// transport here; CPU MPI uses it for checked access ordering while
         /// controller progress remains explicit.
         const Runtime::ExecutionStream &CommunicationStream() const;
+        /// @brief Context-owned snapshot/copy lane. Producers and subsequent
+        /// writers order their dependencies explicitly; this is not a host sync.
+        const Runtime::ExecutionStream &CopyStream() const;
         /// @brief Optional shared chemistry worker capacity.
         const std::optional<Physics::Chemistry::ChemicalWorkerPool> &ChemicalWorkers() const;
         /// @brief Explicit quiescent boundary for every retained lane and

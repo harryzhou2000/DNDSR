@@ -57,11 +57,11 @@ namespace DNDS::Algebra
             const auto parent = ghost ? column.ghost : column.owned;
             if (column.component != j || parent.data != first.data || parent.rows != first.rows ||
                 parent.width != first.width || parent.stride != first.stride || parent.kind != first.kind ||
-                parent.offsets || parent.sizes)
+                parent.offsets || parent.sizes || parent.device != first.device)
                 return std::nullopt;
         }
         return Runtime::ArrayView<T, Runtime::AccessBoundsChecks, Runtime::TableRows>{first.data, nullptr, first.rows,
-                                                                                      first.width, first.stride, nullptr, first.kind};
+                                                                                      first.width, first.stride, nullptr, first.kind, first.device};
     }
     /// Recognize only owned rows; pass OwnedPart() for paired descriptors.
     template <class T>

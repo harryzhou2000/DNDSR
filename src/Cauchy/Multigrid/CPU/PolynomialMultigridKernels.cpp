@@ -1,4 +1,5 @@
 #include "Cauchy/Multigrid/CPU/PolynomialMultigridKernels.hpp"
+#include "DNDS/Core/OMP.hpp"
 #include <cstring>
 namespace DNDS::Cauchy::CPU
 {
@@ -14,23 +15,26 @@ namespace DNDS::Cauchy::CPU
     }
     void ProjectSelectedCorrection(Algebra::DofComponentView<real> values, SpanView<const uint8_t> active)
     {
-        for (index iRow = 0; iRow < values.RowCount(); ++iRow)
+        OMP::ForRows(0, values.RowCount(), [&](index iRow)
+                     {
             for (index j = 0; j < values.ComponentNumber(); ++j)
                 if (!active[j])
-                    values(iRow, j) = 0;
+                    values(iRow, j) = 0; });
     }
     void AddSelectedCorrection(Algebra::DofComponentView<real> values,
                                Algebra::DofComponentView<const real> delta, SpanView<const index> components)
     {
-        for (index iRow = 0; iRow < values.RowCount(); ++iRow)
+        OMP::ForRows(0, values.RowCount(), [&](index iRow)
+                     {
             for (const auto j : components)
-                values(iRow, j) += delta(iRow, j);
+                values(iRow, j) += delta(iRow, j); });
     }
     void CopyPolynomialLevel(Algebra::DofComponentView<const real> source, Algebra::DofComponentView<real> destination)
     {
-        for (index iCell = 0; iCell < source.RowCount(); ++iCell)
+        OMP::ForRows(0, source.RowCount(), [&](index iCell)
+                     {
             for (index j = 0; j < source.ComponentNumber(); ++j)
-                destination(iCell, j) = source(iCell, j);
+                destination(iCell, j) = source(iCell, j); });
     }
     void AccumulateFASNorm(Algebra::DofComponentView<const real> source, Algebra::DofComponentView<const real> value,
                            CFV::FiniteVolumeHostView metric, int normOrder, SpanView<real> sum)

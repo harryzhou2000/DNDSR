@@ -324,7 +324,7 @@ namespace DNDS::CFV
         DNDS_DEVICE_CALLABLE auto FaceMatrix(index iPoint, int side) const
         {
             return Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::ColMajorTable>{
-                face[2 * iPoint + side].data(), nullptr, derivatives, modes, derivatives, nullptr, Runtime::RowLayoutKind::ColMajorTable};
+                face[2 * iPoint + side].data(), nullptr, derivatives, modes, derivatives, nullptr, Runtime::RowLayoutKind::ColMajorTable, face.device};
         }
         /// Column-major derivatives-by-modes matrix; derivative includes order0.
         DNDS_DEVICE_CALLABLE real FaceDerivative(index iPoint, int side, int derivative, int mode) const

@@ -334,13 +334,37 @@ namespace DNDS::Runtime
 #else
         m.attr("cuda_enabled") = false;
 #endif
-        py::enum_<MemorySpace>(m, "MemorySpace").value("Host", MemorySpace::Host).value("CUDA", MemorySpace::CUDA);
+        py::enum_<MemorySpace>(m, "MemorySpace").value("Host", MemorySpace::Host).value("CUDA", MemorySpace::CUDA).value("Unspecified", MemorySpace::Unspecified);
         py::class_<Device>(m, "Device")
             .def_static("host", &Device::Host)
             .def_static("cuda", &Device::CUDA, py::arg("ordinal") = 0)
             .def_readonly("space", &Device::space)
             .def_readonly("ordinal", &Device::ordinal)
             .def("__eq__", &Device::operator==);
+        py::class_<AllocationActivity>(m, "AllocationActivity")
+            .def_readonly("readers", &AllocationActivity::readers)
+            .def_readonly("writer", &AllocationActivity::writer)
+            .def_readonly("pending_readers", &AllocationActivity::pendingReaders)
+            .def_readonly("pending_writers", &AllocationActivity::pendingWriters);
+        py::class_<AllocationRecord>(m, "AllocationRecord")
+            .def_readonly("identity", &AllocationRecord::identity)
+            .def_readonly("device", &AllocationRecord::device)
+            .def_readonly("bytes", &AllocationRecord::bytes)
+            .def_readonly("names", &AllocationRecord::names)
+            .def_readonly("external_provider", &AllocationRecord::externalProvider)
+            .def_readonly("stream_ordered_memory", &AllocationRecord::streamOrderedMemory)
+            .def_readonly("file", &AllocationRecord::file)
+            .def_readonly("function", &AllocationRecord::function)
+            .def_readonly("line", &AllocationRecord::line)
+            .def_readonly("activity", &AllocationRecord::activity);
+        py::class_<AllocationSnapshot>(m, "AllocationSnapshot")
+            .def_readonly("allocations", &AllocationSnapshot::allocations)
+            .def_readonly("live_bytes", &AllocationSnapshot::liveBytes)
+            .def_readonly("peak_bytes", &AllocationSnapshot::peakBytes);
+        m.def("enable_allocation_diagnostics", &AllocationDiagnostics::Enable, py::arg("enabled") = true,
+              "Enable before allocation/setup. Registry stores no payload owner; disabling clears only diagnostics.");
+        m.def("allocation_snapshot", &AllocationDiagnostics::Snapshot,
+              "Process-local allocation capacities/activity; does not synchronize devices or enter MPI.");
         py::class_<ExecutionContext>(m, "ExecutionContext")
             .def(py::init([](Device d, uintptr_t stream)
                           { return ExecutionContext{d, reinterpret_cast<void *>(stream)}; }),
@@ -426,6 +450,9 @@ namespace DNDS::Runtime
             .def_property_readonly("element_type", &PythonArray::ElementType)
             .def_property_readonly("device", [](const PythonArray &a)
                                    { return a.Storage().GetDevice(); })
+            .def_property("name", [](const PythonArray &a)
+                          { auto storage = a.SharedStorage(); DNDS_check_throw_info(storage, "cannot name a released array"); return storage->Name(); }, [](PythonArray &a, const std::string &name)
+                          { auto storage = a.SharedStorage(); DNDS_check_throw_info(storage, "cannot name a released array"); storage->SetName(name); }, "Optional logical-storage diagnostic label, shared with C++ aliases.")
             .def_property_readonly("identity", [](const PythonArray &a)
                                    { return a.Storage().Identity(); })
             .def_property_readonly("version", [](const PythonArray &a)

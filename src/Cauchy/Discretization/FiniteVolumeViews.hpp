@@ -101,6 +101,26 @@ namespace DNDS::Cauchy
         std::optional<RHSFieldView> conservativeGradient, viscousConservativeGradient;
         /// Explicit physical-dt/mean trial; no reconstructed point increment.
         bool meanOnly = false;
+        /// Host-wrapper validation of borrowed inputs. Ownership and producer
+        /// readiness remain the caller's responsibility; no per-point checks.
+        void ValidateDevice(Runtime::Device expected) const
+        {
+            Runtime::ValidateViewDevices(expected, mean, coefficients, primitiveGradient);
+            if (auxiliary.meanThermodynamics)
+                auxiliary.meanThermodynamics->values.ValidateDevice(expected);
+            if (auxiliary.cellWaveJump)
+                auxiliary.cellWaveJump->ValidateDevice(expected);
+            if (auxiliary.cellPressureMinimum)
+                auxiliary.cellPressureMinimum->ValidateDevice(expected);
+            if (viscousCoefficients)
+                viscousCoefficients->ValidateDevice(expected);
+            if (boundary)
+                boundary->ValidateDevice(expected);
+            if (conservativeGradient)
+                conservativeGradient->ValidateDevice(expected);
+            if (viscousConservativeGradient)
+                viscousConservativeGradient->ValidateDevice(expected);
+        }
     };
     /// Explicit numerical outputs. Diagnostics are returned by the RHS kernel
     /// as a value and merged after each core/dependent operation completes.
@@ -112,6 +132,14 @@ namespace DNDS::Cauchy
         /// in the prepared anchor cell's axes. Selected faces are overwritten;
         /// core/dependent sets can overlap. No source term is included.
         std::optional<RHSFlowOutputView> faceFlux;
+        void ValidateDevice(Runtime::Device expected) const
+        {
+            residual.ValidateDevice(expected);
+            if (lowOrder)
+                lowOrder->ValidateDevice(expected);
+            if (faceFlux)
+                faceFlux->ValidateDevice(expected);
+        }
     };
 }
 

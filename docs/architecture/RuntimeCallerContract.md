@@ -112,6 +112,14 @@ Only typed access leases may authorize reading or writing the values.
    once when the view is created; kernels must retain the declared row assumptions.
    `RowCount()` is the canonical row-count spelling; the compatibility `Rows()`
    alias carries the same value.
+   Whole-array views carry `Device` (space and ordinal). Host kernel wrappers
+   call `ValidateDevice` / `ValidateViewDevices` once before entering numerical
+   loops or launching device work. Row views and spans carry no new tag/check.
+   Managed factories establish the payload/offset/size placement invariant;
+   projections preserve it. An unbound view is allowed only as an empty optional
+   operand. A tag does not prove lifetime, stream readiness or a foreign pointer's
+   capacity. Nonempty CUDA allocation imports check pointer memory type/ordinal
+   once; other provider obligations remain explicit.
 4. Launch device work on the supplied `ExecutionContext` stream and check launch
    errors. Work submitted to another native stream must be joined before the
    enclosing operation publishes completion or relinquishes ownership. Keep

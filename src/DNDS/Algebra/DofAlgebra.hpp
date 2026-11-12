@@ -2,6 +2,7 @@
 
 #include "DNDS/Algebra/DofField.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
+#include "DNDS/Core/OMP.hpp"
 #include <cmath>
 #include <array>
 #include <functional>
@@ -32,7 +33,8 @@ namespace DNDS::Algebra
     void ApplyHostRows(PointwiseOperation operation, Output output, X x, Y y, double a = 0, double b = 0)
     {
         using T = std::remove_reference_t<decltype(output(0, 0))>;
-        for (index iRow = 0; iRow < output.RowCount(); ++iRow)
+        OMP::ForRows(0, output.RowCount(), [&](index iRow)
+                     {
             for (index iCol = 0; iCol < output.RowSize(iRow); ++iCol)
             {
                 switch (operation)
@@ -56,7 +58,7 @@ namespace DNDS::Algebra
                     break;
                 }
                 }
-            }
+            } });
     }
     namespace Detail
     {
@@ -77,6 +79,7 @@ namespace DNDS::Algebra
         void Apply(Runtime::ExecutionContext context, Pointwise operation, Runtime::ArrayView<T> output,
                    Runtime::ArrayView<const T> x = {}, Runtime::ArrayView<const T> y = {}, double a = 0, double b = 0)
         {
+            Runtime::ValidateViewDevices(context.device, output, x, y);
             if (context.device.space == Runtime::MemorySpace::CUDA)
             {
                 ApplyCUDA(context, operation, output, x, y, a, b);
@@ -88,6 +91,7 @@ namespace DNDS::Algebra
         void Reduce(Runtime::ExecutionContext context, Reduction operation, Runtime::ArrayView<const T> x,
                     Runtime::ArrayView<const T> y, Runtime::ArrayView<double> result)
         {
+            Runtime::ValidateViewDevices(context.device, x, y, result);
             if (context.device.space == Runtime::MemorySpace::CUDA)
             {
                 ReduceCUDA(context, operation, x, y, result);

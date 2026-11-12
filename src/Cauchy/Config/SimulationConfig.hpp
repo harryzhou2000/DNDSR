@@ -73,6 +73,7 @@ namespace DNDS::Cauchy
         std::string transferPreflight = "collective";
         std::string communicationExecution = "caller";
         int hostThreads = 0;
+        int deviceOrdinal = 0;
         bool checkAccess = true;
         bool overlap = true;
         bool haloFreshnessChecks = false;
@@ -83,6 +84,7 @@ namespace DNDS::Cauchy
         DNDS_DECLARE_CONFIG(ExecutionSettings)
         {
             DNDS_FIELD(device, "Required numerical backend; no implicit fallback");
+            DNDS_FIELD(deviceOrdinal, "CUDA device ordinal for this process; explicit rank/device mapping, ignored on CPU");
             DNDS_FIELD(layout, "Physical flow table: aos, soa, aosoa32");
             DNDS_FIELD(fieldGrouping, "equationBlocks: separate flow/RANS/species fields; coupled: one physical table with the same logical blocks");
             DNDS_FIELD(communication, "Payload transport");
@@ -605,12 +607,16 @@ namespace DNDS::Cauchy
     };
     struct DiagnosticOutputSettings
     {
+        bool allocations = false;
+        index allocationWarmupSteps = 1;
         bool perRank = false;
         std::string level = "info";
         index maxBytes = 64 * 1024 * 1024;
         index rotatedFiles = 3;
         DNDS_DECLARE_CONFIG(DiagnosticOutputSettings)
         {
+            DNDS_FIELD(allocations, "Track Runtime allocations from simulation setup and write rank-local memory reports after warm-up and at final output");
+            DNDS_FIELD(allocationWarmupSteps, "Accepted steps before the working-set report; zero reports immediately after output initialization");
             DNDS_FIELD(perRank, "Write one rotating operational diagnostic file per global rank");
             DNDS_FIELD(level, "Operational diagnostic level: trace, debug, info, warn, error, critical or off");
             DNDS_FIELD(maxBytes, "Per-rank diagnostic rotation size in bytes");

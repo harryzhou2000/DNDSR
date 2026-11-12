@@ -114,7 +114,7 @@ namespace DNDS::Runtime
                 auto *pointer = static_cast<Value *>(access.Pointer(alignof(Value), sizeof(Value)));
                 const auto device = context.device;
                 const auto &rows = layout->rows;
-                ArrayView<Value, AccessBoundsChecks> dynamic{pointer, layout->Offsets(device), rows.RowCount(), rows.Width(), rows.Stride(), layout->Sizes(device), rows.Kind()};
+                ArrayView<Value, AccessBoundsChecks> dynamic{pointer, layout->Offsets(device), rows.RowCount(), rows.Width(), rows.Stride(), layout->Sizes(device), rows.Kind(), device};
                 view = ProjectView<Value, AccessBoundsChecks, Policy>(dynamic, rows);
             }
             void Handoff(ExecutionContext context)
