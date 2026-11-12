@@ -4,14 +4,36 @@
 #include "Cauchy/Discretization/LimitedVRInternal.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeLimitedVRKernels.hpp"
 #include "Cauchy/Physics/ReconstructionPositivity.hpp"
+#include "Cauchy/State/CPU/FieldKernels.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
-#include "DNDS/Algebra/DofAlgebra.hpp"
 
 namespace DNDS::Cauchy
 {
     namespace R = Runtime;
     using FiniteVolumeDetail::Load;
     using FiniteVolumeDetail::RotateState;
+
+    namespace
+    {
+        /// Execute inside the already queued CPU operation. The private LVR
+        /// work fields are distinct; only owned rows are copied, while the
+        /// next layer's explicit halo operation publishes its remote rows.
+        /// Immediate algebra would create and drain a second engine here.
+        void CopyOwnedLVRRows(const CFV::FVField &input, CFV::FVField &output)
+        {
+            input.Validate();
+            output.Validate();
+            DNDS_check_throw_info(input.Space().Same(output.Space()) &&
+                                      input.Width() == output.Width() &&
+                                      input.Device() == R::Device::Host() &&
+                                      output.Device() == R::Device::Host(),
+                                  "LVR row copy requires matching host fields");
+            auto read = input.Owned().Read();
+            auto write = output.Owned().Write();
+            CPU::CopyRows(read.View<R::UniformTableRows>(),
+                          write.View<R::UniformTableRows>(), output.Width());
+        }
+    }
 
     void FiniteVolume::LimitedVRWorkspace::Build(const Data &data, const CFV::FVField &mean,
                                                  R::Array<real> &previous,
@@ -114,7 +136,7 @@ namespace DNDS::Cauchy
                             {
                 geometry.gates.NeighborMaximum(input, temporary, active, excludeBoundary, saturated, {settings.alphaMax, settings.contactAlphaMax, 1},
                                                overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
-                Algebra::Copy(input, temporary); });
+                CopyOwnedLVRRows(temporary, input); });
         };
         const auto merge = [&](int column)
         {
@@ -141,7 +163,7 @@ namespace DNDS::Cauchy
                 merge(1);
         }
         schedule.Submit([&]
-                        { Algebra::Copy(branches, seeds); });
+                        { CopyOwnedLVRRows(seeds, branches); });
         for (int layer = 0; layer < settings.neighborLayers; ++layer)
             maximum(branches, branchHalo, {true, false, false}, false, settings.saturatedOnly);
         schedule.Submit([&]

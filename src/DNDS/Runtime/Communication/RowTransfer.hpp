@@ -288,6 +288,16 @@ namespace DNDS::Runtime
         /// False selects portable MPI's controller-side producer-readiness
         /// bridge. This is a provider capability, not a device-location test.
         bool SupportsStreamEnqueue() const { return bool(_provider); }
+        /// Common managed launch for CPU-visible input (MPI), or input already
+        /// ordered on the communication lane (native providers). Native launch
+        /// retains payload/provider owners through actual stream retirement.
+        TransferOperation SubmitReady(EagerEngine &engine, const ExecutionStream &communication,
+                                      bool callerValid = true) const;
+        /// Import the producer prefix, then submit on the communication lane.
+        /// Native providers use stream events without a host wait. Portable MPI
+        /// requires controller progress/readiness and is not graph-capturable.
+        TransferOperation SubmitAfter(EagerEngine &engine, const ExecutionStream &communication,
+                                      StreamEvent producer, bool callerValid = true) const;
         /// One active Begin operation per binding. Default remains isolated persistent
         /// requests. Options select shared context/tags and transient requests.
         /// Collective: all ranks call in the same order, including empty ranks.
@@ -349,6 +359,7 @@ namespace DNDS::Runtime
     {
         struct ManagedState;
         std::shared_ptr<ManagedState> _managed;
+        std::shared_ptr<StreamEvent> _nativeCompletion;
         StreamEvent ManagedCompletion() const;
         struct WorkerState;
         std::unique_ptr<WorkerState> _worker;
@@ -379,10 +390,20 @@ namespace DNDS::Runtime
         void WaitDestinationReady();
         void Wait();
         bool Test();
-        /// Full completion of a managed stream begin. The creating runtime
+        /// Full completion of a managed MPI or native stream submission. The creating runtime
         /// retains and progresses the transfer after this handle is released.
         /// Raw-context and unmanaged provider operations reject this query.
+        /// Native events can be imported by matching device streams directly;
+        /// use EnqueueWait for a portable MPI -> device consumer bridge.
         StreamEvent CompletionEvent() const;
+        /// Insert consumer ordering using this transport's completion contract.
+        /// Native transfers import a native event. Portable MPI -> CUDA must
+        /// progress/wait on the controller before device submission: this is an
+        /// explicit non-capturable bridge, never a fabricated CUDA event.
+        /// CPU consumers remain queued and do not block a worker on MPI.
+        void EnqueueWait(const ExecutionStream &consumer) const;
+        /// Portable MPI may need controller work and cannot be graph captured.
+        bool RequiresHostProgress() const { return !_nativeCompletion; }
     };
 
     /// Opt-in prepared CPU MPI bundle; existing separate starts remain default.

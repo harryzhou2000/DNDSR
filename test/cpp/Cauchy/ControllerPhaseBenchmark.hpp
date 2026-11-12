@@ -246,17 +246,17 @@ namespace CauchyBenchmark
                     value(iCell, 4) += .001 * value(iCell, 0);
             }
             MPI_Barrier(mpi.comm);
-            C::NonlinearProfile profile;
-            const auto report = solver.Solve(trialState, sourceState, 1e5, 1, 0, 0, {1, 0, std::ref(profile)});
-            DNDS_check_throw_info(report.iterations == 1 && report.linearIterations == 5 && profile.residualEvaluations == 2 &&
+            auto profile = std::make_shared<C::NonlinearProfile>();
+            const auto report = solver.Solve(trialState, sourceState, 1e5, 1, 0, 0, {1, 0, profile});
+            DNDS_check_throw_info(report.iterations == 1 && report.linearIterations == 5 && profile->residualEvaluations == 2 &&
                                       report.residual[4] < report.initialResidual[4],
                                   "nonlinear benchmark did not perform the declared correction or reduce its defect");
             double sections = 0;
             for (int phase = 0; phase < C::NonlinearProfile::Total; ++phase)
-                sections += profile.seconds[phase];
-            DNDS_check_throw_info(profile.seconds[C::NonlinearProfile::Total] >= sections, "nonlinear benchmark sections overlap");
+                sections += profile->seconds[phase];
+            DNDS_check_throw_info(profile->seconds[C::NonlinearProfile::Total] >= sections, "nonlinear benchmark sections overlap");
             for (int phase = 0; phase < C::NonlinearProfile::PhaseNumber; ++phase)
-                accumulated.seconds[phase] += profile.seconds[phase] / repetitions;
+                accumulated.seconds[phase] += profile->seconds[phase] / repetitions;
         }
         std::array<double, C::NonlinearProfile::PhaseNumber + 1> maximum{}, average{};
         double remainder = accumulated.seconds[C::NonlinearProfile::Total];

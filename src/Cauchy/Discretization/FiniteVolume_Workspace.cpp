@@ -7,35 +7,6 @@
 namespace DNDS::Cauchy
 {
     namespace R = Runtime;
-    namespace
-    {
-        EquationDofs BindFields(const EquationDofs &prototype, Algebra::DofBundle fields,
-                                index modes)
-        {
-            auto schema = prototype.Schema();
-            std::vector<EquationDofBinding> bindings;
-            for (index iBlock = 0; iBlock < prototype.BlockNumber(); ++iBlock)
-            {
-                const auto location = prototype.LocateBlock(iBlock);
-                auto &block = schema.blocks[iBlock];
-                bindings.push_back({block.name, prototype.Fields().Name(location.physicalField),
-                                    location.firstComponent * modes});
-                if (modes != 1)
-                {
-                    auto components = std::move(block.components);
-                    block.components.clear();
-                    block.vectorStarts.clear();
-                    for (const auto &component : components)
-                        for (index mode = 0; mode < modes; ++mode)
-                            block.components.push_back({component.name + ":mode" + std::to_string(mode),
-                                                        component.units, "polynomial-coefficient"});
-                }
-            }
-            if (modes != 1)
-                schema.family = "polynomial:" + schema.family;
-            return {std::move(schema), std::move(fields), std::move(bindings)};
-        }
-    }
 
     std::vector<FiniteVolume::Workspace::Field> FiniteVolume::Workspace::BuildFields(const Data &data, const EquationDofs &state, bool meanOnly)
     {
@@ -189,7 +160,7 @@ namespace DNDS::Cauchy
         for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             bundle.Add(state.Fields().Name(iField), CFV::FVField(space, fields[iField].boundaryValues,
                                                                  R::Array<real>(R::RowLayout::Dense(0, state.PhysicalField(iField).Width()))));
-        return BindFields(state, std::move(bundle), 1);
+        return FiniteVolumeDetail::BindFieldSchema(state, std::move(bundle), 1);
     }
     FiniteVolume::Workspace::Workspace(std::shared_ptr<const Data> data, EquationDofs &state,
                                        std::optional<Physics::Chemistry::ChemicalWorkerPool> pool, bool meanTrial)

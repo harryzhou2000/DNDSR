@@ -56,8 +56,11 @@ namespace DNDS::ODE
         /// restore recreates bindings against the caller-provided trial.
         struct ActiveCheckpoint
         {
-            int schemaVersion = 1;
+            int schemaVersion = 2;
             std::string method;
+            /// Mathematical method parameters, not stopping/output controls.
+            /// Active stages cannot be interpreted using another DITR tableau.
+            std::optional<DITRSettings> ditrSettings;
             real pendingDt = 0, startTime = 0;
             bool pendingSteady = false, stagesActive = false, stagePrepared = false;
             int nextStage = 0;
@@ -403,6 +406,8 @@ namespace DNDS::ODE
         {
             ActiveCheckpoint checkpoint;
             checkpoint.method = _method;
+            if (_ditr)
+                checkpoint.ditrSettings = _ditrSettings;
             checkpoint.pendingDt = _pendingDt;
             checkpoint.startTime = _startTime;
             checkpoint.pendingSteady = _pendingSteady;
@@ -456,9 +461,23 @@ namespace DNDS::ODE
         {
             RunLocal([&]
                      {
-                DNDS_check_throw_info(checkpoint.schemaVersion == 1 && checkpoint.method == _method &&
+                DNDS_check_throw_info(checkpoint.schemaVersion == 2 && checkpoint.method == _method &&
                                           checkpoint.names.size() == checkpoint.fields.size(),
                                       "time checkpoint method or payload schema differs");
+                // Check the mathematical signature before mutating trial or
+                // discarding an existing group. Accepted-step restarts may
+                // change methods; an exact internal restart must not combine
+                // stored stage/rate values with different method coefficients.
+                DNDS_check_throw_info(bool(checkpoint.ditrSettings) == bool(_ditr),
+                                      "time checkpoint method parameters are missing or unexpected");
+                if (_ditr)
+                {
+                    checkpoint.ditrSettings->Validate();
+                    DNDS_check_throw_info(checkpoint.ditrSettings->fraction == _ditrSettings.fraction &&
+                                              checkpoint.ditrSettings->theta == _ditrSettings.theta &&
+                                              checkpoint.ditrSettings->variant == _ditrSettings.variant,
+                                          "time checkpoint DITR coefficients differ");
+                }
                 const auto payload = [&](const std::string &name) -> const Field &
                 {
                     const auto found = std::find(checkpoint.names.begin(), checkpoint.names.end(), name);

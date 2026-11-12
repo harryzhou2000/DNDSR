@@ -195,15 +195,15 @@ namespace DNDS::Cauchy
         NonlinearIterationReport initial;
         initial.residual.resize(size_t(endpoint.ComponentNumber()));
         auto coupledControl = ProgressControl();
-        coupledControl.state.Emplace(_state.coupledNonlinear);
+        coupledControl.state = _state.coupledNonlinear;
         coupledControl.resume = resume;
         if (!resume)
         {
-            ++_state.coupledNonlinear.attempt;
-            _state.coupledNonlinear.convergenceComponents = settings.residualComponents;
+            ++_state.coupledNonlinear->attempt;
+            _state.coupledNonlinear->convergenceComponents = settings.residualComponents;
         }
         else
-            DNDS_check_throw_info(_state.coupledNonlinear.convergenceComponents == settings.residualComponents,
+            DNDS_check_throw_info(_state.coupledNonlinear->convergenceComponents == settings.residualComponents,
                                   "restored DITR convergence components differ");
         DNDS_check_throw_info(_execution.nonlinearSetup,
                               "DITR update policy was not resolved");

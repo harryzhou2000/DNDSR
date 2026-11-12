@@ -48,7 +48,7 @@ namespace DNDS::Cauchy
         std::optional<R::Array<real>> cellRHSAlpha;
         real reconstructionTolerance;
         index flowFirst = -1, speciesFirst = -1, ransFirst = -1;
-        NonlinearSolveState nonlinearState;
+        std::shared_ptr<NonlinearSolveState> nonlinearState = std::make_shared<NonlinearSolveState>();
         std::unique_ptr<NonlinearSolveSetup> setup;
 
         /// Lifetime retained by every callback in one externally phased solve.
@@ -65,7 +65,7 @@ namespace DNDS::Cauchy
             Algebra::ComponentSelection selection;
             R::MetadataBuffer<uint8_t> activeComponents;
             OptionalRef<const EquationDofs> cachedRate;
-            NonlinearProfile *profile = nullptr;
+            std::shared_ptr<NonlinearProfile> profile;
             std::unique_ptr<NonlinearDetail::PhaseTimer> total;
 
             ActiveSolve(std::shared_ptr<Data> data,
@@ -75,14 +75,14 @@ namespace DNDS::Cauchy
                         Algebra::ComponentSelection selectionIn,
                         R::MetadataBuffer<uint8_t> active,
                         OptionalRef<const EquationDofs> cached,
-                        NonlinearProfile *profileIn,
+                        std::shared_ptr<NonlinearProfile> profileIn,
                         std::unique_ptr<NonlinearDetail::PhaseTimer> totalIn)
                 : owner(std::move(data)), session(std::move(access)),
                   state(stateIn.NumericAlias()), source(sourceIn.NumericAlias()), mass(massIn),
                   rhsScale(rhsScaleIn), time(timeIn), stage(stageIn),
                   selection(std::move(selectionIn)),
                   activeComponents(std::move(active)), cachedRate(cached),
-                  profile(profileIn),
+                  profile(std::move(profileIn)),
                   total(std::move(totalIn))
             {
             }
@@ -360,7 +360,7 @@ namespace DNDS::Cauchy
         auto active = std::make_shared<Data::ActiveSolve>(
             _data, std::move(access), state, source, mass, rhsScale, time,
             stage, std::move(selection), std::move(activeComponents),
-            OptionalRef<const EquationDofs>{}, control.profile.Get(),
+            OptionalRef<const EquationDofs>{}, control.profile,
             std::move(total));
 
         const auto evaluate = [active]
@@ -576,7 +576,7 @@ namespace DNDS::Cauchy
         auto engine = data.stream.LockEngine();
         if (control.profile)
             *control.profile = {};
-        auto *profile = control.profile.Get();
+        const auto profile = control.profile;
         const NonlinearDetail::PhaseTimer total(profile, NonlinearProfile::Total);
         const index nv = data.binding.snapshot.ComponentNumber();
         Algebra::ComponentSelection selection(nv);
@@ -765,7 +765,7 @@ namespace DNDS::Cauchy
                 report.reconstructionRelativeUpdate = 0;
             advance(report);
             report.iterations = 1;
-            auto &stateSnapshot = data.nonlinearState;
+            auto &stateSnapshot = *data.nonlinearState;
             stateSnapshot.stage = stage;
             stateSnapshot.coupledStage = -1;
             stateSnapshot.iteration = 1;
@@ -801,7 +801,7 @@ namespace DNDS::Cauchy
     const NonlinearSolveState &NonlinearSolver::State() const
     {
         DNDS_check_throw_info(_data, "nonlinear session was moved");
-        return _data->nonlinearState;
+        return *_data->nonlinearState;
     }
     void NonlinearSolver::RestoreState(const NonlinearSolveState &state)
     {
@@ -809,20 +809,20 @@ namespace DNDS::Cauchy
         const auto validated = NonlinearSolveState::FromJson(state.ToJson());
         DNDS_check_throw_info(validated.convergenceComponents == _data->settings.residualComponents,
                               "restored nonlinear convergence components differ from current solver");
-        _data->nonlinearState = validated;
+        *_data->nonlinearState = validated;
     }
     void NonlinearSolver::BindControllerState(NonlinearSolveControl &control)
     {
         DNDS_check_throw_info(_data, "nonlinear session was moved");
         if (!control.resume)
         {
-            ++_data->nonlinearState.attempt;
-            _data->nonlinearState.convergenceComponents = _data->settings.residualComponents;
+            ++_data->nonlinearState->attempt;
+            _data->nonlinearState->convergenceComponents = _data->settings.residualComponents;
         }
         else
-            DNDS_check_throw_info(_data->nonlinearState.convergenceComponents == _data->settings.residualComponents,
+            DNDS_check_throw_info(_data->nonlinearState->convergenceComponents == _data->settings.residualComponents,
                                   "restored nonlinear convergence components differ from current controls");
-        control.state.Emplace(_data->nonlinearState);
+        control.state = _data->nonlinearState;
     }
     bool NonlinearSolver::ReconstructionConverged() const
     {

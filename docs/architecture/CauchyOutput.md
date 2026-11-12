@@ -116,6 +116,13 @@ active solve at that boundary rather than restarting its stage; continuation
 tests compare the following nonlinear result and accepted step with an
 uninterrupted run.
 
+The active time payload uses schema 2 and includes DITR's variant, stage
+fraction and transformed-equation weight. Exact internal restore rejects a
+different mathematical signature before replacing live stage state; it never
+reuses saved stages/rates with new coefficients. Older active payloads without
+this signature are rejected. Accepted-step restart remains separately flexible
+because it starts a new step rather than resuming an existing stage equation.
+
 Exact internal output is rejected for SSPRK3 and, currently, for multi-domain
 simulations. A domain callback cannot publish a truthful simulation-wide exact
 snapshot while another colocated or dislocated domain is at a different

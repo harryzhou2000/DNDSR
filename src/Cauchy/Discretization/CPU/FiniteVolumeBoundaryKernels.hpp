@@ -83,8 +83,8 @@ namespace DNDS::Cauchy::CPU
         real time = 0;
     };
 
-    void FillPrimitiveBoundary(const PrimitiveBoundaryRequest &request,
-                               SpanView<const BoundaryCondition> conditions);
+    NumericalStatus FillPrimitiveBoundary(const PrimitiveBoundaryRequest &request,
+                                          SpanView<const BoundaryCondition> conditions) noexcept;
 
     using BoundaryPointRows = Runtime::ArrayView<const BoundaryPoint, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>>;
     NumericalStatus ValidateInterfacePacketRows(Algebra::DofComponentView<const real> rows, BoundaryPointRows points,

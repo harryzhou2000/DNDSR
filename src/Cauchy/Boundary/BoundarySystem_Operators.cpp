@@ -56,10 +56,12 @@ namespace DNDS::Cauchy
             {
                 DNDS_assert_info(condition.hasPerfectGasState && !rhoY.nSpecies,
                                  "nonconstant analytic boundary requires a perfect-gas flow5 profile");
-                const auto value = ProfileValue(condition.profile, condition.prescribedPrimitive,
-                                                evaluator.PerfectGasModel(),
-                                                frame ? frame.Get()->WorldPoint(point) : point, time);
-                return frame ? frame.Get()->LocalState(value) : value;
+                const auto value = TryProfileValue(condition.profile, condition.prescribedPrimitive,
+                                                   evaluator.PerfectGasModel(),
+                                                   frame ? frame.Get()->WorldPoint(point) : point, time);
+                if (!value)
+                    return value.status;
+                return frame ? frame.Get()->LocalState(value.value) : value.value;
             }
             if (kind == BoundaryKind::Farfield || kind == BoundaryKind::Analytic)
             {

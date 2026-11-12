@@ -119,7 +119,7 @@ namespace DNDS::Cauchy
                                                                  checkpoint.middleHistory
                                                                      ? OptionalRef<const Runtime::Array<real>>(*checkpoint.middleHistory)
                                                                      : OptionalRef<const Runtime::Array<real>>{});
-            _state.coupledNonlinear = checkpoint.nonlinear;
+            *_state.coupledNonlinear = checkpoint.nonlinear;
         }
         else
             _execution.implicit->RestoreState(checkpoint.nonlinear);

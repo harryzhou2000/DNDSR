@@ -67,6 +67,16 @@ namespace DNDS::Cauchy
         result->time.bdfPreviousDt = time.at("bdf_previous_dt").get<real>();
         result->time.ditrTime = time.at("ditr_time").get<real>();
         result->time.ditrDt = time.at("ditr_dt").get<real>();
+        if (time.contains("ditr_settings"))
+        {
+            const auto &parameters = time.at("ditr_settings");
+            const auto variant = parameters.at("variant").get<std::string>();
+            DNDS_check_throw_info(variant == "U2R1" || variant == "U2R2",
+                                  "unknown exact-checkpoint DITR variant");
+            result->time.ditrSettings = ODE::DITRSettings{
+                parameters.at("fraction").get<real>(), parameters.at("theta").get<real>(),
+                variant == "U2R1" ? ODE::DITRVariant::U2R1 : ODE::DITRVariant::U2R2};
+        }
         std::set<std::string> payloadNames;
         index payloadOrdinal = 0;
         for (const auto &payload : time.at("payloads"))

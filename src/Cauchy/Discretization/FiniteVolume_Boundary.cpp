@@ -118,7 +118,8 @@ namespace DNDS::Cauchy
             primitiveRequest.incoming = incoming;
             primitiveRequest.flowFirst = flowFirst;
             primitiveRequest.time = time;
-            CPU::FillPrimitiveBoundary(primitiveRequest, conditions);
+            RequireNumericalSuccess(CPU::FillPrimitiveBoundary(primitiveRequest, conditions),
+                                    "primitive boundary evaluation");
         }
     }
 }

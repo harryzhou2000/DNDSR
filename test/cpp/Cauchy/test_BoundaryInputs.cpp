@@ -11,6 +11,33 @@ namespace R = DNDS::Runtime;
 using I = DNDS::index;
 static DNDS::MPIInfo mpi;
 
+TEST_CASE("Analytic boundary numerical failures return status through both equation entries")
+{
+    C::DomainSettings settings;
+    auto &input = settings.boundaries["4"];
+    input.kind = "analytic";
+    input.profile.kind = "isentropicVortex";
+    input.profile.strength = 100;
+    input.profile.center = {0, 0, 0};
+    const auto equation = C::EquationSystem::Resolve(settings.equation);
+    C::BoundarySystem boundaries(settings.boundaries, equation);
+    const auto &condition = boundaries.At(4);
+    const auto inside = equation.Gas().Conservative({1, 0, 0, 0, 1});
+    const C::Vector3 normal{1, 0, 0};
+    const auto fixed = condition.TryExterior(equation.Gas(), inside, normal);
+    CHECK_FALSE(fixed);
+    CHECK(fixed.status.code == DNDS::NumericalError::InvalidState);
+    auto evaluator = equation.MakePointEvaluator({}, {});
+    C::BoundaryPointOperator boundary(equation);
+    std::vector<DNDS::real> point(inside.begin(), inside.end());
+    const auto generic = boundary.TryEvaluate(point, condition, 0, normal, {}, evaluator,
+                                              {}, 0, C::BoundaryPointStateKind::ExteriorState);
+    CHECK_FALSE(generic);
+    CHECK(generic.code == DNDS::NumericalError::InvalidState);
+    // Only the checked setup/binding convenience is allowed to throw.
+    CHECK_THROWS(condition.Exterior(equation.Gas(), inside, normal));
+}
+
 TEST_CASE("DMR bottom producer resolves prescribed and reflecting pieces in world coordinates")
 {
     C::DomainSettings settings;

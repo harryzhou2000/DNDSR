@@ -675,6 +675,13 @@ TEST_CASE("Time facade restores DITR coupled state at a completed iteration boun
     auto defect = O::FieldTimeOperations::NewVector(trial);
     AdvanceDITROnce(original, group, trial, defect);
     const auto checkpoint = original.CaptureActive(trial);
+    auto differentMethod = checkpoint;
+    REQUIRE(differentMethod.ditrSettings);
+    differentMethod.ditrSettings->fraction = .5;
+    A::Fill(restoredTrial, -.33);
+    CHECK_THROWS_WITH(restored.RestoreActive(differentMethod, restoredTrial),
+                      doctest::Contains("DITR coefficients differ"));
+    CHECK(Value(restoredTrial) == -.33);
     restored.RestoreActive(checkpoint, restoredTrial);
     CHECK(Value(restoredTrial) == Value(trial));
     const auto resumed = restored.ActiveGroup();

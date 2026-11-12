@@ -126,8 +126,8 @@ namespace DNDS::Cauchy::CPU
                 destination(iPoint, j) = source(sourceRows(iPoint, 0), j);
     }
 
-    void FillPrimitiveBoundary(const PrimitiveBoundaryRequest &request,
-                               SpanView<const BoundaryCondition> conditions)
+    NumericalStatus FillPrimitiveBoundary(const PrimitiveBoundaryRequest &request,
+                                          SpanView<const BoundaryCondition> conditions) noexcept
     {
         std::vector<real> cellMean(size_t(request.componentNumber));
         for (index iPoint = 0; iPoint < request.output.RowCount(); ++iPoint)
@@ -147,9 +147,12 @@ namespace DNDS::Cauchy::CPU
             }
             else
             {
-                state = condition.Exterior(
+                const auto exterior = condition.TryExterior(
                     request.gas, inside, sample.normal, sample.location,
                     request.time, OptionalRef<const RigidFrame>(request.frame));
+                if (!exterior)
+                    return exterior.status.At(sample.cell, iPoint);
+                state = exterior.value;
                 for (int j = 0; j < 5; ++j)
                     state[j] = .5 * (inside[j] + state[j]);
             }
@@ -160,6 +163,7 @@ namespace DNDS::Cauchy::CPU
             for (int j = 0; j < 5; ++j)
                 request.output(iPoint, j) = converted[j];
         }
+        return {};
     }
 
     NumericalStatus ValidateInterfacePacketRows(Algebra::DofComponentView<const real> rows, BoundaryPointRows points,

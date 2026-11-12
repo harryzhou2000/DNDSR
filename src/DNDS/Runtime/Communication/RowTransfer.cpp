@@ -1341,8 +1341,50 @@ namespace DNDS::Runtime
         return operations;
     }
     TransferOperation::TransferOperation() = default;
+    TransferOperation TransferBinding::SubmitReady(EagerEngine &engine, const ExecutionStream &communication,
+                                                   bool callerValid) const
+    {
+        DNDS_check_throw_info(engine.Owns(communication), "transfer stream belongs to another runtime");
+        if (!_provider)
+            return engine.ChecksAccess() ? BeginReadyChecked(communication, callerValid)
+                                         : BeginReadyScheduled(communication, callerValid);
+        DNDS_check_throw_info(callerValid, "native transfer caller validation failed");
+        Enqueue(engine, communication);
+        TransferOperation operation;
+        operation._nativeCompletion = std::make_shared<StreamEvent>(communication.Record());
+        return operation;
+    }
+    TransferOperation TransferBinding::SubmitAfter(EagerEngine &engine, const ExecutionStream &communication,
+                                                   StreamEvent producer, bool callerValid) const
+    {
+        DNDS_check_throw_info(engine.Owns(communication), "transfer stream belongs to another runtime");
+        if (!_provider)
+        {
+            // Portable MPI posting needs the producer visible to its controller.
+            // Do not enqueue a CPU waiter that would occupy a worker or call MPI
+            // from a thread forbidden by the initialized MPI thread level.
+            producer.WaitHost();
+        }
+        communication.WaitFor(std::move(producer));
+        return SubmitReady(engine, communication, callerValid);
+    }
+    void TransferOperation::EnqueueWait(const ExecutionStream &consumer) const
+    {
+        auto completion = CompletionEvent();
+        if (!_nativeCompletion && consumer.Context().device.space == MemorySpace::CUDA)
+        {
+            // Portable MPI has no native CUDA stream completion. Progress its
+            // requests and any device unpack on the permitted controller, then
+            // import the completed ordering record. This bridge is explicitly
+            // non-capturable; ordinary Stream::WaitFor remains strict.
+            completion.WaitHost();
+        }
+        consumer.WaitFor(std::move(completion));
+    }
     StreamEvent TransferOperation::ManagedCompletion() const
     {
+        if (_nativeCompletion)
+            return *_nativeCompletion;
         if (!_managed)
             return {};
         StreamEvent result(_managed);
@@ -1351,12 +1393,16 @@ namespace DNDS::Runtime
     }
     StreamEvent TransferOperation::CompletionEvent() const
     {
+        if (_nativeCompletion)
+            return *_nativeCompletion;
         DNDS_check_throw_info(_managed,
                               "completion event requires a managed transfer");
         return ManagedCompletion();
     }
     std::shared_ptr<const AccessOrder> TransferOperation::CheckedOrder() const
     {
+        if (_nativeCompletion)
+            return _nativeCompletion->_order;
         if (_managed)
             return _managed->order;
         if (_worker)
@@ -1372,7 +1418,7 @@ namespace DNDS::Runtime
         {
             try
             {
-                if (!_managed)
+                if (!_managed && !_nativeCompletion)
                     Wait();
             }
             catch (...)
@@ -1380,6 +1426,7 @@ namespace DNDS::Runtime
                 MPI::Abort(_state ? _state->binding->comm : MPI_COMM_WORLD, "transfer replacement completion failed");
             }
             _managed = std::move(other._managed);
+            _nativeCompletion = std::move(other._nativeCompletion);
             _state = std::move(other._state);
             _provider = std::move(other._provider);
             _worker = std::move(other._worker);
@@ -1388,7 +1435,7 @@ namespace DNDS::Runtime
     }
     TransferOperation::~TransferOperation()
     {
-        if (_managed)
+        if (_managed || _nativeCompletion)
             return; // Runtime inventory, not handle scope, owns retirement.
         // Waiting while unwinding a rank-local exception can strand this rank
         // before the application reaches its fatal handler: a peer may never
@@ -1449,6 +1496,11 @@ namespace DNDS::Runtime
     }
     void TransferOperation::WaitDestinationReady()
     {
+        if (_nativeCompletion)
+        {
+            _nativeCompletion->WaitHost();
+            return;
+        }
         if (_managed)
         {
             if (_managed->done.load(std::memory_order_acquire))
@@ -1560,6 +1612,11 @@ namespace DNDS::Runtime
     }
     void TransferOperation::Wait()
     {
+        if (_nativeCompletion)
+        {
+            _nativeCompletion->WaitHost();
+            return;
+        }
         if (_managed)
         {
             _managed->Wait();
@@ -1606,6 +1663,8 @@ namespace DNDS::Runtime
     }
     bool TransferOperation::Test()
     {
+        if (_nativeCompletion)
+            return _nativeCompletion->Ready();
         if (_managed)
             return _managed->Ready();
         if (_worker)

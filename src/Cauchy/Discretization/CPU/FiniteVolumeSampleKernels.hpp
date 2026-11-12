@@ -35,37 +35,39 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
                metric.GetCellCent(sample.other) - metric.GetCellBary(sample.other);
     }
     template <class Sample>
-    inline FlowState BoundaryFaceValue(const Sample &sample, const PerfectGas &gas, const FlowState &inside,
-                                       real time, const RigidFrame &frame, RHSScalarView incoming)
+    inline NumericalResult<FlowState> BoundaryFaceValue(const Sample &sample, const PerfectGas &gas, const FlowState &inside,
+                                                        real time, const RigidFrame &frame, RHSScalarView incoming) noexcept
     {
         if (sample.boundary.kind == BoundaryKind::Interface)
             return Load(incoming, sample.boundaryPoint);
-        return sample.boundary.FaceValue(gas, inside, {sample.normal[0], sample.normal[1], sample.normal[2]},
-                                         {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time,
-                                         OptionalRef<const RigidFrame>(frame));
+        return sample.boundary.TryFaceValue(gas, inside, {sample.normal[0], sample.normal[1], sample.normal[2]},
+                                            {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time,
+                                            OptionalRef<const RigidFrame>(frame));
     }
     template <class Sample>
-    inline FlowState BoundaryExterior(const Sample &sample, const PerfectGas &gas, const FlowState &inside,
-                                      real time, const RigidFrame &frame, RHSScalarView incoming)
+    inline NumericalResult<FlowState> BoundaryExterior(const Sample &sample, const PerfectGas &gas, const FlowState &inside,
+                                                       real time, const RigidFrame &frame, RHSScalarView incoming) noexcept
     {
         if (sample.boundary.kind == BoundaryKind::Interface)
             return Load(incoming, sample.boundaryPoint);
-        return sample.boundary.Exterior(gas, inside, {sample.normal[0], sample.normal[1], sample.normal[2]},
-                                        {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time,
-                                        OptionalRef<const RigidFrame>(frame));
+        return sample.boundary.TryExterior(gas, inside, {sample.normal[0], sample.normal[1], sample.normal[2]},
+                                           {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time,
+                                           OptionalRef<const RigidFrame>(frame));
     }
     /// GradientPlan consumes a face trace; Euler's GG/LS construction consumes
     /// a mirrored exterior at twice the wall distance. This conservative mean
     /// is the matching trace, including its energy/species convention. Incoming
     /// interface packets already are prescribed point values, not ghost states.
     template <class Sample>
-    inline FlowState BoundaryGradientValue(const Sample &sample, const PerfectGas &gas, const FlowState &inside,
-                                           real time, const RigidFrame &frame, RHSScalarView incoming)
+    inline NumericalResult<FlowState> BoundaryGradientValue(const Sample &sample, const PerfectGas &gas, const FlowState &inside,
+                                                            real time, const RigidFrame &frame, RHSScalarView incoming) noexcept
     {
         auto result = BoundaryExterior(sample, gas, inside, time, frame, incoming);
+        if (!result)
+            return result.status;
         if (sample.boundary.kind != BoundaryKind::Interface)
             for (int j = 0; j < 5; ++j)
-                result[j] = .5 * (inside[j] + result[j]);
+                result.value[j] = .5 * (inside[j] + result.value[j]);
         return result;
     }
 }

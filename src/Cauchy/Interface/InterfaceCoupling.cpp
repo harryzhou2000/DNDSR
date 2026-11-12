@@ -15,6 +15,24 @@ namespace DNDS::Cauchy
     {
         using SchemaJson = nlohmann::ordered_json;
 
+        std::shared_ptr<R::CommunicationContext> CouplingContext(
+            const SimulationConfig &config,
+            std::shared_ptr<R::CommunicationContext> context)
+        {
+            DNDS_check_throw_info(context, "interface coupling requires an owning communication context");
+            // Every control rank has the complete resolved domain list,
+            // including dislocated nonmembers. Any requesting domain enables
+            // agreement for this shared protocol; local membership must never
+            // decide whether a collective is entered. WithPreflight shares
+            // the communicator and tag namespace, without duplication.
+            bool collectiveChecks = false;
+            for (const auto &domain : config.Domains())
+                collectiveChecks |= domain.settings.implicit.collectiveChecks;
+            return context->ChecksCollectivePreflight() == collectiveChecks
+                       ? std::move(context)
+                       : context->WithPreflight(collectiveChecks);
+        }
+
         std::string DescribeSchema(const EquationSchema &schema)
         {
             SchemaJson blocks = SchemaJson::array();
@@ -185,7 +203,6 @@ namespace DNDS::Cauchy
               compute(engine.CreateCPUStream()),
               communication(engine.CreateCPUStream())
         {
-            DNDS_check_throw_info(control, "interface coupling requires an owning communication context");
             mpi = MPIInfo(control->Communicator());
         }
     };
@@ -219,7 +236,7 @@ namespace DNDS::Cauchy
         std::shared_ptr<Runtime::CommunicationContext> context,
         const std::vector<std::optional<FiniteVolume>> &localDomains,
         const std::vector<std::optional<Physics::Chemistry::ChemicalWorkerPool>> &workers)
-        : _data(std::make_shared<Data>(std::move(context)))
+        : _data(std::make_shared<Data>(CouplingContext(config, std::move(context))))
     {
         auto &data = *_data;
         const auto coupling = data.mpi.comm;
@@ -227,8 +244,8 @@ namespace DNDS::Cauchy
             data.refreshEveryNonlinearIteration =
                 config.Interfaces().front().refreshCadence ==
                 "nonlinearIteration";
-        MPI::LocalStage(data.mpi, [&]
-                        {
+        data.control->LocalStage([&]
+                                 {
             DNDS_check_throw_info(localDomains.size()==config.Domains().size(),"interface domain descriptor count differs");
             data.discrete.resize(localDomains.size());
             data.workers = workers;
@@ -373,8 +390,8 @@ namespace DNDS::Cauchy
         auto state = std::make_shared<RefreshOperation::State>(
             _data, _data->Enter(), time, epoch);
         auto &data = *_data;
-        MPI::LocalStage(data.mpi, [&]
-                        {
+        data.control->LocalStage([&]
+                                 {
             DNDS_check_throw_info(domains.size()==data.discrete.size()&&std::isfinite(time),"invalid interface refresh descriptors/time");
             for(index iDomain=0;iDomain<index(domains.size());++iDomain)
             {
@@ -455,14 +472,14 @@ namespace DNDS::Cauchy
                                                   ? localSchema
                                                   : std::string{};
                     BroadcastString(donorSchema, descriptorRoot, data.mpi.comm);
-                    MPI::LocalStage(data.mpi, [&]
-                                    {
+                    data.control->LocalStage([&]
+                                             {
                     if(publication)
                         DNDS_check_throw_info(localSchema==donorSchema,
                                               "interface donor ranks publish different equation schemas"); });
                     EquationSchema schema;
-                    MPI::LocalStage(data.mpi, [&]
-                                    { schema = ParseSchema(donorSchema); });
+                    data.control->LocalStage([&]
+                                             { schema = ParseSchema(donorSchema); });
                     int receiverRoot = receiver ? data.mpi.rank : data.mpi.size;
                     MPI::Allreduce(MPI_IN_PLACE, &receiverRoot, 1, MPI_INT, MPI_MIN,
                                    data.mpi.comm);
@@ -470,8 +487,8 @@ namespace DNDS::Cauchy
                         receiverRoot >= 0 && receiverRoot < data.mpi.size,
                         "interface connection has no receiver equation schema");
                     std::vector<index> mapping;
-                    MPI::LocalStage(data.mpi, [&]
-                                    {
+                    data.control->LocalStage([&]
+                                             {
                     if(receiver)
                         mapping=schema.MapComponentsTo(receiver->Equation().Schema()); });
                     index mappingSize = data.mpi.rank == receiverRoot
@@ -487,8 +504,8 @@ namespace DNDS::Cauchy
                         mapping.resize(size_t(mappingSize));
                     MPI::Bcast(mapping.data(), int(mappingSize), MPI_INT64_T,
                                receiverRoot, data.mpi.comm);
-                    MPI::LocalStage(data.mpi, [&]
-                                    {
+                    data.control->LocalStage([&]
+                                             {
                     if(receiver)
                         DNDS_check_throw_info(
                             mapping==schema.MapComponentsTo(receiver->Equation().Schema()),
@@ -497,8 +514,8 @@ namespace DNDS::Cauchy
                     connection.receiverComponents = R::MetadataBuffer<index>(mapping);
                 }
                 else
-                    MPI::LocalStage(data.mpi, [&]
-                                    {
+                    data.control->LocalStage([&]
+                                             {
                     if(publication)
                         DNDS_check_throw_info(
                             localSchema==connection.donorSchema,
@@ -514,8 +531,8 @@ namespace DNDS::Cauchy
                     descriptor = localDescriptor;
                 MPI::Bcast(descriptor.data(), descriptorSize, MPI_INT64_T,
                            descriptorRoot, data.mpi.comm);
-                MPI::LocalStage(data.mpi, [&]
-                                {
+                data.control->LocalStage([&]
+                                         {
                 if (publication)
                     DNDS_check_throw_info(
                         localDescriptor == descriptor,
@@ -554,8 +571,8 @@ namespace DNDS::Cauchy
             }
             else
             {
-                MPI::LocalStage(data.mpi, [&]
-                                {
+                data.control->LocalStage([&]
+                                         {
                     DNDS_check_throw_info(
                         route.epoch &&
                             route.epoch->acceptedStep == epoch.acceptedStep &&
@@ -594,8 +611,8 @@ namespace DNDS::Cauchy
                 std::optional<Geom::BoundaryPatch> patch;
                 std::optional<CFV::FiniteVolumePlan> metrics;
                 std::optional<CFV::VariationalReconstructionPlan> reconstruction;
-                MPI::LocalStage(data.mpi, [&]
-                                {
+                data.control->LocalStage([&]
+                                         {
                     points=R::Array<real>(R::RowLayout::Dense(connection.receiverRows.RowCount(),3));
                     ids=R::Array<index>(R::RowLayout::Dense(connection.receiverRows.RowCount(),1));
                     if(donor)
@@ -628,8 +645,8 @@ namespace DNDS::Cauchy
                 search.coarseBoxesPerRank = connection.settings.coarseBoxesPerRank;
                 auto map = Geom::DistributedInterfacePointMap::Match(connection.context, std::move(patch), points, ids,
                                                                      connection.settings.routing == "coarseBoxes" ? Geom::InterfaceRoutingMode::CoarseBoxes : Geom::InterfaceRoutingMode::AllGatherBoundary, search);
-                MPI::LocalStage(data.mpi, [&]
-                                {
+                data.control->LocalStage([&]
+                                         {
                     R::Array<index> donors(R::RowLayout::Dense(map.Size(), 1));
                     auto write = donors.Write();
                     const auto donorRows = write.View<R::FixedRows<1>>();
@@ -650,8 +667,8 @@ namespace DNDS::Cauchy
                 route.sampling.emplace(std::move(metrics),
                                        std::move(reconstruction),
                                        std::move(map));
-                MPI::LocalStage(data.mpi, [&]
-                                {
+                data.control->LocalStage([&]
+                                         {
                     const index fields = connection.donorDescriptor[1];
                     index offset = 2 + fields;
                     route.fields.resize(size_t(fields));
@@ -695,8 +712,8 @@ namespace DNDS::Cauchy
                 route.poses = std::make_pair(donorPose, receiverPose);
             }
             route.epoch = epoch;
-            MPI::LocalStage(data.mpi, [&]
-                            {
+            data.control->LocalStage([&]
+                                     {
                 for (index iField = 0;
                      iField < index(route.fields.size()); ++iField)
                 {

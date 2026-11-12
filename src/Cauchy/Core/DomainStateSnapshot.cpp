@@ -78,7 +78,7 @@ namespace DNDS::Cauchy
                                        ? domain._state.timeStepper->Method()
                                        : "ssprk3";
         const Json nonlinear = domain._state.timeStepper && method == "ditr"
-                                   ? domain._state.coupledNonlinear.ToJson()
+                                   ? domain._state.coupledNonlinear->ToJson()
                                    : (domain._execution.implicit
                                           ? domain._execution.implicit->StateJson()
                                           : NonlinearSolveState{}.ToJson());

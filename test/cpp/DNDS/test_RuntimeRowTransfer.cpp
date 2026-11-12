@@ -287,14 +287,14 @@ TEST_CASE("Managed MPI requests survive dropped handles and progress worker cons
         }
         engine.Synchronize();
         CHECK(destination.Read().At(0, 0) == 1000 * ((rank + 1) % size) + 160);
-        auto operation = checked ? binding->BeginReadyChecked(communication)
-                                 : binding->BeginReadyScheduled(communication);
+        auto operation = binding->SubmitReady(engine, communication);
+        CHECK(operation.RequiresHostProgress());
         auto event = operation.CompletionEvent();
-        operation = {}; // Runtime inventory and event retain the actual transfer.
         std::atomic<bool> core{false};
         engine.Submit(stream, [&](ExecutionContext)
                       { core = true; });
-        stream.WaitFor(event);
+        operation.EnqueueWait(stream);
+        operation = {}; // Runtime inventory and event retain the actual transfer.
         SubmitArrays(engine, stream, [](ExecutionContext, auto input, auto result)
                      {
             for (DNDS::index iRow = 0; iRow < 17; ++iRow)

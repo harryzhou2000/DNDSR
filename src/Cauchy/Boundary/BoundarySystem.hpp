@@ -80,6 +80,14 @@ namespace DNDS::Cauchy
         /// Shared kinematics for equation-specific adiabatic wall producers.
         Vector3 WallVelocityAt(const Vector3 &point,
                                OptionalRef<const RigidFrame> frame = {}) const;
+        /// Perfect-gas numerical entries return failures explicitly. Checked
+        /// convenience wrappers below are for setup, diagnostics and bindings.
+        NumericalResult<FlowState> TryFaceValue(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal,
+                                                const Vector3 &point = {}, real time = 0,
+                                                OptionalRef<const RigidFrame> frame = {}) const noexcept;
+        NumericalResult<FlowState> TryExterior(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal,
+                                               const Vector3 &point = {}, real time = 0,
+                                               OptionalRef<const RigidFrame> frame = {}) const noexcept;
         /// Physical wall trace for diagnostics/prescribed wall data. Wall normal
         /// is outward from the interior parent. Extrapolation leaves U unchanged.
         FlowState FaceValue(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal,

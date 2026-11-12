@@ -51,16 +51,16 @@ namespace
             for (I iCell = 0; iCell < fixture.fv.Metrics().NumCell(); ++iCell)
                 flow(iCell, 4) += .0001 * flow(iCell, 0);
         };
-        const auto solve = [&](C::NonlinearProfile &profile)
+        const auto solve = [&](std::shared_ptr<C::NonlinearProfile> profile)
         {
-            const auto report = solver.Solve(state, source, mass, 1, 0, 0, {1, 0, std::ref(profile)});
+            const auto report = solver.Solve(state, source, mass, 1, 0, 0, {1, 0, profile});
             DNDS_check_throw_info(!report.converged && report.iterations == 1 && report.linearIterations == 5 &&
-                                      profile.residualEvaluations == 2 && report.initialResidual[4] > 0 && report.residual[4] < report.initialResidual[4],
+                                      profile->residualEvaluations == 2 && report.initialResidual[4] > 0 && report.residual[4] < report.initialResidual[4],
                                   "nonlinear assessment changed work or failed to reduce its energy defect");
             return report;
         };
         reset();
-        C::NonlinearProfile warm;
+        auto warm = std::make_shared<C::NonlinearProfile>();
         solve(warm);
         const auto expected = Plan53::RHSFixture::Values(state);
         int provided = 0;
@@ -73,16 +73,16 @@ namespace
             {
                 reset();
                 MPI_Barrier(mpi.comm);
-                C::NonlinearProfile profile;
+                auto profile = std::make_shared<C::NonlinearProfile>();
                 const auto start = std::chrono::steady_clock::now();
                 const auto report = solve(profile);
                 wall += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() / repetitions;
                 double sum = 0;
                 for (int p = 0; p < C::NonlinearProfile::Total; ++p)
-                    sum += profile.seconds[p];
-                DNDS_check_throw_info(sum <= profile.seconds[C::NonlinearProfile::Total], "nonlinear profile phases overlap");
+                    sum += profile->seconds[p];
+                DNDS_check_throw_info(sum <= profile->seconds[C::NonlinearProfile::Total], "nonlinear profile phases overlap");
                 for (int p = 0; p < C::NonlinearProfile::PhaseNumber; ++p)
-                    phases[p] += profile.seconds[p] / repetitions;
+                    phases[p] += profile->seconds[p] / repetitions;
                 energyRatio = std::max(energyRatio, report.residual[4] / report.initialResidual[4]);
                 DNDS_check_throw_info(Plan53::RHSFixture::Values(state) == expected && Plan53::RHSFixture::Values(source) == sourceValues,
                                       "reset nonlinear trial differs or immutable source was modified");
@@ -112,8 +112,7 @@ namespace
         auto alternativeReconstruction = fixture.fv.BuildReconstructionState(alternate);
         C::NonlinearSolver other(fixture.fv, alternate, alternativeReconstruction, alternativeWork, engine, stream, settings,
                                  DNDS::Algebra::ComponentSelection(alternate.ComponentNumber()), fixture.physical.workers);
-        C::NonlinearProfile unused;
-        const auto report = other.Solve(alternate, source, mass, 1, 0, 0, {1, 0, std::ref(unused)});
+        const auto report = other.Solve(alternate, source, mass, 1, 0, 0, {1});
         const auto actual = Plan53::RHSFixture::Values(alternate);
         DNDS_check_throw_info(actual.size() == expected.size(), "storage-mode oracle field sizes differ");
         bool valid = report.iterations == 1 && report.linearIterations == 5;

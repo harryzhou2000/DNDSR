@@ -38,7 +38,7 @@ namespace DNDS::Cauchy
         std::optional<EquationDofs> reconstructionBackup;
         std::optional<Runtime::Array<real>> limitedVRBackup;
         std::unique_ptr<EquationTimeStepper> timeStepper;
-        NonlinearSolveState coupledNonlinear;
+        std::shared_ptr<NonlinearSolveState> coupledNonlinear = std::make_shared<NonlinearSolveState>();
         bool restoreReconstruction = false;
         StateEpoch epoch, trialEpoch;
         uint64_t nextTrial = 0;

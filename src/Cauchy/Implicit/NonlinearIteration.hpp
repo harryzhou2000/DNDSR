@@ -63,25 +63,23 @@ namespace DNDS::Cauchy::NonlinearDetail
     class PhaseTimer
     {
         using Clock = std::chrono::steady_clock;
-        real *_seconds = nullptr;
+        std::shared_ptr<NonlinearProfile> _profile;
+        NonlinearProfile::Phase _phase;
         Clock::time_point _start{};
 
     public:
-        PhaseTimer(NonlinearProfile *profile, NonlinearProfile::Phase phase)
-            : _seconds(profile ? &profile->seconds[phase] : nullptr)
+        PhaseTimer(std::shared_ptr<NonlinearProfile> profile, NonlinearProfile::Phase phase)
+            : _profile(std::move(profile)), _phase(phase)
         {
-            if (_seconds)
+            if (_profile)
                 _start = Clock::now();
         }
-        PhaseTimer(OptionalRef<NonlinearProfile> profile,
-                   NonlinearProfile::Phase phase)
-            : PhaseTimer(profile.Get(), phase) {}
         PhaseTimer(const PhaseTimer &) = delete;
         PhaseTimer &operator=(const PhaseTimer &) = delete;
         ~PhaseTimer()
         {
-            if (_seconds)
-                *_seconds += std::chrono::duration<real>(Clock::now() - _start).count();
+            if (_profile)
+                _profile->seconds[_phase] += std::chrono::duration<real>(Clock::now() - _start).count();
         }
     };
 

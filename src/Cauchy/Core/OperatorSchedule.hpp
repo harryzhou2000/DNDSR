@@ -72,9 +72,7 @@ namespace DNDS::Cauchy
         }
         Runtime::TransferOperation Begin(Runtime::TransferBinding &binding) const
         {
-            return _engine.ChecksAccess()
-                       ? binding.BeginReadyChecked(_communication)
-                       : binding.BeginReadyScheduled(_communication);
+            return binding.SubmitReady(_engine, _communication);
         }
         std::vector<Runtime::TransferOperation> Begin(std::vector<Runtime::TransferBinding> &bindings) const
         {
@@ -89,22 +87,13 @@ namespace DNDS::Cauchy
         /// enqueue without a host wait. Portable MPI must observe its CPU/CUDA
         /// producer before posting; its managed bridge waits only that prefix,
         /// not every lane in the engine. MPI progress remains controller-owned.
-        Runtime::StreamEvent BeginAfterCompute(Runtime::TransferBinding &binding) const
+        Runtime::TransferOperation BeginAfterCompute(Runtime::TransferBinding &binding) const
         {
-            if (binding.SupportsStreamEnqueue())
-            {
-                _communication.WaitFor(_compute.Record());
-                binding.Enqueue(_engine, _communication);
-                return _communication.Record();
-            }
-            auto operation = _engine.ChecksAccess()
-                                 ? binding.BeginChecked(_compute)
-                                 : binding.BeginScheduled(_compute);
-            return operation.CompletionEvent();
+            return binding.SubmitAfter(_engine, _communication, _compute.Record());
         }
-        std::vector<Runtime::StreamEvent> BeginAfterCompute(std::vector<Runtime::TransferBinding> &bindings) const
+        std::vector<Runtime::TransferOperation> BeginAfterCompute(std::vector<Runtime::TransferBinding> &bindings) const
         {
-            std::vector<Runtime::StreamEvent> events;
+            std::vector<Runtime::TransferOperation> events;
             events.reserve(bindings.size());
             for (auto &binding : bindings)
                 events.push_back(BeginAfterCompute(binding));
@@ -115,13 +104,13 @@ namespace DNDS::Cauchy
         /// work cannot start until the runtime progresses the managed transfer.
         void Await(Runtime::TransferOperation &operation) const
         {
-            _compute.WaitFor(operation.CompletionEvent());
+            operation.EnqueueWait(_compute);
             operation = {};
         }
         void Await(std::vector<Runtime::TransferOperation> &operations) const
         {
             for (auto &operation : operations)
-                _compute.WaitFor(operation.CompletionEvent());
+                operation.EnqueueWait(_compute);
             operations.clear();
         }
         void Await(std::vector<Runtime::StreamEvent> &events) const
@@ -139,17 +128,36 @@ namespace DNDS::Cauchy
         {
             auto publication = std::make_shared<std::decay_t<Operation>>(
                 std::forward<Operation>(operation));
-            _compute.WaitFor(publication->CompletionEvent());
-            _engine.Submit(
-                _compute,
-                [publication](Runtime::ExecutionContext)
-                { publication->PublishCompleted(); });
+            publication->EnqueuePublication(_engine, _compute, publication);
         }
         template <class Action>
         void Submit(Action &&action) const
         {
+            DNDS_check_throw_info(_compute.Context().device == Runtime::Device::Host(),
+                                  "CPU compound callback requires a host stream; resolve a prepared device operation instead");
             _engine.Submit(_compute, [operation = std::forward<Action>(action)](Runtime::ExecutionContext) mutable
                            { operation(); });
+        }
+        /// Submit a prepared backend operation through the same schedule.
+        /// The record owns every non-Array scope/descriptor it borrows and
+        /// supplies Accesses(), Launch(context), and noexcept Retire(error).
+        /// Accesses are checked at submission; native Launch only enqueues work.
+        /// Retire runs after actual execution and must complete/fail its access
+        /// reservations without throwing. Captured ownership survives both the
+        /// launch callback and every queued device use. Missing device kernels
+        /// must be rejected during preparation, never silently run CPU code.
+        /// For Array operands prefer SubmitArrays: it implements this retained
+        /// allocation/layout/access contract without a custom operation record.
+        template <class Operation>
+        void SubmitPrepared(std::shared_ptr<Operation> operation) const
+        {
+            static_assert(noexcept(operation->Retire(std::declval<std::exception_ptr>())),
+                          "prepared operation retirement must be noexcept");
+            DNDS_check_throw_info(operation, "prepared operation is empty");
+            auto accesses = operation->Accesses();
+            _engine.SubmitOperation(_compute, [operation](Runtime::ExecutionContext context)
+                                    { operation->Launch(context); }, [operation](std::exception_ptr error) noexcept
+                                    { operation->Retire(error); }, std::move(accesses));
         }
         template <class Action, class... Operands>
         void SubmitArrays(Action &&action, Operands &&...operands) const

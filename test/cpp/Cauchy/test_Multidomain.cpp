@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/Core/Simulation.hpp"
+#include "Cauchy/Interface/InterfaceCoupling.hpp"
 #include "CartesianFixture.hpp"
 #include "RotatingVortexFixture.hpp"
 #include <filesystem>
@@ -386,6 +387,8 @@ TEST_CASE("DITR freezes distinct rotating midpoint and endpoint interface packet
         input["domains"][1]["overrides"] = {
             {"motion",
              {{"angularVelocity", {0, 0, .02}}, {"center", {5, 5, 0}}}}};
+        for (auto &connection : input["interfaces"])
+            connection["refreshCadence"] = "nonlinearIteration";
         const auto factory = [](I iDomain, const auto &, const auto &domainMPI)
         { return CauchyTest::VortexPatch(domainMPI, iDomain == 1, 8, 20); };
         C::Simulation simulation(
@@ -401,6 +404,76 @@ TEST_CASE("DITR freezes distinct rotating midpoint and endpoint interface packet
                 const auto &domain = simulation.GetDomain(iDomain);
                 CHECK(domain.LastCoupledIterations() > 0);
                 CHECK(domain.Discretization().Admissible(domain.Dofs()));
+            }
+        // Exercise the actual matcher/sampler/return route with distinguishable
+        // stage data. Solver admissibility alone cannot detect packet aliasing
+        // or midpoint/endpoint route reuse at the wrong rigid-body pose.
+        std::vector<std::optional<C::FiniteVolume>> local(2);
+        std::vector<std::optional<C::EquationDofs>> values(2);
+        std::vector<std::shared_ptr<C::FiniteVolume::ReconstructionState>> reconstruction(2);
+        std::vector<std::shared_ptr<C::FiniteVolume::Workspace>> workspace(2);
+        std::array<std::vector<std::optional<C::BoundaryInputs>>, 2> frozen{
+            std::vector<std::optional<C::BoundaryInputs>>(2),
+            std::vector<std::optional<C::BoundaryInputs>>(2)};
+        for (I iDomain = 0; iDomain < 2; ++iDomain)
+            if (simulation.Local(iDomain))
+            {
+                local[iDomain] = simulation.GetDomain(iDomain).Discretization();
+                values[iDomain] = C::EquationDofs::Coupled(
+                    local[iDomain]->Equation().Schema(), local[iDomain]->Metrics().BuildField(5));
+                reconstruction[iDomain] = local[iDomain]->BuildReconstructionState(*values[iDomain]);
+                workspace[iDomain] = local[iDomain]->BuildWorkspace(*values[iDomain]);
+            }
+        C::InterfaceCoupling coupling(simulation.Config(), simulation.Placement().ControlContext(), local);
+        for (int round = 0; round < 2; ++round)
+            for (int slot = 0; slot < 2; ++slot)
+            {
+                const double time = slot == 0 ? 5e-5 : 1e-4;
+                const double density = 2 + slot + 2 * round;
+                std::vector<C::InterfaceDomainInput> donors(2);
+                for (I iDomain = 0; iDomain < 2; ++iDomain)
+                    if (local[iDomain])
+                    {
+                        local[iDomain]->Initialize(*values[iDomain], {}, {density, 0, 0, 0, 1});
+                        donors[iDomain].values = local[iDomain]->PublishInterfaceDonor(
+                            *values[iDomain], *reconstruction[iDomain], *workspace[iDomain], false);
+                    }
+                C::StateEpoch epoch;
+                epoch.trial = 1;
+                epoch.coupledStage = slot;
+                epoch.couplingIteration = round;
+                auto refresh = round == 0 ? coupling.BeginRefresh(donors, time, epoch)
+                                          : coupling.BeginValueRefresh(donors, time, epoch);
+                refresh.Complete();
+                for (I iDomain = 0; iDomain < 2; ++iDomain)
+                    if (local[iDomain])
+                    {
+                        const auto packet = refresh.Inputs(iDomain);
+                        REQUIRE(packet);
+                        CHECK(packet->Epoch().coupledStage == uint64_t(slot));
+                        CHECK(packet->Epoch().couplingIteration == uint64_t(round));
+                        CHECK(packet->Time() == time);
+                        const auto rows = packet->QuadratureValues().ReadOwned();
+                        const auto flow = rows.Block("flow");
+                        const auto &points = local[iDomain]->BoundaryPoints();
+                        for (I iPoint = 0; iPoint < I(points.size()); ++iPoint)
+                            if (points[iPoint].interface)
+                                CHECK(flow(iPoint, 0) == doctest::Approx(density));
+                        if (round == 0)
+                            frozen[slot][iDomain] = local[iDomain]->FreezeBoundaryInputs(*packet);
+                        else
+                        {
+                            const auto &old = *frozen[slot][iDomain];
+                            REQUIRE(packet->InterfaceSources().size() == old.InterfaceSources().size());
+                            for (I iSource = 0; iSource < I(old.InterfaceSources().size()); ++iSource)
+                                CHECK(packet->InterfaceSources()[iSource].routeGeneration == old.InterfaceSources()[iSource].routeGeneration);
+                            local[iDomain]->ValidateBoundaryInputs(old, time);
+                            const auto oldRows = old.QuadratureValues().ReadOwned();
+                            for (I iPoint = 0; iPoint < I(points.size()); ++iPoint)
+                                if (points[iPoint].interface)
+                                    CHECK(oldRows.Block("flow")(iPoint, 0) == doctest::Approx(2 + slot));
+                        }
+                    }
             }
     }
 }

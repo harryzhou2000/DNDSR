@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "Cauchy/Core/CoordinatedSchedule.hpp"
 #include "Cauchy/Core/DomainExecutionContext.hpp"
+#include "Cauchy/Core/OperatorSchedule.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "DNDS/Algebra/DofBundle.hpp"
 #include <atomic>
@@ -71,6 +72,36 @@ TEST_CASE("Domain execution contexts retain named lanes and backend lifetime")
     C::ExecutionSettings settings;
     settings.device = "cuda";
     CHECK_THROWS(C::DomainExecutionContext(settings));
+}
+TEST_CASE("Prepared operator records retain their owners through execution retirement")
+{
+    struct Prepared
+    {
+        std::shared_ptr<std::atomic<int>> result;
+        std::vector<R::ScheduledBufferAccess> Accesses() const { return {}; }
+        void Launch(R::ExecutionContext context)
+        {
+            DNDS_assert(context.device == R::Device::Host());
+            result->store(1);
+        }
+        void Retire(std::exception_ptr error) noexcept
+        {
+            result->store(error ? -1 : result->load() == 1 ? 2
+                                                           : -2);
+        }
+    };
+    for (const int workers : {0, 2})
+    {
+        R::EagerEngine engine(workers, std::make_shared<R::AccessTrackingContext>());
+        C::OperatorSchedule schedule(engine, engine.CreateCPUStream(), engine.CreateCPUStream(), true);
+        auto result = std::make_shared<std::atomic<int>>(0);
+        auto prepared = std::make_shared<Prepared>(Prepared{result});
+        std::weak_ptr<Prepared> retained = prepared;
+        schedule.SubmitPrepared(std::move(prepared));
+        schedule.Join();
+        CHECK(result->load() == 2);
+        CHECK(retained.expired());
+    }
 }
 TEST_CASE("Imported interface completions progress on the controller and retain receiver resources")
 {

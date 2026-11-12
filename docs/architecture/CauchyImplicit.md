@@ -252,11 +252,15 @@ distributed FAS with explicit finest/coarse work accounting. This does not yet
 complete the remaining whole-phase qualification. BDF/DIRK history ownership
 and the first tracked mean-halo integration are described below.
 
-Optional CPU profiling uses caller-owned `NonlinearProfile` through
+Optional CPU profiling uses shared `NonlinearProfile` ownership through
 `NonlinearSolveControl::profile`. A null output performs no clock queries or
 additional MPI operations. A provided output resets for each synchronous solve
-and retains partial timings when it throws; retain it until return/unwinding
-and do not share it between simultaneous solves. Timers surround operator and
+and retains partial timings when it throws. Prepared nonlinear sessions and
+their timers retain the profile until retirement, even if the caller releases
+its handle. The live `NonlinearSolveState` publication is shared likewise;
+callbacks themselves must retain any additional objects they capture. Do not
+mutate/read these outputs concurrently with progression or share them between
+simultaneous solves. Timers surround operator and
 controller phases, outside numerical row loops. Per-rank Total encloses Entry,
 Residual, Convergence, PseudoTimePP, Jacobian, LinearSolve and Correction.
 Residual includes reconstruction/auxiliary/communication; LinearSolve includes

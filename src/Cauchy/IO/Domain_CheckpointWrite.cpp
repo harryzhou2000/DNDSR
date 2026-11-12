@@ -103,6 +103,11 @@ namespace DNDS::Cauchy
                        {"ditr_time", active->ditrTime},
                        {"ditr_dt", active->ditrDt},
                        {"payloads", std::move(timePayloads)}};
+        if (active->ditrSettings)
+            timeState["ditr_settings"] = {
+                {"fraction", active->ditrSettings->fraction},
+                {"theta", active->ditrSettings->theta},
+                {"variant", active->ditrSettings->variant == ODE::DITRVariant::U2R1 ? "U2R1" : "U2R2"}};
         const Json trialEpoch{{"accepted_step", _state.trialEpoch.acceptedStep},
                               {"trial", _state.trialEpoch.trial},
                               {"stage", _state.trialEpoch.stage},

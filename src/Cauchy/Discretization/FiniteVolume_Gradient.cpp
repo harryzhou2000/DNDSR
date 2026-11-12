@@ -5,6 +5,7 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumeGradientKernels.hpp"
 #include "Cauchy/Physics/ThermalAdmissibility.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
+#include "Cauchy/State/CPU/FieldKernels.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -49,13 +50,23 @@ namespace DNDS::Cauchy
             {
                 if (fromGradientField)
                 {
-                    // The cache check may retain a compatible input read.
-                    // Use the explicit engine entry: the immediate algebra
-                    // wrapper deliberately requires completely idle fields.
-                    R::EagerEngine engine;
-                    const auto stream = engine.CreateCPUStream();
-                    Algebra::Copy(engine, stream, directGradients[iField], *fields[iField].gradient);
-                    engine.Synchronize();
+                    // This CPU operation already executes on the caller's
+                    // compute lane. Retain compatible reads and the distinct
+                    // output write directly; do not create a nested runtime
+                    // merely to bypass immediate algebra's idle-field check.
+                    const auto &input = *fields[iField].gradient;
+                    auto &output = directGradients[iField];
+                    input.Validate();
+                    output.Validate();
+                    DNDS_check_throw_info(input.Space().Same(output.Space()) &&
+                                              input.Width() == output.Width() &&
+                                              input.Device() == R::Device::Host() &&
+                                              output.Device() == R::Device::Host(),
+                                          "direct gradient copy requires matching host fields");
+                    auto read = input.Owned().Read();
+                    auto write = output.Owned().Write();
+                    CPU::CopyRows(read.View<R::UniformTableRows>(),
+                                  write.View<R::UniformTableRows>(), output.Width());
                 }
                 else
                 {

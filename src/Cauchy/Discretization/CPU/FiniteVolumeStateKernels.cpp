@@ -4,8 +4,8 @@ namespace DNDS::Cauchy::CPU
 {
     namespace
     {
-        FlowState CellAverage(const Geom::UnstructuredMeshView &mesh, index iCell, const FlowProfileSettings &profile,
-                              const FlowState &primitive, const PerfectGas &gas, real time, const RigidFrame &frame)
+        NumericalResult<FlowState> CellAverage(const Geom::UnstructuredMeshView &mesh, index iCell, const FlowProfileSettings &profile,
+                                               const FlowState &primitive, const PerfectGas &gas, real time, const RigidFrame &frame) noexcept
         {
             if (profile.kind == "constant")
                 return frame.LocalState(gas.Conservative(primitive));
@@ -21,7 +21,10 @@ namespace DNDS::Cauchy::CPU
                 const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, order, iQ);
                 const Geom::tPoint point = Geom::Elem::PPhysicsCoordD01Nj(coords, shape);
                 const real weight = Geom::Elem::CellJacobianDet(mesh.Dimension(), coords, shape) * quadrature.GetWeight(iQ);
-                const auto value = frame.LocalState(ProfileValue(profile, primitive, gas, frame.WorldPoint({point[0], point[1], point[2]}), time));
+                const auto valueResult = TryProfileValue(profile, primitive, gas, frame.WorldPoint({point[0], point[1], point[2]}), time);
+                if (!valueResult)
+                    return valueResult.status.At(iCell, iQ);
+                const auto value = frame.LocalState(valueResult.value);
                 for (int j = 0; j < 5; ++j)
                     average[j] += weight * value[j];
                 volume += weight;
@@ -32,19 +35,22 @@ namespace DNDS::Cauchy::CPU
         }
     }
 
-    void InitializeFlowProfile(Geom::UnstructuredMeshView mesh, EquationBlockArrayView<real> flow,
-                               const FlowProfileSettings &profile, const FlowState &primitive, const PerfectGas &gas, const RigidFrame &frame)
+    NumericalStatus InitializeFlowProfile(Geom::UnstructuredMeshView mesh, EquationBlockArrayView<real> flow,
+                                          const FlowProfileSettings &profile, const FlowState &primitive, const PerfectGas &gas, const RigidFrame &frame) noexcept
     {
         for (index iCell = 0; iCell < flow.RowCount(); ++iCell)
         {
             const auto average = CellAverage(mesh, iCell, profile, primitive, gas, 0, frame);
+            if (!average)
+                return average.status;
             for (int j = 0; j < 5; ++j)
-                flow(iCell, j) = average[j];
+                flow(iCell, j) = average.value[j];
         }
+        return {};
     }
-    FlowErrorStatistics MeasureFlowError(Geom::UnstructuredMeshView mesh, CFV::FiniteVolumeHostView metric,
-                                         EquationBlockArrayView<const real> flow, const FlowProfileSettings &profile,
-                                         const FlowState &primitive, const PerfectGas &gas, real time, const RigidFrame &frame)
+    NumericalResult<FlowErrorStatistics> MeasureFlowError(Geom::UnstructuredMeshView mesh, CFV::FiniteVolumeHostView metric,
+                                                          EquationBlockArrayView<const real> flow, const FlowProfileSettings &profile,
+                                                          const FlowState &primitive, const PerfectGas &gas, real time, const RigidFrame &frame) noexcept
     {
         FlowErrorStatistics result;
         auto &errors = result.errors;
@@ -52,11 +58,13 @@ namespace DNDS::Cauchy::CPU
         for (index iCell = 0; iCell < flow.RowCount(); ++iCell)
         {
             const auto exact = CellAverage(mesh, iCell, profile, primitive, gas, time, frame);
+            if (!exact)
+                return exact.status;
             const real weight = metric.GetCellVol(iCell);
             volume += weight;
             for (int j = 0; j < 5; ++j)
             {
-                const real error = std::abs(flow(iCell, j) - exact[j]);
+                const real error = std::abs(flow(iCell, j) - exact.value[j]);
                 errors[0][j] += weight * error;
                 errors[1][j] += weight * error * error;
                 errors[2][j] = std::max(errors[2][j], error);
@@ -85,49 +93,4 @@ namespace DNDS::Cauchy::CPU
         return dt;
     }
 
-    NumericalStatus InitializeProgrammedField(Geom::UnstructuredMeshView mesh, Algebra::DofComponentView<real> rows,
-                                              const RigidFrame &frame, InitialFieldEvaluator &evaluator) noexcept
-    {
-        const index width = rows.ComponentNumber();
-        std::vector<real> background(width), average(width);
-        for (index iCell = 0; iCell < rows.RowCount(); ++iCell)
-        {
-            for (index j = 0; j < width; ++j)
-                background[j] = rows(iCell, j);
-            FlowState flow;
-            std::copy_n(background.begin(), 5, flow.begin());
-            flow = frame.WorldState(flow);
-            std::copy(flow.begin(), flow.end(), background.begin());
-            std::fill(average.begin(), average.end(), 0);
-            Geom::tSmallCoords coords;
-            mesh.GetCoordsOnCell(iCell, coords);
-            const auto element = mesh.GetCellElement(iCell);
-            constexpr int order = Geom::Elem::INT_ORDER_MAX;
-            const Geom::Elem::Quadrature quadrature(element, order);
-            real volume = 0;
-            for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
-            {
-                const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, order, iQ);
-                const Geom::tPoint point = Geom::Elem::PPhysicsCoordD01Nj(coords, shape);
-                const real jacobian = Geom::Elem::CellJacobianDet(mesh.Dimension(), coords, shape);
-                if (!(std::isfinite(jacobian) && jacobian > 0))
-                    return NumericalStatus{NumericalError::InvalidState, 1, iCell};
-                const real weight = jacobian * quadrature.GetWeight(iQ);
-                const auto value = evaluator.Evaluate(frame.WorldPoint({point[0], point[1], point[2]}), 0, iCell, background);
-                for (index j = 0; j < width; ++j)
-                    average[j] += weight * value[j];
-                volume += weight;
-            }
-            if (!(std::isfinite(volume) && volume > 0))
-                return NumericalStatus{NumericalError::InvalidState, 2, iCell};
-            for (auto &value : average)
-                value /= volume;
-            std::copy_n(average.begin(), 5, flow.begin());
-            flow = frame.LocalState(flow);
-            std::copy(flow.begin(), flow.end(), average.begin());
-            for (index j = 0; j < width; ++j)
-                rows(iCell, j) = average[j];
-        }
-        return {};
-    }
 }

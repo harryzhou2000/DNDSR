@@ -231,22 +231,31 @@ namespace DNDS::Cauchy::CPU
                 }
                 else
                 {
-                    right = FiniteVolumeDetail::BoundaryExterior(sample, gas, left.state, request.time, frame, incoming);
+                    const auto exterior = FiniteVolumeDetail::BoundaryExterior(sample, gas, left.state, request.time, frame, incoming);
+                    if (!exterior)
+                        return exterior.status.At(iCell, sample.point);
+                    right = exterior.value;
                     viscousRight = right;
                     rightGradient = left.gradient;
                 }
                 const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
                 const Vector3 point{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]};
                 const bool wallFluxState = noRsOnWall && !internal && boundaryKind == BoundaryKind::NoSlipWall;
-                const auto convectiveLeft = wallFluxState ? FiniteVolumeDetail::BoundaryFaceValue(sample, gas, left.state, request.time, frame, incoming) : left.state;
+                const auto convectiveLeftResult = wallFluxState ? FiniteVolumeDetail::BoundaryFaceValue(sample, gas, left.state, request.time, frame, incoming)
+                                                                : NumericalResult<FlowState>{left.state};
+                if (!convectiveLeftResult)
+                    return convectiveLeftResult.status.At(iCell, sample.point);
+                const auto &convectiveLeft = convectiveLeftResult.value;
                 const auto convectiveRight = wallFluxState ? convectiveLeft : right;
                 const auto leftFlux = equation.PrepareFluxState(convectiveLeft), rightFlux = equation.PrepareFluxState(convectiveRight);
                 const auto gridVelocity = frame.GridVelocity(point);
                 const auto leftMean = Load(mean, iCell);
                 const auto otherMean = internal ? Load(mean, sample.other) : FlowState{};
-                const auto rightMean = !internal             ? FiniteVolumeDetail::BoundaryExterior(sample, gas, leftMean, request.time, frame, incoming)
-                                       : sample.changesFrame ? RotateState(otherMean, sample.rotation)
-                                                             : otherMean;
+                const auto rightMeanResult = !internal ? FiniteVolumeDetail::BoundaryExterior(sample, gas, leftMean, request.time, frame, incoming)
+                                                       : NumericalResult<FlowState>{sample.changesFrame ? RotateState(otherMean, sample.rotation) : otherMean};
+                if (!rightMeanResult)
+                    return rightMeanResult.status.At(iCell, sample.point);
+                const auto &rightMean = rightMeanResult.value;
                 const auto leftMeanData = hasThermo ? Riemann::AcousticState{{leftMean, thermo(iCell, 0)}, thermo(iCell, 1)} : equation.PrepareFluxState(leftMean);
                 const auto rightMeanData = !internal || !hasThermo ? equation.PrepareFluxState(rightMean) : Riemann::AcousticState{{rightMean, thermo(sample.other, 0)}, thermo(sample.other, 1)};
                 auto fluxSettings = baseFluxSettings;
@@ -292,9 +301,11 @@ namespace DNDS::Cauchy::CPU
                     auto primitive = gas.Primitive(left.state);
                     auto gradient = left.gradient;
                     const auto ownPrimitive = gas.Primitive(Load(mean, iCell));
-                    const auto rightPrimitive = gas.Primitive(!internal             ? FiniteVolumeDetail::BoundaryGradientValue(sample, gas, Load(mean, iCell), request.time, frame, incoming)
-                                                              : sample.changesFrame ? RotateState(Load(mean, sample.other), sample.rotation)
-                                                                                    : Load(mean, sample.other));
+                    const auto neighborResult = !internal ? FiniteVolumeDetail::BoundaryGradientValue(sample, gas, Load(mean, iCell), request.time, frame, incoming)
+                                                          : NumericalResult<FlowState>{sample.changesFrame ? RotateState(Load(mean, sample.other), sample.rotation) : Load(mean, sample.other)};
+                    if (!neighborResult)
+                        return neighborResult.status.At(iCell, sample.point);
+                    const auto rightPrimitive = gas.Primitive(neighborResult.value);
                     // Evaluate into an owning vector: an Eigen expression
                     // would retain a dangling temporary cell barycenter.
                     const Geom::tPoint distance = !internal ? Geom::tPoint(sample.ownPoint - metric.GetCellBary(iCell)) : Geom::tPoint(sample.otherPoint - metric.GetCellBary(iCell));

@@ -229,19 +229,26 @@ namespace DNDS::Cauchy::CPU
                     face.values = left.values;
                     const auto original = left.Flow(request.flowFirst);
                     const Physics::Chemistry::SpeciesBufferView wallSpecies{independent ? face.values.data() + request.speciesFirst : nullptr, independent};
-                    const auto wall = sample.boundary.FaceValue(evaluator, original, wallSpecies,
-                                                                {sample.normal[0], sample.normal[1], sample.normal[2]},
-                                                                {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, request.time,
-                                                                OptionalRef<const RigidFrame>(frame));
+                    const auto wall = sample.boundary.TryFaceValue(evaluator, original, wallSpecies,
+                                                                   {sample.normal[0], sample.normal[1], sample.normal[2]},
+                                                                   {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, request.time,
+                                                                   OptionalRef<const RigidFrame>(frame));
+                    if (!wall)
+                        return wall;
                     for (int j = 0; j < 5; ++j)
-                        face.values[request.flowFirst + j] = wall[j];
+                        face.values[request.flowFirst + j] = wall.value[j];
                     if (ransModel)
                         for (int j = 0; j < ransModel->ComponentNumber(); ++j)
-                            face.values[request.ransFirst + j] *= wall[0] / original[0];
+                            face.values[request.ransFirst + j] *= wall.value[0] / original[0];
                     return wall;
                 };
                 if (wallFluxState)
-                    leftFlow = rightFlow = prepareWallState();
+                {
+                    const auto wall = prepareWallState();
+                    if (!wall)
+                        return wall.status.At(iCell, sample.point);
+                    leftFlow = rightFlow = wall.value;
+                }
                 Riemann::AcousticState leftData{}, rightData{};
                 const auto evaluateDirect = [&](const FlowState &flow, const PointScratch &point,
                                                 Riemann::AcousticState &output) -> NumericalStatus
@@ -278,11 +285,16 @@ namespace DNDS::Cauchy::CPU
                         meanRight = sample.changesFrame ? FiniteVolumeDetail::RotateState(cellMean.Flow(request.flowFirst), sample.rotation) : cellMean.Flow(request.flowFirst);
                     }
                     else
+                    {
                         // The shared boundary dispatch also handles interface
                         // traces. Pass its real input instead of duplicating
                         // the kind test around an empty interface view.
-                        meanRight = FiniteVolumeDetail::BoundaryExterior(
+                        const auto exterior = FiniteVolumeDetail::BoundaryExterior(
                             sample, equation.Gas(), meanLeft, request.time, frame, request.incoming);
+                        if (!exterior)
+                            return exterior.status.At(iCell, sample.point);
+                        meanRight = exterior.value;
+                    }
                     meanLeftData = request.preparedMean
                                        ? Riemann::AcousticState{{meanLeft, (*request.preparedMean)(iCell, 0)}, (*request.preparedMean)(iCell, 1)}
                                        : equation.PrepareFluxState(meanLeft);
@@ -368,7 +380,12 @@ namespace DNDS::Cauchy::CPU
                                             : cellMean.Flow(request.flowFirst);
                         }
                         else
-                            rightMean = FiniteVolumeDetail::BoundaryGradientValue(sample, gas, ownMean, request.time, frame, request.incoming);
+                        {
+                            const auto trace = FiniteVolumeDetail::BoundaryGradientValue(sample, gas, ownMean, request.time, frame, request.incoming);
+                            if (!trace)
+                                return trace.status.At(iCell, sample.point);
+                            rightMean = trace.value;
+                        }
                         const auto rightPrimitive = gas.Primitive(rightMean);
                         const Geom::tPoint distance = !internal
                                                           ? Geom::tPoint(sample.ownPoint - metric.GetCellBary(iCell))
@@ -436,7 +453,11 @@ namespace DNDS::Cauchy::CPU
                                 face.gradient(request.ransFirst, d) -= normal[d] * wallSAViscousInterior * inverseDistance;
 #endif
                         if (wallFluxState)
-                            prepareWallState();
+                        {
+                            const auto wallState = prepareWallState();
+                            if (!wallState)
+                                return wallState.status.At(iCell, sample.point);
+                        }
                         const auto faceFlow = face.Flow(request.flowFirst);
                         PointProperties point;
                         const auto propertyStatus = evaluator.TryEvaluate(faceFlow, face.Species(request.speciesFirst, independent),

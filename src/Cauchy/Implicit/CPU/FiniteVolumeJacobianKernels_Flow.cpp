@@ -146,9 +146,11 @@ namespace DNDS::Cauchy::CPU
                     own.diagonal().array() += factor * (convection + diffusion);
                     continue; // Euler's scalar diagonal does not linearize BCs.
                 }
-                const auto right = sample.other == UnInitIndex ? FiniteVolumeDetail::BoundaryExterior(sample, equation.Gas(), left, time, frame, incoming)
-                                   : !sample.changesFrame      ? Load(mean, sample.other)
-                                                               : RotateState(Load(mean, sample.other), sample.rotation);
+                const auto rightResult = sample.other == UnInitIndex ? FiniteVolumeDetail::BoundaryExterior(sample, equation.Gas(), left, time, frame, incoming)
+                                                                     : NumericalResult<FlowState>{!sample.changesFrame ? Load(mean, sample.other) : RotateState(Load(mean, sample.other), sample.rotation)};
+                if (!rightResult)
+                    return rightResult.status.At(iCell, sample.point);
+                const auto &right = rightResult.value;
                 Matrix dissipation = Matrix::Identity() * (convection + diffusion);
                 if (request.roe)
                 {

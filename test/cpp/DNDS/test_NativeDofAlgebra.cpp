@@ -541,5 +541,16 @@ TEST_CASE("DOF halo publication tracks completed epochs while owned core work ov
             ghost.View()(0, 0) = -1;
         }
         CHECK_THROWS(halo.RequireCurrent(input, 2)); // External ghost writes invalidate the receipt.
+        R::SubmitArrays(engine, stream, [](auto, auto owned)
+                        {
+            for (DNDS::index iRow = 0; iRow < 3; ++iRow)
+                for (DNDS::index j = 0; j < 2; ++j)
+                    owned(iRow, j) += 1; }, R::ReadWrite(input.Owned()));
+        auto publication = std::make_shared<A::DofHalo<>::Operation>(halo.Begin(3, engine, stream));
+        publication->EnqueuePublication(engine, stream, publication);
+        publication.reset();
+        engine.Synchronize();
+        halo.RequireCurrent(input, 3);
+        CHECK(input.Ghost().Read().At(0, 0) == 10 * donor + (donor == 0 ? 100 : 0) + 1);
     }
 }

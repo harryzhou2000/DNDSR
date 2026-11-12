@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "Cauchy/Core/NumericalFailure.hpp"
 #include "DNDS/Runtime/Execution/SessionAccess.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeStateKernels.hpp"
 #include "DNDS/MPI/Failure.hpp"
@@ -527,7 +528,7 @@ namespace DNDS::Cauchy
             auto write = state.WriteOwned();
             const auto flow = write.Block("flow");
             const auto frame = _data->motion.At(0);
-            CPU::InitializeFlowProfile(mesh, flow, profile, primitive, _data->equation.Gas(), frame); });
+            RequireNumericalSuccess(CPU::InitializeFlowProfile(mesh, flow, profile, primitive, _data->equation.Gas(), frame), "flow profile initialization"); });
     }
     std::array<FlowState, 3> FiniteVolume::Error(const EquationDofs &state, const FlowProfileSettings &profile, const FlowState &primitive, real time) const
     {
@@ -543,7 +544,7 @@ namespace DNDS::Cauchy
             const auto read = state.ReadOwned();
             const auto flow = read.Block("flow");
             const auto frame = _data->motion.At(time);
-            const auto result = CPU::MeasureFlowError(mesh, metric, flow.owned, profile, primitive, _data->equation.Gas(), time, frame);
+            const auto result = RequireNumericalSuccess(CPU::MeasureFlowError(mesh, metric, flow.owned, profile, primitive, _data->equation.Gas(), time, frame), "flow error oracle");
             errors = result.errors; volume = result.volume; });
         volume = MPI::AllreduceValue<MPI::Reduction::Sum>(volume, Metrics().Communicator());
         for (int i = 0; i < 3; ++i)

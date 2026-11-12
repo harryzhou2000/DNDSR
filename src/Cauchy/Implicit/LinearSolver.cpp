@@ -373,7 +373,16 @@ namespace DNDS::Cauchy
                                 CPU::FillRows(values, values.Width(), 0);
                             }
                             else
-                                part.Ghost().CopyFrom(ghosts[iField]).Wait();
+                            {
+                                // This is already a CPU execution callback: copy the
+                                // frozen halo through its leases, without constructing
+                                // another execution engine or waiting inside a worker.
+                                const auto read = ghosts[iField].Read();
+                                auto write = part.Ghost().Write();
+                                CPU::CopyRows(read.template View<R::UniformTableRows>(),
+                                              write.template View<R::UniformTableRows>(),
+                                              part.Width());
+                            }
                             ++iField;
                         });
                         problem->Jacobi(rhs, forward, output); });

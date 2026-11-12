@@ -14,6 +14,38 @@
 namespace DNDS::Cauchy
 {
     namespace R = Runtime;
+    namespace FiniteVolumeDetail
+    {
+        /// Bind boundary rows (modes=1) or component-major polynomial rows to
+        /// the prototype equation grouping. Payload arrays remain shared; only
+        /// schema names and logical block offsets are adapted during setup.
+        inline EquationDofs BindFieldSchema(const EquationDofs &prototype, Algebra::DofBundle fields,
+                                            index modes)
+        {
+            auto schema = prototype.Schema();
+            std::vector<EquationDofBinding> bindings;
+            for (index iBlock = 0; iBlock < prototype.BlockNumber(); ++iBlock)
+            {
+                const auto location = prototype.LocateBlock(iBlock);
+                auto &block = schema.blocks[iBlock];
+                bindings.push_back({block.name, prototype.Fields().Name(location.physicalField),
+                                    location.firstComponent * modes});
+                if (modes != 1)
+                {
+                    auto components = std::move(block.components);
+                    block.components.clear();
+                    block.vectorStarts.clear();
+                    for (const auto &component : components)
+                        for (index mode = 0; mode < modes; ++mode)
+                            block.components.push_back({component.name + ":mode" + std::to_string(mode),
+                                                        component.units, "polynomial-coefficient"});
+                }
+            }
+            if (modes != 1)
+                schema.family = "polynomial:" + schema.family;
+            return {std::move(schema), std::move(fields), std::move(bindings)};
+        }
+    }
     struct FiniteVolume::Workspace
     {
         R::SessionAccess session;

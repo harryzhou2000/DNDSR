@@ -264,10 +264,10 @@ namespace DNDS::Cauchy
                             if (profileEnabled)
                                 ++cachedRateUses[level];
                         }
-                        NonlinearProfile timing;
+                        std::shared_ptr<NonlinearProfile> timing;
                         NonlinearSolveControl control{1, smootherCFL[level], {}, components};
                         if (profileEnabled)
-                            control.profile.Emplace(timing);
+                            control.profile = timing = std::make_shared<NonlinearProfile>();
                         const auto step = relax->CorrectOnce(u, source, mass, rhsScale, time, stage,
                                                              std::move(control), rate);
                         if (cached)
@@ -275,8 +275,8 @@ namespace DNDS::Cauchy
                         if (profileEnabled)
                         {
                             for (index phase = 0; phase < NonlinearProfile::PhaseNumber; ++phase)
-                                smootherProfiles[level].seconds[phase] += timing.seconds[phase];
-                            smootherProfiles[level].residualEvaluations += timing.residualEvaluations;
+                                smootherProfiles[level].seconds[phase] += timing->seconds[phase];
+                            smootherProfiles[level].residualEvaluations += timing->residualEvaluations;
                         }
                         NonlinearDetail::AccumulateWork(*report, step);
                     }

@@ -4,6 +4,7 @@
 #include "DNDS/Runtime/Communication/MPIProgress.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
+#include "DNDS/Algebra/DofHalo.hpp"
 #include <cuda_runtime.h>
 #include <atomic>
 #include <chrono>
@@ -128,9 +129,9 @@ TEST_CASE("NCCL packed rows match exact values across layouts and queued produce
                 {
                     R::SubmitArrays(engine, producer, [pass](auto c, auto output)
                                     { Produce<<<1,128,0,static_cast<cudaStream_t>(c.stream)>>>(output, mpi.rank, pass); LaunchOK(); }, R::Write(source));
-                    comm.WaitFor(producer.Record());
-                    binding.Enqueue(engine, comm);
-                    consumer.WaitFor(comm.Record());
+                    auto transfer = binding.SubmitAfter(engine, comm, producer.Record());
+                    CHECK_FALSE(transfer.RequiresHostProgress());
+                    transfer.EnqueueWait(consumer);
                     R::SubmitArrays(engine, consumer, [previous, pass](auto c, auto input, auto errors)
                                     { CheckRows<<<1,128,0,static_cast<cudaStream_t>(c.stream)>>>(input, errors, previous, pass); LaunchOK(); }, R::Read(destination), R::ReadWrite(errors));
                     producer.WaitFor(consumer.Record());
@@ -346,18 +347,19 @@ TEST_CASE("CUDA producer chains device-packed MPI and NCCL across streams throug
     // CUDA-aware MPI is not stream ordered: the controller must observe the
     // producer before MPI may reserve/read its device buffer. The subsequent
     // MPI completion is exported as an event for the stream-ordered NCCL leg.
-    producer.Record().WaitHost();
-    auto mpiOperation = mpiBinding->BeginScheduled(mpiStream);
-    R::MPIProgress mpiProgress;
-    const auto mpiReady = mpiProgress.Import(std::move(mpiOperation));
+    auto mpiOperation = mpiBinding->SubmitAfter(engine, mpiStream, producer.Record());
+    CHECK(mpiOperation.RequiresHostProgress());
     // MPI completion is a host-progress event, not a CUDA-stream event. The
     // controller observes unpack completion before entering the fully
     // stream-ordered NCCL segment.
-    mpiReady.WaitHost();
+    mpiOperation.EnqueueWait(ncclStream);
+    mpiOperation = {};
     TestGate gate;
     gate.Enqueue(engine, ncclStream);
-    ncclBinding->Enqueue(engine, ncclStream);
-    const auto resultReady = ncclStream.Record();
+    auto ncclOperation = ncclBinding->SubmitReady(engine, ncclStream);
+    CHECK_FALSE(ncclOperation.RequiresHostProgress());
+    const auto resultReady = ncclOperation.CompletionEvent();
+    ncclOperation = {}; // The runtime retains provider/payload access until retirement.
     CHECK_FALSE(resultReady.Ready());
 
     auto retained = ncclRows;
@@ -386,6 +388,36 @@ TEST_CASE("CUDA producer chains device-packed MPI and NCCL across streams throug
         for (I j = 0; j < 5; ++j)
             CHECK(read.View()(iRow, j) == Value(twicePrevious, iRow, j, 7));
 }
+TEST_CASE("NCCL DOF halo publishes the retired producer version without a submission host wait")
+{
+    namespace A = DNDS::Algebra;
+    auto control = std::make_shared<R::CommunicationContext>(mpi.comm);
+    A::DofSpace space(control, 17, 1);
+    A::DofField<> field(space, R::Array<double>(Shape(1, 17, 5), device),
+                        R::Array<double>(Shape(2, 1, 5), device));
+    const int previous = (mpi.rank + mpi.size - 1) % mpi.size;
+    R::RowTransferPlan route(control, 17, 1, {{previous, 3, 0}});
+    A::DofHalo<> halo(field, route, Options(), R::TransferTransport::DevicePacked);
+    R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
+    auto producer = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+    auto consumer = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+    TestGate gate;
+    gate.Enqueue(engine, producer);
+    R::SubmitArrays(engine, producer, [](auto context, auto output)
+                    { Produce<<<1,128,0,static_cast<cudaStream_t>(context.stream)>>>(output, mpi.rank, 9); LaunchOK(); }, R::Write(field.Owned()));
+    auto publication = std::make_shared<A::DofHalo<>::Operation>(halo.Begin(9, engine, producer));
+    publication->EnqueuePublication(engine, consumer, publication);
+    publication.reset();
+    // Reaching this release proves no producer-completion host wait was added
+    // to native halo launch/publication, even with a pending source generation.
+    gate.Release();
+    engine.Close();
+    halo.RequireCurrent(field, 9);
+    const auto ghost = field.Ghost().To(R::Device::Host());
+    for (I j = 0; j < 5; ++j)
+        CHECK(ghost.Read().At(0, j) == Value(previous, 3, j, 9));
+}
+
 TEST_CASE("Unchecked NCCL missing producer edge demonstrably transfers a stale epoch")
 {
     R::Array<double> source(Shape(0, 17, 5), device), destination(Shape(0, 17, 5), device), warm(Shape(0, 17, 5), device);

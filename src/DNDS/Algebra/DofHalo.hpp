@@ -8,7 +8,7 @@
 
 namespace DNDS::Algebra
 {
-    /// CPU halo transport with an explicit completed-publication record.
+    /// Backend-selected halo transport with a completed-publication record.
     /// Epoch is a caller-defined, equality-comparable source context (for example
     /// a step/trial/stage/iteration tuple). All ranks must use a coherent epoch
     /// and exchange order. This facility never infers remote freshness from a
@@ -18,7 +18,8 @@ namespace DNDS::Algebra
     /// stamps must cover mesh/order changes. Field aliases share publication
     /// state through this handle. Serialize Begin/Wait/RequireCurrent on the MPI
     /// controller; retained operations keep the binding and allocations alive.
-    /// CUDA needs a separate stream-ready publication contract and is rejected.
+    /// Queued publications retire after device execution, not at kernel launch.
+    /// Portable MPI retains its explicit, non-capturable controller bridge.
     template <class T = real, class Epoch = uint64_t>
     class DofHalo
     {
@@ -35,6 +36,7 @@ namespace DNDS::Algebra
                 uint64_t ownedVersion, ghostVersion;
             };
             std::optional<Publication> publication;
+            std::exception_ptr publicationFailure;
             bool active = false;
             Data(Field field, Runtime::RowTransferPlan route, Runtime::TransferBinding binding)
                 : field(std::move(field)), route(std::move(route)), binding(std::move(binding)),
@@ -58,17 +60,30 @@ namespace DNDS::Algebra
             std::shared_ptr<Data> _data;
             Runtime::TransferOperation _operation;
             Epoch _epoch;
-            uint64_t _ownedVersion;
+            struct SourceStamp
+            {
+                std::optional<uint64_t> version;
+                std::exception_ptr failure;
+            };
+            std::shared_ptr<SourceStamp> _source;
             bool _observed = false;
             friend class DofHalo;
-            Operation(std::shared_ptr<Data> data, Runtime::TransferOperation operation, Epoch epoch)
+            Operation(std::shared_ptr<Data> data, Runtime::TransferOperation operation, Epoch epoch,
+                      std::shared_ptr<SourceStamp> source = {})
                 : _data(std::move(data)), _operation(std::move(operation)), _epoch(std::move(epoch)),
-                  _ownedVersion(_data->field.Owned().Version()) {}
+                  _source(std::move(source))
+            {
+                if (!_source)
+                    _source = std::make_shared<SourceStamp>(SourceStamp{_data->field.Owned().Version(), {}});
+            }
             void Publish()
             {
-                DNDS_check_throw_info(_data->Matches(_data->field) && _data->field.Owned().Version() == _ownedVersion,
+                if (_source->failure)
+                    std::rethrow_exception(_source->failure);
+                DNDS_check_throw_info(_source->version && _data->Matches(_data->field) &&
+                                          _data->field.Owned().Version() == *_source->version,
                                       "halo binding/source changed during transfer");
-                _data->publication = typename Data::Publication{_epoch, _ownedVersion, _data->field.Ghost().Version()};
+                _data->publication = typename Data::Publication{_epoch, *_source->version, _data->field.Ghost().Version()};
                 _data->active = false;
                 _observed = true;
             }
@@ -121,6 +136,35 @@ namespace DNDS::Algebra
                                       "halo operation is empty or already published");
                 return _operation.CompletionEvent();
             }
+            void EnqueueWait(const Runtime::ExecutionStream &consumer) const
+            {
+                _operation.EnqueueWait(consumer);
+            }
+            /// Retain this publication until the dependent prefix retires.
+            /// The owner must refer to this Operation. CUDA launch callbacks
+            /// cannot publish CPU-visible generation/freshness information.
+            void EnqueuePublication(Runtime::EagerEngine &engine, const Runtime::ExecutionStream &consumer,
+                                    std::shared_ptr<Operation> owner)
+            {
+                DNDS_check_throw_info(owner.get() == this, "halo publication owner mismatch");
+                EnqueueWait(consumer);
+                engine.SubmitOperation(consumer, [](Runtime::ExecutionContext) {}, [owner](std::exception_ptr error) noexcept
+                                       {
+                    try
+                    {
+                        if (error)
+                            std::rethrow_exception(error);
+                        owner->PublishCompleted();
+                    }
+                    catch (...)
+                    {
+                        MPI::AbortIfSolverFailure("queued halo publication failed");
+                        owner->_data->publicationFailure = std::current_exception();
+                        owner->_data->publication.reset();
+                        owner->_data->active = false;
+                        owner->_observed = true;
+                    } });
+            }
             /// Called on a dependent execution lane after CompletionEvent.
             /// No MPI routine is entered here; the managed runtime already
             /// retired transport ownership on its controller.
@@ -135,31 +179,33 @@ namespace DNDS::Algebra
 
         /// Collective construction. Layouts remain AoS/SoA/AoSoA as bound;
         /// ordinary direct h-indexed transfer is the default transport.
-        DofHalo(Field &field, Runtime::RowTransferPlan route, Runtime::TransferOptions options = {})
+        DofHalo(Field &field, Runtime::RowTransferPlan route, Runtime::TransferOptions options = {},
+                Runtime::TransferTransport transport = Runtime::TransferTransport::Direct)
         {
             // This only validates local field/route compatibility. The route
             // still owns the required collective payload/binding protocols.
             route.Context()->LocalStage([&]
                                         {
                 field.Validate();
-                DNDS_check_throw_info(field.Device() == Runtime::Device::Host() && !route.HasCollisions() &&
+                DNDS_check_throw_info(!route.HasCollisions() &&
                     route.SourceRows() == index(field.Space().OwnedRows()) && route.DestinationRows() == index(field.Space().GhostRows()),
-                    "halo requires a CPU field and collision-free owned-to-ghost route"); });
+                    "halo requires a collision-free owned-to-ghost route"); });
             auto binding = Runtime::PayloadPlan(route, field.Owned().Layout(), field.Ghost().Layout(), Runtime::ElementSchema::Arithmetic<T>())
-                               .Bind(field.Owned(), field.Ghost(), Runtime::TransferTransport::Direct, std::move(options));
+                               .Bind(field.Owned(), field.Ghost(), transport, std::move(options));
             _data = std::make_shared<Data>(field, std::move(route), std::move(binding));
         }
         /// Conservatively exchange every call. Binding validity joins the
         /// transport's existing preflight. checks adds a separate diagnostic
         /// collective and defaults off. Checked streams
-        /// observe their CPU producer prefix; caller-ordered eager streams require
-        /// completed CPU producers. Core readers may overlap the ghost writer.
+        /// observe the supplied producer prefix. Native device producers stay
+        /// queued; MPI uses its explicit controller-readiness bridge. Core
+        /// readers may overlap the ghost writer.
         Operation Begin(Epoch epoch, Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, bool checks = false)
         {
             bool valid = false;
             try
             {
-                valid = !_data->active && _data->Matches(_data->field) && stream.Context().device == Runtime::Device::Host();
+                valid = !_data->active && _data->Matches(_data->field) && stream.Context().device == _data->field.Device();
             }
             catch (...)
             {
@@ -168,27 +214,44 @@ namespace DNDS::Algebra
             const auto validate = [&]
             {
                 DNDS_check_throw_info(valid,
-                                      "halo binding is stale, busy or not on CPU");
+                                      "halo binding is stale, busy or has mismatched placement");
             };
             if (checks)
                 MPI::LocalStage(MPIInfo(_data->route.Communicator()), validate);
             _data->publication.reset();
-            auto operation = engine.ChecksAccess() ? _data->binding.BeginChecked(stream, valid) : _data->binding.BeginScheduled(stream, valid);
+            _data->publicationFailure = {};
+            // Source versions are committed at actual producer retirement.
+            // Capture the stamp in that order, rather than snapshotting a stale
+            // CPU version when native kernels have only been submitted.
+            auto source = std::make_shared<typename Operation::SourceStamp>();
+            auto field = _data->field;
+            engine.SubmitOperation(stream, [](Runtime::ExecutionContext) {}, [source, field](std::exception_ptr error) noexcept
+                                   {
+                source->failure = error;
+                if (!error)
+                {
+                    try { source->version = field.Owned().Version(); }
+                    catch (...) { source->failure = std::current_exception(); }
+                } });
+            auto operation = _data->binding.SubmitAfter(engine, stream, stream.Record(), valid);
             _data->active = true;
-            return Operation(_data, std::move(operation), std::move(epoch));
+            return Operation(_data, std::move(operation), std::move(epoch), std::move(source));
         }
         /// Begin on a dedicated communication lane after the owned payload is
-        /// already CPU-visible. A later compute-lane event must precede every
-        /// ghost consumer and PublishCompleted.
+        /// CPU-visible (MPI), or already ordered on that lane (native provider).
+        /// Use EnqueueWait/EnqueuePublication before ghost consumers; native
+        /// publication is CPU-visible only after actual completion/retirement.
         Operation BeginReady(Epoch epoch, Runtime::EagerEngine &engine,
                              const Runtime::ExecutionStream &stream,
                              bool checks = false)
         {
+            if (_data->binding.SupportsStreamEnqueue())
+                return Begin(std::move(epoch), engine, stream, checks);
             bool valid = false;
             try
             {
                 valid = !_data->active && _data->Matches(_data->field) &&
-                        stream.Context().device == Runtime::Device::Host();
+                        stream.Context().device == _data->field.Device();
             }
             catch (...)
             {
@@ -197,14 +260,13 @@ namespace DNDS::Algebra
             const auto validate = [&]
             {
                 DNDS_check_throw_info(valid,
-                                      "halo binding is stale, busy or not on CPU");
+                                      "halo binding is stale, busy or has mismatched placement");
             };
             if (checks)
                 MPI::LocalStage(MPIInfo(_data->route.Communicator()), validate);
             _data->publication.reset();
-            auto operation = engine.ChecksAccess()
-                                 ? _data->binding.BeginReadyChecked(stream, valid)
-                                 : _data->binding.BeginReadyScheduled(stream, valid);
+            _data->publicationFailure = {};
+            auto operation = _data->binding.SubmitReady(engine, stream, valid);
             _data->active = true;
             return Operation(_data, std::move(operation), std::move(epoch));
         }
@@ -213,6 +275,8 @@ namespace DNDS::Algebra
         /// Read leases separately guarantee access safety, not source freshness.
         void RequireCurrent(const Field &field, const Epoch &epoch) const
         {
+            if (_data->publicationFailure)
+                std::rethrow_exception(_data->publicationFailure);
             DNDS_check_throw_info(!_data->active && _data->publication && _data->Matches(field) &&
                                       _data->publication->epoch == epoch && _data->publication->ownedVersion == field.Owned().Version() &&
                                       _data->publication->ghostVersion == field.Ghost().Version(),

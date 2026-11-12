@@ -22,32 +22,6 @@ namespace DNDS::Cauchy
 {
     namespace R = Runtime;
     using namespace EquationFVDetail;
-    namespace
-    {
-        EquationDofs BindFields(const EquationDofs &prototype, Algebra::DofBundle fields, index modes)
-        {
-            auto schema = prototype.Schema();
-            std::vector<EquationDofBinding> bindings;
-            for (index iBlock = 0; iBlock < prototype.BlockNumber(); ++iBlock)
-            {
-                const auto location = prototype.LocateBlock(iBlock);
-                auto &block = schema.blocks[iBlock];
-                bindings.push_back({block.name, prototype.Fields().Name(location.physicalField), location.firstComponent * modes});
-                if (modes != 1)
-                {
-                    auto components = std::move(block.components);
-                    block.components.clear();
-                    block.vectorStarts.clear();
-                    for (const auto &component : components)
-                        for (index mode = 0; mode < modes; ++mode)
-                            block.components.push_back({component.name + ":mode" + std::to_string(mode), component.units, "polynomial-coefficient"});
-                }
-            }
-            if (modes != 1)
-                schema.family = "polynomial:" + schema.family;
-            return {std::move(schema), std::move(fields), std::move(bindings)};
-        }
-    }
     bool FiniteVolume::ReconstructionState::FinalizedCurrent() const
     {
         if (!coefficients)
@@ -120,7 +94,7 @@ namespace DNDS::Cauchy
                                                         FiniteVolumeDetail::FieldLayout(physical.Owned().Layout(), data.metrics.NumCell(),
                                                                                         index(physical.Width()) * data.reconstruction->NRecDOF())));
         }
-        return BindFields(state, std::move(fields), data.reconstruction->NRecDOF());
+        return FiniteVolumeDetail::BindFieldSchema(state, std::move(fields), data.reconstruction->NRecDOF());
     }
     FiniteVolume::ReconstructionState::ReconstructionState(std::shared_ptr<const Data> data, EquationDofs &state)
         : owner(std::move(data)), binding(state),

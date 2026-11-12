@@ -21,10 +21,23 @@ request alone therefore cannot own an asynchronous launch.
 
 Current Cauchy worker callbacks execute complete CPU facades and finish before
 the enclosing public call returns. Their scopes are acquired inside that
-callback. GPU submission will require a retained prepared-operation record
-through completion and explicit device-ready nested descriptors. The current
-CPU-only guard remains intentional; merely swapping a CPU entry for a CUDA
-launch would be incorrect.
+callback. `OperatorSchedule::Submit` rejects a device lane for these callbacks.
+Prepared launchers instead use `SubmitArrays` for declared Array operands or
+`SubmitPrepared` for a shared record with `Accesses`, `Launch(context)` and
+nonthrowing `Retire(error)`. The record must own all nested descriptor/scopes;
+the runtime retains it until actual execution completes, including a device
+launch's pending work. This infrastructure does not implement the deferred
+Cauchy CUDA leaves. Merely swapping a CPU facade for a CUDA launch is incorrect.
+
+Transfer dependencies belong to `TransferBinding::SubmitReady/SubmitAfter`
+and `TransferOperation::EnqueueWait`, not a provider switch in Cauchy. Preserve
+the operation until its consumer edge has been registered: extracting only
+its event loses the portable-MPI versus native-stream completion contract.
+NCCL uses native ordering; portable MPI explicitly progresses on its allowed
+controller before a CUDA consumer can use the received data. That bridge is
+non-capturable. DofHalo records source generations and publishes freshness on
+retirement. `RequireCurrent` checks CPU-visible completed state; it cannot
+validate a future queued publication at CUDA launch submission time.
 
 Fixed-count VR queues boundary refresh, reconstruction and commit in order;
 it does not drain the full engine after each sweep. A requested reconstruction
@@ -151,6 +164,16 @@ CPU scratch still uses ordinary allocations. Recoverable resource exhaustion,
 allocation-free kernels, and conversion of all transitive legacy validations
 are not claimed by this pass. Those limits must not be confused with an EOS
 nonconvergence status.
+
+The closure audit also follows analytic profiles and perfect-gas boundary
+helpers reached by RHS, primitive gradients and Jacobian preparation. Their
+`TryProfileValue`, `TryFaceValue` and `TryExterior` entries propagate numerical
+status, including total-inlet conversion failures; checked convenience wrappers
+remain outside numerical kernels. The same status contract covers profile
+initialization and the analytic error oracle. Programmable expression input is
+different: expression validation and checked physical-state conversion are
+setup work in `FiniteVolume_InitializeField.cpp`, outside any `noexcept` CPU
+kernel. They reject invalid user input without substituting fallback states.
 
 ### Findings and corrections
 

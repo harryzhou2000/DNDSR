@@ -50,10 +50,11 @@ namespace DNDS::Cauchy
         real reconstructionRelativeUpdate = 0;
         bool reconstructionUpdateMeasured = false;
     };
-    /// Optional synchronous CPU profile. Values are local wall seconds, not
+    /// Optional CPU profile. Values are local wall seconds, not
     /// reduced across ranks. Total encloses the disjoint named sections;
     /// its remainder includes setup work and timer overhead. The caller
-    /// owns this output through Solve, including unwinding, and serializes it.
+    /// shares this output with the solve/session, including unwinding, and
+    /// serializes external reads with solve progression.
     struct NonlinearProfile
     {
         enum Phase
@@ -77,7 +78,7 @@ namespace DNDS::Cauchy
         real initialPseudoCFL = 0;  // 0 starts at the configured stage CFL
         /// Null means no clock queries or extra communication. A provided
         /// output resets per call and retains partial timings on exceptions.
-        OptionalRef<NonlinearProfile> profile;
+        std::shared_ptr<NonlinearProfile> profile;
         /// Empty updates all components. A subset solves the principal
         /// linear system with all other means frozen, including through PP.
         /// This never changes the separately configured convergence selection.
@@ -89,7 +90,9 @@ namespace DNDS::Cauchy
         std::function<void(const NonlinearProgress &)> progress;
         /// Optional live setup publication. Iterate updates it before the
         /// progress observer, so checkpoint/console/CSV see one state source.
-        OptionalRef<NonlinearSolveState> state;
+        /// Shared ownership also covers externally phased prepared sessions;
+        /// dropping the caller's control object must not invalidate publication.
+        std::shared_ptr<NonlinearSolveState> state;
         /// Called at a restart-safe boundary after the current correction (or
         /// at a terminal observation) and after the next pseudo-CFL is
         /// published. It may synchronously serialize the supplied small state.

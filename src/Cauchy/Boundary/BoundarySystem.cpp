@@ -9,9 +9,9 @@ namespace DNDS::Cauchy
 {
     namespace
     {
-        FlowState TotalInletValue(const BoundaryCondition &condition, const PerfectGas &gas,
-                                  const FlowState &inside, const Vector3 &normal,
-                                  OptionalRef<const RigidFrame> frame)
+        NumericalResult<FlowState> TryTotalInletValue(const BoundaryCondition &condition, const PerfectGas &gas,
+                                                      const FlowState &inside, const Vector3 &normal,
+                                                      OptionalRef<const RigidFrame> frame) noexcept
         {
             const auto &total = condition.totalCondition;
             Vector3 direction{total[2], total[3], total[4]};
@@ -23,13 +23,23 @@ namespace DNDS::Cauchy
                 speedSquared += sqr(inside[1 + d] / inside[0]);
                 inward += direction[d] * normal[d];
             }
-            DNDS_assert_info(inward < -1e-14, "total inlet direction must point into the domain");
+            if (!(inward < -1e-14))
+                return NumericalStatus{NumericalError::InvalidInput, 1};
             const auto result = Physics::Thermodynamics::TotalToStaticPerfectGas(total[0], total[1], speedSquared, gas.gasConstant, gas.gamma);
-            DNDS_assert_info(result, "total inlet thermodynamic conversion failed");
+            if (!result)
+                return result.status;
             const auto &state = result.value;
             const real speed = std::sqrt(state.speedSquared);
             return gas.Conservative({state.density, direction[0] * speed, direction[1] * speed,
                                      direction[2] * speed, state.pressure});
+        }
+        FlowState TotalInletValue(const BoundaryCondition &condition, const PerfectGas &gas,
+                                  const FlowState &inside, const Vector3 &normal,
+                                  OptionalRef<const RigidFrame> frame)
+        {
+            const auto result = TryTotalInletValue(condition, gas, inside, normal, frame);
+            DNDS_check_throw_info(result, "total inlet thermodynamic conversion failed");
+            return result.value;
         }
         Vector3 WallVelocity(const BoundaryCondition &condition, const Vector3 &point,
                              OptionalRef<const RigidFrame> frame)
@@ -43,12 +53,14 @@ namespace DNDS::Cauchy
                 velocity[d] += condition.velocity[d];
             return velocity;
         }
-        FlowState AnalyticValue(const BoundaryCondition &condition, const PerfectGas &gas,
-                                const Vector3 &point, real time,
-                                OptionalRef<const RigidFrame> frame)
+        NumericalResult<FlowState> AnalyticValue(const BoundaryCondition &condition, const PerfectGas &gas,
+                                                 const Vector3 &point, real time,
+                                                 OptionalRef<const RigidFrame> frame) noexcept
         {
-            const auto value = ProfileValue(condition.profile, condition.prescribedPrimitive, gas, frame ? frame.Get()->WorldPoint(point) : point, time);
-            return frame ? frame.Get()->LocalState(value) : value;
+            const auto value = TryProfileValue(condition.profile, condition.prescribedPrimitive, gas, frame ? frame.Get()->WorldPoint(point) : point, time);
+            if (!value)
+                return value.status;
+            return frame ? frame.Get()->LocalState(value.value) : value.value;
         }
         real GridNormalSpeed(const Vector3 &normal, const Vector3 &point,
                              OptionalRef<const RigidFrame> frame)
@@ -91,30 +103,25 @@ namespace DNDS::Cauchy
     {
         return WallVelocity(*this, point, frame);
     }
-    FlowState BoundaryCondition::FaceValue(
+    NumericalResult<FlowState> BoundaryCondition::TryFaceValue(
         const PerfectGas &gas, const FlowState &inside, const Vector3 &normal,
-        const Vector3 &point, real time, OptionalRef<const RigidFrame> frame) const
+        const Vector3 &point, real time, OptionalRef<const RigidFrame> frame) const noexcept
     {
-        DNDS_check_throw_info(hasPerfectGasState, "boundary needs its equation-specific value producer");
-        DNDS_check_throw_info(kind != BoundaryKind::Interface, "interface boundary needs a ready incoming packet");
-        if (kind == BoundaryKind::Analytic)
+        if (!hasPerfectGasState || kind == BoundaryKind::Interface)
+            return NumericalStatus{NumericalError::InvalidInput, 2};
+        const auto resolvedKind = KindAt(point, frame);
+        if (resolvedKind == BoundaryKind::Analytic)
             return AnalyticValue(*this, gas, point, time, frame);
-        if (kind == BoundaryKind::DoubleMachBottom)
-        {
-            auto condition = *this;
-            condition.kind = KindAt(point, frame);
-            return condition.FaceValue(gas, inside, normal, point, time, frame);
-        }
         if (kind == BoundaryKind::Farfield)
             return FarfieldValue(gas, inside, frame ? frame.Get()->LocalState(farfield) : farfield, normal, GridNormalSpeed(normal, point, frame));
         if (kind == BoundaryKind::TotalConditionInlet)
-            return TotalInletValue(*this, gas, inside, normal, frame);
+            return TryTotalInletValue(*this, gas, inside, normal, frame);
         if (kind == BoundaryKind::Extrapolate)
             return inside;
         const auto p = gas.Primitive(inside);
         const auto wallVelocity = WallVelocity(*this, point, frame);
         FlowState face{p.density, p.velocity[0], p.velocity[1], p.velocity[2], p.pressure};
-        if (kind == BoundaryKind::SlipWall)
+        if (resolvedKind == BoundaryKind::SlipWall)
         {
             real speed = 0;
             for (int d = 0; d < 3; ++d)
@@ -131,30 +138,25 @@ namespace DNDS::Cauchy
         }
         return gas.Conservative(face);
     }
-    FlowState BoundaryCondition::Exterior(
+    NumericalResult<FlowState> BoundaryCondition::TryExterior(
         const PerfectGas &gas, const FlowState &inside, const Vector3 &normal,
-        const Vector3 &point, real time, OptionalRef<const RigidFrame> frame) const
+        const Vector3 &point, real time, OptionalRef<const RigidFrame> frame) const noexcept
     {
-        DNDS_check_throw_info(hasPerfectGasState, "boundary needs its equation-specific exterior producer");
-        DNDS_check_throw_info(kind != BoundaryKind::Interface, "interface boundary needs a ready incoming packet");
-        if (kind == BoundaryKind::Analytic)
+        if (!hasPerfectGasState || kind == BoundaryKind::Interface)
+            return NumericalStatus{NumericalError::InvalidInput, 2};
+        const auto resolvedKind = KindAt(point, frame);
+        if (resolvedKind == BoundaryKind::Analytic)
             return AnalyticValue(*this, gas, point, time, frame);
-        if (kind == BoundaryKind::DoubleMachBottom)
-        {
-            auto condition = *this;
-            condition.kind = KindAt(point, frame);
-            return condition.Exterior(gas, inside, normal, point, time, frame);
-        }
         if (kind == BoundaryKind::Farfield)
             return FarfieldValue(gas, inside, frame ? frame.Get()->LocalState(farfield) : farfield, normal, GridNormalSpeed(normal, point, frame));
         if (kind == BoundaryKind::TotalConditionInlet)
-            return TotalInletValue(*this, gas, inside, normal, frame);
+            return TryTotalInletValue(*this, gas, inside, normal, frame);
         if (kind == BoundaryKind::Extrapolate)
             return inside;
         const auto p = gas.Primitive(inside);
         const auto wallVelocity = WallVelocity(*this, point, frame);
         FlowState exterior{p.density, p.velocity[0], p.velocity[1], p.velocity[2], p.pressure};
-        if (kind == BoundaryKind::SlipWall)
+        if (resolvedKind == BoundaryKind::SlipWall)
         {
             real speed = 0;
             for (int d = 0; d < 3; ++d)
@@ -172,6 +174,22 @@ namespace DNDS::Cauchy
                 exterior[0] = p.pressure / (gas.gasConstant * temperature);
         }
         return gas.Conservative(exterior);
+    }
+    FlowState BoundaryCondition::FaceValue(
+        const PerfectGas &gas, const FlowState &inside, const Vector3 &normal,
+        const Vector3 &point, real time, OptionalRef<const RigidFrame> frame) const
+    {
+        const auto result = TryFaceValue(gas, inside, normal, point, time, frame);
+        DNDS_check_throw_info(result, "perfect-gas boundary face evaluation failed");
+        return result.value;
+    }
+    FlowState BoundaryCondition::Exterior(
+        const PerfectGas &gas, const FlowState &inside, const Vector3 &normal,
+        const Vector3 &point, real time, OptionalRef<const RigidFrame> frame) const
+    {
+        const auto result = TryExterior(gas, inside, normal, point, time, frame);
+        DNDS_check_throw_info(result, "perfect-gas boundary exterior evaluation failed");
+        return result.value;
     }
     std::array<real, 25> BoundaryCondition::ExteriorJacobian(
         const PerfectGas &gas, const FlowState &inside, const Vector3 &normal,

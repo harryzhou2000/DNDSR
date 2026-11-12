@@ -243,27 +243,27 @@ TEST_CASE("Nonlinear controller resumes after a completed correction without res
     };
 
     double uninterruptedValue = 1;
-    C::NonlinearSolveState uninterruptedState;
+    auto uninterruptedState = std::make_shared<C::NonlinearSolveState>();
     C::NonlinearSolveControl uninterrupted;
-    uninterrupted.state.Emplace(uninterruptedState);
+    uninterrupted.state = uninterruptedState;
     const auto expected = run(uninterruptedValue, uninterrupted);
 
     double resumedValue = 1;
-    C::NonlinearSolveState saved;
+    auto saved = std::make_shared<C::NonlinearSolveState>();
     C::NonlinearSolveControl interrupted;
-    interrupted.state.Emplace(saved);
+    interrupted.state = saved;
     interrupted.quiescent = [&](const auto &state)
     {
         if (state.iteration == 1)
             throw std::runtime_error("test checkpoint stop");
     };
     CHECK_THROWS_WITH_AS(run(resumedValue, interrupted), "test checkpoint stop", std::runtime_error);
-    CHECK(saved.iteration == 1);
-    CHECK(saved.pseudoCFL == 4);
+    CHECK(saved->iteration == 1);
+    CHECK(saved->pseudoCFL == 4);
     CHECK(resumedValue == .25);
 
     C::NonlinearSolveControl resume;
-    resume.state.Emplace(saved);
+    resume.state = saved;
     resume.resume = true;
     const auto actual = run(resumedValue, resume);
     CHECK(actual.converged == expected.converged);
@@ -453,11 +453,11 @@ TEST_CASE("One correction reuses the ordinary solve update without a stopping lo
     auto one = MakeSolver(fv, singleState, engine, stream, settings);
     const auto version = source.Owned().Version();
     const auto solved = full.Solve(referenceState, right, 20, 1, .1);
-    C::NonlinearProfile profile;
-    const auto corrected = one.CorrectOnce(singleState, right, 20, 1, .1, 0, {-1, 0, std::ref(profile)});
+    auto profile = std::make_shared<C::NonlinearProfile>();
+    const auto corrected = one.CorrectOnce(singleState, right, 20, 1, .1, 0, {-1, 0, profile});
     CHECK(corrected.iterations == 1);
     CHECK_FALSE(corrected.converged);
-    CHECK(profile.residualEvaluations == 1);
+    CHECK(profile->residualEvaluations == 1);
     CHECK(corrected.linearIterations == solved.linearIterations);
     CHECK(source.Owned().Version() == version);
     const auto a = reference.Owned().Read(), b = single.Owned().Read();
@@ -803,36 +803,48 @@ TEST_CASE("Optional nonlinear phase output preserves exact corrections and recor
     auto plainSolver = MakeSolver(fv, plainState, engine, stream, settings);
     auto profiledSolver = MakeSolver(fv, profiledState, engine, stream, settings);
     const auto a = plainSolver.Solve(plainState, right, 20, 1, 0, 0, {1});
-    C::NonlinearProfile profile;
-    profile.seconds.fill(-1);
-    profile.residualEvaluations = 777;
-    const auto b = profiledSolver.Solve(profiledState, right, 20, 1, 0, 0, {1, 0, std::ref(profile)});
+    auto profile = std::make_shared<C::NonlinearProfile>();
+    profile->seconds.fill(-1);
+    profile->residualEvaluations = 777;
+    C::NonlinearSolveSetup setup(
+        settings.implicit, equation.Schema(), mpi.rank, "singleStageImplicit",
+        {1, C::NonlinearDetail::ResidualObservation::BeforeUpdate, false});
+    std::weak_ptr<C::NonlinearProfile> retainedProfile = profile;
+    auto session = profiledSolver.PrepareSolve(
+        setup, profiledState, right, 20, 1, 0, 0, {1, 0, profile});
+    profile.reset(); // A phased solve must retain diagnostic outputs itself.
+    REQUIRE_FALSE(retainedProfile.expired());
+    const auto b = C::SolveNonlinear(session);
+    profile = retainedProfile.lock();
+    REQUIRE(profile);
+    session = {}; // Retire the total timer before inspecting its final value.
+    CHECK(profile.use_count() == 1);
     CHECK(a.iterations == 1);
     CHECK(b.iterations == a.iterations);
     CHECK(b.linearIterations == a.linearIterations);
     CHECK(b.residual == a.residual);
     CHECK(b.residualTargetRatio == a.residualTargetRatio);
     CHECK(b.converged == a.converged);
-    CHECK(profile.residualEvaluations == 2);
+    CHECK(profile->residualEvaluations == 2);
     DNDS::real sections = 0;
     for (int phase = 0; phase < C::NonlinearProfile::Total; ++phase)
     {
-        CHECK(profile.seconds[phase] > 0);
-        sections += profile.seconds[phase];
+        CHECK(profile->seconds[phase] > 0);
+        sections += profile->seconds[phase];
     }
-    CHECK(profile.seconds[C::NonlinearProfile::Total] >= sections);
+    CHECK(profile->seconds[C::NonlinearProfile::Total] >= sections);
     {
         const auto x = plain.Owned().Read(), y = profiled.Owned().Read();
         for (DNDS::index iCell = 0; iCell < plain.Owned().RowCount(); ++iCell)
             for (int j = 0; j < 5; ++j)
                 CHECK(x.View<R::UniformTableRows>()(iCell, j) == y.View<R::UniformTableRows>()(iCell, j));
     }
-    CHECK_THROWS(profiledSolver.Solve(profiledState, right, std::numeric_limits<double>::quiet_NaN(), 1, 0, 0, {1, 0, std::ref(profile)}));
-    CHECK(profile.residualEvaluations == 0);
-    CHECK(profile.seconds[C::NonlinearProfile::Entry] > 0);
-    CHECK(profile.seconds[C::NonlinearProfile::Total] >= profile.seconds[C::NonlinearProfile::Entry]);
+    CHECK_THROWS(profiledSolver.Solve(profiledState, right, std::numeric_limits<double>::quiet_NaN(), 1, 0, 0, {1, 0, profile}));
+    CHECK(profile->residualEvaluations == 0);
+    CHECK(profile->seconds[C::NonlinearProfile::Entry] > 0);
+    CHECK(profile->seconds[C::NonlinearProfile::Total] >= profile->seconds[C::NonlinearProfile::Entry]);
     for (int phase = C::NonlinearProfile::Residual; phase < C::NonlinearProfile::Total; ++phase)
-        CHECK(profile.seconds[phase] == 0);
+        CHECK(profile->seconds[phase] == 0);
 }
 int main(int argc, char **argv)
 {

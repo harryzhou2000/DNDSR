@@ -18,7 +18,12 @@ namespace DNDS::Cauchy
     /// Physical adapter over Geom matching and CFV point interpolation. It owns
     /// ready receiver packets, posed matching/sampling plans and stable scratch.
     /// Every coupling rank calls in the same connection order, including ranks
-    /// outside both domains. Domain inner iterations never enter this protocol.
+    /// outside both domains. The simulation's coordinated nonlinear policy
+    /// refreshes values; an individual domain never enters it independently.
+    /// Optional safety agreement is enabled if any configured domain requests
+    /// implicit.collectiveChecks. All-off retains local fail-fast validation,
+    /// required routing collectives and numerical communication. The selected
+    /// context shares the supplied communicator resource and tag namespace.
     /// No conservative interface flux is imposed by this point-value coupling.
     class InterfaceCoupling
     {

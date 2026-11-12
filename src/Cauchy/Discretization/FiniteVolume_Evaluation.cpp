@@ -588,7 +588,11 @@ namespace DNDS::Cauchy
                                                              reconstruction.WarmValues().PhysicalField(iField));
                     }
                     else if (_data->reconstruction)
-                        Algebra::Fill(reconstruction.WarmValues().PhysicalField(iField), 0.);
+                    {
+                        auto write = reconstruction.WarmValues().PhysicalField(iField).Owned().Write();
+                        const auto values = write.View<R::UniformTableRows>();
+                        CPU::FillRows(values, values.Width(), 0.);
+                    }
                 } });
             local([&]
                   { schedule.Join(); });
@@ -614,12 +618,10 @@ namespace DNDS::Cauchy
         {
             for (int iteration = 0; iteration < numerics.reconstructionIterations; ++iteration)
             {
-                std::vector<R::StreamEvent> operations;
+                std::vector<R::TransferOperation> operations;
                 if (iteration == 0 && firstSweep)
                 {
-                    for (const auto &operation : firstCoefficients)
-                        operations.push_back(operation.CompletionEvent());
-                    firstCoefficients.clear();
+                    operations = std::move(firstCoefficients);
                 }
                 else
                 {
@@ -674,15 +676,14 @@ namespace DNDS::Cauchy
         else if (!directGradientWork && _data->reconstruction)
             local([&]
                   {
-                schedule.Join();
                 for (index iField = 0; iField < index(work.fields.size()); ++iField)
-                    Algebra::Fill(reconstruction.WarmValues().PhysicalField(iField), 0.); });
+                    Algebra::Fill(engine, stream, reconstruction.WarmValues().PhysicalField(iField), 0.); });
         const bool useFluxScratch = reconstruction.distinctFinalized;
         if (useFluxScratch)
             schedule.Submit([&]
                             { EquationDofOperations::Copy(reconstruction.MutableFinalized(), reconstruction.WarmValues()); });
         // These current CPU postprocessors acquire controller-visible scopes
-        // and may contain collective decisions. Keep one explicit boundary for
+        // and publish transform/version metadata. Keep one explicit boundary for
         // them, not a drain in every fixed-count VR sweep. Their prepared
         // device implementations remain a separate operator migration.
         const bool hostPostprocessing = work.positivity ||
@@ -776,7 +777,8 @@ namespace DNDS::Cauchy
                       work.ApplyDirectGradientPositivity(state); });
         if (work.positivity)
             local([&] { // CPU polynomial PP inspects limiter publications and
-                // performs its own collective decisions at this boundary.
+                // uses rank-local host decisions for reference selection and
+                // recovery. This is not a numerical MPI reduction boundary.
                 schedule.Join();
                 const Workspace::PhaseTime timing(work, Workspace::PPPhase);
                 work.positivity->Apply(state, reconstruction.WarmValues(), reconstruction.MutableFinalized(), false);
