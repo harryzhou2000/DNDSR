@@ -54,6 +54,11 @@ def main():
 
     configure = ["cmake", "-S", source, "-B", build,
                  "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_NO_MPI=ON",
+                 # Upstream's prefix-only RUNPATH masks the application's
+                 # transitive CUDA RPATH and can load a different toolkit from
+                 # ldconfig. DNDSR already supplies its resolved provider/CUDA
+                 # library directories with DT_RPATH; let that policy apply.
+                 "-DAMGX_NO_RPATH=ON",
                  f"-DCMAKE_CUDA_ARCHITECTURES={args.architectures}",
                  f"-DCMAKE_INSTALL_PREFIX={install}"]
     if args.cuda_compiler:
@@ -63,7 +68,10 @@ def main():
         configure.extend([f"-DCMAKE_CXX_COMPILER={compiler}",
                           f"-DCMAKE_CUDA_HOST_COMPILER={compiler}"])
     run(configure)
-    run(["cmake", "--build", build, "--target", "amgx", "amgxsh",
+    # Upstream installs its small serial C-API example unconditionally. Build
+    # it with the libraries so cmake --install has every declared artifact.
+    # Do not build upstream's full test target or execute device examples.
+    run(["cmake", "--build", build, "--target", "amgx", "amgxsh", "amgx_capi",
          "--parallel", args.jobs])
     run(["cmake", "--install", build])
     provenance = dict(revision=AMGX_REVISION, tag=AMGX_TAG, mpi=False,

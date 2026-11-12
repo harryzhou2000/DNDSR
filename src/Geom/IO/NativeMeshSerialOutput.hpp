@@ -58,7 +58,10 @@ namespace DNDS::Geom
             DNDS_check_throw_info(global && pull && transformer.father && transformer.son,
                                   "attach field arrays before borrowing native serial-output indexing");
             DNDS_check_throw_info(transformer.father->Size() == owned, "serial-output field owned rows differ from source");
-            for (MPI_Comm comm : {transformer.mpi.comm, transformer.father->getMPI().comm, transformer.son->getMPI().comm})
+            // A named array also parses correctly through CUDA 12.6's host
+            // lowering of this template (a braced dependent range does not).
+            const MPI_Comm communicators[]{transformer.mpi.comm, transformer.father->getMPI().comm, transformer.son->getMPI().comm};
+            for (MPI_Comm comm : communicators)
             {
                 DNDS_check_throw_info(comm != MPI_COMM_NULL, "serial-output field communicator is null");
                 int relation = MPI_UNEQUAL;

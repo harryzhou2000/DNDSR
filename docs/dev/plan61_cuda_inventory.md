@@ -79,7 +79,33 @@ from required iterative work; excluded CPU algorithms are not deleted.
 - **C:** Jacobi/AmgX/GMRES/pMG/time arithmetic and asynchronous snapshots.
 - **D:** final two-local-GPU cylinder and auwd NACA0012 acceptance.
 
-No build or numerical test has been run for these edits. Finish a group's source
-and focused test-source edits before its grouped build/test round. New unit tests
-cover contracts concisely; end-to-end acceptance is separate evidence.
+## Foundation validation (group A, 2026-11-13)
+
+Built the selected C++, CUDA and Python targets at j16 with GCC 12, CUDA 12.6,
+CUDA-aware OpenMPI 5.0.9 and installed NCCL. Built pinned AmgX v2.5.0 without
+MPI. The adapter's 5/6/7-component scalar-CSR checks passed on local device 0.
+AmgX's prefix-only RUNPATH was disabled so the application's selected CUDA
+toolkit takes precedence; installed DNDS Python libraries retain that toolkit
+directory too. The corrected loader trace resolves CUDA libraries to 12.6.
+
+- 24 selected CPU/MPI CTest entries passed (np=1/2/4 as registered).
+- Eight further OMP=2 entries passed, including np=2/4 auxiliary/nonlinear/DOF
+  checks and reconstruction with empty ranks and frozen subpartition reads.
+- Four CUDA entries passed: eager engine, native DOF algebra, AmgX and CFV
+  reconstruction. These test existing device facilities and new contracts;
+  they do **not** establish a complete Cauchy CUDA solver.
+- Rebuilt and installed Python bindings, including EulerP's package dependency:
+  24 array tests and 42 eager-engine tests passed at np=1; 24 array tests passed
+  on each rank at np=2. No module-level skip substitutes for bridge coverage.
+
+Source corrections in this group include the dependency's required C-API
+installation artifact and a named communicator array for CUDA 12.6 parsing of
+an existing Geom serial-output template. Mesh/connectivity mathematics are
+unchanged. Full logs, configure/build commands and fixture hashes are under
+`workspace/plan61-validation/A/` in this checkout.
+
+Spatial CPU OMP completion remains grouped with B; implicit/time/reduction OMP
+completion with C. The source-linked transitive catalog above remains open.
+Finish each group's source/test-source editing before its build/test round;
+end-to-end solver acceptance remains group D.
 

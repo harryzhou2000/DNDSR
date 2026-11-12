@@ -99,6 +99,14 @@ dnds_add_lib(${LIBNAME} "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
 
 dnds_add_lib(${LIBNAME}_shared "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
     ON ON ON)  # SHARED,FAST, EXCLUDE
+if(DNDS_USE_CUDA)
+    # Installed Python libraries must keep the toolkit selected at configure
+    # time, including transitive AmgX libraries. The host may have several
+    # same-soname CUDA releases in ldconfig; none is an implicit substitute.
+    get_target_property(_DNDS_CUDART_LIBRARY CUDA::cudart IMPORTED_LOCATION)
+    get_filename_component(_DNDS_CUDA_RUNTIME_DIR "${_DNDS_CUDART_LIBRARY}" DIRECTORY)
+    set_property(TARGET ${LIBNAME}_shared APPEND PROPERTY INSTALL_RPATH "${_DNDS_CUDA_RUNTIME_DIR}")
+endif()
 if(DNDS_USE_AMGX)
     target_link_libraries(${LIBNAME} PRIVATE DNDS::AmgX)
     target_link_libraries(${LIBNAME}_shared PRIVATE DNDS::AmgX)
