@@ -301,7 +301,11 @@ TEST_CASE("LVR fine reconstruction connects to limited-gradient and constant pol
     CHECK(domain.Discretization().Admissible(domain.Dofs()));
     REQUIRE(domain.LastImplicitStages().size() == 1);
     const auto &report = domain.LastImplicitStages()[0];
-    CHECK(report.multigridCycles == 1);
+    // One pMG cycle is one nonlinear correction. This fixture requests two
+    // nonlinear corrections; do not confuse a configured cycle per correction
+    // with one cycle for the complete stage.
+    CHECK(report.multigridCycles == report.iterations);
+    CHECK(report.multigridCycles > 0);
     REQUIRE(report.levelCorrections.size() == 3);
     for (const auto corrections : report.levelCorrections)
         CHECK(corrections > 0);
