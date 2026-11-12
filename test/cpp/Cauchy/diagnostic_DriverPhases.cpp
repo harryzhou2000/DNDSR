@@ -10,6 +10,8 @@
 #include <numeric>
 #include <cstdlib>
 #include <climits>
+#include <fstream>
+#include <iomanip>
 #include "DiagnosticTiming.hpp"
 
 namespace DNDS::Euler::DriverDiagnostic
@@ -212,26 +214,105 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
             nativeNorm.push_back(std::sqrt(sums[j]));
             oldNorm.push_back(std::sqrt(sums[6 + j]));
         }
+        // Optional untimed, rank-local spatial evidence. Keep raw fields under
+        // the run directory, not in source control. This observes every owned
+        // cell once and cannot change reconstruction, fluxes or the oracle.
+        if (spatialOutput)
+            if (const auto *prefix = std::getenv("DNDS_DIAGNOSTIC_DUMP"))
+            {
+                const auto stencilRead = work->owner->stencil.Read();
+                const auto stencil = stencilRead.View();
+                std::ofstream dump(std::string(prefix) + "-rank" + std::to_string(mpi.rank) + ".csv");
+                DNDS_check_throw_info(bool(dump), "cannot open spatial diagnostic dump");
+                dump << std::setprecision(17) << "rank,cell,x,y,z,volume,boundary_zone";
+                for (int j = 0; j < 6; ++j)
+                    dump << ",cauchy_" << j << ",euler_" << j << ",difference_" << j;
+                dump << '\n';
+                for (I iCell = 0; iCell < values.RowCount(); ++iCell)
+                {
+                    int boundaryZone = -1;
+                    for (I iEntry = stencil.offsets(iCell, 0); iEntry < stencil.offsets(iCell + 1, 0); ++iEntry)
+                    {
+                        const auto sample = stencil.samples(iEntry, 0);
+                        if (sample.other < 0)
+                            boundaryZone = sample.zone;
+                    }
+                    const auto center = metric.GetCellBary(iCell);
+                    dump << mpi.rank << ',' << iCell << ',' << center[0] << ',' << center[1] << ',' << center[2]
+                         << ',' << metric.GetCellVol(iCell) << ',' << boundaryZone;
+                    for (int j = 0; j < 6; ++j)
+                    {
+                        const auto actual = values(iCell, j), expected = (*legacy.residual)[iCell][j];
+                        dump << ',' << actual << ',' << expected << ',' << actual - expected;
+                    }
+                    dump << '\n';
+                }
+                DNDS_check_throw_info(bool(dump), "spatial diagnostic dump write failed");
+                // The reset starts both one-sweep reconstructions at zero.
+                // Record the solver-owned native boundary input beside Euler's
+                // actual reconstruction callback evaluated at that same mean.
+                // This separates a boundary convention change from RHS flux
+                // arithmetic without substituting either solver's values.
+                const auto boundaryRead = work->boundary.ReadOwned();
+                const auto boundaryLayout = boundaryRead.ComponentLayout();
+                const auto boundaryValues = boundaryLayout.View();
+                const auto pointsRead = work->owner->boundaryTraceGeometry.Read();
+                const auto points = pointsRead.View<R::FixedRows<1>>();
+                std::ofstream boundaryDump(std::string(prefix) + "-boundary-rank" + std::to_string(mpi.rank) + ".csv");
+                DNDS_check_throw_info(bool(boundaryDump), "cannot open boundary diagnostic dump");
+                boundaryDump << std::setprecision(17) << "rank,cell,face,quadrature,x,y,z,zone";
+                for (int j = 0; j < 6; ++j)
+                    boundaryDump << ",cauchy_" << j << ",euler_" << j;
+                boundaryDump << '\n';
+                for (I iPoint = 0; iPoint < points.RowCount(); ++iPoint)
+                {
+                    const auto sample = points(iPoint, 0);
+                    const int zone = mesh->GetFaceZone(sample.face);
+                    const DNDS::Geom::tPoint normal(sample.normal[0], sample.normal[1], sample.normal[2]);
+                    const auto normalBase = DNDS::Geom::NormBuildLocalBaseV<3>(normal);
+                    const DNDS::Geom::tPoint point(sample.location[0], sample.location[1], sample.location[2]);
+                    E::EulerEvaluator<E::NS_SA>::TU left = solver.getU()[sample.cell];
+                    const int quadrature = int(sample.point - metric.FaceQuadratureBegin(sample.face));
+                    const auto old = solver.getEval().generateBoundaryValue(
+                        left, solver.getU()[sample.cell], sample.cell, sample.face, quadrature,
+                        normal, normalBase, point, 0., zone, true, 1);
+                    boundaryDump << mpi.rank << ',' << sample.cell << ',' << sample.face << ',' << quadrature
+                                 << ',' << point[0] << ',' << point[1] << ',' << point[2] << ',' << zone;
+                    for (int j = 0; j < 6; ++j)
+                        boundaryDump << ',' << boundaryValues(iPoint, j) << ',' << old[j];
+                    boundaryDump << '\n';
+                }
+                DNDS_check_throw_info(bool(boundaryDump), "boundary diagnostic dump write failed");
+            }
         return C::Json{{"relative_l2_difference", relative}, {"native_l2", nativeNorm}, {"Euler_l2", oldNorm}};
     };
     // Untimed rank-sized workload metadata for arrival-imbalance diagnosis.
     // Count the actual prepared canonical face/source sets, not a uniform
     // cells-per-rank cost estimate. No counter is added to a numerical loop.
+    I sourcePointNumber = 0;
+    {
+        const auto offsetsRead = work->sourceOffsets.Read();
+        const auto offsets = offsetsRead.View<R::FixedRows<1>>();
+        if (offsets.RowCount())
+            sourcePointNumber = offsets(offsets.RowCount() - 1, 0);
+    }
     std::array<I, 10> localWork{fv.Metrics().NumCell(), fv.Metrics().NumCellProc() - fv.Metrics().NumCell(),
                                 I(work->owner->partition.Core().size()), I(work->owner->partition.HaloDependent().size()),
-                                I(work->owner->jacobianSamples.size()), I(work->owner->faceEntries.size()), 0, 0, 0,
-                                work->sourceOffsets.empty() ? 0 : work->sourceOffsets.back()};
+                                work->owner->stencil.jacobianSamples.RowCount(), work->owner->stencil.faceEntries.RowCount(), 0, 0, 0,
+                                sourcePointNumber};
     {
         const auto geometry = fv.Metrics().AcquireRead();
         const auto metric = geometry.HostView();
-        for (const auto first : work->owner->faceEntries)
+        const auto stencilRead = work->owner->stencil.Read();
+        const auto stencil = stencilRead.View();
+        for (I iRow = 0; iRow < stencil.faceEntries.RowCount(); ++iRow)
         {
-            const auto &sample = work->owner->samples[first];
+            const auto &sample = stencil.samples(stencil.faceEntries(iRow, 0), 0);
             localWork[8] += metric.FaceQuadratureEnd(sample.face) - metric.FaceQuadratureBegin(sample.face);
             if (sample.other == DNDS::UnInitIndex)
             {
                 ++localWork[6];
-                localWork[7] += sample.boundary.kind == C::BoundaryKind::NoSlipWall;
+                localWork[7] += work->owner->boundaryConditions.at(sample.condition).kind == C::BoundaryKind::NoSlipWall;
             }
         }
     }
@@ -274,11 +355,13 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
     legacy.auxiliary();
     legacy.spatial();
     const auto spatialOracle = compare(true);
+    // Preserve the failed oracle before aborting; a startup smoke must expose
+    // the differing components instead of only its acceptance assertion.
+    if (!mpi.rank)
+        std::cout << "BROAD_SPATIAL_ORACLE " << spatialOracle.dump() << std::endl;
     if (!levels)
         for (const auto &difference : spatialOracle["relative_l2_difference"])
             DNDS_check_throw_info(difference.get<DNDS::real>() < 1e-9, "production spatial residuals disagree");
-    if (!mpi.rank)
-        std::cout << "BROAD_SPATIAL_ORACLE " << spatialOracle.dump() << std::endl;
 
     // Untimed positive control for correction-only counters: publish an owned
     // generation with unchanged values, forcing the existing source refresh
@@ -296,7 +379,7 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
         fv.PrepareCorrectionAux(state, *reconstruction, *work, auxiliary, engine, stream, 0.);
         DiagnosticTiming::active = nullptr;
         DNDS_check_throw_info(std::accumulate(audit.correctionSourceCalls.begin(), audit.correctionSourceCalls.end(), DNDS::index(0)) == 1 &&
-                                  std::accumulate(audit.correctionSourcePoints.begin(), audit.correctionSourcePoints.end(), DNDS::index(0)) == work->sourceOffsets.back(),
+                                  std::accumulate(audit.correctionSourcePoints.begin(), audit.correctionSourcePoints.end(), DNDS::index(0)) == sourcePointNumber,
                               "correction source audit did not observe the positive control");
     }
 

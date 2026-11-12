@@ -34,6 +34,7 @@ int main(int argc, char **argv)
         const int degree = std::stoi(argv[4]), repetitions = std::stoi(argv[5]), trials = std::stoi(argv[6]);
         DNDS_check_throw_info(degree == 0 || degree == 1 || degree == 3, "diagnostic degree must be 0, 1 or 3");
         DNDS_check_throw_info(operation == "faces" || operation == "source" || operation == "composed" || operation == "halo", "unsupported SA component operation");
+        DNDS_check_throw_info(operation != "halo" || degree == 3, "coefficient-halo diagnosis requires modal P3 reconstruction");
         DNDS_check_throw_info(repetitions > 0 && trials > 0, "positive spatial comparison counts required");
         std::unique_ptr<E::EulerSolver<E::NS_SA>> caseSolver;
         C::DomainSettings settings;
@@ -102,8 +103,7 @@ int main(int argc, char **argv)
         auto result = C::EquationDofOperations::NewVector(state);
         auto reconstruction = fv.BuildReconstructionState(state);
         auto workspace = fv.BuildWorkspace(state);
-        auto reconstructionBinding = workspace->BindReconstruction(reconstruction->coefficients,
-                                                                   reconstruction->fluxCoefficients);
+        auto reconstructionBinding = workspace->BindReconstruction(*reconstruction);
         R::Array<DNDS::real> meanSourceDiagonal(R::RowLayout::Dense(fv.Metrics().NumCell(), 6));
 
         using Eval = E::DiagnosticEulerSA;
@@ -193,7 +193,7 @@ int main(int argc, char **argv)
         if (operation == "halo")
         {
             {
-                auto write = reconstruction->coefficients.PhysicalField(0).Owned().Write();
+                auto write = reconstruction->coefficients->PhysicalField(0).Owned().Write();
                 const auto values = write.View<R::UniformTableRows>();
                 const int modes = fv.PolynomialReconstruction()->NRecDOF();
                 for (I iCell = 0; iCell < values.RowCount(); ++iCell)
@@ -202,14 +202,18 @@ int main(int argc, char **argv)
                             values(iCell, j * modes + mode) = oldRec[iCell](mode, j) =
                                 .01 * (mode + 1) + .02 * j + .001 * mesh->OriginalEntityId(DNDS::Geom::EntityKind::Cell, iCell);
             }
-            C::EquationDofOperations::Copy(reconstruction->fluxCoefficients, reconstruction->coefficients);
+            if (reconstruction->fluxCoefficients)
+                C::EquationDofOperations::Copy(*reconstruction->fluxCoefficients, *reconstruction->coefficients);
         }
         auto meanHalo = workspace->owner->BindHalo(state.PhysicalField(0));
-        auto coefficientHalo = workspace->owner->BindHalo(reconstruction->coefficients.PhysicalField(0));
+        std::optional<decltype(meanHalo)> coefficientHalo;
+        if (reconstruction->coefficients)
+            coefficientHalo.emplace(workspace->owner->BindHalo(reconstruction->coefficients->PhysicalField(0)));
         const auto haloNative = [&]
         {
             meanHalo.Begin().Wait();
-            coefficientHalo.Begin().Wait();
+            if (coefficientHalo)
+                coefficientHalo->Begin().Wait();
         };
         const auto haloLegacy = [&]
         {
@@ -220,54 +224,27 @@ int main(int argc, char **argv)
         };
         haloNative();
         haloLegacy();
-        if (degree != 3 && operation != "halo")
+        if (degree != 3)
         {
-            // Untimed positive/invalidation checks on actual nonempty fields.
-            // Restore the original coefficient exactly before numeric oracles.
-            workspace->RefreshDirectGradients(false);
-            auto &gradient = workspace->directGradients[0].Owned();
-            const auto readyVersion = gradient.Version();
-            workspace->RefreshDirectGradients(false);
-            DNDS_check_throw_info(gradient.Version() == readyVersion, "ready direct gradient was rewritten");
-            auto &input = reconstruction->fluxCoefficients.PhysicalField(0).Owned();
-            const DNDS::real coefficient = input.Read().View()(0, 0);
-            const DNDS::real previous = gradient.Read().View()(0, 0);
-            DNDS::real scale;
-            {
-                const auto geometry = fv.Metrics().AcquireRead();
-                scale = geometry.HostView().cells(0, 7);
-            }
-            constexpr DNDS::real delta = .001;
-            {
-                auto write = input.Write();
-                write.View()(0, 0) = coefficient + delta;
-            }
-            workspace->RefreshDirectGradients(false);
-            const DNDS::real expected = previous + delta / scale, actual = gradient.Read().View()(0, 0);
-            DNDS_check_throw_info(gradient.Version() > readyVersion && std::abs(actual - expected) <= 1e-12 * (1 + std::abs(expected)),
-                                  "changed coefficient did not refresh a nonzero physical gradient");
-            bool writerRejected = false;
-            {
-                auto write = input.Write();
-                try
+            // This phase comparison freezes zero physical gradients, matching
+            // Euler's uGradBuf/oldRec above. Direct P0/P1 has no modal arrays;
+            // do not resurrect a coefficient placeholder or mutate the means.
+            DNDS_check_throw_info(!reconstruction->coefficients && !reconstruction->fluxCoefficients,
+                                  "direct reconstruction unexpectedly owns modal coefficients");
+            for (auto &field : workspace->directGradients)
+                for (auto *array : {&field.Owned(), &field.Ghost()})
                 {
-                    workspace->RefreshDirectGradients(false);
+                    auto write = array->Write();
+                    const auto view = write.View();
+                    for (I iRow = 0; iRow < view.RowCount(); ++iRow)
+                        for (I j = 0; j < view.RowSize(iRow); ++j)
+                            view(iRow, j) = 0;
                 }
-                catch (const std::exception &)
-                {
-                    writerRejected = true; // Local-only operation; no collective is caught.
-                }
-                write.CancelUnmodified();
-            }
-            DNDS_check_throw_info(writerRejected, "active coefficient writer passed the gradient cache check");
-            {
-                auto write = input.Write();
-                write.View()(0, 0) = coefficient;
-            }
-            workspace->RefreshDirectGradients(false);
-            DNDS_check_throw_info(gradient.Read().View()(0, 0) == previous, "gradient audit did not restore its frozen input");
+            workspace->RefreshDirectGradients(state, false, 0);
+            workspace->RefreshDirectGradients(state, true, 0);
             if (!mpi.rank)
-                std::cout << "EXTRACTED_GRADIENT_REFRESH_AUDIT " << C::Json{{"degree", degree}, {"ready_reuse", true}, {"nonzero_input_invalidation", true}, {"active_writer_rejected", true}, {"frozen_input_restored", true}}.dump() << std::endl;
+                std::cout << "EXTRACTED_GRADIENT_INPUT "
+                          << C::Json{{"degree", degree}, {"physical_gradients", "frozen zero"}, {"modal_coefficients", "absent"}}.dump() << std::endl;
         }
         auto evaluatorNative = equation.MakePointEvaluator({}, {true, true, true, false, false});
         const uint64_t flags = Eval::RHS_Dont_Update_Integration | Eval::RHS_Dont_Record_Bud_Flux |
@@ -347,7 +324,7 @@ int main(int argc, char **argv)
                         error = std::max(error, std::abs(values(iCell, j) - expected));
                         magnitude = std::max(magnitude, std::abs(expected));
                     }
-                const auto coefficientRead = reconstruction->coefficients.PhysicalField(0).Ghost().Read();
+                const auto coefficientRead = reconstruction->coefficients->PhysicalField(0).Ghost().Read();
                 const auto rec = coefficientRead.View<R::UniformTableRows>();
                 const int modes = fv.PolynomialReconstruction()->NRecDOF();
                 for (I iCell = 0; iCell < rec.RowCount(); ++iCell)
@@ -481,15 +458,22 @@ int main(int argc, char **argv)
             const auto metric = geometry.HostView();
             const auto topologyRead = mesh->AcquireRead(DNDS::Geom::MeshReadRequirements::CellFlux());
             const auto topology = topologyRead.HostView();
+            const auto offsetsRead = workspace->sourceOffsets.Read();
+            const auto offsets = offsetsRead.View<R::FixedRows<1>>();
+            const auto stencilRead = workspace->owner->stencil.Read();
+            const auto stencil = stencilRead.View();
             for (I iCell = 0; iCell < topology.NumCell(); ++iCell)
             {
-                counts[4] += workspace->sourceOffsets[iCell + 1] - workspace->sourceOffsets[iCell];
+                counts[4] += offsets(iCell + 1, 0) - offsets(iCell, 0);
                 counts[5] += (degree == 3 ? old->GetCellQuad(iCell) : old->GetCellQuadO1(iCell)).GetNumPoints();
             }
             for (I iFace = 0; iFace < mesh->NumFaceProc(); ++iFace)
                 counts[3] += (degree == 3 ? old->GetFaceQuad(iFace) : old->GetFaceQuadO1(iFace)).GetNumPoints();
-            for (const auto iFace : workspace->owner->stencilFaces)
+            for (I iRow = 0; iRow < stencil.stencilFaces.RowCount(); ++iRow)
+            {
+                const I iFace = stencil.stencilFaces(iRow, 0);
                 counts[2] += metric.FaceQuadratureEnd(iFace) - metric.FaceQuadratureBegin(iFace);
+            }
         }
         MPI_Allreduce(MPI_IN_PLACE, counts, 6, MPI_INT64_T, MPI_SUM, mpi.comm);
         DNDS_check_throw_info(counts[4] == counts[5], "source quadrature workloads differ");
