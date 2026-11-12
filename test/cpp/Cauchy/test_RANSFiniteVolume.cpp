@@ -2,7 +2,7 @@
 #include "doctest.h"
 #include "Cauchy/Boundary/BoundaryPointOperator.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
-#include "Cauchy/Discretization/FiniteVolumeKernels.hpp"
+#include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
 #include "Cauchy/Discretization/WallDistanceSamples.hpp"
 #include "Cauchy/Physics/EquationRANS.hpp"
 #include "Cauchy/Physics/EquationSetup.hpp"

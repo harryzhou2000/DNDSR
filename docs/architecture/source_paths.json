@@ -1,6 +1,38 @@
 {
   "stage": "Cauchy Plan 60 source ownership",
   "namespace_changes": false,
+  "owners": {
+    "Cauchy/Discretization/FiniteVolume.hpp": {
+      "plan": "Cauchy/Discretization/FiniteVolume.cpp",
+      "workspace": [
+        "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp",
+        "Cauchy/Discretization/FiniteVolumeReconstructionStateInternal.hpp",
+        "Cauchy/Discretization/FiniteVolumeAuxiliaryInternal.hpp",
+        "Cauchy/Discretization/FiniteVolume_Workspace.cpp",
+        "Cauchy/Discretization/FiniteVolume_WorkspaceFactory.cpp"
+      ],
+      "orchestration": [
+        "Cauchy/Discretization/FiniteVolume_Evaluation.cpp",
+        "Cauchy/Discretization/FiniteVolume_ReconstructionState.cpp",
+        "Cauchy/Discretization/FiniteVolume_AuxiliaryValues.cpp",
+        "Cauchy/Discretization/FiniteVolume_BoundaryInputs.cpp",
+        "Cauchy/Discretization/FiniteVolume_Flux.cpp",
+        "Cauchy/Discretization/FiniteVolume_Source.cpp",
+        "Cauchy/Discretization/FiniteVolume_Diagnostics.cpp"
+      ],
+      "cpu": [
+        "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp",
+        "Cauchy/Discretization/CPU/FiniteVolumeBoundaryKernels.cpp",
+        "Cauchy/Discretization/CPU/FiniteVolumeGradientKernels.cpp",
+        "Cauchy/Discretization/CPU/FiniteVolumeAuxiliaryKernels.cpp",
+        "Cauchy/Discretization/CPU/FiniteVolumeLimitedVRKernels.cpp",
+        "Cauchy/Discretization/CPU/FiniteVolumePositivityKernels.cpp",
+        "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels_Flow5.cpp",
+        "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels_Equation.cpp",
+        "Cauchy/Discretization/CPU/FiniteVolumeSourceKernels.cpp"
+      ]
+    }
+  },
   "paths": [
     {
       "old": "Cauchy/Boundary/BoundaryOperators.cpp",
@@ -39,13 +71,13 @@
     },
     {
       "old": "Cauchy/Discretization/RHS.cpp",
-      "canonical": "Cauchy/Discretization/FiniteVolume_RHS.cpp",
-      "physical": "Cauchy/Discretization/FiniteVolume_RHS.cpp"
+      "canonical": "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels_Flow5.cpp",
+      "physical": "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels_Flow5.cpp"
     },
     {
       "old": "Cauchy/Discretization/Reconstruction.cpp",
-      "canonical": "Cauchy/Discretization/FiniteVolume_Reconstruction.cpp",
-      "physical": "Cauchy/Discretization/FiniteVolume_Reconstruction.cpp"
+      "canonical": "Cauchy/Discretization/CPU/FiniteVolumePositivityKernels.cpp",
+      "physical": "Cauchy/Discretization/CPU/FiniteVolumePositivityKernels.cpp"
     },
     {
       "old": "Cauchy/Discretization/TimeStep.cpp",

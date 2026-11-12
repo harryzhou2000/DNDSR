@@ -1,6 +1,6 @@
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Implicit/JacobianGeometry.hpp"
-#include "Cauchy/Discretization/FiniteVolumeKernels.hpp"
+#include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/Physics/EquationFlux.hpp"
 #include "Cauchy/Implicit/JacobianKernels.hpp"

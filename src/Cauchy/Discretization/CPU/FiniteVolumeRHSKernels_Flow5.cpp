@@ -107,7 +107,8 @@ namespace DNDS::Cauchy
         const auto &gas = data->equation.Gas();
         const auto &thermalBounds = data->FixedFlowThermalBounds();
         const auto frame = data->motion.At(time);
-        RequireKernel<fatal>(!data->hasInterfaces || input.boundary, "RHS requires incoming interface values");
+        RequireKernel<fatal>(!data->hasLocalInterfaceRows || input.boundary,
+                             "RHS requires incoming interface values on a rank with local interface rows");
         const auto incoming = input.boundary.value_or(RHSScalarView{});
         if (input.boundary)
             RequireKernel<fatal>(incoming.RowCount() == index(data->boundaryEntries.size()) && incoming.Width() == 5, "RHS interface input shape differs");

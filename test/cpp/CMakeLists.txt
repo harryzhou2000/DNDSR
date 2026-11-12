@@ -943,8 +943,13 @@ if(Python_EXECUTABLE)
     set(_nonlinear_diagnostic_header "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic/ExtractedEquationPipeline.cpp")
     add_custom_command(OUTPUT "${_nonlinear_diagnostic_header}"
         COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy/extract_pipeline_diagnostic.py"
-            "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume.cpp" "${_nonlinear_diagnostic_header}"
-        DEPENDS Cauchy/extract_pipeline_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume.cpp"
+            "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_Evaluation.cpp" "${_nonlinear_diagnostic_header}"
+            --extra-source "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/CPU/FiniteVolumeRHSKernels_Equation.cpp"
+            --extra-source "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/CPU/FiniteVolumeSourceKernels.cpp"
+        DEPENDS Cauchy/extract_pipeline_diagnostic.py
+            "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/FiniteVolume_Evaluation.cpp"
+            "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/CPU/FiniteVolumeRHSKernels_Equation.cpp"
+            "${PROJECT_SOURCE_DIR}/src/Cauchy/Discretization/CPU/FiniteVolumeSourceKernels.cpp"
         VERBATIM)
     target_sources(cauchy_diagnostic_driver_phases PRIVATE "${_nonlinear_diagnostic_header}")
     set_source_files_properties("${_nonlinear_diagnostic_header}" PROPERTIES HEADER_FILE_ONLY TRUE)

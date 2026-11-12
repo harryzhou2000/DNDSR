@@ -175,11 +175,9 @@ namespace DNDS::Cauchy
             _equation.HasRANS())
             for (int j = 0; j < _equation.RANS().ComponentNumber(); ++j)
                 output(_ransFirst + j, _ransFirst + j) = -1;
-#ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
-        if (condition.kind == BoundaryKind::NoSlipWall &&
-            _equation.HasRANS() &&
-            _equation.RANS().Kind() == Physics::RANS::ModelKind::SA)
-            output(_ransFirst, _ransFirst) = 0;
-#endif
+        // The optional SA wall-gradient correction belongs to the viscous
+        // reconstruction leaf. It must not alter this exterior-state
+        // derivative: the centralized wall law reflects every transported
+        // RANS scalar as 2*target-interior, hence its diagonal is exactly -1.
     }
 }

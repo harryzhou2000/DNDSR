@@ -545,6 +545,11 @@ namespace DNDS::Cauchy
             struct State;
             std::unique_ptr<State> _state;
             explicit AuxiliaryPreparation(std::unique_ptr<State> state);
+            static AuxiliaryPreparation BuildState(
+                std::shared_ptr<const Data> plan, const EquationDofs &state,
+                const AuxiliaryValues &output, real time,
+                std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
+                AuxiliaryInputs inputs);
             friend class FiniteVolume;
 
         public:
@@ -851,6 +856,14 @@ namespace DNDS::Cauchy
         /// leaf input.
         std::optional<BoundaryInputs> PreparedBoundaryInputs(const AuxiliaryValues &values) const;
         std::optional<BoundaryInputs> PreparedBoundaryInputs(const Workspace &workspace) const;
+        /// CPU implementation leaf for the reconstruction-independent mean
+        /// gradient boundary trace. The public operator owns validation,
+        /// worker lifetime, scheduling and halo order; this leaf owns only the
+        /// synchronous point arithmetic and output writes.
+        void FillMeanGradientBoundaryCPU(
+            const EquationDofs &state, MeanGradients &gradients,
+            EquationPointEvaluator &evaluator, real time,
+            RHSScalarView incoming) const;
         /// Established fixed perfect-gas Roe leaf selected by the equation
         /// Jacobian resolver. It is not a second public state API.
         void PrepareFlow5Jacobian(const CFV::FVField &state, const AuxiliaryValues &auxiliary,

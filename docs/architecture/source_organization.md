@@ -5,17 +5,26 @@
 Cauchy public headers retain their paths and namespaces. Implementation units
 with no standalone header use `<owning-header>_<responsibility>.cpp`, so a file
 name identifies the public owner whose private definitions it emits. Examples
-are `FiniteVolume_RHS.cpp`, `LinearProblem_ILU.cpp`,
+are `FiniteVolume_Evaluation.cpp`, `LinearProblem_ILU.cpp`,
 `Domain_ImplicitStep.cpp` and `Simulation_Checkpoint.cpp`. This is a source-path
-and CMake-list cleanup only: it creates no second facade, compatibility header,
-numerical path or compiled symbol spelling. Binding entry points retain their
-conventional `_bind.cpp`/`pybind11.cpp` names.
+and CMake-list cleanup: it creates no second facade, compatibility header or
+compiled symbol spelling. Binding entry points retain their conventional
+`_bind.cpp`/`pybind11.cpp` names.
 
 The exact private-TU renames are in [source_paths.json](source_paths.json).
-Large arithmetic units remain separate by responsibility and may later move
-under CPU/CUDA subdirectories only with measured build/runtime evidence. The
-current rename deliberately does not duplicate `FiniteVolume::Data`, workspace
-ownership or hot kernel definitions merely to reduce a line count.
+`FiniteVolume.cpp` now owns immutable plan/metric construction and small public
+queries only. Reconstruction publication, workspace construction, evaluation,
+boundary binding, flux/source facades and diagnostics are separate
+owner-qualified units. Declaration-only internal headers share the private
+workspace and reconstruction-state shapes without duplicating ownership.
+
+Synchronous CPU arithmetic is isolated under `Cauchy/Discretization/CPU/`:
+generic and fixed-flow RHS kernels, auxiliary point/face/cell preparation,
+direct-gradient kernels, reconstruction positivity, limited-VR updates and
+source kernels. The finite-volume operator layer retains validation, leases,
+halo order, region scheduling and publication. A future CUDA implementation is
+a sibling backend behind the same prepared operator contracts; orchestration
+must not include these CPU implementation units.
 
 ## Cauchy preliminary source cleanup
 

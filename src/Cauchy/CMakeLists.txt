@@ -33,11 +33,25 @@ set(CPPS
     Interface/InterfaceCoupling.cpp
 
     Discretization/FiniteVolume.cpp
-    Discretization/FiniteVolume_Reconstruction.cpp
+    Discretization/FiniteVolume_Workspace.cpp
+    Discretization/FiniteVolume_WorkspaceFactory.cpp
+    Discretization/FiniteVolume_Evaluation.cpp
+    Discretization/FiniteVolume_ReconstructionState.cpp
+    Discretization/FiniteVolume_BoundaryInputs.cpp
+    Discretization/FiniteVolume_Flux.cpp
+    Discretization/FiniteVolume_Source.cpp
+    Discretization/FiniteVolume_Diagnostics.cpp
+    Discretization/CPU/FiniteVolumeGradientKernels.cpp
+    Discretization/CPU/FiniteVolumeBoundaryKernels.cpp
+    Discretization/CPU/FiniteVolumeLimitedVRKernels.cpp
+    Discretization/CPU/FiniteVolumeAuxiliaryKernels.cpp
+    Discretization/CPU/FiniteVolumePositivityKernels.cpp
+    Discretization/CPU/FiniteVolumeRHSKernels_Flow5.cpp
+    Discretization/CPU/FiniteVolumeRHSKernels_Equation.cpp
+    Discretization/CPU/FiniteVolumeSourceKernels.cpp
     Discretization/FiniteVolume_AuxiliaryValues.cpp
     Discretization/FiniteVolume_LimitedVR.cpp
     Discretization/FiniteVolume_PrepareAuxValues.cpp
-    Discretization/FiniteVolume_RHS.cpp
     Discretization/FiniteVolume_TimeStep.cpp
     Discretization/FiniteVolume_InitializeField.cpp
     Discretization/WallDistanceSamples.cpp

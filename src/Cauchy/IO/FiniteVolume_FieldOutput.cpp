@@ -1,4 +1,4 @@
-#include "Cauchy/Discretization/FiniteVolumeKernels.hpp"
+#include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/Physics/EquationPositivity.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"

@@ -203,7 +203,14 @@ namespace DNDS::Cauchy
         std::map<int, index> forceSlots;
         std::shared_ptr<Detail::BoundaryPointLayout> boundaryLayout;
         std::vector<index> gradientBoundaryPoints;
+        /// Domain-wide coupling participation. Every rank uses this to retain
+        /// the collective interface publication protocol, including ranks
+        /// with no locally owned interface quadrature.
         bool hasInterfaces = false;
+        /// Whether this rank's RHS actually consumes an incoming interface
+        /// row. A published zero-row packet is valid and must not be mistaken
+        /// for a missing numeric payload on interior-only partitions.
+        bool hasLocalInterfaceRows = false;
         std::vector<index> stencilFaces;
         std::vector<index> faceEntries;
         std::vector<index> auxiliaryCoreFaces, auxiliaryDependentFaces;

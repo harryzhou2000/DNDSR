@@ -35,12 +35,12 @@ def main():
     # Scope the original callbacks themselves so recursive coarse calls are
     # observed too. The time/correction algorithms remain verbatim.
     for old, new in [
-        ("                int iter, real ct, int uPos, int reconstructionFlag)\n        {",
-         "                int iter, real ct, int uPos, int reconstructionFlag)\n        {\n            ::DiagnosticTiming::Scope diagnosticScope(::DiagnosticTiming::Block::Spatial);"),
+        ("                int iter, real ct, int uPos, int reconstructionFlag, bool reuseDtGradients = false)\n        {",
+         "                int iter, real ct, int uPos, int reconstructionFlag, bool reuseDtGradients = false)\n        {\n            ::DiagnosticTiming::Scope diagnosticScope(::DiagnosticTiming::Block::Spatial);"),
         ("auto fdtau = [&](ArrayDOFV<nVarsFixed> &cx, ArrayDOFV<1> &dTau, real alphaDiag, int uPos)\n        {",
          "auto fdtau = [&](ArrayDOFV<nVarsFixed> &cx, ArrayDOFV<1> &dTau, real alphaDiag, int uPos)\n        {\n            ::DiagnosticTiming::Scope diagnosticScope(::DiagnosticTiming::Block::Auxiliary);"),
-        ("                    auto call_evaluate_rhs = [&]()\n                    {",
-         "                    auto call_evaluate_rhs = [&]()\n                    {\n                        ::DiagnosticTiming::Scope diagnosticScope(::DiagnosticTiming::Block::Spatial);"),
+        ("                    auto call_evaluate_rhs = [&](uint64_t gradientFlags = TEval::RHS_No_Flags)\n                    {",
+         "                    auto call_evaluate_rhs = [&](uint64_t gradientFlags = TEval::RHS_No_Flags)\n                    {\n                        ::DiagnosticTiming::Scope diagnosticScope(::DiagnosticTiming::Block::Spatial);"),
         ("                    DNDS_assert(mgLevel > 0 && mgLevel <= mgLevelMax);",
          "                    ::DiagnosticTiming::Level diagnosticLevel(mgLevel);\n                    DNDS_assert(mgLevel > 0 && mgLevel <= mgLevelMax);")]:
         unique(source, old)

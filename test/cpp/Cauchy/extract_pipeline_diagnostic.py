@@ -1,4 +1,4 @@
-"""Add external diagnostic scopes to a private copy of the unified FV pipeline.
+"""Add external diagnostic scopes to private copies of the unified FV pipeline.
 
 The generated translation unit preserves every production statement and adds
 only clocks/counters. Unique anchors deliberately fail when orchestration is
@@ -43,8 +43,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--extra-source", action="append", default=[], type=Path)
     args = parser.parse_args()
-    text = args.source.read_text()
+    sources = [args.source, *args.extra_source]
+    text = "\n".join(source.read_text() for source in sources)
 
     correction = (
         "void FiniteVolume::PrepareCorrectionAux(EquationDofs &state, ReconstructionState &reconstruction,\n"
@@ -144,9 +146,13 @@ def main():
                 f"FV detail scope {phase} expected {expected}, got {count}")
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha256(args.source.read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    for source in sources:
+        digest.update(str(source).encode())
+        digest.update(b"\0")
+        digest.update(source.read_bytes())
     args.output.write_text(
-        "// Generated unified FV diagnostic; original SHA256: " + digest +
+        "// Generated unified FV diagnostic; original SHA256: " + digest.hexdigest() +
         '\n#include "DiagnosticTiming.hpp"\n' + text)
 
 
