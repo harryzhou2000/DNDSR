@@ -27,6 +27,10 @@ namespace DNDS::Cauchy
                                Physics::Chemistry::ChemicalWorkerPool::Lease worker = {});
         /// Complete schema-order state, in code units with total energy.
         std::vector<real> Conservative(Physics::StateInput input);
+        /// Boundary-only totalPT[_phy] vector. Converts p0/T0/scalar units,
+        /// normalizes the prescribed direction, and repairs mass fractions.
+        /// It does not invent a static density or evaluate an inlet speed.
+        std::vector<real> TotalCondition(Physics::StateInput input);
         /// Seed an expression in any Euler input representation. Conservative
         /// species stay raw; primitive scalars divide by the actual density,
         /// while thermodynamic queries use repaired composition, as in Euler.

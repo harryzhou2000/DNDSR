@@ -94,6 +94,20 @@ namespace DNDS::Physics::Thermodynamics
         auto &input = _worker.Buffers().rhoY;
         return {input.data(), int(input.size()) - 1};
     }
+    NumericalResult<TotalConditionStaticState> IdealGasMixture::PointEvaluator::TryTotalToStatic(
+        real pressure, real temperature, real speedSquared,
+        Chemistry::ConstSpeciesBufferView independentFractions) noexcept
+    {
+        if (independentFractions.nSpecies != int(_state->species.size()) - 1)
+            return NumericalStatus{NumericalError::InvalidState, 1, -1};
+        auto &fractions = _worker.Buffers().fractions;
+        // The supplied density 1 is explicitly mass-fraction normalization,
+        // never a fallback for a missing physical density.
+        Chemistry::RepairMassFractions(1, independentFractions, {fractions.data(), int(fractions.size())});
+        return TotalToStaticIdealMixture(_worker.Source(), _state->scales, pressure,
+                                         temperature, speedSquared,
+                                         {fractions.data(), int(fractions.size())});
+    }
     void IdealGasMixture::PointEvaluator::PrepareComposition(real rho, Chemistry::ConstSpeciesBufferView rhoY)
     {
         auto &fractions = _worker.Buffers().fractions;

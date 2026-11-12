@@ -278,9 +278,11 @@ namespace DNDS::Cauchy::CPU
                         meanRight = sample.changesFrame ? FiniteVolumeDetail::RotateState(cellMean.Flow(request.flowFirst), sample.rotation) : cellMean.Flow(request.flowFirst);
                     }
                     else
-                        meanRight = sample.boundary.kind == BoundaryKind::Interface
-                                        ? FiniteVolumeDetail::Load(request.incoming, sample.boundaryPoint)
-                                        : FiniteVolumeDetail::BoundaryExterior(sample, equation.Gas(), meanLeft, request.time, frame, {});
+                        // The shared boundary dispatch also handles interface
+                        // traces. Pass its real input instead of duplicating
+                        // the kind test around an empty interface view.
+                        meanRight = FiniteVolumeDetail::BoundaryExterior(
+                            sample, equation.Gas(), meanLeft, request.time, frame, request.incoming);
                     meanLeftData = request.preparedMean
                                        ? Riemann::AcousticState{{meanLeft, (*request.preparedMean)(iCell, 0)}, (*request.preparedMean)(iCell, 1)}
                                        : equation.PrepareFluxState(meanLeft);

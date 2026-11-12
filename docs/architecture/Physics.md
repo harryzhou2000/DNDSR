@@ -30,6 +30,7 @@ flowchart TD
 | `Physics/Chemistry/ChemicalWorker` | Exclusive worker contexts and bounded reusable species buffers |
 | `Physics/Chemistry/SpeciesAdmissibility.hpp` | Euler-compatible transported mean-species repair on strided rows |
 | `Physics/Thermodynamics/IdealGasMixture` | Immutable material descriptor and solver-independent code-scaled point evaluation |
+| `Physics/Thermodynamics/TotalCondition` | Perfect-gas and frozen-composition ideal-mixture total-to-static closure, with Euler's speed cap and explicit numerical status |
 | `Physics/Thermodynamics/ConservativeConversion.hpp` | EOS-independent velocity/internal-energy conversion and conservative directional kinematics |
 | `Physics/Thermodynamics/IdealMixtureGradient.hpp` | Exact ideal-mixture temperature chain rule |
 | `Physics/Transport/MixtureAveragedDiffusion.hpp` | Conservative species-flux correction and full-enthalpy energy diffusion |

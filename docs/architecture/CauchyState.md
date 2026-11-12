@@ -577,10 +577,11 @@ Both ordinary mean thermodynamics and optional derived bundles are supported.
 A mixture uses one explicit matching chemistry worker at a time; no chemistry
 rates are requested for these face/mean properties. Pressure, acoustics and
 molecular/species diffusion bounds come from the actual EOS/transport provider.
-The equation boundary profile covers extrapolation, farfield, constant prescribed
-values and adiabatic/isothermal walls, using the same producer as reconstruction
-boundary buffers and the equation RHS. Interface packets and nonconstant analytic
-profiles still require their extended equation-state adapters.
+The equation boundary profile covers extrapolation, farfield, total-condition
+inlet, constant prescribed values and adiabatic/isothermal walls, using the same
+producer as reconstruction boundary buffers and the equation RHS. Interface
+packets supply complete logical equation rows. Nonconstant analytic profiles
+remain restricted to the explicitly supported perfect-gas profile producers.
 Wave/pressure statistics and cell spectral sums have the existing definitions;
 missing face outputs use private scratch only when a requested reduction needs
 it. An unused retained scratch allocation is neither acquired nor written.
@@ -930,6 +931,20 @@ The sign is pressure times the outward fluid normal minus viscous traction,
 matching the flow5 diagnostic. No full spatial-flame or RANS acceptance is implied.
 
 ### Primitive initialization and equation boundary values
+
+For VR, `numerics.vrBoundaryValue` selects `physicalTrace` (default, a physical
+face target) or `physicalMirrored` (Euler's reconstruction callback convention,
+including wall reflection and the enabled zero-SA wall treatment). This changes
+only the supplied VR value. Direct gradients retain their physical target;
+flux exterior states and auxiliary preparation retain their own contracts.
+Interface rows are prescribed receiver-frame values in either mode, without
+reflection. `reconstructionBoundaryFromPolynomial=true` refreshes physical BC
+values from the latest warm polynomial before every VR sweep; false prepares
+mean-based values once per spatial evaluation. A repeated copy of an interface
+row does not initiate another interface exchange within that evaluation.
+
+The total-condition inlet uses the shared point-physics closure documented in
+[physical state input](CauchyStateInput.md#total-condition-inlet).
 
 `PointEvaluator::FromPrimitive([rho,u,v,w,p], rhoY, temperature)` produces
 flow5 through the actual material. Zero temperature selects pressure; a positive

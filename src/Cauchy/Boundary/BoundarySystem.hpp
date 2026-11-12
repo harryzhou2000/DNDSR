@@ -16,6 +16,7 @@ namespace DNDS::Cauchy
         Interior,
         Extrapolate,
         Farfield,
+        TotalConditionInlet,
         SlipWall,
         NoSlipWall,
         Analytic,
@@ -41,6 +42,10 @@ namespace DNDS::Cauchy
         /// species-free profile; never resolve names inside numerical loops.
         std::vector<real> prescribedFractions;
         std::array<real, 2> prescribedRANS{};
+        /// Total inlet uses [p0,T0,unit direction] in ground axes and primitive
+        /// RANS values; density is computed at the current boundary point.
+        std::array<real, 5> totalCondition{};
+        std::array<real, 2> totalRANSPrimitive{};
         /// Validate the equation-state producer at operator setup. The legacy
         /// perfect-gas methods retain their existing larger profile set.
         void ValidateEquationProducer() const;

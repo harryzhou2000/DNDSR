@@ -2,12 +2,35 @@
 #include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/Input/FlowProfile.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
+#include "Physics/Thermodynamics/TotalCondition.hpp"
 #include <set>
 
 namespace DNDS::Cauchy
 {
     namespace
     {
+        FlowState TotalInletValue(const BoundaryCondition &condition, const PerfectGas &gas,
+                                  const FlowState &inside, const Vector3 &normal,
+                                  OptionalRef<const RigidFrame> frame)
+        {
+            const auto &total = condition.totalCondition;
+            Vector3 direction{total[2], total[3], total[4]};
+            if (frame)
+                direction = frame->LocalVector(direction);
+            real speedSquared = 0, inward = 0;
+            for (int d = 0; d < 3; ++d)
+            {
+                speedSquared += sqr(inside[1 + d] / inside[0]);
+                inward += direction[d] * normal[d];
+            }
+            DNDS_assert_info(inward < -1e-14, "total inlet direction must point into the domain");
+            const auto result = Physics::Thermodynamics::TotalToStaticPerfectGas(total[0], total[1], speedSquared, gas.gasConstant, gas.gamma);
+            DNDS_assert_info(result, "total inlet thermodynamic conversion failed");
+            const auto &state = result.value;
+            const real speed = std::sqrt(state.speedSquared);
+            return gas.Conservative({state.density, direction[0] * speed, direction[1] * speed,
+                                     direction[2] * speed, state.pressure});
+        }
         Vector3 WallVelocity(const BoundaryCondition &condition, const Vector3 &point,
                              OptionalRef<const RigidFrame> frame)
         {
@@ -75,6 +98,8 @@ namespace DNDS::Cauchy
         }
         if (kind == BoundaryKind::Farfield)
             return FarfieldValue(gas, inside, frame ? frame.Get()->LocalState(farfield) : farfield, normal, GridNormalSpeed(normal, point, frame));
+        if (kind == BoundaryKind::TotalConditionInlet)
+            return TotalInletValue(*this, gas, inside, normal, frame);
         if (kind == BoundaryKind::Extrapolate)
             return inside;
         const auto p = gas.Primitive(inside);
@@ -113,6 +138,8 @@ namespace DNDS::Cauchy
         }
         if (kind == BoundaryKind::Farfield)
             return FarfieldValue(gas, inside, frame ? frame.Get()->LocalState(farfield) : farfield, normal, GridNormalSpeed(normal, point, frame));
+        if (kind == BoundaryKind::TotalConditionInlet)
+            return TotalInletValue(*this, gas, inside, normal, frame);
         if (kind == BoundaryKind::Extrapolate)
             return inside;
         const auto p = gas.Primitive(inside);
@@ -146,6 +173,39 @@ namespace DNDS::Cauchy
         std::array<real, 25> result{};
         if (kind == BoundaryKind::Analytic)
             return result;
+        if (kind == BoundaryKind::TotalConditionInlet)
+        {
+            const auto state = TotalInletValue(*this, gas, inside, normal, frame);
+            real speedSquared = 0;
+            for (int d = 0; d < 3; ++d)
+                speedSquared += sqr(inside[1 + d] / inside[0]);
+            const real cp = gas.gamma * gas.gasConstant / (gas.gamma - 1);
+            // At the kinetic cap the prescribed state is locally constant.
+            // At zero speed |v| is nondifferentiable; use the zero generalized
+            // derivative. Production LU-SGS freezes this target in all cases.
+            if (speedSquared == 0 || speedSquared >= .95 * 2 * cp * totalCondition[1])
+                return result;
+            const real temperature = totalCondition[1] - .5 * speedSquared / cp;
+            const real densityDerivative = -state[0] / (2 * gas.gamma * gas.gasConstant * temperature);
+            const real pressureDerivative = -.5 * state[0];
+            Vector3 direction{totalCondition[2], totalCondition[3], totalCondition[4]};
+            if (frame)
+                direction = frame->LocalVector(direction);
+            const real speed = std::sqrt(speedSquared);
+            for (int column = 0; column < 5; ++column)
+            {
+                const real dk = column == 0   ? -2 * speedSquared / inside[0]
+                                : column == 4 ? 0
+                                              : 2 * inside[column] / sqr(inside[0]);
+                result[column * 5] = densityDerivative * dk;
+                for (int d = 0; d < 3; ++d)
+                    result[column * 5 + 1 + d] = direction[d] * (densityDerivative * speed + .5 * state[0] / speed) * dk;
+                result[column * 5 + 4] = (pressureDerivative / (gas.gamma - 1) +
+                                          .5 * (densityDerivative * speedSquared + state[0])) *
+                                         dk;
+            }
+            return result;
+        }
         if (kind == BoundaryKind::DoubleMachBottom)
         {
             auto condition = *this;
@@ -319,6 +379,16 @@ namespace DNDS::Cauchy
                                   "RANS values require a prescribed RANS boundary");
             if (equation.HasRANS() && prescribed)
                 condition.prescribedRANS = ResolveRANSValues(equation, source.ransConservative);
+            if (condition.kind == BoundaryKind::TotalConditionInlet)
+            {
+                const index nr = equation.HasRANS() ? equation.RANS().ComponentNumber() : 0;
+                const index ni = equation.HasMixture() ? equation.Mixture().SpeciesNumber() - 1 : 0;
+                DNDS_check_throw_info(index(source.resolvedTotalState.size()) == 5 + nr + ni,
+                                      "total inlet requires resolved totalPT state in equation order");
+                std::copy_n(source.resolvedTotalState.begin(), 5, condition.totalCondition.begin());
+                std::copy_n(source.resolvedTotalState.begin() + 5, nr, condition.totalRANSPrimitive.begin());
+                condition.prescribedFractions.assign(source.resolvedTotalState.begin() + 5 + nr, source.resolvedTotalState.end());
+            }
         }
     }
     BoundarySystem::BoundarySystem(const std::map<std::string, BoundarySettings> &settings,
@@ -327,12 +397,19 @@ namespace DNDS::Cauchy
         for (const auto &[zone, source] : settings)
         {
             DNDS_check_throw_info(!gas || source.massFractions.empty(), "perfect-gas boundary has unused mass fractions");
-            DNDS_check_throw_info(source.state.is_null(), "resolve tagged boundary state before constructing BoundarySystem directly");
+            DNDS_check_throw_info(source.state.is_null() || source.kind == "totalConditionInlet", "resolve tagged boundary state before constructing BoundarySystem directly");
             BoundaryCondition condition;
             if (source.kind == "extrapolate")
                 condition.kind = BoundaryKind::Extrapolate;
             else if (source.kind == "farfield")
                 condition.kind = BoundaryKind::Farfield;
+            else if (source.kind == "totalConditionInlet")
+            {
+                condition.kind = BoundaryKind::TotalConditionInlet;
+                DNDS_check_throw_info(source.resolvedTotalState.size() >= 5,
+                                      "resolve totalPT input before constructing the inlet");
+                std::copy_n(source.resolvedTotalState.begin(), 5, condition.totalCondition.begin());
+            }
             else if (source.kind == "slipWall")
                 condition.kind = BoundaryKind::SlipWall;
             else if (source.kind == "noSlipWall")

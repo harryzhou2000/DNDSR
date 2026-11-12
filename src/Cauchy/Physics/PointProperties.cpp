@@ -4,6 +4,17 @@
 
 namespace DNDS::Cauchy
 {
+    NumericalResult<Physics::Thermodynamics::TotalConditionStaticState> PointEvaluator::TryTotalToStatic(
+        real pressure, real temperature, real speedSquared,
+        Physics::Chemistry::ConstSpeciesBufferView independentFractions) noexcept
+    {
+        if (_mixture)
+            return _mixture->TryTotalToStatic(pressure, temperature, speedSquared, independentFractions);
+        if (independentFractions.nSpecies)
+            return NumericalStatus{NumericalError::InvalidState, 1, -1};
+        return Physics::Thermodynamics::TotalToStaticPerfectGas(
+            pressure, temperature, speedSquared, _gas.gasConstant, _gas.gamma);
+    }
     PointEvaluator::PointEvaluator(const EquationSystem &equation,
                                    Physics::Chemistry::ChemicalWorkerPool::Lease worker, Physics::Thermodynamics::MixturePropertyRequest request)
         : _viscous(equation.Viscous()), _request(request)

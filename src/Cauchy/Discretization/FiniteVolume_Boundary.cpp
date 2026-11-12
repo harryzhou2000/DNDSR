@@ -65,7 +65,13 @@ namespace DNDS::Cauchy
                             ? owner->reconstruction->NRecDOF()
                             : 0;
         request.time = time;
+        const bool mirrored = !direct && owner->settings.numerics.vrBoundaryValue == "physicalMirrored";
+        const bool gradientBoundary = std::any_of(fields.begin(), fields.end(),
+                                                  [](const auto &field)
+                                                  { return bool(field.gradientBoundary); });
+        const auto fillBoundary = [&](BoundaryPointStateKind kind)
         {
+            request.stateKind = kind;
             auto outputWrite = boundary.WriteOwned();
             std::vector<EquationBlockArrayView<real>> outputBlocks;
             outputBlocks.reserve(size_t(boundary.BlockNumber()));
@@ -76,7 +82,12 @@ namespace DNDS::Cauchy
             RequireNumericalSuccess(CPU::FillBoundaryTraces(request, conditions,
                                                             owner->boundaryPoint, evaluator),
                                     "FillBoundaryTraces");
-        }
+        };
+        // Preserve the direct-gradient/LVR target separately from the selected
+        // VR target. Most VR workspaces need only the one selected fill. When
+        // a gradient target is needed, publish/copy the physical values first.
+        fillBoundary(mirrored && !gradientBoundary ? BoundaryPointStateKind::ExteriorState
+                                                   : BoundaryPointStateKind::FaceTrace);
 
         for (auto &field : fields)
             if (field.gradientBoundary)
@@ -88,6 +99,8 @@ namespace DNDS::Cauchy
                     target.View<R::UniformTableRows>(),
                     sourceRows);
             }
+        if (mirrored && gradientBoundary)
+            fillBoundary(BoundaryPointStateKind::ExteriorState);
         if (primitiveBoundary)
         {
             auto target = primitiveBoundary->Write();

@@ -2,6 +2,7 @@
 
 #include "Physics/ReferenceScales.hpp"
 #include "Physics/Chemistry/ChemicalWorker.hpp"
+#include "Physics/Thermodynamics/TotalCondition.hpp"
 #include <array>
 
 namespace DNDS::Physics::Chemistry
@@ -107,6 +108,11 @@ namespace DNDS::Physics::Thermodynamics
             /// Stable Ns-1 input scratch for gathering strided logical rows.
             /// Retained by this evaluator; evaluation never rewrites rhoY.
             Chemistry::SpeciesBufferView SpeciesInput() const;
+            /// Frozen-composition total-to-static closure using this worker.
+            /// independentFractions contains Ns-1 mass fractions, not rhoY.
+            NumericalResult<TotalConditionStaticState> TryTotalToStatic(
+                real pressure, real temperature, real speedSquared,
+                Chemistry::ConstSpeciesBufferView independentFractions) noexcept;
 
             /// Numerical entry: all backend exceptions are intercepted and
             /// returned as status. Only UV nonconvergence permits mean fallback.

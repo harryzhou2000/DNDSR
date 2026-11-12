@@ -147,6 +147,9 @@ namespace DNDS::Cauchy
         real reconstructionTolerance = 0;
         bool characteristicLimiter = true, faceFallback = true;
         bool reconstructionBoundaryFromPolynomial = true;
+        /// VR boundary equation target only. Direct gradients and flux exterior
+        /// states retain their own contracts; interface samples are unchanged.
+        std::string vrBoundaryValue = "physicalTrace";
         bool firstOrderConvection = false;
         std::string viscousGradient = "primitive";
         bool viscousLimited = true, noGRPOnWall = false, noRsOnWall = false;
@@ -180,6 +183,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(characteristicLimiter, "Use equation-provided cell-mean face characteristics for 3WBAP");
             DNDS_FIELD(faceFallback, "Fall back to the cell mean at inadmissible face values; disable for non-PP accuracy studies");
             DNDS_FIELD(reconstructionBoundaryFromPolynomial, "Project current face polynomial through BC each VR sweep; false uses mean-based boundary values");
+            DNDS_FIELD(vrBoundaryValue, "VR-only boundary target: physicalTrace or physicalMirrored (Euler reflected-state target); interface values remain prescribed samples");
             DNDS_FIELD(firstOrderConvection, "P0 face operator: cell means and jump-only normal viscosity; separate reconstruction remains available for RANS/volume sources. Used by bottom pMG");
             DNDS_FIELD(viscousGradient, "primitive retains the cell-gradient scheme; polynomial uses cached polynomial derivatives and Euler's normal face-jump penalty");
             DNDS_FIELD(viscousLimited, "Use the filtered flux polynomial for polynomial viscosity; false uses the unlimited VR guess");
@@ -224,6 +228,10 @@ namespace DNDS::Cauchy
         std::string wallVelocityFrame = "mesh";
         std::array<real, 5> primitive{1, 0, 0, 0, 1};
         Json state = nullptr;
+        /// Setup-only resolved [p0,T0,unit direction,primitive RANS,Y...].
+        /// Original tagged state is serialized; this prepared vector is not a
+        /// second user configuration and is populated by physical input setup.
+        std::vector<real> resolvedTotalState;
         std::array<real, 3> velocity{0, 0, 0};
         std::map<std::string, real> massFractions;
         std::map<std::string, real> ransConservative;
@@ -231,7 +239,7 @@ namespace DNDS::Cauchy
         FlowProfileSettings profile;
         DNDS_DECLARE_CONFIG(BoundarySettings)
         {
-            DNDS_FIELD(kind, "extrapolate, farfield, slipWall, noSlipWall, analytic, doubleMachBottom, or interface");
+            DNDS_FIELD(kind, "extrapolate, farfield, totalConditionInlet, slipWall, noSlipWall, analytic, doubleMachBottom, or interface");
             DNDS_FIELD(thermal, "Wall thermal law: adiabatic or isothermal");
             DNDS_FIELD(wallVelocityFrame, "mesh: velocity relative to moving wall; ground: prescribed absolute ground velocity");
             DNDS_FIELD(primitive, "Farfield rho,u,v,w,p; three velocities on any geometry");

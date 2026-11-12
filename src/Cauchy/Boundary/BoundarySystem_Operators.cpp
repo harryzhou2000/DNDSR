@@ -6,7 +6,7 @@ namespace DNDS::Cauchy
 {
     void BoundaryCondition::ValidateEquationProducer() const
     {
-        DNDS_check_throw_info(kind == BoundaryKind::Extrapolate || kind == BoundaryKind::Farfield ||
+        DNDS_check_throw_info(kind == BoundaryKind::Extrapolate || kind == BoundaryKind::Farfield || kind == BoundaryKind::TotalConditionInlet ||
                                   kind == BoundaryKind::SlipWall || kind == BoundaryKind::NoSlipWall ||
                                   kind == BoundaryKind::Interface ||
                                   (kind == BoundaryKind::Analytic &&
@@ -22,6 +22,34 @@ namespace DNDS::Cauchy
         {
             if (condition.kind == BoundaryKind::Extrapolate)
                 return inside;
+            if (condition.kind == BoundaryKind::TotalConditionInlet)
+            {
+                if (condition.prescribedFractions.size() != size_t(rhoY.nSpecies) || !(inside[0] > 0))
+                    return NumericalStatus{NumericalError::InvalidState, 4, -1};
+                const auto &total = condition.totalCondition;
+                Vector3 direction{total[2], total[3], total[4]};
+                if (frame)
+                    direction = frame->LocalVector(direction);
+                real speedSquared = 0, inward = 0;
+                for (int d = 0; d < 3; ++d)
+                {
+                    speedSquared += sqr(inside[1 + d] / inside[0]);
+                    inward += direction[d] * normal[d];
+                }
+                if (!(inward < -1e-14))
+                    return NumericalStatus{NumericalError::InvalidState, 5, -1};
+                const auto result = evaluator.TryTotalToStatic(total[0], total[1], speedSquared,
+                                                               {condition.prescribedFractions.data(), int(condition.prescribedFractions.size())});
+                if (!result)
+                    return result.status;
+                const auto &state = result.value;
+                const real speed = std::sqrt(state.speedSquared);
+                for (int k = 0; k < rhoY.nSpecies; ++k)
+                    rhoY[k] = state.density * condition.prescribedFractions[k];
+                return evaluator.TryFromPrimitive({state.density, direction[0] * speed,
+                                                   direction[1] * speed, direction[2] * speed, state.pressure},
+                                                  rhoY, state.temperature);
+            }
             if (condition.kind == BoundaryKind::Analytic && condition.profile.kind != "constant")
             {
                 DNDS_assert_info(condition.hasPerfectGasState && !rhoY.nSpecies,

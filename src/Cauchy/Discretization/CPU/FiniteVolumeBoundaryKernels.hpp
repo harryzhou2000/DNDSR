@@ -28,6 +28,9 @@ namespace DNDS::Cauchy::CPU
         CFV::ReconstructionBasisEvaluationView basis;
         index componentNumber = 0;
         bool polynomial = false, usePointRows = false, repairRANS = true;
+        /// Resolved by the operator. Mirroring is a VR-only choice, not a
+        /// property of polynomial sampling or of the downstream CFV kernel.
+        BoundaryPointStateKind stateKind = BoundaryPointStateKind::FaceTrace;
         RANSStateView rans;
         EquationBlockReadView ransMeans;
         WallDistanceView wallDistance;

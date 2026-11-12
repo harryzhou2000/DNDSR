@@ -101,6 +101,11 @@ namespace DNDS::Cauchy
                                                     Physics::Chemistry::ConstSpeciesBufferView rhoY = {}, real temperature = 0) noexcept;
         FlowState FromPrimitive(const FlowState &primitive, Physics::Chemistry::ConstSpeciesBufferView rhoY = {},
                                 real temperature = 0);
+        /// Shared total-state inlet closure, with fixed composition. Returns
+        /// accepted speed after the Euler enthalpy cap; inputs use code units.
+        NumericalResult<Physics::Thermodynamics::TotalConditionStaticState> TryTotalToStatic(
+            real pressure, real temperature, real speedSquared,
+            Physics::Chemistry::ConstSpeciesBufferView independentFractions = {}) noexcept;
         /// Nonthrowing numerical property entry. All expected validation and
         /// backend failures return an explicit code. output is valid only on
         /// success; its species spans still borrow this worker until next use.

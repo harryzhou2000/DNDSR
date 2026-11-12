@@ -61,7 +61,7 @@ namespace DNDS::Cauchy::CPU
                 if (const auto status = boundary.TryEvaluate(
                         point, condition, sample.interfaceRow, sample.normal,
                         sample.location, evaluator, request.frame, request.time,
-                        BoundaryPointStateKind::FaceTrace,
+                        request.stateKind,
                         OptionalRef<const std::vector<real>>(cellMean),
                         request.rans.components == 2
                             ? request.wallDistance.cellMean(sample.cell, 0)

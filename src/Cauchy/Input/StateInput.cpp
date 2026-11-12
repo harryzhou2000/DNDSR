@@ -41,9 +41,36 @@ namespace DNDS::Cauchy
                                   "state input scales differ from equation material");
         }
     }
+    std::vector<real> PhysicalStateConverter::TotalCondition(Physics::StateInput parsed)
+    {
+        DNDS_check_throw_info(parsed.form == Physics::StateInput::Form::TotalPT,
+                              "totalConditionInlet requires totalPT or totalPT_phy");
+        parsed.ToCodeUnits(_scales, _scalarScales);
+        auto &v = parsed.values;
+        DNDS_check_throw_info(std::all_of(v.begin(), v.end(), [](real value)
+                                          { return std::isfinite(value); }),
+                              "scaled total inlet state is not finite");
+        const real norm = std::hypot(v[2], v[3], v[4]);
+        DNDS_check_throw_info(v[0] > 0 && v[1] > 0 && std::isfinite(norm) && norm > 1e-14,
+                              "total inlet requires positive total p/T and a finite nonzero direction");
+        for (int d = 2; d < 5; ++d)
+            v[d] /= norm;
+        for (int j = 0; j < _rans; ++j)
+            DNDS_check_throw_info(v[5 + j] >= 0, "total inlet requires nonnegative primitive RANS values");
+        if (_species)
+        {
+            std::vector<real> fractions(_species);
+            Physics::Chemistry::RepairMassFractions(1, {v.data() + 5 + _rans, _species - 1},
+                                                    {fractions.data(), _species});
+            for (int k = 0; k < _species - 1; ++k)
+                v[5 + _rans + k] = fractions[k];
+        }
+        return std::move(v);
+    }
     std::vector<real> PhysicalStateConverter::Conservative(Physics::StateInput parsed)
     {
         using Form = Physics::StateInput::Form;
+        DNDS_check_throw_info(parsed.form != Form::TotalPT, "totalPT is only valid for a totalConditionInlet boundary");
         const auto &equation = _equation;
         const int nr = _rans, ns = _species, ni = ns ? ns - 1 : 0;
         parsed.ToCodeUnits(_scales, _scalarScales);
@@ -101,6 +128,7 @@ namespace DNDS::Cauchy
     Physics::StateInput PhysicalStateConverter::Represent(const std::vector<real> &conservative, Physics::StateInput::Form form, bool physical)
     {
         using Form = Physics::StateInput::Form;
+        DNDS_check_throw_info(form != Form::TotalPT, "totalPT is a boundary input, not a conservative-state representation");
         DNDS_check_throw_info(conservative.size() == 5 + _scalarScales.size() && conservative[0] > 0 &&
                                   std::all_of(conservative.begin(), conservative.end(), [](real v)
                                               { return std::isfinite(v); }),
@@ -187,9 +215,20 @@ namespace DNDS::Cauchy
         for (auto &[zone, boundary] : result.boundaries)
             if (!boundary.state.is_null())
             {
-                DNDS_check_throw_info(boundary.kind == "farfield" || boundary.kind == "analytic", "tagged boundary state requires a prescribed boundary");
+                DNDS_check_throw_info(boundary.kind == "farfield" || boundary.kind == "analytic" || boundary.kind == "totalConditionInlet", "tagged boundary state requires a prescribed boundary");
                 DNDS_check_throw_info(boundary.primitive == BoundarySettings{}.primitive && boundary.massFractions.empty() && boundary.ransConservative.empty(),
                                       "boundary state conflicts with legacy primitive/scalar fields");
+                if (boundary.kind == "totalConditionInlet")
+                {
+                    PhysicalStateConverter converter(equation, scales, workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{});
+                    boundary.resolvedTotalState = converter.TotalCondition(Physics::StateInput::Parse(boundary.state));
+                    DNDS_check_throw_info(boundary.resolvedTotalState[1] >= settings.numerics.temperatureFloor,
+                                          "total inlet temperature lies below the configured temperature floor");
+                    // Retain the normalized descriptor in prepared settings:
+                    // workspace/cache identities serialize those settings.
+                    boundary.state = {{"type", "totalPT"}, {"state", boundary.resolvedTotalState}};
+                    continue;
+                }
                 auto state = resolve(boundary.state);
                 DNDS_check_throw_info(state.temperature >= settings.numerics.temperatureFloor,
                                       "prescribed boundary state lies below configured temperature floor");

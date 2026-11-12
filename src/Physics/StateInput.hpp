@@ -17,7 +17,9 @@ namespace DNDS::Physics
             Sensible,
             RhoP,
             RhoT,
-            TP
+            TP,
+            /// Boundary-only [p0,T0,dirX,dirY,dirZ, primitive RANS, Y...].
+            TotalPT
         };
         Form form;
         bool physical;

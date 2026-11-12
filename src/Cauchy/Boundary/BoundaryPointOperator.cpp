@@ -107,6 +107,12 @@ namespace DNDS::Cauchy
 
         if (!ransComponents)
             return {};
+        if (condition.kind == BoundaryKind::TotalConditionInlet)
+        {
+            for (int j = 0; j < ransComponents; ++j)
+                point[size_t(_ransFirst + j)] = flow[0] * condition.totalRANSPrimitive[j];
+            return {};
+        }
         if (condition.kind == BoundaryKind::NoSlipWall)
         {
             std::array<real, 2> target{};

@@ -37,6 +37,8 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(settings.mesh.dimension == 2 || settings.mesh.dimension == 3, "Cauchy geometric dimension must be 2 or 3");
         DNDS_check_throw_info(settings.execution.hostThreads >= 0 && settings.execution.hostThreads <= 1024, "invalid CPU worker count");
         const auto &numerics = settings.numerics;
+        DNDS_check_throw_info(numerics.vrBoundaryValue == "physicalTrace" || numerics.vrBoundaryValue == "physicalMirrored",
+                              "vrBoundaryValue must be physicalTrace or physicalMirrored");
         numerics.ValidatePositivity();
         DNDS_check_throw_info(numerics.reconstructionIterations > 0 && numerics.reconstructionResidualCheckInterval > 0 && std::isfinite(numerics.reconstructionTolerance) && numerics.reconstructionTolerance >= 0,
                               "invalid Cauchy numerical controls");
@@ -78,6 +80,10 @@ namespace DNDS::Cauchy
                                       (equation.eos != "perfectGas" && (condition.kind == "farfield" || condition.kind == "analytic")),
                                   "boundary mass fractions require a prescribed mixture state");
             validateProfile(condition.profile);
+            if (condition.kind == "totalConditionInlet")
+                DNDS_check_throw_info(!condition.state.is_null() &&
+                                          Physics::StateInput::Parse(condition.state).form == Physics::StateInput::Form::TotalPT,
+                                      "totalConditionInlet requires a totalPT or totalPT_phy state vector");
             if (condition.kind == "noSlipWall" && condition.thermal == "isothermal")
                 DNDS_check_throw_info(condition.temperature >= numerics.temperatureFloor, "wall temperature lies below the configured temperature floor");
             if (condition.kind == "farfield" && equation.eos == "perfectGas" && condition.state.is_null())
@@ -311,7 +317,7 @@ namespace DNDS::Cauchy
         require(!s.implicit.multigrid.levels || (s.numerics.reconstruction == "variational" && s.numerics.cfv.maxOrder >= 2), "polynomial FAS requires high-order variational reconstruction");
         for (const auto &[zone, condition] : s.boundaries)
         {
-            require(condition.kind == "extrapolate" || condition.kind == "farfield" || condition.kind == "slipWall" || condition.kind == "noSlipWall" || condition.kind == "analytic" || condition.kind == "doubleMachBottom" || condition.kind == "interface", "BC zone " + zone + ": " + condition.kind);
+            require(condition.kind == "extrapolate" || condition.kind == "farfield" || condition.kind == "totalConditionInlet" || condition.kind == "slipWall" || condition.kind == "noSlipWall" || condition.kind == "analytic" || condition.kind == "doubleMachBottom" || condition.kind == "interface", "BC zone " + zone + ": " + condition.kind);
             require(condition.kind != "doubleMachBottom" || condition.profile.kind == "doubleMachReflection", "DMR bottom requires its analytic shock profile");
             require(condition.thermal == "adiabatic" || condition.thermal == "isothermal", "thermal BC " + condition.thermal);
             require(condition.wallVelocityFrame == "mesh" || condition.wallVelocityFrame == "ground", "wall velocity frame " + condition.wallVelocityFrame);

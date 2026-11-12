@@ -9,6 +9,8 @@
 #include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/Implicit/LinearSolver.hpp"
 #include "Cauchy/Boundary/BoundarySystem.hpp"
+#include "Cauchy/Boundary/BoundaryPointOperator.hpp"
+#include "Cauchy/Input/StateInput.hpp"
 #include "Euler/SourceTermContributor.hpp"
 #include "Physics/Chemistry/SpeciesAdmissibility.hpp"
 #include <Eigen/LU>
@@ -93,6 +95,49 @@ namespace
             }
         }
     };
+}
+
+TEST_CASE("Total mixture inlet preserves prescribed composition stagnation enthalpy and entropy")
+{
+    Fixture f;
+    const auto fractions = f.Fractions(0);
+    const P::Chemistry::ConstSpeciesBufferView Y{fractions.data(), f.species};
+    const double totalT = 1400, totalP = 200000;
+    C::DomainSettings settings;
+    settings.equation.referenceScales = {{"rho0", f.scales.rho0}, {"U0", f.scales.U0}, {"L0", f.scales.L0}, {"T0", f.scales.T0}};
+    std::vector<double> total{totalP, totalT, -1, 0, 0};
+    total.insert(total.end(), fractions.begin(), fractions.end() - 1);
+    settings.boundaries["7"].kind = "totalConditionInlet";
+    settings.boundaries["7"].state = {{"type", "totalPT_phy"}, {"state", total}};
+    const auto prepared = C::ResolvePhysicalStateInputs(settings, f.equation, f.workers);
+    const C::BoundarySystem boundaries(prepared.settings.boundaries, f.equation);
+    const C::BoundaryPointOperator boundary(f.equation);
+    auto evaluator = f.equation.MakePointEvaluator(f.workers.Acquire(), {});
+    for (const double speed : {.3, 100.})
+    {
+        const auto input = f.Point(0);
+        std::vector<double> point(input.data(), input.data() + input.size());
+        point[1] = point[0] * speed;
+        point[2] = point[3] = 0;
+        REQUIRE(boundary.TryEvaluate(point, boundaries.At(7), 0, {1, 0, 0}, {}, evaluator, {}, 0,
+                                     C::BoundaryPointStateKind::ExteriorState));
+        C::FlowState flow;
+        std::copy_n(point.begin(), 5, flow.begin());
+        const auto properties = evaluator.Evaluate(flow, {point.data() + 5, f.species - 1});
+        const double t = properties.thermo.temperature * f.scales.T0;
+        const double p = properties.thermo.pressure * f.scales.Pressure();
+        const double kinetic = .5 * DNDS::sqr(point[1] / point[0]) * f.scales.SpecificEnergy();
+        const double h0 = f.prototype.mixtureEnthalpy(totalT, Y, totalP);
+        CHECK(f.prototype.mixtureEnthalpy(t, Y, p) + kinetic == doctest::Approx(h0).epsilon(2e-9));
+        CHECK(f.prototype.mixtureEntropy(t, Y, p) == doctest::Approx(f.prototype.mixtureEntropy(totalT, Y, totalP)).epsilon(2e-9));
+        CHECK(point[1] < 0);
+        for (int k = 0; k < f.species - 1; ++k)
+            CHECK(point[5 + k] / point[0] == doctest::Approx(fractions[k]).epsilon(1e-12));
+        if (speed < 1)
+            CHECK(point[1] / point[0] == doctest::Approx(-speed));
+        else
+            CHECK(std::abs(point[1] / point[0]) < speed);
+    }
 }
 
 TEST_CASE("Shared transported species repair preserves Euler constants and strided neighbors")

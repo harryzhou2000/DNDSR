@@ -2,6 +2,8 @@
 #include "doctest.h"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Input/FlowProfile.hpp"
+#include "Cauchy/Input/StateInput.hpp"
+#include "Cauchy/Boundary/BoundaryPointOperator.hpp"
 #include "../CFV/ReconstructionFixture.hpp"
 
 namespace C = DNDS::Cauchy;
@@ -9,83 +11,139 @@ namespace R = DNDS::Runtime;
 using I = DNDS::index;
 static DNDS::MPIInfo mpi;
 
-TEST_CASE("VR wall targets use physical face traces in both flow and equation profiles")
+TEST_CASE("VR wall target selection preserves the selected physical boundary equation")
 {
     const auto mesh = CFVTest::CartesianHexes(mpi, 3);
-    C::DomainSettings settings;
-    settings.mesh.dimension = 3;
-    settings.boundaries["7"].kind = "slipWall";
-    settings.numerics.reconstruction = "variational";
-    settings.numerics.faceFallback = false;
-    settings.numerics.reconstructionIterations = 1;
-    settings.numerics.cfv.maxOrder = 3;
-    settings.numerics.cfv.boundaryDerivativeWeights = {1, 0, 0, 0};
-    const auto equation = C::EquationSystem::Resolve(settings.equation);
-    C::FiniteVolume fv(mesh, settings, equation);
-    const auto plan = DNDS::CFV::VariationalReconstructionPlan::ConstructRecCoeff(fv.Metrics(), settings.numerics.cfv);
-    auto state = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
+    for (bool mirrored : {false, true})
     {
-        auto write = state.Owned().Write();
-        const auto u = write.View<R::UniformTableRows>();
-        for (I iCell = 0; iCell < u.RowCount(); ++iCell)
+        CAPTURE(mirrored);
+        C::DomainSettings settings;
+        settings.mesh.dimension = 3;
+        settings.boundaries["7"].kind = "slipWall";
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.vrBoundaryValue = mirrored ? "physicalMirrored" : "physicalTrace";
+        settings.numerics.faceFallback = false;
+        settings.numerics.reconstructionIterations = 1;
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.cfv.boundaryDerivativeWeights = {1, 0, 0, 0};
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume fv(mesh, settings, equation);
+        const auto plan = DNDS::CFV::VariationalReconstructionPlan::ConstructRecCoeff(fv.Metrics(), settings.numerics.cfv);
+        auto state = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
         {
-            const auto x = fv.Metrics().GetCellCent(iCell);
-            const auto value = equation.Gas().Conservative({1 + .01 * x[0], .02 + .01 * x[1], -.03, .01, 10});
-            for (int j = 0; j < 5; ++j)
-                u(iCell, j) = value[j];
+            auto write = state.Owned().Write();
+            const auto u = write.View<R::UniformTableRows>();
+            for (I iCell = 0; iCell < u.RowCount(); ++iCell)
+            {
+                const auto x = fv.Metrics().GetCellCent(iCell);
+                const auto value = equation.Gas().Conservative({1 + .01 * x[0], .02 + .01 * x[1], -.03, .01, 10});
+                for (int j = 0; j < 5; ++j)
+                    u(iCell, j) = value[j];
+            }
         }
-    }
-    auto expected = plan.BuildWorkspace(5);
-    auto expectedCoefficients = plan.BuildCoefficients(5);
-    DNDS::Algebra::Fill(expectedCoefficients, 0.);
-    auto boundary = plan.BuildBoundaryValues(5);
-    {
-        const auto read = state.Owned().Read();
-        const auto u = read.View<R::UniformTableRows>();
-        auto write = boundary.values.Write();
-        const auto values = write.View<R::UniformTableRows>();
-        for (I iPoint = 0; iPoint < plan.NumBoundaryQuadrature(); ++iPoint)
+        auto expected = plan.BuildWorkspace(5);
+        auto expectedCoefficients = plan.BuildCoefficients(5);
+        DNDS::Algebra::Fill(expectedCoefficients, 0.);
+        auto boundary = plan.BuildBoundaryValues(5);
         {
-            const auto point = plan.GetBoundaryQuadrature(iPoint);
-            C::FlowState inside{};
-            for (int j = 0; j < 5; ++j)
-                inside[j] = u(point.cell, j);
-            auto trace = equation.Gas().Primitive(inside);
-            double normalVelocity = 0;
-            for (int d = 0; d < 3; ++d)
-                normalVelocity += trace.velocity[d] * point.normal[d];
-            // Independent stationary slip trace: rho and pressure/internal
-            // energy are retained while wall-normal velocity is removed once.
-            // Flux exteriors use twice this velocity jump but are deliberately
-            // not reconstruction boundary data.
-            for (int d = 0; d < 3; ++d)
-                trace.velocity[d] -= normalVelocity * point.normal[d];
-            const auto expectedTrace = equation.Gas().Conservative(
-                {trace.density, trace.velocity[0], trace.velocity[1],
-                 trace.velocity[2], trace.pressure});
-            for (int j = 0; j < 5; ++j)
-                values(iPoint, j) = expectedTrace[j];
+            const auto read = state.Owned().Read();
+            const auto u = read.View<R::UniformTableRows>();
+            auto write = boundary.values.Write();
+            const auto values = write.View<R::UniformTableRows>();
+            for (I iPoint = 0; iPoint < plan.NumBoundaryQuadrature(); ++iPoint)
+            {
+                const auto point = plan.GetBoundaryQuadrature(iPoint);
+                C::FlowState inside{};
+                for (int j = 0; j < 5; ++j)
+                    inside[j] = u(point.cell, j);
+                auto trace = equation.Gas().Primitive(inside);
+                double normalVelocity = 0;
+                for (int d = 0; d < 3; ++d)
+                    normalVelocity += trace.velocity[d] * point.normal[d];
+                // Independent slip target: retain rho/p, remove the normal
+                // velocity once for a face trace or twice for a mirrored target.
+                for (int d = 0; d < 3; ++d)
+                    trace.velocity[d] -= (mirrored ? 2 : 1) * normalVelocity * point.normal[d];
+                const auto expectedTrace = equation.Gas().Conservative(
+                    {trace.density, trace.velocity[0], trace.velocity[1],
+                     trace.velocity[2], trace.pressure});
+                for (int j = 0; j < 5; ++j)
+                    values(iPoint, j) = expectedTrace[j];
+            }
         }
+        fv.Metrics().BindHalo(state).Begin().Wait();
+        fv.Metrics().BindHalo(expectedCoefficients).Begin().Wait();
+        plan.DoReconstructionIter(state, expectedCoefficients, expected, boundary);
+        const auto check = [&](const auto &coefficients)
+        {
+            const auto a = coefficients.Owned().Read(), b = expectedCoefficients.Owned().Read();
+            const auto actual = a.template View<R::UniformTableRows>(), oracle = b.View<R::UniformTableRows>();
+            for (I iCell = 0; iCell < actual.RowCount(); ++iCell)
+                for (I j = 0; j < actual.Width(); ++j)
+                    CHECK(actual(iCell, j) == doctest::Approx(oracle(iCell, j)).epsilon(1e-12).scale(1));
+        };
+        R::EagerEngine engine;
+        const auto stream = engine.CreateCPUStream();
+        auto logical = C::EquationDofs::Coupled(equation.Schema(), state);
+        auto output = C::EquationDofs::Coupled(equation.Schema(), residual);
+        auto reconstruction = fv.BuildReconstructionState(logical);
+        auto equationWorkspace = fv.BuildWorkspace(logical);
+        fv.Evaluate(logical, output, *reconstruction, *equationWorkspace, engine, stream);
+        check(fv.ReconstructionGuess(*reconstruction).CoupledField());
     }
-    fv.Metrics().BindHalo(state).Begin().Wait();
-    fv.Metrics().BindHalo(expectedCoefficients).Begin().Wait();
-    plan.DoReconstructionIter(state, expectedCoefficients, expected, boundary);
-    const auto check = [&](const auto &coefficients)
+}
+
+TEST_CASE("Total inlet resolves physical vector input and applies static density to SA")
+{
+    C::DomainSettings input;
+    input.equation.rans.model = "SA";
+    input.equation.transport = "NewtonianFourier";
+    input.equation.viscosity = .01;
+    input.equation.gasConstant = 287. * 50 / 100;
+    input.equation.referenceScales = {{"rho0", 2}, {"U0", 10}, {"L0", 3}, {"T0", 50}};
+    auto &inlet = input.boundaries["7"];
+    inlet.kind = "totalConditionInlet";
+    inlet.state = {{"type", "totalPT_phy"}, {"state", {101325., 300., -2., 0., 0., 2.}}};
+    const auto equation = C::EquationSystem::Resolve(input.equation);
+    const auto prepared = C::ResolvePhysicalStateInputs(input, equation, {});
+    C::BoundarySystem boundaries(prepared.settings.boundaries, equation);
+    C::BoundaryPointOperator boundary(equation);
+    auto evaluator = equation.MakePointEvaluator({}, {});
+    const auto flow = equation.Gas().Conservative({1, .2, .1, 0, 4});
+    for (const auto kind : {C::BoundaryPointStateKind::FaceTrace, C::BoundaryPointStateKind::ExteriorState})
     {
-        const auto a = coefficients.Owned().Read(), b = expectedCoefficients.Owned().Read();
-        const auto actual = a.template View<R::UniformTableRows>(), oracle = b.View<R::UniformTableRows>();
-        for (I iCell = 0; iCell < actual.RowCount(); ++iCell)
-            for (I j = 0; j < actual.Width(); ++j)
-                CHECK(actual(iCell, j) == doctest::Approx(oracle(iCell, j)).epsilon(1e-12).scale(1));
-    };
-    R::EagerEngine engine;
-    const auto stream = engine.CreateCPUStream();
-    auto logical = C::EquationDofs::Coupled(equation.Schema(), state);
-    auto output = C::EquationDofs::Coupled(equation.Schema(), residual);
-    auto reconstruction = fv.BuildReconstructionState(logical);
-    auto equationWorkspace = fv.BuildWorkspace(logical);
-    fv.Evaluate(logical, output, *reconstruction, *equationWorkspace, engine, stream);
-    check(fv.ReconstructionGuess(*reconstruction).CoupledField());
+        std::vector<DNDS::real> point(flow.begin(), flow.end());
+        point.push_back(7.);
+        REQUIRE(boundary.TryEvaluate(point, boundaries.At(7), 0, {1, 0, 0}, {}, evaluator, {}, 0, kind));
+        const double totalT = 6, totalP = 101325. / 200;
+        const double cp = 1.4 / .4 * input.equation.gasConstant;
+        const double temperature = totalT - .05 / (2 * cp);
+        const double pressure = totalP * std::pow(temperature / totalT, 3.5);
+        CHECK(point[0] == doctest::Approx(pressure / (input.equation.gasConstant * temperature)));
+        CHECK(point[1] / point[0] == doctest::Approx(-std::sqrt(.05)));
+        CHECK(point[2] == 0);
+        CHECK(point[5] == doctest::Approx(2 * point[0]));
+    }
+    std::vector<DNDS::real> point(flow.begin(), flow.end());
+    point.push_back(7.);
+    CHECK_FALSE(boundary.TryEvaluate(point, boundaries.At(7), 0, {-1, 0, 0}, {}, evaluator, {}, 0,
+                                     C::BoundaryPointStateKind::ExteriorState));
+    const auto &condition = boundaries.At(7);
+    const auto jacobian = condition.ExteriorJacobian(equation.Gas(), flow, {1, 0, 0}, {}, 0);
+    for (int column = 0; column < 5; ++column)
+    {
+        auto plus = flow, minus = flow;
+        const double epsilon = 1e-6;
+        plus[column] += epsilon;
+        minus[column] -= epsilon;
+        const auto a = condition.Exterior(equation.Gas(), plus, {1, 0, 0}, {}, 0);
+        const auto b = condition.Exterior(equation.Gas(), minus, {1, 0, 0}, {}, 0);
+        for (int row = 0; row < 5; ++row)
+            CHECK(jacobian[column * 5 + row] == doctest::Approx((a[row] - b[row]) / (2 * epsilon)).epsilon(2e-6).scale(1));
+    }
+    Eigen::MatrixXd approximate(6, 6);
+    REQUIRE(boundary.TryApproximateExteriorJacobian(approximate, condition, point, {1, 0, 0}, {}, {}, 0));
+    CHECK(approximate.isZero());
 }
 
 TEST_CASE("Published interface packets reproduce analytic P3 boundaries through auxiliary RHS and frozen Jacobian operators")
@@ -105,6 +163,7 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
     settings.numerics.reconstruction = "variational";
     settings.numerics.cfv.maxOrder = 3;
     settings.numerics.reconstructionIterations = 2;
+    settings.numerics.vrBoundaryValue = "physicalMirrored";
     const auto equation = C::EquationSystem::Resolve(settings.equation);
     C::FiniteVolume reference(mesh, settings, equation);
     settings.boundaries["7"].kind = "interface";

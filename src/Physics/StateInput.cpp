@@ -31,6 +31,8 @@ namespace DNDS::Physics
             result.form = Form::RhoT;
         else if (type == "primTP")
             result.form = Form::TP;
+        else if (type == "totalPT")
+            result.form = Form::TotalPT;
         else
             DNDS_check_throw_info(false, "unsupported physical state type: " + type);
         DNDS_check_throw_info(result.values.size() >= 5 &&
@@ -44,7 +46,7 @@ namespace DNDS::Physics
         using Json = nlohmann::ordered_json;
         const Json values{{"type", "array"}, {"items", {{"type", "number"}}}, {"minItems", 5}};
         return {{"oneOf", Json::array({Json{{"type", "null"}}, values,
-                                       Json{{"type", "object"}, {"required", {"type", "state"}}, {"additionalProperties", false}, {"properties", {{"type", {{"type", "string"}, {"enum", {"cons", "consSensible", "primRhoP", "primRhoT", "primTP", "cons_phy", "consSensible_phy", "primRhoP_phy", "primRhoT_phy", "primTP_phy"}}}}, {"state", values}}}}})}};
+                                       Json{{"type", "object"}, {"required", {"type", "state"}}, {"additionalProperties", false}, {"properties", {{"type", {{"type", "string"}, {"enum", {"cons", "consSensible", "primRhoP", "primRhoT", "primTP", "totalPT", "cons_phy", "consSensible_phy", "primRhoP_phy", "primRhoT_phy", "primTP_phy", "totalPT_phy"}}}}, {"state", values}}}}})}};
     }
     void StateInput::ToCodeUnits(const ReferenceScales &scales, const std::vector<real> &scalarScales)
     {
@@ -53,10 +55,19 @@ namespace DNDS::Physics
         if (!physical)
             return;
         const bool conservative = form == Form::Conservative || form == Form::Sensible;
-        values[0] /= form == Form::TP ? scales.T0 : scales.rho0;
-        for (int d = 1; d <= 3; ++d)
-            values[d] /= conservative ? scales.Momentum() : scales.U0;
-        values[4] /= form == Form::RhoT ? scales.T0 : scales.Pressure();
+        if (form == Form::TotalPT)
+        {
+            values[0] /= scales.Pressure();
+            values[1] /= scales.T0;
+            // Direction is dimensionless. Its magnitude is not a speed.
+        }
+        else
+        {
+            values[0] /= form == Form::TP ? scales.T0 : scales.rho0;
+            for (int d = 1; d <= 3; ++d)
+                values[d] /= conservative ? scales.Momentum() : scales.U0;
+            values[4] /= form == Form::RhoT ? scales.T0 : scales.Pressure();
+        }
         for (index j = 0; j < index(scalarScales.size()); ++j)
         {
             DNDS_check_throw_info(std::isfinite(scalarScales[j]) && scalarScales[j] > 0, "invalid scalar input unit scale");

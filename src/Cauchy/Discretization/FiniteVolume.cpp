@@ -56,6 +56,8 @@ namespace DNDS::Cauchy
         R::CommunicationDetail::LocalStage(mesh->getMPI().comm, settings.implicit.collectiveChecks, [&]
                                            {
             settings.numerics.ValidatePositivity();
+            DNDS_check_throw_info(settings.numerics.vrBoundaryValue == "physicalTrace" || settings.numerics.vrBoundaryValue == "physicalMirrored",
+                                  "vrBoundaryValue must be physicalTrace or physicalMirrored");
             DNDS_check_throw_info(settings.initialState.is_null() && settings.referenceState.is_null(),
                                   "resolve tagged physical inputs before constructing FiniteVolume directly");
             if (equation.HasRANS())

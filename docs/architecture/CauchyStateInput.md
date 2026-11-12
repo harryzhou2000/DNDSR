@@ -72,6 +72,36 @@ composition, as Euler does. Domain admissibility remains a separate check.
 
 ## Ownership and setup
 
+### Total-condition inlet
+
+Use `kind: "totalConditionInlet"` with
+`state: {"type": "totalPT_phy", "state": [pTotal, TTotal, dirX, dirY, dirZ, ...]}`.
+`totalPT` accepts code units; `_phy` converts pressure by rho0*U0² and
+temperature by T0. Direction is dimensionless, normalized at setup and expressed
+in ground axes; the boundary operator rotates it into mesh axes and requires
+it to point inward. Append primitive RANS values and independent species mass
+fractions in the ordinary equation order. Their scaling matches primitive state
+input above. Total-state tags are invalid for initial/reference states.
+
+The interior absolute velocity magnitude supplies the requested inlet speed.
+For perfect gas, `T=TTotal-v²/(2*cp)` and
+`p=pTotal*(T/TTotal)^(gamma/(gamma-1))`, with Euler's 95% kinetic-energy cap.
+For ideal mixtures, shared `Physics/Thermodynamics/TotalCondition` solves
+`h(T,Y)+v²/2=h(TTotal,Y)` at prescribed frozen composition and then recovers
+pressure from constant entropy. The temperature bracket, 95% available-enthalpy
+cap, 60 bisections and relative enthalpy tolerance 1e-10 match Euler's defaults.
+One caller-owned chemistry worker supplies the backend; no worker is acquired
+inside the boundary loop. Backend exceptions become explicit failure status at
+the shared physics adapter, never a kernel fallback.
+
+The recovered static density multiplies prescribed RANS scalars and species.
+Face and exterior producers use this same inlet state; reconstruction remains
+a frozen supplied-value operation. Approximate LU-SGS freezes the inlet target
+(zero exterior derivative), matching Euler's prescribed-boundary linearization.
+The perfect-gas exact boundary derivative is available separately, with zero
+derivative at the speed cap and a zero generalized derivative at zero speed.
+No density, temperature or composition is inferred from a unit fallback.
+
 `ResolvePhysicalState` consumes one explicit chemistry-worker lease and returns
 owned conservative values, primitive rho/u/v/w/p, temperature and named scalar
 adapters. It has no MPI, hidden global worker or runtime-array dependency.
