@@ -714,6 +714,14 @@ cfv_add_mpi_test(reconstruction "CFV/test_Reconstruction.cpp" "cfv;geom;dnds")
 cfv_add_mpi_test(fv_facility "CFV/test_FVFacility.cpp" "cfv;geom;dnds")
 cfv_add_mpi_test(distributed_interface_sampling "CFV/test_DistributedInterfaceSampling.cpp" "cfv;geom;dnds")
 cfv_add_mpi_test(reconstruction_overlap "CFV/test_ReconstructionOverlap.cpp" "cfv;geom;dnds")
+if(DNDS_USE_OMP AND DNDS_DIST_MT_USE_OMP)
+    add_test(NAME cfv_reconstruction_overlap_omp2_np2
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:cfv_test_reconstruction_overlap> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(cfv_reconstruction_overlap_omp2_np2 PROPERTIES
+        TIMEOUT 180 PROCESSORS 4
+        ENVIRONMENT "OMP_NUM_THREADS=2;DNDS_DIST_OMP_NUM_THREADS=2")
+endif()
 cfv_add_mpi_test(gradient_plan "CFV/test_GradientPlan.cpp" "cfv;geom;dnds")
 cfv_add_mpi_test(limited_vr "CFV/test_LimitedVR.cpp" "cfv;geom;dnds")
 cfv_add_mpi_test(fv_completion "CFV/test_FVCompletion.cpp" "cfv;geom;dnds")

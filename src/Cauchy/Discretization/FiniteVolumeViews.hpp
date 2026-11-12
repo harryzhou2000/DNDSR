@@ -33,6 +33,16 @@ namespace DNDS::Cauchy
             _forces[size_t(slot)][component] += value;
         }
         index FaceFallbacks() const { return _faceFallbacks; }
+        /// Merge private worker counters after all independent rows finish.
+        /// No atomic or shared counter update belongs in a quadrature loop.
+        void Merge(const RHSKernelDiagnostics &other) noexcept
+        {
+            DNDS_assert(_forces.size() == other._forces.size());
+            _faceFallbacks += other._faceFallbacks;
+            for (index slot = 0; slot < index(_forces.size()); ++slot)
+                for (int d = 0; d < 3; ++d)
+                    _forces[slot][d] += other._forces[slot][d];
+        }
     };
     /// Workspace-owned, rank-local aggregate for one complete RHS evaluation.
     /// Boundary zones are resolved to dense slots during plan setup; kernels

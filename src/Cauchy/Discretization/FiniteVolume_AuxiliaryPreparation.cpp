@@ -5,6 +5,7 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
 #include "Cauchy/Physics/PointProperties.hpp"
 #include "DNDS/MPI/Failure.hpp"
+#include "DNDS/Core/OMP.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -148,6 +149,18 @@ namespace DNDS::Cauchy
         {
             return data->equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {true, true, false});
         }
+        std::vector<CPU::AuxiliaryWorkerScratch> MakeKernelWorkers() const
+        {
+            // This phase enables perfect-gas OMP, including RANS. Keep the
+            // existing single leased Cantera worker for the mixture path;
+            // reserving a team could otherwise exhaust a bounded shared pool.
+            const index count = data->equation.HasMixture() ? 1 : OMP::DistributedThreads();
+            std::vector<CPU::AuxiliaryWorkerScratch> result;
+            result.reserve(size_t(count));
+            for (index iWorker = 0; iWorker < count; ++iWorker)
+                result.emplace_back(Evaluator(), source.ComponentNumber());
+            return result;
+        }
         void RefreshDerived(bool ghost)
         {
             auto &field = ghost ? buffers.derivedGhost : buffers.derivedOwned;
@@ -197,7 +210,8 @@ namespace DNDS::Cauchy
                                   "auxiliary independent phase requires a pending boundary");
             started = true;
             RefreshDerived(false);
-            auto evaluator = Evaluator();
+            auto kernelWorkers = MakeKernelWorkers();
+            const SpanView<CPU::AuxiliaryWorkerScratch> evaluator{kernelWorkers.data(), index(kernelWorkers.size())};
             const auto blocks = EquationFVDetail::BlockViews(source, owned);
             const auto request = KernelInput(blocks.HostView());
             RequireNumericalSuccess(CPU::PrepareAuxiliaryMeans(request, data->equation, evaluator, 0, data->metrics.NumCell()), "core auxiliary means");
@@ -233,7 +247,8 @@ namespace DNDS::Cauchy
             started = true;
             if (!independentDone)
                 RefreshDerived(false);
-            auto evaluator = Evaluator();
+            auto kernelWorkers = MakeKernelWorkers();
+            const SpanView<CPU::AuxiliaryWorkerScratch> evaluator{kernelWorkers.data(), index(kernelWorkers.size())};
             const auto blocks = EquationFVDetail::BlockViews(source, owned);
             const auto request = KernelInput(blocks.HostView());
             if (!independentDone)
@@ -260,7 +275,8 @@ namespace DNDS::Cauchy
                                                                           { return RHSFieldView{gradientViews[iField].owned, gradientGhost[iField].View<R::UniformTableRows>()}; });
             }
             RefreshDerived(true);
-            auto evaluator = Evaluator();
+            auto kernelWorkers = MakeKernelWorkers();
+            const SpanView<CPU::AuxiliaryWorkerScratch> evaluator{kernelWorkers.data(), index(kernelWorkers.size())};
             const auto blocks = EquationFVDetail::BlockViews(source, *complete);
             const auto request = KernelInput(blocks.HostView());
             RequireNumericalSuccess(CPU::PrepareAuxiliaryMeans(request, data->equation, evaluator, data->metrics.NumCell(), data->metrics.NumCellProc()), "dependent auxiliary means");

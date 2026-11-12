@@ -1,6 +1,7 @@
 #include "Cauchy/Core/Simulation.hpp"
 #include "Cauchy/Interface/InterfaceCoupling.hpp"
 #include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
+#include "DNDS/Core/OMP.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -44,6 +45,7 @@ namespace DNDS::Cauchy
             Geom::PrepareMeshOptions prepare;
             prepare.buildSerialOut = false;
             prepare.reorderCells = 1;
+            prepare.reorderParts = OMP::DistributedThreads();
             return Geom::UnstructuredMesh::FromNative(
                 mpi, Geom::PrepareNativeMeshForSolverOwned(
                          std::move(owned), mpi, prepare));

@@ -84,6 +84,19 @@ namespace DNDS::CFV
             const Math::TaylorBasis polynomial(dim, degree);
             const FaceSystemLayout faceSystem(n, capabilities);
             const index nCell = mesh.NumCell(), nFace = mesh.NumFaceProc();
+            const auto parts = geometry->mesh->NLocalParts();
+            std::vector<index> partitionStarts;
+            if (parts > 0)
+            {
+                for (int part = 0; part < parts; ++part)
+                    partitionStarts.push_back(geometry->mesh->LocalPartStart(part));
+                partitionStarts.push_back(geometry->mesh->LocalPartEnd(parts - 1));
+            }
+            else
+                partitionStarts = {0, nCell};
+            DNDS_check_throw_info(partitionStarts.front() == 0 && partitionStarts.back() == nCell &&
+                                  std::is_sorted(partitionStarts.begin(), partitionStarts.end()), "invalid VR host subpartition ranges");
+            data->hostPartitionStarts = R::MetadataBuffer<index>(partitionStarts);
             data->coreFirstPosition.resize(nCell);
             index position = 0;
             for (auto iCell : data->workPartition->Core())
@@ -173,7 +186,9 @@ namespace DNDS::CFV
             }
             auto momentWrite = data->moments.Write();
             const auto moment = momentWrite.View<R::TableRows>();
-            R::Array<real> halfBoxStorage(R::RowLayout::Dense(mesh.NumCellProc(), 3));
+            const bool needHalfBoxes = (faceSystem.width || settings.cacheDiffBase) &&
+                settings.functional.scaleType == ReconstructionFunctionalSettings::LengthScale::MeanAACBB;
+            R::Array<real> halfBoxStorage(R::RowLayout::Dense(needHalfBoxes ? mesh.NumCellProc() : 0, 3));
             halfBoxStorage.SetName("CFV/setup/halfBoxes", DNDS_ALLOCATION_SITE());
             data->preparationRuntimeScratchBytes += halfBoxStorage.Storage().Bytes();
             auto halfBoxWrite = halfBoxStorage.Write();
@@ -185,7 +200,8 @@ namespace DNDS::CFV
                 std::fill(moment[iCell].begin(), moment[iCell].end(), 0.);
                 mesh.GetCoordsOnCell(iCell, coords);
                 const tPoint bary{cell(iCell, 4), cell(iCell, 5), cell(iCell, 6)};
-                Eigen::Map<tPoint>(halfBoxes[iCell].data()) = (coords.colwise() - bary).array().abs().rowwise().maxCoeff();
+                if (needHalfBoxes)
+                    Eigen::Map<tPoint>(halfBoxes[iCell].data()) = (coords.colwise() - bary).array().abs().rowwise().maxCoeff();
                 const auto element = mesh.GetCellElement(iCell);
                 const Quadrature q(element, INT_ORDER_MAX);
                 const tPoint center{cell(iCell, 1), cell(iCell, 2), cell(iCell, 3)};

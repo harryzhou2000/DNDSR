@@ -2,6 +2,7 @@
 
 #include "DNDS/Core/NumericalStatus.hpp"
 #include "DNDS/Core/Errors.hpp"
+#include "DNDS/Core/OMP.hpp"
 #include "Cauchy/State/EquationViews.hpp"
 #include "Cauchy/Physics/ThermalAdmissibility.hpp"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
@@ -16,12 +17,11 @@ namespace DNDS::Cauchy::CPU
     template <class Input, class Output, class Metric>
     void ScaleRateByVolume(Input input, Output output, const Metric &metric, index components)
     {
-        for (index iCell = 0; iCell < input.RowCount(); ++iCell)
-        {
+        OMP::ForRows(0, input.RowCount(), [&](index iCell)
+                     {
             const real volume = metric.GetCellVol(iCell);
             for (index j = 0; j < components; ++j)
-                output(iCell, j) = volume * input(iCell, j);
-        }
+                output(iCell, j) = volume * input(iCell, j); });
     }
 
     /// Divide a cell-integrated residual by cell volume. This is the CPU leaf
@@ -29,12 +29,11 @@ namespace DNDS::Cauchy::CPU
     template <class Input, class Output, class Metric>
     void NormalizeRateByVolume(Input input, Output output, const Metric &metric, index components)
     {
-        for (index iCell = 0; iCell < input.RowCount(); ++iCell)
-        {
+        OMP::ForRows(0, input.RowCount(), [&](index iCell)
+                     {
             const real inverseVolume = 1 / metric.GetCellVol(iCell);
             for (index j = 0; j < components; ++j)
-                output(iCell, j) = inverseVolume * input(iCell, j);
-        }
+                output(iCell, j) = inverseVolume * input(iCell, j); });
     }
 
     /// Assemble the implicit stage defect and, when requested, its local norm
@@ -68,28 +67,26 @@ namespace DNDS::Cauchy::CPU
     void AssembleEquationRows(Mean mean, Residual residual, Output output, const Metric &metric,
                               index components, real mass, real rhsScale)
     {
-        for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
-        {
+        OMP::ForRows(0, mean.RowCount(), [&](index iCell)
+                     {
             const real volume = metric.GetCellVol(iCell);
             for (index j = 0; j < components; ++j)
-                output(iCell, j) = mass * mean(iCell, j) - rhsScale * residual(iCell, j) / volume;
-        }
+                output(iCell, j) = mass * mean(iCell, j) - rhsScale * residual(iCell, j) / volume; });
     }
 
     template <class Mean, class Residual, class Output, class Rate, class Metric>
     void AssembleEquationAndRateRows(Mean mean, Residual residual, Output output, Rate rate,
                                      const Metric &metric, index components, real mass, real rhsScale)
     {
-        for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
-        {
+        OMP::ForRows(0, mean.RowCount(), [&](index iCell)
+                     {
             const real volume = metric.GetCellVol(iCell);
             for (index j = 0; j < components; ++j)
             {
                 const real rateValue = residual(iCell, j) / volume;
                 output(iCell, j) = mass * mean(iCell, j) - rhsScale * residual(iCell, j) / volume;
                 rate(iCell, j) = rateValue;
-            }
-        }
+            } });
     }
 
     struct CorrectionControls

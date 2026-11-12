@@ -34,144 +34,176 @@ namespace DNDS::Cauchy::CPU
         }
         return std::array<real, 3>{result.thermo.pressure, result.thermo.soundSpeed, diffusion};
     }
-    NumericalStatus PrepareAuxiliaryMeans(const AuxiliaryKernelRequest &request, const EquationSystem &equation, PointEvaluator &evaluator, index first, index last) noexcept
+    NumericalStatus PrepareAuxiliaryMeans(const AuxiliaryKernelRequest &request, const EquationSystem &equation, SpanView<AuxiliaryWorkerScratch> workers, index first, index last) noexcept
     {
         if (!request.enabled[0])
             return {};
-        EquationFVDetail::PointScratch point(request.components);
-        for (index iCell = first; iCell < last; ++iCell)
-        {
+        if (workers.empty())
+            return NumericalStatus{NumericalError::InvalidInput};
+        OMP::ForRows(0, workers.size(), [&](index iWorker)
+                     {
+          auto &worker = workers[iWorker];
+          worker.status = {};
+          auto &point = worker.left;
+          const index count = last - first, quotient = count / workers.size(), remainder = count % workers.size();
+          const index begin = first + iWorker * quotient + std::min(iWorker, remainder);
+          const index end = begin + quotient + (iWorker < remainder);
+          for (index iCell = begin; iCell < end; ++iCell)
+          {
             EquationFVDetail::Gather(request.blocks, iCell, point);
             LoadGradients(request, iCell, point);
-            const auto result = Properties(request, equation, point, evaluator, request.hasWall ? request.wall.cellMean(iCell, 0) : 1);
+            const auto result = Properties(request, equation, point, worker.evaluator, request.hasWall ? request.wall.cellMean(iCell, 0) : 1);
             if (!result)
-                return result.status.At(iCell);
+            {
+                worker.status = result.status.At(iCell);
+                break;
+            }
             for (int j = 0; j < 3; ++j)
                 request.values[0](iCell, j) = result.value[j];
-        }
+          } });
+        for (const auto &worker : workers)
+            if (!worker.status)
+                return worker.status;
         return {};
     }
-    NumericalStatus PrepareAuxiliaryFaces(const AuxiliaryKernelRequest &request, const EquationSystem &equation, const BoundaryPointOperator &boundary, PointEvaluator &evaluator, FiniteVolumeStencilView::Indices faces) noexcept
+    NumericalStatus PrepareAuxiliaryFaces(const AuxiliaryKernelRequest &request, const EquationSystem &equation, const BoundaryPointOperator &boundary, SpanView<AuxiliaryWorkerScratch> workers, FiniteVolumeStencilView::Indices faces) noexcept
     {
         const bool spectral = request.enabled[1] || request.enabled[4], wave = request.enabled[2] || request.enabled[5], pressure = request.enabled[3] || request.enabled[6];
         if (!spectral && !wave && !pressure)
             return {};
         const auto metric = request.metric;
         const auto &derived = request.derived;
-        EquationFVDetail::PointScratch left(request.components), right(request.components), face(request.components);
-        const auto prepared = [&](index iCell, auto &point) -> NumericalResult<std::array<real, 3>>
+        if (workers.empty())
+            return NumericalStatus{NumericalError::InvalidInput};
+        const auto compute = [&](AuxiliaryWorkerScratch &worker, index begin, index end) -> NumericalStatus
         {
-            if (derived && request.ransFirst < 0)
-                return std::array<real, 3>{(*derived)(iCell, 0), (*derived)(iCell, 1), (*derived)(iCell, 2)};
-            if (request.enabled[0])
-                return std::array<real, 3>{request.values[0](iCell, 0), request.values[0](iCell, 1), request.values[0](iCell, 2)};
-            return Properties(request, equation, point, evaluator, request.hasWall ? request.wall.cellMean(iCell, 0) : 1);
-        };
-        for (index iRow = 0; iRow < faces.RowCount(); ++iRow)
-        {
-            const index iAux = faces(iRow, 0);
-            const auto iFace = request.stencil.stencilFaces(iAux, 0), first = request.stencil.faceEntries(iAux, 0);
-            const auto &anchor = FiniteVolumeDetail::ExpandSample(request.stencil.samples(first, 0), request.conditions);
-            EquationFVDetail::Gather(request.blocks, anchor.cell, left);
-            LoadGradients(request, anchor.cell, left);
-            const auto leftResult = prepared(anchor.cell, left);
-            if (!leftResult)
-                return leftResult.status.At(anchor.cell);
-            const auto &leftProperties = leftResult.value;
-            const Riemann::AcousticState leftData{{left.Flow(request.flowFirst), leftProperties[0]}, leftProperties[1]};
-            real convection = 0, diffusion = 0, jump = 0, minimum = leftProperties[0];
-            const auto count = metric.FaceQuadratureEnd(iFace) - metric.FaceQuadratureBegin(iFace);
-            for (index q = 0; q < count; ++q)
+            auto &evaluator = worker.evaluator;
+            auto &left = worker.left;
+            auto &right = worker.right;
+            auto &face = worker.face;
+            const auto prepared = [&](index iCell, auto &point) -> NumericalResult<std::array<real, 3>>
             {
-                const auto &sample = FiniteVolumeDetail::ExpandSample(request.stencil.samples(first + q, 0), request.conditions);
-                if (sample.other == UnInitIndex)
+                if (derived && request.ransFirst < 0)
+                    return std::array<real, 3>{(*derived)(iCell, 0), (*derived)(iCell, 1), (*derived)(iCell, 2)};
+                if (request.enabled[0])
+                    return std::array<real, 3>{request.values[0](iCell, 0), request.values[0](iCell, 1), request.values[0](iCell, 2)};
+                return Properties(request, equation, point, evaluator, request.hasWall ? request.wall.cellMean(iCell, 0) : 1);
+            };
+            for (index iRow = begin; iRow < end; ++iRow)
+            {
+                const index iAux = faces(iRow, 0);
+                const auto iFace = request.stencil.stencilFaces(iAux, 0), first = request.stencil.faceEntries(iAux, 0);
+                const auto &anchor = FiniteVolumeDetail::ExpandSample(request.stencil.samples(first, 0), request.conditions);
+                EquationFVDetail::Gather(request.blocks, anchor.cell, left);
+                LoadGradients(request, anchor.cell, left);
+                const auto leftResult = prepared(anchor.cell, left);
+                if (!leftResult)
+                    return leftResult.status.At(anchor.cell);
+                const auto &leftProperties = leftResult.value;
+                const Riemann::AcousticState leftData{{left.Flow(request.flowFirst), leftProperties[0]}, leftProperties[1]};
+                real convection = 0, diffusion = 0, jump = 0, minimum = leftProperties[0];
+                const auto count = metric.FaceQuadratureEnd(iFace) - metric.FaceQuadratureBegin(iFace);
+                for (index q = 0; q < count; ++q)
                 {
-                    right.values = left.values;
-                    right.gradient = left.gradient;
-                    // Euler's EvaluateDt uses the owned mean on both sides
-                    // of an ordinary physical boundary. A coupling
-                    // interface supplies its explicitly published remote
-                    // point state.
-                    if (sample.boundary.kind == BoundaryKind::Interface)
+                    const auto &sample = FiniteVolumeDetail::ExpandSample(request.stencil.samples(first + q, 0), request.conditions);
+                    if (sample.other == UnInitIndex)
                     {
-                        if (const auto status = boundary.TryEvaluate(
-                                right.values, sample.boundary,
-                                sample.boundaryPoint,
-                                {sample.normal[0], sample.normal[1],
-                                 sample.normal[2]},
-                                {sample.ownPoint[0], sample.ownPoint[1],
-                                 sample.ownPoint[2]},
-                                evaluator, request.frame, request.time,
-                                BoundaryPointStateKind::FaceTrace, {}, 0,
-                                request.incoming);
-                            !status)
-                            return status;
-                    }
-                }
-                else
-                {
-                    EquationFVDetail::Gather(request.blocks, sample.other, right);
-                    LoadGradients(request, sample.other, right);
-                    // Setup proves exact identity, including translational
-                    // periodic images. Keep the full transform for every
-                    // genuinely rotated component request.frame.
-                    if (sample.changesFrame)
-                        EquationFVDetail::RotatePoint(right, sample.rotation,
-                                                      request.vectorStarts);
-                }
-                const auto rightResult = sample.other == UnInitIndex
-                                             ? (sample.boundary.kind == BoundaryKind::Interface
-                                                    ? Properties(request, equation, right, evaluator)
-                                                    : leftResult)
-                                             : prepared(sample.other, right);
-                if (!rightResult)
-                    return rightResult.status.At(sample.other == UnInitIndex ? sample.cell : sample.other, sample.point);
-                const auto &rightProperties = rightResult.value;
-                const Riemann::AcousticState rightData{{right.Flow(request.flowFirst), rightProperties[0]}, rightProperties[1]};
-                const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
-                const auto grid = request.frame.GridVelocity({sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]});
-                if (spectral)
-                {
-                    convection = std::max({convection, Riemann::SignalSpeed(leftData, normal, grid), Riemann::SignalSpeed(rightData, normal, grid)});
-                    real bound = std::max(leftProperties[2], rightProperties[2]);
-                    if (request.hasWall)
-                    {
-                        for (index j = 0; j < request.components; ++j)
-                            face.values[j] = .5 * (left.values[j] + right.values[j]);
-                        face.gradient = .5 * (left.gradient + right.gradient);
-                        if (sample.other == UnInitIndex)
+                        right.values = left.values;
+                        right.gradient = left.gradient;
+                        // Euler's EvaluateDt uses the owned mean on both sides
+                        // of an ordinary physical boundary. A coupling
+                        // interface supplies its explicitly published remote
+                        // point state.
+                        if (sample.boundary.kind == BoundaryKind::Interface)
                         {
-                            face.values = left.values;
+                            if (const auto status = boundary.TryEvaluate(
+                                    right.values, sample.boundary,
+                                    sample.boundaryPoint,
+                                    {sample.normal[0], sample.normal[1],
+                                     sample.normal[2]},
+                                    {sample.ownPoint[0], sample.ownPoint[1],
+                                     sample.ownPoint[2]},
+                                    evaluator, request.frame, request.time,
+                                    BoundaryPointStateKind::FaceTrace, {}, 0,
+                                    request.incoming);
+                                !status)
+                                return status;
                         }
-                        const auto faceResult = Properties(request, equation, face, evaluator, request.wall.faces(sample.face, q));
-                        if (!faceResult)
-                            return faceResult.status.At(sample.cell, sample.point);
-                        bound = std::max(bound, faceResult.value[2]);
                     }
-                    diffusion = std::max(diffusion, bound * request.stencil.auxiliaryFaceArea(iAux, 0) *
-                                                        (1 / metric.GetCellVol(sample.cell) + 1 / metric.GetCellVol(sample.other == UnInitIndex ? sample.cell : sample.other)));
+                    else
+                    {
+                        EquationFVDetail::Gather(request.blocks, sample.other, right);
+                        LoadGradients(request, sample.other, right);
+                        // Setup proves exact identity, including translational
+                        // periodic images. Keep the full transform for every
+                        // genuinely rotated component request.frame.
+                        if (sample.changesFrame)
+                            EquationFVDetail::RotatePoint(right, sample.rotation,
+                                                          request.vectorStarts);
+                    }
+                    const auto rightResult = sample.other == UnInitIndex
+                                                 ? (sample.boundary.kind == BoundaryKind::Interface
+                                                        ? Properties(request, equation, right, evaluator)
+                                                        : leftResult)
+                                                 : prepared(sample.other, right);
+                    if (!rightResult)
+                        return rightResult.status.At(sample.other == UnInitIndex ? sample.cell : sample.other, sample.point);
+                    const auto &rightProperties = rightResult.value;
+                    const Riemann::AcousticState rightData{{right.Flow(request.flowFirst), rightProperties[0]}, rightProperties[1]};
+                    const Vector3 normal{sample.normal[0], sample.normal[1], sample.normal[2]};
+                    const auto grid = request.frame.GridVelocity({sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]});
+                    if (spectral)
+                    {
+                        convection = std::max({convection, Riemann::SignalSpeed(leftData, normal, grid), Riemann::SignalSpeed(rightData, normal, grid)});
+                        real bound = std::max(leftProperties[2], rightProperties[2]);
+                        if (request.hasWall)
+                        {
+                            for (index j = 0; j < request.components; ++j)
+                                face.values[j] = .5 * (left.values[j] + right.values[j]);
+                            face.gradient = .5 * (left.gradient + right.gradient);
+                            if (sample.other == UnInitIndex)
+                            {
+                                face.values = left.values;
+                            }
+                            const auto faceResult = Properties(request, equation, face, evaluator, request.wall.faces(sample.face, q));
+                            if (!faceResult)
+                                return faceResult.status.At(sample.cell, sample.point);
+                            bound = std::max(bound, faceResult.value[2]);
+                        }
+                        diffusion = std::max(diffusion, bound * request.stencil.auxiliaryFaceArea(iAux, 0) *
+                                                            (1 / metric.GetCellVol(sample.cell) + 1 / metric.GetCellVol(sample.other == UnInitIndex ? sample.cell : sample.other)));
+                    }
+                    if (wave)
+                        jump = std::max(jump, Riemann::TransverseSignalJump(leftData, rightData, normal));
+                    if (pressure)
+                        minimum = std::min(minimum, rightProperties[0]);
                 }
-                if (wave)
-                    jump = std::max(jump, Riemann::TransverseSignalJump(leftData, rightData, normal));
-                if (pressure)
-                    minimum = std::min(minimum, rightProperties[0]);
+                if (request.enabled[1])
+                {
+                    request.values[1](iAux, 0) = convection;
+                    request.values[1](iAux, 1) = diffusion;
+                }
+                if (request.enabled[2])
+                    request.values[2](iAux, 0) = jump;
+                if (request.enabled[3])
+                    request.values[3](iAux, 0) = minimum;
+                if (request.useScratch)
+                {
+                    request.scratch(iAux, 0) = convection + diffusion;
+                    request.scratch(iAux, 1) = jump;
+                    request.scratch(iAux, 2) = minimum;
+                }
             }
-            if (request.enabled[1])
-            {
-                request.values[1](iAux, 0) = convection;
-                request.values[1](iAux, 1) = diffusion;
-            }
-            if (request.enabled[2])
-                request.values[2](iAux, 0) = jump;
-            if (request.enabled[3])
-                request.values[3](iAux, 0) = minimum;
-            if (request.useScratch)
-            {
-                request.scratch(iAux, 0) = convection + diffusion;
-                request.scratch(iAux, 1) = jump;
-                request.scratch(iAux, 2) = minimum;
-            }
-        }
+            return {};
+        };
+        OMP::ForRows(0, workers.size(), [&](index iWorker)
+                     {
+            const index count = faces.RowCount(), quotient = count / workers.size(), remainder = count % workers.size();
+            const index begin = iWorker * quotient + std::min(iWorker, remainder);
+            workers[iWorker].status = compute(workers[iWorker], begin, begin + quotient + (iWorker < remainder)); });
+        for (const auto &worker : workers)
+            if (!worker.status)
+                return worker.status;
         return {};
     }
     void ReduceAuxiliaryCells(const AuxiliaryKernelRequest &request, FiniteVolumeStencilView::Indices cells)

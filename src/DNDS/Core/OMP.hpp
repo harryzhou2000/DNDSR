@@ -3,6 +3,7 @@
 /// @brief Helpers for OpenMP thread-count configuration at solver entry points.
 
 #include "DNDS/Core/Defines.hpp"
+#include "DNDS/Core/NumericalStatus.hpp"
 #include "Eigen/src/Core/products/Parallelizer.h"
 #include <algorithm>
 #include <exception>
@@ -34,7 +35,7 @@ namespace DNDS::OMP
     void ForRows(index begin, index end, Body &&body) noexcept
     {
         const int threads = DistributedThreads();
-        if (threads == 1)
+        if (threads == 1 || end - begin <= 1)
         {
             for (index iRow = begin; iRow < end; ++iRow)
                 body(iRow);
@@ -45,6 +46,59 @@ namespace DNDS::OMP
 #endif
         for (index iRow = begin; iRow < end; ++iRow)
             body(iRow);
+    }
+
+    /** Independent row arithmetic with explicit numerical failure status.
+     * Successful rows have no shared-counter/atomic update. Each worker keeps
+     * its first failure; only failing workers enter the final error merge.
+     * The lowest logical row wins, independently of OpenMP scheduling. As with
+     * every failed kernel, partial output must not be published by the caller.
+     * body must not throw or perform MPI, leases, or mutable shared work.
+     */
+    template <class Body>
+    NumericalStatus ForRowsStatus(index begin, index end, Body &&body) noexcept
+    {
+        const int threads = DistributedThreads();
+        if (threads == 1 || end - begin <= 1)
+        {
+            for (index iRow = begin; iRow < end; ++iRow)
+                if (const auto status = body(iRow); !status)
+                    return status;
+            return {};
+        }
+        NumericalStatus result;
+        index failedRow = end;
+#if defined(DNDS_USE_OMP) && defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel num_threads(threads)
+#endif
+        {
+            NumericalStatus local;
+            index localRow = end;
+#if defined(DNDS_USE_OMP) && defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp for schedule(static)
+#endif
+            for (index iRow = begin; iRow < end; ++iRow)
+                if (local)
+                    if (const auto status = body(iRow); !status)
+                    {
+                        local = status;
+                        localRow = iRow;
+                    }
+            if (!local)
+            {
+#if defined(DNDS_USE_OMP) && defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp critical(DNDS_OMP_ROW_FAILURE)
+#endif
+                {
+                    if (localRow < failedRow)
+                    {
+                        failedRow = localRow;
+                        result = local;
+                    }
+                }
+            }
+        }
+        return result;
     }
 
     /** Setup-only parallel work, allowing allocating/validating library calls.

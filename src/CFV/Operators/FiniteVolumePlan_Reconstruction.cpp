@@ -21,7 +21,9 @@ namespace DNDS::CFV
         {
             DNDS_check_throw_info(work.plan.get() == data && work.components > 0, "reconstruction workspace belongs to another plan");
             data->metrics.ValidateField(work.temporary, data->n * work.components);
-            CheckArray(work.scratch, 6, data->n * work.components);
+            CheckArray(work.scratch, data->capabilities.wbap ? 6 * data->hostThreads : 0, data->n * work.components);
+            DNDS_check_throw_info(OMP::DistributedThreads() <= data->hostThreads,
+                                  "CPU reconstruction team exceeds prepared scratch capacity");
         }
         void CheckWorkspace(const Detail::ReconstructionData *data, const ReconstructionWorkspace &work,
                             const FVField &coefficients)
@@ -188,7 +190,7 @@ namespace DNDS::CFV
             return BuildDeviceWorkspace(components, R::RowLayout::Dense(PlacementOwnedRows(), n * components),
                                         std::move(periodicVectorStarts));
         return {Metrics().BuildField(n * components),
-                R::Array<real>(R::RowLayout::Dense(6, n * components)), components, _data, std::move(periodicVectorStarts)};
+                R::Array<real>(R::RowLayout::Dense(_data->capabilities.wbap ? 6 * _data->hostThreads : 0, n * components)), components, _data, std::move(periodicVectorStarts)};
     }
     ReconstructionWorkspace VariationalReconstructionPlan::BuildWorkspace(index components, R::RowLayout prototype,
                                                                           std::vector<index> periodicVectorStarts) const
@@ -202,7 +204,7 @@ namespace DNDS::CFV
         if (_device)
             return BuildDeviceWorkspace(components, std::move(prototype), std::move(periodicVectorStarts));
         return {Metrics().BuildField(prototype),
-                R::Array<real>(R::RowLayout::Dense(6, n * components)), components, _data, std::move(periodicVectorStarts)};
+                R::Array<real>(R::RowLayout::Dense(_data->capabilities.wbap ? 6 * _data->hostThreads : 0, n * components)), components, _data, std::move(periodicVectorStarts)};
     }
     FVField VariationalReconstructionPlan::BuildCoefficients(index components) const
     {
@@ -473,7 +475,6 @@ namespace DNDS::CFV
         const auto offsets = oRead.View<R::FixedRows<1>>(), neighbors = nbRead.View<R::FixedRows<1>>(), bOffsets = boRead.View<R::FixedRows<1>>();
         const auto matrices = mRead.View<R::TableRows>(), vectors = vRead.View<R::TableRows>(), injection = injectionRead.View<R::TableRows>();
         const real relax = _data->settings.jacobiRelax;
-        Math::SmallMatrix rotatedRec;
         auto rotationRead = _data->neighborRotation.Read();
         auto rotationActiveRead = _data->neighborRotationActive.Read();
         const auto rotations = rotationRead.View<R::FixedRows<9>>();
@@ -490,8 +491,9 @@ namespace DNDS::CFV
         const bool coreFirst = region != ReconstructionRegion::All || Settings().coreFirst;
         const auto position = [&](index iCell)
         { return coreFirst ? _data->coreFirstPosition[iCell] : iCell; };
-        auto compute = [&](index iCell)
+        auto compute = [&](index iCell, index partBegin, index partEnd)
         {
+            Math::SmallMatrix rotatedRec;
             auto output = nextMatrices[iCell];
             output = currentMatrices[iCell] * (1 - relax);
             const real alphaCell = target ? penalty(iCell, 0) : 0;
@@ -509,7 +511,7 @@ namespace DNDS::CFV
                     // SOR reads completed predecessors from a separate output,
                     // leaving the whole input immutable for direct MPI sends.
                     const auto otherCoefficients = other < Metrics().NumCell()
-                                                       ? (Settings().SORInstead && position(other) < position(iCell) ? visitedMatrices[other] : currentMatrices[other])
+                                                       ? (Settings().SORInstead && other >= partBegin && other < partEnd && position(other) < position(iCell) ? visitedMatrices[other] : currentMatrices[other])
                                                        : ghostMatrices[other - Metrics().NumCell()];
                     // Component rotation is independent of spatial derivative
                     // pullback, already included in the prepared B block.
@@ -543,15 +545,50 @@ namespace DNDS::CFV
                             output.col(variable).noalias() += Eigen::Map<const Eigen::VectorXd>(injection[iQ].data(), n) * (scale * (bValues(iQ, variable) - u(iCell, variable)));
             }
         };
-        if (region == ReconstructionRegion::Core || (region == ReconstructionRegion::All && Settings().coreFirst))
-            for (auto iCell : _data->workPartition->Core())
-                compute(iCell);
-        if (region == ReconstructionRegion::HaloDependent || (region == ReconstructionRegion::All && Settings().coreFirst))
-            for (auto iCell : _data->workPartition->HaloDependent())
-                compute(iCell);
-        if (region == ReconstructionRegion::All && !Settings().coreFirst)
-            for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
-                compute(iCell);
+        const index owned = Metrics().NumCell();
+        if (!Settings().SORInstead)
+        {
+            if (region == ReconstructionRegion::All)
+                OMP::ForRows(0, owned, [&](index iCell)
+                             { compute(iCell, 0, owned); });
+            else
+            {
+                const auto &rows = region == ReconstructionRegion::Core ? _data->workPartition->Core() : _data->workPartition->HaloDependent();
+                OMP::ForRows(0, index(rows.size()), [&](index iRow)
+                             { compute(rows[iRow], 0, owned); });
+            }
+        }
+        else
+        {
+            // OMP=1 is the canonical serial sweep. With multiple threads, each
+            // mesh subpartition is one ordered block; cross-block reads remain
+            // frozen input. A split call preserves core-first logical ordering.
+            const auto sweep = [&](index begin, index end)
+            {
+                const index coreCount = index(_data->workPartition->Core().size());
+                const auto run = [&](bool core)
+                {
+                    for (index iCell = begin; iCell < end; ++iCell)
+                        if ((_data->coreFirstPosition[iCell] < coreCount) == core)
+                            compute(iCell, begin, end);
+                };
+                if (!coreFirst)
+                    for (index iCell = begin; iCell < end; ++iCell)
+                        compute(iCell, begin, end);
+                else
+                {
+                    if (region != ReconstructionRegion::HaloDependent)
+                        run(true);
+                    if (region != ReconstructionRegion::Core)
+                        run(false);
+                }
+            };
+            if (OMP::DistributedThreads() == 1)
+                sweep(0, owned);
+            else
+                OMP::ForRows(0, index(_data->hostPartitionStarts.size()) - 1, [&](index part)
+                             { sweep(_data->hostPartitionStarts[part], _data->hostPartitionStarts[part + 1]); });
+        }
     }
     void VariationalReconstructionPlan::DoReconstructionIter(const FVField &mean, FVField &coefficients,
                                                              ReconstructionWorkspace &work,
@@ -589,8 +626,8 @@ namespace DNDS::CFV
         auto destination = coefficients.Owned().Write();
         const auto src = source.View<R::UniformTableRows>();
         const auto dst = destination.View<R::UniformTableRows>();
-        for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
-            std::copy(src[iCell].begin(), src[iCell].end(), dst[iCell].begin());
+        OMP::ForRows(0, Metrics().NumCell(), [&](index iCell)
+                     { std::copy(src[iCell].begin(), src[iCell].end(), dst[iCell].begin()); });
     }
     void VariationalReconstructionPlan::SubmitCommitReconstruction(
         R::EagerEngine &engine, const R::ExecutionStream &stream, FVField &coefficients,
@@ -694,13 +731,13 @@ namespace DNDS::CFV
             const auto forwardView = selectedTransform ? forward->View<R::TableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::TableRows>{};
             const auto inverseView = selectedTransform ? inverse->View<R::TableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::TableRows>{};
             const auto scratchMatrices = Algebra::MakeEigenRowMatrices(scratch, modes, nv);
-            auto center = scratchMatrices[0], other = scratchMatrices[1], limited = scratchMatrices[2];
-            auto up = scratchMatrices[3], down = scratchMatrices[4], valid = scratchMatrices[5];
             const auto outputMatrices = Algebra::MakeEigenRowMatrices(output, n, nv);
             const auto recMatrices = Algebra::MakeEigenRowMatrices(rec, n, nv);
             const real epsilon = std::pow(verySmallReal, .25);
-            auto compute = [&](index iCell)
+            auto compute = [&](index iCell, index worker)
             {
+                auto center = scratchMatrices[6 * worker], other = scratchMatrices[6 * worker + 1], limited = scratchMatrices[6 * worker + 2];
+                auto up = scratchMatrices[6 * worker + 3], down = scratchMatrices[6 * worker + 4], valid = scratchMatrices[6 * worker + 5];
                 auto out = outputMatrices[iCell];
                 out = recMatrices[iCell];
                 if (indicatorArray && activation(iCell, 0) < threshold)
@@ -755,15 +792,18 @@ namespace DNDS::CFV
                     for (int mode = 0; mode < modes; ++mode)
                         out(begin + mode, v) *= valid(mode, v) * up(mode, v) / down(mode, v);
             };
-            if (region == ReconstructionRegion::All)
-                for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
-                    compute(iCell);
-            else if (region == ReconstructionRegion::Core)
-                for (auto iCell : _data->workPartition->Core())
-                    compute(iCell);
-            else
-                for (auto iCell : _data->workPartition->HaloDependent())
-                    compute(iCell);
+            const auto &rows = region == ReconstructionRegion::Core ? _data->workPartition->Core() : _data->workPartition->HaloDependent();
+            const index count = region == ReconstructionRegion::All ? Metrics().NumCell() : index(rows.size());
+            const index workers = _data->hostThreads;
+            OMP::ForRows(0, workers, [&](index worker)
+                         {
+                // Explicit worker slots own six scratch matrices. This remains
+                // valid when a nested caller executes the slots serially.
+                const index quotient = count / workers, remainder = count % workers;
+                const index begin = worker * quotient + std::min(worker, remainder);
+                const index end = begin + quotient + (worker < remainder);
+                for (index iRow = begin; iRow < end; ++iRow)
+                    compute(region == ReconstructionRegion::All ? iRow : rows[iRow], worker); });
         }
     }
     void VariationalReconstructionPlan::SubmitLimiterWBAP_3OrderTo(

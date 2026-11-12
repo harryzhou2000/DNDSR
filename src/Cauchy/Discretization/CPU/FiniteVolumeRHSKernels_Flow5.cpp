@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels.hpp"
+#include "DNDS/Core/OMP.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeSampleKernels.hpp"
 #include "CFV/CPU/ReconstructionBasisKernels.hpp"
 #include "Cauchy/Discretization/ViscousFlux.hpp"
@@ -27,9 +28,10 @@ namespace DNDS::Cauchy::CPU
 
     }
 
-    NumericalResult<RHSKernelDiagnostics> EvaluateFlowFlux(const FlowRHSRequest &request, const EquationSystem &equation,
-                                                           const Riemann::RiemannFlux &fluxOperator, const RHSReadViews &input,
-                                                           const RHSWriteViews &output, CFV::ReconstructionRegion region) noexcept
+    NumericalStatus EvaluateFlowFlux(const FlowRHSRequest &request, const EquationSystem &equation,
+                                     const Riemann::RiemannFlux &fluxOperator, const RHSReadViews &input,
+                                     const RHSWriteViews &output, CFV::ReconstructionRegion region,
+                                     FlowRHSWorkerBuffers workers) noexcept
     {
         if (!(std::isfinite(request.time)))
             return NumericalStatus{NumericalError::InvalidState, 1, -1};
@@ -63,7 +65,6 @@ namespace DNDS::Cauchy::CPU
         const auto thermo = input.auxiliary.meanThermodynamics.value_or(RHSScalarView{});
         const auto waveInput = input.auxiliary.cellWaveJump.value_or(RHSFieldView{});
         const auto pressureInput = input.auxiliary.cellPressureMinimum.value_or(RHSFieldView{});
-        RHSKernelDiagnostics diagnostics(request.forceSlots);
         const auto &fluxPolicy = request.fluxPolicy;
         const auto baseFluxSettings = fluxPolicy.settings;
         const bool writeFace = bool(output.faceFlux);
@@ -140,7 +141,7 @@ namespace DNDS::Cauchy::CPU
         if (!(!request.useStencil ||
               ((!fluxPolicy.transverseSignal || useWave) && (!fluxPolicy.pressureStencil || usePressure))))
             return NumericalStatus{NumericalError::InvalidState, 12, -1};
-        auto compute = [&](index iCell) -> NumericalStatus
+        auto compute = [&](index iCell, RHSKernelDiagnostics &diagnostics) -> NumericalStatus
         {
             FlowState integrated{};
             FlowState integratedLow{};
@@ -383,20 +384,44 @@ namespace DNDS::Cauchy::CPU
             }
             return {};
         };
-        if (region == CFV::ReconstructionRegion::All)
+        const auto rows = region == CFV::ReconstructionRegion::Core ? request.stencil.coreCells : request.stencil.dependentCells;
+        const index count = region == CFV::ReconstructionRegion::All ? request.ownedCells : rows.RowCount();
+        const auto cellAt = [&](index iRow)
+        { return region == CFV::ReconstructionRegion::All ? iRow : rows(iRow, 0); };
+        // Optional face diagnostics currently revisit a shared face from both
+        // parents. Keep their established serial publication until the common
+        // face-owned flux/gather path replaces it; never race those writes.
+        const index threads = writeFace ? 1 : std::min<index>(OMP::DistributedThreads(), std::max<index>(1, count));
+        if (workers.diagnostics.size() < threads || workers.status.size() < threads)
+            return NumericalStatus{NumericalError::InvalidState, 40, -1};
+        if (threads == 1)
         {
-            for (index iCell = 0; iCell < request.ownedCells; ++iCell)
-                if (const auto status = compute(iCell); !status)
+            for (index iRow = 0; iRow < count; ++iRow)
+                if (const auto status = compute(cellAt(iRow), workers.diagnostics[0]); !status)
                     return status;
         }
         else
         {
-            const auto rows = region == CFV::ReconstructionRegion::Core ? request.stencil.coreCells : request.stencil.dependentCells;
-            for (index iRow = 0; iRow < rows.RowCount(); ++iRow)
-                if (const auto status = compute(rows(iRow, 0)); !status)
-                    return status;
+            // Small per-worker diagnostics; no field-sized packing or counter
+            // atomics. All point/basis/flux scratch is local to compute's row.
+            OMP::ForRows(0, threads, [&](index worker)
+                         {
+                const index quotient = count / threads, remainder = count % threads;
+                const index begin = worker * quotient + std::min(worker, remainder);
+                const index end = begin + quotient + (worker < remainder);
+                for (index iRow = begin; iRow < end; ++iRow)
+                    if (const auto status = compute(cellAt(iRow), workers.diagnostics[worker]); !status)
+                    {
+                        workers.status[worker] = status;
+                        break;
+                    } });
+            for (index worker = 0; worker < threads; ++worker)
+            {
+                if (!workers.status[worker])
+                    return workers.status[worker];
+            }
         }
-        return diagnostics;
+        return {};
     }
 
     NumericalStatus AddFlowRotationSource(const FlowRHSRequest &request, const RHSReadViews &input,
@@ -429,13 +454,12 @@ namespace DNDS::Cauchy::CPU
             }
         };
         if (region == CFV::ReconstructionRegion::All)
-            for (index iCell = 0; iCell < request.ownedCells; ++iCell)
-                compute(iCell);
+            OMP::ForRows(0, request.ownedCells, compute);
         else
         {
             const auto rows = region == CFV::ReconstructionRegion::Core ? request.stencil.coreCells : request.stencil.dependentCells;
-            for (index iRow = 0; iRow < rows.RowCount(); ++iRow)
-                compute(rows(iRow, 0));
+            OMP::ForRows(0, rows.RowCount(), [&](index iRow)
+                         { compute(rows(iRow, 0)); });
         }
         return {};
     }

@@ -142,6 +142,41 @@ TEST_CASE("Core-first SOR uses a separate frozen send snapshot during split exec
     Equal(referenceCoefficients, splitCoefficients);
 }
 
+TEST_CASE("One-cell OpenMP SOR blocks reduce to Jacobi with frozen cross-block reads" *
+          doctest::skip(DNDS::OMP::DistributedThreads() == 1))
+{
+    auto fixture = G::OverlapTest::BuildNativeFixture(mpi, true, 6);
+    const auto state = fixture.mesh->CurrentNativeState();
+    const I owned = state->NumOwned(G::EntityKind::Cell);
+    std::vector<I> starts;
+    for (I iCell = 0; iCell <= owned; ++iCell)
+        starts.push_back(iCell);
+    if (!owned)
+        starts.push_back(0);
+    auto mesh = G::UnstructuredMesh::FromNative(mpi, state->WithLocalPartitions(std::move(starts)));
+    auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh);
+    C::ReconstructionSettings settings;
+    settings.coreFirst = true;
+    const auto jacobi = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+    settings.SORInstead = true;
+    const auto sor = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+    auto means = metrics.BuildField(5);
+    auto input = jacobi.BuildCoefficients(5);
+    auto a = jacobi.BuildCoefficients(5), b = sor.BuildCoefficients(5);
+    auto workA = jacobi.BuildWorkspace(5), workB = sor.BuildWorkspace(5);
+    auto boundaryA = jacobi.BuildBoundaryValues(5), boundaryB = sor.BuildBoundaryValues(5);
+    Fill(means, 1);
+    Fill(input, .03);
+    metrics.BindHalo(means).Begin().Wait();
+    metrics.BindHalo(input).Begin().Wait();
+    jacobi.DoReconstructionIterTo(means, input, workA, boundaryA);
+    sor.DoReconstructionIterTo(means, input, workB, boundaryB, C::ReconstructionRegion::Core);
+    sor.DoReconstructionIterTo(means, input, workB, boundaryB, C::ReconstructionRegion::HaloDependent);
+    jacobi.CommitReconstruction(a, workA);
+    sor.CommitReconstruction(b, workB);
+    Equal(a, b);
+}
+
 TEST_CASE("CFV split operators share eager ordering across inline and worker CPU launchers")
 {
     auto fixture = G::OverlapTest::BuildNativeFixture(mpi, true);

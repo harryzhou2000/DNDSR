@@ -29,9 +29,18 @@ namespace DNDS::Cauchy::CPU
         bool polynomialViscosity = false, hasLocalInterfaceRows = false, useStencil = false;
         real time = 0;
     };
-    NumericalResult<RHSKernelDiagnostics> EvaluateFlowFlux(const FlowRHSRequest &, const EquationSystem &,
-                                                           const Riemann::RiemannFlux &, const RHSReadViews &,
-                                                           const RHSWriteViews &, CFV::ReconstructionRegion) noexcept;
+    /// Small host worker scratch, allocated/reset by the C++ operator wrapper.
+    /// One disjoint slot per worker, merged after this kernel returns. Field
+    /// outputs remain explicit Array views; numerical loops acquire no leases.
+    struct FlowRHSWorkerBuffers
+    {
+        SpanView<RHSKernelDiagnostics> diagnostics;
+        SpanView<NumericalStatus> status;
+    };
+    NumericalStatus EvaluateFlowFlux(const FlowRHSRequest &, const EquationSystem &,
+                                     const Riemann::RiemannFlux &, const RHSReadViews &,
+                                     const RHSWriteViews &, CFV::ReconstructionRegion,
+                                     FlowRHSWorkerBuffers) noexcept;
     NumericalStatus AddFlowRotationSource(const FlowRHSRequest &, const RHSReadViews &,
                                           const RHSWriteViews &, CFV::ReconstructionRegion) noexcept;
 

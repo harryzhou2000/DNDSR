@@ -1,4 +1,5 @@
 #include "Cauchy/Core/CPU/TimeStageKernels.hpp"
+#include "DNDS/Core/OMP.hpp"
 namespace DNDS::Cauchy::CPU
 {
     NumericalStatus UpdateExplicitBlock(EquationBlockArrayView<const real> base, EquationBlockArrayView<const real> rhs,
@@ -6,8 +7,8 @@ namespace DNDS::Cauchy::CPU
                                         CFV::FiniteVolumeHostView metric, RANSStateView ransState, bool rans,
                                         real dt, real historyWeight, real stageWeight) noexcept
     {
-        for (index iCell = 0; iCell < state.RowCount(); ++iCell)
-        {
+        return OMP::ForRowsStatus(0, state.RowCount(), [&](index iCell) -> NumericalStatus
+                                  {
             if (rans)
             {
                 // PP POLICY -- explicit extended equations retain
@@ -29,7 +30,7 @@ namespace DNDS::Cauchy::CPU
                 ransState.RepairMean(flow(iCell, 0), next);
                 for (int j = 0; j < ransState.components; ++j)
                     state(iCell, j) = next[j];
-                continue;
+                return {};
             }
             // PP POLICY -- no cellwise thermal increment compression:
             // flow5
@@ -38,8 +39,7 @@ namespace DNDS::Cauchy::CPU
             // the full raw candidate must pass Admissible below.
             for (index j = 0; j < state.ComponentNumber(); ++j)
                 state(iCell, j) = historyWeight * base(iCell, j) + stageWeight * (state(iCell, j) + dt * rhs(iCell, j) / metric.GetCellVol(iCell));
-        }
-        return {};
+            return {}; });
     }
     NumericalResult<ExplicitBlendStatistics> MeasureExplicitBlend(RHSScalarView initial, RHSScalarView state, RHSScalarView high,
                                                                   RHSScalarView low, CFV::FiniteVolumeHostView metrics, ThermalBounds bounds,
@@ -75,11 +75,12 @@ namespace DNDS::Cauchy::CPU
     void UpdateExplicitFlow(RHSScalarView initial, RHSScalarView rhs, RHSScalarView low, RHSOutputView stage,
                             CFV::FiniteVolumeHostView metrics, real dt, real historyWeight, real stageWeight, real alpha)
     {
-        for (index iCell = 0; iCell < stage.RowCount(); ++iCell)
+        OMP::ForRows(0, stage.RowCount(), [&](index iCell)
+                     {
             for (int j = 0; j < 5; ++j)
             {
                 const real residual = alpha == 1 ? rhs(iCell, j) : (1 - alpha) * low(iCell, j) + alpha * rhs(iCell, j);
                 stage(iCell, j) = historyWeight * initial(iCell, j) + stageWeight * (stage(iCell, j) + dt * residual / metrics.GetCellVol(iCell));
-            }
+            } });
     }
 }

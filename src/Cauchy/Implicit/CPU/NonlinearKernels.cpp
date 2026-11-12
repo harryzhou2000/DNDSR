@@ -5,12 +5,12 @@ namespace DNDS::Cauchy::CPU
     NumericalStatus ValidateImplicitMeans(EquationLayoutView<const real> layout, AdmissibilityView bounds) noexcept
     {
         return DispatchCPUEquationLayouts([&](auto values) -> NumericalStatus
-                                          {
-            for (index iCell = 0; iCell < values.RowCount(); ++iCell)
+                                          { return OMP::ForRowsStatus(0, values.RowCount(), [&](index iCell) -> NumericalStatus
+                                                                      {
                 if (!(bounds.Admissible(
                     ThermalAdmissibilityDetail::PointRow<decltype(values)>{values, iCell})))
                     return NumericalStatus{NumericalError::InvalidState, 1, iCell};
-            return {}; }, layout);
+            return {}; }); }, layout);
     }
     NumericalStatus AssembleDefect(EquationLayoutView<const real> mean, EquationLayoutView<const real> residual,
                                    EquationLayoutView<const real> constant, EquationLayoutView<real> output,
@@ -258,14 +258,13 @@ namespace DNDS::Cauchy::CPU
         Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows> inverse,
         Algebra::DofComponentView<real> defect, real minimum, AlphaReduction reduction, bool compressRHS)
     {
-        for (index iCell = 0; iCell < alpha.RowCount(); ++iCell)
-        {
+        OMP::ForRows(0, alpha.RowCount(), [&](index iCell)
+                     {
             const real fraction = SelectAlpha(alpha(iCell, 0), minimum, reduction);
             if (compressRHS)
                 for (index j = 0; j < defect.ComponentNumber(); ++j)
                     defect(iCell, j) *= fraction;
             else
-                inverse(iCell, 0) /= std::max(fraction, smallReal);
-        }
+                inverse(iCell, 0) /= std::max(fraction, smallReal); });
     }
 }

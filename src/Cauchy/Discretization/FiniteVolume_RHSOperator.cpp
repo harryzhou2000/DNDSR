@@ -2,6 +2,7 @@
 #include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels.hpp"
+#include "DNDS/Core/OMP.hpp"
 #include <cstdio>
 #include <cstdlib>
 namespace DNDS::Cauchy
@@ -127,7 +128,20 @@ namespace DNDS::Cauchy
                                                                     {
             DNDS_check_throw_info(_read, "RHS operator was moved");
             Runtime::ValidateViewDevices(Runtime::Device::Host(), input, output);
-            return RequireNumericalSuccess(CPU::EvaluateFlowFlux(_read->Request(time), _read->data->equation, _read->data->flux, input, output, region), "EvaluateFlowFlux"); });
+            const auto request = _read->Request(time);
+            const index count = region == CFV::ReconstructionRegion::All ? request.ownedCells :
+                (region == CFV::ReconstructionRegion::Core ? request.stencil.coreCells.RowCount() : request.stencil.dependentCells.RowCount());
+            const index threads = output.faceFlux ? 1 : std::min<index>(OMP::DistributedThreads(), std::max<index>(1, count));
+            std::vector<RHSKernelDiagnostics> diagnostics;
+            diagnostics.reserve(size_t(threads));
+            for (index worker = 0; worker < threads; ++worker)
+                diagnostics.emplace_back(request.forceSlots);
+            std::vector<NumericalStatus> status(size_t(threads), NumericalStatus{});
+            RequireNumericalSuccess(CPU::EvaluateFlowFlux(request, _read->data->equation, _read->data->flux,
+                input, output, region, {{diagnostics.data(), threads}, {status.data(), threads}}), "EvaluateFlowFlux");
+            for (index worker = 1; worker < threads; ++worker)
+                diagnostics[0].Merge(diagnostics[worker]);
+            return std::move(diagnostics[0]); });
     }
     void FiniteVolume::RHSOperator::AddSource(const RHSReadViews &input, const RHSWriteViews &output,
                                               CFV::ReconstructionRegion region, real time) const

@@ -6,6 +6,7 @@
 #include "CFV/Math/TaylorBasis.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
 #include "Geom/Access/EntityWorkPartition.hpp"
+#include "DNDS/Core/OMP.hpp"
 #include <mutex>
 
 namespace DNDS::CFV::Detail
@@ -57,6 +58,11 @@ namespace DNDS::CFV::Detail
         std::optional<Geom::EntityWorkPartition> workPartition;
         // Inverse logical order for split SOR. Independent of physical row order.
         std::vector<index> coreFirstPosition;
+        /// Immutable host subpartition ranges copied from the prepared mesh.
+        /// Block SOR reads changing output only within its own range; neighbors
+        /// in other ranges always use the frozen input, independent of timing.
+        Runtime::MetadataBuffer<index> hostPartitionStarts;
+        int hostThreads = 1;
         int n, cachedDerivatives;
         Runtime::Array<real> moments;
         Runtime::Array<real> faceBasis;
@@ -78,7 +84,10 @@ namespace DNDS::CFV::Detail
         Runtime::Array<index> boundaryPoints;
         ReconstructionData(FiniteVolumePlan m, ReconstructionSettings s, ReconstructionCapabilities c)
             : identity(std::make_shared<const ReconstructionIdentity>()), metrics(std::move(m)), settings(s), capabilities(c), n(Math::PolynomialSize(metrics.Dimension(), s.maxOrder) - 1),
-              cachedDerivatives(s.cacheDiffBase ? Math::TaylorBasis(metrics.Dimension(), s.maxOrder).DerivativeNumber(s.cacheDiffBaseOrder) : 0) {}
+              cachedDerivatives(s.cacheDiffBase ? Math::TaylorBasis(metrics.Dimension(), s.maxOrder).DerivativeNumber(s.cacheDiffBaseOrder) : 0)
+        {
+            hostThreads = OMP::DistributedThreads();
+        }
     };
     inline void Zero(FVField &field)
     {

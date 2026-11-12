@@ -6,6 +6,7 @@
 #include "Cauchy/Boundary/BoundaryPointOperator.hpp"
 #include "Cauchy/State/EquationDofs.hpp"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
+#include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
 
 namespace DNDS::Cauchy::CPU
 {
@@ -33,12 +34,22 @@ namespace DNDS::Cauchy::CPU
         int dimension = 0, independentSpecies = 0;
         real time = 0;
     };
+    /// Operator-allocated point scratch. Each worker has an exclusive evaluator;
+    /// no chemistry state or dynamic point storage is shared across OMP rows.
+    struct AuxiliaryWorkerScratch
+    {
+        PointEvaluator evaluator;
+        EquationFVDetail::PointScratch left, right, face;
+        NumericalStatus status;
+        AuxiliaryWorkerScratch(PointEvaluator value, index components)
+            : evaluator(std::move(value)), left(components), right(components), face(components) {}
+    };
     NumericalStatus PrepareAuxiliaryMeans(const AuxiliaryKernelRequest &request,
-                                          const EquationSystem &equation, PointEvaluator &worker,
+                                          const EquationSystem &equation, SpanView<AuxiliaryWorkerScratch> workers,
                                           index first, index end) noexcept;
     NumericalStatus PrepareAuxiliaryFaces(const AuxiliaryKernelRequest &request,
                                           const EquationSystem &equation, const BoundaryPointOperator &boundary,
-                                          PointEvaluator &worker,
+                                          SpanView<AuxiliaryWorkerScratch> workers,
                                           FiniteVolumeStencilView::Indices faces) noexcept;
     void ReduceAuxiliaryCells(const AuxiliaryKernelRequest &request,
                               FiniteVolumeStencilView::Indices cells);

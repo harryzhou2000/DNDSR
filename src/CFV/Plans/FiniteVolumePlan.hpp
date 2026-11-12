@@ -470,6 +470,9 @@ namespace DNDS::CFV
         /// One local sweep. Caller refreshes mean/coefficient halos first.
         /// Both methods write temporary then publish owned output. SOR follows
         /// logical cell order using new local predecessors and old other values.
+        /// With distributed OpenMP enabled, each mesh subpartition is an ordered
+        /// block. Other blocks always use frozen input; OMP=1 retains the global
+        /// serial sweep. Injected meshes need prepared subpartitions for speed.
         /// No implicit MPI, allocation in the cell loop, or callbacks.
         void DoReconstructionIter(const FVField &mean, FVField &coefficients, ReconstructionWorkspace &work,
                                   const ReconstructionBoundaryValues &boundary,
@@ -478,6 +481,7 @@ namespace DNDS::CFV
         /// methods. SOR reads already produced local predecessors from temporary.
         /// Split SOR automatically uses core-first logical ordering; All uses
         /// that same ordering when settings.coreFirst is enabled.
+        /// OpenMP workers never consume another subpartition's changing output.
         /// Core acquires no input ghost leases. Finish both phases before
         /// CommitReconstruction; never update a live direct MPI send buffer.
         void DoReconstructionIterTo(const FVField &mean, const FVField &input, ReconstructionWorkspace &work,

@@ -3,11 +3,29 @@
 #include "DNDS/Algebra/DofAlgebra.hpp"
 #include "DNDS/Algebra/DofHalo.hpp"
 #include "DNDS/Algebra/DofScratchPool.hpp"
+#include "DNDS/Core/OMP.hpp"
 #include <atomic>
 #include <thread>
 
 namespace A = DNDS::Algebra;
 namespace R = DNDS::Runtime;
+
+TEST_CASE("Independent OMP row kernels return deterministic first numerical failure")
+{
+    std::array<DNDS::index, 97> values{};
+    const auto success = DNDS::OMP::ForRowsStatus(0, DNDS::index(values.size()), [&](DNDS::index iRow) -> DNDS::NumericalStatus
+                                                  {
+        values[iRow] = 3 * iRow + 1;
+        return {}; });
+    CHECK(bool(success));
+    for (DNDS::index iRow = 0; iRow < DNDS::index(values.size()); ++iRow)
+        CHECK(values[iRow] == 3 * iRow + 1);
+    const auto failure = DNDS::OMP::ForRowsStatus(0, DNDS::index(values.size()), [](DNDS::index iRow) -> DNDS::NumericalStatus
+                                                  { return iRow == 9 || iRow == 83 ? DNDS::NumericalStatus{DNDS::NumericalError::InvalidState, 7, iRow} : DNDS::NumericalStatus{}; });
+    CHECK_FALSE(bool(failure));
+    CHECK(failure.row == 9);
+    CHECK(failure.detail == 7);
+}
 
 TEST_CASE("Reserved DoF scratch reuses prepared level aliases and communicating slots")
 {
