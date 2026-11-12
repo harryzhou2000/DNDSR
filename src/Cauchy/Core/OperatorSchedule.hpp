@@ -6,6 +6,8 @@
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
 #include <exception>
+#include <memory>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -16,18 +18,33 @@ namespace DNDS::Cauchy
     /// future resolved device launcher. Backend-specific waiting/progress stays
     /// in ExecutionStream and TransferBinding. The schedule owns no numerical
     /// views; each submitted operation record must capture its retained scope.
+    /// Numerical collectives inside a queued segment must be managed operations
+    /// with producer/completion events, never blocking calls inside Submit.
+    /// A dynamic convergence/early-exit decision belongs outside that segment
+    /// and may Join explicitly. In-queue mutation and device driver kernels for
+    /// eliminating such decisions' host synchronization are future work.
+    /// Candidate device controllers include CDP with device-managed streams,
+    /// or a persistent/mega driver kernel managing asynchronous work explicitly.
+    /// This contract does not claim either controller or sync-free GMRES today.
+    /// TODO(sync-free-iteration-control): implement/validate a device-side
+    /// dynamic stopping controller without introducing hidden host waits.
     class OperatorSchedule
     {
         Runtime::EagerEngine &_engine;
-        Runtime::ExecutionStream _stream;
+        Runtime::ExecutionStream _compute, _communication;
         bool _overlap;
         int _exceptions = std::uncaught_exceptions();
 
     public:
-        OperatorSchedule(Runtime::EagerEngine &engine, Runtime::ExecutionStream stream, bool overlap)
-            : _engine(engine), _stream(std::move(stream)), _overlap(overlap)
+        OperatorSchedule(Runtime::EagerEngine &engine,
+                         Runtime::ExecutionStream compute,
+                         Runtime::ExecutionStream communication, bool overlap)
+            : _engine(engine), _compute(std::move(compute)),
+              _communication(std::move(communication)), _overlap(overlap)
         {
-            DNDS_check_throw_info(_engine.Owns(_stream), "operator schedule stream belongs to another runtime");
+            DNDS_check_throw_info(_engine.Owns(_compute) &&
+                                      _engine.Owns(_communication),
+                                  "operator schedule stream belongs to another runtime");
         }
         OperatorSchedule(const OperatorSchedule &) = delete;
         OperatorSchedule &operator=(const OperatorSchedule &) = delete;
@@ -55,7 +72,9 @@ namespace DNDS::Cauchy
         }
         Runtime::TransferOperation Begin(Runtime::TransferBinding &binding) const
         {
-            return _engine.ChecksAccess() ? binding.BeginChecked(_stream) : binding.BeginScheduled(_stream);
+            return _engine.ChecksAccess()
+                       ? binding.BeginReadyChecked(_communication)
+                       : binding.BeginReadyScheduled(_communication);
         }
         std::vector<Runtime::TransferOperation> Begin(std::vector<Runtime::TransferBinding> &bindings) const
         {
@@ -65,30 +84,55 @@ namespace DNDS::Cauchy
                 operations.push_back(Begin(binding));
             return operations;
         }
-        template <class Operation>
-        static void Wait(Operation &operation)
+        /// Insert full transfer completion as a compute-lane dependency. Core
+        /// work already submitted remains ahead of this edge; later dependent
+        /// work cannot start until the runtime progresses the managed transfer.
+        void Await(Runtime::TransferOperation &operation) const
         {
-            operation.Wait();
+            _compute.WaitFor(operation.CompletionEvent());
+            operation = {};
         }
-        template <class Operation>
-        static void Wait(std::vector<Operation> &operations)
+        void Await(std::vector<Runtime::TransferOperation> &operations) const
         {
             for (auto &operation : operations)
-                operation.Wait();
+                _compute.WaitFor(operation.CompletionEvent());
             operations.clear();
+        }
+        template <class Operation>
+        void AwaitPublished(Operation &&operation) const
+        {
+            auto publication = std::make_shared<std::decay_t<Operation>>(
+                std::forward<Operation>(operation));
+            _compute.WaitFor(publication->CompletionEvent());
+            _engine.Submit(
+                _compute,
+                [publication](Runtime::ExecutionContext)
+                { publication->PublishCompleted(); });
         }
         template <class Action>
         void Submit(Action &&action) const
         {
-            _engine.Submit(_stream, [operation = std::forward<Action>(action)](Runtime::ExecutionContext) mutable
+            _engine.Submit(_compute, [operation = std::forward<Action>(action)](Runtime::ExecutionContext) mutable
                            { operation(); });
         }
         template <class Action, class... Operands>
         void SubmitArrays(Action &&action, Operands &&...operands) const
         {
-            Runtime::SubmitArrays(_engine, _stream, std::forward<Action>(action),
+            Runtime::SubmitArrays(_engine, _compute, std::forward<Action>(action),
                                   std::forward<Operands>(operands)...);
         }
-        void Join() const { _stream.Record().WaitHost(); }
+        Runtime::StreamEvent RecordCompute() const { return _compute.Record(); }
+        Runtime::StreamEvent RecordCommunication() const
+        {
+            return _communication.Record();
+        }
+        void ComputeWaitFor(Runtime::StreamEvent event) const
+        {
+            _compute.WaitFor(std::move(event));
+        }
+        /// Quiescent operator boundary. The runtime progresses registered MPI
+        /// work while draining compute dependencies; no transfer wait appears
+        /// between queued core and dependent submissions.
+        void Join() const { _engine.Synchronize(); }
     };
 }

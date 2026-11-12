@@ -123,7 +123,8 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(options.rhsKernel != RHSKernelPolicy::FixedFlow5 || flow5Profile,
                                   "fixed flow5 RHS kernel requires one perfect-gas flow5 physical field");
             DNDS_check_throw_info((n.reconstruction == "constant" || n.reconstruction == "gradient" || n.reconstruction == "variational") &&
-                                  n.reconstructionIterations >= 0, "invalid equation reconstruction controls");
+                                  n.reconstructionIterations >= 0 && n.reconstructionResidualCheckInterval > 0,
+                                  "invalid equation reconstruction controls");
             DNDS_check_throw_info(!_data->equation.HasMixture() || _data->fluxPolicy.rusanov,
                 "extended EOS or stencil flux needs an explicit preparation provider");
             DNDS_check_throw_info(n.limiter == "none" || n.limiter == "Barth" || n.limiter == "LVR" ||

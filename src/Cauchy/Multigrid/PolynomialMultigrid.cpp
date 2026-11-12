@@ -5,7 +5,7 @@
 #include "Cauchy/Core/DomainExecutionContext.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
-#include "Cauchy/Implicit/NonlinearController.hpp"
+#include "Cauchy/Implicit/NonlinearSolve.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Solver/FAS.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
@@ -197,7 +197,7 @@ namespace DNDS::Cauchy
             // movable facade. Stored level callbacks borrow this stable member.
             Solver fineSolver;
             ImplicitSettings settings;
-            std::unique_ptr<NonlinearController> nonlinearController;
+            std::unique_ptr<NonlinearSolveSetup> nonlinearSetup;
             MPIInfo mpi;
             std::vector<std::unique_ptr<Coarse>> coarse;
             std::unique_ptr<Cycle> cycle;
@@ -229,7 +229,7 @@ namespace DNDS::Cauchy
                                       "polynomial FAS requires high-order variational reconstruction");
                 auto iterationSettings = settings;
                 iterationSettings.iterations = settings.multigrid.cycles;
-                nonlinearController = std::make_unique<NonlinearController>(
+                nonlinearSetup = std::make_unique<NonlinearSolveSetup>(
                     iterationSettings, fine.Equation().Schema(), mpi.rank,
                     "singleStageImplicit",
                     UpdatePolicyRequirements{
@@ -488,7 +488,7 @@ namespace DNDS::Cauchy
             Report Solve(const State &source, real mass, real rhsScale,
                          real time, int stage,
                          NonlinearSolveControl solveControl,
-                         OptionalRef<const NonlinearController> controller = {})
+                         OptionalRef<const NonlinearSolveSetup> setup = {})
             {
                 BindEquation(source, mass, rhsScale, time, stage, 0);
                 fineSolver.BindControllerState(solveControl);
@@ -496,10 +496,10 @@ namespace DNDS::Cauchy
                 Report initial;
                 initial.residual = residual;
                 const real start = profileEnabled ? MPI_Wtime() : 0;
-                const auto &activeController = controller ? *controller
-                                                          : *nonlinearController;
-                const auto result = activeController.Execute(
-                    stage,
+                const auto &activeSetup = setup ? *setup
+                                                : *nonlinearSetup;
+                auto session = NonlinearSession::Prepare(
+                    activeSetup, stage,
                     {std::move(solveControl), std::move(initial),
                      fineSolver.ReconstructionTolerance(),
                      [&]
@@ -508,8 +508,10 @@ namespace DNDS::Cauchy
                      { norms = residual; },
                      [&]
                      { return fineSolver.ReconstructionStats(); },
-                     [&](int coupledStage, auto &total)
+                     [&](int coupledStage, auto &total, bool applyCorrection)
                      {
+                         if (!applyCorrection)
+                             return;
                          DNDS_check_throw_info(
                              coupledStage == 0,
                              "p-FAS single-stage policy requested another stage");
@@ -520,6 +522,7 @@ namespace DNDS::Cauchy
                                         total.pseudoCFL,
                                         std::cref(fineRate->rate)));
                      }});
+                const auto result = SolveNonlinear(session);
                 if (profileEnabled && (!mpi.rank || profileAllRanks))
                 {
                     Json levels = Json::array();
@@ -529,6 +532,45 @@ namespace DNDS::Cauchy
                     std::fprintf(stdout, "CAUCHY_PMG_PROFILE %s\n", record.c_str());
                 }
                 return result;
+            }
+            NonlinearSession Start(
+                const NonlinearSolveSetup &setup, const State &source,
+                real mass, real rhsScale, real time, int stage,
+                NonlinearSolveControl solveControl,
+                std::shared_ptr<void> lifetime)
+            {
+                BindEquation(source, mass, rhsScale, time, stage, 0);
+                fineSolver.BindControllerState(solveControl);
+                auto residual = std::make_shared<std::vector<real>>(
+                    Profile::Norms(state));
+                Report initial;
+                initial.residual = *residual;
+                return NonlinearSession::Prepare(
+                    setup, stage,
+                    {std::move(solveControl), std::move(initial),
+                     fineSolver.ReconstructionTolerance(),
+                     [this, residual, source = source.NumericAlias()]
+                     { *residual = Measure(source); },
+                     [residual](auto &norms)
+                     { norms = *residual; },
+                     [this]
+                     { return fineSolver.ReconstructionStats(); },
+                     [this, source = source.NumericAlias(), mass, rhsScale, time,
+                      stage](int coupledStage, auto &total, bool applyCorrection)
+                     {
+                         if (!applyCorrection)
+                             return;
+                         DNDS_check_throw_info(
+                             coupledStage == 0,
+                             "p-FAS single-stage policy requested another stage");
+                         fineRate->stateStamp->Check(state, true);
+                         NonlinearDetail::AccumulateWork(
+                             total,
+                             ApplyCycle(source, mass, rhsScale, time, stage,
+                                        total.pseudoCFL,
+                                        std::cref(fineRate->rate)));
+                     },
+                     std::move(lifetime)});
             }
             void SetBoundaryInputs(const BoundaryInputs &input)
             {
@@ -566,7 +608,7 @@ namespace DNDS::Cauchy
     }
 
     PolynomialMultigrid::PolynomialMultigrid(ssp<Geom::UnstructuredMesh> mesh, const FiniteVolume &fine, EquationDofs &state,
-                                             NonlinearSolver &solver, R::EagerEngine &engine, R::ExecutionStream stream, const DomainSettings &settings,
+                                             NonlinearSolver &solver, Runtime::EagerEngine &engine, Runtime::ExecutionStream stream, const DomainSettings &settings,
                                              std::optional<Physics::Chemistry::ChemicalWorkerPool> workers)
     {
         MPI::LocalStage(MPIInfo(fine.Metrics().Communicator()), [&]
@@ -578,7 +620,7 @@ namespace DNDS::Cauchy
         EquationDofs &state, NonlinearSolver &solver,
         DomainExecutionContext context, const DomainSettings &settings)
         : PolynomialMultigrid(std::move(mesh), fine, state, solver,
-                              context.Engine(), context.PrimaryStream(), settings,
+                              context.Engine(), context.ComputeStream(), settings,
                               context.ChemicalWorkers())
     {
         _data->executionOwner.emplace(std::move(context));
@@ -589,14 +631,20 @@ namespace DNDS::Cauchy
         auto session = _data->fineSolver.ReserveForMultigrid();
         return _data->Solve(source, mass, rhsScale, time, stage, std::move(control));
     }
-    NonlinearIterationReport PolynomialMultigrid::SolveWithController(
-        const NonlinearController &controller, const EquationDofs &source,
+    NonlinearSession PolynomialMultigrid::PrepareSolve(
+        const NonlinearSolveSetup &setup, const EquationDofs &source,
         real mass, real rhsScale, real time, int stage,
         NonlinearSolveControl control)
     {
-        auto session = _data->fineSolver.ReserveForMultigrid();
-        return _data->Solve(source, mass, rhsScale, time, stage,
-                            std::move(control), std::cref(controller));
+        struct Lifetime
+        {
+            std::shared_ptr<Data> data;
+            Runtime::SessionAccess::Lease session;
+        };
+        auto lifetime = std::make_shared<Lifetime>(
+            Lifetime{_data, _data->fineSolver.ReserveForMultigrid()});
+        return _data->Start(setup, source, mass, rhsScale, time, stage,
+                            std::move(control), std::move(lifetime));
     }
     NonlinearIterationReport PolynomialMultigrid::ApplyCycle(
         const EquationDofs &source, real mass, real rhsScale, real time, int stage, real pseudoCFL,
@@ -609,6 +657,23 @@ namespace DNDS::Cauchy
     {
         auto session = _data->fineSolver.ReserveForMultigrid();
         _data->SetBoundaryInputs(input);
+    }
+    std::function<void(const BoundaryInputs &)>
+    PolynomialMultigrid::PrepareBoundaryInputBinding() const
+    {
+        using Receiver = std::pair<FiniteVolume, std::shared_ptr<FiniteVolume::Workspace>>;
+        std::vector<Receiver> receivers;
+        receivers.reserve(_data->coarse.size());
+        for (const auto &level : _data->coarse)
+            receivers.emplace_back(level->discrete, level->workspace);
+        // Retain only receiver resources. Capturing the hierarchy would also
+        // retain its execution context and form a cycle when this binding is
+        // stored in that context's pending interface dependency.
+        return [receivers = std::move(receivers)](const BoundaryInputs &input)
+        {
+            for (const auto &receiver : receivers)
+                receiver.first.SetBoundaryInputs(*receiver.second, input);
+        };
     }
     std::pair<size_t, index> PolynomialMultigrid::ScratchPoolStatistics() const
     {

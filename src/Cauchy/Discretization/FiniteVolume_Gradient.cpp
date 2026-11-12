@@ -15,6 +15,10 @@ namespace DNDS::Cauchy
     {
         if (owner->settings.numerics.reconstruction == "variational")
             return;
+        // A mean forecast has no face polynomial. Only RANS source terms
+        // consume its physical gradients, prepared directly from cell means.
+        if (meanOnly && !owner->equation.HasRANS())
+            return;
         if (owner->settings.numerics.reconstruction == "constant" && directGradients.empty())
             return;
         for (index iField = 0; iField < index(fields.size()); ++iField)
@@ -31,7 +35,7 @@ namespace DNDS::Cauchy
                 published.Publish(*owner, mean, mean, output, incoming, time);
                 continue;
             }
-            const bool fromGradientField = owner->settings.numerics.reconstruction == "constant" && fields[iField].gradient;
+            const bool fromGradientField = (meanOnly || owner->settings.numerics.reconstruction == "constant") && fields[iField].gradient;
             // Constant face fluxes never read remote source gradients.
             if (fromGradientField && ghost)
                 continue;

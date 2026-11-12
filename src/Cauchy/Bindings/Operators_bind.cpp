@@ -217,10 +217,12 @@ namespace DNDS::Cauchy::Bindings
         py::class_<LinearProblemContext::DofSGSIteration>(
             m, "DofSGSIteration",
             "Staged two-buffer SGS. Join input halo before dependent lower work. Upper reverses order. Finish after both scans; abandonment invalidates unfinished output.")
-            .def("lower", &LinearProblemContext::DofSGSIteration::Lower, py::arg("region") = LinearRegion::All,
-                 py::call_guard<py::gil_scoped_release>(), Local)
-            .def("upper", &LinearProblemContext::DofSGSIteration::Upper, py::arg("region") = LinearRegion::All,
-                 py::call_guard<py::gil_scoped_release>(), Local)
+            .def("lower", &LinearProblemContext::DofSGSIteration::Lower,
+                 py::arg_v("region", LinearRegion::All, "LinearRegion.All"), py::call_guard<py::gil_scoped_release>(),
+                 Local)
+            .def("upper", &LinearProblemContext::DofSGSIteration::Upper,
+                 py::arg_v("region", LinearRegion::All, "LinearRegion.All"), py::call_guard<py::gil_scoped_release>(),
+                 Local)
             .def("finish", &LinearProblemContext::DofSGSIteration::Finish, py::call_guard<py::gil_scoped_release>(),
                  Local);
         py::class_<LinearProblemContext, std::shared_ptr<LinearProblemContext>>(
@@ -238,7 +240,7 @@ namespace DNDS::Cauchy::Bindings
             .def("apply",
                  py::overload_cast<const EquationDofs &, EquationDofs &, LinearRegion>(&LinearProblemContext::Apply,
                                                                                        py::const_),
-                 py::arg("input"), py::arg("output"), py::arg("region") = LinearRegion::All,
+                 py::arg("input"), py::arg("output"), py::arg_v("region", LinearRegion::All, "LinearRegion.All"),
                  py::call_guard<py::gil_scoped_release>(), Local)
             .def("begin_sgs",
                  py::overload_cast<const EquationDofs &, const EquationDofs &, EquationDofs &, EquationDofs &, bool>(
@@ -272,6 +274,7 @@ namespace DNDS::Cauchy::Bindings
             .def_readwrite("preconditioner", &LinearSolveSettings::preconditioner)
             .def_readwrite("stopping", &LinearSolveSettings::stopping)
             .def_readwrite("max_iterations", &LinearSolveSettings::maxIterations)
+            .def_readwrite("residual_check_interval", &LinearSolveSettings::residualCheckInterval)
             .def_readwrite("subspace", &LinearSolveSettings::subspace)
             .def_readwrite("sgs_sweeps", &LinearSolveSettings::sgsSweeps)
             .def_readwrite("jacobi_local_sweeps", &LinearSolveSettings::jacobiLocalSweeps)
@@ -282,10 +285,21 @@ namespace DNDS::Cauchy::Bindings
             .def_readwrite("exchange_between_sweeps", &LinearSolveSettings::exchangeBetweenSweeps)
             .def_readwrite("relative_tolerance", &LinearSolveSettings::relativeTolerance)
             .def_readwrite("absolute_tolerance", &LinearSolveSettings::absoluteTolerance);
+        py::class_<LinearExecution::Streams>(
+            m, "LinearExecutionStreams",
+            "Domain compute/communication lanes; retain their owning engine through solve.")
+            .def(py::init(
+                [](Runtime::ExecutionStream compute, Runtime::ExecutionStream communication)
+        {
+            return LinearExecution::Streams{std::move(compute), std::move(communication)};
+        }))
+            .def_readwrite("compute", &LinearExecution::Streams::compute)
+            .def_readwrite("communication", &LinearExecution::Streams::communication);
         py::class_<LinearExecution>(m, "LinearExecution")
             .def(py::init<>())
             .def_readwrite("overlap", &LinearExecution::overlap)
-            .def_readwrite("collective_checks", &LinearExecution::collectiveChecks);
+            .def_readwrite("collective_checks", &LinearExecution::collectiveChecks)
+            .def_readwrite("streams", &LinearExecution::streams);
         py::enum_<Linear::LinearStop>(m, "LinearStop")
             .value("Converged", Linear::LinearStop::Converged)
             .value("IterationLimit", Linear::LinearStop::IterationLimit)
@@ -342,7 +356,7 @@ namespace DNDS::Cauchy::Bindings
             return solver.value->Solve(*solver.state, source, mass, rhsScale, time, stage, control);
         },
                  py::arg("source"), py::arg("inverse_dt"), py::arg("rhs_scale"), py::arg("time") = 0,
-                 py::arg("stage") = 0, py::arg("control") = NonlinearSolveControl{},
+                 py::arg("stage") = 0, py::arg_v("control", NonlinearSolveControl{}, "NonlinearSolveControl()"),
                  py::call_guard<py::gil_scoped_release>(), Collective)
             .def(
                 "correct_once",
@@ -352,7 +366,7 @@ namespace DNDS::Cauchy::Bindings
             return solver.value->CorrectOnce(*solver.state, source, mass, rhsScale, time, stage, control);
         },
                 py::arg("source"), py::arg("inverse_dt"), py::arg("rhs_scale"), py::arg("time") = 0,
-                py::arg("stage") = 0, py::arg("control") = NonlinearSolveControl{},
+                py::arg("stage") = 0, py::arg_v("control", NonlinearSolveControl{}, "NonlinearSolveControl()"),
                 py::call_guard<py::gil_scoped_release>(),
                 "Collective one-correction native block. No nonlinear convergence loop or acceptance decision; the caller controls CFL/stopping and owns rollback.")
             .def("evaluate_equation",
@@ -527,9 +541,9 @@ namespace DNDS::Cauchy::Bindings
                  [](const FiniteVolumeOperators &op, const EquationDofs &u, DiagonalStorage d, OffDiagonalStorage o)
         {
             return op.fv.BuildLinearProblem(u, d, o);
-        }, py::arg("state"), py::arg("diagonal") = DiagonalStorage::Block,
-                 py::arg("off_diagonal") = OffDiagonalStorage::Assembled, py::keep_alive<0, 1>(),
-                 py::call_guard<py::gil_scoped_release>(), Collective)
+        }, py::arg("state"), py::arg_v("diagonal", DiagonalStorage::Block, "DiagonalStorage.Block"),
+                 py::arg_v("off_diagonal", OffDiagonalStorage::Assembled, "OffDiagonalStorage.Assembled"),
+                 py::keep_alive<0, 1>(), py::call_guard<py::gil_scoped_release>(), Collective)
             .def("prepare_jacobian",
                  [](const FiniteVolumeOperators &op, const EquationDofs &u, const AuxiliaryValues &a,
                     const R::PythonArray &inverseDt, LinearProblemContext &p, JacobianPreparation c, real t,
@@ -544,7 +558,7 @@ namespace DNDS::Cauchy::Bindings
                                     : std::nullopt);
         },
                  py::arg("state"), py::arg("auxiliary"), py::arg("inverse_pseudo_time"), py::arg("output"),
-                 py::arg("controls") = JacobianPreparation{}, py::arg("time") = 0,
+                 py::arg_v("controls", JacobianPreparation{}, "JacobianPreparation()"), py::arg("time") = 0,
                  py::arg("source_workspace") = nullptr, Local)
             .def("build_linear_solver",
                  [](const FiniteVolumeOperators &op, std::shared_ptr<LinearProblemContext> p, const EquationDofs &u,
@@ -555,8 +569,9 @@ namespace DNDS::Cauchy::Bindings
                 return fv.BindHalo(field);
             }, settings, execution);
         },
-                 py::arg("problem"), py::arg("prototype"), py::arg("settings") = LinearSolveSettings{},
-                 py::arg("execution") = LinearExecution{}, py::keep_alive<0, 1>(),
+                 py::arg("problem"), py::arg("prototype"),
+                 py::arg_v("settings", LinearSolveSettings{}, "LinearSolveSettings()"),
+                 py::arg_v("execution", LinearExecution{}, "LinearExecution()"), py::keep_alive<0, 1>(),
                  py::call_guard<py::gil_scoped_release>(), Collective)
             .def("build_stage_solver",
                  [](const FiniteVolumeOperators &operators, EquationDofs &state, Workspace &workspace,

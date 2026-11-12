@@ -90,9 +90,9 @@ namespace DNDS::Cauchy
             lowRead.emplace(_problem.finiteVolume.LowOrderResidual(*_execution.workspace).CoupledField().Owned().Read());
             low = lowRead->View<R::UniformTableRows>();
         }
-        R::SubmitArrays(_execution.Engine(), _execution.PrimaryStream(), [dt, historyWeight, stageWeight, metrics, alpha, low](auto, auto initial, auto rhs, auto stage)
+        R::SubmitArrays(_execution.Engine(), _execution.ComputeStream(), [dt, historyWeight, stageWeight, metrics, alpha, low](auto, auto initial, auto rhs, auto stage)
                         { CPU::UpdateExplicitFlow(initial, rhs, low, stage, metrics, dt, historyWeight, stageWeight, alpha); }, R::ReadAs<R::UniformTableRows>(_state.initial.CoupledField().Owned()), R::ReadAs<R::UniformTableRows>(residual.Owned()), R::ReadWriteAs<R::UniformTableRows>(_state.trial.CoupledField().Owned()));
-        _execution.JoinPrimary();
+        _execution.Synchronize();
         if (!Admissible(_state.trial))
             return StepResult::Rejected("Cauchy SSPRK3 stage is inadmissible; accepted state unchanged");
         return {};

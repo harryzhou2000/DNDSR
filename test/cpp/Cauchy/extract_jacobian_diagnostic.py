@@ -3,6 +3,11 @@
 Only external scope declarations/Finish calls are inserted. The round-trip
 check below rejects any accidental change to the production text. Unique
 anchors fail explicitly when the implementation structure changes.
+
+After free-kernel extraction the legacy report labels JacobianFreeze and
+JacobianFaces bracket InitializeEquationJacobian and CompleteEquationJacobian,
+respectively. Their sum remains assembly work; do not compare either individual
+bucket with pre-extraction subphase timings without this qualification.
 """
 import argparse
 import hashlib
@@ -29,13 +34,13 @@ def extract(source):
 
     before("        ValidateAuxValues(state, auxiliary, time);",
            "        ::DiagnosticTiming::Scope assemblySetup(::DiagnosticTiming::Block::JacobianSetup);\n")
-    before("            // Initialize before the additive source entrance.",
+    before('            RequireNumericalSuccess(CPU::InitializeEquationJacobian(request), "initialize equation Jacobian");',
            "            assemblySetup.Finish();\n"
            "            ::DiagnosticTiming::Scope assemblyFreeze(::DiagnosticTiming::Block::JacobianFreeze);\n")
     before("            if ((chemical || rans) && sourceWorkspace)\n",
            "            assemblyFreeze.Finish();\n"
            "            ::DiagnosticTiming::Scope assemblySource(::DiagnosticTiming::Block::JacobianSource);\n")
-    before("            // A block-shaped output is already the row's dense workspace.",
+    before('            RequireNumericalSuccess(CPU::CompleteEquationJacobian(request, _data->boundaryPoint, evaluator, ownedPropertiesPrepared), "complete equation Jacobian");',
            "            assemblySource.Finish();\n"
            "            ::DiagnosticTiming::Scope assemblyFaces(::DiagnosticTiming::Block::JacobianFaces);\n")
     restored = text

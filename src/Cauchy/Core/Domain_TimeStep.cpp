@@ -40,11 +40,11 @@ namespace DNDS::Cauchy
             auto work = _problem.finiteVolume.BuildMeanWorkspace(_state.accepted, _execution.ChemicalWorkers());
             _execution.timePPResidual = std::move(residual);
             _execution.timePPWorkspace = std::move(work);
-            if (_execution.interfaceInputs)
-                _problem.finiteVolume.SetBoundaryInputs(*_execution.timePPWorkspace, *_execution.interfaceInputs);
+            if (_execution.interfaces->active)
+                _problem.finiteVolume.SetBoundaryInputs(*_execution.timePPWorkspace, *_execution.interfaces->active);
         }
         _problem.finiteVolume.EvaluateMean(_state.accepted, *_execution.timePPResidual, *_execution.timePPWorkspace,
-                                           _execution.Engine(), _execution.PrimaryStream(), _state.time);
+                                           _execution.Engine(), _execution.ComputeStream(), _state.time);
         result = _problem.finiteVolume.LimitPhysicalStep(_state.accepted, *_execution.timePPResidual,
                                                          _problem.admissibility->View().thermal, requestedDt,
                                                          _timePP.relax, _timePP.scale, _timeCompressionPower);

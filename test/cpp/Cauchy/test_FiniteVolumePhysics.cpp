@@ -2336,7 +2336,20 @@ TEST_CASE("Production equation nonlinear stages advance a distributed reacting F
         };
         for (int step = 0; step < steps; ++step)
         {
-            REQUIRE(stepper.Prepare(accepted, trial, step * totalTime / steps, totalTime / steps, evaluate, solve));
+            stepper.BeginStep(accepted, trial, step * totalTime / steps,
+                              totalTime / steps, evaluate);
+            for (int stage = 0; stage < stepper.GroupNumber(); ++stage)
+            {
+                const auto group = stepper.PrepareGroup(trial);
+                if (group.implicit)
+                {
+                    const auto equation = stepper.PrepareEquation(group, trial, 0);
+                    const auto &c = equation.coefficients;
+                    REQUIRE(solve(equation.state, equation.resOther,
+                                  c.inverseDt, c.rhsScale, c.time, group.stage));
+                }
+                stepper.CompleteGroup(group, trial, evaluate);
+            }
             C::EquationDofOperations::Copy(accepted, trial);
             stepper.Commit();
         }

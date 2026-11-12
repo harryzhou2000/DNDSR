@@ -1,11 +1,11 @@
 #include "Cauchy/Core/NumericalFailure.hpp"
+#include "Cauchy/Core/OperatorSchedule.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Discretization/LimitedVRInternal.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeLimitedVRKernels.hpp"
 #include "Cauchy/Physics/ReconstructionPositivity.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
 #include "DNDS/Algebra/DofAlgebra.hpp"
-#include "DNDS/MPI/CollectiveStage.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -16,37 +16,37 @@ namespace DNDS::Cauchy
     void FiniteVolume::LimitedVRWorkspace::Build(const Data &data, const CFV::FVField &mean,
                                                  R::Array<real> &previous,
                                                  CFV::FaceCharacteristicTransformRef transform,
-                                                 R::EagerEngine &engine, const R::ExecutionStream &stream)
+                                                 R::EagerEngine &engine,
+                                                 const R::ExecutionStream &stream,
+                                                 const R::ExecutionStream &communication)
     {
-        const MPIInfo mpi(data.metrics.Communicator());
         const auto &geometry = *data.limitedVRGeometry;
         const auto &settings = data.settings.numerics.limitedVR;
         const auto &controls = data.settings.numerics;
         const auto &gas = data.equation.Gas();
         const bool overlap = data.settings.execution.overlap;
-        const auto begin = [&](R::TransferBinding &binding)
-        { return engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream); };
-        MPI::LocalStage(mpi, [&]
-                        { geometry.gradient.ConvertToCoefficients(gradients, *data.reconstruction, targetCoefficients); });
+        OperatorSchedule schedule(engine, stream, communication, overlap);
+        data.metrics.Communication()->LocalStage([&]
+                                                 { geometry.gradient.ConvertToCoefficients(gradients, *data.reconstruction, targetCoefficients); });
         {
-            auto transfer = begin(targetHalo);
+            auto transfer = schedule.Begin(targetHalo);
             if (overlap)
                 data.reconstruction->SubmitLimiterWBAP_3OrderTo(engine, stream, targetCoefficients, target, 1, transform,
                                                                 CFV::ReconstructionRegion::Core);
-            transfer.Wait();
+            schedule.Await(transfer);
             data.reconstruction->SubmitLimiterWBAP_3OrderTo(
                 engine, stream, targetCoefficients, target, 1, transform,
                 overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
             data.reconstruction->SubmitCommitReconstruction(engine, stream, targetCoefficients, target);
-            stream.Record().WaitHost();
+            schedule.Join();
         }
         // PP POLICY -- this is the pure-flow5 O2 target guard inside LVR,
         // distinct from the later equation-aware high-order publication policy.
         // Reuse the Euler common-beta mathematics on a mean-based O2 target,
         // independently of the final high-order PP policy. No alternate limiter
         // or mean clipping is introduced. All PP samples belong to owned cells.
-        MPI::LocalStage(mpi, [&]
-                        {
+        data.metrics.Communication()->LocalStage([&]
+                                                 {
             data.positivitySamples->Evaluate(mean, targetCoefficients, sampledPP);
             auto meanRead = mean.Owned().Read(), pointsRead = sampledPP.Read();
             const auto u = meanRead.View<R::UniformTableRows>(), points = pointsRead.View<R::UniformTableRows>();
@@ -56,11 +56,11 @@ namespace DNDS::Cauchy
                 offsetRead.View<R::FixedRows<1>>(), data.FixedFlowThermalBounds(),
                 controls.positivityBetaPower, controls.positivityBetaCutoff), "LimitLVRTarget"); });
         {
-            auto transfer = begin(targetHalo);
+            auto transfer = schedule.Begin(targetHalo);
             // The mean halo is already observed. Derived mean scalars need no
             // extra communication, including their ghost rows.
-            MPI::LocalStage(mpi, [&]
-                            {
+            data.metrics.Communication()->LocalStage([&]
+                                                     {
                 const auto fill = [&](const auto &input, auto &output)
                 {
                     auto read = input.Read(); auto write = output.Write();
@@ -69,10 +69,11 @@ namespace DNDS::Cauchy
                     CPU::FillLVRScalars(u, s, gas);
                 };
                 fill(mean.Owned(), scalars.Owned()); fill(mean.Ghost(), scalars.Ghost()); });
-            transfer.Wait();
+            schedule.Await(transfer);
+            schedule.Join();
         }
-        MPI::LocalStage(mpi, [&]
-                        {
+        data.metrics.Communication()->LocalStage([&]
+                                                 {
             geometry.sampling->Evaluate(mean, targetCoefficients, sampledFaces);
             auto values = sampledFaces.Read(), own = mean.Owned().Read(), ghost = mean.Ghost().Read();
             const auto samples = values.View<R::UniformTableRows>();
@@ -84,24 +85,28 @@ namespace DNDS::Cauchy
             RequireNumericalSuccess(CPU::BuildLVRBranches(samples, means, faceRead.View<R::FixedRows<1>>(),
                 gas, data.FixedFlowThermalBounds(), settings, g, baseWrite.View<R::FixedRows<2>>()), "BuildLVRBranches"); });
         {
-            auto transfer = begin(branchHalo);
+            auto transfer = schedule.Begin(branchHalo);
             if (overlap)
-                geometry.gates.BuildExtremumSeeds(scalars, branches, previous, seeds, settings, CFV::ReconstructionRegion::Core);
-            transfer.Wait();
-            MPI::LocalStage(mpi, [&]
+                schedule.Submit([&]
+                                { geometry.gates.BuildExtremumSeeds(scalars, branches, previous, seeds, settings, CFV::ReconstructionRegion::Core); });
+            schedule.Await(transfer);
+            schedule.Submit([&]
                             { geometry.gates.BuildExtremumSeeds(scalars, branches, previous, seeds, settings, overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All); });
+            schedule.Join(); // Current portable-MPI bridge needs ready next-layer inputs.
         }
         const auto maximum = [&](CFV::FVField &input, R::TransferBinding &halo, std::array<bool, 3> active, bool excludeBoundary, bool saturated)
         {
-            auto transfer = begin(halo);
+            auto transfer = schedule.Begin(halo);
             if (overlap)
-                geometry.gates.NeighborMaximum(input, temporary, active, excludeBoundary, saturated, {settings.alphaMax, settings.contactAlphaMax, 1}, CFV::ReconstructionRegion::Core);
-            transfer.Wait();
-            MPI::LocalStage(mpi, [&]
+                schedule.Submit([&, active, excludeBoundary, saturated]
+                                { geometry.gates.NeighborMaximum(input, temporary, active, excludeBoundary, saturated, {settings.alphaMax, settings.contactAlphaMax, 1}, CFV::ReconstructionRegion::Core); });
+            schedule.Await(transfer);
+            schedule.Submit([&, active, excludeBoundary, saturated]
                             {
                 geometry.gates.NeighborMaximum(input, temporary, active, excludeBoundary, saturated, {settings.alphaMax, settings.contactAlphaMax, 1},
                                                overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
                 Algebra::Copy(input, temporary); });
+            schedule.Join();
         };
         const auto merge = [&](int column)
         {
@@ -128,8 +133,8 @@ namespace DNDS::Cauchy
         Algebra::Copy(branches, seeds);
         for (int layer = 0; layer < settings.neighborLayers; ++layer)
             maximum(branches, branchHalo, {true, false, false}, false, settings.saturatedOnly);
-        MPI::LocalStage(mpi, [&]
-                        {
+        data.metrics.Communication()->LocalStage([&]
+                                                 {
             auto read = branches.Owned().Read(); auto history = previous.Write(), penalty = alpha.Write();
             const auto g = read.View<R::UniformTableRows>(); const auto h = history.View<R::FixedRows<2>>(); const auto a = penalty.View<R::FixedRows<1>>();
             CPU::PublishLVRPenalty(g, h, a); });

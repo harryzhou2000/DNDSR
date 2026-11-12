@@ -1,5 +1,6 @@
 #include "Cauchy/State/CPU/FieldKernels.hpp"
 #include "Cauchy/Implicit/LinearSolver.hpp"
+#include "Cauchy/Core/OperatorSchedule.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
@@ -93,6 +94,12 @@ namespace DNDS::Cauchy
             using State = Field;
             using Iteration = LinearProblemContext::SGSIteration;
             static index Width(const State &state) { return index(state.Width()); }
+            static State Alias(const State &state) { return state; }
+            static bool SameStorage(const State &a, const State &b)
+            {
+                return a.Owned().SharedStorage() == b.Owned().SharedStorage() &&
+                       a.Ghost().SharedStorage() == b.Ghost().SharedStorage();
+            }
             static void Agree(const State &, MPI_Comm) {}
             static bool LocalFinite(const State &state)
             {
@@ -124,6 +131,16 @@ namespace DNDS::Cauchy
         {
             using Iteration = LinearProblemContext::DofSGSIteration;
             static index Width(const State &state) { return state.ComponentNumber(); }
+            static State Alias(const State &state) { return state.NumericAlias(); }
+            static bool SameStorage(const State &a, const State &b)
+            {
+                if (a.PhysicalFieldNumber() != b.PhysicalFieldNumber())
+                    return false;
+                for (index iField = 0; iField < a.PhysicalFieldNumber(); ++iField)
+                    if (!FieldLinearOperations::SameStorage(a.PhysicalField(iField), b.PhysicalField(iField)))
+                        return false;
+                return true;
+            }
             static void Agree(const State &state, MPI_Comm communicator) { AgreeEquationBinding(state, communicator); }
             static bool LocalFinite(const State &state)
             {
@@ -154,12 +171,14 @@ namespace DNDS::Cauchy
             MPIInfo mpi;
             LinearSolveSettings settings;
             LinearExecution execution;
+            std::unique_ptr<R::EagerEngine> standaloneEngine;
+            R::ExecutionStream compute, communication;
             std::unique_ptr<GMRES> gmres;
             std::optional<Field> solution;
             Field old, next, forward, action, residual;
             struct Input
             {
-                Field *field;
+                Field field; // Retained allocation/shape handles, not a facade address.
                 MPI_Comm comm = MPI_COMM_NULL;
                 struct Slot
                 {
@@ -170,13 +189,14 @@ namespace DNDS::Cauchy
                 bool active = false;
             };
             std::vector<Input> inputs;
-            /// Slots are allocated at binding time. Normal retirement drains;
-            /// active transfer retirement during unwinding fails immediately.
-            /// No per-application allocation or pending request survives this
-            /// synchronous controller operation.
+            /// Slots are retained at binding time. Await imports each managed
+            /// completion into the compute lane; dropping the public handles
+            /// does not block or release active payload owners. The enclosing
+            /// operator schedule drains before returning. A partially posted
+            /// launch failure aborts, never attempts distributed recovery.
             class Exchange
             {
-                Input *_input = nullptr;
+                OptionalRef<Input> _input;
                 void Retire() noexcept
                 {
                     if (!_input)
@@ -184,18 +204,18 @@ namespace DNDS::Cauchy
                     for (auto &slot : _input->slots)
                         slot.operation.reset();
                     _input->active = false;
-                    _input = nullptr;
+                    _input.Reset();
                 }
 
             public:
-                explicit Exchange(Input &input) : _input(&input)
+                Exchange(Input &input, const OperatorSchedule &schedule) : _input(input)
                 {
                     DNDS_check_throw_info(!input.active, "linear halo is already active");
                     input.active = true;
                     try
                     {
                         for (auto &slot : input.slots)
-                            slot.operation.emplace(slot.binding.Begin());
+                            slot.operation.emplace(schedule.Begin(slot.binding));
                     }
                     catch (...)
                     {
@@ -212,14 +232,14 @@ namespace DNDS::Cauchy
                 }
                 Exchange(const Exchange &) = delete;
                 Exchange &operator=(const Exchange &) = delete;
-                Exchange(Exchange &&other) noexcept : _input(std::exchange(other._input, nullptr)) {}
+                Exchange(Exchange &&other) noexcept : _input(std::exchange(other._input, OptionalRef<Input>{})) {}
                 ~Exchange() { Retire(); }
-                void Wait()
+                void Await(const OperatorSchedule &schedule)
                 {
                     if (!_input)
                         return;
                     for (auto &slot : _input->slots)
-                        slot.operation->Wait();
+                        schedule.Await(*slot.operation);
                     Retire();
                 }
             };
@@ -230,6 +250,22 @@ namespace DNDS::Cauchy
                 : problem(std::move(matrix)), mpi(problem->Space().Communicator()), settings(std::move(controls)), execution(policy),
                   old(Ops::NewVector(prototype)), next(Ops::NewVector(prototype)), forward(Ops::NewVector(prototype)), action(Ops::NewVector(prototype)), residual(Ops::NewVector(prototype))
             {
+                if (execution.streams)
+                {
+                    compute = execution.streams->compute;
+                    communication = execution.streams->communication;
+                    auto engine = compute.LockEngine();
+                    DNDS_check_throw_info(engine.Owns(communication) &&
+                                              compute.Context().device == R::Device::Host() &&
+                                              communication.Context().device == R::Device::Host(),
+                                          "linear execution has foreign lanes or an unavailable backend");
+                }
+                else
+                {
+                    standaloneEngine = std::make_unique<R::EagerEngine>();
+                    compute = standaloneEngine->CreateCPUStream();
+                    communication = standaloneEngine->CreateCPUStream();
+                }
                 if (settings.method == "gmres")
                     gmres = std::make_unique<GMRES>(prototype, settings.subspace);
                 else
@@ -244,30 +280,38 @@ namespace DNDS::Cauchy
             Input &Halo(Field &field)
             {
                 const auto found = std::find_if(inputs.begin(), inputs.end(), [&](const auto &input)
-                                                { return input.field == &field; });
+                                                { return Ops::SameStorage(input.field, field); });
                 DNDS_check_throw_info(found != inputs.end(), "linear operator input has no prepared halo binding");
                 return *found;
             }
             void Apply(Field &input, Field &output)
             {
                 const LinearProfile::Scope timing(profile, LinearProfile::Action);
-                auto exchange = Exchange(Halo(input));
+                auto engine = compute.LockEngine();
+                OperatorSchedule schedule(engine, compute, communication, execution.overlap);
+                auto exchange = Exchange(Halo(input), schedule);
                 if (execution.overlap)
-                    Stage([&]
-                          { problem->Apply(input, output, LinearRegion::Core); });
-                exchange.Wait();
+                    schedule.Submit([&]
+                                    { problem->Apply(input, output, LinearRegion::Core); });
+                exchange.Await(schedule);
+                schedule.Submit([&]
+                                { problem->Apply(input, output, execution.overlap ? LinearRegion::HaloDependent : LinearRegion::All); });
                 Stage([&]
-                      { problem->Apply(input, output, execution.overlap ? LinearRegion::HaloDependent : LinearRegion::All); });
+                      { schedule.Join(); });
             }
             void Sweep(const Field &rhs, Field &input, Field &output, bool knownZero)
             {
                 const LinearProfile::Scope timing(profile, LinearProfile::SGS);
+                // Iteration scopes outlive the schedule, including exceptional
+                // draining of accepted work. No worker enters MPI.
+                std::optional<Iteration> iteration;
+                auto engine = compute.LockEngine();
+                OperatorSchedule schedule(engine, compute, communication, execution.overlap);
                 std::optional<Exchange> exchange;
                 if (!knownZero)
-                    exchange.emplace(Exchange(Halo(input)));
-                std::optional<Iteration> iteration;
-                Stage([&]
-                      {
+                    exchange.emplace(Halo(input), schedule);
+                schedule.Submit([&]
+                                {
                 if (knownZero)
                     iteration.emplace(problem->BeginSGSZero(rhs, forward, output, settings.exchangeBetweenSweeps));
                 else
@@ -276,39 +320,49 @@ namespace DNDS::Cauchy
                 else if (execution.overlap) iteration->Lower(LinearRegion::Core); });
                 if (!knownZero)
                 {
-                    exchange->Wait();
-                    Stage([&]
-                          { iteration->Lower(execution.overlap ? LinearRegion::HaloDependent : LinearRegion::All); });
+                    exchange->Await(schedule);
+                    schedule.Submit([&]
+                                    { iteration->Lower(execution.overlap ? LinearRegion::HaloDependent : LinearRegion::All); });
                 }
                 if (settings.exchangeBetweenSweeps)
-                    Exchange(Halo(forward)).Wait();
+                {
+                    // Deliberately exposed middle exchange. Portable MPI must
+                    // observe the completed forward producer before posting.
+                    Stage([&]
+                          { schedule.Join(); });
+                    Exchange(Halo(forward), schedule).Await(schedule);
+                }
+                schedule.Submit([&]
+                                { iteration->Upper(); iteration->Finish(); });
                 Stage([&]
-                      { iteration->Upper(); iteration->Finish(); });
+                      { schedule.Join(); });
             }
             void JacobiSweep(const Field &rhs, Field &input, Field &output, bool knownZero)
             {
                 auto &first = settings.jacobiLocalSweeps == 2 ? forward : output;
+                auto engine = compute.LockEngine();
+                OperatorSchedule schedule(engine, compute, communication, execution.overlap);
                 if (knownZero)
-                    Stage([&]
-                          { problem->JacobiZero(rhs, first); });
+                    schedule.Submit([&]
+                                    { problem->JacobiZero(rhs, first); });
                 else
                 {
-                    auto exchange = Exchange(Halo(input));
+                    auto exchange = Exchange(Halo(input), schedule);
                     if (execution.overlap)
-                        Stage([&]
-                              { problem->Jacobi(rhs, input, first, LinearRegion::Core); });
-                    exchange.Wait();
-                    Stage([&]
-                          { problem->Jacobi(rhs, input, first, execution.overlap ? LinearRegion::HaloDependent : LinearRegion::All); });
+                        schedule.Submit([&]
+                                        { problem->Jacobi(rhs, input, first, LinearRegion::Core); });
+                    exchange.Await(schedule);
+                    schedule.Submit([&]
+                                    { problem->Jacobi(rhs, input, first, execution.overlap ? LinearRegion::HaloDependent : LinearRegion::All); });
                 }
                 if (settings.jacobiLocalSweeps == 2)
-                    Stage([&]
-                          {
-                        // The first sweep is fully joined. The second reads
+                    schedule.Submit([&]
+                                    {
+                        // Stream ordering completes the first sweep. The second reads
                         // its owned result but the same frozen remote values;
                         // a one-hop core is not proof for a two-hop overlap.
-                        std::vector<const R::Array<real> *> ghosts;
-                        Ops::VisitFields(input, [&](const auto &part) { ghosts.push_back(&part.Ghost()); });
+                        std::vector<R::Array<real>> ghosts;
+                        Ops::VisitFields(input, [&](const auto &part) { ghosts.push_back(part.Ghost()); });
                         index iField = 0;
                         Ops::VisitFields(forward, [&](auto &part)
                         {
@@ -319,10 +373,23 @@ namespace DNDS::Cauchy
                                 CPU::FillRows(values, values.Width(), 0);
                             }
                             else
-                                part.Ghost().CopyFrom(*ghosts[iField]).Wait();
+                                part.Ghost().CopyFrom(ghosts[iField]).Wait();
                             ++iField;
                         });
                         problem->Jacobi(rhs, forward, output); });
+                Stage([&]
+                      { schedule.Join(); });
+            }
+            void ApplyILU(const Field &rhs, Field &output)
+            {
+                auto engine = compute.LockEngine();
+                OperatorSchedule schedule(engine, compute, communication, false);
+                // The operation record owns numeric handles and matrix/factors;
+                // it never retains this solver (and its execution context).
+                schedule.Submit([matrix = problem, source = Ops::Alias(rhs),
+                                 scratch = Ops::Alias(forward), target = Ops::Alias(output)]() mutable
+                                { matrix->ApplyILU(source, scratch, target); });
+                schedule.Join(); // Synchronous preconditioner return boundary.
             }
             void Precondition(const Field &rhs, Field &output)
             {
@@ -331,21 +398,21 @@ namespace DNDS::Cauchy
                     if (settings.iluPreconditionerCorrections == 1)
                     {
                         Stage([&]
-                              { problem->ApplyILU(rhs, forward, output); });
+                              { ApplyILU(rhs, output); });
                         return;
                     }
                     // Every application begins at zero, preserving a fixed
                     // linear preconditioner for ordinary left GMRES. No outer
                     // nonlinear RHS or changing stopping policy lives here.
                     Stage([&]
-                          { problem->ApplyILU(rhs, forward, old); });
+                          { ApplyILU(rhs, old); });
                     for (int correction = 1; correction < settings.iluPreconditionerCorrections; ++correction)
                     {
                         Apply(old, action);
                         Stage([&]
                               {
                             Ops::LinearCombination(residual, real(1), rhs, real(-1), action);
-                            problem->ApplyILU(residual, forward, action);
+                            ApplyILU(residual, action);
                             Ops::LinearCombination(next, real(1), old, real(1), action);
                             Ops::Copy(old, next); });
                     }
@@ -380,6 +447,10 @@ namespace DNDS::Cauchy
             }
             std::vector<real> Products(const Field &x, const std::vector<const Field *> &probes) const
             {
+                // TODO(sync-free-gmres): replace this host Arnoldi boundary
+                // with managed device-aware reduction buffers,
+                // then queue the small-matrix/coefficient-update phase behind
+                // their completion, instead of exposing this host vector.
                 const LinearProfile::Scope timing(profile, LinearProfile::Products);
                 std::vector<real> local, global(probes.size());
                 Stage([&]
@@ -455,9 +526,9 @@ namespace DNDS::Cauchy
             }
             for (const auto &input : data.inputs)
             {
-                input.field->Validate();
-                CheckIdle(*input.field, true);
-                Ops::RequireDistinct(rhs, *input.field);
+                input.field.Validate();
+                CheckIdle(input.field, true);
+                Ops::RequireDistinct(rhs, input.field);
             }
             diagonal.emplace(data.problem->Diagonal().Read());
             offDiagonal.emplace(data.problem->ReadOffDiagonal());
@@ -473,7 +544,7 @@ namespace DNDS::Cauchy
                         return data.gmres->Solve(rhs, [&](Field &x, Field &y)
                                                  { data.Apply(x, y); }, [&](const Field &x, Field &y)
                                                  { data.Precondition(x, y); }, [&](const Field &x, const auto &probes)
-                                                 { return data.Products(x, probes); }, {data.settings.maxIterations, data.settings.relativeTolerance, data.settings.absoluteTolerance}, initialGuess.Get());
+                                                 { return data.Products(x, probes); }, {data.settings.maxIterations, data.settings.relativeTolerance, data.settings.absoluteTolerance, data.settings.residualCheckInterval}, initialGuess.Get());
                     auto &x = *data.solution;
                     const bool directFirstILU = !initialGuess && data.settings.method == "ilu" && data.settings.stopping == "fixedCount";
                     data.Stage([&]
@@ -501,7 +572,7 @@ namespace DNDS::Cauchy
                             // avoiding clear, zero+correction and next->x copy.
                             data.Stage([&]
                                        { const LinearProfile::Scope timing(data.profile, LinearProfile::Triangular);
-                                         data.problem->ApplyILU(rhs, data.forward, x); });
+                                         data.ApplyILU(rhs, x); });
                             ++report.preconditionerApplications;
                             ++report.iterations;
                             return;
@@ -517,7 +588,7 @@ namespace DNDS::Cauchy
                                        {
                                 {
                                     const LinearProfile::Scope timing(data.profile, LinearProfile::Triangular);
-                                    data.problem->ApplyILU(defect, data.forward, data.action);
+                                    data.ApplyILU(defect, data.action);
                                 }
                                 const LinearProfile::Scope timing(data.profile, LinearProfile::Algebra);
                                 Ops::LinearCombination(data.next, real(1), x, real(1), data.action); });
@@ -559,7 +630,15 @@ namespace DNDS::Cauchy
                     while (std::isfinite(report.trueResidual) && report.trueResidual > target && report.iterations < data.settings.maxIterations)
                     {
                         correct();
-                        report.trueResidual = residual();
+                        // Dynamic stopping is an explicit host observation
+                        // boundary. Between checks the correction sequence is
+                        // fixed. ILU still needs b-A*x to compute its next
+                        // correction, but need not reduce/observe that norm.
+                        if (report.iterations % data.settings.residualCheckInterval == 0 ||
+                            report.iterations == data.settings.maxIterations)
+                            report.trueResidual = residual();
+                        else if (data.settings.method == "ilu")
+                            formDefect();
                     }
                     report.converged = std::isfinite(report.trueResidual) && report.trueResidual <= target;
                     if (!initialGuess && report.iterations == 0 && (data.settings.method == "sgs" || data.settings.method == "jacobi"))
@@ -598,7 +677,7 @@ namespace DNDS::Cauchy
                                   "linear solver prototype differs from its CPU problem");
             DNDS_check_throw_info(bindHalo && (settings.method == "sgs" || settings.method == "jacobi" || settings.method == "ilu" || settings.method == "gmres") &&
                                       (settings.stopping == "residual" || (settings.stopping == "fixedCount" && settings.method != "gmres")) &&
-                                      (settings.preconditioner == "sgs" || settings.preconditioner == "ilu") && settings.maxIterations >= 0 &&
+                                      (settings.preconditioner == "sgs" || settings.preconditioner == "ilu") && settings.maxIterations >= 0 && settings.residualCheckInterval > 0 &&
                                       settings.subspace > 0 && settings.subspace < INT_MAX && settings.sgsSweeps > 0 && settings.iluFill >= -1 && settings.iluFill <= 5 &&
                                       settings.iluPreconditionerCorrections > 0 &&
                                       settings.jacobiLocalSweeps >= 1 && settings.jacobiLocalSweeps <= 2 &&
@@ -608,12 +687,12 @@ namespace DNDS::Cauchy
                                   "invalid linear solver controls");
             DNDS_check_throw_info(!((UsesILU(settings) || settings.method == "jacobi") && settings.exchangeBetweenSweeps),
                                   "local ILU/Jacobi has no inter-scan exchange"); });
-            const std::array<int64_t, 16> integers{settings.method == "gmres" ? 1 : settings.method == "ilu"  ? 2
+            const std::array<int64_t, 17> integers{settings.method == "gmres" ? 1 : settings.method == "ilu"  ? 2
                                                                                 : settings.method == "jacobi" ? 3
                                                                                                               : 0,
                                                    settings.preconditioner == "ilu", settings.maxIterations, settings.subspace,
                                                    settings.sgsSweeps, settings.iluFill, settings.iluCoreFirst, settings.exchangeBetweenSweeps,
-                                                   execution.overlap, execution.collectiveChecks, problem->Components(), int(problem->OffDiagonalMode()), settings.stopping == "fixedCount", settings.iluOrdering == "rcm", settings.iluPreconditionerCorrections, settings.jacobiLocalSweeps};
+                                                   execution.overlap, execution.collectiveChecks, problem->Components(), int(problem->OffDiagonalMode()), settings.stopping == "fixedCount", settings.iluOrdering == "rcm", settings.iluPreconditionerCorrections, settings.jacobiLocalSweeps, settings.residualCheckInterval};
             auto lowest = integers, highest = integers;
             const std::array<real, 2> tolerances{settings.relativeTolerance, settings.absoluteTolerance};
             auto lowTolerance = tolerances, highTolerance = tolerances;
@@ -631,7 +710,7 @@ namespace DNDS::Cauchy
             if (UsesILU(settings)) problem->PrepareILUStructure(settings.iluFill, settings.iluCoreFirst, {}, settings.iluOrdering); });
             const auto bind = [&](Field &field)
             {
-                typename Data::Input input{&field, mpi.comm, {}};
+                typename Data::Input input{Ops::Alias(field), mpi.comm, {}};
                 MPI::LocalStage(mpi, [&]
                                 {
                 index count = 0;

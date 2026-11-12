@@ -4,7 +4,8 @@
 #include "CFV/Plans/DistributedInterfaceSamplingPlan.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include <limits>
-#include <mutex>
+#include <atomic>
+#include <map>
 #include <nlohmann/json.hpp>
 
 namespace DNDS::Cauchy
@@ -78,6 +79,38 @@ namespace DNDS::Cauchy
     }
     struct InterfaceCoupling::Data
     {
+        /// Exclusivity belongs to an operation, not a CPU thread. Submission
+        /// and publication may occur on different workers; std::mutex ownership
+        /// must not be moved across that boundary.
+        class OperationLease
+        {
+            std::shared_ptr<std::atomic<bool>> _busy;
+
+        public:
+            OperationLease(std::shared_ptr<std::atomic<bool>> busy, bool terminal)
+                : _busy(std::move(busy))
+            {
+                bool expected = false;
+                const bool acquired = _busy->compare_exchange_strong(expected, true);
+                if (terminal)
+                    DNDS_assert_info(acquired, "concurrent interface publication");
+                else
+                    DNDS_check_throw_info(acquired, "interface coupling already has an active operation");
+            }
+            OperationLease(const OperationLease &) = delete;
+            OperationLease &operator=(const OperationLease &) = delete;
+            OperationLease(OperationLease &&) noexcept = default;
+            OperationLease &operator=(OperationLease &&) noexcept = delete;
+            ~OperationLease() { Release(); }
+            void Release() noexcept
+            {
+                if (_busy)
+                {
+                    _busy->store(false, std::memory_order_release);
+                    _busy.reset();
+                }
+            }
+        };
         struct Connection
         {
             struct DonorField
@@ -87,7 +120,7 @@ namespace DNDS::Cauchy
                 R::Array<real> values;
                 std::optional<R::TransferBinding> result;
             };
-            index donor, receiver;
+            index donor, receiver, protocol = 0;
             InterfaceSettings settings;
             std::shared_ptr<R::CommunicationContext> context;
             std::optional<Geom::BoundaryPatch> patch;
@@ -95,9 +128,17 @@ namespace DNDS::Cauchy
             // destinations in the quadrature and face-centered packet tables.
             R::Array<CPU::InterfacePacketRow> receiverRows{R::RowLayout::Dense(0, 1)};
             R::Array<real> receiverReferencePoints{R::RowLayout::Dense(0, 3)};
-            std::optional<std::pair<Geom::RigidPose, Geom::RigidPose>> poses;
-            std::optional<CFV::DistributedInterfaceSamplingPlan> sampling;
-            std::vector<DonorField> fields;
+            struct StageRoute
+            {
+                std::optional<std::pair<Geom::RigidPose, Geom::RigidPose>> poses;
+                std::optional<CFV::DistributedInterfaceSamplingPlan> sampling;
+                std::vector<DonorField> fields;
+                std::optional<StateEpoch> epoch;
+                uint64_t mapGeneration = 0;
+            };
+            // DITR needs both poses and persistent bindings alive throughout
+            // its nonlinear loop. Ordinary DIRK reuses slot zero between stages.
+            std::map<uint64_t, StageRoute> stageRoutes;
             /// Collective, immutable donor physical grouping: mode, logical
             /// component count, then one logical-component map per field.
             std::vector<index> donorDescriptor;
@@ -110,47 +151,82 @@ namespace DNDS::Cauchy
             // Initial history is empty but retains the same fixed width as
             // every later publication, including nonmember/zero-query ranks.
             R::Array<index> lastDonors{R::RowLayout::Dense(0, 1)};
-            uint64_t mapGeneration = 0;
         };
-        mutable std::mutex operationMutex;
+        std::shared_ptr<std::atomic<bool>> operationBusy =
+            std::make_shared<std::atomic<bool>>(false);
         // One controller operation at a time; do not wait behind an MPI path.
         // Commit/discard remain allocation-free, nonthrowing publication.
-        std::unique_lock<std::mutex> Enter(bool publication = false) const
+        OperationLease Enter(bool publication = false) const
         {
-            std::unique_lock<std::mutex> lock(operationMutex, std::try_to_lock);
-            if (publication)
-                DNDS_assert_info(lock.owns_lock(), "concurrent interface publication");
-            else
-                DNDS_check_throw_info(lock.owns_lock(), "interface coupling already has an active operation");
-            return lock;
+            return OperationLease(operationBusy, publication);
         }
         std::shared_ptr<R::CommunicationContext> control;
         MPIInfo mpi;
+        // Interface value transport has one backend-neutral compute/progress
+        // pair. Domain compute lanes may import its completion event; topology
+        // setup and packet publication remain controller operations.
+        R::EagerEngine engine;
+        R::ExecutionStream compute, communication;
         std::vector<std::optional<FiniteVolume>> discrete;
         std::vector<std::optional<Physics::Chemistry::ChemicalWorkerPool>> workers;
         std::vector<RigidMotion> motion;
         std::vector<std::optional<BoundaryInputs>> incoming;
+        std::vector<std::optional<BoundaryInputs>> staging;
         std::vector<std::optional<BoundaryInputs>> accepted;
         bool useAccepted = false;
+        bool refreshEveryNonlinearIteration = false;
         std::vector<Connection> connections;
         index changedDonors = 0;
         uint64_t mapBuilds = 0;
         real maximumGap = 0;
-        explicit Data(std::shared_ptr<R::CommunicationContext> owner) : control(std::move(owner))
+        explicit Data(std::shared_ptr<R::CommunicationContext> owner)
+            : control(std::move(owner)),
+              engine(0, std::make_shared<R::AccessTrackingContext>()),
+              compute(engine.CreateCPUStream()),
+              communication(engine.CreateCPUStream())
         {
             DNDS_check_throw_info(control, "interface coupling requires an owning communication context");
             mpi = MPIInfo(control->Communicator());
         }
     };
+    struct InterfaceCoupling::RefreshOperation::State
+    {
+        std::shared_ptr<InterfaceCoupling::Data> data;
+        InterfaceCoupling::Data::OperationLease operation;
+        real time = 0;
+        StateEpoch epoch;
+        // Keep sampled local inputs alive independently of the caller's
+        // temporary descriptor vector. Receiver packets may retain these
+        // snapshots after completion; there is no back-reference to this
+        // operation, its engine, or the interface controller.
+        std::vector<std::shared_ptr<const InterfaceDonorPublication>> donors;
+        std::vector<std::vector<BoundaryInterfaceSource>> sources;
+        std::optional<std::vector<std::optional<BoundaryInputs>>> published;
+        R::StreamEvent completion;
+        bool finished = false;
+
+        State(std::shared_ptr<InterfaceCoupling::Data> owner,
+              InterfaceCoupling::Data::OperationLease lock, real physicalTime,
+              StateEpoch stateEpoch)
+            : data(std::move(owner)), operation(std::move(lock)),
+              time(physicalTime), epoch(stateEpoch),
+              donors(data->discrete.size()), sources(data->discrete.size())
+        {
+        }
+    };
     InterfaceCoupling::InterfaceCoupling(
         const SimulationConfig &config,
-        std::shared_ptr<R::CommunicationContext> context,
+        std::shared_ptr<Runtime::CommunicationContext> context,
         const std::vector<std::optional<FiniteVolume>> &localDomains,
         const std::vector<std::optional<Physics::Chemistry::ChemicalWorkerPool>> &workers)
         : _data(std::make_shared<Data>(std::move(context)))
     {
         auto &data = *_data;
         const auto coupling = data.mpi.comm;
+        if (!config.Interfaces().empty())
+            data.refreshEveryNonlinearIteration =
+                config.Interfaces().front().refreshCadence ==
+                "nonlinearIteration";
         MPI::LocalStage(data.mpi, [&]
                         {
             DNDS_check_throw_info(localDomains.size()==config.Domains().size(),"interface domain descriptor count differs");
@@ -161,6 +237,7 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(data.workers.size() == localDomains.size(),
                                   "interface chemistry-worker descriptor count differs");
             data.incoming.resize(localDomains.size());
+            data.staging.resize(localDomains.size());
             data.accepted.resize(localDomains.size());
             for(const auto &domain:config.Domains()) data.motion.emplace_back(domain.settings.motion,domain.settings.mesh.dimension);
             for(index iDomain=0;iDomain<index(localDomains.size());++iDomain)
@@ -168,12 +245,16 @@ namespace DNDS::Cauchy
                 {
                     data.discrete[iDomain]=*localDomains[iDomain];
                     if(localDomains[iDomain]->HasInterfaces())
+                    {
                         data.incoming[iDomain]=localDomains[iDomain]->BuildBoundaryInputs(data.workers[iDomain]);
+                        data.staging[iDomain]=localDomains[iDomain]->BuildBoundaryInputs(data.workers[iDomain]);
+                    }
                 } });
         for (const auto &settings : config.Interfaces())
         {
             Data::Connection connection;
             connection.settings = settings;
+            connection.protocol = index(data.connections.size());
             const auto domainIndex = [&](const std::string &name)
             {
                 const auto found = std::find_if(config.Domains().begin(), config.Domains().end(), [&](const auto &domain)
@@ -186,9 +267,10 @@ namespace DNDS::Cauchy
                 config.Root().at("domains").at(size_t(connection.donor)).at("settings").at("equation") ==
                     config.Root().at("domains").at(size_t(connection.receiver)).at("settings").at("equation"),
                 "interface donor and receiver need identical equation, material and scaling settings");
-            // Independent connection protocols intentionally isolate their
-            // query/result namespaces; this is not a lifetime-only duplication.
-            connection.context = R::CommunicationContext::Duplicate(coupling);
+            // Connections share the coupling communicator owner. Persistent
+            // result bindings reserve distinct agreed channels below; transient
+            // geometric matching retains its own short-lived search namespace.
+            connection.context = data.control;
             // Patch construction is domain-collective. A local exception must
             // propagate to the fatal boundary, not to a coupling reduction
             // while another donor rank is still constructing the patch.
@@ -244,6 +326,10 @@ namespace DNDS::Cauchy
             data.connections.push_back(std::move(connection));
         }
     }
+    bool InterfaceCoupling::RefreshEveryNonlinearIteration() const
+    {
+        return _data->refreshEveryNonlinearIteration;
+    }
     std::optional<BoundaryInputs> InterfaceCoupling::Inputs(index domain) const
     {
         auto session = _data->Enter();
@@ -280,13 +366,13 @@ namespace DNDS::Cauchy
         result.mapBuilds = _data->mapBuilds;
         return result;
     }
-    void InterfaceCoupling::Refresh(const std::vector<InterfaceDomainInput> &domains, real time, StateEpoch epoch)
+    InterfaceCoupling::RefreshOperation InterfaceCoupling::BeginRefreshImpl(
+        const std::vector<InterfaceDomainInput> &domains, real time,
+        StateEpoch epoch, bool valuesOnly)
     {
-        auto session = _data->Enter();
+        auto state = std::make_shared<RefreshOperation::State>(
+            _data, _data->Enter(), time, epoch);
         auto &data = *_data;
-        data.useAccepted = false;
-        std::vector<std::vector<BoundaryInterfaceSource>> sources(
-            data.discrete.size());
         MPI::LocalStage(data.mpi, [&]
                         {
             DNDS_check_throw_info(domains.size()==data.discrete.size()&&std::isfinite(time),"invalid interface refresh descriptors/time");
@@ -296,23 +382,28 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(bool(input.values)==bool(data.discrete[iDomain]),
                                       "interface refresh has incomplete or changed domain participation");
                 if (input.values)
+                {
                     input.values->Validate();
+                    state->donors[size_t(iDomain)] =
+                        std::make_shared<const InterfaceDonorPublication>(*input.values);
+                }
                 if(data.discrete[iDomain]&&data.discrete[iDomain]->HasInterfaces())
                 {
-                    if(!data.incoming[iDomain])
-                        data.incoming[iDomain]=data.discrete[iDomain]->BuildBoundaryInputs(data.workers[iDomain]);
-                    else data.discrete[iDomain]->BeginBoundaryUpdate(*data.incoming[iDomain]);
+                    if(!data.staging[iDomain])
+                        data.staging[iDomain]=data.discrete[iDomain]->BuildBoundaryInputs(data.workers[iDomain]);
+                    else data.discrete[iDomain]->BeginBoundaryUpdate(*data.staging[iDomain]);
                 }
             } });
         for (auto &connection : data.connections)
         {
             auto &donor = data.discrete[connection.donor];
             auto &receiver = data.discrete[connection.receiver];
+            auto &route = connection.stageRoutes[epoch.coupledStage];
             const auto donorPose = data.motion[connection.donor].At(time).pose;
             const auto receiverPose = data.motion[connection.receiver].At(time).pose;
             const auto samePose = [](const auto &a, const auto &b)
             { return a.rotation == b.rotation && a.translation == b.translation; };
-            const auto describe = [](const FiniteVolume::InterfaceDonorPublication &publication)
+            const auto describe = [](const InterfaceDonorPublication &publication)
             {
                 const auto &values = publication._means;
                 std::vector<std::vector<index>> logical(
@@ -337,92 +428,94 @@ namespace DNDS::Cauchy
                     result.insert(result.end(), field.begin(), field.end());
                 return result;
             };
-            const auto &publication = domains[connection.donor].values;
+            const auto &publication = state->donors[size_t(connection.donor)];
             std::vector<index> localDescriptor;
             if (publication)
                 localDescriptor = describe(*publication);
-            int descriptorRoot = publication ? data.mpi.rank : data.mpi.size;
-            MPI::Allreduce(MPI_IN_PLACE, &descriptorRoot, 1, MPI_INT, MPI_MIN,
-                           data.mpi.comm);
-            DNDS_check_throw_info(descriptorRoot >= 0 && descriptorRoot < data.mpi.size,
-                                  "interface connection has no donor publication");
-            // Resolve semantic component compatibility once, independently of
-            // physical field grouping. Same-width equations are not sufficient:
-            // species names, units, conservation groups and vector-frame roles
-            // must match. The exact equation/material configuration was already
-            // required equal in the constructor; this runtime map proves that
-            // the published schema still matches the receiver.
-            std::string localSchema;
-            if (publication)
-                localSchema = DescribeSchema(publication->Schema());
-            if (connection.receiverComponents.empty())
+            std::vector<index> descriptor;
+            if (!valuesOnly)
             {
-                std::string donorSchema = data.mpi.rank == descriptorRoot
-                                              ? localSchema
-                                              : std::string{};
-                BroadcastString(donorSchema, descriptorRoot, data.mpi.comm);
-                MPI::LocalStage(data.mpi, [&]
-                                {
+                int descriptorRoot = publication ? data.mpi.rank : data.mpi.size;
+                MPI::Allreduce(MPI_IN_PLACE, &descriptorRoot, 1, MPI_INT, MPI_MIN,
+                               data.mpi.comm);
+                DNDS_check_throw_info(descriptorRoot >= 0 && descriptorRoot < data.mpi.size,
+                                      "interface connection has no donor publication");
+                // Resolve semantic component compatibility once, independently of
+                // physical field grouping. Same-width equations are not sufficient:
+                // species names, units, conservation groups and vector-frame roles
+                // must match. The exact equation/material configuration was already
+                // required equal in the constructor; this runtime map proves that
+                // the published schema still matches the receiver.
+                std::string localSchema;
+                if (publication)
+                    localSchema = DescribeSchema(publication->Schema());
+                if (connection.receiverComponents.empty())
+                {
+                    std::string donorSchema = data.mpi.rank == descriptorRoot
+                                                  ? localSchema
+                                                  : std::string{};
+                    BroadcastString(donorSchema, descriptorRoot, data.mpi.comm);
+                    MPI::LocalStage(data.mpi, [&]
+                                    {
                     if(publication)
                         DNDS_check_throw_info(localSchema==donorSchema,
                                               "interface donor ranks publish different equation schemas"); });
-                EquationSchema schema;
-                MPI::LocalStage(data.mpi, [&]
-                                { schema = ParseSchema(donorSchema); });
-                int receiverRoot = receiver ? data.mpi.rank : data.mpi.size;
-                MPI::Allreduce(MPI_IN_PLACE, &receiverRoot, 1, MPI_INT, MPI_MIN,
-                               data.mpi.comm);
-                DNDS_check_throw_info(
-                    receiverRoot >= 0 && receiverRoot < data.mpi.size,
-                    "interface connection has no receiver equation schema");
-                std::vector<index> mapping;
-                MPI::LocalStage(data.mpi, [&]
-                                {
+                    EquationSchema schema;
+                    MPI::LocalStage(data.mpi, [&]
+                                    { schema = ParseSchema(donorSchema); });
+                    int receiverRoot = receiver ? data.mpi.rank : data.mpi.size;
+                    MPI::Allreduce(MPI_IN_PLACE, &receiverRoot, 1, MPI_INT, MPI_MIN,
+                                   data.mpi.comm);
+                    DNDS_check_throw_info(
+                        receiverRoot >= 0 && receiverRoot < data.mpi.size,
+                        "interface connection has no receiver equation schema");
+                    std::vector<index> mapping;
+                    MPI::LocalStage(data.mpi, [&]
+                                    {
                     if(receiver)
                         mapping=schema.MapComponentsTo(receiver->Equation().Schema()); });
-                index mappingSize = data.mpi.rank == receiverRoot
-                                        ? index(mapping.size())
-                                        : 0;
-                MPI::Bcast(&mappingSize, 1, MPI_INT64_T, receiverRoot,
-                           data.mpi.comm);
-                DNDS_check_throw_info(
-                    mappingSize > 0 &&
-                        mappingSize <= std::numeric_limits<int>::max(),
-                    "invalid interface equation component mapping size");
-                if (data.mpi.rank != receiverRoot)
-                    mapping.resize(size_t(mappingSize));
-                MPI::Bcast(mapping.data(), int(mappingSize), MPI_INT64_T,
-                           receiverRoot, data.mpi.comm);
-                MPI::LocalStage(data.mpi, [&]
-                                {
+                    index mappingSize = data.mpi.rank == receiverRoot
+                                            ? index(mapping.size())
+                                            : 0;
+                    MPI::Bcast(&mappingSize, 1, MPI_INT64_T, receiverRoot,
+                               data.mpi.comm);
+                    DNDS_check_throw_info(
+                        mappingSize > 0 &&
+                            mappingSize <= std::numeric_limits<int>::max(),
+                        "invalid interface equation component mapping size");
+                    if (data.mpi.rank != receiverRoot)
+                        mapping.resize(size_t(mappingSize));
+                    MPI::Bcast(mapping.data(), int(mappingSize), MPI_INT64_T,
+                               receiverRoot, data.mpi.comm);
+                    MPI::LocalStage(data.mpi, [&]
+                                    {
                     if(receiver)
                         DNDS_check_throw_info(
                             mapping==schema.MapComponentsTo(receiver->Equation().Schema()),
                             "interface receiver ranks resolve different equation mappings"); });
-                connection.donorSchema = std::move(donorSchema);
-                connection.receiverComponents = R::MetadataBuffer<index>(mapping);
-            }
-            else
-                MPI::LocalStage(data.mpi, [&]
-                                {
+                    connection.donorSchema = std::move(donorSchema);
+                    connection.receiverComponents = R::MetadataBuffer<index>(mapping);
+                }
+                else
+                    MPI::LocalStage(data.mpi, [&]
+                                    {
                     if(publication)
                         DNDS_check_throw_info(
                             localSchema==connection.donorSchema,
                             "interface donor equation schema changed after setup"); });
-            int descriptorSize = data.mpi.rank == descriptorRoot
-                                     ? int(localDescriptor.size())
-                                     : 0;
-            MPI::Bcast(&descriptorSize, 1, MPI_INT, descriptorRoot, data.mpi.comm);
-            DNDS_check_throw_info(descriptorSize >= 2,
-                                  "invalid interface donor field descriptor");
-            std::vector<index> descriptor(static_cast<size_t>(descriptorSize),
-                                          index{});
-            if (data.mpi.rank == descriptorRoot)
-                descriptor = localDescriptor;
-            MPI::Bcast(descriptor.data(), descriptorSize, MPI_INT64_T,
-                       descriptorRoot, data.mpi.comm);
-            MPI::LocalStage(data.mpi, [&]
-                            {
+                int descriptorSize = data.mpi.rank == descriptorRoot
+                                         ? int(localDescriptor.size())
+                                         : 0;
+                MPI::Bcast(&descriptorSize, 1, MPI_INT, descriptorRoot, data.mpi.comm);
+                DNDS_check_throw_info(descriptorSize >= 2,
+                                      "invalid interface donor field descriptor");
+                descriptor.assign(static_cast<size_t>(descriptorSize), index{});
+                if (data.mpi.rank == descriptorRoot)
+                    descriptor = localDescriptor;
+                MPI::Bcast(descriptor.data(), descriptorSize, MPI_INT64_T,
+                           descriptorRoot, data.mpi.comm);
+                MPI::LocalStage(data.mpi, [&]
+                                {
                 if (publication)
                     DNDS_check_throw_info(
                         localDescriptor == descriptor,
@@ -446,7 +539,7 @@ namespace DNDS::Cauchy
                     "interface donor descriptor does not cover its equation");
                 if (receiver)
                     DNDS_check_throw_info(
-                        data.incoming[connection.receiver]
+                        data.staging[connection.receiver]
                                 ->QuadratureValues()
                                 .ComponentNumber() == descriptor[0] &&
                             index(connection.receiverComponents.size()) ==
@@ -456,9 +549,45 @@ namespace DNDS::Cauchy
                     DNDS_check_throw_info(
                         connection.donorDescriptor == descriptor,
                         "interface donor physical grouping changed after setup"); });
-            if (connection.donorDescriptor.empty())
-                connection.donorDescriptor = descriptor;
-            if (!connection.poses || !samePose(connection.poses->first, donorPose) || !samePose(connection.poses->second, receiverPose))
+                if (connection.donorDescriptor.empty())
+                    connection.donorDescriptor = descriptor;
+            }
+            else
+            {
+                MPI::LocalStage(data.mpi, [&]
+                                {
+                    DNDS_check_throw_info(
+                        route.epoch &&
+                            route.epoch->acceptedStep == epoch.acceptedStep &&
+                            route.epoch->trial == epoch.trial &&
+                            route.epoch->stage == epoch.stage,
+                        "interface value refresh has no route for this physical stage");
+                    DNDS_check_throw_info(
+                        route.poses && route.sampling &&
+                            !route.fields.empty() &&
+                            !connection.donorDescriptor.empty() &&
+                            !connection.receiverComponents.empty(),
+                        "interface value refresh has no frozen topology");
+                    DNDS_check_throw_info(
+                        samePose(route.poses->first, donorPose) &&
+                            samePose(route.poses->second, receiverPose),
+                        "interface pose changed inside a frozen nonlinear stage");
+                    if(publication)
+                    {
+                        DNDS_check_throw_info(
+                            localDescriptor == connection.donorDescriptor,
+                            "interface donor grouping changed inside a frozen stage");
+                        DNDS_check_throw_info(
+                            DescribeSchema(publication->Schema()) ==
+                                connection.donorSchema,
+                            "interface donor schema changed inside a frozen stage");
+                    } });
+                descriptor = connection.donorDescriptor;
+            }
+            if (!valuesOnly &&
+                (!route.poses ||
+                 !samePose(route.poses->first, donorPose) ||
+                 !samePose(route.poses->second, receiverPose)))
             {
                 R::Array<real> points;
                 R::Array<index> ids;
@@ -515,20 +644,20 @@ namespace DNDS::Cauchy
                     }
                     connection.lastDonors=std::move(donors);
                     ++data.mapBuilds;
-                    ++connection.mapGeneration; });
-                connection.fields.clear();
-                connection.sampling.reset();
-                connection.sampling.emplace(std::move(metrics),
-                                            std::move(reconstruction),
-                                            std::move(map));
+                    ++route.mapGeneration; });
+                route.fields.clear();
+                route.sampling.reset();
+                route.sampling.emplace(std::move(metrics),
+                                       std::move(reconstruction),
+                                       std::move(map));
                 MPI::LocalStage(data.mpi, [&]
                                 {
                     const index fields = connection.donorDescriptor[1];
                     index offset = 2 + fields;
-                    connection.fields.resize(size_t(fields));
+                    route.fields.resize(size_t(fields));
                     for (index iField = 0; iField < fields; ++iField)
                     {
-                        auto &field = connection.fields[size_t(iField)];
+                        auto &field = route.fields[size_t(iField)];
                         const index width =
                             connection.donorDescriptor[size_t(2 + iField)];
                         std::vector<index> logicalComponents(size_t(width), index{});
@@ -547,24 +676,29 @@ namespace DNDS::Cauchy
                         field.logicalComponents = R::MetadataBuffer<index>(logicalComponents);
                         offset += width;
                         field.workspace =
-                            connection.sampling->BuildWorkspace(width);
+                            route.sampling->BuildWorkspace(width);
                         field.values = R::Array<real>(R::RowLayout::Dense(
                             connection.receiverRows.RowCount(), width));
                     } });
                 for (index iField = 0;
-                     iField < index(connection.fields.size()); ++iField)
+                     iField < index(route.fields.size()); ++iField)
                 {
-                    auto &field = connection.fields[size_t(iField)];
-                    field.result = connection.sampling->BindResult(
+                    auto &field = route.fields[size_t(iField)];
+                    field.result = route.sampling->BindResult(
                         *field.workspace, field.values,
-                        R::TransferMode::Persistent, int(iField));
+                        R::TransferMode::Persistent,
+                        "cauchy-interface-" +
+                            std::to_string(connection.protocol) + "-slot-" +
+                            std::to_string(epoch.coupledStage) + "-field-" +
+                            std::to_string(iField));
                 }
-                connection.poses = std::make_pair(donorPose, receiverPose);
+                route.poses = std::make_pair(donorPose, receiverPose);
             }
+            route.epoch = epoch;
             MPI::LocalStage(data.mpi, [&]
                             {
                 for (index iField = 0;
-                     iField < index(connection.fields.size()); ++iField)
+                     iField < index(route.fields.size()); ++iField)
                 {
                     std::optional<CFV::DonorInputs> input;
                     if (publication)
@@ -572,57 +706,134 @@ namespace DNDS::Cauchy
                         const auto &mean = publication->_means.PhysicalField(iField);
                         switch (publication->_kind)
                         {
-                        case FiniteVolume::InterfaceDonorPublication::Kind::Constant:
+                        case InterfaceDonorPublication::Kind::Constant:
                             input.emplace(mean);
                             break;
-                        case FiniteVolume::InterfaceDonorPublication::Kind::Gradient:
+                        case InterfaceDonorPublication::Kind::Gradient:
                             input.emplace(CFV::DonorInputs::Gradient(
                                 mean, publication->_gradients[size_t(iField)]));
                             break;
-                        case FiniteVolume::InterfaceDonorPublication::Kind::Variational:
+                        case InterfaceDonorPublication::Kind::Variational:
                             input.emplace(
                                 mean,
                                 publication->_coefficients->PhysicalField(iField));
                             break;
                         }
                     }
-                    connection.sampling->EvaluateDonors(
+                    route.sampling->EvaluateDonors(
                         input,
-                        *connection.fields[size_t(iField)].workspace);
+                        *route.fields[size_t(iField)].workspace);
                 } });
-            std::vector<R::TransferOperation> transfers;
-            transfers.reserve(connection.fields.size());
-            for (auto &field : connection.fields)
-                transfers.push_back(field.result->Begin());
-            for (auto &transfer : transfers)
-                transfer.Wait();
-            MPI::LocalStage(data.mpi, [&]
-                            {
-                if(!receiver) return;
-                // Every schema-declared vector triple is absolute and expressed
-                // in donor axes. Scalars (including absolute total energy) are
-                // invariant under this rigid change of coordinate axes.
-                const auto donorFrame=data.motion[connection.donor].At(time);
-                const auto receiverFrame=data.motion[connection.receiver].At(time);
+            for (auto &field : route.fields)
+            {
+                auto transfer = data.engine.ChecksAccess()
+                                    ? field.result->BeginReadyChecked(
+                                          data.communication)
+                                    : field.result->BeginReadyScheduled(
+                                          data.communication);
+                data.compute.WaitFor(transfer.CompletionEvent());
+            }
+        }
+        state->completion = data.compute.Record();
+        return RefreshOperation(std::move(state));
+    }
+    InterfaceCoupling::RefreshOperation InterfaceCoupling::BeginRefresh(
+        const std::vector<InterfaceDomainInput> &domains, real time,
+        StateEpoch epoch)
+    {
+        return BeginRefreshImpl(domains, time, epoch, false);
+    }
+    InterfaceCoupling::RefreshOperation InterfaceCoupling::BeginValueRefresh(
+        const std::vector<InterfaceDomainInput> &domains, real time,
+        StateEpoch epoch)
+    {
+        return BeginRefreshImpl(domains, time, epoch, true);
+    }
+
+    InterfaceCoupling::RefreshOperation::~RefreshOperation()
+    {
+        if (_state && !_state->finished)
+        {
+            MPI::AbortIfSolverFailure(
+                "unfinished Cauchy interface refresh operation");
+            DNDS_assert_info(false,
+                             "interface refresh must be completed or discarded");
+        }
+    }
+    R::StreamEvent
+    InterfaceCoupling::RefreshOperation::CompletionEvent() const
+    {
+        DNDS_check_throw_info(_state && !_state->finished,
+                              "interface refresh operation is not active");
+        return _state->completion;
+    }
+    bool InterfaceCoupling::RefreshOperation::Finished() const
+    {
+        return !_state || _state->finished;
+    }
+    std::optional<BoundaryInputs>
+    InterfaceCoupling::RefreshOperation::Inputs(index domain) const
+    {
+        DNDS_check_throw_info(_state && _state->finished && _state->published,
+                              "interface refresh has no published packets");
+        const auto &packets = *_state->published;
+        DNDS_check_throw_info(domain >= 0 && domain < index(packets.size()),
+                              "invalid interface receiver domain");
+        return packets[size_t(domain)];
+    }
+    void InterfaceCoupling::RefreshOperation::Complete()
+    {
+        Finish(true);
+    }
+    void InterfaceCoupling::RefreshOperation::PublishReady()
+    {
+        Finish(false);
+    }
+    void InterfaceCoupling::RefreshOperation::Finish(bool wait)
+    {
+        DNDS_check_throw_info(_state && !_state->finished,
+                              "interface refresh operation is not active");
+        auto &state = *_state;
+        if (wait)
+            state.completion.WaitHost();
+        else
+            DNDS_check_throw_info(state.completion.Ready(),
+                                  "interface refresh publication preceded its completion event");
+        auto &data = *state.data;
+        for (auto &connection : data.connections)
+        {
+            auto &route = connection.stageRoutes.at(state.epoch.coupledStage);
+            auto &receiver = data.discrete[connection.receiver];
+            const auto donorPose =
+                data.motion[connection.donor].At(state.time).pose;
+            const auto receiverPose =
+                data.motion[connection.receiver].At(state.time).pose;
+            // Completion is imported by a domain compute lane. Publication
+            // must remain rank-local: MPI_THREAD_FUNNELED permits no collective
+            // preflight here, and unrelated domains may consume at different
+            // times. Solver worker exceptions terminate at the engine boundary.
+            if (receiver)
+            {
+                const auto donorFrame = data.motion[connection.donor].At(state.time);
+                const auto receiverFrame = data.motion[connection.receiver].At(state.time);
                 std::vector<R::Array<real>::ReadLease> reads;
-                reads.reserve(connection.fields.size());
-                for (const auto &field : connection.fields)
+                reads.reserve(route.fields.size());
+                for (const auto &field : route.fields)
                     reads.push_back(field.values.Read());
-                auto write = data.incoming[connection.receiver]
+                auto write = data.staging[connection.receiver]
                                  ->QuadratureValues()
                                  .WriteOwned();
-                auto faceWrite = data.incoming[connection.receiver]
+                auto faceWrite = data.staging[connection.receiver]
                                      ->FaceCenterValues()
                                      .WriteOwned();
                 const auto outputLayout = write.ComponentLayout();
                 const auto faceOutputLayout = faceWrite.ComponentLayout();
                 std::vector<CPU::InterfacePacketFieldView> fieldViews;
-                fieldViews.reserve(connection.fields.size());
+                fieldViews.reserve(route.fields.size());
                 for (index iField = 0;
-                     iField < index(connection.fields.size()); ++iField)
-                    fieldViews.push_back({
-                        reads[size_t(iField)].View<R::UniformTableRows>(),
-                        connection.fields[size_t(iField)].logicalComponents.HostView()});
+                     iField < index(route.fields.size()); ++iField)
+                    fieldViews.push_back({reads[size_t(iField)].View<R::UniformTableRows>(),
+                                          route.fields[size_t(iField)].logicalComponents.HostView()});
                 const R::MetadataBuffer<CPU::InterfacePacketFieldView> descriptors(fieldViews);
                 const auto rowRead = connection.receiverRows.Read();
                 CPU::InterfacePacketRequest request;
@@ -636,26 +847,46 @@ namespace DNDS::Cauchy
                 for (int d = 0; d < 3; ++d)
                     for (int e = 0; e < 3; ++e)
                     {
-                        request.rotation.donor[size_t(3*d+e)] = donorFrame.pose.rotation(d,e);
-                        request.rotation.receiver[size_t(3*d+e)] = receiverFrame.pose.rotation(e,d);
+                        request.rotation.donor[size_t(3 * d + e)] = donorFrame.pose.rotation(d, e);
+                        request.rotation.receiver[size_t(3 * d + e)] = receiverFrame.pose.rotation(e, d);
                     }
                 CPU::FillInterfacePacket(request);
                 DNDS_check_throw_info(
-                    connection.mapGeneration > 0 &&
-                        !connection.fields.empty() &&
-                        connection.fields.front().workspace &&
-                        connection.fields.front().workspace->plan,
+                    route.mapGeneration > 0 && !route.fields.empty() &&
+                        route.fields.front().workspace &&
+                        route.fields.front().workspace->plan,
                     "interface publication lacks a retained matching route");
-                sources[size_t(connection.receiver)].push_back(
+                state.sources[size_t(connection.receiver)].push_back(
                     {connection.donor, connection.receiver,
-                     connection.mapGeneration, donorPose, receiverPose,
-                     connection.fields.front().workspace->plan}); });
+                     route.mapGeneration, donorPose, receiverPose,
+                     route.fields.front().workspace->plan,
+                     state.donors[size_t(connection.donor)]});
+            }
         }
-        MPI::LocalStage(data.mpi, [&]
-                        {
-            for(index iDomain=0;iDomain<index(data.discrete.size());++iDomain)
-                if(data.incoming[iDomain]) data.discrete[iDomain]->PublishBoundaryInputs(
-                    *data.incoming[iDomain],time,epoch,
-                    std::move(sources[size_t(iDomain)])); });
+        for (index iDomain = 0; iDomain < index(data.discrete.size()); ++iDomain)
+            if (data.staging[iDomain])
+                data.discrete[iDomain]->PublishBoundaryInputs(
+                    *data.staging[iDomain], state.time, state.epoch,
+                    std::move(state.sources[size_t(iDomain)]));
+        data.incoming.swap(data.staging);
+        data.useAccepted = false;
+        state.published = data.incoming;
+        state.finished = true;
+        state.operation.Release();
+    }
+    void InterfaceCoupling::RefreshOperation::Discard()
+    {
+        DNDS_check_throw_info(_state && !_state->finished,
+                              "interface refresh operation is not active");
+        _state->completion.WaitHost();
+        _state->finished = true;
+        _state->operation.Release();
+    }
+    void InterfaceCoupling::Refresh(
+        const std::vector<InterfaceDomainInput> &domains, real time,
+        StateEpoch epoch)
+    {
+        auto operation = BeginRefresh(domains, time, epoch);
+        operation.Complete();
     }
 }

@@ -9,6 +9,7 @@
 namespace DNDS::Cauchy
 {
     class FiniteVolume;
+    class InterfaceDonorPublication;
     class EquationThermalPolicy;
     namespace Detail
     {
@@ -34,6 +35,12 @@ namespace DNDS::Cauchy
         uint64_t routeGeneration = 0;
         Geom::RigidPose donorPose, receiverPose;
         std::shared_ptr<const void> routeOwner;
+        /// Retains this rank's sampled donor fields and recorded generations.
+        /// Empty on receiver-only ranks: remote allocations are owned on their
+        /// donor ranks, never represented by a local pointer. The packet epoch
+        /// and frozen route identify that remote sampling round. This retains
+        /// storage, not a read lease or immutable copy of future donor values.
+        std::shared_ptr<const InterfaceDonorPublication> localDonor;
     };
     /// Explicit incoming equation packet in receiver axes. QuadratureValues()
     /// holds RHS/reconstruction rows; FaceCenterValues() holds independently
@@ -64,7 +71,7 @@ namespace DNDS::Cauchy
             std::vector<uint64_t> versions, shapes, faceVersions, faceShapes;
             std::vector<BoundaryInterfaceSource> sources;
         };
-        std::optional<Publication> _publication;
+        std::shared_ptr<const Publication> _publication;
         bool _updating = false;
         BoundaryInputs(EquationDofs quadrature, EquationDofs faceCenters,
                        EquationPropertyKey property,
@@ -74,6 +81,13 @@ namespace DNDS::Cauchy
               _property(std::move(property)), _thermal(std::move(thermal)) {}
 
     public:
+        /// O(1) identity of a completed publication, preserved by packet alias.
+        /// This does not test live payload versions: ValidateBoundaryInputs
+        /// separately rejects a write or shape edit after publication.
+        bool SamePublication(const BoundaryInputs &other) const
+        {
+            return _publication && _publication == other._publication;
+        }
         /// Managed complete equation rows. Mutable access is intentional for a
         /// begun controller update; any later write invalidates publication by
         /// native array generations. No raw pointer escapes this packet API.

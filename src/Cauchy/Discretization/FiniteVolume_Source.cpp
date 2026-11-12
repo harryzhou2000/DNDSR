@@ -13,15 +13,18 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(reconstruction.owner == _data, "foreign equation reconstruction state");
         auto reconstructionSession = reconstruction.session.Acquire();
         auto workspaceSession = work.session.Acquire();
-        const auto finalized = AcquireFinalizedReconstruction(reconstruction);
-        const auto &finalValues = finalized.Values();
-        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, finalValues);
+        std::optional<FinalizedReconstruction> finalized;
+        if (_data->reconstruction)
+            finalized.emplace(AcquireFinalizedReconstruction(reconstruction));
+        auto activeReconstruction = work.BindReconstruction(reconstruction);
         state.RequireCompatible(residual);
         EquationDofOperations::RequireDistinct(state, residual);
-        EquationDofOperations::RequireDistinct(finalValues, residual);
-        DNDS_check_throw_info(work.rhsState && work.rhsCoefficients && work.rhsTime == time, "source needs a completed spatial preparation at this time");
+        if (finalized)
+            EquationDofOperations::RequireDistinct(finalized->Values(), residual);
+        DNDS_check_throw_info(work.rhsState && work.rhsTime == time, "source needs a completed spatial preparation at this time");
         work.rhsState->Check(state, true);
-        DNDS_check_throw_info(work.rhsCoefficients->Current(finalValues),
+        DNDS_check_throw_info((finalized ? work.rhsCoefficients && work.rhsCoefficients->Current(finalized->Values())
+                                         : !work.rhsCoefficients),
                               "source reconstruction changed after spatial preparation");
         auto evaluator = _data->equation.MakePointEvaluator(work.workers ? work.workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{},
                                                             {true, false, false, work.chemical, false});
@@ -38,15 +41,16 @@ namespace DNDS::Cauchy
         auto &work = context.workspace.get();
         auto reconstructionSession = reconstruction.session.Acquire();
         auto workspaceSession = work.session.Acquire();
-        const auto finalized = AcquireFinalizedReconstruction(reconstruction);
-        const auto &finalValues = finalized.Values();
-        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, finalValues);
+        std::optional<FinalizedReconstruction> finalized;
+        if (_data->reconstruction)
+            finalized.emplace(AcquireFinalizedReconstruction(reconstruction));
+        auto activeReconstruction = work.BindReconstruction(reconstruction);
         DNDS_check_throw_info(work.owner == _data && (work.chemical || work.ransFirst >= 0), "foreign or source-free reconstruction");
         if (!work.sourceSampling)
             return;
-        DNDS_check_throw_info(work.sourceState && work.sourceCoefficients && work.sourceTime == time, "source quadrature requires a current completed sample publication");
+        DNDS_check_throw_info(finalized && work.sourceState && work.sourceCoefficients && work.sourceTime == time, "source quadrature requires a current completed sample publication");
         work.sourceState->Check(state, true);
-        DNDS_check_throw_info(work.sourceCoefficients->Current(finalValues),
+        DNDS_check_throw_info(work.sourceCoefficients->Current(finalized->Values()),
                               "source reconstruction changed after sample publication");
     }
     bool FiniteVolume::AddEquationSourceJacobian(const EquationDofs &state,
@@ -60,9 +64,10 @@ namespace DNDS::Cauchy
         auto &work = context.workspace.get();
         auto reconstructionSession = reconstruction.session.Acquire();
         auto workspaceSession = work.session.Acquire();
-        const auto finalized = AcquireFinalizedReconstruction(reconstruction);
-        const auto &finalValues = finalized.Values();
-        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, finalValues);
+        std::optional<FinalizedReconstruction> finalized;
+        if (_data->reconstruction)
+            finalized.emplace(AcquireFinalizedReconstruction(reconstruction));
+        auto activeReconstruction = work.BindReconstruction(reconstruction);
         return work.AddMeanSourceJacobian(state, diagonal, storage, scale, evaluator, linearization);
     }
 }

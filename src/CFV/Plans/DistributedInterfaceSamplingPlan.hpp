@@ -198,6 +198,34 @@ namespace DNDS::CFV
             return payload.Bind(workspace.donorValues, values, Runtime::TransferTransport::Direct,
                                 {mode, _data->returnRoute.Context(), tag});
         }
+        /// Shared-context variant. The semantic channel is agreed collectively;
+        /// each persistent binding receives its own retained tag reservation.
+        /// This avoids duplicating the coupling communicator while preserving
+        /// isolation between connection/field protocols.
+        Runtime::TransferBinding BindResult(
+            const DistributedSamplingWorkspace &workspace,
+            Runtime::Array<real> &values, Runtime::TransferMode mode,
+            std::string channel) const
+        {
+            _data->returnRoute.Context()->LocalStage([&]
+                                                     {
+                Validate();
+                DNDS_check_throw_info(workspace.plan == _data &&
+                                          values.RowCount() == Size() &&
+                                          values.GetDevice() == Runtime::Device::Host() &&
+                                          values.Layout().Kind() == Runtime::RowLayoutKind::Table &&
+                                          !channel.empty(),
+                                      "sampling output/workspace or channel is invalid"); });
+            Runtime::PayloadPlan payload(
+                _data->returnRoute, workspace.donorValues.Layout(),
+                values.Layout(), Runtime::ElementSchema::Arithmetic<real>());
+            Runtime::TransferOptions options;
+            options.mode = mode;
+            options.channel = std::move(channel);
+            return payload.Bind(workspace.donorValues, values,
+                                Runtime::TransferTransport::Direct,
+                                std::move(options));
+        }
         /// Collective synchronous convenience. Preparation failures agree before
         /// payload communication. The caller owns workspace/output lifetimes and
         /// arranges new maps/plans after motion, deformation or redistribution.

@@ -28,12 +28,12 @@ namespace DNDS::Cauchy
     }
     Json Domain::UpdatePolicyMetadata() const
     {
-        if (!_execution.nonlinearController)
+        if (!_execution.nonlinearSetup)
             return {{"name", "explicit"},
                     {"coupled_stages", 0},
                     {"residual_observation", "none"},
                     {"method_stopping_residual", false}};
-        return _execution.nonlinearController->Policy().Metadata();
+        return _execution.nonlinearSetup->policy->Descriptor().Metadata();
     }
     void Domain::InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh)
     {
@@ -54,7 +54,7 @@ namespace DNDS::Cauchy
                           _implicitControls = time.method == "ditr" ? time.ditr.ResolveControls(settings.implicit) : settings.implicit;
                           _ditrComponents = _problem.equation.Schema().ResolveComponents(settings.implicit.residualComponents);
                           const bool ditr = time.method == "ditr";
-                          _execution.nonlinearController = std::make_unique<NonlinearController>(
+                          _execution.nonlinearSetup = std::make_unique<NonlinearSolveSetup>(
                               _implicitControls, _problem.equation.Schema(), mpi.rank,
                               _implicitControls.updatePolicy,
                               UpdatePolicyRequirements{
@@ -91,11 +91,8 @@ namespace DNDS::Cauchy
                 },
                 [solver]
                 { return solver->ReconstructionStats(); },
-                [multigrid](const BoundaryInputs &input)
-                {
-                    if (multigrid)
-                        multigrid->SetBoundaryInputs(input);
-                },
+                multigrid ? multigrid->PrepareBoundaryInputBinding()
+                          : std::function<void(const BoundaryInputs &)>{},
                 reconstruction};
         };
         MPI::LocalStage(mpi, [&]
@@ -163,13 +160,16 @@ namespace DNDS::Cauchy
                 _state.restoreReconstruction = true;
             } });
     }
-    void Domain::PrepareCoupledImplicit(EquationTimeStepper::DITR &method,
-                                        bool resume)
+    void Domain::PrepareGroupOperators(bool resume)
     {
-        const auto owner = method.IntermediateState().PhysicalField(0).Owned().SharedStorage();
+        if (!_state.stageGroup || _state.stageGroup->coupledStages != 2)
+            return;
+        auto &middle = _state.timeStepper->GroupState(
+            *_state.stageGroup, _state.trial, 0);
+        const auto owner = middle.PhysicalField(0).Owned().SharedStorage();
         if (!_coupledMiddle || _execution.coupledMiddleOwner != owner)
         {
-            _coupledMiddle = _execution.coupledFactory(method.IntermediateState());
+            _coupledMiddle = _execution.coupledFactory(middle);
             _execution.coupledMiddleOwner = owner;
             _execution.coupledPreparedTrial =
                 std::numeric_limits<uint64_t>::max();
@@ -177,26 +177,20 @@ namespace DNDS::Cauchy
         if (!resume &&
             _execution.coupledPreparedTrial != _state.trialEpoch.trial)
         {
-            _problem.finiteVolume.CopyReconstructionState(*_coupledMiddle->state, *_state.reconstruction);
+            if (_problem.finiteVolume.PolynomialReconstruction())
+                _problem.finiteVolume.CopyReconstructionState(*_coupledMiddle->state, *_state.reconstruction);
             _execution.coupledPreparedTrial = _state.trialEpoch.trial;
         }
     }
-    bool Domain::SolveCoupledImplicit(EquationTimeStepper::DITR &method,
-                                      EquationDofs &endpoint, bool resume)
+    NonlinearSession Domain::CreateCoupledNonlinearSession(bool resume)
     {
-        PrepareCoupledImplicit(method, resume);
+        PrepareGroupOperators(resume);
+        auto &endpoint = _state.trial;
         const MPIInfo mpi(_problem.finiteVolume.Metrics().Communicator());
         MPI::LocalStage(mpi, [&]
                         {
             if (!_execution.coupledResidual)
                 _execution.coupledResidual.emplace(EquationDofOperations::NewVector(endpoint)); });
-        const auto evaluate = [&](EquationDofs &state, EquationDofs &rate, real time, int stage)
-        {
-            if (stage == 0)
-                _coupledMiddle->evaluate(state, rate, time, stage);
-            else
-                EvaluateImplicitRate(state, rate, *_execution.workspace, time, stage);
-        };
         const auto &settings = _implicitControls;
         NonlinearIterationReport initial;
         initial.residual.resize(size_t(endpoint.ComponentNumber()));
@@ -211,191 +205,61 @@ namespace DNDS::Cauchy
         else
             DNDS_check_throw_info(_state.coupledNonlinear.convergenceComponents == settings.residualComponents,
                                   "restored DITR convergence components differ");
-        DNDS_check_throw_info(_execution.nonlinearController,
+        DNDS_check_throw_info(_execution.nonlinearSetup,
                               "DITR update policy was not resolved");
-        const auto report = _execution.nonlinearController->Execute(
-            0, {std::move(coupledControl), std::move(initial),
-                _coupledReconstructionTolerance, [&]
-                { method.AssembleStoppingResidual(endpoint, *_execution.coupledResidual); }, [&](auto &norms)
-                {
+        return NonlinearSession::Prepare(
+            *_execution.nonlinearSetup, 0,
+            {std::move(coupledControl), std::move(initial),
+             _coupledReconstructionTolerance, [this]
+             { _state.timeStepper->AssembleStoppingResidual(
+                   *_state.stageGroup, _state.trial,
+                   *_execution.coupledResidual); }, [this, mpi](auto &norms)
+             {
             std::vector<real> sum(norms.size() + 1, 0);
             MPI::LocalStage(mpi, [&]
             {
                 const auto geometry = _problem.finiteVolume.Metrics().AcquireRead(); const auto metric = geometry.HostView();
                 const auto read = _execution.coupledResidual->ReadOwned(); const auto layout = read.ComponentLayout(); const auto values = layout.View();
-                RequireNumericalSuccess(CPU::AccumulateVolumeNorm(values, metric, index(norms.size()), settings.normOrder, {sum.data(), index(sum.size())}), "AccumulateVolumeNorm");
+                RequireNumericalSuccess(CPU::AccumulateVolumeNorm(values, metric, index(norms.size()), _implicitControls.normOrder, {sum.data(), index(sum.size())}), "AccumulateVolumeNorm");
             });
             MPI::AllreduceInPlace<MPI::Reduction::Sum>(
                 MPI::ContiguousView<real>{sum.data(), sum.size()}, mpi.comm);
             DNDS_check_throw_info(std::isfinite(sum.back()) && sum.back() > 0, "invalid DITR global volume");
             for (index j = 0; j < index(norms.size()); ++j)
-                norms[j] = settings.normOrder == 1 ? sum[j] : std::sqrt(sum[j]); }, [&]
-                {
+                norms[j] = _implicitControls.normOrder == 1 ? sum[j] : std::sqrt(sum[j]); }, [this]
+             {
             const auto a = _coupledMiddle->reconstruction();
             const auto b = _execution.implicit->ReconstructionStats();
-            return std::make_pair(std::max(a.first, b.first), std::max(a.second, b.second)); }, [&](int coupledStage, auto &iteration)
-                {
+            return std::make_pair(std::max(a.first, b.first), std::max(a.second, b.second)); }, [this](int coupledStage, auto &iteration, bool applyCorrection)
+             {
                 SetTimeStage(coupledStage);
                 ActivateCoupledInterface(coupledStage);
-                const auto equation = method.PrepareCoupledStage(endpoint, coupledStage);
+                const auto equation = _state.timeStepper->PrepareEquation(
+                    *_state.stageGroup, _state.trial, coupledStage);
                 const auto &c = equation.coefficients;
                 _state.progressTime = c.time;
-                const auto &rate = method.CurrentRate();
+                const auto rate = _state.timeStepper->CachedRate(*_state.stageGroup);
+                DNDS_check_throw_info(rate, "DITR update requires its method rate");
                 NonlinearIterationReport work;
-                if (coupledStage == 0)
-                    work = _coupledMiddle->correct(equation, rate, iteration.pseudoCFL);
-                else
+                if (applyCorrection && coupledStage == 0)
+                    work = _coupledMiddle->correct(equation, *rate, iteration.pseudoCFL);
+                else if (applyCorrection)
                     work = _execution.multigrid ? _execution.multigrid->ApplyCycle(equation.resOther, c.inverseDt, c.rhsScale, c.time,
-                                                               coupledStage, iteration.pseudoCFL, std::cref(rate))
-                                      : _execution.implicit->CorrectOnce(endpoint, equation.resOther, c.inverseDt, c.rhsScale, c.time,
-                                                               coupledStage, {1, iteration.pseudoCFL}, std::cref(rate));
+                                                               coupledStage, iteration.pseudoCFL, rate)
+                                      : _execution.implicit->CorrectOnce(_state.trial, equation.resOther, c.inverseDt, c.rhsScale, c.time,
+                                                               coupledStage, {1, iteration.pseudoCFL}, rate);
                 NonlinearDetail::AccumulateWork(iteration, work);
-                method.CompleteCoupledStage(endpoint, evaluate); }});
-        _lastCoupledIterations = report.iterations;
-        _lastCoupledTargetRatio = report.residualTargetRatio;
-        return RecordImplicitStage(report);
-    }
-    StepResult Domain::PrepareImplicitStep(real dt)
-    {
-        _lastImplicit.clear();
-        _lastCoupledIterations = 0;
-        _lastCoupledTargetRatio = 0;
-        const auto evaluate = [&](EquationDofs &state, EquationDofs &rate, real time, int stage)
-        {
-            if (_state.timeStepper->Method() == "ditr" && stage == 0)
-            {
-                DNDS_check_throw_info(_coupledMiddle, "DITR intermediate operator is not bound");
-                _coupledMiddle->evaluate(state, rate, time, stage);
-            }
-            else
-                EvaluateImplicitRate(state, rate, *_execution.workspace, time, stage);
-        };
-        const auto solve = [&](EquationDofs &state, const EquationDofs &source, real mass, real scale, real time, int stage)
-        {
-            _state.progressTime = time;
-            SetTimeStage(stage);
-            const auto progress = ProgressControl();
-            return RecordImplicitStage(
-                _execution.multigrid
-                    ? _execution.multigrid->SolveWithController(
-                          *_execution.nonlinearController, source, mass, scale,
-                          time, stage, progress)
-                    : _execution.implicit->SolveWithController(
-                          *_execution.nonlinearController, state, source, mass,
-                          scale, time, stage, progress));
-        };
-        const auto coupled = [&](EquationTimeStepper::DITR &method, EquationDofs &endpoint)
-        { return SolveCoupledImplicit(method, endpoint, false); };
-        const bool prepared = _steady ? _state.timeStepper->PrepareSteady(_state.initial, _state.trial, _state.time, solve)
-                                      : _state.timeStepper->Prepare(_state.initial, _state.trial, _state.time, dt, evaluate, solve, coupled);
-        if (!prepared)
-        {
-            // Failure-only diagnostics keep capped inner solves distinct from
-            // accepted stages and make timestep retries auditable. No logging
-            // or extra reduction is added to the successful numerical path.
-            Json details{{"method", _state.timeStepper->Method()}, {"steady", _steady}, {"stage", _state.trialEpoch.stage}, {"dt", _steady ? 0 : dt}, {"coupled_iterations", _lastCoupledIterations}, {"coupled_target_ratio", _lastCoupledTargetRatio}};
-            if (!_lastImplicit.empty())
-            {
-                const auto &last = _lastImplicit.back();
-                details["last_solve_converged"] = last.converged;
-                details["nonlinear_iterations"] = last.iterations;
-                details["linear_iterations"] = last.linearIterations;
-                details["pseudo_cfl"] = last.pseudoCFL;
-                details["initial_residual"] = last.initialResidual;
-                details["reference_residual"] = last.referenceResidual;
-                details["residual_target_ratio"] = last.residualTargetRatio;
-                details["last_residual"] = last.residual;
-                details["vr_sweeps"] = last.reconstructionIterations;
-                details["vr_relative_update"] = last.reconstructionRelativeUpdate;
-            }
-            return StepResult::Rejected("Cauchy implicit stage reached its correction cap; accepted state/history unchanged; " + details.dump());
-        }
-        if (!Admissible(_state.trial))
-            return StepResult::Rejected("Cauchy implicit candidate is inadmissible");
-        return {};
-    }
-    StepResult Domain::ResumeImplicitStep()
-    {
-        DNDS_check_throw_info(_state.internalResume && _state.timeStepper && !_state.timeStepper->HasPendingTrial(),
-                              "Cauchy domain has no exact internal step to resume");
-        _lastImplicit.clear();
-        _lastCoupledIterations = 0;
-        _lastCoupledTargetRatio = 0;
-        const auto evaluate = [&](EquationDofs &state, EquationDofs &rate, real time, int stage)
-        {
-            if (_state.timeStepper->Method() == "ditr" && stage == 0)
-            {
-                DNDS_check_throw_info(_coupledMiddle, "restored DITR intermediate operator is not bound");
-                _coupledMiddle->evaluate(state, rate, time, stage);
-            }
-            else
-                EvaluateImplicitRate(state, rate, *_execution.workspace, time, stage);
-        };
-        bool prepared = false;
-        if (_state.timeStepper->Method() == "ditr")
-            prepared = _state.timeStepper->ResumeCoupled(_state.trial, [&](auto &method, auto &endpoint)
-                                                         { return SolveCoupledImplicit(method, endpoint, true); });
-        else
-        {
-            const auto restored = _state.timeStepper->RestoredStageEquation();
-            // The method owns the frozen source. Use its validated prepared
-            // ticket instead of reconstructing resOther in Domain.
-            const auto resumeSolve = [&](EquationDofs &state, const EquationDofs &source, real mass, real scale, real time, int stage)
-            {
-                _state.progressTime = time;
-                SetTimeStage(stage);
-                auto control = ProgressControl();
-                control.resume = true;
-                return RecordImplicitStage(
-                    _execution.multigrid
-                        ? _execution.multigrid->SolveWithController(
-                              *_execution.nonlinearController, source, mass,
-                              scale, time, stage, control)
-                        : _execution.implicit->SolveWithController(
-                              *_execution.nonlinearController, state, source,
-                              mass, scale, time, stage, control));
-            };
-            prepared = _state.timeStepper->SolvePreparedStage(restored, _state.trial, resumeSolve);
-            if (prepared)
-            {
-                _state.timeStepper->CompleteStage(_state.trial, evaluate);
-                while (!_state.timeStepper->HasPendingTrial())
-                {
-                    const auto equation = _state.timeStepper->PrepareStage(_state.trial);
-                    bool accepted = true;
-                    if (equation.implicit)
+                _state.timeStepper->CompleteEquation(
+                    *_state.stageGroup, _state.trial,
+                    [this](EquationDofs &state, EquationDofs &rate, real time,
+                           int stage)
                     {
-                        const auto normalSolve = [&](EquationDofs &state, const EquationDofs &source, real mass, real scale, real time, int stage)
-                        {
-                            _state.progressTime = time;
-                            SetTimeStage(stage);
-                            const auto control = ProgressControl();
-                            return RecordImplicitStage(
-                                _execution.multigrid
-                                    ? _execution.multigrid->SolveWithController(
-                                          *_execution.nonlinearController,
-                                          source, mass, scale, time, stage,
-                                          control)
-                                    : _execution.implicit->SolveWithController(
-                                          *_execution.nonlinearController,
-                                          state, source, mass, scale, time,
-                                          stage, control));
-                        };
-                        accepted = _state.timeStepper->SolvePreparedStage(equation, _state.trial, normalSolve);
-                    }
-                    if (!accepted)
-                    {
-                        prepared = false;
-                        break;
-                    }
-                    _state.timeStepper->CompleteStage(_state.trial, evaluate);
-                }
-            }
-        }
-        if (!prepared)
-            return StepResult::Rejected("resumed Cauchy implicit stage reached its correction cap; accepted state/history unchanged");
-        if (!Admissible(_state.trial))
-            return StepResult::Rejected("resumed Cauchy implicit candidate is inadmissible");
-        return {};
+                        if (stage == 0)
+                            _coupledMiddle->evaluate(state, rate, time, stage);
+                        else
+                            EvaluateImplicitRate(state, rate,
+                                                 *_execution.workspace, time,
+                                                 stage);
+                    }); }});
     }
 }

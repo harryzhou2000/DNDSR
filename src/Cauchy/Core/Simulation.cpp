@@ -1,6 +1,4 @@
 #include "Cauchy/Core/Simulation.hpp"
-#include "Cauchy/Core/DomainController.hpp"
-#include "Cauchy/Core/SimulationController.hpp"
 #include "Cauchy/Interface/InterfaceCoupling.hpp"
 #include "Geom/Unstructured/UnstructuredMeshHelpers.hpp"
 
@@ -58,6 +56,32 @@ namespace DNDS::Cauchy
           _placement(comm, _config.RankGroups()),
           _domains(size_t(_placement.DomainNumber()))
     {
+        if (_config.Time().steady || _config.Time().method != "ssprk3")
+        {
+            const bool ditr = !_config.Time().steady && _config.Time().method == "ditr";
+            const UpdatePolicyRequirements requirements{
+                ditr ? 2 : 1,
+                ditr ? NonlinearDetail::ResidualObservation::AfterUpdate
+                     : NonlinearDetail::ResidualObservation::BeforeUpdate,
+                ditr};
+            // Resolve over every configured domain on every control rank,
+            // including ranks with no local mesh. Membership must not decide
+            // whether an optional control-communicator agreement is executed.
+            for (const auto &domain : _config.Domains())
+            {
+                const auto controls = ditr
+                                          ? _config.Time().ditr.ResolveControls(domain.settings.implicit)
+                                          : domain.settings.implicit;
+                auto policy = UpdatePolicyRegistry::Resolve(controls.updatePolicy, requirements);
+                if (_updatePolicy)
+                    DNDS_check_throw_info(
+                        policy->Descriptor().Metadata() == _updatePolicy->Descriptor().Metadata(),
+                        "coordinated domains require the same nonlinear update policy");
+                else
+                    _updatePolicy = std::move(policy);
+                _nonlinearCollectiveChecks |= controls.collectiveChecks;
+            }
+        }
         for (auto iDomain : _placement.LocalDomains())
         {
             const auto &domain = _config.Domains()[iDomain];
@@ -91,33 +115,27 @@ namespace DNDS::Cauchy
                 for (auto &domain : _domains)
                     if (domain)
                     {
-                        auto control = domain->Controller();
-                        if (prepared)
-                            control.PrepareInterfaceReconstruction(0);
-                        else
-                            control.PrepareInterfaceSampling();
+                        auto &control = *domain;
+                        control.PrepareInterface(0, prepared, 0);
                     }
                 std::vector<InterfaceDomainInput> ports(_domains.size());
                 for (index iDomain = 0; iDomain < index(_domains.size());
                      ++iDomain)
                     if (auto &domain = _domains[iDomain])
                         ports[iDomain] = {
-                            domain->Controller().PublishInterfaceDonor(prepared)};
+                            domain->PublishInterfaceDonor(0, prepared)};
                 _interfaces->Refresh(ports, 0, {});
                 for (index iDomain = 0; iDomain < index(_domains.size());
                      ++iDomain)
                     if (_domains[iDomain])
                         if (const auto input = _interfaces->Inputs(iDomain))
-                            _domains[iDomain]->Controller().BindInterfaceInputs(
+                            _domains[iDomain]->BindInterfaceInputs(
                                 *input);
             };
             initialize(false);
             initialize(true);
             _interfaces->Commit();
         }
-        _controller = std::make_unique<SimulationController>(
-            SimulationControlAccess{_config, _placement, _domains, _interfaces,
-                                    _time, _step});
     }
 
     Simulation::~Simulation() = default;
@@ -150,11 +168,4 @@ namespace DNDS::Cauchy
         return *_domains[iDomain];
     }
 
-    StepResult Simulation::Advance(real dt,
-                                   std::optional<real> acceptedTime)
-    {
-        DNDS_check_throw_info(_controller,
-                              "Cauchy simulation controller is not initialized");
-        return _controller->Advance(dt, acceptedTime);
-    }
 }

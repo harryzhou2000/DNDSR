@@ -54,8 +54,10 @@ flowchart LR
     Domain --> Problem[DomainProblem]
     Domain --> State[DomainState]
     Domain --> Execution[DomainExecution]
-    Simulation --> Controller[DomainController view]
-    Controller --> Domain
+    Simulation --> Domain
+    Simulation --> Policy[Prepared UpdatePolicy]
+    Policy --> Group[Scoped NonlinearSolveGroup]
+    Group --> Session[Per-domain NonlinearSession]
     Problem --> P1[EquationSystem + FiniteVolume + admissibility]
     State --> S1[accepted/trial means + time history]
     State --> S2[durable reconstruction + epochs/cursors]
@@ -71,30 +73,41 @@ means, time-method history, durable reconstruction and active trial metadata.
 and the retained execution context, but no accepted state. Its destruction
 order retires submitted work before state/problem storage disappears.
 
-`Simulation` no longer reaches into trial arrays, reconstruction workspaces,
-execution streams or accepted writers. It uses the non-owning synchronous
-`DomainController`, whose candidate/checkpoint tokens retain opaque leases and
-cancel an abandoned writer. Every local domain is reserved before any candidate
-is committed. Checkpoint read transactions live under `Cauchy/IO`, rather than
-as public or simulation-visible `Domain` implementation types. This extraction
-now feeds the application-level `SimulationController`, which owns the
-accepted-step loop for both one-domain and multi-domain runs. A one-domain run
-is the degenerate coordinated case, not a production shortcut through
-`Domain::PrepareStep`; the standalone `Domain` frontend remains a synchronous
-debugging/Python and numerical-oracle path.
-`SimulationController` receives a named `SimulationControlAccess` bundle of
-references whose owner is the facade; it neither retains a `Simulation*` nor
-uses unrestricted friend access. The controller is declared last and destroyed
-first, before any referenced placement/domain/interface state.
+`Simulation` coordinates physical steps and time groups directly through
+`Domain`; there are no forwarding simulation/domain controllers. Domain
+candidate/checkpoint tokens retain opaque reservations and cancel an abandoned
+writer. Every local domain is reserved before any candidate is committed.
+Checkpoint arithmetic stays under `Cauchy/IO`. One-domain production execution
+is the degenerate coordinated case. The standalone `Domain` debugging/Python
+frontend uses the same group and policy interfaces.
+
+The resolved `UpdatePolicy` owns its complete nonlinear loop. `NonlinearSession`
+holds one domain's convergence/CFL/report state and numerical callbacks;
+`NonlinearSolveGroup` supplies interface and publication helpers but never a
+second iteration loop. One-stage policies refresh traces and visit all domains;
+the DITR policy refreshes and visits all midpoint states before doing the same
+for endpoint states. Colocated and dislocated placements use this same order.
+Ranks with no local domain still participate in control-communicator ordering.
+Optional iteration-check collectives are selected from the full simulation
+configuration, not from rank-local domain membership.
+
+Each domain's residual norms, CFL/PP reductions, linear solves and halo
+operations use its subset communicator. Dislocated ranks instantiate only the
+domains they occupy; other domain slots are empty. All control ranks retain the
+small configuration/placement metadata. The simulation communicator handles
+cross-domain interfaces, stage/iteration agreement and joint termination;
+it does not combine domain residual norms into one stopping criterion.
 
 Serialized BDF/DIRK stages and coupled DITR groups use the same candidate
 reservation/commit transaction. For DITR with interfaces, the controller first
 prepares independent midpoint and endpoint boundary packets. Each packet owns
 its sampled equation rows and publication metadata, so preparing the endpoint
 cannot invalidate the midpoint through the interface coordinator's reusable
-incoming allocation. The two packets remain frozen through the registered
-sequential midpoint/endpoint nonlinear policy. Per-iteration interface refresh
-and interstage overlap remain future policies.
+incoming allocation. Stage-frozen mode retains those packets. The active
+per-evaluation-refresh work adds separate midpoint/endpoint route caches and
+retained asynchronous value publications; interface-independent overlap and all
+nested spatial-evaluation sites are still undergoing the Plan 60 source audit.
+Interstage compute overlap is a future policy, not an acceptance claim here.
 
 `Cauchy/Core/DomainPlacement` owns immutable simulation/domain communicator
 namespaces. Descriptor construction is collective and checked for exact agreement.

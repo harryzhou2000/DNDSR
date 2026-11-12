@@ -1,4 +1,5 @@
 #include "Cauchy/Implicit/UpdatePolicy.hpp"
+#include "Cauchy/Implicit/NonlinearSolve.hpp"
 
 #include <mutex>
 
@@ -17,10 +18,23 @@ namespace DNDS::Cauchy
             {
                 return _descriptor;
             }
-            void Advance(NonlinearProblem &problem,
-                         NonlinearIterationReport &report) const override
+            void Solve(NonlinearSolveGroup &group) const override
             {
-                problem.advanceStage(0, report);
+                bool complete = false;
+                while (!complete)
+                {
+                    const index iteration = group.BeginIteration();
+                    group.RefreshInterfaces(0, iteration);
+                    for (auto reference : group.domains)
+                    {
+                        auto &domain = reference.get();
+                        domain.Observe();
+                        if (!domain.LocalTerminal())
+                            domain.AdvanceStage(0);
+                    }
+                    group.FinishInterfaces();
+                    complete = group.FinishIteration();
+                }
             }
         };
 
@@ -35,13 +49,29 @@ namespace DNDS::Cauchy
             {
                 return _descriptor;
             }
-            void Advance(NonlinearProblem &problem,
-                         NonlinearIterationReport &report) const override
+            void Solve(NonlinearSolveGroup &group) const override
             {
-                for (int coupledStage = 0;
-                     coupledStage < _descriptor.coupledStages;
-                     ++coupledStage)
-                    problem.advanceStage(coupledStage, report);
+                bool complete = false;
+                while (!complete)
+                {
+                    const index iteration = group.BeginIteration();
+                    group.RefreshInterfaces(0, iteration);
+                    // Correction auxiliary/RHS operators import the packet
+                    // event themselves. Keep independent core preparation
+                    // ahead of that edge; no policy-wide pre-update wait.
+                    for (auto reference : group.domains)
+                        reference.get().AdvanceStage(0);
+                    group.FinishInterfaces();
+
+                    group.RefreshInterfaces(1, iteration);
+                    for (auto reference : group.domains)
+                        reference.get().AdvanceStage(1);
+                    group.FinishInterfaces();
+
+                    for (auto reference : group.domains)
+                        reference.get().Observe();
+                    complete = group.FinishIteration();
+                }
             }
         };
 

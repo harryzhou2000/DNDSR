@@ -27,7 +27,9 @@ namespace DNDS::Geom
 namespace DNDS::Cauchy
 {
     class DomainExecutionContext;
+    struct QueuedEvaluationDependency;
     class InterfaceCoupling;
+    class InterfaceDonorPublication;
     namespace EquationFVDetail
     {
         struct MeanLinearizationOutput;
@@ -55,6 +57,9 @@ namespace DNDS::Cauchy
     {
         OptionalRef<const MeanGradients> meanGradients;
         OptionalRef<const BoundaryInputs> boundary;
+        /// Reserve outputs before a queued interface packet is ready. Only
+        /// ApplyInterfaceIndependent may run until BindBoundary supplies it.
+        bool deferBoundary = false;
     };
     /// Explicit result of physical-step selection. Alpha/count describe the PP
     /// bound before any independent growth cap or subsequent retry halving.
@@ -142,6 +147,7 @@ namespace DNDS::Cauchy
     /// requires a distinct Workspace. No solver clock/history/IO policy here.
     class FiniteVolume
     {
+        friend class InterfaceDonorPublication;
         struct Data;
         struct LimitedVRGeometry;
         struct LimitedVRWorkspace;
@@ -170,40 +176,6 @@ namespace DNDS::Cauchy
         struct Workspace;
         struct MeanWorkspace;
         struct ReconstructionState;
-        /// Immutable managed donor snapshot for one interface sampling round.
-        /// It retains equation arrays and their finite-volume owner; the
-        /// coupling adapter validates recorded versions before reading. Direct
-        /// P0, physical-gradient P1 and variational coefficients are distinct
-        /// prepared modes, hidden from Simulation orchestration.
-        class InterfaceDonorPublication
-        {
-            friend class FiniteVolume;
-            friend class InterfaceCoupling;
-            enum class Kind
-            {
-                Constant,
-                Gradient,
-                Variational
-            };
-            std::shared_ptr<const Data> _owner;
-            EquationDofs _means;
-            std::optional<EquationDofs> _coefficients;
-            std::vector<CFV::FVField> _gradients;
-            std::vector<uint64_t> _meanVersions, _reconstructionVersions;
-            Kind _kind = Kind::Constant;
-            InterfaceDonorPublication(std::shared_ptr<const Data> owner,
-                                      EquationDofs means)
-                : _owner(std::move(owner)), _means(std::move(means)) {}
-
-        public:
-            /// Local validation only; no leases, MPI, sampling or refresh.
-            void Validate() const;
-            const EquationSchema &Schema() const { return _means.Schema(); }
-            index PhysicalFieldNumber() const
-            {
-                return _means.PhysicalFieldNumber();
-            }
-        };
         /// Local structural report for allocation/transfer acceptance gates.
         /// Counts describe modal reconstruction only; the independent mean
         /// halo belongs to the equation state and is intentionally excluded.
@@ -211,7 +183,6 @@ namespace DNDS::Cauchy
         {
             bool polynomialPlan = false;
             bool distinctFinalized = false;
-            bool aliasesEquationState = false;
             index coefficientFields = 0;
             index coefficientTransferBindings = 0;
             /// Actual retained value allocations. Structural layout metadata is
@@ -220,11 +191,10 @@ namespace DNDS::Cauchy
             size_t coefficientOwnedBytes = 0;
             size_t coefficientGhostBytes = 0;
         };
-        /// Managed selection of the reconstruction publication consumed by
-        /// flux, source and Jacobian operators. Variational modes retain the
-        /// warm-source and selected polynomial handles; direct P0/P1 retain the
-        /// equation-state alias while Workspace publishes physical gradients.
-        /// Every selected handle and publication version remains validated.
+        /// Managed modal publication consumed by flux/source/Jacobian operators.
+        /// Retains warm-source and selected polynomial handles and versions.
+        /// Direct P0/P1 has no such publication: means and physical gradients
+        /// are explicit, separate operands of those operators.
         class FinalizedReconstruction
         {
             friend class FiniteVolume;
@@ -295,7 +265,8 @@ namespace DNDS::Cauchy
                                                            bool collectiveChecks = true) const;
         /// Allocate durable variational coefficients and their communication
         /// bindings independently of reusable scratch. Direct P0/P1 allocate
-        /// neither and retain only a managed equation-state alias.
+        /// neither: their modal slots stay empty and physical gradients live
+        /// separately in Workspace. Mean halo bindings remain available.
         std::shared_ptr<ReconstructionState> BuildReconstructionState(EquationDofs &state) const;
         /// Inspect one compatible reconstruction state without acquiring array
         /// access or entering MPI. P0/P1 must report all modal counts as zero.
@@ -369,7 +340,8 @@ namespace DNDS::Cauchy
         void PrepareReconstruction(EquationDofs &state, ReconstructionState &reconstruction, Workspace &workspace, Runtime::EagerEngine &engine,
                                    const Runtime::ExecutionStream &stream, real time = 0) const;
         void RefreshSamplingInputs(EquationDofs &state, ReconstructionState &reconstruction, Workspace &workspace, Runtime::EagerEngine &engine,
-                                   const Runtime::ExecutionStream &stream) const;
+                                   const Runtime::ExecutionStream &compute,
+                                   const Runtime::ExecutionStream &communication) const;
         /// @brief Canonical solver-facing FV phase entry.
         /// @pre `context` owns the primary stream and outlives this call.
         /// @pre Request operands are compatible, nonaliased and retained until
@@ -387,10 +359,13 @@ namespace DNDS::Cauchy
         /// as in Euler; it is not a separately configured P0 FV operator.
         void EvaluateMean(EquationDofs &state, EquationDofs &residual, MeanWorkspace &workspace,
                           Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0) const;
+        /// Borrow modal warm coefficients; direct P0/P1 has none and rejects.
+        /// Direct means and physical gradients are separate from modal storage.
         const EquationDofs &ReconstructionGuess(const ReconstructionState &state) const;
         /// Collective transactional owned warm-guess restore: finite-value and
         /// lease preflight precedes every write. No halo transfer/mean mutation.
         /// Caller joins workspace work and supplies a distinct snapshot.
+        /// Requires a polynomial plan; direct P0/P1 rejects before any write.
         void RestoreReconstructionGuess(ReconstructionState &state, const EquationDofs &guess,
                                         OptionalRef<const Runtime::Array<real>> limitedVRHistory = {}) const;
         /// Copy one complete durable polynomial publication, including the
@@ -409,6 +384,8 @@ namespace DNDS::Cauchy
         std::optional<Runtime::Array<real>> LimitedVRAlpha(const Workspace &workspace) const;
         /// Local reset; caller coordinates failures and joins workspace work.
         void ResetReconstruction(ReconstructionState &state, Workspace &workspace) const;
+        /// Retain finalized modal coefficients. Direct P0/P1 rejects: its
+        /// gradients are temporary fields, not modal reconstruction storage.
         FinalizedReconstruction AcquireFinalizedReconstruction(const ReconstructionState &state) const;
         /// Compatibility facade for existing synchronous checkpoint/output
         /// code. New split operators retain `FinalizedReconstruction` instead.
@@ -441,7 +418,7 @@ namespace DNDS::Cauchy
             std::unique_ptr<State> _state;
             explicit AuxiliaryPreparation(std::unique_ptr<State> state);
             static AuxiliaryPreparation BuildState(
-                std::shared_ptr<const Data> plan, const EquationDofs &state,
+                const FiniteVolume &plan, const EquationDofs &state,
                 const AuxiliaryValues &output, real time,
                 std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
                 AuxiliaryInputs inputs);
@@ -453,6 +430,12 @@ namespace DNDS::Cauchy
             AuxiliaryPreparation(AuxiliaryPreparation &&) noexcept;
             AuxiliaryPreparation &operator=(AuxiliaryPreparation &&) noexcept;
             ~AuxiliaryPreparation();
+            /// Owned means and the prepared MPI-local, interface-independent
+            /// auxiliary face/cell subsets. Requires deferBoundary at setup.
+            void ApplyInterfaceIndependent();
+            /// Rank-local publication after the packet completion event. The
+            /// scope retains packet reads until Finish; no MPI is performed.
+            void BindBoundary(const BoundaryInputs &input);
             void Apply(CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All);
             void Finish(AuxiliaryValues &output);
         };
@@ -483,7 +466,19 @@ namespace DNDS::Cauchy
                               Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time = 0,
                               std::optional<Physics::Chemistry::ChemicalWorkerPool> workers = std::nullopt,
                               AuxiliaryInputs inputs = {}) const;
+        void PrepareAuxValues(EquationDofs &state, AuxiliaryValues &output, MeanGradients &gradients,
+                              Runtime::EagerEngine &engine, const Runtime::ExecutionStream &compute,
+                              const Runtime::ExecutionStream &communication, real time,
+                              std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
+                              AuxiliaryInputs inputs) const;
         void ValidateAuxValues(const EquationDofs &state, const AuxiliaryValues &values, real time = 0) const;
+        /// Rank-local cache selection: auxiliary values must have used the
+        /// currently bound interface publication, even when means/time match.
+        /// No refresh, lease or collective is performed. Coordinated callers
+        /// publish packets on all domain ranks before choosing a collective
+        /// preparation path; full payload validation remains separate.
+        bool AuxiliaryBoundaryCurrent(const AuxiliaryValues &values,
+                                      const Workspace &workspace) const;
         /// Copyable immutable read scope for RHS geometry/basis data. Apply is
         /// stateless: no MPI, reconstruction, cache update or hidden counters.
         /// Raw input/output views require retained/declared Array leases and
@@ -714,8 +709,16 @@ namespace DNDS::Cauchy
         /// retained polynomial before publishing their Jacobian provenance.
         /// PrepareJacobian separately evaluates the mean-state source matrix;
         /// this call evaluates neither chemical rates nor the physical RHS.
+        /// A supplied interface dependency is imported before boundary reads;
+        /// flow/mixture auxiliary core work independent of the interface can
+        /// run first. The current two-equation gradient provider has an explicit
+        /// host preparation boundary. Return is quiescent for all providers.
         void PrepareCorrectionAux(EquationDofs &state, ReconstructionState &reconstruction, Workspace &workspace, AuxiliaryValues &auxiliary,
                                   Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time) const;
+        void PrepareCorrectionAux(EquationDofs &state, ReconstructionState &reconstruction, Workspace &workspace, AuxiliaryValues &auxiliary,
+                                  Runtime::EagerEngine &engine, const Runtime::ExecutionStream &compute,
+                                  const Runtime::ExecutionStream &communication, real time,
+                                  OptionalRef<const QueuedEvaluationDependency> dependency = {}) const;
         /// Rebind and, when needed, resample only the source/Jacobian
         /// publication from a stage's durable finalized polynomial. This does
         /// not touch auxiliary face/cell signals, so a DITR endpoint can retain
@@ -779,8 +782,10 @@ namespace DNDS::Cauchy
                                                       bool meanOnly, WorkspaceOptions options = WorkspaceOptions()) const;
         void EvaluateImpl(EquationDofs &state, OptionalRef<EquationDofs> residual,
                           ReconstructionState &reconstruction, Workspace &workspace, Runtime::EagerEngine &engine,
-                          const Runtime::ExecutionStream &stream, real time,
-                          OptionalRef<AuxiliaryValues> auxiliary = {}) const;
+                          const Runtime::ExecutionStream &compute,
+                          const Runtime::ExecutionStream &communication, real time,
+                          OptionalRef<AuxiliaryValues> auxiliary = {},
+                          OptionalRef<const QueuedEvaluationDependency> dependency = {}) const;
         void ValidateEquationSourceJacobian(const EquationDofs &state,
                                             const JacobianContext &context, real time) const;
         bool AddEquationSourceJacobian(const EquationDofs &state,
@@ -797,4 +802,45 @@ namespace DNDS::Cauchy
                                          CFV::GradientFaceCharacteristicTransform &transform,
                                          index firstComponent = 0) const;
     };
+    /// Immutable publication record for one interface sampling round.
+    /// It retains shared equation arrays (not a deep value snapshot) and their
+    /// finite-volume owner; the
+    /// coupling adapter validates recorded versions before reading. Direct
+    /// P0, physical-gradient P1 and variational coefficients are distinct
+    /// prepared modes, hidden from Simulation orchestration.
+    class InterfaceDonorPublication
+    {
+        friend class FiniteVolume;
+        friend class InterfaceCoupling;
+        enum class Kind
+        {
+            Constant,
+            Gradient,
+            Variational
+        };
+        std::shared_ptr<const FiniteVolume::Data> _owner;
+        EquationDofs _means;
+        std::optional<EquationDofs> _coefficients;
+        std::vector<CFV::FVField> _gradients;
+        std::vector<uint64_t> _meanVersions, _reconstructionVersions;
+        Kind _kind = Kind::Constant;
+        InterfaceDonorPublication(std::shared_ptr<const FiniteVolume::Data> owner,
+                                  EquationDofs means)
+            : _owner(std::move(owner)), _means(std::move(means)) {}
+
+    public:
+        /// Recorded local allocation generations, not a distributed clock.
+        /// Historical packet provenance remains valid after these arrays advance.
+        const std::vector<uint64_t> &MeanVersions() const { return _meanVersions; }
+        const std::vector<uint64_t> &ReconstructionVersions() const { return _reconstructionVersions; }
+        /// Pre-sampling local validation; no leases, MPI, sampling or refresh.
+        /// Do not revalidate against live arrays when consuming a frozen packet.
+        void Validate() const;
+        const EquationSchema &Schema() const { return _means.Schema(); }
+        index PhysicalFieldNumber() const
+        {
+            return _means.PhysicalFieldNumber();
+        }
+    };
+
 }

@@ -11,7 +11,6 @@
 namespace DNDS::Cauchy
 {
     struct ResolvedPhysicalInputs;
-    class DomainController;
     /// One participating domain. Placement/context ownership belongs to the
     /// simulation; this object owns only local mesh, equation, fields and
     /// numerical workspace. Simulation coordinates its accepted clock;
@@ -21,7 +20,6 @@ namespace DNDS::Cauchy
     /// state separation and explicit domain-local residual boundary.
     class Domain
     {
-        friend class DomainController;
         friend class DomainStateSnapshot;
         DomainProblem _problem;
         DomainState _state;
@@ -51,11 +49,9 @@ namespace DNDS::Cauchy
         void EvaluateObservation(const DomainStateSnapshot &snapshot);
         void InitializeImplicit(const DomainSettings &settings, const TimeSettings &time, const ssp<Geom::UnstructuredMesh> &mesh);
         void ConfigureTimeStep(const TimeSettings &time, int compressionPower);
-        StepResult PrepareImplicitStep(real dt);
-        StepResult ResumeImplicitStep();
-        void PrepareCoupledImplicit(EquationTimeStepper::DITR &method,
-                                    bool resume);
-        bool SolveCoupledImplicit(EquationTimeStepper::DITR &method, EquationDofs &endpoint, bool resume);
+        void PrepareGroupOperators(bool resume);
+        NonlinearSession CreateCoupledNonlinearSession(
+            bool resume);
         NonlinearSolveControl ProgressControl() const;
         void SetTimeStage(int stage);
         void PreserveReconstructionGuess();
@@ -67,24 +63,35 @@ namespace DNDS::Cauchy
         Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time, EquationSetup setup);
         Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const ResolvedPhysicalInputs &inputs, const TimeSettings &time, EquationSetup setup);
         void BeginTrial(real dt);
-        /// Simulation alone interleaves these serialized domain-local phases.
-        /// Boundary exchanges happen between preparation and solve, outside
-        /// every domain's inner nonlinear loop and MPI communicator.
-        void BeginCoordinatedStep(real dt);
-        real PrepareCoordinatedStage(int stage);
-        StepResult SolveCoordinatedStage();
-        StepResult CompleteCoordinatedStage();
-        int CoordinatedStageNumber() const;
-        bool CoordinatedStepIsCoupled() const;
-        real CoupledStageTime(int coupledStage) const;
+
+    public:
+        /// Domain-local preparation operations used by the simulation's
+        /// selected update policy. None owns a cross-domain iteration loop.
+        void BeginStep(real dt);
+        DomainStageGroup PrepareGroup();
+        std::optional<NonlinearSession> PrepareGroupSolve();
+        StepResult FinishGroupSolve(NonlinearSession &session);
+        StepResult ApplyExplicitGroup();
+        StepResult CompleteGroup();
+        bool HasNextGroup() const { return !_state.trialReady; }
+        int GroupNumber() const;
+        /// Interface operands of the prepared group, or the accepted/trial
+        /// endpoint when no group is active. Slot zero is the ordinary stage.
+        void PrepareInterface(int coupledStage, bool reconstructed, real time);
+        InterfaceDonorPublication PublishInterfaceDonor(
+            int coupledStage, bool prepared) const;
+        void BindInterfaceInputs(const BoundaryInputs &input, int coupledStage = -1);
+        /// Retained receiver binding for a queued publication. Captures only
+        /// plan/workspace/packet owners, never a Domain pointer. Execute in
+        /// compute-lane order before boundary-dependent work, not concurrently
+        /// with another use of the same domain workspaces.
+        std::function<void(const BoundaryInputs &)> PrepareInterfaceReceiver(int coupledStage);
+
+    private:
         void PrepareCoupledInterface(int coupledStage, bool reconstructed);
-        FiniteVolume::InterfaceDonorPublication PublishCoupledInterfaceDonor(
-            int coupledStage, bool reconstructed);
-        void BindCoupledInterfaceInputs(int coupledStage,
-                                        const BoundaryInputs &input);
+        InterfaceDonorPublication PublishCoupledInterfaceDonor(
+            int coupledStage, bool reconstructed) const;
         void ActivateCoupledInterface(int coupledStage);
-        StepResult SolveCoordinatedCoupledStep();
-        void BindInterfaceInputs(const BoundaryInputs &input);
         void CommitReserved(EquationDofs::WriteScope &destination, EquationDofs::ReadScope &source);
         std::unique_ptr<IO::DomainCheckpointRead> PrepareCheckpointRead(const std::string &path, const Json &resolved);
         void ReserveCheckpointRead(IO::DomainCheckpointRead &checkpoint, bool collectiveChecks = true);
@@ -93,12 +100,76 @@ namespace DNDS::Cauchy
         void CommitInternalCheckpointRead(IO::DomainInternalCheckpointRead &checkpoint);
 
     public:
+        /// Move-only accepted-state reservation. Its leases pin the destination
+        /// and trial until publication; dropping it cancels an untouched write.
+        class CandidateReservation
+        {
+            struct Data;
+            std::unique_ptr<Data> _data;
+            explicit CandidateReservation(std::unique_ptr<Data> data);
+            friend class Domain;
+
+        public:
+            CandidateReservation(CandidateReservation &&) noexcept;
+            CandidateReservation &operator=(CandidateReservation &&) noexcept;
+            CandidateReservation(const CandidateReservation &) = delete;
+            CandidateReservation &operator=(const CandidateReservation &) = delete;
+            ~CandidateReservation();
+        };
+        /// Detached persistent-ID checkpoint candidate. File I/O and mapping
+        /// finish before return; accepted state changes only on CommitCheckpoint.
+        class CheckpointCandidate
+        {
+            struct Data;
+            std::unique_ptr<Data> _data;
+            explicit CheckpointCandidate(std::unique_ptr<Data> data);
+            friend class Domain;
+
+        public:
+            CheckpointCandidate(CheckpointCandidate &&) noexcept;
+            CheckpointCandidate &operator=(CheckpointCandidate &&) noexcept;
+            CheckpointCandidate(const CheckpointCandidate &) = delete;
+            CheckpointCandidate &operator=(const CheckpointCandidate &) = delete;
+            ~CheckpointCandidate();
+            real Time() const;
+            StateEpoch Epoch() const;
+        };
+        /// Exact nonlinear/method cursor restored after the accepted candidate.
+        class InternalCheckpointCandidate
+        {
+            struct Data;
+            std::unique_ptr<Data> _data;
+            explicit InternalCheckpointCandidate(std::unique_ptr<Data> data);
+            friend class Domain;
+
+        public:
+            InternalCheckpointCandidate(InternalCheckpointCandidate &&) noexcept;
+            InternalCheckpointCandidate &operator=(InternalCheckpointCandidate &&) noexcept;
+            InternalCheckpointCandidate(const InternalCheckpointCandidate &) = delete;
+            InternalCheckpointCandidate &operator=(const InternalCheckpointCandidate &) = delete;
+            ~InternalCheckpointCandidate();
+            StateEpoch TrialEpoch() const;
+        };
+        /// Existing domain communicator; no duplication or ownership transfer.
+        MPI_Comm Communicator() const;
+        void RequireAcceptedClock(real time, uint64_t acceptedStep) const;
+        uint64_t TrialIdentifier() const;
+        void SetEvaluationDependency(QueuedEvaluationDependency dependency);
+        void DrainEvaluationDependency();
+        CandidateReservation ReserveCandidate();
+        void CommitCandidate(CandidateReservation &reservation);
+        void SnapAcceptedTime(real time);
+        CheckpointCandidate PrepareCheckpoint(const std::string &path,
+                                              const Json &resolved);
+        InternalCheckpointCandidate PrepareInternalCheckpoint(
+            const std::string &path, const Json &resolved);
+        InterfaceDonorPublication PrepareCheckpointInterfaceDonor(
+            CheckpointCandidate &candidate);
+        void ReserveCheckpoint(CheckpointCandidate &candidate, bool collectiveChecks = true);
+        void CommitCheckpoint(CheckpointCandidate &candidate);
+        void CommitInternalCheckpoint(InternalCheckpointCandidate &candidate);
+
         Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time = {});
-        /// Construct a short-lived controller view over this domain. The
-        /// controller owns no numerical resources and must not outlive Domain;
-        /// it is the only orchestration API allowed to reserve or publish a
-        /// coordinated trial candidate.
-        DomainController Controller();
         /// Pin one accepted generation for synchronous or asynchronous output.
         /// The returned zero-copy snapshot blocks accepted-state publication
         /// until all copies are released.
@@ -181,7 +252,7 @@ namespace DNDS::Cauchy
             _state.trialReady = false;
             _state.internalResume = false;
             _state.coordinatedPrepared = false;
-            _state.stageEquation.reset();
+            _state.stageGroup.reset();
             if (_state.timeStepper)
                 _state.timeStepper->Discard();
         }

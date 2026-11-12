@@ -7,8 +7,9 @@
 namespace DNDS::Cauchy
 {
     class DomainExecutionContext;
-    class NonlinearController;
-    /// Live nonlinear controller state. This object contains only small,
+    class NonlinearSolveSetup;
+    class NonlinearSession;
+    /// Live nonlinear setup state. This object contains only small,
     /// JSON-serializable values; field payloads and runtime resources belong to
     /// the checkpoint bundle and execution context respectively.
     struct NonlinearSolveState
@@ -51,7 +52,7 @@ namespace DNDS::Cauchy
     };
     /// Optional synchronous CPU profile. Values are local wall seconds, not
     /// reduced across ranks. Total encloses the disjoint named sections;
-    /// its remainder includes controller work and timer overhead. The caller
+    /// its remainder includes setup work and timer overhead. The caller
     /// owns this output through Solve, including unwinding, and serializes it.
     struct NonlinearProfile
     {
@@ -86,7 +87,7 @@ namespace DNDS::Cauchy
         /// receives copied scalar/vector data and may buffer it for a safe
         /// frontend flush boundary.
         std::function<void(const NonlinearProgress &)> progress;
-        /// Optional live controller publication. Iterate updates it before the
+        /// Optional live setup publication. Iterate updates it before the
         /// progress observer, so checkpoint/console/CSV see one state source.
         OptionalRef<NonlinearSolveState> state;
         /// Called at a restart-safe boundary after the current correction (or
@@ -127,7 +128,7 @@ namespace DNDS::Cauchy
     /// Polynomial FAS uses CorrectOnce as its bounded smoother. A capped finite solve
     /// remains unconverged and leaves acceptance to the time orchestrator.
     /// Callers serialize bound state/workspace/engine access, coordinate all
-    /// domain ranks and keep owners on the controller through worker joins.
+    /// domain ranks and keep owners on the setup through worker joins.
     /// Move-only session; explicit pMG aliases share exclusion tickets.
     /// Each execution call locks the bound stream's actual runtime and rejects
     /// closed/expired execution. No EagerEngine object address is retained.
@@ -144,7 +145,11 @@ namespace DNDS::Cauchy
                                          real mass, real rhsScale, real time, int stage,
                                          NonlinearSolveControl control, bool singleCorrection,
                                          OptionalRef<const EquationDofs> cachedRate,
-                                         OptionalRef<const NonlinearController> controller = {});
+                                         OptionalRef<const NonlinearSolveSetup> setup = {});
+        NonlinearSession Start(EquationDofs &state, const EquationDofs &source,
+                               real mass, real rhsScale, real time, int stage,
+                               NonlinearSolveControl control,
+                               const NonlinearSolveSetup &setup);
 
     public:
         NonlinearSolver(const NonlinearSolver &) = delete;
@@ -170,12 +175,11 @@ namespace DNDS::Cauchy
                         const Algebra::ComponentSelection &residualSelection);
         NonlinearIterationReport Solve(EquationDofs &state, const EquationDofs &source, real mass, real rhsScale, real time,
                                        int stage = 0, NonlinearSolveControl control = {});
-        /// Execute the full nonlinear loop through a domain/time-method-owned
-        /// controller. This is the production orchestration path; the ordinary
-        /// Solve overload retains the solver-local one-stage controller for
-        /// standalone operator/debug use.
-        NonlinearIterationReport SolveWithController(
-            const NonlinearController &controller, EquationDofs &state,
+        /// Prepare one externally phased finest nonlinear solve. The returned
+        /// session retains this solver's exclusion ticket and all borrowed
+        /// numerical owners until coordinated completion.
+        NonlinearSession PrepareSolve(
+            const NonlinearSolveSetup &setup, EquationDofs &state,
             const EquationDofs &source, real mass, real rhsScale, real time,
             int stage = 0, NonlinearSolveControl control = {});
         /// One bounded correction retaining split allocation/layout and
@@ -211,7 +215,7 @@ namespace DNDS::Cauchy
         std::pair<int, real> ReconstructionStats() const;
         const NonlinearSolveState &State() const;
         void RestoreState(const NonlinearSolveState &state);
-        /// Bind the shared live controller to an outer nonlinear policy such as
+        /// Bind the shared live setup to an outer nonlinear policy such as
         /// pMG, applying the same new-attempt versus resume semantics as Solve.
         void BindControllerState(NonlinearSolveControl &control);
         Json StateJson() const { return State().ToJson(); }

@@ -187,7 +187,21 @@ namespace CauchyBenchmark
             };
             const auto advance = [&]
             {
-                DNDS_check_throw_info(driver.Prepare(initial, trial, 0, .001, evaluate, solve), "ODE benchmark stage failed");
+                driver.BeginStep(initial, trial, 0, .001, evaluate);
+                for (int stage = 0; stage < driver.GroupNumber(); ++stage)
+                {
+                    const auto group = driver.PrepareGroup(trial);
+                    if (group.implicit)
+                    {
+                        const auto equation = driver.PrepareEquation(group, trial, 0);
+                        const auto &c = equation.coefficients;
+                        DNDS_check_throw_info(
+                            solve(equation.state, equation.resOther, c.inverseDt,
+                                  c.rhsScale, c.time, group.stage),
+                            "ODE benchmark stage failed");
+                    }
+                    driver.CompleteGroup(group, trial, evaluate);
+                }
                 A::Copy(initial, trial);
                 driver.Commit();
             };

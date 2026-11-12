@@ -3,7 +3,7 @@
 #include "Cauchy/Core/DomainExecutionContext.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
-#include "Cauchy/Implicit/NonlinearController.hpp"
+#include "Cauchy/Implicit/NonlinearSolve.hpp"
 #include "Cauchy/Multigrid/PolynomialMultigrid.hpp"
 #include "Cauchy/Physics/EquationPositivity.hpp"
 #include "Cauchy/State/EquationTimeStepper.hpp"
@@ -45,13 +45,24 @@ namespace DNDS::Cauchy
         real time = 0, trialTime = 0, trialDt = 0, lastAcceptedDt = 0,
              progressTime = 0;
         bool trialReady = false, internalResume = false;
-        std::optional<EquationTimeStepper::StageEquation> stageEquation;
+        std::optional<EquationTimeStepper::StageGroup> stageGroup;
         int coordinatedStage = 0;
         bool coordinatedPrepared = false;
 
         DomainState(const DomainProblem &problem, const DomainSettings &settings,
                     const std::optional<Physics::Chemistry::ChemicalWorkerPool> &workers,
                     const std::vector<real> &initialConservative);
+    };
+
+    /// Small host-side description of the currently prepared mathematical
+    /// group. Serialized DIRK stages have one member; DITR has two. No field
+    /// ownership or mutable method scratch escapes through this metadata.
+    struct DomainStageGroup
+    {
+        int stage = 0;
+        int coupledStages = 1;
+        bool implicit = false;
+        std::array<real, 2> times{};
     };
 
     /// Two-stage nonlinear operator bundle consumed by the registered DITR
@@ -67,6 +78,15 @@ namespace DNDS::Cauchy
         std::function<std::pair<int, real>()> reconstruction;
         std::function<void(const BoundaryInputs &)> bindBoundary;
         std::shared_ptr<FiniteVolume::ReconstructionState> state;
+    };
+
+    /// Shared packet-handle publication, retained by queued receiver bindings.
+    /// Updates are serialized on the domain compute lane or at a quiescent
+    /// controller boundary. Numerical payloads remain owned by BoundaryInputs.
+    struct DomainInterfaceState
+    {
+        std::optional<BoundaryInputs> active;
+        std::array<std::optional<BoundaryInputs>, 2> coupled;
     };
 
     /// Rebuildable backend-resolved execution resources. This owner contains
@@ -89,14 +109,14 @@ namespace DNDS::Cauchy
         mutable std::vector<Runtime::TransferBinding> timeMeanHalo;
         std::shared_ptr<FiniteVolume::MeanWorkspace> timePPWorkspace;
         std::optional<EquationDofs> timePPResidual;
-        std::optional<BoundaryInputs> interfaceInputs;
-        std::array<std::optional<BoundaryInputs>, 2> coupledInterfaceInputs;
+        std::shared_ptr<DomainInterfaceState> interfaces =
+            std::make_shared<DomainInterfaceState>();
         std::function<DomainCoupledStageOperator(EquationDofs &)>
             coupledFactory;
         Runtime::ArrayStorage::Shared coupledMiddleOwner;
         uint64_t coupledPreparedTrial = std::numeric_limits<uint64_t>::max();
         std::optional<EquationDofs> coupledResidual;
-        std::unique_ptr<NonlinearController> nonlinearController;
+        std::unique_ptr<NonlinearSolveSetup> nonlinearSetup;
         DomainExecutionContext context;
 
         DomainExecution(const DomainProblem &problem, DomainState &state,
@@ -106,15 +126,19 @@ namespace DNDS::Cauchy
         Runtime::EagerEngine &Engine() const { return context.Engine(); }
         DomainExecutionContext &Context() { return context; }
         const DomainExecutionContext &Context() const { return context; }
-        const Runtime::ExecutionStream &PrimaryStream() const
+        const Runtime::ExecutionStream &ComputeStream() const
         {
-            return context.PrimaryStream();
+            return context.ComputeStream();
+        }
+        const Runtime::ExecutionStream &CommunicationStream() const
+        {
+            return context.CommunicationStream();
         }
         const std::optional<Physics::Chemistry::ChemicalWorkerPool> &
         ChemicalWorkers() const
         {
             return context.ChemicalWorkers();
         }
-        void JoinPrimary() const { context.JoinPrimary(); }
+        void Synchronize() const { context.Synchronize(); }
     };
 }

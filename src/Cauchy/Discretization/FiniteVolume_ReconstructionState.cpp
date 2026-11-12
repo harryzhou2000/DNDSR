@@ -49,6 +49,8 @@ namespace DNDS::Cauchy
     }
     bool FiniteVolume::ReconstructionState::FinalizedCurrent() const
     {
+        if (!coefficients)
+            return true; // No polynomial publication exists for direct P0/P1.
         const auto current = [](const EquationDofOperations::Binding &binding, const EquationDofs &values)
         {
             if (binding.snapshot.PhysicalFieldNumber() != values.PhysicalFieldNumber())
@@ -65,27 +67,39 @@ namespace DNDS::Cauchy
         };
         if (!finalizedFrom || !finalizedPublication)
             return false;
-        return current(*finalizedFrom, coefficients) &&
+        return current(*finalizedFrom, *coefficients) &&
                current(*finalizedPublication, FinalizedValues());
     }
     void FiniteVolume::ReconstructionState::PublishFinalized()
     {
-        finalizedFrom.emplace(coefficients);
+        if (!coefficients)
+            return;
+        finalizedFrom.emplace(*coefficients);
         finalizedPublication.emplace(FinalizedValues());
+    }
+    const EquationDofs &FiniteVolume::ReconstructionState::WarmValues() const
+    {
+        DNDS_check_throw_info(coefficients, "direct P0/P1 has no modal coefficients");
+        return *coefficients;
+    }
+    EquationDofs &FiniteVolume::ReconstructionState::WarmValues()
+    {
+        DNDS_check_throw_info(coefficients, "direct P0/P1 has no modal coefficients");
+        return *coefficients;
     }
     const EquationDofs &FiniteVolume::ReconstructionState::FinalizedValues() const
     {
-        return distinctFinalized ? fluxCoefficients : coefficients;
+        return distinctFinalized ? *fluxCoefficients : WarmValues();
     }
     EquationDofs &FiniteVolume::ReconstructionState::FinalizedValues()
     {
-        return distinctFinalized ? fluxCoefficients : coefficients;
+        return distinctFinalized ? *fluxCoefficients : WarmValues();
     }
     EquationDofs &FiniteVolume::ReconstructionState::MutableFinalized()
     {
         DNDS_check_throw_info(distinctFinalized,
                               "unfiltered reconstruction has no mutable finalized scratch");
-        return fluxCoefficients;
+        return *fluxCoefficients;
     }
     std::vector<R::TransferBinding> &FiniteVolume::ReconstructionState::FinalizedHalo()
     {
@@ -94,11 +108,8 @@ namespace DNDS::Cauchy
 
     EquationDofs FiniteVolume::ReconstructionState::BuildCoefficients(const Data &data, const EquationDofs &state)
     {
-        // Direct P0/P1 publications consume means/physical gradients. Keep
-        // only a managed alias for the common schedule; allocate no modal
-        // payload and bind no coefficient transfer.
-        if (!data.reconstruction)
-            return state.NumericAlias();
+        DNDS_check_throw_info(data.reconstruction,
+                              "coefficient allocation requires a polynomial plan");
         Algebra::DofBundle fields(state.Space());
         for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
         {
@@ -111,26 +122,28 @@ namespace DNDS::Cauchy
         return BindFields(state, std::move(fields), data.reconstruction->NRecDOF());
     }
     FiniteVolume::ReconstructionState::ReconstructionState(std::shared_ptr<const Data> data, EquationDofs &state)
-        : owner(std::move(data)), binding(state), coefficients(BuildCoefficients(*owner, state)),
+        : owner(std::move(data)), binding(state),
           distinctFinalized(owner->reconstruction && ((owner->settings.numerics.limiter == "WBAP" &&
                                                        !(owner->settings.numerics.reconstruction == "gradient" &&
                                                          !owner->settings.numerics.positivity)) ||
-                                                      bool(owner->limitedVRGeometry) || owner->settings.numerics.positivity)),
-          fluxCoefficients(distinctFinalized ? BuildCoefficients(*owner, state)
-                                             : coefficients.NumericAlias())
+                                                      bool(owner->limitedVRGeometry) || owner->settings.numerics.positivity))
     {
-        for (index iField = 0; iField < coefficients.PhysicalFieldNumber(); ++iField)
+        if (owner->reconstruction)
+            coefficients.emplace(BuildCoefficients(*owner, state));
+        if (distinctFinalized)
+            fluxCoefficients.emplace(BuildCoefficients(*owner, state));
+        for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
         {
             meanHalo.push_back(owner->BindTrackedHalo(state.PhysicalField(iField)));
             if (owner->reconstruction)
             {
-                Algebra::Fill(coefficients.PhysicalField(iField), 0.);
-                coefficientHalo.push_back(owner->BindHalo(coefficients.PhysicalField(iField)));
+                Algebra::Fill(coefficients->PhysicalField(iField), 0.);
+                coefficientHalo.push_back(owner->BindHalo(coefficients->PhysicalField(iField)));
             }
             if (distinctFinalized)
             {
-                Algebra::Fill(fluxCoefficients.PhysicalField(iField), 0.);
-                fluxHalo.push_back(owner->BindHalo(fluxCoefficients.PhysicalField(iField)));
+                Algebra::Fill(fluxCoefficients->PhysicalField(iField), 0.);
+                fluxHalo.push_back(owner->BindHalo(fluxCoefficients->PhysicalField(iField)));
             }
         }
         if (owner->limitedVRGeometry)
@@ -177,7 +190,9 @@ namespace DNDS::Cauchy
     {
         DNDS_check_throw_info(state.owner == _data,
                               "foreign equation reconstruction state");
-        return state.coefficients;
+        DNDS_check_throw_info(_data->reconstruction,
+                              "direct P0/P1 has no modal reconstruction guess");
+        return state.WarmValues();
     }
     FiniteVolume::ReconstructionStorageInfo FiniteVolume::InspectReconstructionStorage(
         const ReconstructionState &state) const
@@ -187,16 +202,9 @@ namespace DNDS::Cauchy
         ReconstructionStorageInfo result;
         result.polynomialPlan = bool(_data->reconstruction);
         result.distinctFinalized = state.distinctFinalized;
-        result.aliasesEquationState = !result.polynomialPlan;
-        for (index iField = 0; result.aliasesEquationState &&
-                               iField < state.coefficients.PhysicalFieldNumber();
-             ++iField)
-            result.aliasesEquationState =
-                state.coefficients.PhysicalField(iField).Owned().SharedStorage() ==
-                state.binding.snapshot.PhysicalField(iField).Owned().SharedStorage();
         if (result.polynomialPlan)
         {
-            result.coefficientFields = state.coefficients.PhysicalFieldNumber() *
+            result.coefficientFields = state.WarmValues().PhysicalFieldNumber() *
                                        (state.distinctFinalized ? 2 : 1);
             result.coefficientTransferBindings = index(state.coefficientHalo.size() +
                                                        state.fluxHalo.size());
@@ -212,13 +220,13 @@ namespace DNDS::Cauchy
                         values.PhysicalField(iField).Ghost().Storage().Bytes());
                 }
             };
-            accumulate(state.coefficients);
+            accumulate(state.WarmValues());
             if (state.distinctFinalized)
-                accumulate(state.fluxCoefficients);
+                accumulate(state.FinalizedValues());
         }
         return result;
     }
-    void FiniteVolume::InterfaceDonorPublication::Validate() const
+    void InterfaceDonorPublication::Validate() const
     {
         DNDS_check_throw_info(_owner &&
                                   _meanVersions.size() ==
@@ -279,7 +287,7 @@ namespace DNDS::Cauchy
             }
         }
     }
-    FiniteVolume::InterfaceDonorPublication FiniteVolume::PublishInterfaceDonor(
+    InterfaceDonorPublication FiniteVolume::PublishInterfaceDonor(
         const EquationDofs &state, const ReconstructionState &reconstruction,
         const Workspace &work, bool prepared) const
     {
@@ -294,7 +302,7 @@ namespace DNDS::Cauchy
         if (_data->settings.numerics.reconstruction == "variational")
         {
             const auto &values = prepared ? reconstruction.FinalizedValues()
-                                          : reconstruction.coefficients;
+                                          : reconstruction.WarmValues();
             if (prepared)
                 DNDS_check_throw_info(reconstruction.FinalizedCurrent(),
                                       "interface donor reconstruction is stale");
@@ -334,7 +342,7 @@ namespace DNDS::Cauchy
         result.Validate();
         return result;
     }
-    FiniteVolume::InterfaceDonorPublication
+    InterfaceDonorPublication
     FiniteVolume::PublishVariationalInterfaceDonor(
         const EquationDofs &state, const EquationDofs &coefficients) const
     {
@@ -427,13 +435,17 @@ namespace DNDS::Cauchy
     FiniteVolume::FinalizedReconstruction FiniteVolume::AcquireFinalizedReconstruction(
         const ReconstructionState &state) const
     {
+        DNDS_check_throw_info(_data->reconstruction,
+                              "direct P0/P1 has no modal reconstruction publication");
         DNDS_check_throw_info(state.owner == _data, "foreign equation reconstruction state");
         DNDS_check_throw_info(state.FinalizedCurrent(), "reconstruction has no current finalized publication");
-        return {_data, state.coefficients, state.FinalizedValues(), state.distinctFinalized};
+        return {_data, state.WarmValues(), state.FinalizedValues(), state.distinctFinalized};
     }
     const EquationDofs &FiniteVolume::FluxReconstruction(const ReconstructionState &state, const Workspace &work) const
     {
         DNDS_check_throw_info(state.owner == _data && work.owner == _data, "foreign equation reconstruction state or workspace");
+        DNDS_check_throw_info(_data->reconstruction,
+                              "direct P0/P1 has no modal flux reconstruction");
         DNDS_check_throw_info(state.FinalizedCurrent(), "reconstruction has no current finalized publication");
         return state.FinalizedValues();
     }
@@ -461,7 +473,7 @@ namespace DNDS::Cauchy
         const auto history = source.limitedVRHistory
                                  ? OptionalRef<const R::Array<real>>(*source.limitedVRHistory)
                                  : OptionalRef<const R::Array<real>>{};
-        auto restore = ReserveReconstructionRestoreImpl(destination, source.coefficients, history, {}, true,
+        auto restore = ReserveReconstructionRestoreImpl(destination, source.WarmValues(), history, {}, true,
                                                         OptionalRef<const EquationDofs>(source.FinalizedValues()));
         restore.Commit();
         destination.PublishFinalized();
@@ -535,16 +547,20 @@ namespace DNDS::Cauchy
                 reservation->owner = std::move(retained);
                 reservation->session = state.session.Acquire();
                 DNDS_check_throw_info(state.owner == _data, "foreign equation reconstruction state");
-                state.coefficients.RequireCompatible(guess);
-                EquationDofOperations::RequireDistinct(state.coefficients, guess);
+                // Direct P0/P1 has no modal storage. Reject before reserving
+                // write access; means and physical gradients are separate data.
+                DNDS_check_throw_info(_data->reconstruction,
+                                      "direct P0/P1 has no modal reconstruction to restore");
+                state.WarmValues().RequireCompatible(guess);
+                EquationDofOperations::RequireDistinct(state.WarmValues(), guess);
                 const auto &finalInput = state.distinctFinalized && finalized ? *finalized : guess;
                 if (state.distinctFinalized)
                 {
-                    state.fluxCoefficients.RequireCompatible(guess);
-                    EquationDofOperations::RequireDistinct(state.fluxCoefficients, guess);
-                    state.fluxCoefficients.RequireCompatible(finalInput);
-                    EquationDofOperations::RequireDistinct(state.coefficients, finalInput);
-                    EquationDofOperations::RequireDistinct(state.fluxCoefficients, finalInput);
+                    state.MutableFinalized().RequireCompatible(guess);
+                    EquationDofOperations::RequireDistinct(state.MutableFinalized(), guess);
+                    state.MutableFinalized().RequireCompatible(finalInput);
+                    EquationDofOperations::RequireDistinct(state.WarmValues(), finalInput);
+                    EquationDofOperations::RequireDistinct(state.MutableFinalized(), finalInput);
                 }
                 DNDS_check_throw_info(state.limitedVRHistory || !historyInput,
                                       "LVR history requires an active matching reconstruction state");
@@ -558,11 +574,11 @@ namespace DNDS::Cauchy
                     for (index iField = 0; iField < guess.PhysicalFieldNumber(); ++iField)
                     {
                         DNDS_check_throw_info(!Algebra::Detail::Overlaps(historyInput->Storage(),
-                                                                         state.coefficients.PhysicalField(iField).Owned().Storage()),
+                                                                         state.WarmValues().PhysicalField(iField).Owned().Storage()),
                                               "LVR history aliases reconstruction output");
                         if (state.distinctFinalized)
                             DNDS_check_throw_info(!Algebra::Detail::Overlaps(historyInput->Storage(),
-                                                                             state.fluxCoefficients.PhysicalField(iField).Owned().Storage()),
+                                                                             state.MutableFinalized().PhysicalField(iField).Owned().Storage()),
                                                   "LVR history aliases finalized reconstruction output");
                     }
                     DNDS_check_throw_info(!Algebra::Detail::Overlaps(historyInput->Storage(), state.limitedVRHistory->Storage()),
@@ -590,9 +606,9 @@ namespace DNDS::Cauchy
                         fluxInputRows.push_back(fluxInput.owned);
                     }
                 }
-                reservation->destination.emplace(state.coefficients.WriteOwned());
+                reservation->destination.emplace(state.WarmValues().WriteOwned());
                 if (state.distinctFinalized)
-                    reservation->fluxDestination.emplace(state.fluxCoefficients.WriteOwned());
+                    reservation->fluxDestination.emplace(state.MutableFinalized().WriteOwned());
                 for (index iBlock = 0; iBlock < guess.BlockNumber(); ++iBlock)
                 {
                     outputRows.push_back(reservation->destination->Block(iBlock));
@@ -651,9 +667,9 @@ namespace DNDS::Cauchy
         try
         {
             if (_data->reconstruction)
-                coefficients.emplace(state.coefficients.WriteOwned());
+                coefficients.emplace(state.WarmValues().WriteOwned());
             if (state.distinctFinalized)
-                fluxCoefficients.emplace(state.fluxCoefficients.WriteOwned());
+                fluxCoefficients.emplace(state.MutableFinalized().WriteOwned());
             temporary.reserve(work.fields.size());
             for (auto &field : work.fields)
                 if (field.reconstruction)
@@ -727,7 +743,7 @@ namespace DNDS::Cauchy
             ValidateWorkspace(state, work);
             DNDS_check_throw_info(work.positivity, "equation reconstruction PP was not requested");
             DNDS_check_throw_info(reconstruction.owner == _data, "foreign equation reconstruction state");
-            work.positivity->Apply(state, reconstruction.coefficients, reconstruction.MutableFinalized(), true);
+            work.positivity->Apply(state, reconstruction.WarmValues(), reconstruction.MutableFinalized(), true);
             reconstruction.PublishFinalized(); });
     }
     std::pair<index, real> FiniteVolume::PositivityReconstructionStats(const Workspace &work) const

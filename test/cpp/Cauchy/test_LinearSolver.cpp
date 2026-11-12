@@ -347,6 +347,32 @@ TEST_CASE("Dedicated zero-start SGS needs no old storage and preserves explicit-
                 }
             }
 }
+TEST_CASE("Residual observation cadence preserves stationary iterates and skips only diagnostic reductions")
+{
+    for (const auto method : {"sgs", "ilu"})
+    {
+        Fixture fixture;
+        C::LinearSolveSettings settings;
+        settings.method = method;
+        settings.maxIterations = 5;
+        settings.relativeTolerance = settings.absoluteTolerance = 0;
+        C::LinearSolver frequent(fixture.problem, fixture.rhs, [&](Field &field)
+                                 { return fixture.Bind(field); }, settings);
+        settings.residualCheckInterval = 3;
+        C::LinearSolver periodic(fixture.problem, fixture.rhs, [&](Field &field)
+                                 { return fixture.Bind(field); }, settings);
+        const auto a = frequent.Solve(fixture.rhs), b = periodic.Solve(fixture.rhs);
+        CHECK(a.iterations == 5);
+        CHECK(b.iterations == 5);
+        CHECK(a.innerProductBatches == 7); // RHS, five residuals, final iterate.
+        CHECK(b.innerProductBatches == 4); // RHS, iterations 3/5, final iterate.
+        CHECK(a.trueResidual == doctest::Approx(b.trueResidual).epsilon(1e-13));
+        const auto x = frequent.Solution().Owned().Read(), y = periodic.Solution().Owned().Read();
+        for (DNDS::index iCell = 0; iCell < 4; ++iCell)
+            for (int j = 0; j < 5; ++j)
+                CHECK(x.View<R::UniformTableRows>()(iCell, j) == y.View<R::UniformTableRows>()(iCell, j));
+    }
+}
 TEST_CASE("Residual-stopped SGS publishes zero when a repeated solve needs no sweep")
 {
     Fixture fixture;
@@ -381,7 +407,11 @@ TEST_CASE("Cauchy coupled linear solvers match a global dense oracle with real p
         settings.maxIterations = 80;
         settings.relativeTolerance = 1e-11;
         settings.absoluteTolerance = 1e-13;
-        const C::LinearExecution execution{scenario % 2 == 0, scenario % 3 != 1};
+        R::EagerEngine engine(scenario % 3 == 0 ? 2 : 0,
+                              std::make_shared<R::AccessTrackingContext>());
+        C::LinearExecution execution{scenario % 2 == 0, scenario % 3 != 1};
+        execution.streams = C::LinearExecution::Streams{engine.CreateCPUStream(), engine.CreateCPUStream()};
+        settings.residualCheckInterval = scenario >= 5 ? 3 : 1;
         C::LinearSolver solver(fixture.problem, fixture.rhs, [&](Field &field)
                                { return fixture.Bind(field); }, settings, execution);
         const auto version = fixture.rhs.Owned().Version();

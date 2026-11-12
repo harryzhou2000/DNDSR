@@ -13,6 +13,7 @@ namespace DNDS::Cauchy
 
     struct FiniteVolume::AuxiliaryPreparation::State
     {
+        FiniteVolume owner;
         std::shared_ptr<const Data> data;
         EquationDofs source;
         AuxiliaryValues buffers;
@@ -42,13 +43,14 @@ namespace DNDS::Cauchy
         RigidFrame frame;
         int phase = 0;
         bool started = false;
+        bool boundaryPending = false, independentDone = false;
 
-        State(std::shared_ptr<const Data> plan, const EquationDofs &state, const AuxiliaryValues &output, real atTime,
+        State(const FiniteVolume &plan, const EquationDofs &state, const AuxiliaryValues &output, real atTime,
               std::optional<Physics::Chemistry::ChemicalWorkerPool> pool, AuxiliaryInputs inputs)
-            : data(std::move(plan)), source(state.NumericAlias()), buffers(output), workers(std::move(pool)),
+            : owner(plan), data(plan._data), source(state.NumericAlias()), buffers(output), workers(std::move(pool)),
               geometry(data->metrics.AcquireRead()), stencilRead(data->stencil.Read()), owned(source.ReadOwned()),
               independent(data->equation.HasMixture() ? data->equation.Mixture().SpeciesNumber() - 1 : 0),
-              time(atTime), frame(data->motion.At(time))
+              time(atTime), frame(data->motion.At(time)), boundaryPending(inputs.deferBoundary)
         {
             if (inputs.meanGradients)
             {
@@ -189,17 +191,60 @@ namespace DNDS::Cauchy
             request.time = time;
             return request;
         }
-        void Core()
+        void InterfaceIndependent()
         {
-            DNDS_check_throw_info(phase == 0, "equation auxiliary core already executed");
+            DNDS_check_throw_info(phase == 0 && boundaryPending && !independentDone,
+                                  "auxiliary independent phase requires a pending boundary");
             started = true;
             RefreshDerived(false);
             auto evaluator = Evaluator();
             const auto blocks = EquationFVDetail::BlockViews(source, owned);
             const auto request = KernelInput(blocks.HostView());
             RequireNumericalSuccess(CPU::PrepareAuxiliaryMeans(request, data->equation, evaluator, 0, data->metrics.NumCell()), "core auxiliary means");
-            RequireNumericalSuccess(CPU::PrepareAuxiliaryFaces(request, data->equation, data->boundaryPoint, evaluator, request.stencil.auxiliaryCoreFaces), "core auxiliary faces");
-            CPU::ReduceAuxiliaryCells(request, request.stencil.coreCells);
+            RequireNumericalSuccess(CPU::PrepareAuxiliaryFaces(request, data->equation, data->boundaryPoint, evaluator,
+                                                               request.stencil.auxiliaryInterfaceIndependentFaces),
+                                    "interface-independent auxiliary faces");
+            CPU::ReduceAuxiliaryCells(request, request.stencil.interfaceIndependentCells);
+            independentDone = true;
+        }
+        void BindBoundary(const BoundaryInputs &input)
+        {
+            DNDS_check_throw_info(phase == 0 && boundaryPending,
+                                  "auxiliary boundary is not pending");
+            owner.ValidateBoundaryInputs(input, time);
+            const auto arrays = EquationAuxiliaryArrays(buffers);
+            for (const auto *array : arrays)
+                if (array)
+                    for (const auto *packet : {&input.QuadratureValues(), &input.FaceCenterValues()})
+                        for (index iField = 0; iField < packet->PhysicalFieldNumber(); ++iField)
+                            DNDS_check_throw_info(
+                                !Algebra::Detail::Overlaps(array->Storage(),
+                                                           packet->PhysicalField(iField).Owned().Storage()),
+                                "auxiliary output aliases deferred boundary input");
+            boundary = input;
+            boundaryRead.emplace(boundary->QuadratureValues().CoupledField().Owned().Read());
+            incoming = boundaryRead->View<R::UniformTableRows>();
+            boundaryPending = false;
+        }
+        void Core()
+        {
+            DNDS_check_throw_info(phase == 0 && !boundaryPending,
+                                  "auxiliary core already executed or interface is pending");
+            started = true;
+            if (!independentDone)
+                RefreshDerived(false);
+            auto evaluator = Evaluator();
+            const auto blocks = EquationFVDetail::BlockViews(source, owned);
+            const auto request = KernelInput(blocks.HostView());
+            if (!independentDone)
+                RequireNumericalSuccess(CPU::PrepareAuxiliaryMeans(request, data->equation, evaluator, 0, data->metrics.NumCell()),
+                                        "core auxiliary means");
+            RequireNumericalSuccess(CPU::PrepareAuxiliaryFaces(request, data->equation, data->boundaryPoint, evaluator,
+                                                               independentDone ? request.stencil.auxiliaryInterfaceFaces
+                                                                               : request.stencil.auxiliaryCoreFaces),
+                                    "core auxiliary faces");
+            CPU::ReduceAuxiliaryCells(request, independentDone ? request.stencil.interfaceCoreCells
+                                                               : request.stencil.coreCells);
             phase = 1;
         }
         void Dependent()
@@ -226,19 +271,29 @@ namespace DNDS::Cauchy
     };
     FiniteVolume::AuxiliaryPreparation
     FiniteVolume::AuxiliaryPreparation::BuildState(
-        std::shared_ptr<const Data> plan, const EquationDofs &state,
+        const FiniteVolume &plan, const EquationDofs &state,
         const AuxiliaryValues &output, real time,
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
         AuxiliaryInputs inputs)
     {
         return AuxiliaryPreparation(std::make_unique<State>(
-            std::move(plan), state, output, time, std::move(workers), inputs));
+            plan, state, output, time, std::move(workers), inputs));
     }
 
     FiniteVolume::AuxiliaryPreparation::AuxiliaryPreparation(std::unique_ptr<State> state) : _state(std::move(state)) {}
     FiniteVolume::AuxiliaryPreparation::AuxiliaryPreparation(AuxiliaryPreparation &&) noexcept = default;
     FiniteVolume::AuxiliaryPreparation &FiniteVolume::AuxiliaryPreparation::operator=(AuxiliaryPreparation &&) noexcept = default;
     FiniteVolume::AuxiliaryPreparation::~AuxiliaryPreparation() = default;
+    void FiniteVolume::AuxiliaryPreparation::ApplyInterfaceIndependent()
+    {
+        DNDS_check_throw_info(_state, "equation auxiliary scope is finished or moved");
+        _state->InterfaceIndependent();
+    }
+    void FiniteVolume::AuxiliaryPreparation::BindBoundary(const BoundaryInputs &input)
+    {
+        DNDS_check_throw_info(_state, "equation auxiliary scope is finished or moved");
+        _state->BindBoundary(input);
+    }
     void FiniteVolume::AuxiliaryPreparation::Apply(CFV::ReconstructionRegion region)
     {
         DNDS_check_throw_info(_state, "equation auxiliary scope is finished or moved");

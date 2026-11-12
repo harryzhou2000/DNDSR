@@ -51,25 +51,27 @@ def main():
     correction = (
         "void FiniteVolume::PrepareCorrectionAux(EquationDofs &state, ReconstructionState &reconstruction,\n"
         "Workspace &work, AuxiliaryValues &auxiliary,\n"
-        "R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const\n    {")
+        "Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream,\n"
+        "const Runtime::ExecutionStream &communication, real time,\n"
+        "OptionalRef<const QueuedEvaluationDependency> dependency) const\n    {")
     text = insert_after_once(
         text, correction,
         "        ::DiagnosticTiming::Scope diagnosticAuxiliary(::DiagnosticTiming::Block::Auxiliary);\n"
         "        ::DiagnosticTiming::AuxiliaryTrace correctionTrace(!work.meanGradients, 1, ::DiagnosticTiming::currentLevel);\n")
     text = insert_before_once(
         text, "        for (auto &halo : reconstruction.meanHalo)\n"
-              "            transfers.push_back(halo.Begin(reconstruction.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));",
+              "            transfers.push_back(halo.BeginReady(reconstruction.meanEpoch, engine, communication,\n"
+              "                                                _data->settings.CheckHaloFreshness()));",
         "        correctionTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::LaunchBegin);\n")
     text = insert_after_once(
-        text, "            transfers.push_back(halo.Begin(reconstruction.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));",
+        text, "            transfers.push_back(halo.BeginReady(reconstruction.meanEpoch, engine, communication,\n"
+              "                                                _data->settings.CheckHaloFreshness()));",
         "        correctionTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::LaunchEnd);\n"
         "        correctionTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::BoundaryEnd);\n"
         "        correctionTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::WaitBegin);\n")
-    text = insert_after_once(
-        text, "        OperatorSchedule::Wait(transfers);",
-        "        correctionTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::WaitEnd);\n")
     text = insert_before_once(
         text, "                preparation->Apply(rest);",
+        "                correctionTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::WaitEnd);\n"
         "                correctionTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::ComputeBegin);\n")
     text = insert_after_once(
         text, "                preparation->Finish(auxiliary);",
@@ -78,9 +80,11 @@ def main():
     evaluation = (
         "void FiniteVolume::EvaluateImpl(EquationDofs &state,\n"
         "OptionalRef<EquationDofs> residual,\n"
-        "ReconstructionState &reconstruction, Workspace &work, R::EagerEngine &engine,\n"
-        "const R::ExecutionStream &stream, real time,\n"
-        "OptionalRef<AuxiliaryValues> auxiliary) const\n    {")
+        "ReconstructionState &reconstruction, Workspace &work, Runtime::EagerEngine &engine,\n"
+        "const Runtime::ExecutionStream &stream,\n"
+        "const Runtime::ExecutionStream &communication, real time,\n"
+        "OptionalRef<AuxiliaryValues> auxiliary,\n"
+        "OptionalRef<const QueuedEvaluationDependency> dependency) const\n    {")
     text = insert_after_once(
         text, evaluation,
         "        ::DiagnosticTiming::Level diagnosticLevel(_data->settings.numerics.firstOrderConvection ? 2 : _data->settings.numerics.reconstruction == \"variational\" ? 0 : 1);\n"
@@ -93,36 +97,44 @@ def main():
         "                      auxiliaryPreparation.emplace(BeginAuxValues(state, *auxiliary, time, work.workers, inputs)); });")
     text = insert_before_once(
         text, "        for (auto &halo : reconstruction.meanHalo)\n"
-              "            meanOperations.push_back(halo.Begin(reconstruction.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));",
+              "            meanOperations.push_back(halo.BeginReady(\n"
+              "                reconstruction.meanEpoch, engine, communication,\n"
+              "                _data->settings.CheckHaloFreshness()));",
         "        evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::LaunchBegin);\n"
         "        ::DiagnosticTiming::Scope auxiliaryExchange(::DiagnosticTiming::Block::AuxiliaryExchange);\n")
     text = insert_after_once(
-        text, "            meanOperations.push_back(halo.Begin(reconstruction.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));",
+        text, "            meanOperations.push_back(halo.BeginReady(\n"
+              "                reconstruction.meanEpoch, engine, communication,\n"
+              "                _data->settings.CheckHaloFreshness()));",
         "        evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::LaunchEnd);\n"
         "        evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::BoundaryEnd);\n"
         "        evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::WaitBegin);\n")
-    text = insert_after_once(
-        text, "        OperatorSchedule::Wait(meanOperations);",
-        "        auxiliaryExchange.Finish();\n"
-        "        evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::WaitEnd);\n")
-    text = replace_once(
-        text,
-        "                            { auxiliaryPreparation->Apply(CFV::ReconstructionRegion::Core); });",
-        "                            { ::DiagnosticTiming::Scope scope(::DiagnosticTiming::Block::AuxiliaryCompute);\n"
-        "                              auxiliaryPreparation->Apply(CFV::ReconstructionRegion::Core); });")
+    # Both boundary-ready and deferred-boundary branches call this core leaf.
+    # Keep the instrumentation inside each queued command, not at submission.
+    core = pattern("auxiliaryPreparation->Apply(CFV::ReconstructionRegion::Core);")
+    text, count = re.subn(
+        core,
+        "{ ::DiagnosticTiming::Scope scope(::DiagnosticTiming::Block::AuxiliaryCompute); "
+        "auxiliaryPreparation->Apply(CFV::ReconstructionRegion::Core); }",
+        text)
+    if count != 2:
+        raise ValueError(f"expected two auxiliary core branches, got {count}")
     text = insert_before_once(
         text, "                auxiliaryPreparation->Apply(rest);",
+        "                auxiliaryExchange.Finish();\n"
+        "                evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::WaitEnd);\n"
         "                ::DiagnosticTiming::Scope scope(::DiagnosticTiming::Block::AuxiliaryCompute);\n"
         "                evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::ComputeBegin);\n")
-    text = insert_after_once(
+    text = replace_once(
         text, "                auxiliaryPreparation->Finish(*auxiliary); });",
-        "                evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::ComputeEnd);\n")
+        "                auxiliaryPreparation->Finish(*auxiliary);\n"
+        "                evaluationTrace.Mark(::DiagnosticTiming::AuxiliaryTrace::ComputeEnd); });")
 
     refresh = r"if\s*\(work\.SourceSamplesCurrent\(state,\s*time\)\)\s*return;"
     text, count = re.subn(
         refresh,
         lambda match: match.group(0) +
-        "\n                ::DiagnosticTiming::ObserveCorrectionSource(work.sourceOffsets.empty() ? 0 : work.sourceOffsets.back());",
+        "\n                ::DiagnosticTiming::ObserveCorrectionSource(work.sourceValues.empty() ? 0 : work.sourceValues.front().RowCount());",
         text)
     if count != 3:
         raise ValueError(f"expected three correction source refresh guards, got {count}")

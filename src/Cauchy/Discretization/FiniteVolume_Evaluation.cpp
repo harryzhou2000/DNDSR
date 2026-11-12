@@ -43,11 +43,22 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::PrepareCorrectionAux(EquationDofs &state, ReconstructionState &reconstruction,
                                             Workspace &work, AuxiliaryValues &auxiliary,
-                                            R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
+                                            Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time) const
+    {
+        PrepareCorrectionAux(state, reconstruction, work, auxiliary, engine,
+                             stream, stream, time);
+    }
+    void FiniteVolume::PrepareCorrectionAux(EquationDofs &state, ReconstructionState &reconstruction,
+                                            Workspace &work, AuxiliaryValues &auxiliary,
+                                            Runtime::EagerEngine &engine,
+                                            const Runtime::ExecutionStream &stream,
+                                            const Runtime::ExecutionStream &communication,
+                                            real time,
+                                            OptionalRef<const QueuedEvaluationDependency> dependency) const
     {
         auto reconstructionSession = reconstruction.session.Acquire();
         auto workspaceSession = work.session.Acquire();
-        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, reconstruction.FinalizedValues());
+        auto activeReconstruction = work.BindReconstruction(reconstruction);
         const MPIInfo mpi(Metrics().Communicator());
         reconstruction.binding.Check(state);
         const auto local = [&](auto &&action)
@@ -65,11 +76,25 @@ namespace DNDS::Cauchy
             reconstruction.PublishFinalized(); });
         if (work.meanGradients)
         {
+            if (dependency)
+            {
+                // The current RANS gradient preparer acquires its boundary
+                // scope on the controller. Keep this explicit bridge until
+                // that preparer accepts a deferred packet too; no MPI runs in
+                // the queued publication callback.
+                OperatorSchedule boundarySchedule(engine, stream, communication, false);
+                boundarySchedule.ComputeWaitFor(dependency->completion);
+                boundarySchedule.Submit([&]
+                                        { dependency->publish(); });
+                boundarySchedule.Join();
+            }
             ValidateWorkspace(state, work);
             AuxiliaryInputs inputs;
             if (work.incoming)
                 inputs.boundary.Emplace(*work.incoming);
-            PrepareAuxValues(state, auxiliary, *work.meanGradients, engine, stream, time, work.workers, inputs);
+            PrepareAuxValues(state, auxiliary, *work.meanGradients, engine,
+                             stream, communication, time, work.workers,
+                             inputs);
             local([&]
                   {
                 if (work.SourceSamplesCurrent(state, time)) return;
@@ -85,27 +110,48 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(stream.Context().device == R::Device::Host(), "equation correction requires a CPU stream");
             PreflightHalo(state);
             AuxiliaryInputs inputs;
-            if (work.incoming)
+            inputs.deferBoundary = bool(dependency);
+            if (work.incoming && !dependency)
                 inputs.boundary.Emplace(*work.incoming);
             preparation.emplace(BeginAuxValues(state, auxiliary, time, work.workers, inputs)); });
-        OperatorSchedule schedule(engine, stream, _data->settings.execution.overlap);
+        OperatorSchedule schedule(engine, stream, communication,
+                                  _data->settings.execution.overlap);
         std::vector<Algebra::DofHalo<>::Operation> transfers;
         transfers.reserve(reconstruction.meanHalo.size());
         ++reconstruction.meanEpoch;
         for (auto &halo : reconstruction.meanHalo)
-            transfers.push_back(halo.Begin(reconstruction.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));
+            transfers.push_back(halo.BeginReady(reconstruction.meanEpoch, engine, communication,
+                                                _data->settings.CheckHaloFreshness()));
         if (_data->settings.execution.overlap)
             schedule.Submit([&]
-                            { preparation->Apply(CFV::ReconstructionRegion::Core); });
-        OperatorSchedule::Wait(transfers);
+                            {
+                if (dependency)
+                    preparation->ApplyInterfaceIndependent();
+                else
+                    preparation->Apply(CFV::ReconstructionRegion::Core); });
+        if (dependency)
+        {
+            schedule.ComputeWaitFor(dependency->completion);
+            schedule.Submit([&]
+                            {
+                dependency->publish();
+                DNDS_check_throw_info(work.incoming,
+                                      "correction interface refresh did not bind a packet");
+                preparation->BindBoundary(*work.incoming);
+                if (_data->settings.execution.overlap)
+                    preparation->Apply(CFV::ReconstructionRegion::Core); });
+        }
+        for (auto &transfer : transfers)
+            schedule.AwaitPublished(std::move(transfer));
+        transfers.clear();
         const auto rest = schedule.DependentRegion();
         local([&]
               {
-            if (_data->settings.CheckHaloFreshness())
-                for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
-                    reconstruction.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), reconstruction.meanEpoch);
             schedule.Submit([&, rest]
             {
+                if (_data->settings.CheckHaloFreshness())
+                    for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+                        reconstruction.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), reconstruction.meanEpoch);
                 preparation->Apply(rest);
                 preparation->Finish(auxiliary);
                 // Source Jacobians use the retained current polynomial. RANS
@@ -129,8 +175,7 @@ namespace DNDS::Cauchy
     {
         auto reconstructionSession = reconstruction.session.Acquire();
         auto workspaceSession = work.session.Acquire();
-        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients,
-                                                            reconstruction.FinalizedValues());
+        auto activeReconstruction = work.BindReconstruction(reconstruction);
         Metrics().Communication()->LocalStage([&]
                                               {
             ValidateWorkspace(state, work);
@@ -157,52 +202,63 @@ namespace DNDS::Cauchy
             work.PublishSourceState(state, time); });
     }
     void FiniteVolume::Evaluate(EquationDofs &state, EquationDofs &residual, ReconstructionState &reconstruction, Workspace &work,
-                                R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
+                                Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time) const
     {
-        EvaluateImpl(state, OptionalRef<EquationDofs>(residual), reconstruction, work, engine, stream, time);
+        EvaluateImpl(state, OptionalRef<EquationDofs>(residual), reconstruction,
+                     work, engine, stream, stream, time);
     }
     void FiniteVolume::Evaluate(EquationDofs &state, EquationDofs &residual, ReconstructionState &reconstruction, Workspace &work,
-                                AuxiliaryValues &auxiliary, R::EagerEngine &engine,
-                                const R::ExecutionStream &stream, real time) const
+                                AuxiliaryValues &auxiliary, Runtime::EagerEngine &engine,
+                                const Runtime::ExecutionStream &stream, real time) const
     {
-        EvaluateImpl(state, OptionalRef<EquationDofs>(residual), reconstruction, work, engine, stream, time,
+        EvaluateImpl(state, OptionalRef<EquationDofs>(residual), reconstruction,
+                     work, engine, stream, stream, time,
                      OptionalRef<AuxiliaryValues>(auxiliary));
     }
-    void FiniteVolume::PrepareReconstruction(EquationDofs &state, ReconstructionState &reconstruction, Workspace &work, R::EagerEngine &engine,
-                                             const R::ExecutionStream &stream, real time) const
+    void FiniteVolume::PrepareReconstruction(EquationDofs &state, ReconstructionState &reconstruction, Workspace &work, Runtime::EagerEngine &engine,
+                                             const Runtime::ExecutionStream &stream, real time) const
     {
-        EvaluateImpl(state, {}, reconstruction, work, engine, stream, time);
+        EvaluateImpl(state, {}, reconstruction, work, engine, stream, stream,
+                     time);
     }
-    void FiniteVolume::RefreshSamplingInputs(EquationDofs &state, ReconstructionState &reconstruction, Workspace &work, R::EagerEngine &engine,
-                                             const R::ExecutionStream &stream) const
+    void FiniteVolume::RefreshSamplingInputs(EquationDofs &state, ReconstructionState &reconstruction, Workspace &work, Runtime::EagerEngine &engine,
+                                             const Runtime::ExecutionStream &stream,
+                                             const Runtime::ExecutionStream &communication) const
     {
         ValidateWorkspace(state, work);
         auto reconstructionSession = reconstruction.session.Acquire();
         auto session = work.session.Acquire();
-        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, reconstruction.FinalizedValues());
+        auto activeReconstruction = work.BindReconstruction(reconstruction);
         Metrics().Communication()->LocalStage([&]
                                               {
             DNDS_check_throw_info(engine.Owns(stream) && stream.Context().device == R::Device::Host(),
                                   "sampling refresh requires the workspace CPU engine");
             PreflightHalo(state);
-            PreflightHalo(reconstruction.FinalizedValues()); });
+            if (reconstruction.coefficients)
+                PreflightHalo(reconstruction.FinalizedValues()); });
         ++reconstruction.meanEpoch;
         std::vector<Algebra::DofHalo<>::Operation> means;
         means.reserve(reconstruction.meanHalo.size());
+        OperatorSchedule schedule(engine, stream, communication, true);
         for (auto &halo : reconstruction.meanHalo)
-            means.push_back(halo.Begin(reconstruction.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));
+            means.push_back(halo.BeginReady(reconstruction.meanEpoch, engine,
+                                            communication, _data->settings.CheckHaloFreshness()));
+        // Modal coefficients are distinct from means whenever this list is
+        // nonempty. Post all independent payloads before the final join;
+        // gradient/P0 representations have no modal-coefficient exchange.
+        auto coefficients = schedule.Begin(reconstruction.FinalizedHalo());
         for (auto &operation : means)
-            operation.Wait();
+            schedule.AwaitPublished(std::move(operation));
+        means.clear();
+        schedule.Await(coefficients);
+        // Sampling consumes CPU-visible inputs today. The transfer segment
+        // itself uses the same event/publication protocol as RHS preparation.
+        schedule.Join();
         if (_data->settings.CheckHaloFreshness())
             Metrics().Communication()->LocalStage([&]
                                                   {
                 for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                     reconstruction.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), reconstruction.meanEpoch); });
-        for (auto &binding : reconstruction.FinalizedHalo())
-        {
-            auto operation = engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream);
-            operation.Wait();
-        }
     }
     void FiniteVolume::Execute(EquationDofs &state,
                                ReconstructionState &reconstruction,
@@ -211,49 +267,65 @@ namespace DNDS::Cauchy
                                FiniteVolumeEvaluation evaluation) const
     {
         auto &engine = context.Engine();
-        const auto &stream = context.PrimaryStream();
+        const auto &stream = context.ComputeStream();
+        const auto &communication = context.CommunicationStream();
         switch (evaluation.mode)
         {
         case FiniteVolumeEvaluationMode::SpatialResidual:
             DNDS_check_throw_info(evaluation.residual,
                                   "spatial FV evaluation requires a residual output");
-            if (evaluation.auxiliary)
-                Evaluate(state, *evaluation.residual, reconstruction, work,
-                         *evaluation.auxiliary, engine, stream, evaluation.time);
-            else
-                Evaluate(state, *evaluation.residual, reconstruction, work,
-                         engine, stream, evaluation.time);
-            return;
+            {
+                auto dependency = context.AcquireEvaluationDependency();
+                if (evaluation.auxiliary)
+                    EvaluateImpl(state, OptionalRef<EquationDofs>(*evaluation.residual),
+                                 reconstruction, work, engine, stream, communication,
+                                 evaluation.time,
+                                 OptionalRef<AuxiliaryValues>(*evaluation.auxiliary),
+                                 dependency ? OptionalRef<const QueuedEvaluationDependency>(*dependency)
+                                            : OptionalRef<const QueuedEvaluationDependency>{});
+                else
+                    EvaluateImpl(state, OptionalRef<EquationDofs>(*evaluation.residual),
+                                 reconstruction, work, engine, stream, communication,
+                                 evaluation.time, {},
+                                 dependency ? OptionalRef<const QueuedEvaluationDependency>(*dependency)
+                                            : OptionalRef<const QueuedEvaluationDependency>{});
+                return;
+            }
         case FiniteVolumeEvaluationMode::ReconstructionOnly:
             DNDS_check_throw_info(!evaluation.residual && !evaluation.auxiliary,
                                   "reconstruction-only FV evaluation has no residual or auxiliary output");
-            PrepareReconstruction(state, reconstruction, work, engine, stream,
-                                  evaluation.time);
+            EvaluateImpl(state, {}, reconstruction, work, engine, stream,
+                         communication, evaluation.time);
             return;
         case FiniteVolumeEvaluationMode::SamplingInputs:
             DNDS_check_throw_info(!evaluation.residual && !evaluation.auxiliary,
                                   "sampling-input FV evaluation has no residual or auxiliary output");
-            RefreshSamplingInputs(state, reconstruction, work, engine, stream);
+            RefreshSamplingInputs(state, reconstruction, work, engine, stream,
+                                  communication);
             return;
         }
         DNDS_check_throw_info(false, "unknown finite-volume evaluation mode");
     }
     void FiniteVolume::EvaluateMean(EquationDofs &state, EquationDofs &residual, MeanWorkspace &work,
-                                    R::EagerEngine &engine, const R::ExecutionStream &stream, real time) const
+                                    Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time) const
     {
-        EvaluateImpl(state, OptionalRef<EquationDofs>(residual), *work.reconstruction, *work.work, engine, stream, time);
+        EvaluateImpl(state, OptionalRef<EquationDofs>(residual),
+                     *work.reconstruction, *work.work, engine, stream, stream,
+                     time);
     }
     void FiniteVolume::EvaluateImpl(EquationDofs &state,
                                     OptionalRef<EquationDofs> residual,
-                                    ReconstructionState &reconstruction, Workspace &work, R::EagerEngine &engine,
-                                    const R::ExecutionStream &stream, real time,
-                                    OptionalRef<AuxiliaryValues> auxiliary) const
+                                    ReconstructionState &reconstruction, Workspace &work, Runtime::EagerEngine &engine,
+                                    const Runtime::ExecutionStream &stream,
+                                    const Runtime::ExecutionStream &communication, real time,
+                                    OptionalRef<AuxiliaryValues> auxiliary,
+                                    OptionalRef<const QueuedEvaluationDependency> dependency) const
     {
         if (!auxiliary && work.rhsAuxiliary)
             auxiliary.Emplace(*work.rhsAuxiliary);
         auto reconstructionSession = reconstruction.session.Acquire();
         auto session = work.session.Acquire();
-        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, reconstruction.FinalizedValues());
+        auto activeReconstruction = work.BindReconstruction(reconstruction);
         const Workspace::PhaseTime timing(work, Workspace::TotalPhase);
         work.sourceState.reset();
         work.sourceCoefficients.reset();
@@ -272,10 +344,9 @@ namespace DNDS::Cauchy
         {
             Metrics().Communication()->LocalStage(std::forward<decltype(action)>(action));
         };
-        // Observe only this lane's producer prefix. MPI remains on the caller's
-        // controller thread, including when the CPU launcher uses worker threads.
-        local([&]
-              { stream.Record().WaitHost(); });
+        DNDS_check_throw_info(engine.Owns(stream) &&
+                                  engine.Owns(communication),
+                              "FV execution lanes belong to another runtime");
         std::optional<EquationPointEvaluator> evaluator;
         std::optional<AuxiliaryPreparation> auxiliaryPreparation;
         std::optional<R::Array<real>::ReadLease> incomingRead;
@@ -292,7 +363,10 @@ namespace DNDS::Cauchy
         };
         local([&]
               {
-            DNDS_check_throw_info(work.owner == _data && reconstruction.owner == _data && std::isfinite(time) && stream.Context().device == R::Device::Host(),
+            DNDS_check_throw_info(work.owner == _data && reconstruction.owner == _data &&
+                                      std::isfinite(time) &&
+                                      stream.Context().device == R::Device::Host() &&
+                                      communication.Context().device == R::Device::Host(),
                                   "foreign equation workspace/state, invalid time or missing CPU backend");
             ValidateWorkspace(state, work);
             reconstruction.binding.Check(state);
@@ -302,14 +376,22 @@ namespace DNDS::Cauchy
                 _data->equation.ValidateStateSchema(output);
                 state.RequireCompatible(output);
                 EquationDofOperations::RequireDistinct(state, output);
-                EquationDofOperations::RequireDistinct(reconstruction.coefficients, output);
-                EquationDofOperations::RequireDistinct(reconstruction.FinalizedValues(), output);
+                if (reconstruction.coefficients)
+                {
+                    EquationDofOperations::RequireDistinct(reconstruction.WarmValues(), output);
+                    EquationDofOperations::RequireDistinct(reconstruction.FinalizedValues(), output);
+                }
                 auto write = output.WriteOwned(); write.CancelUnmodified();
             }
-            PreflightHalo(state); PreflightHalo(reconstruction.coefficients); PreflightHalo(reconstruction.FinalizedValues());
-            DNDS_check_throw_info(!HasInterfaces() || work.incoming,
+            PreflightHalo(state);
+            if (reconstruction.coefficients)
+            {
+                PreflightHalo(reconstruction.WarmValues());
+                PreflightHalo(reconstruction.FinalizedValues());
+            }
+            DNDS_check_throw_info(!HasInterfaces() || work.incoming || dependency,
                                   "FV evaluation needs a ready interface packet");
-            if (work.incoming)
+            if (work.incoming && !dependency)
             {
                 ValidateBoundaryInputs(*work.incoming, time);
                 incomingRead.emplace(
@@ -319,11 +401,13 @@ namespace DNDS::Cauchy
             _data->partition.Validate();
             work.boundaryMomentumCurrent = false;
             if (!deferredEvaluator) createEvaluator(); });
-        if (auxiliary && !work.meanGradients)
+        const bool needsAuxiliaryPreparation = auxiliary && !work.meanGradients;
+        if (needsAuxiliaryPreparation)
             local([&]
                   {
                       AuxiliaryInputs inputs;
-                      if (work.incoming)
+                      inputs.deferBoundary = bool(dependency);
+                      if (work.incoming && !dependency)
                           inputs.boundary.Emplace(*work.incoming);
                       auxiliaryPreparation.emplace(BeginAuxValues(state, *auxiliary, time, work.workers, inputs)); });
         const bool overlap = _data->settings.execution.overlap;
@@ -336,7 +420,7 @@ namespace DNDS::Cauchy
                                           field.reconstructionBoundary,
                                       "limited VR schedule lacks polynomial workspace");
                 _data->reconstruction->SubmitReconstructionIterLimitedTo(
-                    engine, stream, state.CoupledField(), reconstruction.coefficients.CoupledField(),
+                    engine, stream, state.CoupledField(), reconstruction.WarmValues().CoupledField(),
                     *field.reconstruction, *field.reconstructionBoundary, work.limitedVR->targetCoefficients,
                     work.limitedVR->alpha, region);
                 return;
@@ -348,7 +432,7 @@ namespace DNDS::Cauchy
                                           field.reconstructionBoundary,
                                       "VR schedule lacks polynomial workspace");
                 _data->reconstruction->SubmitReconstructionIterTo(
-                    engine, stream, state.PhysicalField(iField), reconstruction.coefficients.PhysicalField(iField),
+                    engine, stream, state.PhysicalField(iField), reconstruction.WarmValues().PhysicalField(iField),
                     *field.reconstruction, *field.reconstructionBoundary, region);
             }
         };
@@ -370,7 +454,7 @@ namespace DNDS::Cauchy
         // Destruction order is part of the worker lifetime contract: gradient
         // is captured by reference below, so the schedule must drain before
         // this closure and the earlier retained operands leave scope.
-        OperatorSchedule schedule(engine, stream, overlap);
+        OperatorSchedule schedule(engine, stream, communication, overlap);
         const auto rest = schedule.DependentRegion();
         // Payload operations retain their own inputs; queued callbacks only
         // borrow objects declared before schedule (or capture values explicitly).
@@ -378,7 +462,9 @@ namespace DNDS::Cauchy
         meanOperations.reserve(reconstruction.meanHalo.size());
         ++reconstruction.meanEpoch;
         for (auto &halo : reconstruction.meanHalo)
-            meanOperations.push_back(halo.Begin(reconstruction.meanEpoch, engine, stream, _data->settings.CheckHaloFreshness()));
+            meanOperations.push_back(halo.BeginReady(
+                reconstruction.meanEpoch, engine, communication,
+                _data->settings.CheckHaloFreshness()));
         std::vector<R::TransferOperation> firstCoefficients;
         const auto &numerics = _data->settings.numerics;
         const bool variational = !work.meanOnly && numerics.reconstruction == "variational";
@@ -389,25 +475,64 @@ namespace DNDS::Cauchy
         // bridge may otherwise join that work while checking producer readiness.
         if (auxiliaryPreparation && overlap)
             schedule.Submit([&]
-                            { auxiliaryPreparation->Apply(CFV::ReconstructionRegion::Core); });
-        if (!deferredEvaluator)
+                            {
+                if (dependency)
+                    auxiliaryPreparation->ApplyInterfaceIndependent();
+                else
+                    auxiliaryPreparation->Apply(CFV::ReconstructionRegion::Core); });
+        if (!deferredEvaluator && !dependency)
             schedule.Submit([&, variational]
                             { work.FillBoundary(state, variational && _data->settings.numerics.reconstructionBoundaryFromPolynomial,
                                                 time, *evaluator, incoming); });
         // P0 RANS sources still need physical gradients during a mean-only
         // timestep forecast; disabling reconstruction must not skip this pass.
         const bool directGradientWork = (!work.meanOnly && numerics.reconstruction == "gradient") ||
-                                        (_data->equation.HasRANS() && numerics.reconstruction == "constant");
+                                        (_data->equation.HasRANS() &&
+                                         (numerics.reconstruction == "constant" ||
+                                          (work.meanOnly && numerics.reconstruction == "gradient")));
         const bool gradientWork = directGradientWork || bool(work.limitedVR) || bool(work.primitiveGradient);
-        if (gradientWork && overlap && !deferredEvaluator)
+        if (gradientWork && overlap && !deferredEvaluator && !dependency)
             schedule.Submit([&]
                             { gradient(CFV::ReconstructionRegion::Core); });
-        if (firstSweep)
+        if (firstSweep && !dependency)
             sweep(CFV::ReconstructionRegion::Core);
-        OperatorSchedule::Wait(meanOperations);
-        if (auxiliaryPreparation)
+        if (dependency)
         {
+            schedule.ComputeWaitFor(dependency->completion);
             schedule.Submit([&]
+                            {
+                dependency->publish();
+                DNDS_check_throw_info(work.incoming,
+                                      "interface refresh did not bind a boundary packet");
+                ValidateBoundaryInputs(*work.incoming, time);
+                incomingRead.emplace(
+                    work.incoming->QuadratureValues().CoupledField().Owned().Read());
+                incoming = incomingRead->View<R::UniformTableRows>();
+                if (needsAuxiliaryPreparation)
+                    auxiliaryPreparation->BindBoundary(*work.incoming); });
+            if (needsAuxiliaryPreparation && overlap)
+                schedule.Submit([&]
+                                { auxiliaryPreparation->Apply(CFV::ReconstructionRegion::Core); });
+            if (!deferredEvaluator)
+                schedule.Submit([&, variational]
+                                { work.FillBoundary(state, variational && _data->settings.numerics.reconstructionBoundaryFromPolynomial,
+                                                    time, *evaluator, incoming); });
+            // The ordinary MPI core may contain cells incident to a physical
+            // interface. Until a separately prepared interface-independent
+            // partition is supplied, run these boundary-consuming core passes
+            // after the interface event; never infer safety from MPI locality.
+            if (gradientWork && overlap && !deferredEvaluator)
+                schedule.Submit([&]
+                                { gradient(CFV::ReconstructionRegion::Core); });
+            if (firstSweep)
+                sweep(CFV::ReconstructionRegion::Core);
+        }
+        for (auto &operation : meanOperations)
+            schedule.AwaitPublished(std::move(operation));
+        meanOperations.clear();
+        if (needsAuxiliaryPreparation)
+        {
+            schedule.Submit([&, rest]
                             {
                 auxiliaryPreparation->Apply(rest);
                 auxiliaryPreparation->Finish(*auxiliary); });
@@ -418,10 +543,17 @@ namespace DNDS::Cauchy
         {
             // Two-equation transport explicitly needs mean gradients; those
             // are independent of the reconstruction being computed below.
+            // The current mean-gradient preparation acquires its CPU scopes
+            // synchronously, so publish any queued packet before binding them.
+            // This is a host-access bridge, not an MPI-core safety assumption.
+            local([&]
+                  { schedule.Join(); });
             AuxiliaryInputs inputs;
             if (work.incoming)
                 inputs.boundary.Emplace(*work.incoming);
-            PrepareAuxValues(state, *auxiliary, *work.meanGradients, engine, stream, time, work.workers, inputs);
+            PrepareAuxValues(state, *auxiliary, *work.meanGradients, engine,
+                             stream, communication, time, work.workers,
+                             inputs);
         }
         if (deferredEvaluator)
         {
@@ -431,10 +563,10 @@ namespace DNDS::Cauchy
                                                 time, *evaluator, incoming); });
         }
         if (_data->settings.CheckHaloFreshness())
-            local([&]
-                  {
-            for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
-                reconstruction.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), reconstruction.meanEpoch); });
+            schedule.Submit([&]
+                            {
+                for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+                    reconstruction.meanHalo[iField].RequireCurrent(state.PhysicalField(iField), reconstruction.meanEpoch); });
         if (gradientWork)
         {
             schedule.Submit([&, rest]
@@ -445,15 +577,15 @@ namespace DNDS::Cauchy
                 for (index iField = 0; iField < index(work.fields.size()); ++iField)
                 {
                     auto &field = work.fields[iField];
-                    if (numerics.reconstruction == "gradient" && !work.nativeDirectGradient)
+                    if (!work.meanOnly && numerics.reconstruction == "gradient" && !work.nativeDirectGradient)
                     {
                         DNDS_check_throw_info(_data->reconstruction,
                                               "gradient-to-modal conversion requires a polynomial plan");
                         _data->gradient.ConvertToCoefficients(*field.gradient, *_data->reconstruction,
-                                                             reconstruction.coefficients.PhysicalField(iField));
+                                                             reconstruction.WarmValues().PhysicalField(iField));
                     }
                     else if (_data->reconstruction)
-                        Algebra::Fill(reconstruction.coefficients.PhysicalField(iField), 0.);
+                        Algebra::Fill(reconstruction.WarmValues().PhysicalField(iField), 0.);
                 } });
             local([&]
                   { schedule.Join(); });
@@ -473,7 +605,7 @@ namespace DNDS::Cauchy
             work.limitedVR->Build(*_data, state.CoupledField(), *reconstruction.limitedVRHistory,
                                   work.flowCharacteristic ? CFV::FaceCharacteristicTransformRef(std::cref(*work.flowCharacteristic))
                                                           : std::nullopt,
-                                  engine, stream);
+                                  engine, stream, communication);
         }
         if (variational)
         {
@@ -493,19 +625,24 @@ namespace DNDS::Cauchy
                     if (overlap)
                         sweep(CFV::ReconstructionRegion::Core);
                 }
-                OperatorSchedule::Wait(operations);
+                schedule.Await(operations);
                 sweep(rest);
                 local([&]
                       { schedule.Join(); });
                 bool converged = false;
-                if (numerics.reconstructionTolerance > 0 && (iteration % 4 == 3 || iteration + 1 == numerics.reconstructionIterations))
+                // Explicit host stopping boundary. Fixed-count sweeps do not
+                // observe a residual. Device-side conditional iteration / queue
+                // mutation is future work, not hidden inside this segment.
+                if (numerics.reconstructionTolerance > 0 &&
+                    ((iteration + 1) % numerics.reconstructionResidualCheckInterval == 0 ||
+                     iteration + 1 == numerics.reconstructionIterations))
                 {
                     real norms[2]{};
                     local([&]
                           {
                         for (index iField = 0; iField < index(work.fields.size()); ++iField)
                         {
-                            const auto aRead = reconstruction.coefficients.PhysicalField(iField).Owned().Read();
+                            const auto aRead = reconstruction.WarmValues().PhysicalField(iField).Owned().Read();
                             DNDS_check_throw_info(work.fields[iField].reconstruction,
                                                   "VR convergence check lacks workspace");
                             const auto bRead = work.fields[iField].reconstruction->temporary.Owned().Read();
@@ -519,7 +656,7 @@ namespace DNDS::Cauchy
                 }
                 for (index iField = 0; iField < index(work.fields.size()); ++iField)
                     _data->reconstruction->SubmitCommitReconstruction(engine, stream,
-                                                                      reconstruction.coefficients.PhysicalField(iField),
+                                                                      reconstruction.WarmValues().PhysicalField(iField),
                                                                       *work.fields[iField].reconstruction);
                 local([&]
                       { schedule.Join(); });
@@ -533,16 +670,18 @@ namespace DNDS::Cauchy
                   {
                 schedule.Join();
                 for (index iField = 0; iField < index(work.fields.size()); ++iField)
-                    Algebra::Fill(reconstruction.coefficients.PhysicalField(iField), 0.); });
+                    Algebra::Fill(reconstruction.WarmValues().PhysicalField(iField), 0.); });
         const bool useFluxScratch = reconstruction.distinctFinalized;
         if (useFluxScratch)
             local([&]
-                  { EquationDofOperations::Copy(reconstruction.MutableFinalized(), reconstruction.coefficients); });
+                  { EquationDofOperations::Copy(reconstruction.MutableFinalized(), reconstruction.WarmValues()); });
         if (work.nativeDirectGradient && numerics.limiter != "WBAP" &&
             (numerics.limiter == "Barth" || numerics.positivity))
             local([&]
                   { work.PrepareDirectGradientLimiter(state, numerics.limiter == "Barth"); });
-        if (numerics.limiter == "WBAP")
+        // Mean-only forecasts do not publish a reconstructed face field, even
+        // when the regular operator is configured with gradient/modal WBAP.
+        if (!work.meanOnly && numerics.limiter == "WBAP")
         {
             if (work.nativeDirectGradient)
             {
@@ -569,9 +708,11 @@ namespace DNDS::Cauchy
                             region, std::nullopt, 0, numerics.cfv.WBAP_nStd);
                 };
                 if (overlap)
-                    limit(CFV::ReconstructionRegion::Core);
-                OperatorSchedule::Wait(gradientOperations);
-                limit(rest);
+                    schedule.Submit([limit]
+                                    { limit(CFV::ReconstructionRegion::Core); });
+                schedule.Await(gradientOperations);
+                schedule.Submit([limit, rest]
+                                { limit(rest); });
                 local([&]
                       { schedule.Join(); });
             }
@@ -601,7 +742,7 @@ namespace DNDS::Cauchy
                     };
                     if (overlap)
                         limit(CFV::ReconstructionRegion::Core);
-                    OperatorSchedule::Wait(limiterOperations);
+                    schedule.Await(limiterOperations);
                     limit(rest);
                     local([&]
                           { schedule.Join(); });
@@ -622,7 +763,7 @@ namespace DNDS::Cauchy
         if (work.positivity)
             local([&]
                   { const Workspace::PhaseTime timing(work, Workspace::PPPhase);
-                    work.positivity->Apply(state, reconstruction.coefficients, reconstruction.MutableFinalized(), false); });
+                    work.positivity->Apply(state, reconstruction.WarmValues(), reconstruction.MutableFinalized(), false); });
         local([&]
               { reconstruction.PublishFinalized(); });
         auto operations = work.nativeDirectGradient
@@ -640,11 +781,11 @@ namespace DNDS::Cauchy
             schedule.Submit([&]
                             { work.ApplyRHS(state, *residual, CFV::ReconstructionRegion::Core, *evaluator, time,
                                             OptionalRef<const AuxiliaryValues>(auxiliary), {}, incoming); });
-        OperatorSchedule::Wait(operations);
-        OperatorSchedule::Wait(unlimitedViscousOperations);
-        OperatorSchedule::Wait(directViscousOperations);
+        schedule.Await(operations);
+        schedule.Await(unlimitedViscousOperations);
+        schedule.Await(directViscousOperations);
         if (primitiveGradientOperation)
-            primitiveGradientOperation->Wait();
+            schedule.Await(*primitiveGradientOperation);
         schedule.Submit([&]
                         { work.RefreshDirectGradients(state, true, time); });
         if (residual)
@@ -666,7 +807,8 @@ namespace DNDS::Cauchy
                   { work.PublishSourceState(state, time); });
         work.boundaryMomentumCurrent = bool(residual);
         work.rhsState.emplace(state.NumericAlias());
-        work.rhsCoefficients.emplace(reconstruction.FinalizedValues());
+        if (reconstruction.coefficients)
+            work.rhsCoefficients.emplace(reconstruction.FinalizedValues());
         work.rhsTime = time;
     }
 

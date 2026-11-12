@@ -341,13 +341,15 @@ namespace DNDS::Cauchy
             Workspace *_work = nullptr;
 
         public:
-            ActiveReconstruction(Workspace &work, const EquationDofs &coefficients,
-                                 const EquationDofs &fluxCoefficients) : _work(&work)
+            ActiveReconstruction(Workspace &work, const ReconstructionState &state) : _work(&work)
             {
                 DNDS_check_throw_info(!work.activeCoefficients && !work.activeFluxCoefficients,
                                       "workspace already has an active reconstruction binding");
-                work.activeCoefficients.emplace(coefficients);
-                work.activeFluxCoefficients.emplace(fluxCoefficients);
+                if (state.coefficients)
+                {
+                    work.activeCoefficients.emplace(state.WarmValues());
+                    work.activeFluxCoefficients.emplace(state.FinalizedValues());
+                }
             }
             ActiveReconstruction(const ActiveReconstruction &) = delete;
             ActiveReconstruction &operator=(const ActiveReconstruction &) = delete;
@@ -361,10 +363,9 @@ namespace DNDS::Cauchy
                 }
             }
         };
-        ActiveReconstruction BindReconstruction(const EquationDofs &coefficients,
-                                                const EquationDofs &fluxCoefficients)
+        ActiveReconstruction BindReconstruction(const ReconstructionState &state)
         {
-            return ActiveReconstruction(*this, coefficients, fluxCoefficients);
+            return ActiveReconstruction(*this, state);
         }
         const EquationDofs &Coefficients() const
         {

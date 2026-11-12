@@ -14,21 +14,17 @@ namespace DNDS::Cauchy
         R::SessionAccess session;
         std::shared_ptr<const Data> owner;
         EquationDofOperations::Binding binding;
-        /// Durable warm/unlimited coefficients advanced by variational
-        /// reconstruction. Direct P0/P1 instead retain a managed numeric alias
-        /// of the equation state for the common publication/coupling contract;
-        /// they allocate no coefficient payload or coefficient transfer.
-        EquationDofs coefficients;
+        /// Durable warm/unlimited modal coefficients. Empty for direct P0/P1;
+        /// physical gradients live in Workspace and means are separate inputs.
+        std::optional<EquationDofs> coefficients;
         /// A distinct finalized allocation is required only when a limiter or
         /// reconstruction PP mutates a polynomial derived from the warm guess.
-        /// Otherwise fluxCoefficients is a shallow managed alias of coefficients:
-        /// it retains the same allocation without a second payload or copy.
+        /// Otherwise FinalizedValues selects coefficients without another handle.
         bool distinctFinalized = false;
         /// Durable finalized variational polynomial consumed after limiter/PP.
-        /// Direct P0/P1 keep the same state alias and publish their actual
-        /// gradients from Workspace. DITR variational stages need independent
+        /// Empty for direct P0/P1 and unfiltered VR. DITR stages need independent
         /// copies while serially sharing all temporary workspace allocation.
-        EquationDofs fluxCoefficients;
+        std::optional<EquationDofs> fluxCoefficients;
         /// Provenance of the finalized owned polynomial. Limiter/PP profiles
         /// require an Evaluate/PrepareReconstruction after the warm guess
         /// changes; unfiltered profiles can republish by a direct owned copy.
@@ -41,6 +37,8 @@ namespace DNDS::Cauchy
 
         bool FinalizedCurrent() const;
         void PublishFinalized();
+        const EquationDofs &WarmValues() const;
+        EquationDofs &WarmValues();
         const EquationDofs &FinalizedValues() const;
         EquationDofs &FinalizedValues();
         EquationDofs &MutableFinalized();

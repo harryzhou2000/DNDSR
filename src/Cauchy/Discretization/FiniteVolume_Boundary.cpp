@@ -13,12 +13,15 @@ namespace DNDS::Cauchy
     {
         const PhaseTime timing(*this, BoundaryPhase);
         const auto mean = state.ReadOwned();
-        const auto rec = Coefficients().ReadOwned();
+        std::optional<EquationDofs::ReadScope> rec;
+        if (polynomial)
+            rec.emplace(Coefficients().ReadOwned());
         std::vector<EquationBlockReadView> meanBlocks, recBlocks;
         for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
         {
             meanBlocks.push_back(mean.Block(iBlock));
-            recBlocks.push_back(rec.Block(iBlock));
+            if (rec)
+                recBlocks.push_back(rec->Block(iBlock));
         }
         const R::MetadataBuffer<EquationBlockReadView> meanMetadata(meanBlocks),
             coefficientMetadata(recBlocks);

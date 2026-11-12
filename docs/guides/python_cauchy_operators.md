@@ -62,6 +62,15 @@ Workspaces and linear solvers retain the operator owner. Copied Runtime arrays
 retain their allocations and metadata independently. Bare native views still
 obey the ordinary lease lifetime contract; a NumPy snapshot is a copy.
 
+`reconstruction_guess()`, `flux_reconstruction()` and
+`restore_reconstruction()` refer to **modal VR coefficients**. Direct P0/P1
+has empty modal slots and rejects those calls; it never returns cell means as
+fake coefficients. Direct P1 physical gradients are separate temporary
+workspace fields. Use `domain.dofs` or an explicit cloned state to inspect or
+change means, and run the normal reconstruction/evaluation operation to prepare
+gradients. These are the current Cauchy contracts, not compatibility aliases
+for the former split flow5/equation APIs.
+
 ```text
 NonlinearStageSolver -> FiniteVolumeOperators -> Domain -> optional Simulation
                    -> original state + workspace + engine

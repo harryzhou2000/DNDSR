@@ -1,6 +1,7 @@
 #include "Cauchy/Core/Simulation.hpp"
 #include "RotatingVortexFixture.hpp"
 #include "Geom/Unstructured/UnstructuredMeshState.hpp"
+#include "DNDS/MPI/Failure.hpp"
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -61,7 +62,8 @@ namespace
 /// than adding experiment controls to the production solver configuration.
 int main(int argc, char **argv)
 {
-    MPI_Init(&argc, &argv);
+    int provided = 0;
+    MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &provided);
     DNDS::MPIInfo mpi;
     mpi.setWorld();
     int result = 0;
@@ -125,7 +127,15 @@ int main(int argc, char **argv)
                             {"PERIODIC_1",DNDS::Geom::BC_ID_PERIODIC_1}, {"PERIODIC_1_DONOR",DNDS::Geom::BC_ID_PERIODIC_1_DONOR},
                             {"PERIODIC_2",DNDS::Geom::BC_ID_PERIODIC_2}, {"PERIODIC_2_DONOR",DNDS::Geom::BC_ID_PERIODIC_2_DONOR}};
                         if (iDomain == 0) mesh["periodicLengths"] = {10,10,0};
-                    } });
+                    }
+                // Bounded numerical campaigns may select an implicit method,
+                // solver controls and a value-refresh cadence without adding
+                // experiment flags to the production configuration API.
+                if (settings.contains("time")) input["time"].merge_patch(settings.at("time"));
+                if (settings.contains("defaults")) input["defaults"].merge_patch(settings.at("defaults"));
+                if (settings.contains("interfaceRefreshCadence"))
+                    for (auto &connection : input["interfaces"])
+                        connection["refreshCadence"] = settings.at("interfaceRefreshCadence"); });
         const auto config = C::SimulationConfig::ResolveCollective(input, mpi.comm);
         const auto start = MPI_Wtime();
         {
@@ -196,6 +206,25 @@ int main(int argc, char **argv)
                         }
                     }
                 DNDS_check_throw_info(bool(field),"failed writing rank-local final field"); });
+            // Preserve capped versus converged solves independently of physical
+            // step acceptance. Only the domain root writes its report; no new
+            // diagnostic collective is inserted into the nonlinear schedule.
+            for (I iDomain = 0; iDomain < 2; ++iDomain)
+                if (simulation.Local(iDomain) && simulation.Placement().DomainRank(iDomain) == 0)
+                {
+                    C::Json stages = C::Json::array();
+                    for (const auto &stage : simulation.GetDomain(iDomain).LastImplicitStages())
+                        stages.push_back({{"iterations", stage.iterations},
+                                          {"converged", stage.converged},
+                                          {"residualTargetRatio", stage.residualTargetRatio},
+                                          {"residual", stage.residual},
+                                          {"referenceResidual", stage.referenceResidual},
+                                          {"reconstructionIterations", stage.reconstructionIterations},
+                                          {"reconstructionRelativeUpdate", stage.reconstructionRelativeUpdate}});
+                    std::ofstream report("nonlinear-domain" + std::to_string(iDomain) + ".json");
+                    report << stages.dump(2) << '\n';
+                    DNDS_check_throw_info(bool(report), "failed writing nonlinear evidence");
+                }
             DNDS::MPI::LocalStage(mpi, [&]
                                   {
                 if (mpi.rank == 0 && outputEvery)
@@ -212,9 +241,13 @@ int main(int argc, char **argv)
     }
     catch (const std::exception &error)
     {
-        if (mpi.rank == 0)
-            std::cerr << error.what() << '\n';
-        result = 1;
+        // The try contains distributed solver calls: no exception recovery or
+        // collective finalization after a possibly rank-local failure.
+        DNDS::MPI::AbortCaught(mpi.comm, error.what());
+    }
+    catch (...)
+    {
+        DNDS::MPI::AbortCaught(mpi.comm, "unknown multidomain experiment failure");
     }
     MPI_Finalize();
     return result;

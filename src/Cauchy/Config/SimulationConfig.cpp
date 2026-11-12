@@ -97,7 +97,7 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(settings.execution.hostThreads >= 0 && settings.execution.hostThreads <= 1024, "invalid CPU worker count");
             const auto &numerics = settings.numerics;
             numerics.ValidatePositivity();
-            DNDS_check_throw_info(numerics.reconstructionIterations > 0 && std::isfinite(numerics.reconstructionTolerance) && numerics.reconstructionTolerance >= 0,
+            DNDS_check_throw_info(numerics.reconstructionIterations > 0 && numerics.reconstructionResidualCheckInterval > 0 && std::isfinite(numerics.reconstructionTolerance) && numerics.reconstructionTolerance >= 0,
                                   "invalid Cauchy numerical controls");
             numerics.cfv.Validate();
             numerics.limitedVR.Validate();
@@ -232,7 +232,7 @@ namespace DNDS::Cauchy
                                   linear.jacobiLocalSweeps >= 1 && linear.jacobiLocalSweeps <= 2 &&
                                   (linear.componentScaling == "none" || linear.componentScaling == "meanState") &&
                                   (linear.stopping == "residual" || (linear.stopping == "fixedCount" && linear.method != "gmres")) &&
-                                  linear.iterations > 0 && linear.subspace > 0 && linear.subspace < INT_MAX &&
+                                  linear.iterations > 0 && linear.residualCheckInterval > 0 && linear.subspace > 0 && linear.subspace < INT_MAX &&
                                   nonnegative(linear.relativeTolerance) && nonnegative(linear.absoluteTolerance) && sgs.sweeps > 0 && ilu.fill >= -1 && ilu.fill <= 5 && ilu.preconditionerCorrections > 0 &&
                                   (ilu.ordering == "natural" || ilu.ordering == "rcm") &&
                                   !((linear.method == "ilu" || linear.method == "jacobi" || (linear.method == "gmres" && linear.preconditioner == "ilu")) && sgs.exchangeBetweenSweeps),
@@ -583,6 +583,7 @@ namespace DNDS::Cauchy
             data->provenance["/output/checkpointInterval"] = "deprecated /output/interval alias";
         }
         std::set<std::pair<std::string, int>> receivers;
+        std::optional<std::string> interfaceCadence;
         for (const auto &entry : data->root.value("interfaces", Json::array()))
         {
             Config::ValidatePartialJsonSchema(entry, InterfaceSettings::schema(), "/interfaces");
@@ -590,6 +591,15 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(names.count(connection.donor) && names.count(connection.receiver) && connection.donor != connection.receiver,
                                   "interface donor/receiver names must identify distinct configured domains");
             DNDS_check_throw_info(connection.routing == "coarseBoxes" || connection.routing == "allGatherBoundary", "unknown interface routing mode");
+            DNDS_check_throw_info(connection.refreshCadence == "stageFrozen" ||
+                                      connection.refreshCadence == "nonlinearIteration",
+                                  "unknown interface refresh cadence");
+            if (!interfaceCadence)
+                interfaceCadence = connection.refreshCadence;
+            else
+                DNDS_check_throw_info(
+                    *interfaceCadence == connection.refreshCadence,
+                    "all interface connections must use one coordinated refresh cadence");
             DNDS_check_throw_info(connection.coarseBoxesPerRank > 0 && std::isfinite(connection.maxGap) && connection.maxGap >= 0, "invalid interface search bounds");
             DNDS_check_throw_info(receivers.emplace(connection.receiver, connection.receiverZone).second, "interface receiver zone has multiple incoming connections");
             const auto receiver = std::find_if(data->domains.begin(), data->domains.end(), [&](const auto &domain)

@@ -1041,7 +1041,14 @@ TEST_CASE("The same BDF and coupled block solve interface advances all flow RANS
             constexpr double dt = .025;
             for (int step = 0; step < 2; ++step)
             {
-                REQUIRE(stepper.Prepare(state.CoupledField(), trial.CoupledField(), step * dt, dt, evaluate, solve));
+                stepper.BeginStep(state.CoupledField(), trial.CoupledField(),
+                                  step * dt, dt, evaluate);
+                const auto group = stepper.PrepareGroup(trial.CoupledField());
+                const auto equation = stepper.PrepareEquation(group, trial.CoupledField(), 0);
+                const auto &c = equation.coefficients;
+                REQUIRE(solve(equation.state, equation.resOther, c.inverseDt,
+                              c.rhsScale, c.time, group.stage));
+                stepper.CompleteGroup(group, trial.CoupledField(), evaluate);
                 {
                     const auto initial = state.ReadOwned(), result = trial.ReadOwned();
                     for (I iRow = 0; iRow < fixture.rows; ++iRow)
@@ -1195,7 +1202,7 @@ TEST_CASE("One time driver advances coupled and separate equation storage with i
         MPI_Allreduce(MPI_IN_PLACE, &error, 1, MPI_DOUBLE, MPI_MAX, mpi.comm);
         return error < 1e-8;
     };
-    const auto coupled = [&](auto &definition, auto &endpoint, const auto &rate, const auto &update,
+    const auto coupled = [&](auto &definition, const auto &group, auto &endpoint, const auto &rate, const auto &update,
                              const auto &operations, const auto &stopping)
     {
         auto residual = operations.NewVector(endpoint);
@@ -1205,17 +1212,43 @@ TEST_CASE("One time driver advances coupled and separate equation storage with i
         {
             for (int coupledStage = 0; coupledStage < 2; ++coupledStage)
             {
-                const auto equation = definition.PrepareCoupledStage(endpoint, coupledStage);
+                const auto equation = definition.PrepareEquation(group, endpoint, coupledStage);
                 const auto &c = equation.coefficients;
                 if (!update(equation.state, equation.resOther, c.inverseDt, c.rhsScale, c.time, coupledStage))
                     return false;
-                definition.CompleteCoupledStage(endpoint, rate);
+                definition.CompleteEquation(group, endpoint, rate);
             }
-            definition.AssembleStoppingResidual(endpoint, residual);
+            definition.AssembleStoppingResidual(group, endpoint, residual);
             if (stopping(residual))
                 return true;
         }
         return false;
+    };
+    const auto prepare = [&](auto &driver, const auto &initial, auto &trial,
+                             double time, double dt, const auto &rate,
+                             const auto &update, const auto &operations,
+                             const auto &stopping)
+    {
+        driver.BeginStep(initial, trial, time, dt, rate);
+        for (int stage = 0; stage < driver.GroupNumber(); ++stage)
+        {
+            const auto group = driver.PrepareGroup(trial);
+            if (group.coupledStages == 2)
+            {
+                if (!coupled(driver, group, trial, rate, update, operations, stopping))
+                    return false;
+            }
+            else if (group.implicit)
+            {
+                const auto equation = driver.PrepareEquation(group, trial, 0);
+                const auto &c = equation.coefficients;
+                if (!update(equation.state, equation.resOther, c.inverseDt,
+                            c.rhsScale, c.time, group.stage))
+                    return false;
+            }
+            driver.CompleteGroup(group, trial, rate);
+        }
+        return true;
     };
     for (const std::string method : {"bdf1", "bdf2", "trapz", "esdirk2", "esdirk3", "esdirk4", "ditr"})
     {
@@ -1250,10 +1283,11 @@ TEST_CASE("One time driver advances coupled and separate equation storage with i
         double time = 0;
         for (double dt : {.02, .03})
         {
-            REQUIRE(driver.Prepare(state, candidate, time, dt, evaluate, solve, [&](auto &definition, auto &endpoint)
-                                   { return coupled(definition, endpoint, evaluate, solve, C::EquationDofOperations{}, converged); }));
-            REQUIRE(oracle.Prepare(reference.CoupledField(), nativeCandidate, time, dt, nativeRate, nativeSolve, [&](auto &definition, auto &endpoint)
-                                   { return coupled(definition, endpoint, nativeRate, nativeSolve, DNDS::ODE::FieldTimeOperations{}, nativeConverged); }));
+            REQUIRE(prepare(driver, state, candidate, time, dt, evaluate, solve,
+                            C::EquationDofOperations{}, converged));
+            REQUIRE(prepare(oracle, reference.CoupledField(), nativeCandidate,
+                            time, dt, nativeRate, nativeSolve,
+                            DNDS::ODE::FieldTimeOperations{}, nativeConverged));
             compare();
             C::EquationDofOperations::Copy(state, candidate);
             driver.Commit();
@@ -1270,8 +1304,11 @@ TEST_CASE("One time driver advances coupled and separate equation storage with i
             restored->RestoreHistory(driver.PreviousState(), driver.PreviousDt());
             CHECK(restored->HasHistory());
             const auto before = state.ReadOwned();
-            REQUIRE(restored->Prepare(state, candidate, time, .025, evaluate, solve));
-            REQUIRE(oracle.Prepare(reference.CoupledField(), nativeCandidate, time, .025, nativeRate, nativeSolve));
+            REQUIRE(prepare(*restored, state, candidate, time, .025, evaluate,
+                            solve, C::EquationDofOperations{}, converged));
+            REQUIRE(prepare(oracle, reference.CoupledField(), nativeCandidate,
+                            time, .025, nativeRate, nativeSolve,
+                            DNDS::ODE::FieldTimeOperations{}, nativeConverged));
             compare();
             if (fixture.rows)
                 CHECK(before.Block("species")(0, 0) == state.ReadOwned().Block("species")(0, 0));
@@ -1302,14 +1339,15 @@ TEST_CASE("Equation algebra reserves every output before writing and time source
                 CHECK(values(iRow, j) == -7);
     }
     C::EquationTimeStepper driver(state, "bdf1");
-    const auto invalid = [&](auto &, const auto &source, double, double, double, int)
+    driver.BeginStep(state, candidate, 0, .01);
+    const auto group = driver.PrepareGroup(candidate);
+    const auto equation = driver.PrepareEquation(group, candidate, 0);
     {
-        auto write = const_cast<C::EquationDofs &>(source).WriteOwned();
+        auto write = const_cast<C::EquationDofs &>(equation.resOther).WriteOwned();
         if (fixture.rows)
             write.Block("species")(0, 0) += 1;
-        return true;
-    };
-    CHECK_THROWS(driver.Prepare(state, candidate, 0, .01, [](auto &, auto &, double, int) {}, invalid));
+    }
+    CHECK_THROWS(driver.CompleteGroup(group, candidate));
     CHECK_FALSE(driver.HasPendingTrial());
     CHECK_FALSE(driver.HasHistory());
     CheckValues(state);

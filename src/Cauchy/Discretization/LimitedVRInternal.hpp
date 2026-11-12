@@ -30,6 +30,8 @@ namespace DNDS::Cauchy
         void Build(const Data &data, const CFV::FVField &mean,
                    Runtime::Array<real> &previous,
                    CFV::FaceCharacteristicTransformRef transform,
-                   Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream);
+                   Runtime::EagerEngine &engine,
+                   const Runtime::ExecutionStream &compute,
+                   const Runtime::ExecutionStream &communication);
     };
 }

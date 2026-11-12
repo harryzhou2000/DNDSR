@@ -1,6 +1,5 @@
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Core/Simulation.hpp"
-#include "Cauchy/Core/DomainController.hpp"
 #include "Cauchy/Interface/InterfaceCoupling.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
@@ -180,8 +179,8 @@ namespace DNDS::Cauchy
                 } });
         }
         serializer.CloseFile();
-        std::vector<std::optional<DomainController::CheckpointCandidate>> checkpoints;
-        std::optional<DomainController::InternalCheckpointCandidate> internalCheckpoint;
+        std::vector<std::optional<Domain::CheckpointCandidate>> checkpoints;
+        std::optional<Domain::InternalCheckpointCandidate> internalCheckpoint;
         MPI::LocalStage(control, [&]
                         {
             DNDS_check_throw_info(std::isfinite(time) && time >= 0 && step >= 0, "invalid Cauchy simulation archive clock");
@@ -190,13 +189,13 @@ namespace DNDS::Cauchy
                      {
             MPI::LocalStage(MPIInfo(_placement.Context(iDomain)->Communicator()), [&]
                             { DNDS_check_throw_info(std::filesystem::is_regular_file(paths[iDomain]), "missing Cauchy domain checkpoint"); });
-            checkpoints[iDomain].emplace(GetDomain(iDomain).Controller().PrepareCheckpoint(paths[iDomain], _config.Root()));
+            checkpoints[iDomain].emplace(GetDomain(iDomain).PrepareCheckpoint(paths[iDomain], _config.Root()));
             MPI::LocalStage(MPIInfo(_placement.Context(iDomain)->Communicator()), [&]
                             { DNDS_check_throw_info(checkpoints[iDomain]->Time() == time && checkpoints[iDomain]->Epoch().acceptedStep == uint64_t(step),
                                                     "domain checkpoint clock differs from its simulation manifest"); }); });
         if (internal)
         {
-            internalCheckpoint.emplace(GetDomain(0).Controller().PrepareInternalCheckpoint(path, _config.Root()));
+            internalCheckpoint.emplace(GetDomain(0).PrepareInternalCheckpoint(path, _config.Root()));
             MPI::LocalStage(control, [&]
                             { DNDS_check_throw_info(internalCheckpoint->TrialEpoch().acceptedStep == uint64_t(step),
                                                     "internal checkpoint trial belongs to another accepted step"); });
@@ -214,12 +213,12 @@ namespace DNDS::Cauchy
                 auto &candidate = *checkpoints[iDomain];
                 const MPIInfo mpi(_placement.Context(iDomain)->Communicator());
                 MPI::LocalStage(mpi, [&]
-                                { ports[iDomain] = {domain.Controller().PrepareCheckpointInterfaceDonor(candidate)}; }); });
+                                { ports[iDomain] = {domain.PrepareCheckpointInterfaceDonor(candidate)}; }); });
             StateEpoch epoch;
             epoch.acceptedStep = uint64_t(step);
             _interfaces->Refresh(ports, time, epoch);
             LocalDomains(_placement, [&](index iDomain)
-                         { if (const auto input = _interfaces->Inputs(iDomain)) GetDomain(iDomain).Controller().BindInterfaceInputs(*input); });
+                         { if (const auto input = _interfaces->Inputs(iDomain)) GetDomain(iDomain).BindInterfaceInputs(*input); });
         }
         try
         {
@@ -228,7 +227,7 @@ namespace DNDS::Cauchy
             // another domain cannot reserve, without catching collective I/O.
             MPI::LocalStage(control, [&]
                             { LocalDomains(_placement, [&](index iDomain)
-                                           { GetDomain(iDomain).Controller().ReserveCheckpoint(*checkpoints[iDomain], false); }); });
+                                           { GetDomain(iDomain).ReserveCheckpoint(*checkpoints[iDomain], false); }); });
         }
         catch (...)
         {
@@ -241,15 +240,15 @@ namespace DNDS::Cauchy
                 // Already validated accepted-packet aliases. Binding is local
                 // and does not perform I/O, search, transfer or MPI agreement.
                 LocalDomains(_placement, [&](index iDomain)
-                             { if (const auto input = _interfaces->Inputs(iDomain)) GetDomain(iDomain).Controller().BindInterfaceInputs(*input); });
+                             { if (const auto input = _interfaces->Inputs(iDomain)) GetDomain(iDomain).BindInterfaceInputs(*input); });
             }
             throw;
         }
         for (index iDomain = 0; iDomain < index(_domains.size()); ++iDomain)
             if (_domains[iDomain])
-                _domains[iDomain]->Controller().CommitCheckpoint(*checkpoints[iDomain]);
+                _domains[iDomain]->CommitCheckpoint(*checkpoints[iDomain]);
         if (internalCheckpoint)
-            GetDomain(0).Controller().CommitInternalCheckpoint(*internalCheckpoint);
+            GetDomain(0).CommitInternalCheckpoint(*internalCheckpoint);
         if (_interfaces)
             _interfaces->Commit();
         _time = time;

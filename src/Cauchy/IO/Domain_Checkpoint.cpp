@@ -753,10 +753,11 @@ namespace DNDS::Cauchy
             stateArchive->Restore(_state.trial, route, context);
             DNDS_check_throw_info(Admissible(_state.trial), "Cauchy restart contains inadmissible equation states");
             std::optional<EquationDofs> guess;
-            MPI::LocalStage(mpi, [&]
-                            { guess.emplace(EquationDofOperations::NewVector(_problem.finiteVolume.ReconstructionGuess(*_state.reconstruction))); });
+            if (_problem.finiteVolume.PolynomialReconstruction())
+                MPI::LocalStage(mpi, [&]
+                                { guess.emplace(EquationDofOperations::NewVector(_problem.finiteVolume.ReconstructionGuess(*_state.reconstruction))); });
             const bool needsLimitedVRHistory = bool(_problem.finiteVolume.LimitedVRHistory(*_state.reconstruction));
-            int compatible = reconstructionArchive && reconstructionArchive->Compatible(*guess) &&
+            int compatible = guess && reconstructionArchive && reconstructionArchive->Compatible(*guess) &&
                              metadata.value("reconstruction", Json()) == _problem.finiteVolume.ReconstructionMetadata() &&
                              (!needsLimitedVRHistory || limitedVRHistory);
             compatible = MPI::AllreduceValue<MPI::Reduction::Min>(compatible, mpi.comm);
@@ -771,7 +772,7 @@ namespace DNDS::Cauchy
                     transfer(*limitedVRHistory, *mappedLimitedVRHistory);
                 }
             }
-            else
+            else if (guess)
                 EquationDofOperations::Fill(*guess, 0);
             std::unique_ptr<EquationTimeStepper> restoredStepper;
             if (_state.timeStepper)
@@ -804,35 +805,41 @@ namespace DNDS::Cauchy
         transfer(*flow, trial.Owned());
         DNDS_check_throw_info(Admissible(_state.trial), "Cauchy restart contains inadmissible states");
         std::optional<EquationDofs> guess;
-        MPI::LocalStage(mpi, [&]
-                        { guess.emplace(EquationDofOperations::NewVector(_problem.finiteVolume.ReconstructionGuess(*_state.reconstruction))); });
-        auto &guessArray = guess->CoupledField().Owned();
-        int compatibleReconstruction = bool(reconstruction) && (version < 4 || metadata.value("reconstruction", Json()) == _problem.finiteVolume.ReconstructionMetadata());
-        const bool needsLimitedVRHistory = _problem.finiteVolume.LimitedVRHistory(*_state.reconstruction).has_value();
-        compatibleReconstruction = compatibleReconstruction && (!needsLimitedVRHistory || limitedVRHistory);
-        if (reconstruction)
-            for (index iRow = 0; iRow < reconstruction->RowCount(); ++iRow)
-                compatibleReconstruction = compatibleReconstruction && reconstruction->RowSize(iRow) == guessArray.Layout().Width();
-        compatibleReconstruction = MPI::AllreduceValue<MPI::Reduction::Min>(
-            compatibleReconstruction, mpi.comm);
         std::optional<Runtime::Array<real>> mappedLimitedVRHistory;
-        if (compatibleReconstruction)
+        // Means-only/direct reconstructions have no coefficient destination.
+        // A modal payload in an older archive is simply not applicable; do
+        // not manufacture a scratch/alias to run the modal restore branch.
+        if (_problem.finiteVolume.PolynomialReconstruction())
         {
-            transfer(*reconstruction, guessArray);
-            if (needsLimitedVRHistory)
+            MPI::LocalStage(mpi, [&]
+                            { guess.emplace(EquationDofOperations::NewVector(_problem.finiteVolume.ReconstructionGuess(*_state.reconstruction))); });
+            auto &guessArray = guess->CoupledField().Owned();
+            int compatibleReconstruction = bool(reconstruction) && (version < 4 || metadata.value("reconstruction", Json()) == _problem.finiteVolume.ReconstructionMetadata());
+            const bool needsLimitedVRHistory = _problem.finiteVolume.LimitedVRHistory(*_state.reconstruction).has_value();
+            compatibleReconstruction = compatibleReconstruction && (!needsLimitedVRHistory || limitedVRHistory);
+            if (reconstruction)
+                for (index iRow = 0; iRow < reconstruction->RowCount(); ++iRow)
+                    compatibleReconstruction = compatibleReconstruction && reconstruction->RowSize(iRow) == guessArray.Layout().Width();
+            compatibleReconstruction = MPI::AllreduceValue<MPI::Reduction::Min>(
+                compatibleReconstruction, mpi.comm);
+            if (compatibleReconstruction)
             {
-                MPI::LocalStage(mpi, [&]
-                                { mappedLimitedVRHistory.emplace(Runtime::RowLayout::Dense(_problem.finiteVolume.Metrics().NumCell(), 2)); });
-                transfer(*limitedVRHistory, *mappedLimitedVRHistory);
+                transfer(*reconstruction, guessArray);
+                if (needsLimitedVRHistory)
+                {
+                    MPI::LocalStage(mpi, [&]
+                                    { mappedLimitedVRHistory.emplace(Runtime::RowLayout::Dense(_problem.finiteVolume.Metrics().NumCell(), 2)); });
+                    transfer(*limitedVRHistory, *mappedLimitedVRHistory);
+                }
             }
-        }
-        else
-        {
-            auto write = guessArray.Write();
-            const auto output = write.View<Runtime::UniformTableRows>();
-            for (index iCell = 0; iCell < output.RowCount(); ++iCell)
-                for (index j = 0; j < output.RowSize(iCell); ++j)
-                    output(iCell, j) = 0;
+            else
+            {
+                auto write = guessArray.Write();
+                const auto output = write.View<Runtime::UniformTableRows>();
+                for (index iCell = 0; iCell < output.RowCount(); ++iCell)
+                    for (index j = 0; j < output.RowSize(iCell); ++j)
+                        output(iCell, j) = 0;
+            }
         }
         std::unique_ptr<EquationTimeStepper> restoredStepper;
         std::optional<CFV::FVField> restoredHistory;
@@ -1050,7 +1057,7 @@ namespace DNDS::Cauchy
         _state.time = checkpoint.time;
         _state.epoch = checkpoint.epoch;
         _state.trialReady = _state.restoreReconstruction = _state.coordinatedPrepared = false;
-        _state.stageEquation.reset();
+        _state.stageGroup.reset();
         if (checkpoint.stepper)
             _state.timeStepper.swap(checkpoint.stepper);
         _state.lastAcceptedDt = checkpoint.lastDt;
@@ -1094,7 +1101,8 @@ namespace DNDS::Cauchy
         {
             DNDS_check_throw_info(!polynomial || (checkpoint.middleWarm && checkpoint.middleFinal),
                                   "DITR internal checkpoint lacks midpoint reconstruction");
-            auto &middle = _state.timeStepper->CoupledMethod().IntermediateState();
+            auto &middle = _state.timeStepper->GroupState(
+                _state.timeStepper->ActiveGroup(), _state.trial, 0);
             _coupledMiddle = _execution.coupledFactory(middle);
             _execution.coupledMiddleOwner = middle.PhysicalField(0).Owned().SharedStorage();
             if (polynomial)
@@ -1114,7 +1122,7 @@ namespace DNDS::Cauchy
         _state.restoreReconstruction = polynomial;
         _state.internalResume = true;
         _state.coordinatedPrepared = false;
-        _state.stageEquation.reset();
+        _state.stageGroup.reset();
         _state.nextTrial = std::max(_state.nextTrial, _state.trialEpoch.trial);
         _lastImplicit.clear();
         _lastCoupledIterations = 0;

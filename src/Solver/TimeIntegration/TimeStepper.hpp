@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DNDS/Core/Defines.hpp"
+#include "DNDS/Core/OptionalRef.hpp"
 #include "Solver/TimeIntegration/DITRMethod.hpp"
 #include "Solver/TimeIntegration/SerializedMethods.hpp"
 #include <functional>
@@ -30,26 +31,25 @@ namespace DNDS::ODE
     public:
         using Field = State;
         using DITR = DITRMethod<State, Operations>;
-        using SolveCoupled = std::function<bool(DITR &, Field &)>;
         using Evaluate = std::function<void(Field &, Field &, real, int)>;
-        using SolveStage = std::function<bool(Field &, const Field &, real, real, real, int)>;
         using LocalStage = std::function<void(const std::function<void()> &)>;
-        /// Immutable stage ticket, not a reference to reusable method scratch.
-        /// Resolve it through SolvePreparedStage on the same live stepper.
-        class StageEquation
+        /// Immutable group ticket. It identifies method-owned state without
+        /// exporting a concrete method or granting unvalidated scratch access.
+        class StageGroup
         {
             friend class StateTimeStepper;
             std::shared_ptr<const uint8_t> _session;
             uint64_t _generation;
-            StageEquation(std::shared_ptr<const uint8_t> session, uint64_t generation,
-                          real m, real scale, real t, int s, bool i)
+            StageGroup(std::shared_ptr<const uint8_t> session, uint64_t generation,
+                       int s, int count, bool i, std::array<real, 2> times)
                 : _session(std::move(session)), _generation(generation),
-                  mass(m), rhsScale(scale), time(t), stage(s), implicit(i) {}
+                  stage(s), coupledStages(count), implicit(i), times(times) {}
 
         public:
-            const real mass, rhsScale, time;
             const int stage;
+            const int coupledStages;
             const bool implicit;
+            const std::array<real, 2> times;
         };
         /// Deep, backend-agnostic payload captured only at a nonlinear
         /// iteration boundary. Runtime handles/leases are deliberately absent;
@@ -161,90 +161,191 @@ namespace DNDS::ODE
         }
         bool HasHistory() const { return _bdf && _bdf->HasHistory(); }
         bool HasPendingTrial() const { return _pending; }
-        DITR &CoupledMethod()
-        {
-            DNDS_check_throw_info(_ditr, "this time method has no coupled problem");
-            return *_ditr;
-        }
-        const DITR &CoupledMethod() const
-        {
-            DNDS_check_throw_info(_ditr,
-                                  "this time method has no coupled problem");
-            return *_ditr;
-        }
+        /// Serialized group count: DIRK tableau stages, otherwise one group.
+        int GroupNumber() const { return _dirk ? _dirk->StageNumber() : 1; }
+        int CoupledStageNumber() const { return _ditr ? 2 : 1; }
         real PreviousDt() const { return _bdf ? _bdf->PreviousDt() : 0; }
-        /// DITR owns a coupled midpoint/end iteration, not a one-pass tableau.
-        /// Its external coordination must use that coupled protocol explicitly.
-        bool SupportsStageSequence() const { return !_ditr; }
-        int StageNumber() const { return _dirk ? _dirk->StageNumber() : 1; }
         const Field &PreviousState() const
         {
             DNDS_check_throw_info(_bdf, "this method has no accepted-step history");
             return _bdf->PreviousState();
         }
-        /// Begin a serialized synchronous trial without executing its stages.
-        /// All ranks agree controls. Accepted history changes only at Commit.
-        /// The controller must CompleteStage before preparing the next one.
-        void BeginStages(const Field &initial, Field &trial, real time, real dt, bool steady = false)
+
+        /**
+         * @brief Begin one physical trial for every supported time method.
+         * @details No nonlinear solve is called here. DITR initializes its
+         * midpoint/end rate guesses with the supplied initial-state evaluator;
+         * BDF/DIRK prepare their initial/history operands. Accepted state and
+         * history remain unchanged until Commit. Steady means BDF1 with zero
+         * physical mass and no infinite floating-point operand.
+         */
+        void BeginStep(const Field &initial, Field &trial, real time, real dt,
+                       const Evaluate &evaluate = {}, bool steady = false)
         {
             Discard();
             RunLocal([&]
                      {
-                DNDS_check_throw_info(SupportsStageSequence(), "DITR requires coupled iteration coordination, not a one-pass stage sequence");
-                DNDS_check_throw_info(std::isfinite(time) && (steady ? _method == "bdf1" :
-                    std::isfinite(dt) && dt > 0 && std::isfinite(time + dt) && time + dt > time), "invalid stage-sequence controls");
+                DNDS_check_throw_info(
+                    std::isfinite(time) &&
+                        (steady ? _method == "bdf1" :
+                         std::isfinite(dt) && dt > 0 &&
+                         std::isfinite(time + dt) && time + dt > time),
+                    "invalid time-step controls");
                 BeginInitial(initial, trial); });
             _pendingSteady = steady;
             _pendingDt = steady ? 0 : dt;
             _startTime = time;
             _nextStage = 0;
+            if (_ditr)
+                _ditr->Begin(initial, trial, time, dt, evaluate);
             _stagesActive = true;
         }
-        StageEquation PrepareStage(Field &trial)
+
+        /// Prepare the next mathematical group. Ordinary DIRK stages contain
+        /// one unknown; the one DITR group contains midpoint and endpoint.
+        /// A restored active group is obtained through ActiveGroup instead.
+        StageGroup PrepareGroup(Field &trial)
         {
-            DNDS_check_throw_info(_stagesActive && !_stagePrepared && _nextStage < StageNumber(), "no next time stage, or previous stage is unfinished");
-            DNDS_check_throw_info(_stageGeneration != std::numeric_limits<uint64_t>::max(), "time stage generation exhausted");
-            const int stage = _nextStage;
-            const bool implicit = !_dirk || _dirk->Implicit(stage);
-            TimeEquationCoefficients coefficients;
+            DNDS_check_throw_info(
+                _stagesActive && !_stagePrepared && _nextStage < GroupNumber(),
+                "no next time group, or previous group is unfinished");
+            DNDS_check_throw_info(_stageGeneration != std::numeric_limits<uint64_t>::max(),
+                                  "time group generation exhausted");
             RunLocal([&]
                      {
                 Check(trial);
-                coefficients = _bdf ? _bdf->Prepare(trial, _startTime, _pendingDt, _pendingSteady)
-                                    : _dirk->Prepare(trial, stage, _startTime, _pendingDt);
                 _preparedState.emplace(trial);
-                if (implicit) _preparedSource.emplace(Source()); else _preparedSource.reset(); });
+                if (!_ditr)
+                {
+                    _preparedEquation = _bdf
+                        ? _bdf->Prepare(trial, _startTime, _pendingDt, _pendingSteady)
+                        : _dirk->Prepare(trial, _nextStage, _startTime, _pendingDt);
+                    if (!_dirk || _dirk->Implicit(_nextStage))
+                        _preparedSource.emplace(Source());
+                } });
             _stagePrepared = true;
-            _preparedEquation = coefficients;
-            return StageEquation(_session, ++_stageGeneration, coefficients.inverseDt, coefficients.rhsScale, coefficients.time, stage, implicit);
+            ++_stageGeneration;
+            return ActiveGroup();
         }
-        /// Synchronous source borrow, validated before and after the solver.
-        /// The callback may update trial values, but must not retain references,
-        /// replace bindings, or re-enter this stepper. Method scratch never
-        /// escapes through a ticket, and no source payload is copied.
-        bool SolvePreparedStage(const StageEquation &equation, Field &trial, const SolveStage &solve)
+
+        /// Return the current group ticket, including after exact restoration.
+        StageGroup ActiveGroup() const
+        {
+            DNDS_check_throw_info(_stagesActive && _stagePrepared,
+                                  "time method has no prepared group");
+            const bool implicit = !_dirk || _dirk->Implicit(_nextStage);
+            std::array<real, 2> times{};
+            if (_ditr)
+            {
+                times[0] = _ditr->CoupledStageTime(0);
+                times[1] = _ditr->CoupledStageTime(1);
+            }
+            else
+                times[0] = _preparedEquation->time;
+            return StageGroup(_session, _stageGeneration, _nextStage,
+                              CoupledStageNumber(), implicit, times);
+        }
+
+        /// Validate ticket identity and retained field bindings at a group
+        /// boundary. Values may change; replacing an allocation is forbidden.
+        void ValidateGroup(const StageGroup &group, const Field &trial) const
         {
             RunLocal([&]
-                     { DNDS_check_throw_info(_stagesActive && _stagePrepared && equation.implicit && solve &&
-                                                 equation._session == _session && equation._generation == _stageGeneration && equation.stage == _nextStage,
-                                             "expired or foreign time stage ticket"); });
+                     { DNDS_check_throw_info(
+                           _stagesActive && _stagePrepared &&
+                               group._session == _session &&
+                               group._generation == _stageGeneration &&
+                               group.stage == _nextStage &&
+                               group.coupledStages == CoupledStageNumber(),
+                           "expired or foreign time-group ticket"); });
             CheckPrepared(trial);
-            const bool accepted = solve(trial, Source(), equation.mass, equation.rhsScale, equation.time, equation.stage);
-            CheckPrepared(trial);
-            return accepted;
         }
-        /// Record the solved/current stage rate before the next stage can use
-        /// it. BDF/steady need no rate callback. This posts no hidden solve or
-        /// exchange. The caller supplies a coherent fixed stage boundary trace.
-        void CompleteStage(Field &trial, const Evaluate &evaluate = {})
+
+        /// Borrow a group's actual unknown. The caller retains this stepper and
+        /// trial through the scoped solve. No field storage is copied or owned
+        /// by the ticket.
+        Field &GroupState(const StageGroup &group, Field &trial, int coupledStage)
         {
-            DNDS_check_throw_info(_stagesActive && _stagePrepared, "no prepared time stage to complete");
-            CheckPrepared(trial);
-            if (_dirk)
+            ValidateGroup(group, trial);
+            DNDS_check_throw_info(coupledStage >= 0 &&
+                                      coupledStage < group.coupledStages,
+                                  "invalid time-group unknown");
+            return _ditr && coupledStage == 0 ? _ditr->IntermediateState() : trial;
+        }
+        const Field &GroupState(const StageGroup &group, const Field &trial,
+                                int coupledStage) const
+        {
+            ValidateGroup(group, trial);
+            DNDS_check_throw_info(coupledStage >= 0 &&
+                                      coupledStage < group.coupledStages,
+                                  "invalid time-group unknown");
+            return _ditr && coupledStage == 0 ? _ditr->IntermediateState() : trial;
+        }
+
+        /// Freeze the equation operands for a named update. The same returned
+        /// shape serves one-stage methods and each DITR equation. DITR enforces
+        /// its midpoint/end mathematical ordering internally.
+        CoupledStageEquation<Field> PrepareEquation(const StageGroup &group,
+                                                    Field &trial, int coupledStage)
+        {
+            ValidateGroup(group, trial);
+            DNDS_check_throw_info(group.implicit && coupledStage >= 0 &&
+                                      coupledStage < group.coupledStages,
+                                  "invalid implicit time-group equation");
+            if (_ditr)
+                return _ditr->PrepareCoupledStage(trial, coupledStage);
+            return {trial, Source(), *_preparedEquation, 0};
+        }
+
+        /// Method-provided rate guess, if applicable, for the currently
+        /// prepared equation. Ordinary stages evaluate their residual normally.
+        OptionalRef<const Field> CachedRate(const StageGroup &group) const
+        {
+            DNDS_check_throw_info(group._session == _session &&
+                                      group._generation == _stageGeneration &&
+                                      _stagePrepared,
+                                  "expired time-group rate query");
+            return _ditr ? OptionalRef<const Field>(_ditr->CurrentRate())
+                         : OptionalRef<const Field>{};
+        }
+
+        /// Finish one update's mathematical dependency publication. DITR
+        /// refreshes the corrected stage rate; DIRK needs its final rate only
+        /// when CompleteGroup is called after convergence.
+        void CompleteEquation(const StageGroup &group, Field &trial,
+                              const Evaluate &evaluate)
+        {
+            ValidateGroup(group, trial);
+            if (_ditr)
+                _ditr->CompleteCoupledStage(trial, evaluate);
+        }
+
+        /// Method-specific coupled stopping residual. Ordinary one-stage
+        /// defects are assembled by the common spatial/mass operator instead.
+        void AssembleStoppingResidual(const StageGroup &group,
+                                      const Field &trial, Field &residual)
+        {
+            ValidateGroup(group, trial);
+            DNDS_check_throw_info(_ditr, "this group uses the ordinary stage defect");
+            _ditr->AssembleStoppingResidual(trial, residual);
+        }
+
+        /// Complete a successful group, publishing only method-owned stage
+        /// history. Numerical rejection leaves the group active until Discard.
+        /// No nonlinear solve or hidden exchange is launched.
+        void CompleteGroup(const StageGroup &group, Field &trial,
+                           const Evaluate &evaluate = {})
+        {
+            ValidateGroup(group, trial);
+            if (_ditr)
+                (void)_ditr->CheckpointControl();
+            else if (_dirk)
             {
-                DNDS_check_throw_info(evaluate, "DIRK stage completion needs its rate evaluation");
+                DNDS_check_throw_info(evaluate, "DIRK completion needs a rate evaluator");
                 const Binding input(trial), output(_dirk->Rate(_nextStage));
-                evaluate(trial, _dirk->Rate(_nextStage), _dirk->StageTime(_nextStage, _startTime, _pendingDt), _nextStage);
+                evaluate(trial, _dirk->Rate(_nextStage),
+                         _dirk->StageTime(_nextStage, _startTime, _pendingDt),
+                         _nextStage);
                 RunLocal([&]
                          { input.Check(trial, true); output.Check(_dirk->Rate(_nextStage)); });
             }
@@ -252,89 +353,11 @@ namespace DNDS::ODE
             _preparedState.reset();
             _preparedEquation.reset();
             _stagePrepared = false;
-            if (++_nextStage == StageNumber())
+            if (++_nextStage == GroupNumber())
             {
                 _pending = true;
                 _stagesActive = false;
             }
-        }
-        /// Begin a coupled DITR trial without entering its nonlinear update.
-        /// This split lets an external simulation controller construct distinct
-        /// frozen midpoint/endpoint interface packets before either correction.
-        void BeginCoupled(const Field &initial, Field &trial, real time, real dt,
-                          const Evaluate &evaluate)
-        {
-            Discard();
-            RunLocal([&]
-                     {
-                DNDS_check_throw_info(
-                    _ditr && evaluate && std::isfinite(time) &&
-                        std::isfinite(dt) && dt > 0 && std::isfinite(time + dt) &&
-                        time + dt > time,
-                    "invalid coupled time trial controls");
-                BeginInitial(initial, trial); });
-            _pendingDt = dt;
-            _startTime = time;
-            _ditr->Begin(initial, trial, time, dt, evaluate);
-        }
-        /// Execute the already-begun coupled update. False leaves method-owned
-        /// midpoint/rate scratch active only until the caller discards the trial.
-        bool RunCoupled(Field &trial, const SolveCoupled &coupled)
-        {
-            RunLocal([&]
-                     { DNDS_check_throw_info(_ditr && coupled && !_pending,
-                                             "no begun DITR trial, or trial already solved"); });
-            _pending = coupled(*_ditr, trial);
-            return _pending;
-        }
-        /// Preparation is serialized and synchronous. All participating ranks
-        /// must call it with agreed controls and callbacks that coordinate local
-        /// failures before communication. Callbacks may inspect dynamic state.
-        /// Initial and trial must be distinct; only trial/scratch changes here.
-        /// False/exception leaves accepted history unchanged. A successful trial
-        /// still needs Commit *after* its external accepted-state publication.
-        bool Prepare(const Field &initial, Field &trial, real time, real dt, const Evaluate &evaluate, const SolveStage &solve, const SolveCoupled &coupled = {})
-        {
-            Discard();
-            RunLocal([&]
-                     { DNDS_check_throw_info(evaluate && (_ditr ? bool(coupled) : bool(solve)) && std::isfinite(time) && std::isfinite(dt) && dt > 0 && std::isfinite(time + dt) && time + dt > time, "invalid time trial controls"); });
-            _pendingDt = dt;
-            if (_ditr)
-            {
-                BeginCoupled(initial, trial, time, dt, evaluate);
-                return RunCoupled(trial, coupled);
-            }
-            BeginStages(initial, trial, time, dt);
-            for (int stage = 0; stage < StageNumber(); ++stage)
-            {
-                const auto equation = PrepareStage(trial);
-                if (equation.implicit && !SolvePreparedStage(equation, trial, solve))
-                {
-                    CheckPrepared(trial);
-                    Discard();
-                    return false;
-                }
-                CompleteStage(trial, evaluate);
-            }
-            return _pending; // All supported DIRK tableaus are stiffly accurate.
-        }
-        /// BDF1 infinite-dt limit: zero physical mass/history source and frozen
-        /// time. No infinity enters arithmetic and no rate callback is needed.
-        /// The same stage solver owns PTC/PP/convergence; a failed stage cannot
-        /// be committed. Caller serializes/co-ordinates callbacks as in Prepare.
-        bool PrepareSteady(const Field &initial, Field &trial, real time, const SolveStage &solve)
-        {
-            DNDS_check_throw_info(solve, "steady stage needs its solver");
-            BeginStages(initial, trial, time, 0, true);
-            const auto equation = PrepareStage(trial);
-            if (!SolvePreparedStage(equation, trial, solve))
-            {
-                CheckPrepared(trial);
-                Discard();
-                return false;
-            }
-            CompleteStage(trial);
-            return _pending;
         }
         /// Only call once the matching physical trial was published. Pure
         /// handle swaps allocate nothing and cannot fail midway through history.
@@ -453,10 +476,15 @@ namespace DNDS::ODE
                                          payload("ditr_initial"), payload("ditr_middle"),
                                          payload("ditr_initial_rate"), payload("ditr_middle_rate"),
                                          payload("ditr_end_rate"), payload("ditr_res_other"));
+                    _stagesActive = _stagePrepared = true;
+                    _nextStage = 0;
+                    _preparedState.emplace(trial);
+                    _session = std::make_shared<const uint8_t>(0);
+                    ++_stageGeneration;
                     return;
                 }
                 DNDS_check_throw_info(checkpoint.stagesActive && checkpoint.stagePrepared &&
-                                          checkpoint.nextStage >= 0 && checkpoint.nextStage < StageNumber(),
+                                          checkpoint.nextStage >= 0 && checkpoint.nextStage < GroupNumber(),
                                       "serialized time checkpoint has no prepared stage");
                 checkpoint.equation.Validate();
                 if (_bdf)
@@ -477,21 +505,6 @@ namespace DNDS::ODE
                 _preparedSource.emplace(Source());
                 _session = std::make_shared<const uint8_t>(0);
                 ++_stageGeneration; });
-        }
-
-        StageEquation RestoredStageEquation() const
-        {
-            DNDS_check_throw_info(!_ditr && _stagesActive && _stagePrepared && _preparedEquation,
-                                  "time stepper has no restored serialized stage");
-            return StageEquation(_session, _stageGeneration, _preparedEquation->inverseDt,
-                                 _preparedEquation->rhsScale, _preparedEquation->time,
-                                 _nextStage, true);
-        }
-        bool ResumeCoupled(Field &trial, const SolveCoupled &coupled)
-        {
-            DNDS_check_throw_info(_ditr && coupled && !_pending, "time stepper has no restorable coupled solve");
-            _pending = coupled(*_ditr, trial);
-            return _pending;
         }
     };
 }

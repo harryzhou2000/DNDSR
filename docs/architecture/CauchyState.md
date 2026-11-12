@@ -27,8 +27,13 @@ mean gradients for its volume sources; it does not reconstruct face values or
 add those gradients to P0 face viscosity. Thus selecting constant convection
 does not silently turn off gradient-dependent production or destruction.
 
-P0 and direct P1 `ReconstructionState` objects alias the managed equation
-state and retain no modal value allocation or coefficient halo binding.
+P0 and direct P1 `ReconstructionState` objects have **empty optional modal
+coefficient slots** and no coefficient halo binding. They never alias means
+as coefficients. Direct P1 physical gradients are explicit workspace fields;
+P0 retains physical gradients only where source terms require them. Public
+modal-guess/publication/restore APIs reject direct modes before any write.
+Common flux/source scheduling handles absent coefficients explicitly and
+records mean provenance separately, rather than supplying a placeholder.
 Variational reconstruction owns its warm coefficients; limiter/PP output adds
 a second finalized allocation only when it must differ. The local
 `InspectReconstructionStorage` audit reports actual owned/ghost value bytes in

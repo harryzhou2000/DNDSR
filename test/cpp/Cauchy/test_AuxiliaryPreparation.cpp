@@ -3,6 +3,7 @@
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "CartesianFixture.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
+#include <algorithm>
 #include <numeric>
 #include <future>
 #include <thread>
@@ -114,6 +115,42 @@ namespace
         }
         void Drain() override { _worker.Synchronize(); }
         bool ObservedJoin() const { return _joinRecorded; }
+    };
+    /// Record the real FV submission protocol while executing through the
+    /// ordinary CPU provider. This checks launcher independence and event
+    /// placement, not GPU arithmetic or a captured CUDA graph.
+    class RecordingAuxiliaryLauncher final : public R::StreamLauncher
+    {
+        R::EagerEngine _engine;
+        R::ExecutionStream _stream;
+
+    public:
+        std::vector<std::string> trace;
+        explicit RecordingAuxiliaryLauncher(int workers)
+            : _engine(workers), _stream(_engine.CreateCPUStream()) {}
+        R::ExecutionContext Context() const override { return _stream.Context(); }
+        void Submit(Work work, R::CommandKind kind, Retirement retire = {}) override
+        {
+            DNDS_check_throw_info(kind == R::CommandKind::Compute,
+                                  "recording FV launcher expects compute work");
+            trace.emplace_back("submit");
+            _engine.SubmitOperation(_stream, std::move(work), std::move(retire));
+        }
+        void WaitFor(R::StreamEvent event) override
+        {
+            trace.emplace_back("wait");
+            _stream.WaitFor(std::move(event));
+        }
+        R::StreamEvent Record() override
+        {
+            trace.emplace_back("record");
+            return _stream.Record();
+        }
+        void Drain() override
+        {
+            trace.emplace_back("drain");
+            _engine.Synchronize();
+        }
     };
 }
 TEST_CASE("Auxiliary core completes during a real mean halo write and full publication waits for both phases")
@@ -446,6 +483,63 @@ TEST_CASE("Synchronous residual completes its queued core before dependent rejec
     for (DNDS::index iCell = 0; iCell < fv.Metrics().NumCell(); ++iCell)
         for (int j = 0; j < 5; ++j)
             CHECK(actual.View()(iCell, j) == expected.View()(iCell, j));
+}
+TEST_CASE("FV uses the same queued halo dependency sequence with inline and worker launchers")
+{
+    auto mesh = CauchyTest::PeriodicQuads(mpi, 8);
+    C::DomainSettings settings;
+    settings.numerics.reconstruction = "variational";
+    settings.numerics.cfv.maxOrder = 1;
+    settings.numerics.reconstructionIterations = 2;
+    settings.numerics.reconstructionTolerance = 0;
+    settings.numerics.positivity = false;
+    settings.execution.overlap = true;
+    const auto equation = C::EquationSystem::Resolve(settings.equation);
+    C::FiniteVolume fv(mesh, settings, equation);
+    std::vector<DNDS::real> expected;
+    std::vector<std::string> expectedSequence;
+    for (const int workers : {0, 2})
+    {
+        auto mean = fv.Metrics().BuildField(5), residual = fv.Metrics().BuildField(5);
+        Initialize(fv, mean, equation);
+        auto state = Bind(fv, mean), output = Bind(fv, residual);
+        auto reconstruction = fv.BuildReconstructionState(state);
+        auto workspace = fv.BuildWorkspace(state);
+        auto launcher = std::make_shared<RecordingAuxiliaryLauncher>(workers);
+        R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateStream(launcher);
+        fv.Evaluate(state, output, *reconstruction, *workspace, engine, stream, .25);
+        std::vector<DNDS::real> values;
+        {
+            const auto read = residual.Owned().Read();
+            const auto view = read.View<R::UniformTableRows>();
+            for (DNDS::index iCell = 0; iCell < residual.Owned().RowCount(); ++iCell)
+                for (DNDS::index j = 0; j < 5; ++j)
+                    values.push_back(view(iCell, j));
+        }
+        // Prefix observations can vary with progress timing; submitted
+        // numerical commands and stream dependencies cannot.
+        std::vector<std::string> sequence;
+        for (const auto &entry : launcher->trace)
+            if (entry == "submit" || entry == "wait")
+                sequence.push_back(entry);
+        const auto wait = std::find(sequence.begin(), sequence.end(), "wait");
+        REQUIRE(wait != sequence.end());
+        CHECK(std::find(sequence.begin(), wait, "submit") != wait);
+        CHECK(std::find(wait + 1, sequence.end(), "submit") != sequence.end());
+        if (workers == 0)
+        {
+            expected = values;
+            expectedSequence = sequence;
+        }
+        else
+        {
+            CHECK(values == expected);
+            CHECK(sequence == expectedSequence);
+        }
+        auto released = mean.Ghost().Write();
+        released.CancelUnmodified();
+    }
 }
 int main(int argc, char **argv)
 {

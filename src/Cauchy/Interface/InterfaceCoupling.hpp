@@ -12,7 +12,7 @@ namespace DNDS::Cauchy
     /// coupling adapter instead of leaking into Simulation orchestration.
     struct InterfaceDomainInput
     {
-        std::optional<FiniteVolume::InterfaceDonorPublication> values;
+        std::optional<InterfaceDonorPublication> values;
     };
 
     /// Physical adapter over Geom matching and CFV point interpolation. It owns
@@ -26,6 +26,47 @@ namespace DNDS::Cauchy
         std::shared_ptr<Data> _data;
 
     public:
+        /// Move-only posted value refresh. BeginRefresh freezes donor samples
+        /// and posts every connection in canonical order. CompletionEvent is a
+        /// backend-neutral dependency; Complete performs packet mapping and one
+        /// atomic publication after that event. Destruction of an unfinished
+        /// operation is a solver error, never an implicit MPI wait.
+        class RefreshOperation
+        {
+            struct State;
+            std::shared_ptr<State> _state;
+            void Finish(bool wait);
+            explicit RefreshOperation(std::shared_ptr<State> state)
+                : _state(std::move(state)) {}
+            friend class InterfaceCoupling;
+
+        public:
+            RefreshOperation() = default;
+            RefreshOperation(const RefreshOperation &) = delete;
+            RefreshOperation &operator=(const RefreshOperation &) = delete;
+            RefreshOperation(RefreshOperation &&) noexcept = default;
+            RefreshOperation &operator=(RefreshOperation &&) noexcept = delete;
+            ~RefreshOperation();
+            Runtime::StreamEvent CompletionEvent() const;
+            void Complete();
+            /// Publish only after CompletionEvent ordered this callback. No
+            /// host wait is introduced; early use is rejected.
+            void PublishReady();
+            /// Packet handles published by this operation, not whichever round
+            /// the coordinator currently exposes. Call only after publication;
+            /// ordinary packet generation checks still reject later reuse of
+            /// its mutable staging storage. Freeze a packet to keep stages.
+            std::optional<BoundaryInputs> Inputs(index domain) const;
+            void Discard();
+            bool Finished() const;
+        };
+
+    private:
+        RefreshOperation BeginRefreshImpl(
+            const std::vector<InterfaceDomainInput> &domains, real time,
+            StateEpoch epoch, bool valuesOnly);
+
+    public:
         InterfaceCoupling(const InterfaceCoupling &) = delete;
         InterfaceCoupling &operator=(const InterfaceCoupling &) = delete;
         InterfaceCoupling(InterfaceCoupling &&) noexcept = default;
@@ -33,6 +74,17 @@ namespace DNDS::Cauchy
         InterfaceCoupling(const SimulationConfig &config, std::shared_ptr<Runtime::CommunicationContext> coupling,
                           const std::vector<std::optional<FiniteVolume>> &localDomains,
                           const std::vector<std::optional<Physics::Chemistry::ChemicalWorkerPool>> &workers = {});
+        /// Whether values are refreshed once per coordinated nonlinear round.
+        /// Topology/route still remain frozen for the complete physical stage.
+        bool RefreshEveryNonlinearIteration() const;
+        RefreshOperation BeginRefresh(
+            const std::vector<InterfaceDomainInput> &domains, real time,
+            StateEpoch epoch);
+        /// Reuse the already frozen stage topology/route and refresh sampled
+        /// values only. Geometry, pose, schema or grouping changes are errors.
+        RefreshOperation BeginValueRefresh(
+            const std::vector<InterfaceDomainInput> &domains, real time,
+            StateEpoch epoch);
         /// Rebuild maps only when stage-time poses change. Two refreshes at one
         /// time reuse the exact map, sampling workspace and persistent return
         /// binding. Source inputs are frozen for the complete round before any

@@ -44,6 +44,35 @@ namespace
             return true;
         };
     }
+    // Test-owned solve policy: the time method supplies equations, never the
+    // nonlinear loop. Exact scalar solves retain the independent order oracle.
+    template <class Stepper, class SolveStage>
+    bool SolveGroup(Stepper &stepper, const typename Stepper::StageGroup &group,
+                    Field &trial, const SolveStage &solve)
+    {
+        if (!group.implicit)
+            return true;
+        REQUIRE(group.coupledStages == 1);
+        const auto equation = stepper.PrepareEquation(group, trial, 0);
+        const auto &c = equation.coefficients;
+        return solve(equation.state, equation.resOther, c.inverseDt,
+                     c.rhsScale, c.time, group.stage);
+    }
+    template <class Stepper, class SolveStage>
+    bool PrepareTrial(Stepper &stepper, const Field &initial, Field &trial,
+                      double time, double dt, const SolveStage &solve,
+                      bool steady = false)
+    {
+        stepper.BeginStep(initial, trial, time, dt, Evaluate(), steady);
+        for (int stage = 0; stage < stepper.GroupNumber(); ++stage)
+        {
+            const auto group = stepper.PrepareGroup(trial);
+            if (!SolveGroup(stepper, group, trial, solve))
+                return false;
+            stepper.CompleteGroup(group, trial, Evaluate());
+        }
+        return true;
+    }
     double Error(const std::string &method, int steps)
     {
         const A::DofSpace space(1);
@@ -54,7 +83,7 @@ namespace
         for (int i = 0; i < steps; ++i)
         {
             const double oldValue = Value(state);
-            REQUIRE(stepper.Prepare(state, trial, i * dt, dt, Evaluate(), Solve()));
+            REQUIRE(PrepareTrial(stepper, state, trial, i * dt, dt, Solve()));
             CHECK(Value(state) == oldValue);
             A::Copy(state, trial);
             stepper.Commit();
@@ -73,14 +102,14 @@ TEST_CASE("Time methods own only their relevant history and stage buffers")
         Stepper stepper(state, method);
         const bool bdf = method == "bdf1" || method == "bdf2";
         const int expected = bdf ? 3 : method == "ditr" ? 6
-                                                        : 2 + stepper.StageNumber();
+                                                        : 2 + stepper.GroupNumber();
         CHECK(CountTimeAllocations::allocations == expected);
         CHECK_FALSE(stepper.HasHistory());
         if (!bdf)
             CHECK_THROWS(stepper.RestoreHistory(state, .1));
         if (method != "ditr")
         {
-            REQUIRE(stepper.Prepare(state, trial, 0, .1, Evaluate(), Solve()));
+            REQUIRE(PrepareTrial(stepper, state, trial, 0, .1, Solve()));
             stepper.Commit();
             CHECK(stepper.HasHistory() == bdf);
             CHECK(CountTimeAllocations::allocations == expected);
@@ -210,25 +239,25 @@ TEST_CASE("Native implicit time methods converge with independent nonautonomous 
         CHECK(std::log2(coarse / fine) >= minimumOrder);
     }
 }
-TEST_CASE("Time stage tickets reject foreign sessions and reused scratch generations")
+TEST_CASE("Time group tickets reject foreign sessions and reused scratch generations")
 {
     const A::DofSpace space(1);
     Field state(space, 1), trial(space, 1), otherTrial(space, 1);
     A::Fill(state, 1.);
     O::FieldTimeStepper stepper(state, "bdf1"), other(state, "bdf1");
-    stepper.BeginStages(state, trial, 0, .1);
-    const auto stale = stepper.PrepareStage(trial);
-    other.BeginStages(state, otherTrial, 0, .1);
-    const auto foreign = other.PrepareStage(otherTrial);
-    CHECK_THROWS(stepper.SolvePreparedStage(foreign, trial, Solve()));
+    stepper.BeginStep(state, trial, 0, .1);
+    const auto stale = stepper.PrepareGroup(trial);
+    other.BeginStep(state, otherTrial, 0, .1);
+    const auto foreign = other.PrepareGroup(otherTrial);
+    CHECK_THROWS(stepper.ValidateGroup(foreign, trial));
     stepper.Discard();
-    CHECK_THROWS(stepper.SolvePreparedStage(stale, trial, Solve()));
-    stepper.BeginStages(state, trial, 0, .2);
-    const auto current = stepper.PrepareStage(trial);
-    CHECK_THROWS(stepper.SolvePreparedStage(stale, trial, Solve()));
-    REQUIRE(stepper.SolvePreparedStage(current, trial, Solve()));
-    stepper.CompleteStage(trial);
-    CHECK_THROWS(stepper.SolvePreparedStage(current, trial, Solve()));
+    CHECK_THROWS(stepper.ValidateGroup(stale, trial));
+    stepper.BeginStep(state, trial, 0, .2);
+    const auto current = stepper.PrepareGroup(trial);
+    CHECK_THROWS(stepper.ValidateGroup(stale, trial));
+    REQUIRE(SolveGroup(stepper, current, trial, Solve()));
+    stepper.CompleteGroup(current, trial);
+    CHECK_THROWS(stepper.ValidateGroup(current, trial));
 }
 
 TEST_CASE("External controller interleaves coherent stages without changing native time equations")
@@ -241,28 +270,28 @@ TEST_CASE("External controller interleaves coherent stages without changing nati
         A::Fill(state, 1.);
         A::Fill(reference, 1.);
         O::FieldTimeStepper external(state, method), serial(reference, method);
-        CHECK_THROWS(external.CompleteStage(trial, Evaluate()));
+        CHECK_THROWS(external.ActiveGroup());
         double time = 0;
         for (const double dt : {.1, .05})
         {
-            REQUIRE(serial.Prepare(reference, expected, time, dt, Evaluate(), Solve()));
-            external.BeginStages(state, trial, time, dt);
+            REQUIRE(PrepareTrial(serial, reference, expected, time, dt, Solve()));
+            external.BeginStep(state, trial, time, dt);
             const auto generation = state.Owned().Version();
-            for (int stage = 0; stage < external.StageNumber(); ++stage)
+            for (int stage = 0; stage < external.GroupNumber(); ++stage)
             {
                 CHECK_FALSE(external.HasPendingTrial());
-                const auto equation = external.PrepareStage(trial);
+                const auto equation = external.PrepareGroup(trial);
                 CHECK(equation.stage == stage);
-                CHECK(equation.time >= time);
-                CHECK(equation.time <= time + dt);
+                CHECK(equation.times[0] >= time);
+                CHECK(equation.times[0] <= time + dt);
                 CHECK(Value(trial) == Value(state));
                 // A real controller prepares other domains and exchanges their
                 // traces here, before any local stage solver changes its input.
                 if (equation.implicit)
-                    REQUIRE(external.SolvePreparedStage(equation, trial, Solve()));
-                external.CompleteStage(trial, Evaluate());
+                    REQUIRE(SolveGroup(external, equation, trial, Solve()));
+                external.CompleteGroup(equation, trial, Evaluate());
                 if (equation.implicit)
-                    CHECK_THROWS(external.SolvePreparedStage(equation, trial, Solve()));
+                    CHECK_THROWS(external.ValidateGroup(equation, trial));
             }
             CHECK(external.HasPendingTrial());
             CHECK(state.Owned().Version() == generation);
@@ -285,15 +314,15 @@ TEST_CASE("Serialized BDF and DIRK stages restore their trial source and complet
         Field initial(space, 1), trial(space, 1), restoredTrial(space, 1);
         A::Fill(initial, .8);
         O::FieldTimeStepper original(initial, method), restored(initial, method);
-        original.BeginStages(initial, trial, .2, .1);
-        std::optional<decltype(original.PrepareStage(trial))> active;
+        original.BeginStep(initial, trial, .2, .1);
+        std::optional<O::FieldTimeStepper::StageGroup> active;
         while (!active)
         {
-            auto equation = original.PrepareStage(trial);
+            auto equation = original.PrepareGroup(trial);
             if (equation.implicit)
                 active.emplace(equation);
             else
-                original.CompleteStage(trial, Evaluate());
+                original.CompleteGroup(equation, trial, Evaluate());
         }
         A::Fill(trial, .73); // a nonlinear iterate, not the stage initial guess
         const auto checkpoint = original.CaptureActive(trial);
@@ -302,19 +331,19 @@ TEST_CASE("Serialized BDF and DIRK stages restore their trial source and complet
 
         const auto complete = [&](auto &stepper, auto &state, auto equation)
         {
-            REQUIRE(stepper.SolvePreparedStage(equation, state, Solve()));
-            stepper.CompleteStage(state, Evaluate());
-            for (int stage = equation.stage + 1; stage < stepper.StageNumber(); ++stage)
+            REQUIRE(SolveGroup(stepper, equation, state, Solve()));
+            stepper.CompleteGroup(equation, state, Evaluate());
+            for (int stage = equation.stage + 1; stage < stepper.GroupNumber(); ++stage)
             {
-                const auto next = stepper.PrepareStage(state);
+                const auto next = stepper.PrepareGroup(state);
                 if (next.implicit)
-                    REQUIRE(stepper.SolvePreparedStage(next, state, Solve()));
-                stepper.CompleteStage(state, Evaluate());
+                    REQUIRE(SolveGroup(stepper, next, state, Solve()));
+                stepper.CompleteGroup(next, state, Evaluate());
             }
             REQUIRE(stepper.HasPendingTrial());
         };
         complete(original, trial, *active);
-        complete(restored, restoredTrial, restored.RestoredStageEquation());
+        complete(restored, restoredTrial, restored.ActiveGroup());
         CHECK(Value(restoredTrial) == Value(trial));
     }
 }
@@ -347,13 +376,13 @@ TEST_CASE("Native BDF1 steady limit has zero physical mass and history source at
             }
         return calls != 1; // Rejected preparation must preserve accepted history.
     };
-    CHECK_FALSE(stepper.PrepareSteady(initial, trial, 2.75, solve));
+    CHECK_FALSE(PrepareTrial(stepper, initial, trial, 2.75, 0, solve, true));
     CHECK(stepper.HasHistory());
     CHECK(stepper.PreviousDt() == .125);
     CHECK(initial.Owned().Version() == version);
     CHECK_THROWS(stepper.Commit());
     stepper.Discard();
-    REQUIRE(stepper.PrepareSteady(initial, trial, 2.75, solve));
+    REQUIRE(PrepareTrial(stepper, initial, trial, 2.75, 0, solve, true));
     CHECK(initial.Owned().Version() == version);
     stepper.Commit();
     CHECK_FALSE(stepper.HasHistory());
@@ -363,8 +392,8 @@ TEST_CASE("Native BDF1 steady limit has zero physical mass and history source at
         for (int j = 0; j < 2; ++j)
             CHECK(read.View()(iRow, j) == doctest::Approx(exact[j]));
     O::FieldTimeStepper wrong(initial, "esdirk4");
-    CHECK_THROWS(wrong.PrepareSteady(initial, trial, 2.75, solve));
-    CHECK_THROWS(stepper.PrepareSteady(initial, initial, 2.75, solve));
+    CHECK_THROWS(PrepareTrial(wrong, initial, trial, 2.75, 0, solve, true));
+    CHECK_THROWS(PrepareTrial(stepper, initial, initial, 2.75, 0, solve, true));
 }
 TEST_CASE("Native time target comparison excludes only relative roundoff remainders")
 {
@@ -392,12 +421,12 @@ TEST_CASE("Native BDF history is committed explicitly and retries use the last a
     CHECK_FALSE(stepper.HasHistory());
     CHECK_THROWS(stepper.PreviousState());
     CHECK_THROWS(stepper.Commit());
-    CHECK(stepper.Prepare(state, trial, 0, .1, Evaluate(), Solve()));
+    CHECK(PrepareTrial(stepper, state, trial, 0, .1, Solve()));
     const double first = Value(trial);
     stepper.Discard();
     CHECK_FALSE(stepper.HasHistory());
     CHECK_THROWS(stepper.Commit());
-    CHECK(stepper.Prepare(state, trial, 0, .1, Evaluate(), Solve()));
+    CHECK(PrepareTrial(stepper, state, trial, 0, .1, Solve()));
     CHECK(Value(trial) == first);
     A::Copy(state, trial);
     stepper.Commit();
@@ -406,13 +435,13 @@ TEST_CASE("Native BDF history is committed explicitly and retries use the last a
     CHECK(Value(stepper.PreviousState()) == 1);
     // Rejected .2 trial must not replace accepted .1 history. The next .05
     // trial has r=.5, independent of the failed attempt's r=2.
-    CHECK_FALSE(stepper.Prepare(state, trial, .1, .2, Evaluate(), [](auto &, const auto &, auto, auto, auto, auto)
-                                { return false; }));
+    CHECK_FALSE(PrepareTrial(stepper, state, trial, .1, .2, [](auto &, const auto &, auto, auto, auto, auto)
+                             { return false; }));
     CHECK(stepper.PreviousDt() == .1);
     CHECK(Value(stepper.PreviousState()) == 1);
     double observedMass = 0, observedScale = 0, observedSource = 0;
-    CHECK(stepper.Prepare(state, trial, .1, .05, Evaluate(), [&](Field &x, const Field &source, double mass, double scale, double time, int stage)
-                          {
+    CHECK(PrepareTrial(stepper, state, trial, .1, .05, [&](Field &x, const Field &source, double mass, double scale, double time, int stage)
+                       {
         observedMass = mass; observedScale = scale; observedSource = Value(source);
         return Solve()(x, source, mass, scale, time, stage); }));
     CHECK(observedMass == 20);
@@ -421,11 +450,11 @@ TEST_CASE("Native BDF history is committed explicitly and retries use the last a
     O::FieldTimeStepper restored(state, "bdf2");
     restored.RestoreHistory(stepper.PreviousState(), stepper.PreviousDt());
     Field other(space, 1);
-    CHECK(restored.Prepare(state, other, .1, .05, Evaluate(), Solve()));
+    CHECK(PrepareTrial(restored, state, other, .1, .05, Solve()));
     CHECK(Value(other) == Value(trial));
     stepper.ResetHistory();
     CHECK_FALSE(stepper.HasHistory());
-    CHECK_THROWS(stepper.Prepare(state, state, .1, .05, Evaluate(), Solve()));
+    CHECK_THROWS(PrepareTrial(stepper, state, state, .1, .05, Solve()));
     CHECK_THROWS(O::FieldTimeStepper(state, "unknown"));
 }
 namespace
@@ -458,18 +487,34 @@ namespace
         }
         return {false, limit};
     }
-    void AdvanceDITROnce(O::FieldDITR &method, Field &endpoint)
+    void AdvanceDITROnce(O::FieldTimeStepper &stepper,
+                         const O::FieldTimeStepper::StageGroup &group,
+                         Field &endpoint, Field &defect)
     {
-        auto defect = O::FieldTimeOperations::NewVector(endpoint);
         for (int coupledStage = 0; coupledStage < 2; ++coupledStage)
         {
-            const auto equation = method.PrepareCoupledStage(endpoint, coupledStage);
+            const auto equation = stepper.PrepareEquation(group, endpoint, coupledStage);
             const auto &c = equation.coefficients;
-            c.AssembleResidual<O::FieldTimeOperations>(defect, equation.resOther, equation.state, method.CurrentRate());
+            const auto cached = stepper.CachedRate(group);
+            REQUIRE(cached);
+            c.AssembleResidual<O::FieldTimeOperations>(defect, equation.resOther, equation.state, *cached);
             A::Fill(equation.state, Value(equation.state) + Value(defect) / (c.inverseDt + 2 * c.rhsScale));
-            method.CompleteCoupledStage(endpoint, Evaluate());
+            stepper.CompleteEquation(group, endpoint, Evaluate());
         }
-        method.AssembleStoppingResidual(endpoint, defect);
+        stepper.AssembleStoppingResidual(group, endpoint, defect);
+    }
+    DITRResult SolveDITR(O::FieldTimeStepper &stepper,
+                         const O::FieldTimeStepper::StageGroup &group,
+                         Field &endpoint, int limit = 100, double tolerance = 2e-13)
+    {
+        auto defect = O::FieldTimeOperations::NewVector(endpoint);
+        for (int iteration = 1; iteration <= limit; ++iteration)
+        {
+            AdvanceDITROnce(stepper, group, endpoint, defect);
+            if (std::abs(Value(defect)) < tolerance)
+                return {true, iteration};
+        }
+        return {false, limit};
     }
 }
 TEST_CASE("Public DITR converges to the independent original two-equation dense oracle")
@@ -583,30 +628,40 @@ TEST_CASE("Time facade reserves DITR publication while the external controller o
     Field state(space, 1), trial(space, 1);
     A::Fill(state, 1.);
     O::FieldTimeStepper stepper(state, "ditr");
-    const auto solve = [](auto &method, auto &endpoint)
-    { return SolveDITR(method, endpoint).converged; };
-    CHECK_THROWS(stepper.Prepare(state, trial, 0, .1, Evaluate(), {}));
-    REQUIRE(stepper.Prepare(state, trial, 0, .1, Evaluate(), {}, solve));
+    CHECK_THROWS(stepper.BeginStep(state, trial, 0, .1));
+    stepper.BeginStep(state, trial, 0, .1, Evaluate());
+    const auto group = stepper.PrepareGroup(trial);
+    CHECK(group.coupledStages == 2);
+    REQUIRE(SolveDITR(stepper, group, trial).converged);
+    stepper.CompleteGroup(group, trial);
     CHECK(stepper.HasPendingTrial());
     CHECK_FALSE(stepper.HasHistory());
     const double expected = Value(trial);
     stepper.Discard();
     CHECK_FALSE(stepper.HasPendingTrial());
     CHECK_THROWS(stepper.Commit());
-    REQUIRE(stepper.Prepare(state, trial, 0, .1, Evaluate(), {}, solve));
+    stepper.BeginStep(state, trial, 0, .1, Evaluate());
+    const auto retry = stepper.PrepareGroup(trial);
+    REQUIRE(SolveDITR(stepper, retry, trial).converged);
     CHECK(Value(trial) == expected);
     auto fresh = stepper.Fresh();
-    CHECK(fresh->CoupledMethod().IntermediateState().Owned().SharedStorage() !=
-          stepper.CoupledMethod().IntermediateState().Owned().SharedStorage());
-    REQUIRE(fresh->Prepare(state, trial, 0, .1, Evaluate(), {}, solve));
-    CHECK(Value(trial) == expected);
-    A::Copy(state, trial);
+    Field freshTrial(space, 1);
+    fresh->BeginStep(state, freshTrial, 0, .1, Evaluate());
+    const auto freshGroup = fresh->PrepareGroup(freshTrial);
+    CHECK(fresh->GroupState(freshGroup, freshTrial, 0).Owned().SharedStorage() !=
+          stepper.GroupState(retry, trial, 0).Owned().SharedStorage());
+    REQUIRE(SolveDITR(*fresh, freshGroup, freshTrial).converged);
+    CHECK(Value(freshTrial) == expected);
+    fresh->CompleteGroup(freshGroup, freshTrial);
+    A::Copy(state, freshTrial);
     fresh->Commit();
     CHECK_FALSE(fresh->HasHistory()); // DITR is a one-step method, not BDF history.
     CHECK_FALSE(fresh->HasPendingTrial());
-    CHECK_FALSE(fresh->Prepare(state, trial, .1, .1, Evaluate(), {}, [](auto &, auto &)
-                               { return false; }));
+    fresh->BeginStep(state, freshTrial, .1, .1, Evaluate());
+    const auto rejected = fresh->PrepareGroup(freshTrial);
+    CHECK_FALSE(SolveDITR(*fresh, rejected, freshTrial, 1).converged);
     CHECK_FALSE(fresh->HasPendingTrial());
+    fresh->Discard();
     CHECK(Value(state) == expected);
 }
 TEST_CASE("Time facade restores DITR coupled state at a completed iteration boundary")
@@ -615,14 +670,17 @@ TEST_CASE("Time facade restores DITR coupled state at a completed iteration boun
     Field initial(space, 1), trial(space, 1), restoredTrial(space, 1);
     A::Fill(initial, .7);
     O::FieldTimeStepper original(initial, "ditr"), restored(initial, "ditr");
-    original.CoupledMethod().Begin(initial, trial, .3, .2, Evaluate());
-    AdvanceDITROnce(original.CoupledMethod(), trial);
+    original.BeginStep(initial, trial, .3, .2, Evaluate());
+    const auto group = original.PrepareGroup(trial);
+    auto defect = O::FieldTimeOperations::NewVector(trial);
+    AdvanceDITROnce(original, group, trial, defect);
     const auto checkpoint = original.CaptureActive(trial);
     restored.RestoreActive(checkpoint, restoredTrial);
     CHECK(Value(restoredTrial) == Value(trial));
-    const auto solve = [](auto &method, auto &endpoint)
-    { return SolveDITR(method, endpoint).converged; };
-    REQUIRE(original.ResumeCoupled(trial, solve));
-    REQUIRE(restored.ResumeCoupled(restoredTrial, solve));
+    const auto resumed = restored.ActiveGroup();
+    REQUIRE(SolveDITR(original, group, trial).converged);
+    REQUIRE(SolveDITR(restored, resumed, restoredTrial).converged);
+    original.CompleteGroup(group, trial);
+    restored.CompleteGroup(resumed, restoredTrial);
     CHECK(Value(restoredTrial) == Value(trial));
 }

@@ -86,6 +86,10 @@ namespace DNDS::Cauchy
         Indices offsets, jacobianOffsets, stencilFaces, faceEntries, auxiliaryCoreFaces, auxiliaryDependentFaces, rhsCoreFaces, rhsDependentFaces, auxiliaryCellOffsets, auxiliaryCellFaces, positivityOffsets, boundaryEntries, coreCells, dependentCells;
         Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> auxiliaryFaceArea;
         Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::FixedRows<3>> positivityDisplacements;
+        /// Auxiliary work independent of both ghost means and interface traces,
+        /// plus the remaining interface-dependent subset of the MPI core.
+        Indices auxiliaryInterfaceIndependentFaces, auxiliaryInterfaceFaces,
+            interfaceIndependentCells, interfaceCoreCells;
     };
 
     /** @brief Mesh-sized numerical fields, independent of small physics metadata.
@@ -112,11 +116,17 @@ namespace DNDS::Cauchy
         Runtime::Array<index> dependentCells{Runtime::RowLayout::Dense(0, 1)};
         Runtime::Array<real> auxiliaryFaceArea{Runtime::RowLayout::Dense(0, 1)};
         Runtime::Array<real> positivityDisplacements{Runtime::RowLayout::Dense(0, 3)};
+        Runtime::Array<index> auxiliaryInterfaceIndependentFaces{Runtime::RowLayout::Dense(0, 1)};
+        Runtime::Array<index> auxiliaryInterfaceFaces{Runtime::RowLayout::Dense(0, 1)};
+        Runtime::Array<index> interfaceIndependentCells{Runtime::RowLayout::Dense(0, 1)};
+        Runtime::Array<index> interfaceCoreCells{Runtime::RowLayout::Dense(0, 1)};
         struct ReadAccess
         {
             Runtime::Array<FiniteVolumeDetail::SampleRecord>::ReadLease samples, jacobianSamples;
             Runtime::Array<index>::ReadLease offsets, jacobianOffsets, stencilFaces, faceEntries, auxiliaryCoreFaces, auxiliaryDependentFaces, rhsCoreFaces, rhsDependentFaces, auxiliaryCellOffsets, auxiliaryCellFaces, positivityOffsets, boundaryEntries, coreCells, dependentCells;
             Runtime::Array<real>::ReadLease auxiliaryFaceArea, positivityDisplacements;
+            Runtime::Array<index>::ReadLease auxiliaryInterfaceIndependentFaces,
+                auxiliaryInterfaceFaces, interfaceIndependentCells, interfaceCoreCells;
             explicit ReadAccess(const FiniteVolumeStencilStorage &storage)
                 : samples(storage.samples.Read()), jacobianSamples(storage.jacobianSamples.Read()),
                   offsets(storage.offsets.Read()),
@@ -133,7 +143,11 @@ namespace DNDS::Cauchy
                   boundaryEntries(storage.boundaryEntries.Read()),
                   coreCells(storage.coreCells.Read()),
                   dependentCells(storage.dependentCells.Read()),
-                  auxiliaryFaceArea(storage.auxiliaryFaceArea.Read()), positivityDisplacements(storage.positivityDisplacements.Read()) {}
+                  auxiliaryFaceArea(storage.auxiliaryFaceArea.Read()), positivityDisplacements(storage.positivityDisplacements.Read()),
+                  auxiliaryInterfaceIndependentFaces(storage.auxiliaryInterfaceIndependentFaces.Read()),
+                  auxiliaryInterfaceFaces(storage.auxiliaryInterfaceFaces.Read()),
+                  interfaceIndependentCells(storage.interfaceIndependentCells.Read()),
+                  interfaceCoreCells(storage.interfaceCoreCells.Read()) {}
             FiniteVolumeStencilView View() const
             {
                 return {samples.View<Runtime::FixedRows<1>>(), jacobianSamples.View<Runtime::FixedRows<1>>(),
@@ -151,7 +165,11 @@ namespace DNDS::Cauchy
                         boundaryEntries.View<Runtime::FixedRows<1>>(),
                         coreCells.View<Runtime::FixedRows<1>>(),
                         dependentCells.View<Runtime::FixedRows<1>>(),
-                        auxiliaryFaceArea.View<Runtime::FixedRows<1>>(), positivityDisplacements.View<Runtime::FixedRows<3>>()};
+                        auxiliaryFaceArea.View<Runtime::FixedRows<1>>(), positivityDisplacements.View<Runtime::FixedRows<3>>(),
+                        auxiliaryInterfaceIndependentFaces.View<Runtime::FixedRows<1>>(),
+                        auxiliaryInterfaceFaces.View<Runtime::FixedRows<1>>(),
+                        interfaceIndependentCells.View<Runtime::FixedRows<1>>(),
+                        interfaceCoreCells.View<Runtime::FixedRows<1>>()};
             }
         };
         ReadAccess Read() const { return ReadAccess(*this); }

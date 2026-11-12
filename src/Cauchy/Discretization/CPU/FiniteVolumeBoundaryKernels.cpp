@@ -21,7 +21,8 @@ namespace DNDS::Cauchy::CPU
                                        const BoundaryPointOperator &boundary,
                                        EquationPointEvaluator &evaluator) noexcept
     {
-        DNDS_assert(request.means.size() == request.coefficients.size() &&
+        DNDS_assert((request.polynomial ? request.means.size() == request.coefficients.size()
+                                        : request.coefficients.empty()) &&
                     request.means.size() == request.output.size() &&
                     request.means.size() == request.logicalFirst.size());
         CFV::Math::SmallMatrix scratch;

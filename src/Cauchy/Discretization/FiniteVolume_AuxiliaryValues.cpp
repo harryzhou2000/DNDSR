@@ -1,4 +1,5 @@
 #include "Cauchy/Core/NumericalFailure.hpp"
+#include "Cauchy/Core/OperatorSchedule.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeStateKernels.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
@@ -56,7 +57,6 @@ namespace DNDS::Cauchy
         request.usePointRows = true;
         request.repairRANS = false;
         request.means = meanMetadata.HostView();
-        request.coefficients = request.means; // Unread in the mean-only mode.
         request.output = outputMetadata.HostView();
         request.logicalFirst = logicalOffsets.HostView();
         request.componentNumber = state.ComponentNumber();
@@ -105,7 +105,18 @@ namespace DNDS::Cauchy
         return result;
     }
     void FiniteVolume::PrepareAuxValues(EquationDofs &state, AuxiliaryValues &output, MeanGradients &gradients,
-                                        R::EagerEngine &engine, const R::ExecutionStream &stream, real time,
+                                        Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, real time,
+                                        std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
+                                        AuxiliaryInputs inputs) const
+    {
+        PrepareAuxValues(state, output, gradients, engine, stream, stream,
+                         time, std::move(workers), std::move(inputs));
+    }
+    void FiniteVolume::PrepareAuxValues(EquationDofs &state, AuxiliaryValues &output, MeanGradients &gradients,
+                                        Runtime::EagerEngine &engine,
+                                        const Runtime::ExecutionStream &stream,
+                                        const Runtime::ExecutionStream &communication,
+                                        real time,
                                         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
                                         AuxiliaryInputs inputs) const
     {
@@ -125,7 +136,6 @@ namespace DNDS::Cauchy
         // unchecked failures must reach the application's fail-fast boundary.
         stage([&]
               {
-            stream.Record().WaitHost();
             DNDS_check_throw_info(gradients._data && gradients._data->owner.lock() == _data && stream.Context().device == R::Device::Host(), "foreign mean gradient workspace or non-CPU stream");
             gradients._data->binding.Check(state);
             _data->equation.ValidateStateSchema(state);
@@ -151,13 +161,7 @@ namespace DNDS::Cauchy
         auto &work = *gradients._data;
         work.origin.reset();
         work.ghostsReady = false;
-        const auto begin = [&](const auto &bindings)
-        {
-            std::vector<R::TransferOperation> operations;
-            for (const auto &binding : bindings)
-                operations.push_back(engine.ChecksAccess() ? binding.BeginChecked(stream) : binding.BeginScheduled(stream));
-            return operations;
-        };
+        OperatorSchedule schedule(engine, stream, communication, overlap);
         const auto fillBoundary = [&]
         {
             FillMeanGradientBoundary(state, gradients, *evaluator, time,
@@ -171,17 +175,16 @@ namespace DNDS::Cauchy
         std::optional<AuxiliaryPreparation> preparation;
         try
         {
-            auto means = begin(work.meanHalo);
-            engine.Submit(stream, [&](auto)
-                          {
+            auto means = schedule.Begin(work.meanHalo);
+            schedule.Submit([&]
+                            {
                 fillBoundary();
                 if (overlap) gradient(CFV::ReconstructionRegion::Core); });
-            for (auto &operation : means)
-                operation.Wait();
-            engine.Submit(stream, [&](auto)
-                          { gradient(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All); });
+            schedule.Await(means);
+            schedule.Submit([&]
+                            { gradient(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All); });
             stage([&]
-                  { stream.Record().WaitHost(); });
+                  { schedule.Join(); });
             stage([&]
                   {
                 work.origin.emplace(state.NumericAlias()); work.time = time;
@@ -196,33 +199,34 @@ namespace DNDS::Cauchy
             // Release the boundary worker before auxiliary preparation acquires
             // its own worker; a one-worker pool is a supported configuration.
             evaluator.reset();
-            auto halos = begin(work.gradientHalo);
+            auto halos = schedule.Begin(work.gradientHalo);
             stage([&]
                   {
                       DNDS_check_throw_info(!inputs.meanGradients, "mean gradient input is owned by this preparation call");
                       inputs.meanGradients.Emplace(gradients);
                       preparation.emplace(BeginAuxValues(state, output, time, workers, inputs)); });
             if (overlap)
-                engine.Submit(stream, [&](auto)
-                              { preparation->Apply(CFV::ReconstructionRegion::Core); });
-            for (auto &operation : halos)
-                operation.Wait();
-            for (const auto &field : gradients.fields)
-                work.ghostVersion.push_back(field.Ghost().Version());
-            work.ghostsReady = true;
-            engine.Submit(stream, [&](auto)
-                          {
+                schedule.Submit([&]
+                                { preparation->Apply(CFV::ReconstructionRegion::Core); });
+            schedule.Await(halos);
+            schedule.Submit([&]
+                            {
+                // Record the received generation after the stream dependency,
+                // not while the controller is still submitting the halo wait.
+                for (const auto &field : gradients.fields)
+                    work.ghostVersion.push_back(field.Ghost().Version());
+                work.ghostsReady = true;
                 preparation->Apply(overlap ? CFV::ReconstructionRegion::HaloDependent : CFV::ReconstructionRegion::All);
                 preparation->Finish(output); });
             stage([&]
-                  { stream.Record().WaitHost(); });
+                  { schedule.Join(); });
         }
         catch (...)
         {
             MPI::AbortIfSolverFailure("Cauchy equation auxiliary preparation failed");
             try
             {
-                stream.Record().WaitHost();
+                schedule.Join();
             }
             catch (...)
             {
@@ -256,8 +260,10 @@ namespace DNDS::Cauchy
         _data->equation.ResolveKernelProfile(state.Device());
         DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && std::isfinite(time), "equation auxiliary row space/time differs");
         DNDS_check_throw_info(_data->equation.HasMixture() == bool(workers), "equation auxiliary needs exactly its matching worker backend");
-        DNDS_check_throw_info(!HasInterfaces() || inputs.boundary,
+        DNDS_check_throw_info(!HasInterfaces() || inputs.boundary || inputs.deferBoundary,
                               "equation auxiliary preparation needs an incoming interface packet");
+        DNDS_check_throw_info(!inputs.deferBoundary || !inputs.boundary,
+                              "deferred auxiliary boundary already supplies a packet");
         if (inputs.boundary)
             ValidateBoundaryInputs(*inputs.boundary, time);
         _data->boundary.ValidateEquationProducers(_data->boundaryZones);
@@ -315,7 +321,7 @@ namespace DNDS::Cauchy
             output._faceScratch.emplace(R::RowLayout::Dense(faces, 3));
         output._equationOrigin.reset();
         return AuxiliaryPreparation::BuildState(
-            _data, state, output, time, std::move(workers), inputs);
+            *this, state, output, time, std::move(workers), inputs);
     }
     void FiniteVolume::PrepareAuxValues(const EquationDofs &state, AuxiliaryValues &output, real time,
                                         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, AuxiliaryInputs inputs) const
@@ -375,5 +381,12 @@ namespace DNDS::Cauchy
         if (values._equationOrigin)
             return values._equationOrigin->boundary;
         return std::nullopt;
+    }
+    bool FiniteVolume::AuxiliaryBoundaryCurrent(
+        const AuxiliaryValues &values, const Workspace &workspace) const
+    {
+        const auto prepared = PreparedBoundaryInputs(values);
+        const auto bound = PreparedBoundaryInputs(workspace);
+        return prepared ? bound && prepared->SamePublication(*bound) : !bound;
     }
 }

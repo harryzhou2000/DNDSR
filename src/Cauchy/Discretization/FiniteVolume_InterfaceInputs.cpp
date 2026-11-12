@@ -220,7 +220,8 @@ namespace DNDS::Cauchy
         Snapshot(input._quadrature, publication.versions, publication.shapes);
         Snapshot(input._faceCenters, publication.faceVersions,
                  publication.faceShapes);
-        input._publication = std::move(publication);
+        input._publication = std::make_shared<const BoundaryInputs::Publication>(
+            std::move(publication));
         input._updating = false;
     }
     void FiniteVolume::ValidateBoundaryInputs(const BoundaryInputs &input, real time) const

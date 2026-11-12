@@ -723,7 +723,6 @@ TEST_CASE("Cauchy P0 explicit P1 and degree-one VR retain their distinct storage
                 CHECK(storage.coefficientOwnedBytes == 0);
                 CHECK(storage.coefficientGhostBytes == 0);
                 CHECK_FALSE(storage.distinctFinalized);
-                CHECK(storage.aliasesEquationState);
             }
             auto workspace = fv.BuildWorkspace(logical);
             for (int workers : {0, 2})
@@ -775,7 +774,6 @@ TEST_CASE("Cauchy direct P1 owns Barth and thermal PP without variational storag
         CHECK(storage.coefficientTransferBindings == 0);
         CHECK(storage.coefficientOwnedBytes == 0);
         CHECK(storage.coefficientGhostBytes == 0);
-        CHECK(storage.aliasesEquationState);
         auto workspace = fv.BuildWorkspace(logical);
         R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateCPUStream();
@@ -855,7 +853,6 @@ TEST_CASE("Native viscous Cauchy residual reproduces linear Couette heat product
     CHECK(storage.coefficientTransferBindings == 0);
     CHECK(storage.coefficientOwnedBytes == 0);
     CHECK(storage.coefficientGhostBytes == 0);
-    CHECK(storage.aliasesEquationState);
     const auto read = residual.Owned().Read();
     const auto base = inviscidResidual.Owned().Read();
     DNDS::index tested = 0;
@@ -2087,11 +2084,10 @@ TEST_CASE("Optional derived auxiliaries refresh owned rows during halo exchange 
     CHECK_NOTHROW(fv.ValidateAuxValues(typed, aux));
     auto owned = aux.derivedOwned->ReadCurrent(typed, equation), ghost = aux.derivedGhost->ReadCurrent(typed, equation);
     auto meanRead = state.Owned().Read(), meanGhost = state.Ghost().Read();
-    const auto &coefficients = fv.FluxReconstruction(*reconstruction, *work).CoupledField();
-    auto recRead = coefficients.Owned().Read(), recGhost = coefficients.Ghost().Read();
     C::RHSReadViews input;
     input.mean = {meanRead.View<C::RHSFlowRows>(), meanGhost.View<C::RHSFlowRows>()};
-    input.coefficients = {recRead.View<R::UniformTableRows>(), recGhost.View<R::UniformTableRows>()};
+    // P0 has no coefficient operand; optional derived auxiliaries must work
+    // with the same empty coefficient view used by the production wrapper.
     input.auxiliary.meanThermodynamics = C::MeanThermodynamicView::Derived(
         owned, DNDS::OptionalRef<const C::DerivedFields::ReadScope>(ghost));
     C::RHSLocalDiagnostics diagnostics;
@@ -2344,10 +2340,15 @@ TEST_CASE("Primitive gradient overlap preserves conservative reconstruction acro
                     CHECK(state.Owned().Version() == version);
                     CHECK(fv.LastFaceFallbacks(*work) == 0);
                     std::vector<DNDS::real> values;
-                    const std::array<const R::Array<DNDS::real> *, 3> outputs{
-                        &residual.Owned(),
-                        &fv.ReconstructionGuess(*reconstructionState).CoupledField().Owned(),
-                        &fv.FluxReconstruction(*reconstructionState, *work).CoupledField().Owned()};
+                    std::vector<const R::Array<DNDS::real> *> outputs{&residual.Owned()};
+                    // Direct P1 has no modal guess: compare the complete RHS
+                    // and unchanged mean generation above. VR additionally
+                    // compares its genuine warm and finalized coefficients.
+                    if (fv.PolynomialReconstruction())
+                    {
+                        outputs.push_back(&fv.ReconstructionGuess(*reconstructionState).CoupledField().Owned());
+                        outputs.push_back(&fv.FluxReconstruction(*reconstructionState, *work).CoupledField().Owned());
+                    }
                     for (const auto *array : outputs)
                     {
                         auto read = array->Read();

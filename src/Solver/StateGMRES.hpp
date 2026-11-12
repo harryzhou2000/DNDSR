@@ -22,6 +22,10 @@ namespace DNDS::Linear
     {
         index maxIterations = 40;
         real relativeTolerance = 1e-8, absoluteTolerance = 1e-12;
+        /// Gate convergence-triggered cycle exits. Restart, final iteration and
+        /// breakdown still observe the true residual. Arnoldi products cannot
+        /// be skipped: they define the Krylov basis, not just stopping policy.
+        index residualCheckInterval = 1;
     };
     struct LinearIterationReport
     {
@@ -115,7 +119,7 @@ namespace DNDS::Linear
                 Check(*initialGuess);
                 CheckSource(*initialGuess, true);
             }
-            DNDS_check_throw_info(apply && precondition && products && settings.maxIterations >= 0 &&
+            DNDS_check_throw_info(apply && precondition && products && settings.maxIterations >= 0 && settings.residualCheckInterval > 0 &&
                                       std::isfinite(settings.relativeTolerance) && settings.relativeTolerance >= 0 &&
                                       std::isfinite(settings.absoluteTolerance) && settings.absoluteTolerance >= 0,
                                   "invalid GMRES callbacks or controls");
@@ -184,6 +188,22 @@ namespace DNDS::Linear
                 return finish(LinearStop::NonFinite);
             std::vector<const Field *> probes;
             probes.reserve(size_t(_subspace) + 1);
+            // TODO(sync-free-gmres): managed device scalar reductions and
+            // TODO(sync-free-iteration-control): device-side stopping/restart.
+            // Deferred beyond Plan 60's current implementation scope.
+            // Reduction results should be managed, device-aware scalar buffers
+            // (GPU global memory on CUDA), not host-returned scalar values.
+            // Queue a dependent kernel phase to consume those buffers, update
+            // Hessenberg/Givens/residual data, and prepare vector coefficients.
+            // This permits a fixed-count sequence without per-product host
+            // observation; it does not remove Arnoldi's numerical dependencies.
+            // Dynamic stopping/restart/breakdown remains the harder controller
+            // problem. Candidate future designs are CUDA Dynamic Parallelism
+            // with device-managed streams, or a persistent/mega driver kernel
+            // explicitly managing asynchronous device work and overlap.
+            // Neither is implemented here. Portable MPI still needs host
+            // progress; a device-driven distributed loop needs a compatible
+            // communication backend and rank-consistent collective ordering.
             while (report.iterations < settings.maxIterations)
             {
                 const real beta = report.preconditionedResidual;
@@ -254,7 +274,12 @@ namespace DNDS::Linear
                     _g[j] *= _cosine[j];
                     ++report.iterations;
                     used = j + 1;
-                    if (closed || std::abs(_g[j + 1]) <= leftTarget)
+                    // This is a deliberate host decision. Keeping a dynamic
+                    // Arnoldi loop entirely on a device/inside a mutable queue
+                    // requires a later driver design, not an implicit wait in
+                    // an otherwise queued operator segment.
+                    const bool observe = report.iterations % settings.residualCheckInterval == 0;
+                    if (closed || (observe && std::abs(_g[j + 1]) <= leftTarget))
                         break;
                 }
                 const auto leastSquares = _h.topLeftCorner(used + 1, used).colPivHouseholderQr();

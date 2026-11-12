@@ -4,6 +4,7 @@
 #include "DNDS/Core/OptionalRef.hpp"
 #include "Solver/FieldGMRES.hpp"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
+#include "DNDS/Runtime/Execution/EagerEngine.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -21,6 +22,10 @@ namespace DNDS::Cauchy
         /// returned update's finiteness. Tolerances are ignored in fixedCount.
         std::string stopping = "residual";
         index maxIterations = 10;
+        /// Host stopping observations, not mathematical product dependencies.
+        /// Always observe the final stationary iterate. GMRES also observes at
+        /// restart/breakdown; Arnoldi dot products remain mandatory each step.
+        index residualCheckInterval = 1;
         int subspace = 20, sgsSweeps = 1, iluFill = 0;
         /// One or two local Jacobi sweeps per exchange. Two freezes remote
         /// input values between sweeps; it is not two synchronized steps.
@@ -35,6 +40,10 @@ namespace DNDS::Cauchy
     };
     struct LinearExecution
     {
+        struct Streams
+        {
+            Runtime::ExecutionStream compute, communication;
+        };
         bool overlap = true;
         /// Checked mode coordinates local kernel failures before more MPI.
         /// False is caller-ordered eager mode: callers own distributed failure
@@ -43,6 +52,11 @@ namespace DNDS::Cauchy
         /// A nonfinite fixed-count result aborts the communicator in unchecked
         /// mode; checked mode returns a globally agreed NonFinite report.
         bool collectiveChecks = true;
+        /// Production callers bind their domain's execution lanes. Empty uses
+        /// an owned inline CPU runtime for a standalone solve, with exactly the
+        /// same operator schedule. Streams are weak handles; their context must
+        /// outlive Solve. No solver-specific worker pool is created when bound.
+        std::optional<Streams> streams;
     };
     /// Domain-local CPU linear orchestration. Owns reusable native vectors and
     /// persistent bindings; numerical matrices and kernels remain independent.

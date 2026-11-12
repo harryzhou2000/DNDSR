@@ -179,7 +179,7 @@ namespace DNDS::Cauchy
             directLocations.push_back(state.LocateBlock(iBlock));
         std::vector<R::Array<real>::ReadLease> directOwned, directGhost, directViscousOwned, directViscousGhost;
         std::vector<RHSFieldView> directViews, directViscousViews;
-        if (direct && owner->settings.numerics.reconstruction == "gradient" && !owner->settings.numerics.firstOrderConvection)
+        if (!meanOnly && direct && owner->settings.numerics.reconstruction == "gradient" && !owner->settings.numerics.firstOrderConvection)
         {
             DNDS_check_throw_info(directGradients.size() == size_t(state.PhysicalFieldNumber()), "direct FV requires prepared physical gradients");
             for (const auto &gradient : directGradients)
@@ -269,7 +269,7 @@ namespace DNDS::Cauchy
         const auto &settings = owner->settings.numerics;
         request.direct = direct;
         request.linear = settings.reconstruction == "gradient";
-        request.firstOrder = settings.firstOrderConvection;
+        request.firstOrder = meanOnly || settings.firstOrderConvection;
         request.viscous = !meanOnly && owner->equation.Viscous();
         request.primitiveGradient = bool(primitiveGradient);
         request.hasWall = bool(wallRead);

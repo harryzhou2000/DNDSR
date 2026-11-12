@@ -339,12 +339,13 @@ TEST_CASE("Polynomial wall viscosity has the Euler normal jump and noGRP switch"
         R::EagerEngine engine(2);
         const auto stream = engine.CreateCPUStream();
         fv.Evaluate(state, output, *reconstruction, *work, engine, stream);
-        const auto &coefficients = fv.FluxReconstruction(*reconstruction, *work).CoupledField();
         {
-            const auto u = mean.Owned().Read(), ug = mean.Ghost().Read(), c = coefficients.Owned().Read(), cg = coefficients.Ghost().Read();
+            const auto u = mean.Owned().Read(), ug = mean.Ghost().Read();
             C::RHSReadViews input;
             input.mean = {u.View<C::RHSFlowRows>(), ug.View<C::RHSFlowRows>()};
-            input.coefficients = {c.View<R::UniformTableRows>(), cg.View<R::UniformTableRows>()};
+            // The constant inviscid reference has no modal coefficients or
+            // gradients. Keep those inputs empty; the wall-jump oracle below
+            // isolates the viscous contribution from the full evaluation.
             input.includeViscosity = false;
             auto output = inviscid.Owned().Write();
             C::RHSLocalDiagnostics diagnostics;

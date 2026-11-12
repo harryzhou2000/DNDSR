@@ -73,7 +73,9 @@ namespace DNDS::Cauchy
             // physical derivatives in the RANS source. Keep those gradients
             // and their frozen boundary values in the P0 workspace as well.
             if ((!meanOnly && data.settings.numerics.reconstruction == "gradient") ||
-                (data.equation.HasRANS() && data.settings.numerics.reconstruction == "constant"))
+                (data.equation.HasRANS() &&
+                 (data.settings.numerics.reconstruction == "constant" ||
+                  (meanOnly && data.settings.numerics.reconstruction == "gradient"))))
             {
                 field.gradient.emplace(data.metrics.BuildField(index(physical.Width()) * data.metrics.Dimension()));
                 field.gradientBoundary.emplace(data.gradient.BuildBoundaryValues(index(physical.Width())));
@@ -332,7 +334,7 @@ namespace DNDS::Cauchy
                     directGradients.push_back(owner->metrics.BuildField(
                         FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owner->metrics.NumCell(),
                                                         state.PhysicalField(iField).Width() * owner->metrics.Dimension())));
-                if (owner->equation.Viscous() && owner->settings.numerics.viscousGradient == "polynomial" &&
+                if (!meanOnly && owner->equation.Viscous() && owner->settings.numerics.viscousGradient == "polynomial" &&
                     !owner->settings.numerics.viscousLimited && !nativeDirectGradient)
                     directViscousGradients.push_back(owner->metrics.BuildField(
                         FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owner->metrics.NumCell(),

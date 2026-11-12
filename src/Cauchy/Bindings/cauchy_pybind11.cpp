@@ -13,6 +13,11 @@ PYBIND11_MODULE(cauchy_pybind11, m)
     namespace C = DNDS::Cauchy;
     namespace R = DNDS::Runtime;
     py::module_::import("DNDSR.CFV");
+    // Register the mutually referenced type before emitting method signatures;
+    // otherwise pybind records an unbound C++ spelling in Python annotations.
+    auto domainClass = py::class_<C::Domain>(
+        m, "Domain",
+        "CPU perfect-gas or ideal-mixture domain with optional SA, Wilcox/SST or realizable k-epsilon. Collective methods use the mesh communicator. Missing RANS wall distance is built by Geom from no-slip zones. Release all debug views before construction/stepping; no CUDA fallback.");
     py::class_<C::StepResult>(
         m, "StepResult",
         "Collectively agreed numerical outcome; rejection permits smaller-dt retry. Unexpected failures terminate the run.")
@@ -92,9 +97,8 @@ PYBIND11_MODULE(cauchy_pybind11, m)
         .def_readonly("residual", &C::NonlinearIterationReport::residual)
         .def_readonly("rhs_limited", &C::NonlinearIterationReport::rhsLimited)
         .def_readonly("increment_limited", &C::NonlinearIterationReport::incrementLimited);
-    py::class_<C::Domain>(
-        m, "Domain",
-        "CPU perfect-gas or ideal-mixture domain with optional SA, Wilcox/SST or realizable k-epsilon. Collective methods use the mesh communicator. Missing RANS wall distance is built by Geom from no-slip zones. Release all debug views before construction/stepping; no CUDA fallback.")
+    C::Bindings::BindFiniteVolumeOperators(m);
+    domainClass
         .def(
             py::init(
                 [](std::shared_ptr<DNDS::Geom::UnstructuredMesh> mesh, const std::string &json, const std::string &name)
@@ -307,5 +311,4 @@ PYBIND11_MODULE(cauchy_pybind11, m)
     {
         return simulation.Config().Root().dump();
     });
-    C::Bindings::BindFiniteVolumeOperators(m);
 }

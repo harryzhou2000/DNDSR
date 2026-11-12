@@ -97,8 +97,8 @@ namespace DNDS::Cauchy
     real Domain::StableStep(real cfl) const
     {
         AuxiliaryInputs inputs;
-        if (_execution.interfaceInputs)
-            inputs.boundary.Emplace(*_execution.interfaceInputs);
+        if (_execution.interfaces->active)
+            inputs.boundary.Emplace(*_execution.interfaces->active);
         if (!_execution.timeAuxiliary)
         {
             AuxiliaryRequest request;
@@ -121,15 +121,15 @@ namespace DNDS::Cauchy
             if (!_execution.timeMeanGradients)
                 _execution.timeMeanGradients.emplace(_problem.finiteVolume.BuildMeanGradients(state));
             _problem.finiteVolume.PrepareAuxValues(state, *_execution.timeAuxiliary, *_execution.timeMeanGradients,
-                                                   _execution.Engine(), _execution.PrimaryStream(), _state.time,
+                                                   _execution.Engine(), _execution.ComputeStream(), _state.time,
                                                    _execution.ChemicalWorkers(), inputs);
             return _problem.finiteVolume.StableStep(state, *_execution.timeAuxiliary, cfl, _state.time);
         }
         std::vector<R::TransferOperation> transfers;
         for (const auto &halo : _execution.timeMeanHalo)
             transfers.push_back(_execution.Engine().ChecksAccess()
-                                    ? halo.BeginChecked(_execution.PrimaryStream())
-                                    : halo.BeginScheduled(_execution.PrimaryStream()));
+                                    ? halo.BeginChecked(_execution.ComputeStream())
+                                    : halo.BeginScheduled(_execution.ComputeStream()));
         for (auto &transfer : transfers)
             transfer.Wait();
         MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
@@ -153,7 +153,7 @@ namespace DNDS::Cauchy
         // the same synchronous CPU state adapter used by the time driver.
         MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
                         {
-            _execution.JoinPrimary();
+            _execution.Synchronize();
             EquationDofOperations::Copy(_state.trial, _state.accepted);
             EquationDofOperations::Copy(_state.initial, _state.accepted); });
         _lastFallbacks = 0;
@@ -181,7 +181,7 @@ namespace DNDS::Cauchy
     {
         MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
                         {
-            _execution.JoinPrimary();
+            _execution.Synchronize();
             const auto &workers = _execution.ChemicalWorkers();
             DNDS_check_throw_info(_problem.equation.HasMixture() && workers, "chemical source step requires its explicit mixture worker");
             AdvanceChemicalSource(_problem.equation, input, output, workers->Acquire(), dt, _reactorControls); });
@@ -199,111 +199,73 @@ namespace DNDS::Cauchy
     }
     StepResult Domain::PrepareStep(real dt)
     {
-        DNDS_check_throw_info(!_problem.finiteVolume.HasInterfaces(), "interface domains must advance through their coordinated Simulation");
+        DNDS_check_throw_info(!_problem.finiteVolume.HasInterfaces(),
+                              "interface domains must advance through their Simulation");
+        BeginStep(dt);
+        while (HasNextGroup())
+        {
+            PrepareGroup();
+            if (auto session = PrepareGroupSolve())
+            {
+                SolveNonlinear(*session);
+                if (auto result = FinishGroupSolve(*session); !result)
+                    return result;
+            }
+            else if (auto result = ApplyExplicitGroup(); !result)
+                return result;
+            if (auto result = CompleteGroup(); !result)
+                return result;
+        }
+        return {};
+    }
+    int Domain::GroupNumber() const
+    {
+        return _state.timeStepper ? _state.timeStepper->GroupNumber() : 3;
+    }
+    void Domain::BindInterfaceInputs(const BoundaryInputs &input, int coupledStage)
+    {
+        PrepareInterfaceReceiver(coupledStage)(input);
+    }
+    void Domain::BeginStep(real dt)
+    {
+        _execution.Context().ClearEvaluationDependency();
         if (_state.internalResume)
         {
             int valid = _steady || dt == _state.trialDt;
-            valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, _problem.finiteVolume.Metrics().Communicator());
-            DNDS_check_throw_info(valid, "resumed exact internal step requires its stored physical dt");
-            if (auto result = ResumeImplicitStep(); !result)
-                return result;
-            FinishChemicalStep();
-            _state.trialTime = _steady ? _state.time : _state.time + _state.trialDt;
-            _state.trialReady = true;
-            _state.internalResume = false;
-            return {};
-        }
-        BeginTrial(dt);
-        if (_state.timeStepper)
-        {
-            if (auto result = PrepareImplicitStep(dt); !result)
-                return result;
+            valid = MPI::AllreduceValue<MPI::Reduction::Min>(valid, Communicator());
+            DNDS_check_throw_info(valid && _state.timeStepper,
+                                  "exact internal resume requires its stored physical dt");
+            _state.coordinatedStage = _state.timeStepper->ActiveGroup().stage;
         }
         else
         {
-            // Shu-Osher SSPRK(3,3), including its non-monotone physical stage times.
-            _state.trialEpoch.stage = 0;
-            if (auto result = UpdateStage(dt, 0, 1, _state.time); !result)
-                return result;
-            _state.trialEpoch.stage = 1;
-            if (auto result = UpdateStage(dt, .75, .25, _state.time + dt); !result)
-                return result;
-            _state.trialEpoch.stage = 2;
-            if (auto result = UpdateStage(dt, 1. / 3, 2. / 3, _state.time + .5 * dt); !result)
-                return result;
+            BeginTrial(dt);
+            _state.coordinatedStage = 0;
+            if (_state.timeStepper)
+                _state.timeStepper->BeginStep(
+                    _state.initial, _state.trial, _state.time, dt,
+                    [this](auto &state, auto &rate, real time, int stage)
+                    { EvaluateImplicitRate(state, rate, *_execution.workspace, time, stage); },
+                    _steady);
         }
-        FinishChemicalStep();
-        _state.trialTime = _steady ? _state.time : _state.time + dt;
-        _state.trialReady = true;
-        return {};
-    }
-    int Domain::CoordinatedStageNumber() const { return _state.timeStepper ? _state.timeStepper->StageNumber() : 3; }
-    void Domain::BindInterfaceInputs(const BoundaryInputs &input)
-    {
-        // Local validated aliases only. This must stay free of MPI so cleanup
-        // can restore an already accepted packet without another collective.
-        _problem.finiteVolume.SetBoundaryInputs(*_execution.workspace, input);
-        if (_execution.observationWorkspace)
-            _problem.finiteVolume.SetBoundaryInputs(*_execution.observationWorkspace, input);
-        if (_execution.timePPWorkspace)
-            _problem.finiteVolume.SetBoundaryInputs(*_execution.timePPWorkspace, input);
-        _execution.interfaceInputs = input;
-        if (_execution.multigrid)
-            _execution.multigrid->SetBoundaryInputs(input);
-    }
-    void Domain::BeginCoordinatedStep(real dt)
-    {
-        BeginTrial(dt);
         _lastImplicit.clear();
         _lastCoupledIterations = 0;
         _lastCoupledTargetRatio = 0;
-        _state.coordinatedStage = 0;
         _state.coordinatedPrepared = false;
-        _state.stageEquation.reset();
-        for (auto &input : _execution.coupledInterfaceInputs)
+        _state.stageGroup.reset();
+        for (auto &input : _execution.interfaces->coupled)
             input.reset();
-        if (_state.timeStepper)
-        {
-            if (_state.timeStepper->SupportsStageSequence())
-                _state.timeStepper->BeginStages(
-                    _state.initial, _state.trial, _state.time, dt, _steady);
-            else
-            {
-                const auto evaluate = [this](EquationDofs &state,
-                                             EquationDofs &rate, real time,
-                                             int stage)
-                {
-                    EvaluateImplicitRate(state, rate, *_execution.workspace,
-                                         time, stage);
-                };
-                _state.timeStepper->BeginCoupled(
-                    _state.initial, _state.trial, _state.time, dt, evaluate);
-                PrepareCoupledImplicit(_state.timeStepper->CoupledMethod(),
-                                       false);
-            }
-        }
-    }
-    bool Domain::CoordinatedStepIsCoupled() const
-    {
-        return _state.timeStepper &&
-               !_state.timeStepper->SupportsStageSequence();
-    }
-    real Domain::CoupledStageTime(int coupledStage) const
-    {
-        DNDS_check_throw_info(CoordinatedStepIsCoupled(),
-                              "domain has no active coupled stage group");
-        return _state.timeStepper->CoupledMethod().CoupledStageTime(
-            coupledStage);
     }
     void Domain::PrepareCoupledInterface(int coupledStage, bool reconstructed)
     {
-        DNDS_check_throw_info(CoordinatedStepIsCoupled() &&
+        DNDS_check_throw_info(_state.stageGroup && _state.stageGroup->coupledStages == 2 &&
                                   (coupledStage == 0 || coupledStage == 1) &&
                                   _coupledMiddle,
                               "invalid coupled interface preparation");
-        auto &method = _state.timeStepper->CoupledMethod();
-        auto &state = coupledStage == 0 ? method.IntermediateState()
-                                        : _state.trial;
+        if (reconstructed)
+            ActivateCoupledInterface(coupledStage);
+        auto &state = _state.timeStepper->GroupState(
+            *_state.stageGroup, _state.trial, coupledStage);
         auto &reconstruction = coupledStage == 0 ? *_coupledMiddle->state
                                                  : *_state.reconstruction;
         _problem.finiteVolume.Execute(
@@ -311,39 +273,29 @@ namespace DNDS::Cauchy
             _execution.Context(),
             reconstructed
                 ? FiniteVolumeEvaluation::Reconstruction(
-                      method.CoupledStageTime(coupledStage))
+                      _state.stageGroup->times[size_t(coupledStage)])
                 : FiniteVolumeEvaluation::Sampling());
     }
-    FiniteVolume::InterfaceDonorPublication
-    Domain::PublishCoupledInterfaceDonor(int coupledStage, bool reconstructed)
+    InterfaceDonorPublication
+    Domain::PublishCoupledInterfaceDonor(int coupledStage, bool reconstructed) const
     {
-        DNDS_check_throw_info(CoordinatedStepIsCoupled() &&
+        DNDS_check_throw_info(_state.stageGroup && _state.stageGroup->coupledStages == 2 &&
                                   (coupledStage == 0 || coupledStage == 1) &&
                                   _coupledMiddle,
                               "invalid coupled interface publication");
-        auto &method = _state.timeStepper->CoupledMethod();
-        auto &state = coupledStage == 0 ? method.IntermediateState()
-                                        : _state.trial;
+        const auto &state = _state.timeStepper->GroupState(
+            *_state.stageGroup, _state.trial, coupledStage);
         auto &reconstruction = coupledStage == 0 ? *_coupledMiddle->state
                                                  : *_state.reconstruction;
         return _problem.finiteVolume.PublishInterfaceDonor(
             state, reconstruction, *_execution.workspace, reconstructed);
-    }
-    void Domain::BindCoupledInterfaceInputs(int coupledStage,
-                                            const BoundaryInputs &input)
-    {
-        DNDS_check_throw_info(coupledStage == 0 || coupledStage == 1,
-                              "invalid coupled interface slot");
-        _execution.coupledInterfaceInputs[size_t(coupledStage)] =
-            _problem.finiteVolume.FreezeBoundaryInputs(input);
-        ActivateCoupledInterface(coupledStage);
     }
     void Domain::ActivateCoupledInterface(int coupledStage)
     {
         DNDS_check_throw_info(coupledStage == 0 || coupledStage == 1,
                               "invalid coupled interface activation");
         const auto &input =
-            _execution.coupledInterfaceInputs[size_t(coupledStage)];
+            _execution.interfaces->coupled[size_t(coupledStage)];
         if (_problem.finiteVolume.HasInterfaces())
             DNDS_check_throw_info(input,
                                   "coupled stage has no frozen interface packet");
@@ -354,82 +306,116 @@ namespace DNDS::Cauchy
             _coupledMiddle->bindBoundary)
             _coupledMiddle->bindBoundary(*input);
     }
-    StepResult Domain::SolveCoordinatedCoupledStep()
+    DomainStageGroup Domain::PrepareGroup()
     {
-        DNDS_check_throw_info(CoordinatedStepIsCoupled(),
-                              "domain has no begun coupled stage group");
-        const bool accepted = _state.timeStepper->RunCoupled(
-            _state.trial, [this](auto &method, auto &endpoint)
-            { return SolveCoupledImplicit(method, endpoint, false); });
-        if (!accepted)
-            return StepResult::Rejected(
-                "coordinated DITR stage group reached its correction cap");
-        FinishChemicalStep();
-        if (!Admissible(_state.trial))
-            return StepResult::Rejected(
-                "coordinated DITR candidate is inadmissible");
-        _state.trialTime = _state.time + _state.trialDt;
-        _state.trialReady = true;
-        return {};
-    }
-    real Domain::PrepareCoordinatedStage(int stage)
-    {
-        DNDS_check_throw_info(stage == _state.coordinatedStage && stage < CoordinatedStageNumber() && !_state.coordinatedPrepared,
-                              "coordinated domain stage is out of order");
-        _state.trialEpoch.stage = stage;
+        _execution.Context().ClearEvaluationDependency();
+        DNDS_check_throw_info(
+            _state.coordinatedStage < GroupNumber() &&
+                !_state.coordinatedPrepared && !_state.trialReady,
+            "domain group is out of order");
         _state.coordinatedPrepared = true;
+        DomainStageGroup group;
+        group.stage = _state.coordinatedStage;
+        _state.trialEpoch.stage = group.stage;
+        _state.trialEpoch.coupledStage = 0;
         if (_state.timeStepper)
         {
-            _state.stageEquation.emplace(_state.timeStepper->PrepareStage(_state.trial));
-            return _state.stageEquation->time;
-        }
-        static constexpr real c[]{0, 1, .5};
-        return _state.time + c[stage] * _state.trialDt;
-    }
-    StepResult Domain::SolveCoordinatedStage()
-    {
-        DNDS_check_throw_info(_state.coordinatedPrepared, "coordinated domain stage was not prepared");
-        if (_state.stageEquation)
-        {
-            const auto &equation = *_state.stageEquation;
-            if (equation.implicit)
-            {
-                const bool accepted = _state.timeStepper->SolvePreparedStage(equation, _state.trial,
-                                                                             [&](EquationDofs &trial, const EquationDofs &source, real mass, real rhsScale, real time, int stage)
-                                                                             {
-                                                                                 _state.progressTime = time;
-                                                                                 SetTimeStage(stage);
-                                                                                 return RecordImplicitStage(
-                                                                                     _execution.multigrid
-                                                                                         ? _execution.multigrid->SolveWithController(
-                                                                                               *_execution.nonlinearController,
-                                                                                               source, mass, rhsScale, time,
-                                                                                               stage, ProgressControl())
-                                                                                         : _execution.implicit->SolveWithController(
-                                                                                               *_execution.nonlinearController,
-                                                                                               trial, source, mass, rhsScale,
-                                                                                               time, stage, ProgressControl()));
-                                                                             });
-                if (!accepted)
-                    return StepResult::Rejected("coordinated implicit stage reached its correction cap");
-            }
+            _state.stageGroup.emplace(
+                _state.internalResume ? _state.timeStepper->ActiveGroup()
+                                      : _state.timeStepper->PrepareGroup(_state.trial));
+            const auto &prepared = *_state.stageGroup;
+            group.coupledStages = prepared.coupledStages;
+            group.implicit = prepared.implicit;
+            group.times = prepared.times;
+            PrepareGroupOperators(_state.internalResume);
         }
         else
         {
-            static constexpr real history[]{0, .75, 1. / 3}, weight[]{1, .25, 2. / 3}, c[]{0, 1, .5};
-            return UpdateStage(_state.trialDt, history[_state.coordinatedStage], weight[_state.coordinatedStage], _state.time + c[_state.coordinatedStage] * _state.trialDt);
+            static constexpr real times[]{0, 1, .5};
+            group.times[0] = _state.time + times[group.stage] * _state.trialDt;
+        }
+        return group;
+    }
+
+    std::optional<NonlinearSession> Domain::PrepareGroupSolve()
+    {
+        DNDS_check_throw_info(_state.coordinatedPrepared,
+                              "domain group was not prepared");
+        if (!_state.stageGroup || !_state.stageGroup->implicit)
+            return std::nullopt;
+        if (_state.stageGroup->coupledStages == 2)
+            return CreateCoupledNonlinearSession(_state.internalResume);
+        const auto equation = _state.timeStepper->PrepareEquation(
+            *_state.stageGroup, _state.trial, 0);
+        const auto &coefficients = equation.coefficients;
+        _state.progressTime = coefficients.time;
+        SetTimeStage(_state.stageGroup->stage);
+        auto control = ProgressControl();
+        control.resume = _state.internalResume;
+        return _execution.multigrid
+                   ? _execution.multigrid->PrepareSolve(
+                         *_execution.nonlinearSetup, equation.resOther,
+                         coefficients.inverseDt, coefficients.rhsScale,
+                         coefficients.time, _state.stageGroup->stage,
+                         std::move(control))
+                   : _execution.implicit->PrepareSolve(
+                         *_execution.nonlinearSetup, equation.state,
+                         equation.resOther, coefficients.inverseDt,
+                         coefficients.rhsScale, coefficients.time,
+                         _state.stageGroup->stage, std::move(control));
+    }
+
+    StepResult Domain::FinishGroupSolve(NonlinearSession &session)
+    {
+        DNDS_check_throw_info(_state.stageGroup && session.Complete(),
+                              "domain nonlinear group is incomplete");
+        _state.timeStepper->ValidateGroup(*_state.stageGroup, _state.trial);
+        if (_state.stageGroup->coupledStages == 2)
+        {
+            _lastCoupledIterations = session.Report().iterations;
+            _lastCoupledTargetRatio = session.Report().residualTargetRatio;
+        }
+        if (!RecordImplicitStage(session.Report()))
+        {
+            // Failure-only diagnostics survive the common stage-group entry.
+            // Numerical rejection leaves accepted state/history untouched;
+            // reporting requires no extra reduction or exception recovery.
+            const auto &last = session.Report();
+            const Json details{
+                {"method", _state.timeStepper->Method()}, {"steady", _steady}, {"stage", _state.stageGroup->stage}, {"dt", _steady ? 0 : _state.trialDt}, {"coupled_iterations", _lastCoupledIterations}, {"coupled_target_ratio", _lastCoupledTargetRatio}, {"last_solve_converged", last.converged}, {"nonlinear_iterations", last.iterations}, {"linear_iterations", last.linearIterations}, {"pseudo_cfl", last.pseudoCFL}, {"initial_residual", last.initialResidual}, {"reference_residual", last.referenceResidual}, {"residual_target_ratio", last.residualTargetRatio}, {"last_residual", last.residual}, {"vr_sweeps", last.reconstructionIterations}, {"vr_relative_update", last.reconstructionRelativeUpdate}};
+            return StepResult::Rejected(
+                "implicit stage group reached its correction cap; accepted state/history unchanged; " + details.dump());
         }
         return {};
     }
-    StepResult Domain::CompleteCoordinatedStage()
+
+    StepResult Domain::ApplyExplicitGroup()
     {
-        DNDS_check_throw_info(_state.coordinatedPrepared, "no coordinated stage to complete");
+        DNDS_check_throw_info(_state.coordinatedPrepared &&
+                                  (!_state.stageGroup || !_state.stageGroup->implicit),
+                              "domain group is not explicit");
+        if (_state.stageGroup)
+            return {}; // The DIRK method prepared this explicit stage's state.
+        static constexpr real history[]{0, .75, 1. / 3};
+        static constexpr real weight[]{1, .25, 2. / 3}, times[]{0, 1, .5};
+        const int stage = _state.coordinatedStage;
+        return UpdateStage(_state.trialDt, history[stage], weight[stage],
+                           _state.time + times[stage] * _state.trialDt);
+    }
+
+    StepResult Domain::CompleteGroup()
+    {
+        DNDS_check_throw_info(_state.coordinatedPrepared,
+                              "no prepared domain group to complete");
         if (_state.timeStepper)
-            _state.timeStepper->CompleteStage(_state.trial, [this](auto &state, auto &rate, real time, int stage)
-                                              { EvaluateImplicitRate(state, rate, *_execution.workspace, time, stage); });
+            _state.timeStepper->CompleteGroup(
+                *_state.stageGroup, _state.trial,
+                [this](auto &state, auto &rate, real time, int stage)
+                { EvaluateImplicitRate(state, rate, *_execution.workspace, time, stage); });
         _state.coordinatedPrepared = false;
-        _state.stageEquation.reset();
-        if (++_state.coordinatedStage == CoordinatedStageNumber())
+        _state.internalResume = false;
+        _state.stageGroup.reset();
+        if (++_state.coordinatedStage == GroupNumber())
         {
             FinishChemicalStep();
             if (!Admissible(_state.trial))
@@ -521,7 +507,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(Admissible(_state.accepted), "accepted Cauchy mean is inadmissible");
         MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
                         {
-            _execution.JoinPrimary(); EquationDofOperations::Copy(_state.trial, _state.accepted); });
+            _execution.Synchronize(); EquationDofOperations::Copy(_state.trial, _state.accepted); });
         _problem.finiteVolume.Execute(_state.trial, *_state.reconstruction, *_execution.workspace, _execution.Context(),
                                       FiniteVolumeEvaluation::Spatial(_state.residual, _state.time));
         _lastFallbacks = _problem.finiteVolume.LastFaceFallbacks(*_execution.workspace);
@@ -594,12 +580,12 @@ namespace DNDS::Cauchy
                 _execution.observationState.emplace(EquationDofOperations::NewVector(_state.trial)); });
             _execution.observationWorkspace = _problem.finiteVolume.BuildWorkspace(*_execution.observationInput, _execution.ChemicalWorkers());
             _execution.observationReconstruction = _problem.finiteVolume.BuildReconstructionState(*_execution.observationInput);
-            if (_execution.interfaceInputs)
-                _problem.finiteVolume.SetBoundaryInputs(*_execution.observationWorkspace, *_execution.interfaceInputs);
+            if (_execution.interfaces->active)
+                _problem.finiteVolume.SetBoundaryInputs(*_execution.observationWorkspace, *_execution.interfaces->active);
         }
         MPI::LocalStage(mpi, [&]
                         {
-            _execution.JoinPrimary();
+            _execution.Synchronize();
             EquationDofOperations::Copy(*_execution.observationInput, _state.trial); });
         if (_problem.finiteVolume.PolynomialReconstruction())
             _problem.finiteVolume.RestoreReconstructionGuess(*_execution.observationReconstruction,
@@ -631,8 +617,8 @@ namespace DNDS::Cauchy
             _execution.observationState = std::move(residual);
             _execution.observationReconstruction = std::move(reconstruction);
             _execution.observationWorkspace = std::move(workspace);
-            if (_execution.interfaceInputs)
-                _problem.finiteVolume.SetBoundaryInputs(*_execution.observationWorkspace, *_execution.interfaceInputs);
+            if (_execution.interfaces->active)
+                _problem.finiteVolume.SetBoundaryInputs(*_execution.observationWorkspace, *_execution.interfaces->active);
         }
         // Start every observation from the accepted numerical guess, not the
         // last observation and not a cold zero polynomial. This preserves
@@ -642,7 +628,7 @@ namespace DNDS::Cauchy
         // the accepted guess until publication, just as for checkpoint writing.
         MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
                         {
-            _execution.JoinPrimary();
+            _execution.Synchronize();
             EquationDofOperations::Copy(*_execution.observationInput, snapshot.Means()); });
         if (_problem.finiteVolume.PolynomialReconstruction())
         {

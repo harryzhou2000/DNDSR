@@ -278,7 +278,9 @@ namespace DNDS::Cauchy
         if (sourceOffsets.RowCount() == 0)
             return;
         sourceState.emplace(state.NumericAlias());
-        sourceCoefficients.emplace(FluxCoefficients());
+        sourceCoefficients.reset();
+        if (activeFluxCoefficients)
+            sourceCoefficients.emplace(FluxCoefficients());
         sourceTime = time;
     }
     /// ValidateWorkspace has already fixed schema, binding and geometry.
@@ -290,9 +292,20 @@ namespace DNDS::Cauchy
     {
         if (sourceOffsets.RowCount() == 0)
             return true;
-        if (!sourceState || !sourceCoefficients || sourceTime != time)
+        if (!sourceState || sourceTime != time)
             return false;
-        const auto means = state.ReadOwned(), coefficients = FluxCoefficients().ReadOwned();
+        const auto means = state.ReadOwned();
+        std::optional<EquationDofs::ReadScope> coefficients;
+        if (activeFluxCoefficients)
+        {
+            if (!sourceCoefficients)
+                return false;
+            coefficients.emplace(FluxCoefficients().ReadOwned());
+            if (!sourceCoefficients->Current(FluxCoefficients()))
+                return false;
+        }
+        else if (sourceCoefficients)
+            return false;
         const auto unchanged = [](const EquationDofOperations::Binding &publication, const EquationDofs &values)
         {
             if (publication.snapshot.PhysicalFieldNumber() != values.PhysicalFieldNumber())
@@ -307,7 +320,7 @@ namespace DNDS::Cauchy
             }
             return true;
         };
-        return unchanged(*sourceState, state) && sourceCoefficients->Current(FluxCoefficients());
+        return unchanged(*sourceState, state);
     }
     /// High-order RHS source sampling supplies the opt-in quadrature
     /// source Jacobian or refreshes publication provenance only. The

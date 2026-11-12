@@ -1,11 +1,53 @@
 #include "Cauchy/Core/DomainExecutionContext.hpp"
 
 #include "Cauchy/Config/SimulationConfig.hpp"
+#include "DNDS/MPI/Failure.hpp"
+
+#include <mutex>
 
 namespace DNDS::Cauchy
 {
     namespace
     {
+        class EvaluationPublication
+        {
+            QueuedEvaluationDependency _request;
+            mutable std::mutex _mutex;
+            bool _published = false;
+
+        public:
+            explicit EvaluationPublication(QueuedEvaluationDependency request)
+                : _request(std::move(request)) {}
+            Runtime::StreamEvent Completion() const { return _request.completion; }
+            bool Published() const
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                return _published;
+            }
+            void Publish()
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                if (_published)
+                    return;
+                DNDS_check_throw_info(_request.completion.Ready(),
+                                      "interface publication preceded its event");
+                _request.publish();
+                _published = true;
+            }
+        };
+        /// Progress an imported runtime on this runtime's controller thread.
+        /// A compute worker may observe the event but cannot poll FUNNELED MPI.
+        /// Retaining the operation also pins the foreign engine and buffers.
+        class ImportedEvaluationProgress final : public Runtime::ExecutionProgress
+        {
+            Runtime::StreamEvent _completion;
+            std::shared_ptr<void> _owner;
+
+        public:
+            explicit ImportedEvaluationProgress(const QueuedEvaluationDependency &dependency)
+                : _completion(dependency.completion), _owner(dependency.owner) {}
+            bool Poll() override { return _completion.Ready(); }
+        };
         size_t ResolveHostThreads(const ExecutionSettings &settings)
         {
             DNDS_check_throw_info(settings.device == "cpu",
@@ -17,7 +59,9 @@ namespace DNDS::Cauchy
     {
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
         Runtime::EagerEngine engine;
-        Runtime::ExecutionStream primary;
+        Runtime::ExecutionStream compute, communication;
+        std::mutex dependencyMutex;
+        std::shared_ptr<EvaluationPublication> publication;
 
         Data(const ExecutionSettings &settings,
              std::optional<Physics::Chemistry::ChemicalWorkerPool> workerCapacity)
@@ -26,8 +70,32 @@ namespace DNDS::Cauchy
                      settings.checkAccess
                          ? std::make_shared<Runtime::AccessTrackingContext>()
                          : nullptr),
-              primary(engine.CreateCPUStream())
+              compute(engine.CreateCPUStream()),
+              communication(engine.CreateCPUStream())
         {
+        }
+        ~Data()
+        {
+            // A posted interface dependency is accepted work even when no
+            // spatial evaluation consumed it. Finish it before dropping its
+            // packet/resource owners; never recover during distributed teardown.
+            try
+            {
+                // Drain earlier compute work before a controller-side fallback
+                // binds packet metadata. Registered event progress prevents a
+                // worker wait from starving the foreign MPI operation.
+                engine.Synchronize();
+                if (publication)
+                {
+                    publication->Completion().WaitHost();
+                    publication->Publish();
+                    publication.reset();
+                }
+            }
+            catch (...)
+            {
+                MPI::AbortCaught(MPI_COMM_WORLD, "domain execution shutdown failed");
+            }
         }
     };
 
@@ -44,10 +112,16 @@ namespace DNDS::Cauchy
         return _data->engine;
     }
 
-    const Runtime::ExecutionStream &DomainExecutionContext::PrimaryStream() const
+    const Runtime::ExecutionStream &DomainExecutionContext::ComputeStream() const
     {
         DNDS_check_throw_info(_data, "empty domain execution context");
-        return _data->primary;
+        return _data->compute;
+    }
+
+    const Runtime::ExecutionStream &DomainExecutionContext::CommunicationStream() const
+    {
+        DNDS_check_throw_info(_data, "empty domain execution context");
+        return _data->communication;
     }
 
     const std::optional<Physics::Chemistry::ChemicalWorkerPool> &
@@ -57,8 +131,48 @@ namespace DNDS::Cauchy
         return _data->workers;
     }
 
-    void DomainExecutionContext::JoinPrimary() const
+    void DomainExecutionContext::Synchronize() const
     {
-        PrimaryStream().Record().WaitHost();
+        Engine().Synchronize();
+    }
+    void DomainExecutionContext::SetEvaluationDependency(
+        QueuedEvaluationDependency dependency) const
+    {
+        DNDS_check_throw_info(_data && dependency.publish,
+                              "invalid queued evaluation dependency");
+        std::lock_guard<std::mutex> lock(_data->dependencyMutex);
+        DNDS_check_throw_info(!_data->publication || _data->publication->Published(),
+                              "previous interface publication has not completed");
+        _data->engine.RegisterProgress(
+            std::make_shared<ImportedEvaluationProgress>(dependency));
+        _data->publication = std::make_shared<EvaluationPublication>(std::move(dependency));
+    }
+    std::optional<QueuedEvaluationDependency>
+    DomainExecutionContext::AcquireEvaluationDependency() const
+    {
+        DNDS_check_throw_info(_data, "empty domain execution context");
+        std::lock_guard<std::mutex> lock(_data->dependencyMutex);
+        const auto publication = _data->publication;
+        if (!publication)
+            return {};
+        return QueuedEvaluationDependency{
+            publication->Completion(),
+            [publication]
+            { publication->Publish(); }, publication,
+            !publication->Published()};
+    }
+    void DomainExecutionContext::DrainEvaluationDependency() const
+    {
+        auto dependency = AcquireEvaluationDependency();
+        if (!dependency)
+            return;
+        dependency->completion.WaitHost();
+        dependency->publish();
+    }
+    void DomainExecutionContext::ClearEvaluationDependency() const
+    {
+        DrainEvaluationDependency();
+        std::lock_guard<std::mutex> lock(_data->dependencyMutex);
+        _data->publication.reset();
     }
 }

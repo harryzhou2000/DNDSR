@@ -2,7 +2,7 @@ set(CPPS
     Core/DomainPlacement.cpp
     Core/DomainExecutionContext.cpp
     Core/DomainComponents.cpp
-    Core/DomainController.cpp
+    Core/Domain_Operations.cpp
     Core/DomainStateSnapshot.cpp
     Core/Domain.cpp
     Core/Domain_ExplicitStage.cpp
@@ -10,7 +10,7 @@ set(CPPS
     Core/Domain_ImplicitStep.cpp
     Core/Domain_TimeStep.cpp
     Core/Simulation.cpp
-    Core/SimulationController.cpp
+    Core/Simulation_Advance.cpp
 
     Config/SimulationConfig.cpp
 
@@ -84,8 +84,9 @@ set(CPPS
     Implicit/LinearProblem_DofSGS.cpp
     Implicit/LinearProblem_ILU.cpp
     Implicit/LinearSolver.cpp
-    Implicit/NonlinearController.cpp
+    Implicit/NonlinearSolve.cpp
     Implicit/NonlinearSolver.cpp
+    Implicit/NonlinearSolver_State.cpp
     Implicit/CPU/NonlinearKernels.cpp
     Implicit/UpdatePolicy.cpp
     Implicit/FiniteVolume_PrepareJacobian.cpp

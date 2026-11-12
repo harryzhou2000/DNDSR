@@ -128,20 +128,40 @@ compatible one-stage policy without modifying `NonlinearSolver` or `Domain` and
 rejects the same policy under a two-stage DITR requirement. p-FAS smoothers do
 not resolve or nest the finest policy: they continue to call bounded
 `CorrectOnce` operations inside a cycle. The finest p-FAS `ApplyCycle` is a
-correction provider invoked by the same domain-owned `NonlinearController` as a
-non-multigrid correction. Standalone pMG retains a prepared one-stage fallback
-controller for its operator/Python facade.
+correction provider invoked by the same prepared update policy as a
+non-multigrid correction. Standalone pMG uses a one-domain solve group for its
+operator/Python facade.
 
-Production one-domain and multi-domain stepping now share
-`SimulationController`. `StateTimeStepper::BeginCoupled` initializes DITR's
-method-owned endpoint/midpoint/rates without entering the nonlinear loop. The
-controller then prepares separate stage-frozen midpoint and endpoint interface
-packets and calls `RunCoupled`; the resolved `ditrSequential2Stage` policy binds
-the matching packet before each named correction/rate completion. The packet
-payload is an independent frozen copy, not an alias of the interface
-coordinator's reusable update buffer. Standalone `Domain::PrepareStep` retains
-the convenience `Prepare` path only as a synchronous oracle/debugging frontend.
-No per-nonlinear-iteration refresh or DITR interstage overlap is implied.
+Production one-domain and multi-domain stepping share `Simulation::Advance`.
+`StateTimeStepper::BeginStep` initializes the selected method; `PrepareGroup`
+returns the common ticket for a one-unknown DIRK/BDF group or DITR's two-unknown
+group. Simulation prepares domain sessions and dispatches once through
+`SolveNonlinearGroup`. The resolved policy owns the iteration loop and the order
+of domain sweeps. DITR packets and frozen route caches are distinct for midpoint
+and endpoint. Asynchronous refresh publications retain actual packet/receiver
+owners, not raw `Domain*` or interface-facade pointers. Standalone
+`Domain::PrepareStep` also uses this group protocol. Completion of every nested
+per-evaluation refresh and queued overlap remains in the active source audit;
+DITR interstage compute overlap is deferred.
+
+Queued interface readiness is expressed through a completion event and compute
+stream dependency. Compute workers never poll MPI. Ordinary MPI requests still
+need controller-side backend progress; the context imports that progress along
+with a foreign interface event so draining a domain stream cannot starve it.
+The receiver callback runs once after readiness and retains its actual packet,
+FV and workspace owners. Each later finest spatial evaluation acquires the
+latest publication again, including a corrected DITR rate evaluation; acquiring
+the same publication does not repeat its binding side effects. The policy owns
+donor publication cadence and the declared block-Jacobi sweep, not the FV kernel.
+
+Auxiliary preparation has a narrower pre-event phase:
+`ApplyInterfaceIndependent` computes owned mean properties and prepared
+interface-independent face/cell lists. The cell list is an intersection with
+the existing MPI core; face classification follows the actual auxiliary stencil.
+`BindBoundary` installs the ready trace, then ordinary `Apply` completes the
+remaining core and halo-dependent work. These lists are local Runtime arrays,
+not global-sized masks. This proof applies to auxiliary kernels only; it does
+not authorize VR/gradient/RHS kernels to ignore their own interface dependencies.
 
 The one-stage and coupled DITR policies share
 `NonlinearSolver::CorrectOnce`'s ordinary evaluation, defect assembly,
@@ -153,12 +173,17 @@ claim convergence. Input halos may be stale; the physical evaluation handles
 its exchanges. Output guarantees owned values only. Calls remain synchronous
 and serialized against the bound state/workspace/engine.
 
-The nonlinear loop itself has one production entry:
-`NonlinearController::Execute`. Policies implement only `Advance`, naming the
-ordered one-stage or midpoint/endpoint corrections. They cannot replace
-convergence/reference state, CFL progression, caps, progress/checkpoint
-publication or resume semantics. `NonlinearDetail::Iterate` is the controller's
-implementation utility rather than a second production orchestration route.
+The nonlinear solve has one dispatch entry: `SolveNonlinearGroup`. Each policy
+implements its own `Solve` loop; no shared controller loop wraps it. The
+one-stage policy refreshes interfaces, then observes/corrects each domain. DITR
+refreshes midpoint interfaces and updates all midpoints, then refreshes endpoint
+interfaces and updates all endpoints, then observes the combined defects.
+`NonlinearSession` shares convergence/reference, CFL, cap, progress/checkpoint
+and resume bookkeeping. A locally converged/capped domain remains in interface
+rounds until coordinated termination; held DITR states still complete required
+rate refreshes. The group agrees restored cursors once at entry and termination
+each round. These algorithmic agreements remain enabled independently of
+optional diagnostic checks.
 
 Nonlinear, linear and pMG sessions are move-only. Their mutable implementations
 reserve an operation-level exclusion ticket, outside numerical loops. The finest
@@ -180,11 +205,11 @@ bundle; nonmembers supply none and still enter the collective coupling schedule.
 
 `PolynomialMultigrid::ApplyCycle` is one finest update. Its bounded smoothers
 call `CorrectOnce`; they do not restart convergence policy or pseudo-CFL growth.
-The production `SolveWithController` frontend uses the domain's prepared
-`NonlinearController`; the standalone `Solve` facade uses an equivalent
-prepared one-stage fallback. `iterations` counts finest V-cycles;
+The production `PrepareSolve` entry contributes a session to the coordinated
+policy; standalone `Solve` dispatches that policy with one domain.
+`iterations` counts finest V-cycles;
 `levelCorrections` separately counts level smoothing work. `multigrid.cycles`
-remains the cap for this compatibility frontend. Source coefficients and frozen
+remains the cap for the standalone frontend. Source coefficients and frozen
 other-stage terms are unchanged throughout a cycle. Temporal-pMG is deferred.
 
 Coarse controls are defined centrally by `PolynomialMultigrid::CoarseSettings`.
@@ -245,69 +270,70 @@ accepted/trial history contracts are documented in [DITR.md](DITR.md).
 
 ## Interface input refresh protocol
 
-`Core/InterfaceIterationSchedule` supplies one stage/attempt's CPU control hooks.
-It is independent of mesh matching, physical BC evaluation, equation width and
-payload layout. `StateEpoch` now has its own small header; the existing
-`CoordinatedSchedule` scalar clock mock retains its public type/API.
+`Simulation::Advance` prepares the time-method group and invokes
+`SolveNonlinearGroup` once. The resolved `UpdatePolicy` owns its complete
+nonlinear loop. The single-stage policy refreshes interfaces before the domain
+sweep; the DITR policy refreshes and updates all midpoints before refreshing and
+updating any endpoint. Colocated and dislocated placements use the same policy.
+A rank retains only its resident domain sessions; empty control ranks still
+participate in interface completion and group termination.
 
 ```mermaid
-flowchart LR
-    Owner[Stage/attempt owner] --> Begin[BeginIteration]
-    Begin --> Post[External hook: freeze sources and post transfer]
-    Post --> Core[Independent mean / physical BC / core work]
-    Core --> Join[CompleteInputs: join and agree success]
-    Join --> Ready[TraceContext: published source identity]
-    Ready --> Dep[Dependent work]
-    Dep --> End[EndIteration]
-    Post --> Failure[Failure: explicit Discard drains transfers]
-    Join --> Failure
+flowchart TD
+    Simulation["Simulation: prepare method group"] --> Policy["Resolve and invoke UpdatePolicy"]
+    Policy --> Refresh["Publish donor states; post interface values"]
+    Refresh --> Core["Domain independent auxiliary/core work"]
+    Refresh --> Event["Transfer completion event"]
+    Core --> Depend["Compute stream waits on event"]
+    Event --> Depend
+    Depend --> Packet["Publish retained receiver packet"]
+    Packet --> Residual["Dependent spatial residual / correction"]
+    Residual --> End["Policy finishes interface round and agrees termination"]
+    End -->|continue| Refresh
 ```
 
-The owner constructs the schedule collectively on the coupling communication
-context with one agreed stage identity, time, refresh policy and check mode.
-Stage metadata agreement always runs at construction. Normal mode coordinates
-local method/hook failures before publication; caller-ordered mode omits
-per-iteration agreements and requires the caller to coordinate failures before
-peers enter dependent collectives. Hooks coordinate their own internal
-collective phases before throwing. Changing only one rank's stage, time,
-refresh policy or check mode rejects during setup.
+Stage topology, pose and transfer bindings are retained in separate coupled-stage
+slots. `stageFrozen` reuses a stage's packet; `nonlinearIteration` republishes
+donor reconstructions and posts value transfers at the policy's refresh points.
+The packet retains its source epoch and storage versions. `InterfaceDonorPublication`
+is a typed retained record of local mean/reconstruction allocations and their
+sampled generations. The active transfer owns it independently of temporary
+caller descriptors; colocated receiver packets also retain that record.
+On a receiver-only rank `BoundaryInterfaceSource::localDonor` is empty: the
+remote donor rank owns its allocations through sampling/transfer completion,
+and the receiver's epoch and frozen route identify the sampling round. Local
+generation numbers are not broadcast or mistaken for distributed clocks.
+This is shared storage ownership, not a read lease or a deep copy of the donor.
+Validate live donor versions before sampling, never when consuming an already
+frozen packet: subsequent donor updates must not invalidate its sampled values.
+Packet aliases share immutable publication metadata. Cached-rate corrections
+also compare that publication identity before reusing auxiliary spectra: equal
+local means and physical time do not imply equal incoming boundary data.
+DITR correction preparation imports an outstanding refresh event and can run
+interface-independent auxiliary core work first. Its policy joins the round
+after the domain sweep, rather than before it. The current two-equation RANS
+gradient provider retains an explicit host boundary for packet-dependent setup.
+Reusing a completed publication is idempotent, but it does not make that packet a newly sampled donor
+state. Completing the per-evaluation refresh contract, including nested finest
+pMG/DITR evaluations, is part of the active Plan60 source batch.
 
-`PerStage` invokes begin/complete on iteration zero and reuses that packet through
-the remaining nonlinear iterations. `TraceContext()` keeps source iteration zero
-rather than relabelling cached data. `PerIteration` invokes the hooks for each
-frozen round. Both follow Begin/independent/Complete/dependent/End. Ordinals start
-at zero and are consecutive; invalid calls reject before another transfer posts.
-Trace access before completion or after failure rejects. No exchange occurs
-inside a linear or Krylov application.
+Queued receivers retain the publication record and actual FV/workspace/packet
+owners. Compute workers perform rank-local publication after the event, never
+MPI agreement. Portable MPI progress belongs to the controller. CPU streams
+waiting on its completion sleep until event notification; native CUDA/NCCL
+dependencies use native stream ordering. A policy-boundary finish also drains
+accepted transfers on ranks without a local receiver. Solver exceptions abort;
+coordinated recovery/fault injection is confined to tests.
 
-Hooks retain actual packet allocations, source versions, plans and active
-operations. The schedule owns logical context and publication state; an epoch
-alone cannot prove array bytes match it. Native transfer/lease facilities keep
-sources immutable during sends and prevent ghost reads during writes. Complete
-prepares incoming CPU data and is agreed before the context becomes usable.
-On failure/rejection call idempotent `Discard()` to drain operations; it permanently
-invalidates that schedule and does no numerical rollback. Destruction issues
-no implicit Discard; captured owners keep their ordinary cleanup behavior.
-Construct/call/destroy on an MPI-permitted controller thread and release final
-communication/transfer owners before MPI finalization.
-Retry creates a fresh schedule with a fresh trial identity.
-If the discard hook fails after partial cleanup, retain the owners and retry
-cleanup; successful discard becomes idempotent only after its agreement returns.
-
-Distributed mocks use canonical direct payload transfers from two domain roots,
-including shared/reversed and disjoint rank groups and empty source ranks. An
-independent two-variable recurrence checks both policies. Inline and worker
-engines exercise overlap and unsplit order. A gated live worker retains owned
-reads while the controller progresses real MPI requests; metadata remains
-unpublished until CompleteInputs. Setup mismatches and rank-local begin/complete
-failures reject; tests drain their requests and retry with a fresh identity.
-
-This is the C4 control facility, **not physical multi-domain fluid integration**.
-Domain still executes single-domain flow5. C5 must bind real packets to boundary
-operators, compose interface readiness with MPI-core sets, coordinate domains
-after local convergence, and implement stage/global acceptance and restart.
-CUDA/capture needs scheduled readiness; CPU completion here does not certify
-device stream completion.
+The distributed recurrence fixture now invokes the production single-stage
+policy with shared/reversed and disjoint domain rank groups, both refresh
+cadences and inline/worker execution. It checks the independent two-variable
+recurrence and live owned-read/MPI overlap, with domain norms reduced on their
+subset communicators. The DITR policy ordering fixture includes idle control
+ranks. Transfer rejection tests retain source/packet access checks
+without preserving the removed prototype schedule API. These are focused
+integration fixtures, not evidence of a completed fluid campaign. Their current
+source migration must pass the grouped build/test gate.
 
 ## Steady BDF1 limit and physical endpoints
 
@@ -994,6 +1020,59 @@ the optional SGS middle exchange is explicitly exposed. Matrix read scopes pin
 coefficients throughout a solve. Both overlapping core/dependent and unsplit
 wait-then-All execution use the same numerical order.
 
+Linear matrix-action, SGS and Jacobi core/dependent work, and unsplit local ILU
+application, now use the common
+stream/event schedule. `LinearExecution.streams` binds the domain's lanes;
+standalone use creates an inline runtime running that same sequence. MPI is
+posted/progressed on the controller and completion orders the dependent work.
+The ILU application record retains matrix/factor and numeric field handles;
+it does not retain the linear solver or create an execution-context cycle.
+The optional SGS middle exchange remains exposed. Actual device arithmetic is
+still unavailable and rejects explicitly; the CPU inline/worker source path
+must pass the active batch's grouped validation.
+
+`implicit.linear.residualCheckInterval` defaults to **1**. In residual-stopped
+SGS/Jacobi/ILU, observe the norm at each multiple of this interval and at the
+final iteration; the initial residual is still checked. ILU forms `b-A*x` when
+needed for each correction even when its diagnostic norm is not reduced.
+For GMRES, the interval gates convergence-estimate-triggered cycle exits;
+restart, breakdown and the final cycle still check the true residual. Arnoldi
+inner products are mathematical dependencies and are not skipped. Fixed-count
+linear solving continues to omit convergence norms.
+
+`numerics.reconstructionResidualCheckInterval` defaults to **4**, preserving the
+existing VR check cadence. With positive `reconstructionTolerance`, observe
+the update norm at that interval and the last sweep; with zero tolerance, use
+the fixed sweep count without norm observations.
+
+These dynamic stopping decisions are explicit **host observation boundaries**,
+outside queued operator segments. Reductions whose results remain inside a
+queued segment must use engine-managed, stream-ordered operations; they must
+not interrupt submission with a hidden host wait. Removing a dynamic stopping
+boundary through in-queue mutation, a megakernel or a device driver is future
+work. The current host Arnoldi loop and MPI producer-readiness bridges are not
+claimed to be a synchronization-free whole linear solve.
+
+**TODO(sync-free-gmres), TODO(sync-free-iteration-control) — deferred.** Reduction results can
+live in managed, device-aware scalar allocations (GPU global memory for CUDA).
+They are numerical data with stream dependencies and retained lifetimes. A
+dependent kernel phase consumes the reduced values to update the Hessenberg
+matrix, Givens rotations, residual estimate and vector-update coefficients.
+Thus a fixed-count GMRES sequence need not expose every reduction to the host;
+the required Arnoldi dependencies remain, expressed through streams/events.
+Small matrix/scalar scratch should be reserved and reused under those ordering
+rules, like the vector workspaces.
+
+Dynamic early stopping, restart and breakdown handling are the harder part.
+Candidate designs to investigate are CUDA Dynamic Parallelism (CDP) with
+device-managed streams, or a persistent/megakernel driver that explicitly
+manages asynchronous device work and overlap. These are future options, not an
+implemented or selected controller. A distributed version must preserve common
+stopping decisions and collective issue order across ranks. Ordinary MPI still
+requires its host progress bridge; fully device-driven execution requires a
+compatible communication backend. For now, explicit host observation at the
+configured stopping cadence remains supported.
+
 `implicit.linear.stopping="fixedCount"` is an explicit SGS/ILU smoothing mode;
 the default `"residual"` keeps the tolerance checks and true-residual reporting
 above. Fixed-count mode ignores tolerances and always performs `iterations`
@@ -1244,26 +1323,28 @@ publication succeeds; discard/retry never changes accepted history. Variable
 BDF2 uses the last accepted timestep, with BDF1 startup or an explicit reset.
 Independent nonautonomous exact-stage tests verify orders and retry semantics.
 Domain now connects these time equations to the nonlinear stage solver below.
-The same BDF/Trapz/ESDIRK implementation also exposes `BeginStages`,
-`PrepareStage` and `CompleteStage`. A prepared `StageEquation` is an immutable
-ticket describing mass, RHS scale, time and stage index, with no source pointer.
-`SolvePreparedStage(ticket, trial, callback)` validates its stepper identity,
-stage generation and reserved source/trial bindings, then supplies the source
-only during the synchronous callback. Do not retain callback references or
-re-enter the stepper from that callback. Completion, discard, another prepared
-stage and history replacement invalidate old tickets; the method scratch stays
-internal and no source payload is copied. Binding validation also runs after
-the callback, including a normal numerical-rejection return.
-An external controller prepares all domains before exchanging their traces,
-then solves/evaluates each domain and completes the stage. No time coefficient
-or BDF history formula is duplicated in that controller. A trial becomes
-committable only after its final stage completes. Single-domain `Prepare` and
-`PrepareSteady` use this same protocol. DITR delegates its coupled intermediate/endpoint problem to the shared nonlinear
-controller; a one-pass external sequence explicitly rejects it.
+All supported implicit methods expose `BeginStep`, `PrepareGroup` and
+`CompleteGroup`. An immutable `StageGroup` ticket identifies the stepper,
+generation, serialized group, coupled-stage count and evaluation times. It owns
+no solution payload. `PrepareEquation(group, trial, coupledStage)` validates the
+ticket and reserved bindings, then returns a scoped state/source reference and
+normalized coefficients. Keep the stepper and trial alive throughout the solve;
+do not retain these references beyond the group. `CompleteGroup` checks bindings
+again, including that the frozen source was not modified. A numerical rejection
+leaves the group active until the caller discards it; it does not commit history.
+
+DITR uses the same entry and ticket. `GroupState` selects the actual midpoint or
+endpoint; `CachedRate`, `CompleteEquation` and `AssembleStoppingResidual` expose
+its method-owned arithmetic without exporting the concrete method. The policy
+orders midpoint/end updates. BDF/DIRK use the same equation shape with one
+unknown per group. Completion, discard and history replacement invalidate old
+tickets. No time coefficient or history formula is duplicated in orchestration;
+a trial becomes committable only after its final group completes. Steady BDF1
+is `BeginStep(..., steady=true)`, with zero physical mass and source.
 
 The November 4 nested-control defect is corrected in code: each DITR iteration
 now applies one intermediate correction and one endpoint correction, refreshing
-each rate after its update. The common controller observes the method-provided
+each rate after its update. The DITR policy observes the method-provided
 `I+H` residual after both updates. There is one report and one CFL/reference/cap
 policy, not separate inner and outer acceptance criteria. The reacting-Domain
 validation remains in progress; earlier nested-driver ratios are not evidence

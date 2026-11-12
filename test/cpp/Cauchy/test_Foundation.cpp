@@ -6,6 +6,7 @@
 #include "DNDS/Algebra/DofBundle.hpp"
 #include <atomic>
 #include <numeric>
+#include <thread>
 
 namespace C = DNDS::Cauchy;
 namespace A = DNDS::Algebra;
@@ -35,26 +36,109 @@ TEST_CASE("Cauchy configuration preflight coordinates invalid or differing rank 
     }
     CHECK_NOTHROW(C::SimulationConfig::ResolveCollective(C::Json::object(), MPI_COMM_WORLD));
 }
-TEST_CASE("Domain execution contexts retain one engine stream and backend lifetime")
+TEST_CASE("Domain execution contexts retain named lanes and backend lifetime")
 {
-    C::ExecutionSettings settings;
-    settings.hostThreads = 1;
-    settings.checkAccess = true;
-    std::optional<C::DomainExecutionContext> retained;
+    for (const int workers : {0, 2})
     {
-        C::DomainExecutionContext context(settings);
-        CHECK(context.Engine().Owns(context.PrimaryStream()));
-        CHECK(context.Engine().ChecksAccess());
-        retained.emplace(context);
+        C::ExecutionSettings settings;
+        settings.hostThreads = workers;
+        settings.checkAccess = true;
+        std::optional<C::DomainExecutionContext> retained;
+        {
+            C::DomainExecutionContext context(settings);
+            CHECK(context.Engine().Owns(context.ComputeStream()));
+            CHECK(context.Engine().Owns(context.CommunicationStream()));
+            CHECK(context.Engine().ChecksAccess());
+            retained.emplace(context);
+        }
+        std::atomic<int> state{0};
+        retained->Engine().Submit(retained->ComputeStream(),
+                                  [&](R::ExecutionContext)
+                                  { state = 1; });
+        retained->CommunicationStream().WaitFor(
+            retained->ComputeStream().Record());
+        retained->Engine().Submit(retained->CommunicationStream(),
+                                  [&](R::ExecutionContext)
+                                  { state = state == 1 ? 2 : -1; });
+        retained->ComputeStream().WaitFor(
+            retained->CommunicationStream().Record());
+        retained->Engine().Submit(retained->ComputeStream(),
+                                  [&](R::ExecutionContext)
+                                  { state = state == 2 ? 3 : -2; });
+        retained->Synchronize();
+        CHECK(state.load() == 3);
     }
-    std::atomic<int> completed{0};
-    retained->Engine().Submit(retained->PrimaryStream(),
-                              [&](R::ExecutionContext)
-                              { completed = 1; });
-    retained->JoinPrimary();
-    CHECK(completed.load() == 1);
+    C::ExecutionSettings settings;
     settings.device = "cuda";
     CHECK_THROWS(C::DomainExecutionContext(settings));
+}
+TEST_CASE("Imported interface completions progress on the controller and retain receiver resources")
+{
+    struct ControllerCompletion final : R::StreamEvent::State
+    {
+        const std::thread::id controller = std::this_thread::get_id();
+        std::atomic<bool> allowed{false};
+        mutable std::atomic<bool> done{false};
+        bool Ready() const override
+        {
+            if (allowed && std::this_thread::get_id() == controller)
+                done = true;
+            return done;
+        }
+        void Wait() const override
+        {
+            DNDS_check_throw_info(Ready(), "mock completion needs controller progress");
+        }
+    };
+    for (const int workers : {0, 2})
+        for (const bool consume : {false, true})
+        {
+            C::ExecutionSettings settings;
+            settings.hostThreads = workers;
+            auto event = std::make_shared<ControllerCompletion>();
+            auto value = std::make_shared<int>(17);
+            const std::weak_ptr<int> lifetime = value;
+            std::atomic<int> published{0};
+            std::atomic<int> publications{0};
+            {
+                C::DomainExecutionContext context(settings);
+                C::QueuedEvaluationDependency dependency;
+                dependency.completion = R::StreamEvent(event);
+                dependency.owner = value;
+                dependency.publish = [value, &published, &publications]
+                { published = *value; ++publications; };
+                context.SetEvaluationDependency(std::move(dependency));
+                value.reset();
+                CHECK_FALSE(lifetime.expired());
+                if (consume)
+                {
+                    auto incoming = context.AcquireEvaluationDependency();
+                    REQUIRE(incoming);
+                    const auto record = std::make_shared<C::QueuedEvaluationDependency>(std::move(*incoming));
+                    context.ComputeStream().WaitFor(record->completion);
+                    context.Engine().Submit(context.ComputeStream(),
+                                            [record](R::ExecutionContext)
+                                            { record->publish(); });
+                }
+                CHECK(published == 0);
+                event->allowed = true;
+                if (consume)
+                {
+                    context.Synchronize();
+                    CHECK(published == 17);
+                    // A nested finest evaluation obtains the same latest
+                    // packet without rerunning its publication side effects.
+                    const auto again = context.AcquireEvaluationDependency();
+                    REQUIRE(again);
+                    again->publish();
+                    CHECK(publications == 1);
+                }
+                // Unconsumed accepted work is completed by context teardown.
+            }
+            CHECK(published == 17);
+            CHECK(publications == 1);
+            CHECK(lifetime.expired());
+        }
 }
 TEST_CASE("Cauchy domain placement preserves rank namespaces and isolates shared groups")
 {

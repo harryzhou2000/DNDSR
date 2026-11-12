@@ -143,6 +143,7 @@ namespace DNDS::Cauchy
     {
         std::string reconstruction = "gradient", gradient = "leastSquares", flux = "rusanov", limiter = "none";
         int reconstructionIterations = 8;
+        int reconstructionResidualCheckInterval = 4;
         real reconstructionTolerance = 0;
         bool characteristicLimiter = true, faceFallback = true;
         bool reconstructionBoundaryFromPolynomial = true;
@@ -174,6 +175,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(flux, "Numerical inviscid flux family");
             DNDS_FIELD(limiter, "none, direct-gradient Barth, WBAP, or native LVR; positivity is checked separately");
             DNDS_FIELD(reconstructionIterations, "Fixed local VR sweeps per residual");
+            DNDS_FIELD(reconstructionResidualCheckInterval, "Observe the VR update norm every N sweeps and at the final sweep when reconstructionTolerance is positive; each observation is an explicit host stopping boundary");
             DNDS_FIELD(reconstructionTolerance, "Relative Jacobi update tolerance; zero uses the fixed sweep count");
             DNDS_FIELD(characteristicLimiter, "Use equation-provided cell-mean face characteristics for 3WBAP");
             DNDS_FIELD(faceFallback, "Fall back to the cell mean at inadmissible face values; disable for non-PP accuracy studies");
@@ -247,6 +249,7 @@ namespace DNDS::Cauchy
         std::string stopping = "residual";
         std::string componentScaling = "none";
         index iterations = 20;
+        index residualCheckInterval = 1;
         int subspace = 10;
         int jacobiLocalSweeps = 1;
         real relativeTolerance = .1, absoluteTolerance = 1e-12;
@@ -258,6 +261,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(stopping, "residual uses tolerance checks; fixedCount executes exactly iterations for SGS/ILU, omits true-residual reporting and checks the final update is finite; tolerances are ignored");
             DNDS_FIELD(componentScaling, "GMRES metric: none or meanState (Euler volume-averaged absolute conservative magnitudes with a common momentum scale and kinetic energy scale; requires a compressible flow5 block)");
             DNDS_FIELD(iterations, "Maximum linear iterations per nonlinear correction");
+            DNDS_FIELD(residualCheckInterval, "Observe stationary residual stopping every N iterations and at the final iteration; GMRES checks its convergence estimate at this cadence, with mandatory restart/breakdown checks and unchanged Arnoldi products");
             DNDS_FIELD(subspace, "Restarted GMRES subspace size");
             DNDS_FIELD(relativeTolerance, "Relative true-residual tolerance");
             DNDS_FIELD(absoluteTolerance, "Euclidean tolerance on the cell-integrated true residual; zero disables the absolute cutoff, useful for small physical volumes");
@@ -655,6 +659,7 @@ namespace DNDS::Cauchy
     struct InterfaceSettings
     {
         std::string donor, receiver, routing = "coarseBoxes";
+        std::string refreshCadence = "stageFrozen";
         int donorZone = 0, receiverZone = 0, coarseBoxesPerRank = 4;
         real maxGap = 1e-8;
         DNDS_DECLARE_CONFIG(InterfaceSettings)
@@ -664,6 +669,8 @@ namespace DNDS::Cauchy
             DNDS_FIELD(donorZone, "Selected donor boundary zone");
             DNDS_FIELD(receiverZone, "Interface receiver boundary zone");
             DNDS_FIELD(routing, "coarseBoxes or allGatherBoundary correctness baseline");
+            DNDS_FIELD(refreshCadence,
+                       "stageFrozen or nonlinearIteration value refresh policy");
             DNDS_FIELD(coarseBoxesPerRank, "Maximum coarse routing boxes per donor rank");
             DNDS_FIELD(maxGap, "Maximum physical point-to-surface projection distance");
         }

@@ -164,8 +164,14 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
     source.donorPose.translation[0] = .1;
     source.receiverPose.translation[1] = -.2;
     source.routeOwner = routeOwner;
+    source.localDonor = std::make_shared<const C::InterfaceDonorPublication>(
+        reference.PublishInterfaceDonor(equationA, *reconstructionA, *workA, false));
+    const std::weak_ptr<const C::InterfaceDonorPublication> retainedDonor = source.localDonor;
+    const auto sampledMeanVersions = source.localDonor->MeanVersions();
     coupled.PublishBoundaryInputs(incoming, time, {0, 1, 2, 0, 0, 0},
                                   {source});
+    source.localDonor.reset();
+    CHECK_FALSE(retainedDonor.expired());
     REQUIRE(incoming.InterfaceSources().size() == 1);
     CHECK(incoming.InterfaceSources()[0].routeGeneration == 9);
     CHECK(incoming.InterfaceSources()[0].routeOwner == routeOwner);
@@ -193,6 +199,42 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
     auxiliaryInputs.boundary.Emplace(incoming);
     coupled.PrepareAuxValues(equationB, auxB, time, std::nullopt,
                              auxiliaryInputs);
+    // The split must reproduce the full auxiliary publication exactly, while
+    // its independent phase has neither a packet nor permission to read ghosts.
+    const C::AuxiliaryRequest all{true, true, true, true, true, true, true};
+    auto readyAux = coupled.BuildAuxiliaryValues(all);
+    auto deferredAux = coupled.BuildAuxiliaryValues(all);
+    coupled.PrepareAuxValues(equationB, readyAux, time, {}, auxiliaryInputs);
+    C::AuxiliaryInputs deferredInputs;
+    deferredInputs.deferBoundary = true;
+    auto preparation = coupled.BeginAuxValues(equationB, deferredAux, time, {}, deferredInputs);
+    CHECK_THROWS(preparation.Apply(DNDS::CFV::ReconstructionRegion::Core));
+    {
+        auto blockedGhost = b.Ghost().Write();
+        preparation.ApplyInterfaceIndependent();
+        blockedGhost.CancelUnmodified();
+    }
+    preparation.BindBoundary(incoming);
+    preparation.Apply();
+    preparation.Finish(deferredAux);
+    CHECK_NOTHROW(coupled.ValidateAuxValues(equationB, deferredAux, time));
+    const auto arrays = [](const C::AuxiliaryValues &values)
+    {
+        return std::array<const R::Array<double> *, 7>{
+            &*values.meanThermodynamics, &*values.faceSpectralRadius,
+            &*values.faceWaveJump, &*values.facePressureMinimum,
+            &values.cellSpectralSum->Owned(), &values.cellWaveJump->Owned(),
+            &values.cellPressureMinimum->Owned()};
+    };
+    const auto expectedArrays = arrays(readyAux), actualArrays = arrays(deferredAux);
+    for (int k = 0; k < 7; ++k)
+    {
+        const auto expectedRead = expectedArrays[k]->Read(), actualRead = actualArrays[k]->Read();
+        const auto expected = expectedRead.View<R::UniformTableRows>(), actual = actualRead.View<R::UniformTableRows>();
+        for (I iRow = 0; iRow < expected.RowCount(); ++iRow)
+            for (I j = 0; j < expected.RowSize(iRow); ++j)
+                CHECK(actual(iRow, j) == expected(iRow, j));
+    }
     R::Array<double> tau(R::RowLayout::Dense(reference.Metrics().NumCell(), 1));
     {
         auto write = tau.Write();
@@ -221,11 +263,29 @@ TEST_CASE("Published interface packets reproduce analytic P3 boundaries through 
     CHECK(alias.Epoch().stage == 2);
     REQUIRE(alias.InterfaceSources().size() == 1);
     CHECK(alias.InterfaceSources()[0].routeOwner == routeOwner);
+    CHECK(alias.SamePublication(incoming));
+    CHECK(coupled.AuxiliaryBoundaryCurrent(auxB, *workB));
     const auto frozen = coupled.FreezeBoundaryInputs(incoming);
+    CHECK_FALSE(frozen.SamePublication(incoming));
+    coupled.SetBoundaryInputs(*workB, frozen);
+    // Same means and physical time do not make an auxiliary cache current
+    // after a new interface publication (DITR's cached-rate correction path).
+    CHECK_FALSE(coupled.AuxiliaryBoundaryCurrent(auxB, *workB));
+    coupled.SetBoundaryInputs(*workB, incoming);
+    CHECK(coupled.AuxiliaryBoundaryCurrent(auxB, *workB));
+    CHECK(frozen.InterfaceSources()[0].localDonor == retainedDonor.lock());
     CHECK(frozen.QuadratureValues().CoupledField().Owned().SharedStorage() !=
           incoming.QuadratureValues().CoupledField().Owned().SharedStorage());
     CHECK(frozen.FaceCenterValues().CoupledField().Owned().SharedStorage() !=
           incoming.FaceCenterValues().CoupledField().Owned().SharedStorage());
+    CHECK_NOTHROW(coupled.ValidateBoundaryInputs(frozen, time));
+    // A frozen packet describes the sampled past state. Subsequent donor
+    // writes invalidate re-sampling from that publication, not this packet.
+    {
+        auto write = equationA.WriteOwned();
+    }
+    CHECK(frozen.InterfaceSources()[0].localDonor->MeanVersions() == sampledMeanVersions);
+    CHECK_THROWS(frozen.InterfaceSources()[0].localDonor->Validate());
     CHECK_NOTHROW(coupled.ValidateBoundaryInputs(frozen, time));
     {
         auto write = incoming.FaceCenterValues().WriteOwned(); // Either table's debug write invalidates publication.

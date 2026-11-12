@@ -4,7 +4,7 @@
 
 namespace DNDS::Cauchy
 {
-    class NonlinearController;
+    class NonlinearSolveSetup;
     class DomainExecutionContext;
     /// Same-cell FAS hierarchy: high-order VR -> direct-gradient O2 -> first
     /// order convection. All levels retain viscous gradients/physical BCs.
@@ -50,8 +50,11 @@ namespace DNDS::Cauchy
         /// mutable VR warm guesses; they are reset by restriction every cycle.
         NonlinearIterationReport Solve(const EquationDofs &source, real mass, real rhsScale, real time, int stage = 0,
                                        NonlinearSolveControl control = {});
-        NonlinearIterationReport SolveWithController(
-            const NonlinearController &controller, const EquationDofs &source,
+        /// Prepared finest nonlinear session for simulation-level domain
+        /// coordination. Coarse cycles remain bounded corrections inside each
+        /// named update and never own the outer iteration cursor.
+        NonlinearSession PrepareSolve(
+            const NonlinearSolveSetup &setup, const EquationDofs &source,
             real mass, real rhsScale, real time, int stage = 0,
             NonlinearSolveControl control = {});
         /// One finest update, with bounded CorrectOnce smoothing at each level.
@@ -67,6 +70,11 @@ namespace DNDS::Cauchy
         /// Frozen stage trace shared with coarse levels after checking their
         /// canonical boundary quadrature order. Local alias binding only; no MPI.
         void SetBoundaryInputs(const BoundaryInputs &input);
+        /// Retain an ordered internal packet-binding operation for a prepared
+        /// domain solve. Invoked only before the next finest evaluation, while
+        /// no coarse cycle executes. This changes packet handles, not payloads;
+        /// ordinary external callers use the guarded SetBoundaryInputs method.
+        std::function<void(const BoundaryInputs &)> PrepareBoundaryInputBinding() const;
         /// Reserved DoF payload bytes and peak simultaneous borrowed slots.
         /// Excludes persistent state/source/reference and reconstruction storage.
         std::pair<size_t, index> ScratchPoolStatistics() const;

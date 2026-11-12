@@ -22,15 +22,18 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(reconstruction.owner == _data, "foreign equation reconstruction state");
         auto reconstructionSession = reconstruction.session.Acquire();
         auto workspaceSession = work.session.Acquire();
-        const auto finalized = AcquireFinalizedReconstruction(reconstruction);
-        const auto &finalValues = finalized.Values();
-        auto activeReconstruction = work.BindReconstruction(reconstruction.coefficients, finalValues);
+        std::optional<FinalizedReconstruction> finalized;
+        if (_data->reconstruction)
+            finalized.emplace(AcquireFinalizedReconstruction(reconstruction));
+        auto activeReconstruction = work.BindReconstruction(reconstruction);
         state.RequireCompatible(residual);
         EquationDofOperations::RequireDistinct(state, residual);
-        EquationDofOperations::RequireDistinct(finalValues, residual);
-        DNDS_check_throw_info(work.rhsState && work.rhsCoefficients && work.rhsTime == time, "flux needs a completed spatial preparation at this time");
+        if (finalized)
+            EquationDofOperations::RequireDistinct(finalized->Values(), residual);
+        DNDS_check_throw_info(work.rhsState && work.rhsTime == time, "flux needs a completed spatial preparation at this time");
         work.rhsState->Check(state, true);
-        DNDS_check_throw_info(work.rhsCoefficients->Current(finalValues),
+        DNDS_check_throw_info((finalized ? work.rhsCoefficients && work.rhsCoefficients->Current(finalized->Values())
+                                         : !work.rhsCoefficients),
                               "flux reconstruction changed after spatial preparation");
         DNDS_check_throw_info(region == CFV::ReconstructionRegion::All || region == CFV::ReconstructionRegion::Core ||
                                   region == CFV::ReconstructionRegion::HaloDependent,
@@ -41,11 +44,14 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(output.GetDevice() == R::Device::Host() && !output.Layout().IsVariable() &&
                                       output.RowCount() == _data->stencil.stencilFaces.RowCount() && output.Layout().Width() == state.ComponentNumber(),
                                   "equation face output shape/device differs");
-            for (const auto *fields : std::array<const EquationDofs *, 3>{&state, &residual, &finalValues})
-                for (index iField = 0; iField < fields->PhysicalFieldNumber(); ++iField)
-                    DNDS_check_throw_info(!Algebra::Detail::Overlaps(output.Storage(), fields->PhysicalField(iField).Owned().Storage()) &&
-                                              !Algebra::Detail::Overlaps(output.Storage(), fields->PhysicalField(iField).Ghost().Storage()),
-                                          "face output aliases equation fields");
+            for (const auto fields : std::array<OptionalRef<const EquationDofs>, 3>{
+                     OptionalRef<const EquationDofs>(state), OptionalRef<const EquationDofs>(residual),
+                     finalized ? OptionalRef<const EquationDofs>(finalized->Values()) : OptionalRef<const EquationDofs>{}})
+                if (fields)
+                    for (index iField = 0; iField < fields->PhysicalFieldNumber(); ++iField)
+                        DNDS_check_throw_info(!Algebra::Detail::Overlaps(output.Storage(), fields->PhysicalField(iField).Owned().Storage()) &&
+                                                  !Algebra::Detail::Overlaps(output.Storage(), fields->PhysicalField(iField).Ghost().Storage()),
+                                              "face output aliases equation fields");
         }
         if (auxiliary)
             ValidateAuxValues(state, *auxiliary, time);

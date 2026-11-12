@@ -169,6 +169,12 @@ TEST_CASE("Equation mean trial and thermal dt preserve all block layouts and the
     settings.numerics.viscousGradient = "polynomial";
     settings.numerics.temperatureFloor = 1;
     settings.numerics.densityFloor = .1;
+    SUBCASE("Variational warm state") {}
+    SUBCASE("Direct gradients with mean-only fluxes")
+    {
+        settings.numerics.reconstruction = "gradient";
+        settings.numerics.cfv.maxOrder = 1;
+    }
     const auto setup = C::EquationSetup::Resolve(settings.equation);
     const auto &equation = setup.equation;
     C::FiniteVolume fv(mesh, settings, equation);
@@ -199,17 +205,32 @@ TEST_CASE("Equation mean trial and thermal dt preserve all block layouts and the
     auto rhs = C::EquationDofOperations::NewVector(state);
     auto reconstruction = fv.BuildReconstructionState(state);
     auto regular = fv.BuildWorkspace(state, setup.workers);
-    const auto &guess = fv.ReconstructionGuess(*reconstruction);
-    auto seed = C::EquationDofOperations::NewVector(guess);
-    C::EquationDofOperations::Fill(seed, .0001);
-    fv.RestoreReconstructionGuess(*reconstruction, seed);
-    const C::EquationDofOperations::Binding before(state), warm(guess);
+    const C::EquationDofOperations::Binding before(state);
+    std::optional<C::EquationDofOperations::Binding> warm;
+    if (fv.PolynomialReconstruction())
+    {
+        const auto &guess = fv.ReconstructionGuess(*reconstruction);
+        auto seed = C::EquationDofOperations::NewVector(guess);
+        C::EquationDofOperations::Fill(seed, .0001);
+        fv.RestoreReconstructionGuess(*reconstruction, seed);
+        warm.emplace(guess);
+    }
+    else
+    {
+        // Direct P1 has no modal warm state. An attempted coefficient restore
+        // must reject without acquiring or modifying the physical means.
+        auto seed = C::EquationDofOperations::NewVector(state);
+        C::EquationDofOperations::Fill(seed, .0001);
+        CHECK_THROWS(fv.RestoreReconstructionGuess(*reconstruction, seed));
+        CHECK_NOTHROW(before.Check(state, true));
+    }
     auto meanWork = fv.BuildMeanWorkspace(state, setup.workers);
     R::EagerEngine engine(2, std::make_shared<R::AccessTrackingContext>());
     const auto stream = engine.CreateCPUStream();
     fv.EvaluateMean(state, rhs, *meanWork, engine, stream);
     CHECK_NOTHROW(before.Check(state, true));
-    CHECK_NOTHROW(warm.Check(guess, true));
+    if (warm)
+        CHECK_NOTHROW(warm->Check(fv.ReconstructionGuess(*reconstruction), true));
     // Compare the mean trial against a separate inviscid constant operator,
     // retaining the same material and chemistry. SA adds no isotropic stress.
     auto referenceSettings = settings;
@@ -334,7 +355,8 @@ TEST_CASE("Equation mean trial and thermal dt preserve all block layouts and the
     CHECK(limit.dt == doctest::Approx(dt * minimum).epsilon(2e-12));
     CHECK(limit.limitedCells == 12);
     CHECK_NOTHROW(boundBefore.Check(state, true));
-    CHECK_NOTHROW(warm.Check(guess, true));
+    if (warm)
+        CHECK_NOTHROW(warm->Check(fv.ReconstructionGuess(*reconstruction), true));
     auto wrong = thermal;
     ++wrong.speciesFirst;
     CHECK_THROWS(fv.LimitPhysicalStep(state, rhs, wrong, dt, relax, scale));

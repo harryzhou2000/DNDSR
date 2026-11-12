@@ -35,6 +35,8 @@ namespace DNDS::Cauchy
         {
             std::vector<index> offsets, jacobianOffsets, boundaryEntries, stencilFaces, faceEntries;
             std::vector<index> auxiliaryCoreFaces, auxiliaryDependentFaces, rhsCoreFaces, rhsDependentFaces;
+            std::vector<index> auxiliaryInterfaceIndependentFaces, auxiliaryInterfaceFaces,
+                interfaceIndependentCells, interfaceCoreCells;
             std::vector<index> auxiliaryCellOffsets, auxiliaryCellFaces, positivityOffsets;
             std::vector<real> auxiliaryFaceArea;
             std::vector<Geom::tPoint> positivityDisplacements;
@@ -250,6 +252,32 @@ namespace DNDS::Cauchy
         };
         collectFaces(data->partition.Core(), build.rhsCoreFaces);
         collectFaces(data->partition.HaloDependent(), build.rhsDependentFaces);
+        // Refine the existing node-star MPI partition using the actual
+        // auxiliary stencil. An ordinary physical face uses its owned mean;
+        // an interface face consumes a remote trace. No global-sized scratch
+        // or new connectivity algorithm is needed for this local intersection.
+        for (const auto iAux : build.auxiliaryCoreFaces)
+        {
+            const auto &sample = build.samples[build.faceEntries[iAux]];
+            const bool interface = sample.other == UnInitIndex &&
+                                   sample.boundary.kind == BoundaryKind::Interface;
+            (interface ? build.auxiliaryInterfaceFaces
+                       : build.auxiliaryInterfaceIndependentFaces).push_back(iAux);
+        }
+        for (const auto iCell : data->partition.Core())
+        {
+            bool interface = false;
+            for (index entry = build.auxiliaryCellOffsets[iCell];
+                 entry < build.auxiliaryCellOffsets[iCell + 1]; ++entry)
+            {
+                const auto &sample = build.samples[
+                    build.faceEntries[build.auxiliaryCellFaces[entry]]];
+                interface = interface || (sample.other == UnInitIndex &&
+                                           sample.boundary.kind == BoundaryKind::Interface);
+            }
+            (interface ? build.interfaceCoreCells
+                       : build.interfaceIndependentCells).push_back(iCell);
+        }
         data->boundaryLayout=std::make_shared<Detail::BoundaryPointLayout>();
         data->boundaryLayout->mesh=data->mesh;
         data->boundaryLayout->stamp=data->mesh->versions.Stamp(R::Change::Topology|R::Change::Geometry|R::Change::Distribution|R::Change::Layout);
@@ -422,6 +450,10 @@ namespace DNDS::Cauchy
             publishIndices(build.boundaryEntries, data->stencil.boundaryEntries);
             publishIndices(data->partition.Core(), data->stencil.coreCells);
             publishIndices(data->partition.HaloDependent(), data->stencil.dependentCells);
+            publishIndices(build.auxiliaryInterfaceIndependentFaces, data->stencil.auxiliaryInterfaceIndependentFaces);
+            publishIndices(build.auxiliaryInterfaceFaces, data->stencil.auxiliaryInterfaceFaces);
+            publishIndices(build.interfaceIndependentCells, data->stencil.interfaceIndependentCells);
+            publishIndices(build.interfaceCoreCells, data->stencil.interfaceCoreCells);
             data->stencil.auxiliaryFaceArea = R::Array<real>(R::RowLayout::Dense(build.auxiliaryFaceArea.size(), 1));
             data->stencil.positivityDisplacements = R::Array<real>(R::RowLayout::Dense(build.positivityDisplacements.size(), 3));
             auto areas = data->stencil.auxiliaryFaceArea.Write();

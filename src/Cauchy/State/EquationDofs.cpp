@@ -263,7 +263,7 @@ namespace DNDS::Cauchy
             fields.Add(_fields.Name(iField), Algebra::DofField<real>(fields.Space(), PhysicalField(iField).Owned(), PhysicalField(iField).Ghost()));
         return {_definition, std::move(fields)};
     }
-    EquationDofs::ReadScope::ReadScope(const EquationDofs &state, bool ghosts, R::ExecutionContext context)
+    EquationDofs::ReadScope::ReadScope(const EquationDofs &state, bool ghosts, Runtime::ExecutionContext context)
         : _definition(state._definition)
     {
         state.Validate();
@@ -327,7 +327,7 @@ namespace DNDS::Cauchy
         }
         return {std::move(columns), index(_definition->partition->owned), _ghost.empty() ? 0 : index(_definition->partition->ghost)};
     }
-    EquationDofs::WriteScope::WriteScope(EquationDofs &state, R::ExecutionContext context)
+    EquationDofs::WriteScope::WriteScope(EquationDofs &state, Runtime::ExecutionContext context)
         : _definition(state._definition)
     {
         state.Validate();
@@ -384,7 +384,7 @@ namespace DNDS::Cauchy
         for (auto &lease : _owned)
             lease.Fail();
     }
-    EquationDofs::ReadScope EquationDofs::ReadOwned(R::ExecutionContext context) const { return {*this, false, context}; }
-    EquationDofs::ReadScope EquationDofs::ReadWithGhost(R::ExecutionContext context) const { return {*this, true, context}; }
-    EquationDofs::WriteScope EquationDofs::WriteOwned(R::ExecutionContext context) { return {*this, context}; }
+    EquationDofs::ReadScope EquationDofs::ReadOwned(Runtime::ExecutionContext context) const { return {*this, false, context}; }
+    EquationDofs::ReadScope EquationDofs::ReadWithGhost(Runtime::ExecutionContext context) const { return {*this, true, context}; }
+    EquationDofs::WriteScope EquationDofs::WriteOwned(Runtime::ExecutionContext context) { return {*this, context}; }
 }
