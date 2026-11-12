@@ -494,6 +494,16 @@ TEST_CASE("FV uses the same queued halo dependency sequence with inline and work
     settings.numerics.reconstructionTolerance = 0;
     settings.numerics.positivity = false;
     settings.execution.overlap = true;
+    bool wbap = false;
+    SUBCASE("fixed-count VR without a limiter") {}
+    SUBCASE("fixed-count P3 VR with characteristic WBAP")
+    {
+        wbap = true;
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.cfv.intOrder = 5;
+        settings.numerics.limiter = "WBAP";
+        settings.numerics.characteristicLimiter = true;
+    }
     const auto equation = C::EquationSystem::Resolve(settings.equation);
     C::FiniteVolume fv(mesh, settings, equation);
     std::vector<DNDS::real> expected;
@@ -509,6 +519,12 @@ TEST_CASE("FV uses the same queued halo dependency sequence with inline and work
         R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateStream(launcher);
         fv.Evaluate(state, output, *reconstruction, *workspace, engine, stream, .25);
+        // Fixed-count VR never drains between sweeps; P3 WBAP never drains
+        // between orders. The only drains are the public return and, for WBAP,
+        // the current CPU characteristic-preparation boundary before all orders.
+        // Portable MPI producer-prefix observations are a separate backend
+        // contract and are deliberately not disguised as full-engine drains.
+        CHECK(std::count(launcher->trace.begin(), launcher->trace.end(), "drain") == (wbap ? 2 : 1));
         std::vector<DNDS::real> values;
         {
             const auto read = residual.Owned().Read();

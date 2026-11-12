@@ -26,6 +26,17 @@ through completion and explicit device-ready nested descriptors. The current
 CPU-only guard remains intentional; merely swapping a CPU entry for a CUDA
 launch would be incorrect.
 
+Fixed-count VR queues boundary refresh, reconstruction and commit in order;
+it does not drain the full engine after each sweep. A requested reconstruction
+residual observation remains an explicit host boundary. Before exchanging a
+new coefficient publication, `OperatorSchedule::BeginAfterCompute` supplies
+the producer prefix to the transport: portable MPI observes that prefix on
+its controller, while a stream-native provider imports it on the communication
+lane without host synchronization. This does not claim portable MPI is
+captureable. Current CPU limiter/PP facades still have an explicit input
+publication boundary; removing their controller-only preparation is separate
+from the fixed-count VR sweep contract.
+
 ## Storage classes
 
 1. **Mesh-sized fields:** stencil samples, offsets, face/region selections,

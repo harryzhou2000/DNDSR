@@ -84,6 +84,32 @@ namespace DNDS::Cauchy
                 operations.push_back(Begin(binding));
             return operations;
         }
+        /// Exchange a payload produced by the already submitted compute prefix.
+        /// Native providers import that prefix onto the communication lane and
+        /// enqueue without a host wait. Portable MPI must observe its CPU/CUDA
+        /// producer before posting; its managed bridge waits only that prefix,
+        /// not every lane in the engine. MPI progress remains controller-owned.
+        Runtime::StreamEvent BeginAfterCompute(Runtime::TransferBinding &binding) const
+        {
+            if (binding.SupportsStreamEnqueue())
+            {
+                _communication.WaitFor(_compute.Record());
+                binding.Enqueue(_engine, _communication);
+                return _communication.Record();
+            }
+            auto operation = _engine.ChecksAccess()
+                                 ? binding.BeginChecked(_compute)
+                                 : binding.BeginScheduled(_compute);
+            return operation.CompletionEvent();
+        }
+        std::vector<Runtime::StreamEvent> BeginAfterCompute(std::vector<Runtime::TransferBinding> &bindings) const
+        {
+            std::vector<Runtime::StreamEvent> events;
+            events.reserve(bindings.size());
+            for (auto &binding : bindings)
+                events.push_back(BeginAfterCompute(binding));
+            return events;
+        }
         /// Insert full transfer completion as a compute-lane dependency. Core
         /// work already submitted remains ahead of this edge; later dependent
         /// work cannot start until the runtime progresses the managed transfer.
@@ -97,6 +123,12 @@ namespace DNDS::Cauchy
             for (auto &operation : operations)
                 _compute.WaitFor(operation.CompletionEvent());
             operations.clear();
+        }
+        void Await(std::vector<Runtime::StreamEvent> &events) const
+        {
+            for (auto &event : events)
+                _compute.WaitFor(std::move(event));
+            events.clear();
         }
         template <class Operation>
         void AwaitPublished(Operation &&operation) const

@@ -537,8 +537,6 @@ namespace DNDS::Cauchy
                             {
                 auxiliaryPreparation->Apply(rest);
                 auxiliaryPreparation->Finish(*auxiliary); });
-            local([&]
-                  { schedule.Join(); });
         }
         else if (auxiliary)
         {
@@ -558,10 +556,14 @@ namespace DNDS::Cauchy
         }
         if (deferredEvaluator)
         {
-            local(createEvaluator);
             schedule.Submit([&, variational]
-                            { work.FillBoundary(state, variational && numerics.reconstructionBoundaryFromPolynomial,
-                                                time, *evaluator, incoming); });
+                            {
+                // Auxiliary Finish returns its chemistry lease before this
+                // next command acquires the RHS worker. The handoff is a lane
+                // dependency, not a controller-side reason to drain the engine.
+                createEvaluator();
+                work.FillBoundary(state, variational && numerics.reconstructionBoundaryFromPolynomial,
+                                  time, *evaluator, incoming); });
         }
         if (_data->settings.CheckHaloFreshness())
             schedule.Submit([&]
@@ -612,24 +614,24 @@ namespace DNDS::Cauchy
         {
             for (int iteration = 0; iteration < numerics.reconstructionIterations; ++iteration)
             {
-                std::vector<R::TransferOperation> operations;
+                std::vector<R::StreamEvent> operations;
                 if (iteration == 0 && firstSweep)
-                    operations = std::move(firstCoefficients);
+                {
+                    for (const auto &operation : firstCoefficients)
+                        operations.push_back(operation.CompletionEvent());
+                    firstCoefficients.clear();
+                }
                 else
                 {
-                    local([&]
-                          { schedule.Join(); });
                     if (numerics.reconstructionBoundaryFromPolynomial)
-                        local([&]
-                              { work.FillBoundary(state, true, time, *evaluator, incoming); });
-                    operations = schedule.Begin(reconstruction.coefficientHalo);
+                        schedule.Submit([&]
+                                        { work.FillBoundary(state, true, time, *evaluator, incoming); });
+                    operations = schedule.BeginAfterCompute(reconstruction.coefficientHalo);
                     if (overlap)
                         sweep(CFV::ReconstructionRegion::Core);
                 }
                 schedule.Await(operations);
                 sweep(rest);
-                local([&]
-                      { schedule.Join(); });
                 bool converged = false;
                 // Explicit host stopping boundary. Fixed-count sweeps do not
                 // observe a residual. Device-side conditional iteration / queue
@@ -638,6 +640,8 @@ namespace DNDS::Cauchy
                     ((iteration + 1) % numerics.reconstructionResidualCheckInterval == 0 ||
                      iteration + 1 == numerics.reconstructionIterations))
                 {
+                    local([&]
+                          { schedule.Join(); });
                     real norms[2]{};
                     local([&]
                           {
@@ -659,8 +663,9 @@ namespace DNDS::Cauchy
                     _data->reconstruction->SubmitCommitReconstruction(engine, stream,
                                                                       reconstruction.WarmValues().PhysicalField(iField),
                                                                       *work.fields[iField].reconstruction);
-                local([&]
-                      { schedule.Join(); });
+                // Fixed-count sweeps enqueue commit and the next boundary
+                // producer in order. Only requested norm observations above
+                // and the portable-MPI readiness bridge need host visibility.
                 work.iterations = iteration + 1;
                 if (converged)
                     break;
@@ -674,8 +679,18 @@ namespace DNDS::Cauchy
                     Algebra::Fill(reconstruction.WarmValues().PhysicalField(iField), 0.); });
         const bool useFluxScratch = reconstruction.distinctFinalized;
         if (useFluxScratch)
+            schedule.Submit([&]
+                            { EquationDofOperations::Copy(reconstruction.MutableFinalized(), reconstruction.WarmValues()); });
+        // These current CPU postprocessors acquire controller-visible scopes
+        // and may contain collective decisions. Keep one explicit boundary for
+        // them, not a drain in every fixed-count VR sweep. Their prepared
+        // device implementations remain a separate operator migration.
+        const bool hostPostprocessing = work.positivity ||
+                                        (work.nativeDirectGradient && numerics.positivity) ||
+                                        (!work.meanOnly && (numerics.limiter == "WBAP" || numerics.limiter == "Barth"));
+        if (hostPostprocessing)
             local([&]
-                  { EquationDofOperations::Copy(reconstruction.MutableFinalized(), reconstruction.WarmValues()); });
+                  { schedule.Join(); });
         if (work.nativeDirectGradient && numerics.limiter != "WBAP" &&
             (numerics.limiter == "Barth" || numerics.positivity))
             local([&]
@@ -729,7 +744,7 @@ namespace DNDS::Cauchy
                                   state.PhysicalField(flow.physicalField), *work.flowCharacteristic, flow.firstComponent); });
                 for (int order = numerics.cfv.maxOrder; order >= 1; --order)
                 {
-                    auto limiterOperations = schedule.Begin(reconstruction.FinalizedHalo());
+                    auto limiterOperations = schedule.BeginAfterCompute(reconstruction.FinalizedHalo());
                     const auto limit = [&, order](CFV::ReconstructionRegion region)
                     {
                         for (index iField = 0; iField < index(work.fields.size()); ++iField)
@@ -745,14 +760,12 @@ namespace DNDS::Cauchy
                         limit(CFV::ReconstructionRegion::Core);
                     schedule.Await(limiterOperations);
                     limit(rest);
-                    local([&]
-                          { schedule.Join(); });
                     for (index iField = 0; iField < index(work.fields.size()); ++iField)
                         _data->reconstruction->SubmitCommitReconstruction(
                             engine, stream, reconstruction.MutableFinalized().PhysicalField(iField),
                             *work.fields[iField].reconstruction);
-                    local([&]
-                          { schedule.Join(); });
+                    // Commit precedes the next order's producer-prefix
+                    // exchange; no host observation is needed between orders.
                 }
             }
         }
@@ -762,14 +775,17 @@ namespace DNDS::Cauchy
                       const Workspace::PhaseTime timing(work, Workspace::PPPhase);
                       work.ApplyDirectGradientPositivity(state); });
         if (work.positivity)
-            local([&]
-                  { const Workspace::PhaseTime timing(work, Workspace::PPPhase);
-                    work.positivity->Apply(state, reconstruction.WarmValues(), reconstruction.MutableFinalized(), false); });
-        local([&]
-              { reconstruction.PublishFinalized(); });
+            local([&] { // CPU polynomial PP inspects limiter publications and
+                // performs its own collective decisions at this boundary.
+                schedule.Join();
+                const Workspace::PhaseTime timing(work, Workspace::PPPhase);
+                work.positivity->Apply(state, reconstruction.WarmValues(), reconstruction.MutableFinalized(), false);
+            });
+        schedule.Submit([&]
+                        { reconstruction.PublishFinalized(); });
         auto operations = work.nativeDirectGradient
-                              ? schedule.Begin(work.directGradientHalo)
-                              : schedule.Begin(reconstruction.FinalizedHalo());
+                              ? schedule.BeginAfterCompute(work.directGradientHalo)
+                              : schedule.BeginAfterCompute(reconstruction.FinalizedHalo());
         std::vector<R::TransferOperation> unlimitedViscousOperations;
         if (useFluxScratch && _data->equation.Viscous() && numerics.viscousGradient == "polynomial" && !numerics.viscousLimited)
             unlimitedViscousOperations = schedule.Begin(reconstruction.coefficientHalo);

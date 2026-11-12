@@ -284,6 +284,10 @@ namespace DNDS::Runtime
         TransferOperation Start(ExecutionContext context, bool scheduled, std::shared_ptr<AccessTrackingContext> tracking = {}, uint64_t lane = 0, bool callerValid = true) const;
 
     public:
+        /// Whether this binding supplies a native stream enqueue operation.
+        /// False selects portable MPI's controller-side producer-readiness
+        /// bridge. This is a provider capability, not a device-location test.
+        bool SupportsStreamEnqueue() const { return bool(_provider); }
         /// One active Begin operation per binding. Default remains isolated persistent
         /// requests. Options select shared context/tags and transient requests.
         /// Collective: all ranks call in the same order, including empty ranks.
