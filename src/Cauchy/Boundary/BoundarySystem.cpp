@@ -1,4 +1,5 @@
 #include "Cauchy/Boundary/BoundarySystem.hpp"
+#include "Cauchy/Boundary/PerfectGasBoundary.hpp"
 #include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/Input/FlowProfile.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
@@ -97,6 +98,15 @@ namespace DNDS::Cauchy
         return (frame ? frame->WorldPoint(point) : point)[0] < 1. / 6
                    ? BoundaryKind::Analytic
                    : BoundaryKind::SlipWall;
+    }
+    PerfectGasBoundaryParameters BoundaryCondition::PerfectGasKernelParameters() const
+    {
+        DNDS_check_throw_info(hasPerfectGasState && prescribedFractions.empty(), "perfect-gas boundary kernel cannot consume mixture metadata");
+        const auto prepared = PrepareFlowProfile(profile);
+        DNDS_check_throw_info((kind != BoundaryKind::Analytic && kind != BoundaryKind::DoubleMachBottom) || prepared.kind != FlowProfileKind::Unsupported,
+                              "analytic boundary has no CUDA profile implementation");
+        return {kind, farfield, prescribedPrimitive, velocity, temperature, isothermal, wallMovesWithMesh,
+                prepared, prescribedRANS, totalRANSPrimitive, totalCondition};
     }
     Vector3 BoundaryCondition::WallVelocityAt(
         const Vector3 &point, OptionalRef<const RigidFrame> frame) const

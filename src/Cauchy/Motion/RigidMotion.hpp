@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cauchy/Physics/FlowState.hpp"
+#include "Cauchy/Motion/RigidFrameParameters.hpp"
 #include "Geom/Spatial/ElementGeometry.hpp"
 #include "DNDS/Config/ConfigParam.hpp"
 
@@ -28,6 +29,9 @@ namespace DNDS::Cauchy
         Geom::RigidPose pose;
         Vector3 angularVelocity{}, centerVelocity{}, center{};
         bool moving = false;
+        /// Freeze value-only kernel parameters outside point loops. The pose
+        /// owner stays on the host; no Eigen object ABI is uploaded to CUDA.
+        RigidFrameParameters KernelParameters() const;
         Vector3 GridVelocity(const Vector3 &referencePoint) const;
         Vector3 WorldVector(const Vector3 &local) const;
         Vector3 LocalVector(const Vector3 &world) const;

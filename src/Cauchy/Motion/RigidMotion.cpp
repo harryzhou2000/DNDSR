@@ -41,6 +41,21 @@ namespace DNDS::Cauchy
             return {};
         return Vector(Point(centerVelocity) + Point(angularVelocity).cross(Point(point) - Point(center)));
     }
+    RigidFrameParameters RigidFrame::KernelParameters() const
+    {
+        RigidFrameParameters result;
+        for (int j = 0; j < 3; ++j)
+        {
+            for (int i = 0; i < 3; ++i)
+                result.rotation[i + 3 * j] = pose.rotation(i, j);
+            result.translation[j] = pose.translation[j];
+        }
+        result.angularVelocity = angularVelocity;
+        result.centerVelocity = centerVelocity;
+        result.center = center;
+        result.moving = moving;
+        return result;
+    }
     Vector3 RigidFrame::WorldVector(const Vector3 &v) const { return moving ? Vector(pose.rotation * Point(v)) : v; }
     Vector3 RigidFrame::LocalVector(const Vector3 &v) const { return moving ? Vector(pose.rotation.transpose() * Point(v)) : v; }
     Vector3 RigidFrame::WorldPoint(const Vector3 &p) const { return moving ? Vector(pose.Apply(Point(p))) : p; }

@@ -41,6 +41,25 @@ TEST_CASE("Rigid frames preserve absolute energy and provide consistent mesh vel
     const auto rotating = C::RigidMotion(tilted, 3).At(.2);
     const auto f = rotating.RotationSource(world);
     const auto matrix = rotating.NegativeSourceJacobian();
+    // The frozen kernel record contains only values, without a Geom pose ABI.
+    // Compare tilted rotation as well as translation against the host owner.
+    for (const auto &owner : {frame, rotating, C::RigidFrame{}})
+    {
+        const auto parameters = owner.KernelParameters();
+        for (int d = 0; d < 3; ++d)
+        {
+            CHECK(parameters.GridVelocity(point)[d] == doctest::Approx(owner.GridVelocity(point)[d]).epsilon(1e-14).scale(1));
+            CHECK(parameters.WorldPoint(point)[d] == doctest::Approx(owner.WorldPoint(point)[d]).epsilon(1e-14).scale(1));
+            CHECK(parameters.LocalVector(point)[d] == doctest::Approx(owner.LocalVector(point)[d]).epsilon(1e-14).scale(1));
+        }
+        for (int j = 0; j < 5; ++j)
+        {
+            CHECK(parameters.WorldState(world)[j] == doctest::Approx(owner.WorldState(world)[j]).epsilon(1e-14).scale(1));
+            CHECK(parameters.LocalState(world)[j] == doctest::Approx(owner.LocalState(world)[j]).epsilon(1e-14).scale(1));
+            CHECK(parameters.RotationSource(world)[j] == doctest::Approx(owner.RotationSource(world)[j]).epsilon(1e-14).scale(1));
+        }
+        CHECK(parameters.NegativeSourceJacobian() == owner.NegativeSourceJacobian());
+    }
     CHECK(f[1] == doctest::Approx(.3 * world[3] + .4 * world[2]));
     CHECK(f[2] == doctest::Approx(-.4 * world[1] + .2 * world[3]));
     CHECK(f[3] == doctest::Approx(-.2 * world[2] - .3 * world[1]));

@@ -2,6 +2,7 @@
 #include "DNDS/Core/NumericalStatus.hpp"
 
 #include "Cauchy/Config/SimulationConfig.hpp"
+#include "Cauchy/Boundary/BoundaryKind.hpp"
 #include "Cauchy/Physics/PerfectGas.hpp"
 #include "DNDS/Core/OptionalRef.hpp"
 #include "Physics/Chemistry/ChemicalSource.hpp"
@@ -11,18 +12,7 @@ namespace DNDS::Cauchy
 {
     class EquationSystem;
     class PointEvaluator;
-    enum class BoundaryKind
-    {
-        Interior,
-        Extrapolate,
-        Farfield,
-        TotalConditionInlet,
-        SlipWall,
-        NoSlipWall,
-        Analytic,
-        DoubleMachBottom,
-        Interface
-    };
+    struct PerfectGasBoundaryParameters;
     /// Resolved numerical BC, independent of mesh storage and time scheduling.
     /// Construction validates names; a kernel receives plain parameters.
     struct BoundaryCondition
@@ -46,6 +36,10 @@ namespace DNDS::Cauchy
         /// RANS values; density is computed at the current boundary point.
         std::array<real, 5> totalCondition{};
         std::array<real, 2> totalRANSPrimitive{};
+        /// Setup-only projection for a perfect-gas CPU/CUDA kernel registry.
+        /// Rejects mixture metadata and unresolved analytic profiles; the result
+        /// owns only plain values and needs no host condition lifetime.
+        PerfectGasBoundaryParameters PerfectGasKernelParameters() const;
         /// Validate the equation-state producer at operator setup. The legacy
         /// perfect-gas methods retain their existing larger profile set.
         void ValidateEquationProducer() const;

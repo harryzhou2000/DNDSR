@@ -4,6 +4,8 @@
 #include "Physics/RANS/PointKernels.hpp"
 #include "Cauchy/Physics/RiemannPreparation.hpp"
 #include "Cauchy/Riemann/RiemannFluxMath.hpp"
+#include "Cauchy/Boundary/BoundarySystem.hpp"
+#include "Cauchy/Boundary/PerfectGasBoundary.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "DNDS/Runtime/Execution/KernelArguments.hpp"
@@ -87,6 +89,28 @@ namespace
             output(iRow, 5) = result.acousticMinus;
             output(iRow, 6) = result.contact;
             output(iRow, 7) = result.acousticPlus;
+        }
+    }
+    template <class Input, class Output, class Status>
+    __global__ void BoundaryPoints(C::PerfectGas gas, C::PerfectGasBoundaryParameters boundary,
+                                   C::RigidFrameParameters frame, Input input, Output output, Status status)
+    {
+        for (I iRow = I(blockIdx.x) * blockDim.x + threadIdx.x; iRow < input.RowCount(); iRow += I(gridDim.x) * blockDim.x)
+        {
+            C::FlowState inside;
+            for (int j = 0; j < 5; ++j)
+                inside[j] = input(iRow, j);
+            const C::Vector3 point{input(iRow, 5), input(iRow, 6), input(iRow, 7)};
+            const auto face = C::TryPerfectGasBoundaryValue(boundary, gas, inside, {-1, 0, 0}, point, .3, frame, false);
+            const auto exterior = C::TryPerfectGasBoundaryValue(boundary, gas, inside, {-1, 0, 0}, point, .3, frame, true);
+            status(iRow, 0) = int(!face ? face.status.code : exterior.status.code);
+            if (!face || !exterior)
+                continue;
+            for (int j = 0; j < 5; ++j)
+            {
+                output(iRow, j) = face.value[j];
+                output(iRow, 5 + j) = exterior.value[j];
+            }
         }
     }
 }
@@ -213,4 +237,77 @@ TEST_CASE("SA and k-omega CUDA point closures agree with canonical CPU source tr
                     CHECK(actual.View()(iRow, j) == doctest::Approx(expected[j]).epsilon(2e-11).scale(1e-8));
             }
         }
+}
+
+TEST_CASE("Perfect-gas CUDA boundaries preserve physical and exterior targets in a moving frame")
+{
+    constexpr I rows = 33;
+    C::PerfectGas gas;
+    C::RigidMotionSettings motion;
+    motion.angularVelocity = {0, 0, .17};
+    motion.translationVelocity = {.03, -.02, 0};
+    const auto frame = C::RigidMotion(motion, 2).At(.3);
+    R::Array<real> host(R::RowLayout::Dense(rows, 8));
+    {
+        auto access = host.Write();
+        for (I iRow = 0; iRow < rows; ++iRow)
+        {
+            const auto state = gas.Conservative({1.2, -2 + .125 * iRow, .13, .07, 1.1});
+            for (int j = 0; j < 5; ++j)
+                access.View()(iRow, j) = state[j];
+            access.View()(iRow, 5) = -.4 + .05 * iRow;
+            access.View()(iRow, 6) = .1;
+            access.View()(iRow, 7) = 0;
+        }
+    }
+    const auto input = host.To(R::Device::CUDA(0));
+    R::Array<real> output(R::RowLayout::Dense(rows, 10), R::Device::CUDA(0));
+    R::Array<int> status(R::RowLayout::Dense(rows, 1), R::Device::CUDA(0));
+    for (const auto kind : {C::BoundaryKind::Extrapolate, C::BoundaryKind::Farfield, C::BoundaryKind::TotalConditionInlet,
+                            C::BoundaryKind::SlipWall, C::BoundaryKind::NoSlipWall, C::BoundaryKind::Analytic, C::BoundaryKind::DoubleMachBottom})
+    {
+        CAPTURE(int(kind));
+        C::BoundaryCondition boundary;
+        boundary.kind = kind;
+        boundary.farfield = gas.Conservative({1, .2, 0, 0, 1});
+        boundary.prescribedPrimitive = {1, .3, .1, 0, 1};
+        boundary.totalCondition = {1.3, 1.1, 1, 0, 0};
+        boundary.profile.kind = kind == C::BoundaryKind::DoubleMachBottom ? "doubleMachReflection" : "isentropicVortex";
+        boundary.profile.center = {0, 0, 0};
+        boundary.velocity = {.03, -.01, 0};
+        boundary.isothermal = true;
+        boundary.temperature = .8;
+        const auto parameters = boundary.PerfectGasKernelParameters();
+        const auto kinematics = frame.KernelParameters();
+        R::EagerEngine engine;
+        auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+        R::SubmitArrays(engine, stream, [gas, parameters, kinematics](auto context, auto x, auto y, auto s)
+                        {
+                            R::ValidateViewDevices(context.device, x, y, s);
+                            R::CheckKernelArgumentBudget<decltype(gas), decltype(parameters), decltype(kinematics), decltype(x), decltype(y), decltype(s)>();
+                            BoundaryPoints<<<1, 128, 0, static_cast<cudaStream_t>(context.stream)>>>(gas, parameters, kinematics, x, y, s);
+                            DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "boundary point launch failed"); }, R::Read(input), R::Write(output), R::Write(status));
+        engine.Close();
+        const auto downloaded = output.To(R::Device::Host());
+        const auto downloadedStatus = status.To(R::Device::Host());
+        const auto actual = downloaded.Read(), values = host.Read();
+        const auto codes = downloadedStatus.Read();
+        for (I iRow = 0; iRow < rows; ++iRow)
+        {
+            C::FlowState inside;
+            for (int j = 0; j < 5; ++j)
+                inside[j] = values.View()(iRow, j);
+            const C::Vector3 point{values.View()(iRow, 5), values.View()(iRow, 6), values.View()(iRow, 7)};
+            const auto face = boundary.TryFaceValue(gas, inside, {-1, 0, 0}, point, .3, DNDS::OptionalRef<const C::RigidFrame>(frame));
+            const auto exterior = boundary.TryExterior(gas, inside, {-1, 0, 0}, point, .3, DNDS::OptionalRef<const C::RigidFrame>(frame));
+            REQUIRE(face);
+            REQUIRE(exterior);
+            REQUIRE(codes.View()(iRow, 0) == 0);
+            for (int j = 0; j < 5; ++j)
+            {
+                CHECK(actual.View()(iRow, j) == doctest::Approx(face.value[j]).epsilon(3e-12).scale(1));
+                CHECK(actual.View()(iRow, 5 + j) == doctest::Approx(exterior.value[j]).epsilon(3e-12).scale(1));
+            }
+        }
+    }
 }

@@ -117,6 +117,11 @@ end-to-end solver acceptance remains group D.
   thermodynamic recovery has not moved into the gas-agnostic Riemann kernels.
 - Perfect-gas point properties, conservative-gradient conversions, total-to-
   static inlet math and the RANS wall target have host/device numerical entries.
+- Analytic profile names are resolved to plain parameter records. Rigid-frame
+  kernel parameters own rotation/translation/velocity values without a Geom
+  object ABI. Perfect-gas physical-boundary math consumes these records and
+  distinguishes physical face from mirrored exterior targets. Interface values
+  remain packet inputs handled outside this physical-boundary producer.
 - `Physics/RANS/PointKernels.hpp` uses a small value-only `PointParameters`
   descriptor and the existing SA/Wilcox/SST formulas. Kernel-facing transport,
   diffusion and source calls return explicit numerical status. Legacy default
@@ -135,6 +140,8 @@ end-to-end solver acceptance remains group D.
   faces, SA/Wilcox/SST transport/diffusion/source/implicit-diagonal comparisons,
   source-geometry errors, and standalone CUDA metric use after dropping the
   host metric plan. They will run with group B, not as a new validation group.
+  Moving-frame boundary comparisons include farfield/inlet, slip/isothermal
+  no-slip and analytic/composite DMR conditions against the CPU owner methods.
 
 Still pending in B: spatial CUDA launchers and operator wiring, boundary/PP/
 gradient/LVR/sampling/device-cache completion, optional matrix precision and
