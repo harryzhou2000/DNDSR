@@ -1,6 +1,6 @@
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Implicit/LinearProblem.hpp"
-#include "Cauchy/Implicit/LinearBlockKernels.hpp"
+#include "Cauchy/Implicit/CPU/LinearBlockKernels.hpp"
 #include <optional>
 
 namespace DNDS::Cauchy
@@ -12,6 +12,8 @@ namespace DNDS::Cauchy
     struct LinearProblemContext::SGSIteration::State
     {
         std::shared_ptr<const Pattern> pattern;
+        LinearPatternStorage::ReadAccess patternRead;
+        LinearPatternView patternView;
         index components;
         DiagonalStorage mode;
         // Pin numeric allocation/layout owners, not communicator owners. A
@@ -27,7 +29,7 @@ namespace DNDS::Cauchy
         int lower = 0, upper = 0; // 0=not started,1=first region complete,2=scan complete
 
         State(const LinearProblemContext &problem, const Field &b, const Field *old, Field &temporary, Field &result, bool middle)
-            : pattern(problem._pattern), components(problem._components), mode(problem._diagonalStorage),
+            : pattern(problem._pattern), patternRead(pattern->rows.Read()), patternView(patternRead.View()), components(problem._components), mode(problem._diagonalStorage),
               rhs(b.Owned()), forward(temporary.Owned()), forwardGhost(temporary.Ghost()), output(result.Owned()),
               diagonalRead(problem._diagonal.Read()), inverseRead(problem._inverse.Read()), rhsRead(rhs.Read()),
               blocksRead(problem.ReadOffDiagonal()), initialForwardGhost(forwardGhost.Version()), middleExchange(middle)
@@ -66,29 +68,17 @@ namespace DNDS::Cauchy
                 }
         }
         template <bool Upper, class ForwardView>
-        void Scan(ForwardView forwardValues, WriteView destination, ReadView ghostValues, const std::vector<index> &rows)
+        void Scan(ForwardView forwardValues, WriteView destination, ReadView ghostValues, Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> rows)
         {
-            const auto b = Algebra::MakeEigenRowMatrices(rhsRead.View<R::UniformTableRows>(), components, 1);
-            // Zero-start has no old payload. The unused map type is borrowed
-            // from RHS only to share the statically selected kernel signature.
-            const auto old = inputRead ? Algebra::MakeEigenRowMatrices(inputRead->View<R::UniformTableRows>(), components, 1) : b;
-            const auto remote = Algebra::MakeEigenRowMatrices(ghostValues, components, 1);
-            const auto y = Algebra::MakeEigenRowMatrices(forwardValues, components, 1);
-            const auto result = Algebra::MakeEigenRowMatrices(destination, components, 1);
-            const auto inv = Algebra::MakeEigenRowMatrices(inverseRead.View<R::TableRows>(), components, mode == DiagonalStorage::Block ? components : 1);
+            const auto b = rhsRead.View<R::UniformTableRows>();
+            const auto old = inputRead ? inputRead->View<R::UniformTableRows>() : b;
+            const CPU::LinearBlockInput request{blocksRead.View(), patternView, rows,
+                                                inverseRead.View<R::TableRows>(), components, mode == DiagonalStorage::Block};
             started = true;
-            blocksRead.WithActions([&](const auto &blocks)
-                                   {
-                const auto scan = [&](auto zero)
-                {
-                    constexpr bool Zero = decltype(zero)::value;
-                    if (components == 5)
-                        Detail::ScanSGSRows<Upper,5,Zero>(b,old,y,result,remote,inv,blocks,*pattern,rows,components,mode==DiagonalStorage::Block);
-                    else
-                        Detail::ScanSGSRows<Upper,Eigen::Dynamic,Zero>(b,old,y,result,remote,inv,blocks,*pattern,rows,components,mode==DiagonalStorage::Block);
-                };
-                if (!input && (!Upper || !middleExchange)) scan(std::true_type{});
-                else scan(std::false_type{}); });
+            if constexpr (Upper)
+                CPU::UpperSGSRows(request, b, old, forwardValues, ghostValues, destination, !input && !middleExchange);
+            else
+                CPU::LowerSGSRows(request, b, old, ghostValues, destination, !input);
         }
     };
 
@@ -125,8 +115,8 @@ namespace DNDS::Cauchy
             state.inputGhostRead.emplace(state.inputGhost->Read());
         const auto ghost = state.inputGhostRead ? state.inputGhostRead->View<R::UniformTableRows>() : ReadView{};
         const auto target = state.forwardWrite->View<R::UniformTableRows>();
-        const auto &rows = region == LinearRegion::All ? state.pattern->order : region == LinearRegion::Core ? state.pattern->core
-                                                                                                             : state.pattern->dependent;
+        const auto &rows = region == LinearRegion::All ? state.patternView.order : region == LinearRegion::Core ? state.patternView.core
+                                                                                                                : state.patternView.dependent;
         state.Scan<false>(target, target, ghost, rows);
         state.lower = region == LinearRegion::Core ? 1 : 2;
         if (state.lower == 2)
@@ -154,8 +144,8 @@ namespace DNDS::Cauchy
         }
         const auto ghost = state.middleExchange ? (state.forwardGhostRead ? state.forwardGhostRead->View<R::UniformTableRows>() : ReadView{})
                                                 : (state.inputGhostRead ? state.inputGhostRead->View<R::UniformTableRows>() : ReadView{});
-        const auto &rows = region == LinearRegion::All ? state.pattern->order : region == LinearRegion::Core ? state.pattern->core
-                                                                                                             : state.pattern->dependent;
+        const auto &rows = region == LinearRegion::All ? state.patternView.order : region == LinearRegion::Core ? state.patternView.core
+                                                                                                                : state.patternView.dependent;
         state.Scan<true>(state.forwardRead->View<R::UniformTableRows>(), state.outputWrite->View<R::UniformTableRows>(), ghost, rows);
         state.upper = region == LinearRegion::HaloDependent ? 1 : 2;
     }

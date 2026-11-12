@@ -6,6 +6,7 @@
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
 #include "Geom/Access/EntitySpace.hpp"
 #include "Geom/Access/EntityWorkPartition.hpp"
+#include "Geom/Access/MeshView.hpp"
 #include "Geom/Geometry/Geometric.hpp"
 #include "Geom/Unstructured/UnstructuredMeshFwd.hpp"
 #include "DNDS/Math/HardEigen.hpp"
@@ -331,6 +332,17 @@ namespace DNDS::CFV
             return FaceMatrix(iPoint, side)(derivative, mode);
         }
     };
+    /// Frozen operands for cached or on-demand Taylor evaluation. The enclosing
+    /// ReconstructionBasisRead retains mesh, metric, moment and cache leases.
+    struct ReconstructionBasisEvaluationView
+    {
+        Runtime::ArrayView<const real, Runtime::AccessBoundsChecks,
+                           Runtime::TableRows>
+            cached, moments;
+        FiniteVolumeHostView geometry;
+        Geom::UnstructuredMeshView mesh;
+        int dimension = 0, degree = 0, modes = 0, cachedDerivatives = 0;
+    };
     /// Pins the geometry generation and Runtime cache allocations once outside
     /// a hot loop. Face queries must be in an owned-cell stencil and select a
     /// real parent. Generic/debug access can use checked GetCachedFaceBasis.
@@ -342,11 +354,14 @@ namespace DNDS::CFV
         Runtime::Array<real>::ReadLease _moments;
         Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::TableRows> _basisView, _momentView;
         std::shared_ptr<Geom::MeshReadAccess> _meshRead;
+        ReconstructionBasisEvaluationView _evaluation;
         explicit ReconstructionBasisRead(std::shared_ptr<const Detail::ReconstructionData> data);
         friend class VariationalReconstructionPlan;
 
     public:
         ReconstructionBasisHostView HostView() const;
+        /// Frozen cached/on-demand operands; retains no owner or lease itself.
+        const ReconstructionBasisEvaluationView &EvaluationView() const;
         /// Global quadrature ordinal, real parent in an owned-cell stencil.
         /// Uses cached rows when available; otherwise evaluates into scratch.
         Math::ReconstructionBasisView FaceBasis(index face, int side, index point,

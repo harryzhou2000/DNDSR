@@ -1,3 +1,4 @@
+#include "Cauchy/Bindings/Operators_bind.hpp"
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/Implicit/LinearSolver.hpp"

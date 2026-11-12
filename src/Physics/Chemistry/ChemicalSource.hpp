@@ -12,6 +12,7 @@
 #include "DNDS/Core/Errors.hpp"
 #include "Physics/Thermodynamics/Properties.hpp"
 #include "Physics/Transport/Properties.hpp"
+#include "Physics/EvaluationStatus.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -295,6 +296,13 @@ namespace DNDS::Physics::Chemistry
                                  ConstSpeciesBufferView Y,
                                  double T_guess = 0,
                                  double rtol = 1e-12) const;
+
+        /// Nonthrowing UV adapter for numerical kernels. Cantera inversion
+        /// failure is distinguished from invalid input and resource/internal
+        /// failure. temperature is only valid on success; no fallback occurs.
+        NumericalStatus TryTemperatureFromUV(double u, double v, ConstSpeciesBufferView Y,
+                                             double &temperature, double T_guess = 0,
+                                             double rtol = 1e-12) const noexcept;
 
         // ---- Kinetics ----
 

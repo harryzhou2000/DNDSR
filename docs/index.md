@@ -77,6 +77,7 @@ gates. The placement foundation mock alone is not a fluid validation.
 | Physical table formats, strides and local dense adapters | [Physical Array layouts](architecture/PhysicalArrayLayouts.md) |
 | Python Cauchy logical-state, FV and linear operator composition | [Python Cauchy operators](guides/python_cauchy_operators.md) |
 | Canonical and compatibility source paths | [Source organization](architecture/source_organization.md) |
+| Cauchy CPU kernel ownership, layout and read/write effects | [Kernel I/O contracts](architecture/CauchyKernelContracts.md) |
 | Mesh Python access and operations | [Python mesh guide](guides/python_geom_guide.md) |
 
 The mesh construction correction and its fixture/condition audit are recorded

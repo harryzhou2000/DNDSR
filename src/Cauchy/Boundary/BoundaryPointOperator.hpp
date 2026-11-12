@@ -53,6 +53,15 @@ namespace DNDS::Cauchy
         /// no-slip RANS wall. The interface row view is required exactly for an
         /// Interface condition and is otherwise ignored. Point storage is
         /// operator-local scratch and may be mutated; no Array ownership escapes.
+        /// Nonthrowing kernel entry. Outputs are invalid on failure.
+        NumericalStatus TryEvaluate(
+            std::vector<real> &point, const BoundaryCondition &condition,
+            index interfaceRow, const Vector3 &normal, const Vector3 &location,
+            EquationPointEvaluator &evaluator, const RigidFrame &frame,
+            real time, BoundaryPointStateKind stateKind,
+            OptionalRef<const std::vector<real>> mean = {},
+            real meanWallDistance = 0,
+            InterfaceBoundaryRows interfaceValues = {}) const noexcept;
         void Evaluate(
             std::vector<real> &point, const BoundaryCondition &condition,
             index interfaceRow, const Vector3 &normal, const Vector3 &location,
@@ -68,6 +77,12 @@ namespace DNDS::Cauchy
         /// copied, except no-slip RANS exterior values use `2*target-interior`
         /// and therefore contribute -I. Isothermal/property derivatives remain
         /// outside this approximate LU-SGS model.
+        /// Nonthrowing kernel entry. Outputs are invalid on failure.
+        NumericalStatus TryApproximateExteriorJacobian(
+            Eigen::Ref<Eigen::MatrixXd> output,
+            const BoundaryCondition &condition,
+            const std::vector<real> &inside, const Vector3 &normal,
+            const Vector3 &location, const RigidFrame &frame, real time) const noexcept;
         void ApproximateExteriorJacobian(
             Eigen::Ref<Eigen::MatrixXd> output,
             const BoundaryCondition &condition,

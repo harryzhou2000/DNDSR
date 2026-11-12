@@ -241,7 +241,7 @@ def test_runtime_pod_typemap_and_custom_reducer():
 
 
 @pytest.mark.mpi
-def test_runtime_builtin_reverse_and_reducer_failure():
+def test_runtime_builtin_reverse_reductions():
     comm = MPI.COMM_WORLD
     a = R.Array(R.RowLayout.dense(1, 2), np.dtype("int32"))
     a.assign(np.array([[1, 3]], dtype="int32"))
@@ -254,16 +254,8 @@ def test_runtime_builtin_reverse_and_reducer_failure():
         payload.bind(a, b, R.Reducer.builtin(a.dtype, op, R.DestinationInit.Identity)).begin().wait()
         assert b.numpy()[0, 1] == expected
 
-    def fail(dst, src):
-        raise ValueError("intentional reducer failure")
-
-    reducer = R.Reducer.custom(a.element_schema(), a.dtype, "failing", fail, 0)
-    operation = payload.bind(a, b, reducer).begin()
-    with pytest.raises(ValueError, match="intentional"):
-        operation.wait()
-    with pytest.raises(ValueError, match="intentional"):
-        operation.wait()  # Stored failure; the reducer is not retried.
-    assert not b.valid
+    # Post-MPI callback failure is fatal, unlike setup validation. Its Python
+    # adapter is exercised in an isolated child by test_runtime_transient.
 
 
 @pytest.mark.mpi

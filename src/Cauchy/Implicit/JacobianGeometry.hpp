@@ -1,35 +1,80 @@
 #pragma once
 
-#include "DNDS/Core/Defines.hpp"
-#include <algorithm>
+#include "Cauchy/Discretization/FiniteVolumeStencil.hpp"
+#include "CFV/Plans/FiniteVolumePlan.hpp"
 
-namespace DNDS::Cauchy::JacobianDetail
+namespace DNDS::Cauchy
 {
-    /// Geometry-only setup traversal shared by the two evaluated snapshots.
-    /// Preserve centered face-incidence order and repeated periodic-image contributions.
-    /// Boundary/self contributions stay diagonal. Point construction belongs
-    /// to the caller: flow5 retains a Roe sample ordinal; equation physics does
-    /// not. No EOS, numerical cache, lease or MPI ownership belongs here.
-    template <class Offsets, class Samples, class Columns, class Rows, class MakePoint>
-    void BuildStencilRows(const Offsets &offsets, const Samples &samples, const Columns &columns,
-                          Rows &rows, MakePoint &&makePoint)
+    /// One frozen, centered face incidence. Multiple periodic images remain
+    /// separate contributions even when they address the same matrix column.
+    struct JacobianPointRecord
     {
-        rows.resize(columns.size());
-        for (index iCell = 0; iCell < index(rows.size()); ++iCell)
-        {
-            auto &row = rows[iCell];
-            const auto &neighbors = columns[iCell];
-            row.resize(neighbors.size());
-            for (index entry = offsets[iCell]; entry < offsets[iCell + 1]; ++entry)
-            {
-                const auto &sample = samples[entry];
-                if (sample.other == UnInitIndex || sample.other == iCell)
-                    continue;
-                const index slot = sample.jacobianColumn;
-                DNDS_check_throw_info(slot >= 0 && slot < index(neighbors.size()) && neighbors[slot] == sample.other,
-                                      "evaluated Jacobian stencil has an invalid prepared column");
-                row[slot].push_back(makePoint(sample, entry));
-            }
-        }
+        index other, auxiliary, sample;
+        Vector3 normal, location;
+        std::array<real, 9> rotation;
+        real weight;
+        bool changesFrame;
+    };
+    static_assert(std::is_trivially_copyable_v<JacobianPointRecord>);
+
+    struct JacobianPointValue
+    {
+        index other, auxiliary, sample;
+        Vector3 normal, location;
+        Eigen::Matrix3d rotation;
+        real weight;
+        bool changesFrame;
+    };
+    inline JacobianPointValue ExpandJacobianPoint(const JacobianPointRecord &point)
+    {
+        return {point.other, point.auxiliary, point.sample, point.normal,
+                point.location, Eigen::Map<const Eigen::Matrix3d>(point.rotation.data()),
+                point.weight, point.changesFrame};
     }
+
+    /// Two-level CSR: cell -> block, block -> contributing face incidences.
+    /// Pure views; the enclosing evaluator retains the read scope once.
+    struct JacobianGeometryView
+    {
+        Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::CSRRows> columns;
+        Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> blockOffsets;
+        Runtime::ArrayView<const JacobianPointRecord, Runtime::AccessBoundsChecks, Runtime::CSRRows> points;
+        auto Points(index iCell, index iBlock) const
+        {
+            DNDS_assert(iBlock >= 0 && iBlock < columns.RowSize(iCell));
+            return points[blockOffsets(iCell, 0) + iBlock];
+        }
+    };
+
+    /** @brief Owned, rank-local geometry of an evaluated sparse Jacobian.
+     * @details Setup vectors exist only while publishing. ReadAccess retains
+     * all arrays and their layouts; CPU block actions receive only View().
+     */
+    class JacobianGeometryStorage
+    {
+        Runtime::Array<index> _columns, _blockOffsets;
+        Runtime::Array<JacobianPointRecord> _points;
+
+    public:
+        bool sameComponentFrames = true;
+        JacobianGeometryStorage(FiniteVolumeStencilView stencil,
+                                CFV::FiniteVolumeHostView metric,
+                                const std::vector<std::vector<index>> &columns);
+        class ReadAccess
+        {
+            Runtime::Array<index>::ReadLease _columns, _blockOffsets;
+            Runtime::Array<JacobianPointRecord>::ReadLease _points;
+
+        public:
+            explicit ReadAccess(const JacobianGeometryStorage &storage)
+                : _columns(storage._columns.Read()), _blockOffsets(storage._blockOffsets.Read()), _points(storage._points.Read()) {}
+            JacobianGeometryView View() const
+            {
+                return {_columns.View<Runtime::CSRRows>(), _blockOffsets.View<Runtime::FixedRows<1>>(),
+                        _points.View<Runtime::CSRRows>()};
+            }
+        };
+        ReadAccess Read() const { return ReadAccess(*this); }
+        std::vector<std::vector<index>> CopyColumns() const;
+    };
 }

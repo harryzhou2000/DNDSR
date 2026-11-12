@@ -1,4 +1,6 @@
+#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/State/DerivedFields.hpp"
+#include "Cauchy/State/CPU/StatePropertiesKernels.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include <algorithm>
@@ -154,11 +156,21 @@ namespace DNDS::Cauchy
     DerivedPointValues EvaluateDerivedPoint(EquationPointEvaluator &evaluator, const FlowState &state,
                                             Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess)
     {
-        const auto point = evaluator.Evaluate(state, rhoY, temperatureGuess);
-        const auto &thermo = point.thermo;
-        return {thermo.temperature, thermo.pressure, thermo.soundSpeed, point.transport.viscosity,
-                point.transport.conductivity, thermo.cp, thermo.cv, thermo.gasConstant, point.diffusionBound};
+        const auto result = TryEvaluateDerivedPoint(evaluator, state, rhoY, temperatureGuess);
+        DNDS_check_throw_info(result.status, "derived point evaluation failed");
+        return result.value;
     }
+    NumericalResult<DerivedPointValues> TryEvaluateDerivedPoint(EquationPointEvaluator &evaluator, const FlowState &state,
+                                                                Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess) noexcept
+    {
+        EquationPointProperties point;
+        if (const auto status = evaluator.TryEvaluate(state, rhoY, temperatureGuess, point); !status)
+            return status;
+        const auto &thermo = point.thermo;
+        return DerivedPointValues{thermo.temperature, thermo.pressure, thermo.soundSpeed, point.transport.viscosity,
+                                  point.transport.conductivity, thermo.cp, thermo.cv, thermo.gasConstant, point.diffusionBound};
+    }
+
     bool RefreshDerivedFields(const EquationDofs &state, const EquationSystem &equation,
                               DerivedFields &output, bool onlyIfStale)
     {
@@ -194,19 +206,7 @@ namespace DNDS::Cauchy
         const auto input = source.Block("flow");
         const auto rows = data.ghost ? input.ghost : input.owned;
         const auto values = writer->View<R::UniformTableRows>();
-        for (index iRow = 0; iRow < output.RowNumber(); ++iRow)
-        {
-            FlowState point;
-            for (int component = 0; component < 5; ++component)
-                point[component] = rows(iRow, component);
-            for (int k = 0; k < rhoY.nSpecies; ++k)
-                rhoY[k] = species(iRow, k);
-            const real temperatureGuess = useTemperatureGuess ? values(iRow, data.columns[int(DerivedQuantity::Temperature)]) : 0;
-            const auto properties = EvaluateDerivedPoint(evaluator, point, rhoY, temperatureGuess);
-            for (int quantity = 0; quantity < DerivedQuantityNumber; ++quantity)
-                if (data.columns[quantity] >= 0)
-                    values(iRow, data.columns[quantity]) = properties[quantity];
-        }
+        RequireNumericalSuccess(CPU::RefreshDerivedRows(rows, species, values, data.columns, useTemperatureGuess, evaluator), "RefreshDerivedRows");
         writer.reset();
         DerivedFields::Data::Origin origin{{}, equation.PropertyKey(), data.values.Version(), data.values.ShapeVersion()};
         for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)

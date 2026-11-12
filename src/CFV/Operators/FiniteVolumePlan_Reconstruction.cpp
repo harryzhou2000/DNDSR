@@ -1,4 +1,5 @@
 #include "CFV/Detail/ReconstructionData.hpp"
+#include "CFV/CPU/ReconstructionBasisKernels.hpp"
 #include "DNDS/Algebra/EigenView.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 
@@ -906,6 +907,10 @@ namespace DNDS::CFV
         // Freeze plain pointers once while the enclosing read scopes pin both
         // metadata and allocations. Face queries acquire no new Array views.
         _momentView = _moments.View<R::TableRows>();
+        _evaluation = {_basisView, _momentView, _geometry.HostView(),
+                       _meshRead->HostView(), _data->metrics.Dimension(),
+                       _data->settings.maxOrder, _data->n,
+                       _data->cachedDerivatives};
     }
     ReconstructionBasisHostView ReconstructionBasisRead::HostView() const
     {
@@ -915,17 +920,12 @@ namespace DNDS::CFV
     Math::ReconstructionBasisView ReconstructionBasisRead::FaceBasis(index face, int side, index point,
                                                                      int derivativeOrder, Math::SmallMatrix &scratch) const
     {
-        const Math::TaylorBasis polynomial(_data->metrics.Dimension(), _data->settings.maxOrder);
-        const int rows = polynomial.DerivativeNumber(derivativeOrder);
-        if (_basis && rows <= _data->cachedDerivatives)
-            return {_basisView[2 * point + side].data(), rows, _data->n, _data->cachedDerivatives};
-        const auto mesh = _meshRead->HostView();
-        const index cell = mesh.FaceCells(face)[side];
-        const auto geometry = _geometry.HostView();
-        const auto position = Detail::FacePointInCell(mesh, face, side, geometry.GetFacePoint(point));
-        polynomial.Reconstruction(scratch, position, geometry.GetCellCent(cell), geometry.cells(cell, 7),
-                                  _momentView[cell], derivativeOrder);
-        return {scratch.data(), int(scratch.rows()), _data->n, int(scratch.rows())};
+        return CPU::EvaluateFaceBasis(EvaluationView(), face, side, point,
+                                      derivativeOrder, scratch);
+    }
+    const ReconstructionBasisEvaluationView &ReconstructionBasisRead::EvaluationView() const
+    {
+        return _evaluation;
     }
     ReconstructionBasisRead VariationalReconstructionPlan::AcquireBasisRead() const
     {

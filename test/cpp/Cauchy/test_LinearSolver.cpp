@@ -42,7 +42,14 @@ namespace
         explicit EvaluatedOff(const A::DofSpace &space) : partition(space.Pin()) {}
         DNDS::index Components() const override { return components; }
         auto RowSpaceIdentity() const -> std::shared_ptr<const A::DofSpace::Partition> override { return partition; }
-        const std::vector<std::vector<DNDS::index>> &Columns() const override { return declaredColumns; }
+        std::vector<std::vector<DNDS::index>> Columns() const override { return declaredColumns; }
+        DNDS::index RowNumber() const override { return DNDS::index(declaredColumns.size()); }
+        DNDS::index BlockNumber(DNDS::index iRow) const override { return DNDS::index(declaredColumns[iRow].size()); }
+        DNDS::SpanView<const DNDS::index> ColumnRow(DNDS::index iRow) const override
+        {
+            const auto &row = declaredColumns[iRow];
+            return {row.data(), DNDS::index(row.size())};
+        }
         void EvaluateBlock(DNDS::index iRow, DNDS::index iBlock, Eigen::Ref<Eigen::MatrixXd> output) const override
         {
             output = Off(iRow, columns[iRow][iBlock]);

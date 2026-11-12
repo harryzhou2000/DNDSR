@@ -48,18 +48,29 @@ namespace DNDS::Cauchy
         OptionalRef<const std::vector<real>> mean, real meanWallDistance,
         InterfaceBoundaryRows interfaceValues) const
     {
-        DNDS_check_throw_info(index(point.size()) == _components,
-                              "boundary point scratch width differs");
+        const auto status = TryEvaluate(point, condition, interfaceRow, normal, location, evaluator, frame, time, stateKind, mean, meanWallDistance, interfaceValues);
+        DNDS_check_throw_info(status, "boundary point operation failed");
+    }
+    NumericalStatus BoundaryPointOperator::TryEvaluate(
+        std::vector<real> &point, const BoundaryCondition &condition,
+        index interfaceRow, const Vector3 &normal, const Vector3 &location,
+        EquationPointEvaluator &evaluator, const RigidFrame &frame, real time,
+        BoundaryPointStateKind stateKind,
+        OptionalRef<const std::vector<real>> mean, real meanWallDistance,
+        InterfaceBoundaryRows interfaceValues) const noexcept
+    {
+        if (!(index(point.size()) == _components))
+            return NumericalStatus{NumericalError::InvalidState, 1, -1};
         if (condition.kind == BoundaryKind::Interface)
         {
-            DNDS_check_throw_info(
-                interfaceValues.data && interfaceRow >= 0 &&
+            if (!(
+                    interfaceValues.data && interfaceRow >= 0 &&
                     interfaceRow < interfaceValues.RowCount() &&
-                    interfaceValues.Width() == _components,
-                "interface boundary needs one complete logical equation row");
+                    interfaceValues.Width() == _components))
+                return NumericalStatus{NumericalError::InvalidState, 2, -1};
             for (index j = 0; j < _components; ++j)
                 point[size_t(j)] = interfaceValues(interfaceRow, j);
-            return;
+            return {};
         }
 
         const int ransComponents = _equation.HasRANS()
@@ -67,11 +78,11 @@ namespace DNDS::Cauchy
                                        : 0;
         const bool twoEquationWall =
             ransComponents == 2 && condition.kind == BoundaryKind::NoSlipWall;
-        DNDS_check_throw_info(
-            !twoEquationWall ||
+        if (!(
+                !twoEquationWall ||
                 (mean && index(mean->size()) == _components &&
-                 std::isfinite(meanWallDistance) && meanWallDistance > 0),
-            "two-equation wall needs cell mean and positive mean wall distance");
+                 std::isfinite(meanWallDistance) && meanWallDistance > 0)))
+            return NumericalStatus{NumericalError::InvalidState, 3, -1};
 
         FlowState inside{};
         for (int j = 0; j < 5; ++j)
@@ -80,18 +91,21 @@ namespace DNDS::Cauchy
             _independentSpecies ? point.data() + _speciesFirst : nullptr,
             _independentSpecies};
         const bool exterior = stateKind == BoundaryPointStateKind::ExteriorState;
-        const auto flow = exterior
-                              ? condition.Exterior(evaluator, inside, rhoY, normal,
-                                                   location, time,
-                                                   OptionalRef<const RigidFrame>(frame))
-                              : condition.FaceValue(evaluator, inside, rhoY, normal,
-                                                    location, time,
-                                                    OptionalRef<const RigidFrame>(frame));
+        const auto flowResult = exterior
+                                    ? condition.TryExterior(evaluator, inside, rhoY, normal,
+                                                            location, time,
+                                                            OptionalRef<const RigidFrame>(frame))
+                                    : condition.TryFaceValue(evaluator, inside, rhoY, normal,
+                                                             location, time,
+                                                             OptionalRef<const RigidFrame>(frame));
+        if (!flowResult)
+            return flowResult.status;
+        const auto &flow = flowResult.value;
         for (int j = 0; j < 5; ++j)
             point[size_t(_flowFirst + j)] = flow[j];
 
         if (!ransComponents)
-            return;
+            return {};
         if (condition.kind == BoundaryKind::NoSlipWall)
         {
             std::array<real, 2> target{};
@@ -110,8 +124,11 @@ namespace DNDS::Cauchy
                     viscosityFlow = flow;
                     viscositySpecies = {rhoY.data, rhoY.nSpecies};
                 }
-                const auto properties = evaluator.Evaluate(
-                    viscosityFlow, viscositySpecies, 0, {true});
+                EquationPointProperties properties;
+                if (const auto status = evaluator.TryEvaluate(
+                        viscosityFlow, viscositySpecies, 0, {true}, properties);
+                    !status)
+                    return status;
                 Physics::RANS::Point meanPoint;
                 for (int j = 0; j < 5; ++j)
                     meanPoint.state[j] = (*mean)[size_t(_flowFirst + j)];
@@ -129,7 +146,7 @@ namespace DNDS::Cauchy
                 point[size_t(_ransFirst + j)] =
                     exterior ? 2 * target[j] - reflected : target[j];
             }
-            return;
+            return {};
         }
         if (condition.kind == BoundaryKind::Farfield ||
             condition.kind == BoundaryKind::Analytic)
@@ -142,6 +159,7 @@ namespace DNDS::Cauchy
                 for (int j = 0; j < ransComponents; ++j)
                     point[size_t(_ransFirst + j)] = condition.prescribedRANS[j];
         }
+        return {};
     }
 
     void BoundaryPointOperator::ApproximateExteriorJacobian(
@@ -150,10 +168,19 @@ namespace DNDS::Cauchy
         const Vector3 &normal, const Vector3 &location,
         const RigidFrame &frame, real time) const
     {
-        DNDS_check_throw_info(
-            index(inside.size()) == _components &&
-                output.rows() == _components && output.cols() == _components,
-            "boundary Jacobian state or output width differs");
+        const auto status = TryApproximateExteriorJacobian(output, condition, inside, normal, location, frame, time);
+        DNDS_check_throw_info(status, "boundary point operation failed");
+    }
+    NumericalStatus BoundaryPointOperator::TryApproximateExteriorJacobian(
+        Eigen::Ref<Eigen::MatrixXd> output,
+        const BoundaryCondition &condition, const std::vector<real> &inside,
+        const Vector3 &normal, const Vector3 &location,
+        const RigidFrame &frame, real time) const noexcept
+    {
+        if (!(
+                index(inside.size()) == _components &&
+                output.rows() == _components && output.cols() == _components))
+            return NumericalStatus{NumericalError::InvalidState, 1, -1};
         output.setZero();
         FlowState flow{};
         for (int j = 0; j < 5; ++j)
@@ -167,7 +194,7 @@ namespace DNDS::Cauchy
         const bool wall = condition.kind == BoundaryKind::SlipWall ||
                           condition.kind == BoundaryKind::NoSlipWall;
         if (!wall)
-            return;
+            return {};
         for (index j = 0; j < _components; ++j)
             if (j < _flowFirst || j >= _flowFirst + 5)
                 output(j, j) = 1;
@@ -179,5 +206,7 @@ namespace DNDS::Cauchy
         // reconstruction leaf. It must not alter this exterior-state
         // derivative: the centralized wall law reflects every transported
         // RANS scalar as 2*target-interior, hence its diagonal is exactly -1.
+        return {};
     }
+
 }

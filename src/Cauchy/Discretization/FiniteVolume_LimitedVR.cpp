@@ -18,24 +18,29 @@ namespace DNDS::Cauchy
         const auto mesh = read.HostView();
         auto geometry = data.metrics.AcquireRead();
         const auto metric = geometry.HostView();
+        const auto stencilRead = data.stencil.Read();
+        const auto stencil = stencilRead.View();
         index count = 0;
-        for (auto entry : data.faceEntries)
-            count += data.samples[entry].other != UnInitIndex;
-        faces.reserve(size_t(count));
+        for (index iFace = 0; iFace < stencil.faceEntries.RowCount(); ++iFace)
+            count += stencil.samples(stencil.faceEntries(iFace, 0), 0).other != UnInitIndex;
+        faces = R::Array<LimitedVRFace>(R::RowLayout::Dense(count, 1));
+        index nextFace = 0;
         R::Array<index> cells(R::RowLayout::Dense(2 * count, 1));
         R::Array<real> points(R::RowLayout::Dense(2 * count, 3));
         {
+            auto faceWrite = faces.Write();
+            const auto faceValues = faceWrite.View<R::FixedRows<1>>();
             auto cellWrite = cells.Write();
             auto pointWrite = points.Write();
             const auto c = cellWrite.View<R::FixedRows<1>>();
             const auto p = pointWrite.View<R::FixedRows<3>>();
             Geom::tSmallCoords coordinates;
-            for (index iFace = 0; iFace < index(data.faceEntries.size()); ++iFace)
+            for (index iFace = 0; iFace < stencil.faceEntries.RowCount(); ++iFace)
             {
-                const auto &sample = data.samples[data.faceEntries[iFace]];
+                const auto sample = FiniteVolumeDetail::ExpandSample(stencil.samples(stencil.faceEntries(iFace, 0), 0), {data.boundaryConditions.data(), index(data.boundaryConditions.size())});
                 if (sample.other == UnInitIndex)
                     continue;
-                const auto face = data.stencilFaces[iFace];
+                const auto face = stencil.stencilFaces(iFace, 0);
                 mesh.GetCoordsOnFace(face, coordinates);
                 const auto element = mesh.GetFaceElement(face);
                 // Match legacy iG=-1: mapped one-point reference center, not
@@ -49,7 +54,7 @@ namespace DNDS::Cauchy
                 normal.normalize();
                 if (sample.side)
                     normal = -sample.rotation * normal;
-                const index row = 2 * index(faces.size());
+                const index row = 2 * nextFace;
                 const std::array<Geom::tPoint, 2> point{
                     CFV::Detail::FacePointInCell(mesh, face, sample.side, center),
                     CFV::Detail::FacePointInCell(mesh, face, 1 - sample.side, center)};
@@ -58,7 +63,10 @@ namespace DNDS::Cauchy
                 for (int side = 0; side < 2; ++side)
                     for (int d = 0; d < 3; ++d)
                         p(row + side, d) = point[side][d];
-                faces.push_back({sample.cell, sample.other, normal, sample.rotation});
+                LimitedVRFace record{sample.cell, sample.other, {normal[0], normal[1], normal[2]}, {}};
+                for (int j = 0; j < 9; ++j)
+                    record.rotation[j] = sample.rotation.data()[j];
+                faceValues(nextFace++, 0) = record;
             }
         }
         DNDS_check_throw_info(data.reconstruction,
@@ -80,7 +88,7 @@ namespace DNDS::Cauchy
           gradients(data.metrics.BuildField(prototype.components * data.metrics.Dimension())), scalars(data.metrics.BuildField(2)),
           branches(data.metrics.BuildField(3)), seeds(data.metrics.BuildField(3)), temporary(data.metrics.BuildField(3)),
           base(R::RowLayout::Dense(data.metrics.NumCell(), 2)),
-          alpha(R::RowLayout::Dense(data.metrics.NumCell(), 1)), sampledFaces(R::RowLayout::Dense(data.limitedVRGeometry ? 2 * index(data.limitedVRGeometry->faces.size()) : 0, prototype.components)),
+          alpha(R::RowLayout::Dense(data.metrics.NumCell(), 1)), sampledFaces(R::RowLayout::Dense(data.limitedVRGeometry ? 2 * data.limitedVRGeometry->faces.RowCount() : 0, prototype.components)),
           sampledPP(R::RowLayout::Dense(data.positivitySamples ? data.positivitySamples->Size() : 0, prototype.components)), targetHalo(data.BindHalo(targetCoefficients)),
           branchHalo(data.BindHalo(branches)), seedHalo(data.BindHalo(seeds))
     {

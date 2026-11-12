@@ -1,6 +1,9 @@
+#include "Cauchy/Core/NumericalFailure.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/StepResult.hpp"
+#include "Cauchy/State/CPU/FieldKernels.hpp"
+#include "Cauchy/State/CPU/StatePropertiesKernels.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
@@ -133,141 +136,6 @@ namespace DNDS::Cauchy
                         { _problem.finiteVolume.PrepareAuxValues(_state.accepted, *_execution.timeAuxiliary, _state.time,
                                                                  _execution.ChemicalWorkers(), inputs); });
         return _problem.finiteVolume.StableStep(_state.accepted, *_execution.timeAuxiliary, cfl, _state.time);
-    }
-    StepResult Domain::UpdateStage(real dt, real historyWeight, real stageWeight, real stageTime)
-    {
-        _problem.finiteVolume.Execute(_state.trial, *_state.reconstruction, *_execution.workspace, _execution.Context(),
-                                      FiniteVolumeEvaluation::Spatial(_state.residual, stageTime));
-        _lastFallbacks += _problem.finiteVolume.LastFaceFallbacks(*_execution.workspace);
-        _lastCharacteristicFallbacks += _problem.finiteVolume.LastCharacteristicFallbacks(*_execution.workspace);
-        if (_problem.equation.HasMixture() || _problem.equation.HasRANS())
-        {
-            MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
-                            {
-                const auto geometry = _problem.finiteVolume.Metrics().AcquireRead(); const auto metric = geometry.HostView();
-                const auto initial = _state.initial.ReadOwned(), residual = _state.residual.ReadOwned();
-                auto output = _state.trial.WriteOwned();
-                const auto flow = output.Block("flow");
-                for (index iBlock = 0; iBlock < _state.trial.BlockNumber(); ++iBlock)
-                {
-                    const auto base = initial.Block(iBlock), rhs = residual.Block(iBlock); const auto state = output.Block(iBlock);
-                    const auto &ransState = _problem.admissibility->RANS();
-                    const bool rans = ransState.components &&
-                                      _state.trial.Schema().blocks[iBlock].name == "rans";
-                    for (index iCell = 0; iCell < state.RowCount(); ++iCell)
-                    {
-                        if (rans)
-                        {
-                            // PP POLICY -- explicit extended equations retain
-                            // raw flow/species stage increments and reject the
-                            // whole step when their accepted mean is invalid.
-                            // Euler's scalar-only RANS repair is permitted here.
-                            // It must never rescale the flow5/species update.
-                            std::array<real, 2> old{}, change{}, next{};
-                            for (int j = 0; j < ransState.components; ++j)
-                            {
-                                old[j] = state(iCell, j);
-                                change[j] = historyWeight * base(iCell, j) + stageWeight * (old[j] + dt * rhs(iCell, j) / metric.GetCellVol(iCell)) - old[j];
-                                DNDS_check_throw_info(std::isfinite(change[j]), "nonfinite explicit RANS increment");
-                            }
-                            ransState.RepairIncrement(old, change);
-                            for (int j = 0; j < ransState.components; ++j) next[j] = old[j] + change[j];
-                            ransState.RepairMean(flow(iCell, 0), next);
-                            for (int j = 0; j < ransState.components; ++j) state(iCell, j) = next[j];
-                            continue;
-                        }
-                        // PP POLICY -- no cellwise thermal increment compression:
-                        // flow5
-                        // and species retain their conservative residuals.
-                        // Do not clip/normalize species means here either;
-                        // the full raw candidate must pass Admissible below.
-                        for (index j = 0; j < state.ComponentNumber(); ++j)
-                            state(iCell, j) = historyWeight * base(iCell, j) + stageWeight * (state(iCell, j) + dt * rhs(iCell, j) / metric.GetCellVol(iCell));
-                    }
-                } });
-            if (!Admissible(_state.trial))
-                return StepResult::Rejected("Cauchy explicit extended-equation stage is inadmissible; accepted state unchanged");
-            return {};
-        }
-        auto &residual = _state.residual.CoupledField();
-        auto geometry = _problem.finiteVolume.Metrics().AcquireRead();
-        const auto metrics = geometry.HostView();
-        real alpha = 1;
-        int safe[2]{1, 1}; // high candidate, low candidate
-        if (_positivity)
-        {
-            // PP POLICY -- pure-flow5 compatibility baseline: one domain-global
-            // conservative high/low face-flux blend. This is the only explicit
-            // thermal compression currently allowed; extended equations retry
-            // the step instead of compressing their pointwise increments.
-            // Deferred explicit PP work should limit shared face-flux
-            // corrections using both adjacent cells, including MPI faces.
-            // A cell-local increment factor is not a conservative substitute.
-            const auto reconstruction = _problem.finiteVolume.PositivityReconstructionStats(*_execution.workspace);
-            _lastBetaCells += reconstruction.first;
-            _lastBeta = std::min(_lastBeta, reconstruction.second);
-            index limited = 0;
-            MPI::LocalStage(MPIInfo(_problem.finiteVolume.Metrics().Communicator()), [&]
-                            {
-                const auto initialRead = _state.initial.CoupledField().Owned().Read(), stateRead = _state.trial.CoupledField().Owned().Read();
-                const auto highRead = residual.Owned().Read(), lowRead = _problem.finiteVolume.LowOrderResidual(*_execution.workspace).CoupledField().Owned().Read();
-                const auto initial = initialRead.View<R::UniformTableRows>(), state = stateRead.View<R::UniformTableRows>();
-                const auto high = highRead.View<R::UniformTableRows>(), low = lowRead.View<R::UniformTableRows>();
-                for (index iCell = 0; iCell < _problem.finiteVolume.Metrics().NumCell(); ++iCell)
-                {
-                    FlowState base, target;
-                    for (int j = 0; j < 5; ++j)
-                    {
-                        const real constant = historyWeight * initial(iCell, j) + stageWeight * state(iCell, j);
-                        base[j] = constant + stageWeight * dt * low(iCell, j) / metrics.GetCellVol(iCell);
-                        target[j] = constant + stageWeight * dt * high(iCell, j) / metrics.GetCellVol(iCell);
-                        DNDS_check_throw_info(std::isfinite(base[j]) && std::isfinite(target[j]), "nonfinite stage input cannot be repaired by PP");
-                    }
-                    safe[0] &= ThermallyAdmissible(target, _problem.finiteVolume.ThermalConstraints());
-                    const bool lowSafe = ThermallyAdmissible(base, _problem.finiteVolume.ThermalConstraints());
-                    safe[1] &= lowSafe;
-                    const auto fraction = lowSafe ? AdmissibleFraction(base, target, _problem.finiteVolume.ThermalConstraints()) : real(1);
-                    if (fraction < 1) { ++limited; alpha = std::min(alpha, fraction); }
-                } });
-            alpha = MPI::AllreduceValue<MPI::Reduction::Min>(alpha, _problem.finiteVolume.Metrics().Communicator());
-            MPI::AllreduceInPlace<MPI::Reduction::Min>(
-                MPI::ContiguousView<int>{safe, 2}, _problem.finiteVolume.Metrics().Communicator());
-            if (safe[0])
-            {
-                alpha = 1;
-                limited = 0; // No correction was applied to this high stage.
-            }
-            else
-            {
-                // A shared flux blend uses the low-order endpoint everywhere;
-                // local success of the high endpoint cannot excuse an invalid
-                // low endpoint when another cell actually requires blending.
-                if (!safe[1])
-                    return StepResult::Rejected("global conservative PP blend requires admissible low-order stage; reduce dt");
-            }
-            limited = MPI::AllreduceValue<MPI::Reduction::Sum>(limited, _problem.finiteVolume.Metrics().Communicator());
-            _lastAlpha = std::min(_lastAlpha, alpha);
-            _lastAlphaCells += limited;
-        }
-        std::optional<R::Array<real>::ReadLease> lowRead;
-        R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows> low;
-        if (_positivity)
-        {
-            lowRead.emplace(_problem.finiteVolume.LowOrderResidual(*_execution.workspace).CoupledField().Owned().Read());
-            low = lowRead->View<R::UniformTableRows>();
-        }
-        R::SubmitArrays(_execution.Engine(), _execution.PrimaryStream(), [dt, historyWeight, stageWeight, metrics, alpha, low](auto, auto initial, auto rhs, auto stage)
-                        {
-            for (index iCell = 0; iCell < stage.rows; ++iCell)
-                for (int j = 0; j < 5; ++j)
-                {
-                    const real residual = alpha == 1 ? rhs(iCell, j) : (1 - alpha) * low(iCell, j) + alpha * rhs(iCell, j);
-                    stage(iCell, j) = historyWeight * initial(iCell, j) + stageWeight * (stage(iCell, j) + dt * residual / metrics.GetCellVol(iCell));
-                } }, R::ReadAs<R::UniformTableRows>(_state.initial.CoupledField().Owned()), R::ReadAs<R::UniformTableRows>(residual.Owned()), R::ReadWriteAs<R::UniformTableRows>(_state.trial.CoupledField().Owned()));
-        _execution.JoinPrimary();
-        if (!Admissible(_state.trial))
-            return StepResult::Rejected("Cauchy SSPRK3 stage is inadmissible; accepted state unchanged");
-        return {};
     }
     void Domain::BeginTrial(real dt)
     {
@@ -596,9 +464,7 @@ namespace DNDS::Cauchy
         {
             const auto input = source.Block(iBlock);
             const auto output = destination.Block(iBlock);
-            for (index iCell = 0; iCell < _problem.finiteVolume.Metrics().NumCell(); ++iCell)
-                for (index j = 0; j < output.ComponentNumber(); ++j)
-                    output(iCell, j) = input(iCell, j);
+            CPU::CopyRows(input.owned, output, output.ComponentNumber());
         }
         _state.time = _state.trialTime;
         _state.epoch = _state.trialEpoch;
@@ -642,9 +508,7 @@ namespace DNDS::Cauchy
         {
             const auto input = source->Block(iBlock);
             const auto output = destination->Block(iBlock);
-            for (index iCell = 0; iCell < _problem.finiteVolume.Metrics().NumCell(); ++iCell)
-                for (index j = 0; j < output.ComponentNumber(); ++j)
-                    output(iCell, j) = input(iCell, j);
+            CPU::CopyRows(input.owned, output, output.ComponentNumber());
         }
         _state.time = time;
         _state.epoch = epoch;
@@ -684,22 +548,7 @@ namespace DNDS::Cauchy
             std::optional<EquationBlockReadView> species;
             if (independent) species.emplace(read.Block("species"));
             const index width = snapshot.Means().ComponentNumber();
-            auto rhoY = evaluator.SpeciesInput();
-            for (index iCell = 0; iCell < _problem.finiteVolume.Metrics().NumCell(); ++iCell)
-            {
-                FlowState value;
-                for (int j = 0; j < 5; ++j) value[j] = flow(iCell, j);
-                if (independent)
-                {
-                    for (int k = 0; k < independent; ++k) rhoY[k] = (*species)(iCell, k);
-                }
-                const auto point = evaluator.Evaluate(value, rhoY);
-                const real volume = metric.GetCellVol(iCell);
-                result[0] += volume * value[0]; result[1] += volume * value[4];
-                result[2] = std::min(result[2], value[0]); result[3] = std::min(result[3], point.thermo.pressure);
-                result[13] = std::min(result[13], point.thermo.temperature);
-                for (index j = 0; j < width; ++j) result[4] += rhs(iCell, j) * rhs(iCell, j) / volume;
-        } });
+            RequireNumericalSuccess(CPU::AccumulateStateDiagnostics(flow, species, rhs, metric, evaluator, {result.data(), index(result.size())}), "AccumulateStateDiagnostics"); });
         const auto comm = _problem.finiteVolume.Metrics().Communicator();
         MPI::AllreduceInPlace<MPI::Reduction::Sum>(
             MPI::ContiguousView<real>{result.data(), 2}, comm);

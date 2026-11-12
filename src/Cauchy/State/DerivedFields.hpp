@@ -1,4 +1,5 @@
 #pragma once
+#include "DNDS/Core/NumericalStatus.hpp"
 
 #include "Cauchy/State/EquationDofs.hpp"
 #include "Cauchy/Physics/FlowState.hpp"
@@ -95,6 +96,9 @@ namespace DNDS::Cauchy
     DerivedPointValues EvaluateDerivedPoint(const EquationSystem &equation, const FlowState &state);
     /// Same point core for a reserved mixture/perfect-gas worker. Species are
     /// explicit logical inputs, not inferred from the tail of a physical Array.
+    /// Nonthrowing point-property projection; borrowed worker data is consumed here.
+    NumericalResult<DerivedPointValues> TryEvaluateDerivedPoint(EquationPointEvaluator &evaluator, const FlowState &state,
+                                                                Physics::Chemistry::ConstSpeciesBufferView rhoY = {}, real temperatureGuess = 0) noexcept;
     DerivedPointValues EvaluateDerivedPoint(EquationPointEvaluator &evaluator, const FlowState &state,
                                             Physics::Chemistry::ConstSpeciesBufferView rhoY = {}, real temperatureGuess = 0);
 

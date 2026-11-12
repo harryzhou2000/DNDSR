@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DNDS/Runtime/Array/ArrayView.hpp"
+#include "DNDS/Runtime/Storage/Metadata.hpp"
 #include <vector>
 #include <optional>
 
@@ -21,7 +22,7 @@ namespace DNDS::Algebra
     template <class T>
     struct DofComponentView
     {
-        const DofComponentColumn<T> *columns = nullptr;
+        SpanView<const DofComponentColumn<T>> columns;
         index ownedRows = 0, ghostRows = 0, components = 0;
         DNDS_DEVICE_CALLABLE index RowCount() const { return ownedRows + ghostRows; }
         DNDS_DEVICE_CALLABLE index ComponentNumber() const { return components; }
@@ -44,7 +45,7 @@ namespace DNDS::Algebra
     std::optional<Runtime::ArrayView<T, Runtime::AccessBoundsChecks, Runtime::TableRows>>
     TryTablePart(DofComponentView<T> view, bool ghost)
     {
-        if (!view.columns || view.components <= 0 || (ghost ? view.ownedRows : view.ghostRows))
+        if (view.columns.empty() || view.components <= 0 || (ghost ? view.ownedRows : view.ghostRows))
             return std::nullopt;
         const auto first = ghost ? view.columns[0].ghost : view.columns[0].owned;
         if (first.kind != Runtime::RowLayoutKind::Table || first.width != view.components ||
@@ -69,14 +70,14 @@ namespace DNDS::Algebra
     /// read scope and its descriptor table through every stencil operation.
     template <class T>
     auto TryGhostTable(DofComponentView<T> view) { return TryTablePart(view, true); }
-    /// Owns host descriptor metadata only. Payloads are borrowed from enclosing
-    /// access scopes. Build once outside numerical loops, then freeze View().
-    /// Moving/destroying this owner invalidates borrowed views; obtain a new
-    /// view from its final location. No implicit upload, halo or synchronization.
+    /// Owns immutable backend metadata only. Payloads are borrowed from enclosing
+    /// access scopes. Copies share descriptor storage; the enclosing operation
+    /// retains both this owner and its payload scopes. No implicit upload,
+    /// halo or synchronization. Device descriptors must contain device views.
     template <class T>
     class DofComponentLayout
     {
-        std::vector<DofComponentColumn<T>> _columns;
+        Runtime::MetadataBuffer<DofComponentColumn<T>> _columns;
         index _owned, _ghost;
 
     public:
@@ -90,6 +91,6 @@ namespace DNDS::Algebra
                                           (!ghost || column.component < column.ghost.Width()),
                                       "DOF component parent extent differs");
         }
-        DofComponentView<T> View() const { return {_columns.data(), _owned, _ghost, index(_columns.size())}; }
+        DofComponentView<T> View() const { return {_columns.HostView(), _owned, _ghost, index(_columns.size())}; }
     };
 }

@@ -1,5 +1,6 @@
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Implicit/LinearProblem.hpp"
+#include "Cauchy/Implicit/CPU/LinearBlockKernels.hpp"
 #include "Solver/NativeBlockLU.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "DNDS/Serializer/JsonUtil.hpp"
@@ -17,10 +18,9 @@ namespace DNDS::Cauchy
     {
         std::shared_ptr<Direct::SerialSymLUStructure> symbolic;
         std::unique_ptr<Direct::NativeBlockLU> factors;
-        std::vector<index> forwardCore, backwardCore;
+        LinearPatternStorage factorMapping;
         // Per physical row, lower then upper factor slots map to immutable
         // operator-column slots. UnInitIndex denotes structural fill-in.
-        std::vector<std::vector<index>> sourceBlocks;
         uint64_t diagonalVersion = 0, offDiagonalVersion = 0;
         bool current = false;
         // Opt-in local attribution only: no additional collective or change
@@ -37,7 +37,9 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(fill >= -1 && fill <= 5 && _space.Distributed(), "ILU structure needs a domain communicator and fill -1..5");
         DNDS_check_throw_info(ordering == "natural" || ordering == "rcm", "ILU ordering must be natural or rcm");
         auto prepared = std::make_shared<ILUState>();
-        const index rows = index(_pattern->partition->owned);
+        const auto patternRead = _pattern->rows.Read();
+        const auto pattern = patternRead.View();
+        const index rows = pattern.ownedRows;
         DNDS_check_throw_info(localParts.empty() || (localParts.size() >= 2 && localParts.front() == 0 && localParts.back() == rows &&
                                                      std::is_sorted(localParts.begin(), localParts.end())),
                               "invalid ILU local part boundaries");
@@ -48,7 +50,7 @@ namespace DNDS::Cauchy
         // induced block-Jacobi graphs explicitly, before ordering or fill.
         for (index part = 0; part + 1 < index(parts.size()); ++part)
             for (index iCell = parts[part]; iCell < parts[part + 1]; ++iCell)
-                for (auto column : _pattern->columns[iCell])
+                for (auto column : pattern.columns[iCell])
                     if (column >= parts[part] && column < parts[part + 1])
                     {
                         adjacency[iCell].push_back(column);
@@ -97,13 +99,14 @@ namespace DNDS::Cauchy
             }
         }
         if (coreFirst)
-            prepared->symbolic->SetCoreFirstOrdering(_pattern->core, parts);
+            prepared->symbolic->SetCoreFirstOrdering(Core(), parts);
         prepared->symbolic->ObtainSymmetricSymbolicFactorization(adjacency, parts, fill, false);
-        prepared->sourceBlocks.resize(rows);
+        std::vector<std::vector<index>> sourceBlocks(rows);
+        std::vector<index> forwardCore, backwardCore;
         for (index iCell = 0; iCell < rows; ++iCell)
         {
-            auto &slots = prepared->sourceBlocks[iCell];
-            const auto &source = _pattern->columns[iCell];
+            auto &slots = sourceBlocks[iCell];
+            const auto &source = pattern.columns[iCell];
             const auto &lower = prepared->symbolic->lowerTriStructure[iCell];
             const auto &upper = prepared->symbolic->upperTriStructure[iCell];
             slots.reserve(lower.size() + upper.size());
@@ -116,9 +119,10 @@ namespace DNDS::Cauchy
         }
         if (fill >= 0)
         {
-            prepared->forwardCore = prepared->symbolic->ReadySolveRows(_pattern->core, true);
-            prepared->backwardCore = prepared->symbolic->ReadySolveRows(prepared->forwardCore, false);
+            forwardCore = prepared->symbolic->ReadySolveRows(Core(), true);
+            backwardCore = prepared->symbolic->ReadySolveRows(forwardCore, false);
         }
+        prepared->factorMapping = LinearPatternStorage(sourceBlocks, {}, {}, forwardCore, backwardCore);
         prepared->factors = std::make_unique<Direct::NativeBlockLU>(prepared->symbolic, _components);
         _ilu = std::move(prepared);
     }
@@ -132,8 +136,7 @@ namespace DNDS::Cauchy
         _ilu->current = false;
         const auto diagonal = _diagonal.Read();
         const auto offDiagonal = ReadOffDiagonal();
-        const auto d = Algebra::MakeEigenRowMatrices(diagonal.View<R::TableRows>(), _components,
-                                                     _diagonalStorage == DiagonalStorage::Block ? _components : 1);
+        const auto d = diagonal.View<R::TableRows>();
         Clock::time_point gathered{};
         // TODO(large-species factors): support component-partitioned storage
         // through the generic factor algebra, not by zeroing dense factors
@@ -141,26 +144,12 @@ namespace DNDS::Cauchy
         // even if every initial off-diagonal block is flow5+scalar diagonal.
         // Only the fully decoupled approximate operator closes exactly under
         // that representation; other projections need an explicit policy.
+        const auto mappingRead = _ilu->factorMapping.Read();
+        const auto mapping = mappingRead.View();
         _ilu->factors->FillAndFactorize([&](const auto &matrix)
                                         {
-            offDiagonal.WithBlocks([&](const auto &blocks)
-                                   {
-            for (index iCell = 0; iCell < index(_pattern->partition->owned); ++iCell)
-            {
-                if (_diagonalStorage == DiagonalStorage::Block)
-                    matrix(iCell, 0) = d[iCell];
-                else
-                    matrix(iCell, 0) = d[iCell].col(0).asDiagonal();
-                const auto &slots = _ilu->sourceBlocks[iCell];
-                for (index j = 0; j < index(slots.size()); ++j)
-                {
-                    auto block = matrix(iCell, 1 + j);
-                    if (slots[j] == UnInitIndex)
-                        block.setZero();
-                    else
-                        block = blocks(iCell, slots[j]);
-                }
-            } });
+            CPU::FillLinearFactor(d, offDiagonal.View(), matrix, mapping.columns, _components,
+                                  _diagonalStorage == DiagonalStorage::Block);
             gathered = profile ? Clock::now() : Clock::time_point{}; });
         _ilu->diagonalVersion = _diagonal.Version();
         _ilu->offDiagonalVersion = OffDiagonalGeneration();
@@ -195,15 +184,15 @@ namespace DNDS::Cauchy
             return false;
         }
     }
-    const std::vector<index> &LinearProblemContext::ILUForwardCore() const
+    std::vector<index> LinearProblemContext::ILUForwardCore() const
     {
         DNDS_check_throw_info(_ilu, "ILU structure is not prepared");
-        return _ilu->forwardCore;
+        return _ilu->factorMapping.CopyCore();
     }
-    const std::vector<index> &LinearProblemContext::ILUBackwardCore() const
+    std::vector<index> LinearProblemContext::ILUBackwardCore() const
     {
         DNDS_check_throw_info(_ilu, "ILU structure is not prepared");
-        return _ilu->backwardCore;
+        return _ilu->factorMapping.CopyDependent();
     }
     void LinearProblemContext::ApplyILU(const Field &rhs, Field &forward, Field &output) const
     {

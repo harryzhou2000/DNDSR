@@ -20,6 +20,8 @@
 #include <cmath>
 #include <algorithm>
 #include <cctype>
+#include <new>
+#include <limits>
 
 namespace DNDS::Physics::Chemistry
 {
@@ -839,6 +841,57 @@ namespace DNDS::Physics::Chemistry
                                               u, v, rho, Y));
         }
         return impl_->gasT_temperature();
+    }
+
+    NumericalStatus ChemicalSource::TryTemperatureFromUV(double u, double v,
+                                                         ConstSpeciesBufferView Y, double &temperature, double T_guess, double rtol) const noexcept
+    {
+        temperature = std::numeric_limits<double>::quiet_NaN();
+        if (!impl_ || !std::isfinite(u) || !std::isfinite(v) || v <= 0 ||
+            !std::isfinite(rtol) || rtol <= 0 || Y.nSpecies != impl_->Ns || !Y.data)
+            return EvaluationError(NumericalError::InvalidInput, EvaluationFailure::TemperatureInversion);
+        double sum = 0;
+        for (int k = 0; k < Y.nSpecies; ++k)
+        {
+            if (!std::isfinite(Y[k]) || Y[k] < 0)
+                return EvaluationError(NumericalError::InvalidInput, EvaluationFailure::Composition);
+            sum += Y[k];
+        }
+        if (!std::isfinite(sum) || sum <= 0)
+            return EvaluationError(NumericalError::InvalidInput, EvaluationFailure::Composition);
+#ifdef DNDS_USE_CANTERA
+        bool solvingUV = false;
+        try
+        {
+            impl_->gasT_setMassFractions(Y.data);
+            const double guess = std::isfinite(T_guess) && T_guess > 0 ? T_guess : 0;
+            const double initial = std::max(std::max(guess, impl_->TBase), impl_->gas_minTemp());
+            impl_->gasT_setState_TP(initial, mixtureR(Y) * initial / v);
+            solvingUV = true;
+            impl_->gasT_setState_UV(u, v, rtol);
+            temperature = impl_->gasT_temperature();
+            if (!std::isfinite(temperature) || temperature <= 0)
+                return EvaluationError(NumericalError::NoConvergence, EvaluationFailure::TemperatureInversion);
+            return {};
+        }
+        catch (const std::bad_alloc &)
+        {
+            return EvaluationError(NumericalError::AllocationFailure, EvaluationFailure::TemperatureInversion);
+        }
+        catch (const Cantera::CanteraError &)
+        {
+            // Only the UV solve is a numerical fallback opportunity. A setup
+            // failure must not be silently hidden by replacing the point state.
+            return EvaluationError(solvingUV ? NumericalError::NoConvergence : NumericalError::BackendFailure,
+                                   EvaluationFailure::TemperatureInversion);
+        }
+        catch (...)
+        {
+            return EvaluationError(NumericalError::UnexpectedFailure, EvaluationFailure::TemperatureInversion);
+        }
+#else
+        return EvaluationError(NumericalError::UnsupportedRequest, EvaluationFailure::TemperatureInversion);
+#endif
     }
 
     // ---- kinetics ------------------------------------------------------------

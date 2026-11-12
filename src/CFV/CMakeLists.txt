@@ -22,17 +22,20 @@ Legacy/VRDefines.cpp
 Legacy/VariationalReconstruction.cpp
 Legacy/ModelEvaluator.cpp
 Prepare/FiniteVolumePlan.cpp
-Prepare/VariationalReconstructionPlan.cpp
-Prepare/ReconstructionDevicePlan.cpp
+Prepare/FiniteVolumePlan_Reconstruction.cpp
+Prepare/FiniteVolumePlan_Placement.cpp
 Prepare/GradientPlan.cpp
 Prepare/LimitedVRPlan.cpp
-Operators/Gradient.cpp
-Operators/PolynomialSampling.cpp
-Operators/PolynomialSamplingValueGradient.cpp
-Operators/LimitedVR.cpp
+Operators/GradientPlan_Operators.cpp
+Operators/PolynomialSamplingPlan_Values.cpp
+Operators/PolynomialSamplingPlan_ValueGradient.cpp
+Operators/LimitedVRPlan_Operators.cpp
 Prepare/PolynomialSamplingPlan.cpp
-Operators/Reconstruction.cpp
-Operators/ReconstructionLinear.cpp
+Plans/DistributedInterfaceSamplingPlan.cpp
+CPU/DistributedInterfaceSamplingKernels.cpp
+CPU/ReconstructionBasisKernels.cpp
+Operators/FiniteVolumePlan_Reconstruction.cpp
+Operators/FiniteVolumePlan_Linear.cpp
 )
 if (DNDS_USE_CUDA)
 list(APPEND CPPS Legacy/VRDefines.cu Operators/CUDA/ReconstructionDevice.cu Operators/CUDA/ReconstructionTensorCore.cu Operators/CUDA/ReconstructionTensorShared.cu)

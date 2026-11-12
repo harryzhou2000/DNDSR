@@ -4,6 +4,7 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
 #include <cmath>
+#include "Cauchy/State/CPU/FieldKernels.hpp"
 
 namespace DNDS::Cauchy::NonlinearDetail
 {
@@ -16,13 +17,7 @@ namespace DNDS::Cauchy::NonlinearDetail
                                       index flowFirst, MPI_Comm comm)
     {
         std::vector<real> sum(size_t(components + 1), 0);
-        for (index iCell = 0; iCell < values.RowCount(); ++iCell)
-        {
-            const real volume = metric.GetCellVol(iCell);
-            sum[components] += volume;
-            for (index j = 0; j < components; ++j)
-                sum[j] += volume * std::abs(values(iCell, j));
-        }
+        CPU::AccumulateMeanScale(values, metric, components, {sum.data(), index(sum.size())});
         MPI::AllreduceInPlace<MPI::Reduction::Sum>(
             MPI::ContiguousView<real>{sum.data(), sum.size()}, comm);
         DNDS_check_throw_info(std::isfinite(sum[components]) && sum[components] > 0, "invalid mean-state metric volume");

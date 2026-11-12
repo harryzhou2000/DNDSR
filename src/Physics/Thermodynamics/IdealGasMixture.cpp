@@ -1,7 +1,8 @@
 #include "Physics/Thermodynamics/IdealGasMixture.hpp"
+#include <new>
+#include <limits>
 #include "Physics/Thermodynamics/ConservativeConversion.hpp"
 #include "Physics/Chemistry/ReactorStepSettings.hpp"
-#include <limits>
 
 namespace DNDS::Physics::Thermodynamics
 {
@@ -181,6 +182,23 @@ namespace DNDS::Physics::Thermodynamics
         const real R = _worker.Source().mixtureR({fractions.data(), int(fractions.size())});
         return Evaluate(rho, pressure * scales.Pressure() / (rho * scales.rho0 * R * scales.T0), _request);
     }
+    NumericalResult<ConstantVolumeResult> IdealGasMixture::PointEvaluator::TryAdvanceConstVolume(
+        real rho, real internalEnergy, Chemistry::ConstSpeciesBufferView rhoY, real dt,
+        const Chemistry::ReactorStepSettings &controls, real sourceScale, real temperatureGuess) noexcept
+    {
+        try
+        {
+            return AdvanceConstVolume(rho, internalEnergy, rhoY, dt, controls, sourceScale, temperatureGuess);
+        }
+        catch (const std::bad_alloc &)
+        {
+            return EvaluationError(NumericalError::AllocationFailure, EvaluationFailure::ChemicalSource);
+        }
+        catch (...)
+        {
+            return EvaluationError(NumericalError::BackendFailure, EvaluationFailure::ChemicalSource);
+        }
+    }
     ConstantVolumeResult IdealGasMixture::PointEvaluator::AdvanceConstVolume(real rho, real internalEnergy,
                                                                              Chemistry::ConstSpeciesBufferView rhoY, real dt,
                                                                              const Chemistry::ReactorStepSettings &controls,
@@ -242,6 +260,63 @@ namespace DNDS::Physics::Thermodynamics
         }
         const std::array<real, 5> conservative{rho, momentum[0], momentum[1], momentum[2], rhoE};
         auto point = FromRhoEImpl(rho, ConservativeSpecificInternalEnergy<3>(conservative), rhoY, temperatureGuess, 1e-12, request);
+        return CompleteSources(point, rho, rhoE, momentum, request);
+    }
+    NumericalStatus IdealGasMixture::PointEvaluator::TryFromConservative(real rho, real rhoE,
+                                                                         const std::array<real, 3> &momentum, Chemistry::ConstSpeciesBufferView rhoY,
+                                                                         real temperatureGuess, MixturePropertyRequest request, MixturePoint &output) noexcept
+    {
+        if (!_state || !_worker ||
+            (request.transport && !_request.transport) || (request.diffusivity && !_request.diffusivity) ||
+            (request.speciesEnthalpy && !_request.speciesEnthalpy) || (request.sourceJacobian && !_request.sourceJacobian) ||
+            ((request.chemicalSource || request.sourceJacobian) && !_request.chemicalSource && !_request.sourceJacobian))
+            return EvaluationError(NumericalError::UnsupportedRequest, EvaluationFailure::Request);
+        if (!std::isfinite(rho) || rho <= 0 || !std::isfinite(rhoE))
+            return EvaluationError(NumericalError::InvalidState, EvaluationFailure::Request);
+        for (real value : momentum)
+            if (!std::isfinite(value))
+                return EvaluationError(NumericalError::InvalidState, EvaluationFailure::Request);
+        if (rhoY.nSpecies != int(_state->species.size()) - 1 || (rhoY.nSpecies && !rhoY.data))
+            return EvaluationError(NumericalError::InvalidInput, EvaluationFailure::Composition);
+        for (int k = 0; k < rhoY.nSpecies; ++k)
+            if (!std::isfinite(rhoY[k]))
+                return EvaluationError(NumericalError::InvalidState, EvaluationFailure::Composition);
+        EvaluationFailure stage = EvaluationFailure::Composition;
+        try
+        {
+            PrepareComposition(rho, rhoY);
+            const auto &scales = _state->scales;
+            const std::array<real, 5> conservative{rho, momentum[0], momentum[1], momentum[2], rhoE};
+            const real energy = ConservativeSpecificInternalEnergy<3>(conservative);
+            const auto &fractions = _worker.Buffers().fractions;
+            const real guess = std::isfinite(temperatureGuess) && temperatureGuess > 0 ? temperatureGuess * scales.T0 : 0;
+            real temperature = 0;
+            const auto status = _worker.Source().TryTemperatureFromUV(
+                energy * scales.SpecificEnergy(), 1 / (rho * scales.rho0),
+                {fractions.data(), int(fractions.size())}, temperature, guess, 1e-12);
+            if (!status)
+                return status;
+            stage = EvaluationFailure::Properties;
+            auto point = Evaluate(rho, temperature / scales.T0, request);
+            stage = EvaluationFailure::ChemicalSource;
+            output = CompleteSources(point, rho, rhoE, momentum, request);
+            return {};
+        }
+        catch (const std::bad_alloc &)
+        {
+            return EvaluationError(NumericalError::AllocationFailure, stage);
+        }
+        catch (...)
+        {
+            // Only the UV adapter classifies a backend exception as numerical
+            // nonconvergence. Transport/source/programming errors are terminal
+            // statuses; no caller may silently replace them with a cell mean.
+            return EvaluationError(NumericalError::BackendFailure, stage);
+        }
+    }
+    MixturePoint IdealGasMixture::PointEvaluator::CompleteSources(MixturePoint point, real rho, real rhoE,
+                                                                  const std::array<real, 3> &momentum, MixturePropertyRequest request)
+    {
         if (!request.chemicalSource && !request.sourceJacobian)
             return point;
         auto &source = _worker.Source();

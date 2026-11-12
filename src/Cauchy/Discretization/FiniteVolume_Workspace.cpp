@@ -55,7 +55,7 @@ namespace DNDS::Cauchy
             Field field;
             field.vectorStarts = vectors;
             field.boundaryValues = R::Array<real>(R::RowLayout::Dense(
-                index(data.boundaryEntries.size()), index(physical.Width())));
+                data.stencil.boundaryEntries.RowCount(), index(physical.Width())));
             if (data.reconstruction)
             {
                 field.reconstruction.emplace(data.reconstruction->BuildWorkspace(
@@ -69,8 +69,11 @@ namespace DNDS::Cauchy
                 field.boundaryValues = field.reconstructionBoundary->values;
                 Algebra::Fill(field.reconstruction->temporary, 0.);
             }
-            if (!meanOnly && (data.settings.numerics.reconstruction == "gradient" ||
-                              (data.equation.HasRANS() && data.settings.numerics.reconstruction == "constant")))
+            // A mean-only forecast suppresses face reconstruction, not the
+            // physical derivatives in the RANS source. Keep those gradients
+            // and their frozen boundary values in the P0 workspace as well.
+            if ((!meanOnly && data.settings.numerics.reconstruction == "gradient") ||
+                (data.equation.HasRANS() && data.settings.numerics.reconstruction == "constant"))
             {
                 field.gradient.emplace(data.metrics.BuildField(index(physical.Width()) * data.metrics.Dimension()));
                 field.gradientBoundary.emplace(data.gradient.BuildBoundaryValues(index(physical.Width())));
@@ -88,13 +91,13 @@ namespace DNDS::Cauchy
         auto read = owner->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto mesh = read.HostView();
         const int order = owner->settings.numerics.RHSIntegrationOrder();
-        sourceOffsets.resize(size_t(owner->metrics.NumCell()) + 1, 0);
+        std::vector<index> offsetValues(size_t(owner->metrics.NumCell()) + 1, 0);
         for (index iCell = 0; iCell < owner->metrics.NumCell(); ++iCell)
         {
             const Geom::Elem::Quadrature quadrature(mesh.GetCellElement(iCell), order);
-            sourceOffsets[iCell + 1] = sourceOffsets[iCell] + quadrature.GetNumPoints();
+            offsetValues[iCell + 1] = offsetValues[iCell] + quadrature.GetNumPoints();
         }
-        const auto count = sourceOffsets.back();
+        const auto count = offsetValues.back();
         R::Array<index> cells(R::RowLayout::Dense(count, 1));
         R::Array<real> points(R::RowLayout::Dense(count, 3));
         sourceWeights = R::Array<real>(R::RowLayout::Dense(count, 1));
@@ -114,7 +117,7 @@ namespace DNDS::Cauchy
                 const Geom::Elem::Quadrature quadrature(element, order);
                 for (int iQ = 0; iQ < quadrature.GetNumPoints(); ++iQ)
                 {
-                    const index iPoint = sourceOffsets[iCell] + iQ;
+                    const index iPoint = offsetValues[iCell] + iQ;
                     const auto &shape = Geom::Elem::GetCachedShapeAtQuadrature(element.type, order, iQ);
                     const auto point = Geom::Elem::PPhysicsCoordD01Nj(coords, shape);
                     c(iPoint, 0) = iCell;
@@ -128,7 +131,7 @@ namespace DNDS::Cauchy
             sourceSampling.emplace(*owner->reconstruction, cells, points, owner->equation.HasRANS());
         sourceValuesAreMeans = owner->settings.numerics.reconstruction != "variational" && count == owner->metrics.NumCell();
         for (index iCell = 0; sourceValuesAreMeans && iCell < owner->metrics.NumCell(); ++iCell)
-            sourceValuesAreMeans = sourceOffsets[iCell] == iCell && sourceOffsets[iCell + 1] == iCell + 1;
+            sourceValuesAreMeans = offsetValues[iCell] == iCell && offsetValues[iCell + 1] == iCell + 1;
         for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
         {
             // Keep source sampling scratch independent of any particular
@@ -170,6 +173,11 @@ namespace DNDS::Cauchy
                     sourceJacobianGradients.back()[d] = R::Array<real>(FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owned, state.PhysicalField(iField).Width()));
             }
         }
+        sourceOffsets = R::Array<index>(R::RowLayout::Dense(offsetValues.size(), 1));
+        auto offsetWrite = sourceOffsets.Write();
+        const auto offsets = offsetWrite.View<R::FixedRows<1>>();
+        for (index iRow = 0; iRow < index(offsetValues.size()); ++iRow)
+            offsets(iRow, 0) = offsetValues[iRow];
     }
     EquationDofs FiniteVolume::Workspace::BindBoundary(const EquationDofs &state, const std::vector<Field> &fields, index rows)
     {
@@ -184,27 +192,28 @@ namespace DNDS::Cauchy
                                        std::optional<Physics::Chemistry::ChemicalWorkerPool> pool, bool meanTrial)
         : owner(std::move(data)), meanOnly(meanTrial), componentNumber(state.ComponentNumber()), physicalFieldNumber(state.PhysicalFieldNumber()),
           fields(BuildFields(*owner, state, meanOnly)),
-          boundary(BindBoundary(state, fields, index(owner->boundaryEntries.size()))),
+          boundary(BindBoundary(state, fields, owner->stencil.boundaryEntries.RowCount())),
           thermal(owner->equation, owner->settings.numerics.densityFloor, owner->settings.numerics.temperatureFloor,
                   owner->settings.numerics.sensibleEnergyFloor, owner->settings.numerics.pressureFloor,
                   pool ? pool->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}),
           diagnostics(owner->forceZones),
           workers(std::move(pool)),
-          boundaryMomentumFlux(R::RowLayout::Dense(index(owner->boundaryEntries.size()), 3)),
-          faceFlux(R::RowLayout::Dense(index(owner->stencilFaces.size()), state.ComponentNumber())),
+          boundaryMomentumFlux(R::RowLayout::Dense(owner->stencil.boundaryEntries.RowCount(), 3)),
+          faceFlux(R::RowLayout::Dense(owner->stencil.stencilFaces.RowCount(), state.ComponentNumber())),
           chemical(owner->settings.equation.source == "chemical")
     {
         index first = 0;
-        logicalField.assign(size_t(state.ComponentNumber()), -1);
-        logicalComponent.assign(size_t(state.ComponentNumber()), -1);
+        std::vector<index> blockOffsets, vectorOffsets;
+        std::vector<index> physicalFields(size_t(state.ComponentNumber()), -1),
+            physicalComponents(size_t(state.ComponentNumber()), -1);
         for (const auto &block : state.Schema().blocks)
         {
-            logicalFirst.push_back(first);
-            const auto location = state.LocateBlock(index(logicalFirst.size() - 1));
+            blockOffsets.push_back(first);
+            const auto location = state.LocateBlock(index(blockOffsets.size() - 1));
             for (index j = 0; j < location.componentNumber; ++j)
             {
-                logicalField[size_t(first + j)] = location.physicalField;
-                logicalComponent[size_t(first + j)] = location.firstComponent + j;
+                physicalFields[size_t(first + j)] = location.physicalField;
+                physicalComponents[size_t(first + j)] = location.firstComponent + j;
             }
             if (block.name == "flow")
                 flowFirst = first;
@@ -213,9 +222,13 @@ namespace DNDS::Cauchy
             if (block.name == "rans")
                 ransFirst = first;
             for (const auto vector : block.vectorStarts)
-                vectorStarts.push_back(first + vector);
+                vectorOffsets.push_back(first + vector);
             first += index(block.components.size());
         }
+        logicalFirst = R::MetadataBuffer<index>(blockOffsets);
+        vectorStarts = R::MetadataBuffer<index>(vectorOffsets);
+        logicalField = R::MetadataBuffer<index>(physicalFields);
+        logicalComponent = R::MetadataBuffer<index>(physicalComponents);
         if (!meanOnly && owner->settings.numerics.positivity)
         {
             if (owner->settings.numerics.reconstruction == "variational")
@@ -234,7 +247,7 @@ namespace DNDS::Cauchy
                 state.ComponentNumber() == 5 && state.PhysicalFieldNumber() == 1)
             {
                 lowOrderResidual.emplace(EquationDofOperations::NewVector(state));
-                lowOrderFaceFlux.emplace(R::RowLayout::Dense(index(owner->stencilFaces.size()), state.ComponentNumber()));
+                lowOrderFaceFlux.emplace(R::RowLayout::Dense(owner->stencil.stencilFaces.RowCount(), state.ComponentNumber()));
             }
         }
         if (!meanOnly && owner->limitedVRGeometry)
@@ -252,17 +265,18 @@ namespace DNDS::Cauchy
                                 owner->settings.numerics.limiter == "WBAP");
         if (nativeDirectGradient)
         {
-            directLimiterScratch.resize(size_t(6 * componentNumber));
+            directLimiterScratch = R::Array<real>(R::RowLayout::Dense(6, componentNumber));
             if (owner->settings.numerics.positivity)
             {
+                const auto stencilRead = owner->stencil.Read();
+                const auto stencil = stencilRead.View();
                 index maximumPoints = 0;
                 for (index iCell = 0; iCell < owner->metrics.NumCell(); ++iCell)
                     maximumPoints = std::max(
                         maximumPoints,
-                        owner->positivityOffsets[iCell + 1] -
-                            owner->positivityOffsets[iCell]);
-                directPPSamples.resize(
-                    size_t(maximumPoints * componentNumber));
+                        stencil.positivityOffsets(iCell + 1, 0) -
+                            stencil.positivityOffsets(iCell, 0));
+                directPPSamples = R::Array<real>(R::RowLayout::Dense(maximumPoints, componentNumber));
             }
         }
         if (!meanOnly && (owner->settings.numerics.limiter == "WBAP" || limitedVR) && owner->settings.numerics.characteristicLimiter &&

@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
+#include "Cauchy/Discretization/CPU/FiniteVolumeBoundaryKernels.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 
@@ -26,12 +27,9 @@ namespace DNDS::Cauchy
                 DNDS_check_throw_info(_data->settings.boundaries.count(std::to_string(zone)), "force zone has no boundary condition");
             const auto read = work.boundaryMomentumFlux.Read();
             const auto values = read.View<Runtime::FixedRows<3>>();
-            for (index iPoint = 0; iPoint < index(_data->boundaryEntries.size()); ++iPoint)
-            {
-                const auto &sample = _data->samples[_data->boundaryEntries[iPoint]];
-                if (std::find(zones.begin(), zones.end(), sample.zone) != zones.end())
-                    for (int d = 0; d < 3; ++d) force[d] += values(iPoint, d);
-            } });
+            const auto stencilRead = _data->stencil.Read();
+            const auto stencil = stencilRead.View();
+            force = CPU::AccumulateBoundaryForce(stencil, values, {zones.data(), index(zones.size())}); });
         MPI::AllreduceInPlace<MPI::Reduction::Sum>(
             MPI::ContiguousView<real>{force.data(), 3}, mpi.comm);
         return force;

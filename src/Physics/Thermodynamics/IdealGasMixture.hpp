@@ -93,6 +93,8 @@ namespace DNDS::Physics::Thermodynamics
                            MixturePropertyRequest request);
             void PrepareComposition(real rho, Chemistry::ConstSpeciesBufferView rhoY);
             MixturePoint Evaluate(real rho, real temperature, MixturePropertyRequest request);
+            MixturePoint CompleteSources(MixturePoint point, real rho, real rhoE,
+                                         const std::array<real, 3> &momentum, MixturePropertyRequest request);
             MixturePoint FromRhoEImpl(real rho, real internalEnergy, Chemistry::ConstSpeciesBufferView rhoY,
                                       real temperatureGuess, real uvTolerance, MixturePropertyRequest request);
 
@@ -105,6 +107,14 @@ namespace DNDS::Physics::Thermodynamics
             /// Stable Ns-1 input scratch for gathering strided logical rows.
             /// Retained by this evaluator; evaluation never rewrites rhoY.
             Chemistry::SpeciesBufferView SpeciesInput() const;
+
+            /// Numerical entry: all backend exceptions are intercepted and
+            /// returned as status. Only UV nonconvergence permits mean fallback.
+            /// On failure output must not be consumed; worker scratch may have
+            /// changed. Successful species views keep the usual worker lifetime.
+            NumericalStatus TryFromConservative(real rho, real rhoE, const std::array<real, 3> &momentum,
+                                                Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess,
+                                                MixturePropertyRequest request, MixturePoint &output) noexcept;
 
             /// Full thermochemical specific internal energy, not an energy
             /// shifted by BaseInternalEnergy. A positive temperature guess is
@@ -120,6 +130,11 @@ namespace DNDS::Physics::Thermodynamics
             /// Euler's clipping/remainder rule is followed, then UV is solved
             /// again at the unchanged energy. A CVODE temperature is only that
             /// final solve's guess. Zero duration/scale preserves raw rhoY.
+            /// Nonthrowing adapter for the external reactor and its final UV
+            /// solve. Failure does not publish a result or request a fallback.
+            NumericalResult<ConstantVolumeResult> TryAdvanceConstVolume(real rho, real internalEnergy,
+                                                                        Chemistry::ConstSpeciesBufferView rhoY, real dt, const Chemistry::ReactorStepSettings &controls,
+                                                                        real sourceScale = 1, real temperatureGuess = 0) noexcept;
             ConstantVolumeResult AdvanceConstVolume(real rho, real internalEnergy, Chemistry::ConstSpeciesBufferView rhoY,
                                                     real dt, const Chemistry::ReactorStepSettings &controls,
                                                     real sourceScale = 1, real temperatureGuess = 0);

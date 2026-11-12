@@ -262,10 +262,10 @@ namespace DNDS::Cauchy
         /// whose RHS cannot be evaluated from one face pair alone. Ordinary
         /// fluxes avoid this allocation and their existing fused path.
         std::optional<AuxiliaryValues> rhsAuxiliary;
-        std::vector<index> logicalFirst, vectorStarts;
-        std::vector<index> logicalField, logicalComponent;
+        R::MetadataBuffer<index> logicalFirst, vectorStarts;
+        R::MetadataBuffer<index> logicalField, logicalComponent;
         index flowFirst = -1, speciesFirst = -1, ransFirst = -1;
-        std::vector<index> sourceOffsets;
+        R::Array<index> sourceOffsets{R::RowLayout::Dense(0, 1)};
         R::Array<real> sourceWeights;
         std::optional<CFV::PolynomialSamplingPlan> sourceSampling;
         std::vector<R::Array<real>> sourceValues;
@@ -294,7 +294,7 @@ namespace DNDS::Cauchy
         real directPPMinimum = 1;
         /// Reused direct-P1 CPU scratch. Workspace session access serializes
         /// these buffers; no allocation occurs in the cell/point operator.
-        std::vector<real> directLimiterScratch, directPPSamples;
+        R::Array<real> directLimiterScratch, directPPSamples;
         struct WeakPublication
         {
             std::vector<std::weak_ptr<const R::ArrayStorage>> storage;
@@ -404,13 +404,13 @@ namespace DNDS::Cauchy
                       real time, OptionalRef<const AuxiliaryValues> auxiliary = {},
                       OptionalRef<R::Array<real>> faceOutput = {},
                       RHSScalarView incoming = {});
-        template <class Input, class Output>
-        void ApplyRHSRows(const EquationDofs &state, CFV::ReconstructionRegion region,
-                          EquationPointEvaluator &evaluator, real time,
-                          OptionalRef<const AuxiliaryValues> auxiliary,
-                          const EquationDofs::ReadScope &mean, Input owned, Input remote,
-                          Output destination, Output lowDestination, bool produceLow,
-                          OptionalRef<R::Array<real>> faceOutput, RHSScalarView incoming);
+        void ApplyEquationRHS(const EquationDofs &state, CFV::ReconstructionRegion region,
+                              EquationPointEvaluator &evaluator, real time,
+                              OptionalRef<const AuxiliaryValues> auxiliary,
+                              const EquationDofs::ReadScope &mean,
+                              EquationLayoutView<const real> owned, EquationLayoutView<const real> remote,
+                              EquationLayoutView<real> destination, EquationLayoutView<real> lowDestination, bool produceLow,
+                              OptionalRef<R::Array<real>> faceOutput, RHSScalarView incoming);
         void SampleSourceState(const EquationDofs &state, real time);
         bool AddRHSQuadratureSourceJacobian(
             const EquationDofs &state, const R::Array<real>::WriteLease &diagonal,

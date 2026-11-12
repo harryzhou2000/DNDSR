@@ -180,72 +180,8 @@ namespace DNDS::CFV
         }
         /// An empty bundle denotes nonmembership; owned field handles retain
         /// both inputs throughout synchronous evaluation.
-        void EvaluateDonors(const std::optional<DonorInputs> &input, DistributedSamplingWorkspace &workspace) const
-        {
-            Validate();
-            DNDS_check_throw_info(workspace.plan == _data, "sampling workspace belongs to another plan");
-            DNDS_check_throw_info(bool(input) == bool(_data->metrics), "sampling inputs differ from donor-domain participation");
-            if (!input)
-                return;
-            _data->metrics->ValidateField(input->mean,
-                                          workspace.donorValues.Layout().Width());
-            DNDS_check_throw_info(
-                (input->kind == DonorReconstruction::Constant) ==
-                    !input->reconstructed,
-                "constant donor sampling must not carry reconstructed data");
-            if (input->kind == DonorReconstruction::Variational)
-            {
-                DNDS_check_throw_info(_data->sampling && input->reconstructed,
-                                      "variational donor sampling lacks its plan or coefficients");
-                _data->sampling->Evaluate(input->mean, *input->reconstructed,
-                                          workspace.donorValues);
-                return;
-            }
-            const auto cells = _data->cells.Read();
-            const auto mean = input->mean.Owned().Read();
-            const auto cellRows = cells.View<Runtime::FixedRows<1>>();
-            const auto source = mean.View<Runtime::UniformTableRows>();
-            auto outputWrite = workspace.donorValues.Write();
-            const auto output = outputWrite.View<Runtime::UniformTableRows>();
-            std::optional<Runtime::Array<real>::ReadLease> pointRead;
-            std::optional<Runtime::Array<real>::ReadLease> gradientRead;
-            Runtime::ArrayView<const real, Runtime::AccessBoundsChecks,
-                               Runtime::UniformTableRows>
-                locations, gradients;
-            std::optional<FiniteVolumeRead> geometry;
-            if (input->kind == DonorReconstruction::Gradient)
-            {
-                DNDS_check_throw_info(input->reconstructed,
-                                      "gradient donor sampling lacks its gradient field");
-                _data->metrics->ValidateField(
-                    *input->reconstructed,
-                    workspace.donorValues.Layout().Width() *
-                        _data->metrics->Dimension());
-                pointRead.emplace(_data->points.Read());
-                gradientRead.emplace(input->reconstructed->Owned().Read());
-                locations = pointRead->View<Runtime::UniformTableRows>();
-                gradients = gradientRead->View<Runtime::UniformTableRows>();
-                geometry.emplace(_data->metrics->AcquireRead());
-            }
-            for (index iQuery = 0; iQuery < output.RowCount(); ++iQuery)
-            {
-                const index iCell = cellRows(iQuery, 0);
-                Geom::tPoint center{};
-                if (input->kind == DonorReconstruction::Gradient)
-                    center = geometry->HostView().GetCellCent(iCell);
-                for (index j = 0; j < output.Width(); ++j)
-                {
-                    real value = source(iCell, j);
-                    if (input->kind == DonorReconstruction::Gradient)
-                    {
-                        for (int d = 0; d < _data->metrics->Dimension(); ++d)
-                            value += gradients(iCell, j * _data->metrics->Dimension() + d) *
-                                     (locations(iQuery, d) - center[d]);
-                    }
-                    output(iQuery, j) = value;
-                }
-            }
-        }
+        void EvaluateDonors(const std::optional<DonorInputs> &input,
+                            DistributedSamplingWorkspace &workspace) const;
         /// Collective setup. Reuse this binding for repeated fixed-buffer
         /// sampling; wait for donors before Begin and before reading receivers.
         Runtime::TransferBinding BindResult(const DistributedSamplingWorkspace &workspace,

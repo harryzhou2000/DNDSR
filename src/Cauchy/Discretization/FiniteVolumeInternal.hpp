@@ -1,6 +1,10 @@
 #pragma once
 
 #include "Cauchy/Boundary/BoundaryPointOperator.hpp"
+#include "Cauchy/Discretization/BoundaryTraceGeometry.hpp"
+#include "Cauchy/Discretization/FiniteVolumeStencil.hpp"
+#include "Cauchy/Discretization/FiniteVolumeKernelPolicy.hpp"
+#include "Cauchy/Discretization/CPU/FiniteVolumeSampleKernels.hpp"
 // Private shared preparation data. Public callers use FiniteVolume and explicit
 // Workspace/AuxiliaryValues owners; this header is not a mesh or solver API.
 #include "Cauchy/Discretization/FiniteVolume.hpp"
@@ -17,16 +21,6 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
     /// Immutable point-flux dispatch resolved with the FV plan. Flow5 and the
     /// extensible equation adapter consume the same policy; numerical kernels
     /// retain their specialized storage and arithmetic.
-    struct FluxKernelPolicy
-    {
-        Riemann::Requirements required;
-        Riemann::FluxSettings settings;
-        bool rusanov = false;
-        bool transverseSignal = false;
-        bool pressureStencil = false;
-        bool noRsOnWall = false;
-        bool noGRPOnWall = false;
-    };
     inline FluxKernelPolicy ResolveFluxKernelPolicy(const DomainSettings &settings, const Riemann::RiemannFlux &flux)
     {
         return {flux.RequiredInputs(), settings.numerics.riemann.KernelSettings(),
@@ -76,34 +70,6 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         /// active. Default true keeps hand-built samples conservative.
         bool changesFrame = true;
     };
-    template <class View>
-    FlowState Load(const View &input, index iCell)
-    {
-        FlowState state;
-        const auto row = input[iCell];
-        for (int j = 0; j < 5; ++j)
-            state[j] = row[j];
-        return state;
-    }
-    inline FlowState RotateState(FlowState state, const Geom::tGPoint &rotation)
-    {
-        const Geom::tPoint momentum{state[1], state[2], state[3]};
-        const Geom::tPoint rotated = rotation * momentum;
-        for (int d = 0; d < 3; ++d)
-            state[1 + d] = rotated[d];
-        return state;
-    }
-    /// Physical displacement from a cell average's barycenter, in that cell's
-    /// own axes. The neighbor center already carries the periodic coordinate
-    /// image; only vectors need the inverse frame map. No Taylor basis here.
-    inline Geom::tPoint DirectFVDisplacement(const CFV::FiniteVolumeHostView &metric, const Sample &sample, bool other)
-    {
-        if (!other)
-            return sample.ownPoint - metric.GetCellBary(sample.cell);
-        const Geom::tPoint delta = sample.ownPoint - sample.otherPoint;
-        return (sample.changesFrame ? Geom::tPoint(sample.rotation.transpose() * delta) : delta) +
-               metric.GetCellCent(sample.other) - metric.GetCellBary(sample.other);
-    }
     /// Canonical rank-owned cell-face-cell columns, retaining remote columns
     /// and folding self-periodic incidences into the eventual diagonal.
     inline std::vector<std::vector<index>> JacobianColumns(const std::vector<index> &offsets, const std::vector<Sample> &samples)
@@ -123,37 +89,7 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         }
         return columns;
     }
-    inline FlowState BoundaryFaceValue(const Sample &sample, const PerfectGas &gas, const FlowState &inside,
-                                       real time, const RigidFrame &frame, RHSScalarView incoming)
-    {
-        if (sample.boundary.kind == BoundaryKind::Interface)
-            return Load(incoming, sample.boundaryPoint);
-        return sample.boundary.FaceValue(gas, inside, {sample.normal[0], sample.normal[1], sample.normal[2]},
-                                         {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time,
-                                         OptionalRef<const RigidFrame>(frame));
-    }
-    inline FlowState BoundaryExterior(const Sample &sample, const PerfectGas &gas, const FlowState &inside,
-                                      real time, const RigidFrame &frame, RHSScalarView incoming)
-    {
-        if (sample.boundary.kind == BoundaryKind::Interface)
-            return Load(incoming, sample.boundaryPoint);
-        return sample.boundary.Exterior(gas, inside, {sample.normal[0], sample.normal[1], sample.normal[2]},
-                                        {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time,
-                                        OptionalRef<const RigidFrame>(frame));
-    }
-    /// GradientPlan consumes a face trace; Euler's GG/LS construction consumes
-    /// a mirrored exterior at twice the wall distance. This conservative mean
-    /// is the matching trace, including its energy/species convention. Incoming
-    /// interface packets already are prescribed point values, not ghost states.
-    inline FlowState BoundaryGradientValue(const Sample &sample, const PerfectGas &gas, const FlowState &inside,
-                                           real time, const RigidFrame &frame, RHSScalarView incoming)
-    {
-        auto result = BoundaryExterior(sample, gas, inside, time, frame, incoming);
-        if (sample.boundary.kind != BoundaryKind::Interface)
-            for (int j = 0; j < 5; ++j)
-                result[j] = .5 * (inside[j] + result[j]);
-        return result;
-    }
+
 }
 
 namespace DNDS::Cauchy
@@ -164,13 +100,12 @@ namespace DNDS::Cauchy
         {
             std::weak_ptr<Geom::UnstructuredMesh> mesh;
             Runtime::VersionStamp stamp;
-            std::vector<BoundaryPoint> points;
-            std::vector<BoundaryPoint> faces;
+            Runtime::Array<BoundaryPoint> points{Runtime::RowLayout::Dense(0, 1)};
+            Runtime::Array<BoundaryPoint> faces{Runtime::RowLayout::Dense(0, 1)};
         };
     }
     struct FiniteVolume::Data
     {
-        using Sample = FiniteVolumeDetail::Sample;
         ssp<Geom::UnstructuredMesh> mesh;
         DomainSettings settings;
         std::shared_ptr<Runtime::CommunicationWorker> communicationWorker;
@@ -186,23 +121,23 @@ namespace DNDS::Cauchy
         std::optional<CFV::VariationalReconstructionPlan> reconstruction;
         CFV::GradientPlan gradient;
         Geom::EntityWorkPartition partition;
-        std::vector<index> offsets;
-        std::vector<Sample> samples;
+        FiniteVolumeStencilStorage stencil;
         // Coarse exact dispatch avoids growing the frequently traversed Sample
         // structure. One rotated image retains the general Jacobian path for
         // the whole plan; ordinary/translated meshes skip identity products.
         bool hasRotatedFrames = false;
         /// One oriented mean-geometry face per cell incidence. Approximate
         /// Jacobians never traverse the RHS quadrature samples above.
-        std::vector<index> jacobianOffsets;
-        std::vector<Sample> jacobianSamples;
-        std::shared_ptr<const std::vector<std::vector<index>>> jacobianColumns;
-        std::vector<index> boundaryEntries;
+        std::shared_ptr<const LinearPatternStorage> jacobianColumns;
         std::vector<int> boundaryZones;
         std::vector<int> forceZones;
         std::map<int, index> forceSlots;
         std::shared_ptr<Detail::BoundaryPointLayout> boundaryLayout;
-        std::vector<index> gradientBoundaryPoints;
+        /// Mesh-sized inputs declared by the boundary operator; independent of
+        /// the host setup vectors used by the still-pending RHS extraction.
+        Runtime::Array<BoundaryTraceGeometry> boundaryTraceGeometry;
+        Runtime::Array<index> gradientBoundaryRows;
+        std::vector<BoundaryCondition> boundaryConditions;
         /// Domain-wide coupling participation. Every rank uses this to retain
         /// the collective interface publication protocol, including ranks
         /// with no locally owned interface quadrature.
@@ -211,21 +146,13 @@ namespace DNDS::Cauchy
         /// row. A published zero-row packet is valid and must not be mistaken
         /// for a missing numeric payload on interior-only partitions.
         bool hasLocalInterfaceRows = false;
-        std::vector<index> stencilFaces;
-        std::vector<index> faceEntries;
-        std::vector<index> auxiliaryCoreFaces, auxiliaryDependentFaces;
         // Unique faces required by each cell-output region. A face shared
         // across the regions may occur in both; each region remains callable
         // independently, without a hidden prior-core publication contract.
-        std::vector<index> rhsCoreFaces, rhsDependentFaces;
-        std::vector<index> auxiliaryCellOffsets, auxiliaryCellFaces;
-        std::vector<real> auxiliaryFaceArea;
         std::optional<CFV::PolynomialSamplingPlan> positivitySamples;
         std::shared_ptr<const LimitedVRGeometry> limitedVRGeometry;
-        std::vector<index> positivityOffsets;
         /// Cell-center displacements for direct-P1 trace/volume PP checks.
         /// Shares positivityOffsets with polynomial sampling but owns no basis.
-        std::vector<Geom::tPoint> positivityDisplacements;
         /// Small fixed-flow leaves retain their five-component affine bounds;
         /// orchestration and complete equation checks use defaultAdmissibility.
         std::optional<ThermalBounds> fixedFlowThermalBounds;

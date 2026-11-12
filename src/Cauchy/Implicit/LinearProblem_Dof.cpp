@@ -1,5 +1,5 @@
 #include "Cauchy/Implicit/LinearProblem.hpp"
-#include "Cauchy/Implicit/LinearBlockKernels.hpp"
+#include "Cauchy/Implicit/CPU/LinearBlockKernels.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "DNDS/MPI/Failure.hpp"
 
@@ -25,18 +25,17 @@ namespace DNDS::Cauchy
         const auto x = read ? read->ComponentLayout() : right.ComponentLayout();
         auto write = output.WriteOwned();
         const auto y = write.ComponentLayout();
-        const auto inv = Algebra::MakeEigenRowMatrices(inverse.View<R::TableRows>(), _components, _diagonalStorage == DiagonalStorage::Block ? _components : 1);
+        const auto patternRead = _pattern->rows.Read();
+        const auto pattern = patternRead.View();
         const auto blocks = ReadOffDiagonal();
-        const auto &rows = region == LinearRegion::All ? _pattern->order : region == LinearRegion::Core ? _pattern->core
-                                                                                                        : _pattern->dependent;
+        const auto &rows = region == LinearRegion::All ? pattern.order : region == LinearRegion::Core ? pattern.core
+                                                                                                      : pattern.dependent;
         try
         {
-            blocks.WithActions([&](const auto &action)
-                               {
-            if (input)
-                Detail::JacobiRows<false>(b.View().OwnedPart(), x.View().OwnedPart(), x.View().GhostPart(), y.View(), inv, action, *_pattern, rows, _components, _diagonalStorage == DiagonalStorage::Block);
-            else
-                Detail::JacobiRows<true>(b.View().OwnedPart(), x.View().OwnedPart(), x.View().GhostPart(), y.View(), inv, action, *_pattern, rows, _components, _diagonalStorage == DiagonalStorage::Block); });
+            CPU::JacobiLinearRows({blocks.View(), pattern, rows, inverse.View<R::TableRows>(),
+                                   _components, _diagonalStorage == DiagonalStorage::Block},
+                                  b.View().OwnedPart(),
+                                  x.View().OwnedPart(), x.View().GhostPart(), y.View(), !input);
         }
         catch (...)
         {
@@ -79,13 +78,14 @@ namespace DNDS::Cauchy
         auto write = output.WriteOwned();
         const auto destination = write.ComponentLayout();
         const auto diagonal = _diagonal.Read();
+        const auto patternRead = _pattern->rows.Read();
+        const auto pattern = patternRead.View();
         const auto offDiagonal = ReadOffDiagonal();
-        const auto matrices = Algebra::MakeEigenRowMatrices(diagonal.View<R::TableRows>(), _components,
-                                                            _diagonalStorage == DiagonalStorage::Block ? _components : 1);
-        offDiagonal.WithActions([&](const auto &blocks)
-                                { Detail::ApplyBlockRows(source.View().OwnedPart(), source.View().GhostPart(), destination.View(), matrices, blocks, *_pattern,
-                                                         region == LinearRegion::All ? _pattern->order : region == LinearRegion::Core ? _pattern->core
-                                                                                                                                      : _pattern->dependent,
-                                                         _components, _diagonalStorage == DiagonalStorage::Block); });
+        const auto rows = region == LinearRegion::All ? pattern.order : region == LinearRegion::Core ? pattern.core
+                                                                                                     : pattern.dependent;
+        CPU::ApplyLinearRows({offDiagonal.View(), pattern, rows, diagonal.View<R::TableRows>(),
+                              _components, _diagonalStorage == DiagonalStorage::Block},
+                             source.View().OwnedPart(),
+                             source.View().GhostPart(), destination.View());
     }
 }

@@ -1,3 +1,5 @@
+#include "Cauchy/Core/NumericalFailure.hpp"
+#include "Cauchy/State/CPU/FieldKernels.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/StepResult.hpp"
@@ -123,8 +125,7 @@ namespace DNDS::Cauchy
             for (index iBlock = 0; iBlock < rate.BlockNumber(); ++iBlock)
             {
                 const auto input = read.Block(iBlock); const auto output = write.Block(iBlock);
-                for (index iCell = 0; iCell < input.owned.RowCount(); ++iCell)
-                    for (index j = 0; j < input.ComponentNumber(); ++j) output(iCell, j) = input(iCell, j) / metrics.GetCellVol(iCell);
+                CPU::DivideRowsByVolume(input.owned, output, metrics, input.ComponentNumber());
             } });
     }
     bool Domain::RecordImplicitStage(NonlinearIterationReport report)
@@ -222,16 +223,7 @@ namespace DNDS::Cauchy
             {
                 const auto geometry = _problem.finiteVolume.Metrics().AcquireRead(); const auto metric = geometry.HostView();
                 const auto read = _execution.coupledResidual->ReadOwned(); const auto layout = read.ComponentLayout(); const auto values = layout.View();
-                for (index iCell = 0; iCell < values.RowCount(); ++iCell)
-                {
-                    const real volume = metric.GetCellVol(iCell); sum.back() += volume;
-                    for (index j = 0; j < index(norms.size()); ++j)
-                    {
-                        const real value = values(iCell, j);
-                        DNDS_check_throw_info(std::isfinite(value), "nonfinite DITR stopping defect");
-                        sum[j] += volume * (settings.normOrder == 1 ? std::abs(value) : value * value);
-                    }
-                }
+                RequireNumericalSuccess(CPU::AccumulateVolumeNorm(values, metric, index(norms.size()), settings.normOrder, {sum.data(), index(sum.size())}), "AccumulateVolumeNorm");
             });
             MPI::AllreduceInPlace<MPI::Reduction::Sum>(
                 MPI::ContiguousView<real>{sum.data(), sum.size()}, mpi.comm);

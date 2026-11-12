@@ -1,5 +1,7 @@
+#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
+#include "Cauchy/Discretization/CPU/FiniteVolumePositivityKernels.hpp"
 #include "Cauchy/Physics/EquationPositivity.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
@@ -58,7 +60,7 @@ namespace DNDS::Cauchy
             for (int c = 0; c < 2; ++c)
                 DNDS_check_throw_info(std::isfinite(thermal.floors[c]) && thermal.floors[c] >= 0 &&
                                           std::isfinite(thermal.densityCoefficients[c]) &&
-                                          bool(thermal.speciesEnergies[c]) == Equation().HasMixture(),
+                                          (!thermal.speciesEnergies[c].empty()) == Equation().HasMixture(),
                                       "physical timestep thermal coefficients are missing or invalid"); });
         AgreeStepControls(mpi, dt, relax, scale, compressionPower);
         PhysicalStepLimit result{dt};
@@ -69,25 +71,8 @@ namespace DNDS::Cauchy
             const auto meanRead = state.ReadOwned(), rhsRead = residual.ReadOwned();
             const auto meanLayout = meanRead.ComponentLayout(), rhsLayout = rhsRead.ComponentLayout();
             const auto mean = meanLayout.View(), rhs = rhsLayout.View();
-            std::vector<real> increment(size_t(state.ComponentNumber()));
-            for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
-            {
-                const EquationPositivityDetail::PointRow<decltype(mean)> row{mean, iCell};
-                DNDS_check_throw_info(thermal.Admissible(row), "physical timestep PP requires admissible equation means");
-                for (index j = 0; j < state.ComponentNumber(); ++j)
-                {
-                    increment[j] = (dt * scale) * rhs(iCell, j) / metric.GetCellVol(iCell);
-                    DNDS_check_throw_info(std::isfinite(increment[j]), "nonfinite physical timestep equation increment");
-                }
-                // PP POLICY -- physical-dt forecast. The complete coupled trial
-                // enters one clipped-reference thermal estimate; no species
-                // simplex factor is formed and no state is changed. The scalar
-                // restricts the common dt only. Explicit stage acceptance and
-                // retry remain the actual update guarantee.
-                const real alpha = thermal.IncrementFraction(row, increment, relax, 1, compressionPower);
-                DNDS_check_throw_info(std::isfinite(alpha) && alpha >= 0 && alpha <= 1, "invalid physical timestep equation fraction");
-                if (alpha < 1) { ++result.limitedCells; result.minimumAlpha = std::min(result.minimumAlpha, alpha); }
-            } });
+            const auto resultLocal = RequireNumericalSuccess(CPU::LimitPhysicalStepRows(mean, rhs, metric, thermal, dt, relax, scale, compressionPower), "LimitPhysicalStepRows");
+            result.limitedCells = resultLocal.first; result.minimumAlpha = resultLocal.second; });
         ReduceStepLimit(result, mpi);
         return result;
     }

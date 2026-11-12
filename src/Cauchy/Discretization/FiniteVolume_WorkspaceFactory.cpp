@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
+#include "Cauchy/State/CPU/FieldKernels.hpp"
 #include "DNDS/Runtime/Execution/SessionAccess.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "DNDS/Algebra/DofHalo.hpp"
@@ -37,9 +38,9 @@ namespace DNDS::Cauchy
             for (const auto &block : _data->equation.Schema().blocks)
             {
                 const auto rows = output.Block(block.name);
-                for (index iCell = 0; iCell < rows.RowCount(); ++iCell)
-                    for (index j = 0; j < rows.ComponentNumber(); ++j)
-                        rows(iCell, j) = block.name == "flow" ? flow[j] : values[offset + j];
+                CPU::FillConstantRows(rows, block.name == "flow"
+                    ? SpanView<const real>{flow.data(), index(flow.size())}
+                    : SpanView<const real>{values.data() + offset, rows.ComponentNumber()});
                 offset += index(block.components.size());
             } });
     }
@@ -63,19 +64,16 @@ namespace DNDS::Cauchy
             // Resolve/validate EOS input before obtaining any state writer.
             auto output = state.WriteOwned();
             const auto flow = output.Block("flow");
-            for (index iCell = 0; iCell < flow.RowCount(); ++iCell)
-                for (int j = 0; j < 5; ++j) flow(iCell, j) = value[j];
+            CPU::FillConstantRows(flow, {value.data(), index(value.size())});
             if (!fractions.empty())
             {
                 const auto species = output.Block("species");
-                for (index iCell = 0; iCell < species.RowCount(); ++iCell)
-                    for (index k = 0; k < index(fractions.size()); ++k) species(iCell, k) = fractions[k];
+                CPU::FillConstantRows(species, {fractions.data(), index(fractions.size())});
             }
             if (_data->equation.HasRANS())
             {
                 const auto scalars = output.Block("rans");
-                for (index iCell = 0; iCell < scalars.RowCount(); ++iCell)
-                    for (index j = 0; j < scalars.ComponentNumber(); ++j) scalars(iCell, j) = rans[j];
+                CPU::FillConstantRows(scalars, {rans.data(), scalars.ComponentNumber()});
             } });
     }
 
@@ -137,9 +135,7 @@ namespace DNDS::Cauchy
                                   "extended viscosity requires the conservative polynomial gradient");
             DNDS_check_throw_info(_data->settings.equation.source == "none" ||
                 (_data->settings.equation.source == "chemical" && _data->equation.HasMixture()), "unavailable equation volume source");
-            for (const auto &sample : _data->samples)
-                if (sample.other == UnInitIndex)
-                    sample.boundary.ValidateEquationProducer();
+            _data->boundary.ValidateEquationProducers(_data->boundaryZones);
             if (_data->equation.HasMixture())
             {
                 DNDS_check_throw_info(workers, "mixture FV requires explicit chemistry workers");

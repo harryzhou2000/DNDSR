@@ -1,5 +1,8 @@
+#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
 #include "DNDS/Runtime/Execution/SessionAccess.hpp"
+#include "Cauchy/State/CPU/FieldKernels.hpp"
+#include "Cauchy/Discretization/CPU/FiniteVolumeReconstructionKernels.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "DNDS/Algebra/DofHalo.hpp"
 #include "Cauchy/Core/DomainExecutionContext.hpp"
@@ -135,8 +138,7 @@ namespace DNDS::Cauchy
             limitedVRHistory.emplace(R::RowLayout::Dense(owner->metrics.NumCell(), 2));
             auto write = limitedVRHistory->Write();
             const auto values = write.View<R::FixedRows<2>>();
-            for (index iCell = 0; iCell < values.RowCount(); ++iCell)
-                values(iCell, 0) = values(iCell, 1) = 0;
+            CPU::FillRows(values, 2, 0);
         }
         PublishFinalized();
     }
@@ -391,30 +393,10 @@ namespace DNDS::Cauchy
             const RHSFieldView u{owned.View<R::UniformTableRows>(), ghost.View<R::UniformTableRows>()};
             DNDS_check_throw_info(firstComponent >= 0 && firstComponent + 5 <= state.Width(),
                                   "flow characteristic range differs from its physical field");
-            const auto loadFlow = [&](index iCell)
-            {
-                FlowState value;
-                for (int j = 0; j < 5; ++j)
-                    value[j] = u(iCell, firstComponent + j);
-                return value;
-            };
             auto forward = forwardMatrices.Write(), inverse = inverseMatrices.Write();
-            const auto l = forward.View<R::TableRows>(), r = inverse.View<R::TableRows>();
-            for (auto iFace : _data->stencilFaces)
-            {
-                const auto cells = mesh.FaceCells(iFace);
-                if (cells[0] < 0 || cells[0] >= Metrics().NumCellProc())
-                    continue;
-                const auto left = loadFlow(cells[0]);
-                auto right = left;
-                if (cells[1] >= 0 && cells[1] < Metrics().NumCellProc())
-                    right = FiniteVolumeDetail::RotateState(loadFlow(cells[1]), CFV::Detail::OtherFrameInCell(mesh, iFace, 0));
-                const auto normal = metric.GetFaceNorm(metric.FaceQuadratureBegin(iFace));
-                const auto matrices = _data->equation.PrepareCharacteristics(left, right, {normal[0], normal[1], normal[2]});
-                fallbacks += matrices.componentwiseFallback;
-                for (index j = 0; j < 25; ++j)
-                    l(iFace, j) = matrices.forward[j], r(iFace, j) = matrices.inverse[j];
-            }
+            const auto stencilRead = _data->stencil.Read();
+            fallbacks = CPU::PrepareFaceCharacteristicMatrices(stencilRead.View(), mesh, metric, u, firstComponent,
+                                                               forward.View<R::TableRows>(), inverse.View<R::TableRows>(), _data->equation);
         }
         return fallbacks;
     }
@@ -533,8 +515,8 @@ namespace DNDS::Cauchy
             std::optional<EquationDofs::WriteScope> destination, fluxDestination;
             std::optional<R::Array<real>::ReadLease> historySource;
             std::optional<R::Array<real>::WriteLease> historyDestination;
-            std::vector<EquationBlockArrayView<const real>> input, fluxInput;
-            std::vector<EquationBlockArrayView<real>> output, fluxOutput;
+            R::MetadataBuffer<EquationBlockArrayView<const real>> input, fluxInput;
+            R::MetadataBuffer<EquationBlockArrayView<real>> output, fluxOutput;
             bool started = false;
             ~Reservation()
             {
@@ -589,29 +571,23 @@ namespace DNDS::Cauchy
                     const auto values = history.View<R::UniformTableRows>();
                     const std::array<real, 2> caps{_data->settings.numerics.limitedVR.alphaMax,
                                                    _data->settings.numerics.limitedVR.contactAlphaMax};
-                    for (index iCell = 0; iCell < values.RowCount(); ++iCell)
-                        for (int j = 0; j < 2; ++j)
-                            DNDS_check_throw_info(std::isfinite(values(iCell, j)) && values(iCell, j) >= 0 && values(iCell, j) <= caps[j],
-                                                  "LVR history exceeds its valid branch cap");
+                    RequireNumericalSuccess(CPU::RequireCappedRows(values, {caps.data(), index(caps.size())}), "RequireCappedRows");
                 }
+                std::vector<EquationBlockArrayView<const real>> inputRows, fluxInputRows;
+                std::vector<EquationBlockArrayView<real>> outputRows, fluxOutputRows;
                 reservation->source.emplace(guess.ReadOwned());
                 if (state.distinctFinalized && finalized)
                     reservation->fluxSource.emplace(finalInput.ReadOwned());
                 for (index iBlock = 0; iBlock < guess.BlockNumber(); ++iBlock)
                 {
                     const auto input = reservation->source->Block(iBlock);
-                    for (index iCell = 0; iCell < input.owned.RowCount(); ++iCell)
-                        for (index j = 0; j < input.ComponentNumber(); ++j)
-                            DNDS_check_throw_info(std::isfinite(input(iCell, j)), "nonfinite equation reconstruction guess");
-                    reservation->input.push_back(input.owned);
+                    RequireNumericalSuccess(CPU::RequireFiniteRows(input.owned, input.ComponentNumber()), "RequireFiniteRows");
+                    inputRows.push_back(input.owned);
                     if (state.distinctFinalized)
                     {
                         const auto fluxInput = finalized ? reservation->fluxSource->Block(iBlock) : input;
-                        for (index iCell = 0; iCell < fluxInput.owned.RowCount(); ++iCell)
-                            for (index j = 0; j < fluxInput.ComponentNumber(); ++j)
-                                DNDS_check_throw_info(std::isfinite(fluxInput(iCell, j)),
-                                                      "nonfinite finalized equation reconstruction");
-                        reservation->fluxInput.push_back(fluxInput.owned);
+                        RequireNumericalSuccess(CPU::RequireFiniteRows(fluxInput.owned, fluxInput.ComponentNumber()), "RequireFiniteRows");
+                        fluxInputRows.push_back(fluxInput.owned);
                     }
                 }
                 reservation->destination.emplace(state.coefficients.WriteOwned());
@@ -619,10 +595,14 @@ namespace DNDS::Cauchy
                     reservation->fluxDestination.emplace(state.fluxCoefficients.WriteOwned());
                 for (index iBlock = 0; iBlock < guess.BlockNumber(); ++iBlock)
                 {
-                    reservation->output.push_back(reservation->destination->Block(iBlock));
+                    outputRows.push_back(reservation->destination->Block(iBlock));
                     if (state.distinctFinalized)
-                        reservation->fluxOutput.push_back(reservation->fluxDestination->Block(iBlock));
+                        fluxOutputRows.push_back(reservation->fluxDestination->Block(iBlock));
                 }
+                reservation->input = R::MetadataBuffer<EquationBlockArrayView<const real>>(inputRows);
+                reservation->fluxInput = R::MetadataBuffer<EquationBlockArrayView<const real>>(fluxInputRows);
+                reservation->output = R::MetadataBuffer<EquationBlockArrayView<real>>(outputRows);
+                reservation->fluxOutput = R::MetadataBuffer<EquationBlockArrayView<real>>(fluxOutputRows);
                 if (historyInput)
                     reservation->historySource.emplace(historyInput->Read());
                 if (state.limitedVRHistory)
@@ -636,16 +616,12 @@ namespace DNDS::Cauchy
             {
                 const auto input = reservation->input[iBlock];
                 const auto output = reservation->output[iBlock];
-                for (index iCell = 0; iCell < output.RowCount(); ++iCell)
-                    for (index j = 0; j < output.ComponentNumber(); ++j)
-                        output(iCell, j) = input(iCell, j);
+                CPU::CopyRows(input, output, output.ComponentNumber());
                 if (!reservation->fluxOutput.empty())
                 {
                     const auto fluxInput = reservation->fluxInput[iBlock];
                     const auto fluxOutput = reservation->fluxOutput[iBlock];
-                    for (index iCell = 0; iCell < fluxOutput.RowCount(); ++iCell)
-                        for (index j = 0; j < fluxOutput.ComponentNumber(); ++j)
-                            fluxOutput(iCell, j) = fluxInput(iCell, j);
+                    CPU::CopyRows(fluxInput, fluxOutput, fluxOutput.ComponentNumber());
                 }
             }
             if (reservation->historyDestination)
@@ -654,14 +630,10 @@ namespace DNDS::Cauchy
                 if (reservation->historySource)
                 {
                     const auto input = reservation->historySource->View<R::UniformTableRows>();
-                    for (index iCell = 0; iCell < output.RowCount(); ++iCell)
-                        for (int j = 0; j < 2; ++j)
-                            output(iCell, j) = input(iCell, j);
+                    CPU::CopyRows(input, output, 2);
                 }
                 else
-                    for (index iCell = 0; iCell < output.RowCount(); ++iCell)
-                        for (int j = 0; j < 2; ++j)
-                            output(iCell, j) = 0;
+                    CPU::FillRows(output, 2, 0);
             } })); });
         return std::move(*restore);
     }
@@ -710,32 +682,24 @@ namespace DNDS::Cauchy
         {
             const auto layout = coefficients->ComponentLayout();
             const auto values = layout.View();
-            for (index iCell = 0; iCell < values.RowCount(); ++iCell)
-                for (index j = 0; j < values.ComponentNumber(); ++j)
-                    values(iCell, j) = 0;
+            CPU::FillRows(values, values.ComponentNumber(), 0);
         }
         if (fluxCoefficients)
         {
             const auto layout = fluxCoefficients->ComponentLayout();
             const auto values = layout.View();
-            for (index iCell = 0; iCell < values.RowCount(); ++iCell)
-                for (index j = 0; j < values.ComponentNumber(); ++j)
-                    values(iCell, j) = 0;
+            CPU::FillRows(values, values.ComponentNumber(), 0);
         }
         for (auto &write : temporary)
         {
             const auto values = write.View<R::UniformTableRows>();
-            for (index iCell = 0; iCell < values.RowCount(); ++iCell)
-                for (index j = 0; j < values.Width(); ++j)
-                    values(iCell, j) = 0;
+            CPU::FillRows(values, values.Width(), 0);
         }
         for (auto *write : {previous ? &*previous : nullptr, alpha ? &*alpha : nullptr})
             if (write)
             {
                 const auto values = write->View<R::UniformTableRows>();
-                for (index iCell = 0; iCell < values.RowCount(); ++iCell)
-                    for (index j = 0; j < values.Width(); ++j)
-                        values(iCell, j) = 0;
+                CPU::FillRows(values, values.Width(), 0);
             }
         work.sourceState.reset();
         work.sourceCoefficients.reset();

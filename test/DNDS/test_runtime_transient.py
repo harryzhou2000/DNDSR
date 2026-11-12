@@ -1,6 +1,10 @@
 """Transient MPI, dynamic shapes and eager progress using native storage."""
 
 import gc
+import os
+from pathlib import Path
+import subprocess
+import sys
 import weakref
 import numpy as np
 import pytest
@@ -204,40 +208,25 @@ def test_python_reducer_lifetime_through_eager_mpi_progress():
     np.testing.assert_array_equal(target.numpy(), np.full((1, 7), rank + 1 + (rank + 1) % size + 1))
 
 
-@pytest.mark.parametrize("mode", [R.TransferMode.Transient, R.TransferMode.Persistent])
-def test_failed_transfer_stays_failed_after_progress_import(mode):
-    rank, size = MPI.COMM_WORLD.rank, MPI.COMM_WORLD.size
-    ctx = channel()
-    source = R.Array(R.RowLayout.dense(47, 6, 8), np.dtype("float64"))
-    target = R.Array(R.RowLayout.dense(47, 6, 9), source.dtype)
-    requests = [R.RowRequest((rank + 1) % size, 46 - i, i) for i in range(47)]
-    route = R.RowTransferPlan(ctx, 47, 47, requests)
-    calls = []
+@pytest.mark.parametrize("mode", ["transient", "persistent"])
+def test_reducer_failure_after_posting_aborts_in_child(mode):
+    """Never test a post-MPI fatal callback by aborting the pytest MPI world.
 
-    def fail(a, b):
-        calls.append(1)
-        raise ValueError("audit Python reducer failure")
-
-    reducer = R.Reducer.custom(source.element_schema(), source.dtype, "audit.python-failure", fail,
-                              0, R.DestinationInit.Identity)
-    binding = R.PayloadPlan(route, source.layout, target.layout, source.element_schema()).bind(
-        source, target, reducer=reducer, options=R.TransferOptions(mode, ctx, 74))
-    operation = binding.begin_scheduled()
-    for observe in (operation.wait_destination_ready, operation.wait, operation.test):
-        with pytest.raises(ValueError, match="audit Python reducer failure"):
-            observe()
-    progress = R.MPIProgress()
-    event = progress.import_operation(operation)
-    del operation, binding, reducer
-    for observe in (progress.drain, event.wait, event.ready):
-        with pytest.raises(ValueError, match="audit Python reducer failure"):
-            observe()
-    assert len(calls) == 1
-    with pytest.raises(RuntimeError, match="failed allocation"):
-        target.numpy()
+    Each child has its own singleton MPI world. The C++ distributed-failure
+    fixture separately exercises one-rank failure with live remote peers.
+    """
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(("OMPI_", "PMIX_", "PMI_"))}
+    env["PYTHONPATH"] = os.pathsep.join(sys.path)
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).with_name("runtime_reducer_failure_child.py")), mode],
+        env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "injected Python reducer reached" in result.stderr
+    assert "MPI destination completion/reduction failed" in result.stderr
 
 
-def test_failed_callback_does_not_retain_its_frame_and_transfer():
+def test_completed_callback_does_not_retain_its_frame_and_transfer():
     def run():
         rank, size = MPI.COMM_WORLD.rank, MPI.COMM_WORLD.size
         ctx = channel()
@@ -246,18 +235,19 @@ def test_failed_callback_does_not_retain_its_frame_and_transfer():
         route = R.RowTransferPlan(ctx, 31, 31,
                                  [R.RowRequest((rank + 1) % size, 30 - i, i) for i in range(31)])
 
-        def fail(a, b):
-            raise ValueError("callback lifetime audit", 17)
+        def combine(a, b):
+            return a + b
 
-        retained = weakref.ref(fail)
-        reducer = R.Reducer.custom(source.element_schema(), source.dtype, "audit.python-lifetime", fail, 0)
+        source.assign(np.ones((31, 6)))
+        retained = weakref.ref(combine)
+        reducer = R.Reducer.custom(source.element_schema(), source.dtype, "audit.python-lifetime", combine, 0,
+                                  R.DestinationInit.Identity)
         binding = R.PayloadPlan(route, source.layout, target.layout, source.element_schema()).bind(
             source, target, reducer=reducer)
         operation = binding.begin()
         for _ in range(2):
-            with pytest.raises(ValueError) as error:
-                operation.wait()
-            assert error.value.args == ("callback lifetime audit", 17)
+            operation.wait()
+        np.testing.assert_array_equal(target.numpy(), np.ones((31, 6)))
         return retained
 
     callback = run()

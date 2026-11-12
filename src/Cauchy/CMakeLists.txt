@@ -5,6 +5,8 @@ set(CPPS
     Core/DomainController.cpp
     Core/DomainStateSnapshot.cpp
     Core/Domain.cpp
+    Core/Domain_ExplicitStage.cpp
+    Core/CPU/TimeStageKernels.cpp
     Core/Domain_ImplicitStep.cpp
     Core/Domain_TimeStep.cpp
     Core/Simulation.cpp
@@ -17,6 +19,7 @@ set(CPPS
     Physics/EquationProperties.cpp
     Physics/EquationPositivity.cpp
     Physics/EquationSource.cpp
+    Physics/CPU/EquationSourceKernels.cpp
     Physics/EquationRANS.cpp
     Physics/StateInput.cpp
     Physics/InitialField.cpp
@@ -24,24 +27,37 @@ set(CPPS
     State/EquationDofs.cpp
     State/EquationDofCommunication.cpp
     State/DerivedFields.cpp
+    State/CPU/StatePropertiesKernels.cpp
     Motion/RigidMotion.cpp
 
-    Boundary/BoundaryInputs.cpp
+    Discretization/FiniteVolume_InterfaceInputs.cpp
     Boundary/BoundarySystem.cpp
     Boundary/BoundarySystem_Operators.cpp
     Boundary/BoundaryPointOperator.cpp
     Interface/InterfaceCoupling.cpp
+    Interface/CPU/InterfacePacketKernels.cpp
+    Interface/CPU/InterfaceSamplingKernels.cpp
 
     Discretization/FiniteVolume.cpp
+    Discretization/FiniteVolumeViews.cpp
+    Discretization/FiniteVolume_RHSOperator.cpp
+    Discretization/FiniteVolume_RHS.cpp
+    Discretization/FiniteVolume_Gradient.cpp
+    Discretization/FiniteVolume_SourcePreparation.cpp
+    Discretization/FiniteVolume_Positivity.cpp
+    Discretization/FiniteVolume_AuxiliaryPreparation.cpp
     Discretization/FiniteVolume_Workspace.cpp
     Discretization/FiniteVolume_WorkspaceFactory.cpp
     Discretization/FiniteVolume_Evaluation.cpp
     Discretization/FiniteVolume_ReconstructionState.cpp
     Discretization/FiniteVolume_BoundaryInputs.cpp
+    Discretization/FiniteVolume_Boundary.cpp
     Discretization/FiniteVolume_Flux.cpp
     Discretization/FiniteVolume_Source.cpp
     Discretization/FiniteVolume_Diagnostics.cpp
     Discretization/CPU/FiniteVolumeGradientKernels.cpp
+    Discretization/CPU/FiniteVolumeReconstructionKernels.cpp
+    Discretization/CPU/FiniteVolumeStateKernels.cpp
     Discretization/CPU/FiniteVolumeBoundaryKernels.cpp
     Discretization/CPU/FiniteVolumeLimitedVRKernels.cpp
     Discretization/CPU/FiniteVolumeAuxiliaryKernels.cpp
@@ -51,12 +67,18 @@ set(CPPS
     Discretization/CPU/FiniteVolumeSourceKernels.cpp
     Discretization/FiniteVolume_AuxiliaryValues.cpp
     Discretization/FiniteVolume_LimitedVR.cpp
+    Discretization/FiniteVolume_LimitedVRExecution.cpp
     Discretization/FiniteVolume_PrepareAuxValues.cpp
     Discretization/FiniteVolume_TimeStep.cpp
     Discretization/FiniteVolume_InitializeField.cpp
     Discretization/WallDistanceSamples.cpp
 
+    Implicit/LinearPattern.cpp
     Implicit/LinearProblem.cpp
+    Implicit/CPU/LinearBlockKernels_Array.cpp
+    Implicit/CPU/LinearBlockKernels_Dof.cpp
+    Implicit/CPU/LinearBlockKernels_ILU.cpp
+    Implicit/CPU/LinearProblemKernels_Diagonal.cpp
     Implicit/LinearProblem_Dof.cpp
     Implicit/LinearProblem_SGS.cpp
     Implicit/LinearProblem_DofSGS.cpp
@@ -64,11 +86,17 @@ set(CPPS
     Implicit/LinearSolver.cpp
     Implicit/NonlinearController.cpp
     Implicit/NonlinearSolver.cpp
+    Implicit/CPU/NonlinearKernels.cpp
     Implicit/UpdatePolicy.cpp
     Implicit/FiniteVolume_PrepareJacobian.cpp
     Implicit/FiniteVolume_Jacobian.cpp
-    Implicit/JacobianKernels.cpp
+    Implicit/JacobianGeometry.cpp
+    Implicit/CPU/JacobianKernels.cpp
+    Implicit/CPU/FiniteVolumeJacobianKernels_Equation.cpp
+    Implicit/CPU/FiniteVolumeJacobianKernels_Flow.cpp
+    Implicit/CPU/FiniteVolumeJacobianKernels_Preparation.cpp
     Multigrid/PolynomialMultigrid.cpp
+    Multigrid/CPU/PolynomialMultigridKernels.cpp
 
     IO/Domain_Checkpoint.cpp
     IO/StateArchive.cpp

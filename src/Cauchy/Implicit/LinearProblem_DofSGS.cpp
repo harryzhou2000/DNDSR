@@ -1,6 +1,6 @@
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Implicit/LinearProblem.hpp"
-#include "Cauchy/Implicit/LinearBlockKernels.hpp"
+#include "Cauchy/Implicit/CPU/LinearBlockKernels.hpp"
 #include "Cauchy/State/EquationDofs.hpp"
 
 namespace DNDS::Cauchy
@@ -9,6 +9,8 @@ namespace DNDS::Cauchy
     struct LinearProblemContext::DofSGSIteration::State
     {
         std::shared_ptr<const Pattern> pattern;
+        LinearPatternStorage::ReadAccess patternRead;
+        LinearPatternView patternView;
         index components;
         DiagonalStorage mode;
         EquationDofs rhs, forward, output;
@@ -22,7 +24,7 @@ namespace DNDS::Cauchy
         bool middleExchange, started = false;
         int lower = 0, upper = 0;
         State(const LinearProblemContext &problem, const EquationDofs &b, const EquationDofs *old, EquationDofs &temporary, EquationDofs &result, bool middle)
-            : pattern(problem._pattern), components(problem._components), mode(problem._diagonalStorage),
+            : pattern(problem._pattern), patternRead(pattern->rows.Read()), patternView(patternRead.View()), components(problem._components), mode(problem._diagonalStorage),
               rhs(b.NumericAlias()), forward(temporary.NumericAlias()), output(result.NumericAlias()),
               diagonalRead(problem._diagonal.Read()), inverseRead(problem._inverse.Read()), blocksRead(problem.ReadOffDiagonal()),
               rhsRead(rhs.ReadOwned()), middleExchange(middle)
@@ -63,25 +65,20 @@ namespace DNDS::Cauchy
         }
         template <bool Upper, class Forward>
         void Scan(Forward forwardValues, Algebra::DofComponentView<real> destination, Algebra::DofComponentView<const real> ghost,
-                  const std::vector<index> &rows)
+                  Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> rows)
         {
             const auto b = rhsRead.ComponentLayout();
             std::optional<Algebra::DofComponentLayout<const real>> old;
             if (inputRead)
                 old.emplace(inputRead->ComponentLayout());
             const auto previous = old ? old->View() : b.View();
-            const auto inverse = Algebra::MakeEigenRowMatrices(inverseRead.View<R::TableRows>(), components, mode == DiagonalStorage::Block ? components : 1);
+            const CPU::LinearBlockInput request{blocksRead.View(), patternView, rows,
+                                                inverseRead.View<R::TableRows>(), components, mode == DiagonalStorage::Block};
             started = true;
-            blocksRead.WithActions([&](const auto &blocks)
-                                   {
-                const auto scan = [&](auto zero)
-                {
-                    constexpr bool Zero = decltype(zero)::value;
-                    if(components==5) Detail::ScanSGSRows<Upper,5,Zero>(b.View(),previous,forwardValues,destination,ghost,inverse,blocks,*pattern,rows,components,mode==DiagonalStorage::Block);
-                    else Detail::ScanSGSRows<Upper,Eigen::Dynamic,Zero>(b.View(),previous,forwardValues,destination,ghost,inverse,blocks,*pattern,rows,components,mode==DiagonalStorage::Block);
-                };
-                if (!input && (!Upper || !middleExchange)) scan(std::true_type{});
-                else scan(std::false_type{}); });
+            if constexpr (Upper)
+                CPU::UpperSGSRows(request, b.View(), previous, forwardValues, ghost, destination, !input && !middleExchange);
+            else
+                CPU::LowerSGSRows(request, b.View(), previous, ghost, destination, !input);
         }
     };
     LinearProblemContext::DofSGSIteration::DofSGSIteration(std::unique_ptr<State> state) : _state(std::move(state)) {}
@@ -122,8 +119,8 @@ namespace DNDS::Cauchy
         if (state.inputAllRead)
             ghost.emplace(state.inputAllRead->ComponentLayout());
         const auto target = state.forwardWrite->ComponentLayout();
-        const auto &rows = region == LinearRegion::All ? state.pattern->order : region == LinearRegion::Core ? state.pattern->core
-                                                                                                             : state.pattern->dependent;
+        const auto &rows = region == LinearRegion::All ? state.patternView.order : region == LinearRegion::Core ? state.patternView.core
+                                                                                                                : state.patternView.dependent;
         state.Scan<false>(target.View(), target.View(), ghost ? ghost->View().GhostPart() : Algebra::DofComponentView<const real>{}, rows);
         state.lower = region == LinearRegion::Core ? 1 : 2;
         if (state.lower == 2)
@@ -154,8 +151,8 @@ namespace DNDS::Cauchy
             ghost.emplace(state.inputAllRead->ComponentLayout());
         const auto forward = state.forwardRead->ComponentLayout();
         const auto target = state.outputWrite->ComponentLayout();
-        const auto &rows = region == LinearRegion::All ? state.pattern->order : region == LinearRegion::Core ? state.pattern->core
-                                                                                                             : state.pattern->dependent;
+        const auto &rows = region == LinearRegion::All ? state.patternView.order : region == LinearRegion::Core ? state.patternView.core
+                                                                                                                : state.patternView.dependent;
         state.Scan<true>(forward.View(), target.View(), ghost ? ghost->View().GhostPart() : Algebra::DofComponentView<const real>{}, rows);
         state.upper = region == LinearRegion::HaloDependent ? 1 : 2;
     }

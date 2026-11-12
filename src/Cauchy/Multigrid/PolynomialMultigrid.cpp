@@ -1,4 +1,6 @@
+#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Multigrid/PolynomialMultigrid.hpp"
+#include "Cauchy/Multigrid/CPU/PolynomialMultigridKernels.hpp"
 
 #include "Cauchy/Core/DomainExecutionContext.hpp"
 #include "DNDS/MPI/Failure.hpp"
@@ -29,11 +31,9 @@ namespace DNDS::Cauchy
                 const auto read = state.ReadOwned(), savedRead = reference.ReadOwned();
                 const auto layout = read.ComponentLayout(), savedLayout = savedRead.ComponentLayout();
                 const auto values = layout.View(), saved = savedLayout.View();
-                for (index iRow = 0; iRow < values.RowCount(); ++iRow)
-                    for (index j = 0; j < values.ComponentNumber(); ++j)
-                        if (!selection.Includes(j))
-                            DNDS_check_throw_info(std::memcmp(&values(iRow, j), &saved(iRow, j), sizeof(real)) == 0,
-                                                  "FAS callback changed a frozen equation component");
+                const auto active = R::MetadataBuffer<uint8_t>::Generate(values.ComponentNumber(), [&](index j)
+                                                                         { return uint8_t(selection.Includes(j)); });
+                RequireNumericalSuccess(CPU::CheckFrozenComponents(values, saved, active.HostView()), "CheckFrozenComponents");
             }
             static void ProjectCorrection(EquationDofs &correction, const std::vector<index> &components)
             {
@@ -41,10 +41,9 @@ namespace DNDS::Cauchy
                 auto write = correction.WriteOwned();
                 const auto layout = write.ComponentLayout();
                 const auto values = layout.View();
-                for (index iRow = 0; iRow < values.RowCount(); ++iRow)
-                    for (index j = 0; j < values.ComponentNumber(); ++j)
-                        if (!selection.Includes(j))
-                            values(iRow, j) = 0;
+                const auto active = R::MetadataBuffer<uint8_t>::Generate(values.ComponentNumber(), [&](index j)
+                                                                         { return uint8_t(selection.Includes(j)); });
+                CPU::ProjectSelectedCorrection(values, active.HostView());
             }
             static void AddSelected(EquationDofs &state, const EquationDofs &correction, const std::vector<index> &components)
             {
@@ -59,9 +58,7 @@ namespace DNDS::Cauchy
                 const auto stateLayout = write.ComponentLayout();
                 const auto delta = deltaLayout.View();
                 const auto values = stateLayout.View();
-                for (index iRow = 0; iRow < values.RowCount(); ++iRow)
-                    for (const auto j : components)
-                        values(iRow, j) += delta(iRow, j);
+                CPU::AddSelectedCorrection(values, delta, {components.data(), index(components.size())});
             }
         };
 
@@ -166,9 +163,7 @@ namespace DNDS::Cauchy
                     Operations::RequireDistinct(input, output);
                     const index width = Operations::ComponentNumber(input);
                     Profile::TransferRows(input, output, [width](auto source, auto destination)
-                                          {
-                        for (index iCell = 0; iCell < source.RowCount(); ++iCell)
-                            for (index j = 0; j < width; ++j) destination(iCell, j) = source(iCell, j); });
+                                          { CPU::CopyPolynomialLevel(source, destination); });
                 };
                 RunLocalStage(mpi, collectiveChecks, run,
                               "polynomial multigrid identity transfer failed");
@@ -431,16 +426,7 @@ namespace DNDS::Cauchy
                     const auto geometry = fine.Metrics().AcquireRead();
                     const auto metric = geometry.HostView();
                     Profile::ReadPair(source, value, [&](auto b, auto f)
-                                      {
-                        for (index iCell = 0; iCell < f.RowCount(); ++iCell)
-                        {
-                            const real volume = metric.GetCellVol(iCell); sum.back() += volume;
-                            for (index j = 0; j < index(norms.size()); ++j)
-                            {
-                                const real difference = b(iCell, j) - f(iCell, j);
-                                sum[j] += settings.normOrder == 1 ? volume * std::abs(difference) : volume * difference * difference;
-                            }
-                        } });
+                                      { CPU::AccumulateFASNorm(b, f, metric, settings.normOrder, {sum.data(), index(sum.size())}); });
                 };
                 // Only the diagnostic preflight is optional. The residual
                 // norm below is a mathematical collective in both modes.

@@ -242,6 +242,12 @@ namespace DNDS::Runtime
         }
         DNDS_DEVICE_CALLABLE RowType operator[](index row) const { return {Row(row), RowSize(row), ElementStride()}; }
         DNDS_DEVICE_CALLABLE ArrayView<T, Checked> DynamicView() const { return {data, offsets, rows, width, stride, sizes, kind}; }
+        /// Read-only projection of the same borrowed storage. This does not
+        /// acquire access or extend lifetime; the original scope remains owner.
+        DNDS_DEVICE_CALLABLE ArrayView<const std::remove_const_t<T>, Checked, LayoutPolicy> ConstView() const
+        {
+            return {data, offsets, rows, width, stride, sizes, kind};
+        }
         template <bool C = Checked, std::enable_if_t<C, int> = 0>
         DNDS_DEVICE_CALLABLE operator ArrayView<T, false, LayoutPolicy>() const
         {

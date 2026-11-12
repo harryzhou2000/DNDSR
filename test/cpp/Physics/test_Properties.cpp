@@ -115,6 +115,17 @@ TEST_CASE("shared mixture: fused SI outputs, scaled UV and legacy Euler properti
     for (int k = 0; k < rhoYInput.nSpecies; ++k)
         rhoYInput[k] = state[5 + k];
     auto point = work.FromRhoE(rho, internalEnergy, rhoYInput, 800 / scales.T0);
+    // The numerical adapter preserves the established UV solution and reports
+    // malformed requests as values rather than an exception-based fallback.
+    P::Thermodynamics::MixturePoint checkedPoint;
+    const auto status = work.TryFromConservative(rho, state[4], {state[1], state[2], state[3]},
+                                                 rhoYInput, 800 / scales.T0, {true, true, true}, checkedPoint);
+    REQUIRE(bool(status));
+    CHECK(checkedPoint.thermo.temperature == doctest::Approx(point.thermo.temperature).epsilon(2e-11));
+    const auto invalid = work.TryFromConservative(rho, state[4], {state[1], state[2], state[3]},
+                                                  {}, 0, {}, checkedPoint);
+    CHECK(invalid.code == DNDS::NumericalError::InvalidInput);
+    CHECK_FALSE(P::AllowsMeanFallback(invalid));
     CHECK(point.thermo.temperature == doctest::Approx(prim[0]).epsilon(2e-11));
     CHECK(point.thermo.temperature == doctest::Approx(legacy.temperature(state, prim[0])).epsilon(2e-11));
     CHECK(point.thermo.pressure == doctest::Approx(prim[4]).epsilon(2e-11));

@@ -1,3 +1,4 @@
+#include "Cauchy/Bindings/Operators_bind.hpp"
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/Simulation.hpp"
 #include "Cauchy/Core/StepResult.hpp"
@@ -5,11 +6,6 @@
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include <pybind11/stl.h>
-
-namespace DNDS::Cauchy::Bindings
-{
-    void BindFiniteVolumeOperators(pybind11::module_ &module);
-}
 
 PYBIND11_MODULE(cauchy_pybind11, m)
 {

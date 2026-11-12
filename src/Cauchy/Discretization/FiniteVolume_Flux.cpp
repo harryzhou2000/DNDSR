@@ -10,7 +10,7 @@ namespace DNDS::Cauchy
     {
         Metrics().Validate();
         DNDS_check_throw_info(components > 0, "face flux requires positive component count");
-        return R::Array<real>(R::RowLayout::Dense(index(_data->stencilFaces.size()), components));
+        return R::Array<real>(R::RowLayout::Dense(_data->stencil.stencilFaces.RowCount(), components));
     }
     void FiniteVolume::EvaluateFlux(const EquationDofs &state, EquationDofs &residual,
                                     const ReconstructionState &reconstruction, Workspace &work,
@@ -39,7 +39,7 @@ namespace DNDS::Cauchy
         {
             const auto &output = *faceOutput;
             DNDS_check_throw_info(output.GetDevice() == R::Device::Host() && !output.Layout().IsVariable() &&
-                                      output.RowCount() == index(_data->stencilFaces.size()) && output.Layout().Width() == state.ComponentNumber(),
+                                      output.RowCount() == _data->stencil.stencilFaces.RowCount() && output.Layout().Width() == state.ComponentNumber(),
                                   "equation face output shape/device differs");
             for (const auto *fields : std::array<const EquationDofs *, 3>{&state, &residual, &finalValues})
                 for (index iField = 0; iField < fields->PhysicalFieldNumber(); ++iField)

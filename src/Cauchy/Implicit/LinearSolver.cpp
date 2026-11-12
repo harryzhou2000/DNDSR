@@ -1,3 +1,4 @@
+#include "Cauchy/State/CPU/FieldKernels.hpp"
 #include "Cauchy/Implicit/LinearSolver.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"
@@ -87,15 +88,6 @@ namespace DNDS::Cauchy
         {
             return settings.method == "ilu" || (settings.method == "gmres" && settings.preconditioner == "ilu");
         }
-        template <class Rows>
-        bool FiniteRows(Rows values, index components)
-        {
-            bool valid = true;
-            for (index iRow = 0; iRow < values.RowCount(); ++iRow)
-                for (index j = 0; j < components; ++j)
-                    valid &= std::isfinite(values(iRow, j));
-            return valid;
-        }
         struct FieldLinearOperations : Linear::FieldKrylovOperations
         {
             using State = Field;
@@ -105,7 +97,7 @@ namespace DNDS::Cauchy
             static bool LocalFinite(const State &state)
             {
                 const auto read = state.Owned().Read();
-                return FiniteRows(read.View<R::UniformTableRows>(), Width(state));
+                return CPU::FiniteRows(read.View<R::UniformTableRows>(), Width(state));
             }
             template <class S, class F>
             static void VisitFields(S &state, F &&visit) { visit(state); }
@@ -137,7 +129,7 @@ namespace DNDS::Cauchy
             {
                 const auto read = state.ReadOwned();
                 const auto layout = read.ComponentLayout();
-                return FiniteRows(layout.View(), Width(state));
+                return CPU::FiniteRows(layout.View(), Width(state));
             }
             static std::vector<real> LocalProducts(const State &x, const std::vector<const State *> &probes,
                                                    const std::vector<real> &inverseScales)
@@ -324,9 +316,7 @@ namespace DNDS::Cauchy
                             {
                                 auto write = part.Ghost().Write();
                                 const auto values = write.template View<R::UniformTableRows>();
-                                for (index iRow = 0; iRow < values.RowCount(); ++iRow)
-                                    for (index j = 0; j < values.RowSize(iRow); ++j)
-                                        values(iRow, j) = 0;
+                                CPU::FillRows(values, values.Width(), 0);
                             }
                             else
                                 part.Ghost().CopyFrom(*ghosts[iField]).Wait();
@@ -385,8 +375,7 @@ namespace DNDS::Cauchy
                 {
                     auto write = array->Write();
                     const auto values = write.template View<R::UniformTableRows>();
-                    for (index iRow = 0; iRow < values.RowCount(); ++iRow)
-                        for (index j = 0; j < values.RowSize(iRow); ++j) values(iRow, j) = 0;
+                    CPU::FillRows(values, values.Width(), 0);
                 } });
             }
             std::vector<real> Products(const Field &x, const std::vector<const Field *> &probes) const

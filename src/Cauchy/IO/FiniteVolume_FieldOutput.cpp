@@ -1,3 +1,4 @@
+#include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/Physics/EquationPositivity.hpp"
@@ -86,7 +87,7 @@ namespace DNDS::Cauchy
             surface << '\n' << std::setprecision(17);
             std::optional<EquationDofs> coefficients;
             std::optional<EquationDofs::ReadScope> rec;
-            std::vector<EquationBlockReadView> recBlocks;
+            R::MetadataBuffer<EquationBlockReadView> recBlocks;
             std::optional<CFV::ReconstructionBasisRead> basis;
             if (_data->reconstruction)
             {
@@ -119,8 +120,11 @@ namespace DNDS::Cauchy
                                          .Read());
                 incoming = incomingRead->View<Runtime::UniformTableRows>();
             }
-            for (const auto &sample : _data->samples)
+            const auto stencilRead = _data->stencil.Read();
+            const auto stencil = stencilRead.View();
+            for (index entry = 0; entry < stencil.samples.RowCount(); ++entry)
             {
+                const auto sample = FiniteVolumeDetail::ExpandSample(stencil.samples(entry, 0), {_data->boundaryConditions.data(), index(_data->boundaryConditions.size())});
                 if (sample.other != UnInitIndex) continue;
                 Gather(blocks, sample.cell, point);
                 if (basis)

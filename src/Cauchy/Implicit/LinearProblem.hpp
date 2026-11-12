@@ -1,6 +1,8 @@
 #pragma once
 
 #include "DNDS/Algebra/BlockMatrixStorage.hpp"
+#include "Cauchy/Implicit/LinearPattern.hpp"
+#include "Cauchy/Implicit/OffDiagonalView.hpp"
 #include "DNDS/Algebra/DofAlgebra.hpp"
 #include "DNDS/Algebra/ComponentSelection.hpp"
 #include <memory>
@@ -27,28 +29,6 @@ namespace DNDS::Cauchy
         Assembled,
         DirectEvaluated,
         SemiMatrixFree = DirectEvaluated // Compatibility spelling.
-    };
-    /// Immutable physical block producer. Columns and block ordinals belong to
-    /// LinearProblemContext. Implementations own frozen numerical inputs; they
-    /// must not borrow live means, perform communication or mutate hidden caches.
-    /// Blocks use column-major component order, including periodic transforms.
-    class OffDiagonalEvaluator
-    {
-    public:
-        using InputVector = Eigen::Ref<const Eigen::VectorXd, 0, Eigen::InnerStride<Eigen::Dynamic>>;
-        virtual ~OffDiagonalEvaluator() = default;
-        virtual index Components() const = 0;
-        virtual std::shared_ptr<const Algebra::DofSpace::Partition> RowSpaceIdentity() const = 0;
-        virtual const std::vector<std::vector<index>> &Columns() const = 0;
-        virtual void EvaluateBlock(index iRow, index iBlock, Eigen::Ref<Eigen::MatrixXd> output) const = 0;
-        /// Apply one frozen off-diagonal block directly, without constructing
-        /// a components-by-components temporary. This contract has no dense
-        /// fallback: every producer supplies its directional action. Input/output are
-        /// distinct vectors, owned by the enclosing kernel scope. A strided
-        /// input borrows SoA/AoSoA rows without hidden Eigen packing; output
-        /// is contiguous caller scratch, allocated once before the scan.
-        virtual void ApplyBlock(index iRow, index iBlock, InputVector input,
-                                Eigen::Ref<Eigen::VectorXd> output) const = 0;
     };
     /// Integrated residual convention: A=M/dTau+physicalMass*M-residualScale*J_R.
     /// Roe dissipation requires a full diagonal block; scalar dissipation keeps
@@ -83,15 +63,14 @@ namespace DNDS::Cauchy
         struct Pattern
         {
             std::shared_ptr<const Algebra::DofSpace::Partition> partition;
-            std::vector<std::vector<index>> columns;
-            std::vector<index> order, position, core, dependent;
+            LinearPatternStorage rows;
             bool hasGhostColumns = false;
-            Pattern(std::shared_ptr<const Algebra::DofSpace::Partition> rowsIdentity, std::vector<std::vector<index>> rows)
-                : partition(std::move(rowsIdentity)), columns(std::move(rows)) {}
+            explicit Pattern(std::shared_ptr<const Algebra::DofSpace::Partition> rowsIdentity)
+                : partition(std::move(rowsIdentity)) {}
         };
         Algebra::DofSpace _space;
         std::shared_ptr<const Pattern> _pattern;
-        std::shared_ptr<const std::vector<std::vector<index>>> _validatedColumns;
+        std::shared_ptr<const LinearPatternStorage> _validatedColumns;
         index _components;
         DiagonalStorage _diagonalStorage;
         Runtime::Array<real> _diagonal, _inverse;
@@ -139,20 +118,20 @@ namespace DNDS::Cauchy
         }
         index Components() const { return _components; }
         DiagonalStorage DiagonalMode() const { return _diagonalStorage; }
-        const std::vector<std::vector<index>> &Columns() const { return Layout().columns; }
+        std::vector<std::vector<index>> Columns() const { return Layout().rows.CopyColumns(); }
         /// Validate an immutable producer stencil once, then compare identity.
         /// Caller serializes preparation with context use. Retaining the token
         /// prevents address reuse; a new mesh/order supplies a new token.
-        void ValidateColumns(const std::shared_ptr<const std::vector<std::vector<index>>> &columns)
+        void ValidateColumns(const std::shared_ptr<const LinearPatternStorage> &columns)
         {
             if (_validatedColumns == columns && columns)
                 return;
-            DNDS_check_throw_info(columns && *columns == Columns(), "linear producer stencil differs");
+            DNDS_check_throw_info(columns && columns->CopyColumns() == Columns(), "linear producer stencil differs");
             _validatedColumns = columns;
         }
-        const std::vector<index> &Order() const { return Layout().order; }
-        const std::vector<index> &Core() const { return Layout().core; }
-        const std::vector<index> &HaloDependent() const { return Layout().dependent; }
+        std::vector<index> Order() const { return Layout().rows.CopyOrder(); }
+        std::vector<index> Core() const { return Layout().rows.CopyCore(); }
+        std::vector<index> HaloDependent() const { return Layout().rows.CopyDependent(); }
         void Validate() const { ValidateMatrix(); }
         Runtime::Array<real> &Diagonal() { return _diagonal; }
         const Runtime::Array<real> &Diagonal() const { return _diagonal; }
@@ -184,90 +163,19 @@ namespace DNDS::Cauchy
                 : _assembled(std::move(assembled)), _components(components) {}
             OffDiagonalReadAccess(Runtime::Array<real>::ReadLease publication, std::shared_ptr<const OffDiagonalEvaluator> evaluator, index components)
                 : _publication(std::move(publication)), _evaluator(std::move(evaluator)), _components(components) {}
-            template <int Size>
-            struct EvaluatedBlocks
-            {
-                const OffDiagonalEvaluator *evaluator;
-                index components;
-                Eigen::Matrix<real, Size, Size> operator()(index iRow, index iBlock) const
-                {
-                    if constexpr (Runtime::AccessBoundsChecks)
-                    {
-                        const auto &columns = evaluator->Columns();
-                        DNDS_assert(iRow >= 0 && iRow < index(columns.size()) && iBlock >= 0 && iBlock < index(columns[iRow].size()));
-                    }
-                    Eigen::Matrix<real, Size, Size> result(components, components);
-                    evaluator->EvaluateBlock(iRow, iBlock, result);
-                    return result;
-                }
-            };
-            struct EvaluatedActions
-            {
-                static constexpr bool needs_scratch = true;
-                const OffDiagonalEvaluator *evaluator;
-                template <int Size, bool Subtract, class Input, class Output, class Scratch>
-                void Accumulate(index iRow, index iBlock, const Input &input, Output &output, Scratch &scratch) const
-                {
-                    evaluator->ApplyBlock(iRow, iBlock, input, scratch);
-                    if constexpr (Subtract)
-                        output -= scratch;
-                    else
-                        output += scratch;
-                }
-            };
-            template <class Blocks>
-            struct AssembledActions
-            {
-                static constexpr bool needs_scratch = false;
-                Blocks blocks;
-                template <int Size, bool Subtract, class Input, class Output, class Scratch>
-                void Accumulate(index iRow, index iBlock, const Input &input, Output &output, Scratch &) const
-                {
-                    const auto add = [&](const auto &block)
-                    {
-                        if constexpr (Subtract)
-                            output.noalias() -= block * input;
-                        else
-                            output.noalias() += block * input;
-                    };
-                    if constexpr (Size != Eigen::Dynamic)
-                        add(blocks(iRow, iBlock).template topLeftCorner<Size, Size>());
-                    else
-                        add(blocks(iRow, iBlock));
-                }
-            };
 
         public:
-            /// Resolve storage once outside scans. SGS/Jv request an action,
-            /// while ILU continues to request explicit blocks with WithBlocks.
-            template <class Callback>
-            void WithActions(Callback &&callback) const
+            /// Borrow numerical inputs; this scope must outlive every use.
+            OffDiagonalView View() const
             {
                 DNDS_check_throw_info(_assembled || _evaluator, "off-diagonal read scope is moved");
-                if (_assembled)
-                {
-                    const auto blocks = _assembled->View();
-                    callback(AssembledActions<decltype(blocks)>{blocks});
-                }
-                else
-                    callback(EvaluatedActions{_evaluator.get()});
+                return {_assembled ? std::optional(_assembled->View()) : std::nullopt,
+                        _evaluator.get(), _components};
             }
-            /// Dispatch once outside loops. The callback receives a callable
-            /// (row,block): assembled mode returns the ordinary stable map;
-            /// evaluated mode returns an owning block value, with flow5 on the
-            /// stack. Querying another block never overwrites a previous result.
-            /// Other component counts use the generic dynamic dense matrix.
             template <class Callback>
-            void WithBlocks(Callback &&callback) const
-            {
-                DNDS_check_throw_info(_assembled || _evaluator, "off-diagonal read scope is moved");
-                if (_assembled)
-                    callback(_assembled->View());
-                else if (_components == 5)
-                    callback(EvaluatedBlocks<5>{_evaluator.get(), _components});
-                else
-                    callback(EvaluatedBlocks<Eigen::Dynamic>{_evaluator.get(), _components});
-            }
+            void WithActions(Callback &&callback) const { View().WithActions(std::forward<Callback>(callback)); }
+            template <class Callback>
+            void WithBlocks(Callback &&callback) const { View().WithBlocks(std::forward<Callback>(callback)); }
         };
         OffDiagonalReadAccess ReadOffDiagonal() const;
         /// Explicit preparation of diagonal inverses. Block mode follows the
@@ -370,8 +278,8 @@ namespace DNDS::Cauchy
         bool ILUFactorsCurrent() const;
         /// Dependency-safe ready rows from the conservative input core through
         /// both symbolic scans. Complete LU provides no bounded-core promise.
-        const std::vector<index> &ILUForwardCore() const;
-        const std::vector<index> &ILUBackwardCore() const;
+        std::vector<index> ILUForwardCore() const;
+        std::vector<index> ILUBackwardCore() const;
         /// One full local factor solve, no communication between scans. Parent
         /// matrix generations are checked while reads are pinned. RHS, forward
         /// scratch and output are separate native fields on the same row space.

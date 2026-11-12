@@ -1,4 +1,5 @@
 #pragma once
+#include "DNDS/Core/NumericalStatus.hpp"
 
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/Physics/PerfectGas.hpp"
@@ -47,10 +48,20 @@ namespace DNDS::Cauchy
         /// scratch and is replaced only when the BC changes composition or
         /// density. No exchange, Array access, worker acquisition or allocation.
         /// Prescribed velocities use ground axes; results use mesh axes.
+        /// Numerical point entry; failure returns a status, never an exception.
+        NumericalResult<FlowState> TryFaceValue(EquationPointEvaluator &evaluator, const FlowState &inside,
+                                                Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
+                                                const Vector3 &point = {}, real time = 0,
+                                                OptionalRef<const RigidFrame> frame = {}) const noexcept;
         FlowState FaceValue(EquationPointEvaluator &evaluator, const FlowState &inside,
                             Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
                             const Vector3 &point = {}, real time = 0,
                             OptionalRef<const RigidFrame> frame = {}) const;
+        /// Numerical point entry; failure returns a status, never an exception.
+        NumericalResult<FlowState> TryExterior(EquationPointEvaluator &evaluator, const FlowState &inside,
+                                               Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
+                                               const Vector3 &point = {}, real time = 0,
+                                               OptionalRef<const RigidFrame> frame = {}) const noexcept;
         FlowState Exterior(EquationPointEvaluator &evaluator, const FlowState &inside,
                            Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
                            const Vector3 &point = {}, real time = 0,

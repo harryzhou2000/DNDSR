@@ -15,6 +15,28 @@
 
 namespace R = DNDS::Runtime;
 
+TEST_CASE("Kernel spans preserve signed slices and metadata publications own their storage")
+{
+    static_assert(std::is_trivially_copyable_v<DNDS::SpanView<const int>>);
+    int source[]{4, 7, 11, 19};
+    DNDS::SpanView<int> values{source, 4};
+    const DNDS::SpanView<const int> readOnly = values;
+    auto tail = values.Subspan(2, 2);
+    tail[1] = 23;
+    CHECK(readOnly.size() == 4);
+    CHECK(readOnly[3] == 23);
+    CHECK(values.Subspan(4, 0).empty());
+    const R::MetadataBuffer<int> published(std::vector<int>{4, 7, 11, 23});
+    auto independent = published.CopyTo(R::Device::Host(), R::ExecutionContext::Host());
+    CHECK(independent.Identity() != published.Identity());
+    CHECK(independent == published);
+    const auto span = independent.HostView();
+    const auto owner = independent;
+    independent = R::MetadataBuffer<int>{};
+    CHECK(span[2] == 11);
+    CHECK(owner.HostView()[3] == 23);
+}
+
 TEST_CASE("Unused Array access cancellation preserves values validity and generation")
 {
     R::Array<int> values(R::RowLayout::Dense(3, 2));

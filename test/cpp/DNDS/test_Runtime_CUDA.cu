@@ -11,6 +11,49 @@
 
 using namespace DNDS::Runtime;
 
+__global__ void ApplyMetadataWeights(DNDS::SpanView<const double> weights,
+                                     ArrayView<double, AccessBoundsChecks, FixedRows<1>> output)
+{
+    const DNDS::index iRow = blockIdx.x * blockDim.x + threadIdx.x;
+    if (iRow >= output.RowCount())
+        return;
+    double value = 0;
+    for (DNDS::index j = 0; j < weights.size(); ++j)
+        value += weights[j] * double(iRow + j);
+    output(iRow, 0) = value;
+}
+
+TEST_CASE("Backend metadata spans survive asynchronous launch after handles are replaced")
+{
+    const auto context = ExecutionContext::CUDA(0);
+    const MetadataBuffer<double> host(std::vector<double>{1, 2, 4});
+    auto placed = host.CopyTo(Device::CUDA(0), context);
+    CHECK_THROWS(placed.HostView());
+    const auto roundTrip = placed.CopyTo(Device::Host(), context);
+    CHECK(roundTrip == host);
+    Array<double> output(RowLayout::Dense(128, 1), Device::CUDA(0));
+    {
+        auto read = placed.Read(context);
+        auto write = output.Write(context);
+        const auto values = read.View<double>();
+        ApplyMetadataWeights<<<4, 32>>>(
+            {values.data, DNDS::index(values.size)},
+            write.View<FixedRows<1>>());
+        REQUIRE(cudaGetLastError() == cudaSuccess);
+        const auto done = Completion::Record(context);
+        read.Complete(done);
+        write.Complete(done);
+        placed = MetadataBuffer<double>{};
+        read.Wait();
+        write.Wait();
+    }
+    const auto result = output.To(Device::Host(), context);
+    const auto read = result.Read();
+    const auto values = read.View<FixedRows<1>>();
+    for (DNDS::index iRow = 0; iRow < values.RowCount(); ++iRow)
+        CHECK(values(iRow, 0) == 7 * iRow + 10);
+}
+
 template <class Policy>
 __global__ void FillStaticRows(ArrayView<double, AccessBoundsChecks, Policy> values)
 {

@@ -4,7 +4,7 @@
 #include "Cauchy/Physics/EquationFlux.hpp"
 #include "DNDS/Runtime/Array/ArrayView.hpp"
 
-namespace DNDS::Cauchy::Detail
+namespace DNDS::Cauchy::CPU
 {
     using FrozenFluxRow6 = Runtime::RowSpan<const real, Runtime::AccessBoundsChecks, 6, 6, 1>;
     using FrozenFluxMatrix6 = Runtime::RowSpan<real, Runtime::AccessBoundsChecks, 36, 36, 1>;

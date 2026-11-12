@@ -1,7 +1,8 @@
 #pragma once
 
-#include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
+#include "Cauchy/Discretization/FiniteVolumeViews.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/EquationRANS.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
 
 namespace DNDS::Cauchy::EquationFVDetail
@@ -41,21 +42,24 @@ namespace DNDS::Cauchy::EquationFVDetail
     struct MeanLinearizationOutput
     {
         index flowFirst, speciesFirst;
-        Eigen::MatrixXd &pressureDerivative;
-        std::vector<real> &pressure;
-        Eigen::MatrixXd *means;
+        Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::TableRows> pressureDerivative, pressure;
+        std::optional<Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::TableRows>> means;
 
-        void Publish(index iCell, const PointScratch &point, const EquationPointProperties &properties) const
+        NumericalStatus FillRow(index iCell, const PointScratch &point, const EquationPointProperties &properties) const noexcept
         {
+            const int species = properties.fractions.nSpecies;
+            if (species && (properties.speciesEnthalpy.nSpecies != species || properties.speciesGasConstant.nSpecies != species))
+                return NumericalStatus{NumericalError::InvalidInput}.At(iCell);
             const index nv = index(point.values.size());
             for (index j = 0; j < nv; ++j)
             {
-                DNDS_check_throw_info(std::isfinite(point.values[j]), "nonfinite equation Jacobian mean");
+                if (!std::isfinite(point.values[j]))
+                    return NumericalStatus{NumericalError::InvalidState}.At(iCell);
                 if (means)
-                    (*means)(j, iCell) = point.values[j];
+                    (*means)(iCell, j) = point.values[j];
             }
             const auto flow = point.Flow(flowFirst);
-            pressure[iCell] = properties.thermo.pressure;
+            pressure(iCell, 0) = properties.thermo.pressure;
             for (index column = 0; column < nv; ++column)
             {
                 FlowState direction{};
@@ -66,12 +70,15 @@ namespace DNDS::Cauchy::EquationFVDetail
                     index first, column;
                     real operator[](int k) const { return real(column == first + k); }
                 } species{speciesFirst, column};
-                pressureDerivative(column, iCell) = PreparePrimitiveDerivative(flow, direction, properties, species).pressure;
-                DNDS_check_throw_info(std::isfinite(pressureDerivative(column, iCell)), "nonfinite conservative EOS derivative");
+                pressureDerivative(iCell, column) = PreparePrimitiveDerivative(flow, direction, properties, species).pressure;
+                if (!std::isfinite(pressureDerivative(iCell, column)))
+                    return NumericalStatus{NumericalError::InvalidState}.At(iCell);
             }
+            return {};
         }
     };
-    inline void Gather(const std::vector<EquationBlockReadView> &blocks, index iCell, PointScratch &point, bool clearGradient = true)
+    template <class Blocks>
+    inline void Gather(const Blocks &blocks, index iCell, PointScratch &point, bool clearGradient = true)
     {
         index first = 0;
         for (const auto &block : blocks)
@@ -83,15 +90,7 @@ namespace DNDS::Cauchy::EquationFVDetail
         if (clearGradient)
             point.gradient.setZero();
     }
-    inline std::vector<EquationBlockReadView> BlockViews(const EquationDofs &state, const EquationDofs::ReadScope &scope)
-    {
-        std::vector<EquationBlockReadView> result;
-        result.reserve(size_t(state.BlockNumber()));
-        for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
-            result.push_back(scope.Block(iBlock));
-        return result;
-    }
-    inline void RotatePoint(PointScratch &point, const Geom::tGPoint &rotation, const std::vector<index> &vectorStarts)
+    inline void RotatePoint(PointScratch &point, const Geom::tGPoint &rotation, SpanView<const index> vectorStarts)
     {
         // Scalar gradients rotate once, vector gradients on both indices.
         for (index j = 0; j < index(point.values.size()); ++j)

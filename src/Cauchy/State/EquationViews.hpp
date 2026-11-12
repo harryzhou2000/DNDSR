@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cauchy/State/EquationDofs.hpp"
+#include "DNDS/Core/Span.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -77,8 +78,8 @@ namespace DNDS::Cauchy
                               has_static_layout = aos || soa || aosoa;
         static constexpr size_t component_stride = combined ? WholeView::component_stride : Runtime::DynamicExtent;
         static constexpr size_t row_stride = combined ? WholeView::row_stride : Runtime::DynamicExtent;
-        const EquationBlockArrayView<T> *blocks = nullptr;
-        const index *offsets = nullptr;
+        SpanView<const EquationBlockArrayView<T>> blocks;
+        SpanView<const index> offsets;
         index blockNumber = 0, rows = 0, components = 0, rans = -1, species = -1, flowFirst = -1;
         WholeView whole;
         FlowView flow;
@@ -162,22 +163,90 @@ namespace DNDS::Cauchy
     DNDS_DEVICE_CALLABLE typename EquationBlockedView<T, Kind, Width, TileWidth>::Row
     EquationBlockedView<T, Kind, Width, TileWidth>::operator[](index iRow) const { return {*this, iRow}; }
 
-    /// Host metadata owner, prepared once from an already acquired scope. This
-    /// owns descriptors only, never payloads or leases. Moving it invalidates
-    /// existing borrowed views. Select owned and ghost parts independently.
+    /// Borrowed dispatch descriptor. Its block/offset ranges are small metadata,
+    /// retained by the caller along with payload leases. No owner is passed to a
+    /// kernel; the same frozen shape selects CPU or future device specializations.
     template <class T>
-    class EquationViewLayout
+    class EquationLayoutView
     {
-        std::vector<EquationBlockArrayView<T>> _blocks;
-        std::vector<index> _offsets{0};
+        SpanView<const EquationBlockArrayView<T>> _blocks;
+        SpanView<const index> _offsets;
         index _flow = -1, _rans = -1, _species = -1;
         bool _combined = false;
+
+    public:
+        EquationLayoutView() = default;
+        EquationLayoutView(SpanView<const EquationBlockArrayView<T>> blocks,
+                           SpanView<const index> offsets, index flow, index rans,
+                           index species, bool combined)
+            : _blocks(blocks), _offsets(offsets), _flow(flow), _rans(rans),
+              _species(species), _combined(combined) {}
+        bool Combined() const { return _combined; }
+        bool Flow5() const { return _flow >= 0 && _blocks[_flow].ComponentNumber() == 5; }
+        bool FlowTable() const { return Flow5() && _blocks[_flow].HasTableLayout(); }
+        bool Table() const { return _combined && _blocks[0].HasTableLayout(); }
+        bool ColMajor() const
+        {
+            return _combined && _blocks[0].parent.kind == Runtime::RowLayoutKind::ColMajorTable;
+        }
+        bool TiledColMajor(index tileWidth) const
+        {
+            return _combined &&
+                   _blocks[0].parent.kind == Runtime::RowLayoutKind::TiledColMajorTable &&
+                   _blocks[0].parent.stride == tileWidth;
+        }
+        index ComponentNumber() const { return _offsets[_offsets.size() - 1]; }
+        template <EquationViewKind Kind = EquationViewKind::Generic,
+                  size_t Width = Runtime::DynamicExtent,
+                  size_t TileWidth = Runtime::DynamicExtent>
+        auto View() const
+        {
+            using V = EquationBlockedView<T, Kind, Width, TileWidth>;
+            DNDS_check_throw_info(!V::combined || _combined, "combined view requires ordered single-parent storage");
+            DNDS_check_throw_info(!V::aos || Table(), "combined AoS view requires row-major table storage");
+            DNDS_check_throw_info(!V::soa || ColMajor(), "combined SoA view requires column-major table storage");
+            DNDS_check_throw_info(!V::aosoa || TiledColMajor(index(TileWidth)),
+                                  "combined AoSoA view requires the selected tiled storage");
+            DNDS_check_throw_info(V::flow_width != 5 || Flow5(), "static flow view requires flow5 block");
+            DNDS_check_throw_info(!(V::aos || Kind == EquationViewKind::SeparateFlow5AoS) || FlowTable(), "static AoS flow requires table storage");
+            DNDS_check_throw_info(Width == Runtime::DynamicExtent || index(Width) == ComponentNumber(), "whole-equation static width differs");
+            V view;
+            view.blocks = _blocks;
+            view.offsets = _offsets;
+            view.blockNumber = index(_blocks.size());
+            view.rows = _blocks[0].RowCount();
+            view.components = ComponentNumber();
+            view.rans = _rans;
+            view.species = _species;
+            const auto parent = _blocks[0].parent;
+            view.whole = {{parent.data, parent.offsets, parent.rows, parent.width, parent.stride, parent.sizes, parent.kind}, 0, ComponentNumber()};
+            if (_flow >= 0)
+            {
+                const auto block = _blocks[_flow];
+                view.flow = {{block.parent.data, block.parent.offsets, block.parent.rows, block.parent.width, block.parent.stride, block.parent.sizes, block.parent.kind}, block.first, block.components};
+                view.flowFirst = _offsets[_flow];
+            }
+            return view;
+        }
+    };
+
+    /// Immutable backend-aware descriptor ownership, built under payload scopes.
+    /// Moving preserves views because MetadataBuffer allocations are shared;
+    /// destruction still requires all borrowed consumers to have completed.
+    template <class T>
+    class EquationViewLayout : public EquationLayoutView<T>
+    {
+        Runtime::MetadataBuffer<EquationBlockArrayView<T>> _blockStorage;
+        Runtime::MetadataBuffer<index> _offsetStorage;
 
     public:
         template <class Scope>
         EquationViewLayout(const EquationDofs &state, const Scope &scope, bool ghost = false)
         {
-            _combined = state.PhysicalFieldNumber() == 1;
+            bool _combined = state.PhysicalFieldNumber() == 1;
+            index _flow = -1, _rans = -1, _species = -1;
+            std::vector<EquationBlockArrayView<T>> _blocks;
+            std::vector<index> _offsets{0};
             for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
             {
                 const auto &name = state.Schema().blocks[iBlock].name;
@@ -201,54 +270,13 @@ namespace DNDS::Cauchy
                 _combined = _combined && location.firstComponent == _offsets.back();
                 _offsets.push_back(_offsets.back() + location.componentNumber);
             }
+            _blockStorage = Runtime::MetadataBuffer<EquationBlockArrayView<T>>(std::move(_blocks));
+            _offsetStorage = Runtime::MetadataBuffer<index>(std::move(_offsets));
+            static_cast<EquationLayoutView<T> &>(*this) = EquationLayoutView<T>(
+                _blockStorage.HostView(), _offsetStorage.HostView(), _flow, _rans, _species, _combined);
         }
-        bool Combined() const { return _combined; }
-        bool Flow5() const { return _flow >= 0 && _blocks[_flow].ComponentNumber() == 5; }
-        bool FlowTable() const { return Flow5() && _blocks[_flow].HasTableLayout(); }
-        bool Table() const { return _combined && _blocks[0].HasTableLayout(); }
-        bool ColMajor() const
-        {
-            return _combined && _blocks[0].parent.kind == Runtime::RowLayoutKind::ColMajorTable;
-        }
-        bool TiledColMajor(index tileWidth) const
-        {
-            return _combined &&
-                   _blocks[0].parent.kind == Runtime::RowLayoutKind::TiledColMajorTable &&
-                   _blocks[0].parent.stride == tileWidth;
-        }
-        index ComponentNumber() const { return _offsets.back(); }
-        template <EquationViewKind Kind = EquationViewKind::Generic,
-                  size_t Width = Runtime::DynamicExtent,
-                  size_t TileWidth = Runtime::DynamicExtent>
-        auto View() const
-        {
-            using V = EquationBlockedView<T, Kind, Width, TileWidth>;
-            DNDS_check_throw_info(!V::combined || _combined, "combined view requires ordered single-parent storage");
-            DNDS_check_throw_info(!V::aos || Table(), "combined AoS view requires row-major table storage");
-            DNDS_check_throw_info(!V::soa || ColMajor(), "combined SoA view requires column-major table storage");
-            DNDS_check_throw_info(!V::aosoa || TiledColMajor(index(TileWidth)),
-                                  "combined AoSoA view requires the selected tiled storage");
-            DNDS_check_throw_info(V::flow_width != 5 || Flow5(), "static flow view requires flow5 block");
-            DNDS_check_throw_info(!(V::aos || Kind == EquationViewKind::SeparateFlow5AoS) || FlowTable(), "static AoS flow requires table storage");
-            DNDS_check_throw_info(Width == Runtime::DynamicExtent || index(Width) == ComponentNumber(), "whole-equation static width differs");
-            V view;
-            view.blocks = _blocks.data();
-            view.offsets = _offsets.data();
-            view.blockNumber = index(_blocks.size());
-            view.rows = _blocks[0].RowCount();
-            view.components = ComponentNumber();
-            view.rans = _rans;
-            view.species = _species;
-            const auto parent = _blocks[0].parent;
-            view.whole = {{parent.data, parent.offsets, parent.rows, parent.width, parent.stride, parent.sizes, parent.kind}, 0, ComponentNumber()};
-            if (_flow >= 0)
-            {
-                const auto block = _blocks[_flow];
-                view.flow = {{block.parent.data, block.parent.offsets, block.parent.rows, block.parent.width, block.parent.stride, block.parent.sizes, block.parent.kind}, block.first, block.components};
-                view.flowFirst = _offsets[_flow];
-            }
-            return view;
-        }
+
+        EquationLayoutView<T> Descriptor() const { return *this; }
     };
 
     /// Explicit operator-selected dispatch, never an automatic kernel policy.
@@ -259,8 +287,8 @@ namespace DNDS::Cauchy
     template <EquationViewKind Kind = EquationViewKind::Generic,
               size_t Width = Runtime::DynamicExtent,
               size_t TileWidth = Runtime::DynamicExtent,
-              class Kernel, class T, class... Other>
-    decltype(auto) DispatchCPUEquationViews(Kernel &&kernel, const EquationViewLayout<T> &first, const EquationViewLayout<Other> &...other)
+              class Kernel, class First, class... Other>
+    decltype(auto) DispatchCPUEquationViews(Kernel &&kernel, const First &first, const Other &...other)
     {
         DNDS_check_throw_info(((first.ComponentNumber() == other.ComponentNumber()) && ...), "equation view widths differ");
         return std::forward<Kernel>(kernel)(first.template View<Kind, Width, TileWidth>(),
@@ -272,10 +300,10 @@ namespace DNDS::Cauchy
     /// numerical kernel and logical component order are identical. AoSoA tile
     /// widths outside this bounded instantiation list remain supported by the
     /// generic path rather than growing every translation unit.
-    template <size_t Width = Runtime::DynamicExtent, class Kernel, class T, class... Other>
+    template <size_t Width = Runtime::DynamicExtent, class Kernel, class First, class... Other>
     decltype(auto) DispatchCPUEquationLayouts(Kernel &&kernel,
-                                              const EquationViewLayout<T> &first,
-                                              const EquationViewLayout<Other> &...other)
+                                              const First &first,
+                                              const Other &...other)
     {
         DNDS_check_throw_info(((first.ComponentNumber() == other.ComponentNumber()) && ...),
                               "equation view widths differ");

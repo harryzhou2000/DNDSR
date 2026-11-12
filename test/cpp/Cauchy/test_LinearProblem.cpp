@@ -271,10 +271,16 @@ TEST_CASE("Linear matrix construction rejects invalid topology and supports empt
 {
     const A::DofSpace space(2, 1);
     C::LinearProblemContext bound(space, 5, {{1}, {0}}, {}, C::DiagonalStorage::Block);
-    const auto columns = std::make_shared<const std::vector<std::vector<DNDS::index>>>(std::vector<std::vector<DNDS::index>>{{1}, {0}});
+    const auto pattern = [](std::vector<std::vector<DNDS::index>> rows)
+    {
+        return std::make_shared<const C::LinearPatternStorage>(rows,
+                                                               std::vector<DNDS::index>{}, std::vector<DNDS::index>{},
+                                                               std::vector<DNDS::index>{}, std::vector<DNDS::index>{});
+    };
+    const auto columns = pattern({{1}, {0}});
     CHECK_NOTHROW(bound.ValidateColumns(columns));
     CHECK_NOTHROW(bound.ValidateColumns(columns));
-    CHECK_THROWS(bound.ValidateColumns(std::make_shared<const std::vector<std::vector<DNDS::index>>>(std::vector<std::vector<DNDS::index>>{{2}, {0}})));
+    CHECK_THROWS(bound.ValidateColumns(pattern({{2}, {0}})));
     CHECK_THROWS(C::LinearProblemContext(space, 5, {{1}, {2}}, {1}, C::DiagonalStorage::Block));
     CHECK_THROWS(C::LinearProblemContext(space, 5, {{1, 1}, {0}}, {}, C::DiagonalStorage::Block));
     CHECK_THROWS(C::LinearProblemContext(space, 5, {{0}, {0}}, {}, C::DiagonalStorage::Block));

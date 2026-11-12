@@ -1,14 +1,15 @@
 #pragma once
 
 #include "DNDS/Algebra/EigenView.hpp"
+#include "Cauchy/Implicit/LinearPattern.hpp"
 
-namespace DNDS::Cauchy::Detail
+namespace DNDS::Cauchy::CPU
 {
     /// Stateless Jacobi row update. Scratch is allocated once per call, never
     /// per row. Static zero-start removes all off-diagonal/input accesses.
-    template <bool Zero, class RHS, class Owned, class Ghost, class Output, class Inverse, class Blocks, class Pattern>
+    template <bool Zero, class RHS, class Owned, class Ghost, class Output, class Inverse, class Blocks>
     void JacobiRows(RHS rhs, Owned owned, Ghost ghost, Output output, Inverse inverse,
-                    const Blocks &blocks, const Pattern &pattern, const std::vector<index> &rows,
+                    const Blocks &blocks, LinearPatternView pattern, Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> rows,
                     index components, bool fullDiagonal)
     {
         constexpr bool segmented = std::is_same_v<Output, Algebra::DofComponentView<real>>;
@@ -20,17 +21,18 @@ namespace DNDS::Cauchy::Detail
             else
                 target = view[iRow];
         };
-        for (const auto iCell : rows)
+        for (index iRow = 0; iRow < rows.RowCount(); ++iRow)
         {
+            const index iCell = rows(iRow, 0);
             copyRow(rhs, iCell, value);
             if constexpr (!Zero)
                 for (index j = 0; j < index(pattern.columns[iCell].size()); ++j)
                 {
                     const index column = pattern.columns[iCell][j];
-                    if (column < index(pattern.partition->owned))
+                    if (column < pattern.ownedRows)
                         copyRow(owned, column, neighbor);
                     else
-                        copyRow(ghost, column - index(pattern.partition->owned), neighbor);
+                        copyRow(ghost, column - pattern.ownedRows, neighbor);
                     blocks.template Accumulate<Eigen::Dynamic, true>(iCell, j, neighbor, value, product);
                 }
             if (fullDiagonal)
@@ -46,9 +48,9 @@ namespace DNDS::Cauchy::Detail
     /// One ordered SGS scan. Input remote values are frozen by the enclosing
     /// phase scope. Lower local predecessors read forward; upper successors
     /// read output. No ownership/communication or per-row allocation here.
-    template <bool Upper, int Size, bool ZeroInput = false, class RHS, class Old, class Forward, class Output, class Ghost, class Inverse, class Blocks, class Pattern>
+    template <bool Upper, int Size, bool ZeroInput = false, class RHS, class Old, class Forward, class Output, class Ghost, class Inverse, class Blocks>
     void ScanSGSRows(RHS rhs, Old old, Forward forward, Output output, Ghost ghost, Inverse inverse, const Blocks &blocks,
-                     const Pattern &pattern, const std::vector<index> &rows, index components, bool fullDiagonal)
+                     LinearPatternView pattern, Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> rows, index components, bool fullDiagonal)
     {
         constexpr bool scratch = std::is_same_v<Output, Algebra::DofComponentView<real>>;
         if constexpr (scratch && std::is_same_v<RHS, Algebra::DofComponentView<const real>> &&
@@ -98,10 +100,10 @@ namespace DNDS::Cauchy::Detail
         };
         Eigen::Matrix<real, Size, 1> value(components);
         Eigen::Matrix<real, Blocks::needs_scratch ? Size : 0, 1> product(Blocks::needs_scratch ? components : 0);
-        const index ownedRows = index(pattern.partition->owned);
-        for (index scan = 0; scan < index(rows.size()); ++scan)
+        const index ownedRows = pattern.ownedRows;
+        for (index scan = 0; scan < rows.RowCount(); ++scan)
         {
-            const index iCell = rows[Upper ? index(rows.size()) - 1 - scan : scan];
+            const index iCell = rows(Upper ? rows.RowCount() - 1 - scan : scan, 0);
             value = readRow(rhs, iCell);
             const auto &columns = pattern.columns[iCell];
             for (index j = 0; j < index(columns.size()); ++j)
@@ -115,7 +117,7 @@ namespace DNDS::Cauchy::Detail
                     if (column >= ownedRows)
                         continue;
                     if constexpr (!Upper)
-                        if (pattern.position[column] >= pattern.position[iCell])
+                        if (pattern.position(column, 0) >= pattern.position(iCell, 0))
                             continue;
                 }
                 const auto subtract = [&](const auto &input)
@@ -124,7 +126,7 @@ namespace DNDS::Cauchy::Detail
                 };
                 if (column >= ownedRows)
                     subtract(readRow(ghost, column - ownedRows));
-                else if (pattern.position[column] < pattern.position[iCell])
+                else if (pattern.position(column, 0) < pattern.position(iCell, 0))
                     subtract(readRow(forward, column));
                 else if constexpr (Upper)
                     subtract(readRow(output, column));
@@ -156,9 +158,9 @@ namespace DNDS::Cauchy::Detail
     /// All ownership, matrix/field validation and row-dependency checks belong
     /// to the enclosing access scope. The field path keeps direct Eigen maps;
     /// only separate logical fields need one-row scratch, allocated before loops.
-    template <int Size = Eigen::Dynamic, class Owned, class Ghost, class Output, class Diagonal, class Blocks, class Pattern>
+    template <int Size = Eigen::Dynamic, class Owned, class Ghost, class Output, class Diagonal, class Blocks>
     void ApplyBlockRows(Owned owned, Ghost ghost, Output output, Diagonal diagonal, const Blocks &blocks,
-                        const Pattern &pattern, const std::vector<index> &rows, index components, bool fullDiagonal)
+                        LinearPatternView pattern, Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> rows, index components, bool fullDiagonal)
     {
         constexpr bool scratch = std::is_same_v<Output, Algebra::DofComponentView<real>>;
         if constexpr (scratch && std::is_same_v<Owned, Algebra::DofComponentView<const real>> &&
@@ -199,9 +201,10 @@ namespace DNDS::Cauchy::Detail
                 return input[iRow];
         };
         Eigen::Matrix<real, Blocks::needs_scratch ? Size : 0, 1> product(Blocks::needs_scratch ? components : 0);
-        const index ownedRows = index(pattern.partition->owned);
-        for (const auto iCell : rows)
+        const index ownedRows = pattern.ownedRows;
+        for (index iRow = 0; iRow < rows.RowCount(); ++iRow)
         {
+            const index iCell = rows(iRow, 0);
             auto result = [&]
             {
                 if constexpr (scratch)
@@ -234,6 +237,32 @@ namespace DNDS::Cauchy::Detail
             }
             if constexpr (scratch)
                 Algebra::UnpackEigenRow(output, iCell, result);
+        }
+    }
+
+    /// Copy operator blocks to the prepared rank-local factor template.
+    /// Missing entries are structural fill-in. All scopes are retained by the
+    /// factorization facade; the generic LU implementation owns elimination.
+    template <class Diagonal, class Blocks, class Factor>
+    void FillILUBlocks(const Diagonal &diagonal, const Blocks &blocks, const Factor &factor,
+                       Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::CSRRows> sourceBlocks,
+                       bool fullDiagonal)
+    {
+        for (index iCell = 0; iCell < sourceBlocks.RowCount(); ++iCell)
+        {
+            if (fullDiagonal)
+                factor(iCell, 0) = diagonal[iCell];
+            else
+                factor(iCell, 0) = diagonal[iCell].col(0).asDiagonal();
+            const auto slots = sourceBlocks[iCell];
+            for (index j = 0; j < slots.size(); ++j)
+            {
+                auto block = factor(iCell, 1 + j);
+                if (slots[j] == UnInitIndex)
+                    block.setZero();
+                else
+                    block = blocks(iCell, slots[j]);
+            }
         }
     }
 }

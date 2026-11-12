@@ -18,13 +18,85 @@ boundary binding, flux/source facades and diagnostics are separate
 owner-qualified units. Declaration-only internal headers share the private
 workspace and reconstruction-state shapes without duplicating ownership.
 
-Synchronous CPU arithmetic is isolated under `Cauchy/Discretization/CPU/`:
-generic and fixed-flow RHS kernels, auxiliary point/face/cell preparation,
-direct-gradient kernels, reconstruction positivity, limited-VR updates and
-source kernels. The finite-volume operator layer retains validation, leases,
-halo order, region scheduling and publication. A future CUDA implementation is
-a sibling backend behind the same prepared operator contracts; orchestration
-must not include these CPU implementation units.
+CPU kernel packages have their own declarations and definitions. For example,
+`CPU/FiniteVolumeBoundaryKernels.hpp/.cpp` declares/implements free boundary
+arithmetic, while `FiniteVolume_Boundary.cpp` acquires field and geometry leases,
+prepares views, selects the physical producer, and calls the kernel. Likewise,
+`Interface/CPU/InterfaceSamplingKernels` and `InterfacePacketKernels` handle
+query placement and receiver packet arithmetic; `InterfaceCoupling.cpp` owns
+matching, transfers and publication. CFV owns the free donor/basis evaluation
+kernels called by these adapters. `Implicit/CPU/LinearProblemKernels_Diagonal.cpp`
+implements the declarations in `LinearProblemKernels.hpp`.
+
+Generic/fixed RHS, auxiliary, gradient, positivity, limited-VR and source
+packages now expose free CPU entries. `FiniteVolume_<Role>.cpp` retains the
+corresponding workspace/access/publication members. The same separation covers
+Jacobian preparation and evaluated blocks, Apply/Jacobi/SGS, ILU matrix filling,
+nonlinear PP/defect arithmetic, pMG projections/norms, explicit stage updates,
+chemistry advancement and derived-property refresh. Linear specialization and
+instantiation occur in `CPU/LinearBlockKernels_*.cpp`; its `_Impl.hpp` is private
+to that package. Generic LU factorization and shared ODE/DOF arithmetic remain
+in their existing Solver/DNDS owners.
+
+Kernel operands distinguish equation/basis-sized metadata from entity fields.
+Component offsets, vector starts and small descriptor tables use immutable
+backend-aware `Runtime::MetadataBuffer` publications and `DNDS::SpanView`
+capsules. Cells, faces, incidences, quadrature records, row maps and region
+selections use local `Runtime::Array` and their ordinary access scopes, even
+when setup publishes them as immutable rank-local data. The enclosing operation
+retains owners and leases through execution. Kernels receive views and plain
+parameters; they do not acquire leases, communicate, schedule or publish.
+
+`MetadataBuffer::CopyTo` explicitly publishes the same bytes on a backend and
+completes setup transfer before exposing them. It does not relocate pointers
+inside metadata records. Nested array/block views must be prepared for the
+selected backend before uploading a descriptor table. CPU property workers are
+explicit execution contexts, acquired outside the numerical kernel. A missing
+device producer remains an explicit capability failure.
+
+### Numerical storage and retained access
+
+| Data | Authoritative storage | Execution operand |
+|---|---|---|
+| FV quadrature/incidence records, offsets, core/dependent lists, PP displacements | `FiniteVolumeStencilStorage` Runtime arrays | `FiniteVolumeStencilView` under one retained read access |
+| Boundary trace geometry and receiver quadrature/face-center layout | Local Runtime arrays | Fixed-width array views |
+| Linear columns/order/core lists and ILU source-slot mapping | `LinearPatternStorage` Runtime arrays | `LinearPatternView` |
+| Evaluated Jacobian mean/EOS/radius snapshots and face contributions | Runtime arrays; two-level CSR for cell/block/incidence geometry | Frozen row views retained once by the evaluator |
+| Equation block/column descriptors, vector starts, active components and thermal species reference values | Immutable `MetadataBuffer` | `SpanView<const T>` |
+| Equation-sized reduction results and point scratch | Per-call CPU scratch | Mutable spans or local dense views |
+| Chemistry workers, boundary producers, communicator/stream owners | Explicit CPU/context owners | Explicit property context or orchestration-only handle |
+
+Setup may use temporary vectors to count, order and fill canonical fields. It
+does not keep a second vector copy after publication. Public diagnostic list
+accessors return copies; repeated numerical access uses a retained read scope.
+Vectors containing Arrays, access leases, service objects or configuration
+recipes are ownership/control containers, not numeric field storage.
+
+```mermaid
+flowchart LR
+    Plan[Plan / state owner] --> Field[Runtime Array fields]
+    Plan --> Meta[Immutable MetadataBuffer]
+    Operation[Operator reservation / queued entry] --> Lease[Retained array access scopes]
+    Lease --> Field
+    Operation --> Meta
+    Operation --> Worker[CPU property worker context]
+    Operation --> View[Plain array views and metadata spans]
+    View --> Kernel[Free CPU kernel]
+    Worker --> Kernel
+```
+
+The allocation is retained by the operation and its scopes, not by the borrowed
+kernel view. A CPU worker reservation must survive execution. A future GPU
+submission must retain operands through its ordered completion/retirement,
+not merely until the launch wrapper returns. Metadata upload alone does not
+make CPU physics producers or nested host views device-capable. This source
+extraction prepares the boundary; it does not claim Cauchy CUDA execution.
+
+`OffDiagonalReadAccess::View()` is a low-level borrowed numerical descriptor.
+Its evaluated variant points to an immutable evaluator retained by the access
+scope; its assembled variant borrows block storage. Neither variant owns MPI
+or reads live solution state. This avoids transporting a lease-owning context
+into CPU kernels while preserving the assembled/direct-evaluated dispatch.
 
 ## Cauchy preliminary source cleanup
 

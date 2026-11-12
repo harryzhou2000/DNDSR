@@ -1,3 +1,4 @@
+#include "Cauchy/State/CPU/FieldKernels.hpp"
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
 #include "DNDS/Runtime/Execution/SessionAccess.hpp"
 #include "DNDS/MPI/Failure.hpp"
@@ -326,8 +327,6 @@ namespace DNDS::Cauchy
                           inputs.boundary.Emplace(*work.incoming);
                       auxiliaryPreparation.emplace(BeginAuxValues(state, *auxiliary, time, work.workers, inputs)); });
         const bool overlap = _data->settings.execution.overlap;
-        OperatorSchedule schedule(engine, stream, overlap);
-        const auto rest = schedule.DependentRegion();
         const auto sweep = [&](CFV::ReconstructionRegion region)
         {
             if (work.limitedVR)
@@ -368,7 +367,13 @@ namespace DNDS::Cauchy
                 }
             work.PreparePrimitiveGradient(state, region);
         };
-        // Locals captured by worker commands remain alive even on exceptions.
+        // Destruction order is part of the worker lifetime contract: gradient
+        // is captured by reference below, so the schedule must drain before
+        // this closure and the earlier retained operands leave scope.
+        OperatorSchedule schedule(engine, stream, overlap);
+        const auto rest = schedule.DependentRegion();
+        // Payload operations retain their own inputs; queued callbacks only
+        // borrow objects declared before schedule (or capture values explicitly).
         std::vector<Algebra::DofHalo<>::Operation> meanOperations;
         meanOperations.reserve(reconstruction.meanHalo.size());
         ++reconstruction.meanEpoch;
@@ -389,8 +394,10 @@ namespace DNDS::Cauchy
             schedule.Submit([&, variational]
                             { work.FillBoundary(state, variational && _data->settings.numerics.reconstructionBoundaryFromPolynomial,
                                                 time, *evaluator, incoming); });
-        const bool directGradientWork = !work.meanOnly && (numerics.reconstruction == "gradient" ||
-                                                           (_data->equation.HasRANS() && numerics.reconstruction == "constant"));
+        // P0 RANS sources still need physical gradients during a mean-only
+        // timestep forecast; disabling reconstruction must not skip this pass.
+        const bool directGradientWork = (!work.meanOnly && numerics.reconstruction == "gradient") ||
+                                        (_data->equation.HasRANS() && numerics.reconstruction == "constant");
         const bool gradientWork = directGradientWork || bool(work.limitedVR) || bool(work.primitiveGradient);
         if (gradientWork && overlap && !deferredEvaluator)
             schedule.Submit([&]
@@ -503,12 +510,7 @@ namespace DNDS::Cauchy
                                                   "VR convergence check lacks workspace");
                             const auto bRead = work.fields[iField].reconstruction->temporary.Owned().Read();
                             const auto a = aRead.View<R::UniformTableRows>(), b = bRead.View<R::UniformTableRows>();
-                            for (index iCell = 0; iCell < a.RowCount(); ++iCell)
-                                for (index j = 0; j < a.Width(); ++j)
-                                {
-                                    const real delta = b(iCell, j) - a(iCell, j);
-                                    norms[0] += delta * delta; norms[1] += b(iCell, j) * b(iCell, j);
-                                }
+                            CPU::AccumulateReconstructionUpdateNorm(a, b, {norms, 2});
                         } });
                     MPI::AllreduceInPlace<MPI::Reduction::Sum>(
                         MPI::ContiguousView<real>{norms, 2}, mpi.comm);

@@ -1,6 +1,6 @@
-#include "Cauchy/Implicit/JacobianKernels.hpp"
+#include "Cauchy/Implicit/CPU/JacobianKernels.hpp"
 
-namespace DNDS::Cauchy::Detail
+namespace DNDS::Cauchy::CPU
 {
     namespace
     {

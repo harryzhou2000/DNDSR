@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DNDS/Math/HardEigen.hpp"
+#include "DNDS/Core/NumericalStatus.hpp"
 #include <Eigen/LU>
 #include <cmath>
 
@@ -18,13 +19,14 @@ namespace DNDS::Direct
     /// Preserve fixed matrix dimensions supplied by a kernel specialization;
     /// dynamic callers retain the same dynamic result. No size dispatch here.
     template <class Derived>
-    auto InvertDiagonalBlock(const Eigen::MatrixBase<Derived> &matrix)
+    auto TryInvertDiagonalBlock(const Eigen::MatrixBase<Derived> &matrix) noexcept
+        -> NumericalResult<DiagonalBlockInverseResult<typename Derived::PlainObject>>
     {
         using Matrix = typename Derived::PlainObject;
         using Vector = Eigen::Matrix<real, Derived::RowsAtCompileTime, 1>;
-        DNDS_check_throw_info(matrix.rows() > 0 && matrix.rows() == matrix.cols() && matrix.allFinite() &&
-                                  matrix.diagonal().array().abs().minCoeff() > 0,
-                              "invalid or zero diagonal in native block factorization");
+        if (!(matrix.rows() > 0 && matrix.rows() == matrix.cols() && matrix.allFinite() &&
+              matrix.diagonal().array().abs().minCoeff() > 0))
+            return NumericalStatus{NumericalError::InvalidInput, 1};
         const Vector scale = matrix.diagonal().array().inverse();
         Matrix normalized = scale.asDiagonal() * matrix;
         DiagonalBlockInverseResult<Matrix> result;
@@ -46,8 +48,19 @@ namespace DNDS::Direct
             HardEigen::EigenLeastSquareInverse_Filtered(dynamicNormalized, inverse, 0, 0);
             result.value = inverse;
         }
-        DNDS_check_throw_info(result.value.allFinite(), "native block inverse is nonfinite");
+        if (!result.value.allFinite())
+            return NumericalStatus{NumericalError::InvalidState, 2};
         result.value = (result.value * scale.asDiagonal()).eval();
         return result;
+    }
+
+    /// Checked library adapter. CPU numerical kernels use TryInvertDiagonalBlock
+    /// and propagate its status; only the operator boundary chooses error policy.
+    template <class Derived>
+    auto InvertDiagonalBlock(const Eigen::MatrixBase<Derived> &matrix)
+    {
+        auto result = TryInvertDiagonalBlock(matrix);
+        DNDS_check_throw_info(result.status, "invalid or nonfinite native block inverse");
+        return std::move(result.value);
     }
 }

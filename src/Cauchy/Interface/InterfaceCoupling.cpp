@@ -1,4 +1,6 @@
 #include "Cauchy/Interface/InterfaceCoupling.hpp"
+#include "Cauchy/Interface/CPU/InterfacePacketKernels.hpp"
+#include "Cauchy/Interface/CPU/InterfaceSamplingKernels.hpp"
 #include "CFV/Plans/DistributedInterfaceSamplingPlan.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include <limits>
@@ -80,7 +82,7 @@ namespace DNDS::Cauchy
         {
             struct DonorField
             {
-                std::vector<index> logicalComponents;
+                R::MetadataBuffer<index> logicalComponents;
                 std::optional<CFV::DistributedSamplingWorkspace> workspace;
                 R::Array<real> values;
                 std::optional<R::TransferBinding> result;
@@ -89,14 +91,10 @@ namespace DNDS::Cauchy
             InterfaceSettings settings;
             std::shared_ptr<R::CommunicationContext> context;
             std::optional<Geom::BoundaryPatch> patch;
-            struct ReceiverRow
-            {
-                index row;
-                bool faceCenter;
-            };
             // A single distributed match/sample batch, with explicit output
             // destinations in the quadrature and face-centered packet tables.
-            std::vector<ReceiverRow> receiverRows;
+            R::Array<CPU::InterfacePacketRow> receiverRows{R::RowLayout::Dense(0, 1)};
+            R::Array<real> receiverReferencePoints{R::RowLayout::Dense(0, 3)};
             std::optional<std::pair<Geom::RigidPose, Geom::RigidPose>> poses;
             std::optional<CFV::DistributedInterfaceSamplingPlan> sampling;
             std::vector<DonorField> fields;
@@ -107,8 +105,11 @@ namespace DNDS::Cauchy
             /// The latter is broadcast from a real receiver rank, so all
             /// coupling ranks share one setup-time compatibility decision.
             std::string donorSchema;
-            std::vector<index> receiverComponents;
-            std::vector<index> lastDonors;
+            R::MetadataBuffer<index> receiverComponents;
+            R::MetadataBuffer<index> vectorStarts;
+            // Initial history is empty but retains the same fixed width as
+            // every later publication, including nonmember/zero-query ranks.
+            R::Array<index> lastDonors{R::RowLayout::Dense(0, 1)};
             uint64_t mapGeneration = 0;
         };
         mutable std::mutex operationMutex;
@@ -196,17 +197,47 @@ namespace DNDS::Cauchy
                     connection.patch = fv->BuildBoundaryPatch(settings.donorZone);
                 if (auto &fv = data.discrete[connection.receiver])
                 {
-                    const auto &points = fv->BoundaryPoints();
-                    for (index iPoint = 0; iPoint < index(points.size()); ++iPoint)
-                        if (points[iPoint].interface && points[iPoint].zone == settings.receiverZone)
-                            connection.receiverRows.push_back({iPoint, false});
-                    const auto &faces = fv->BoundaryFaces();
-                    for (index iFace = 0; iFace < index(faces.size()); ++iFace)
-                        if (faces[iFace].interface && faces[iFace].zone == settings.receiverZone)
-                            connection.receiverRows.push_back({iFace, true});
+                    std::vector<CPU::InterfacePacketRow> selectedRows;
+                    const auto pointRead = fv->ReadBoundaryPoints();
+                    const auto points = pointRead.View<R::FixedRows<1>>();
+                    for (index iPoint = 0; iPoint < points.RowCount(); ++iPoint)
+                        if (points(iPoint, 0).interface && points(iPoint, 0).zone == settings.receiverZone)
+                            selectedRows.push_back({iPoint, false});
+                    const auto faceRead = fv->ReadBoundaryFaces();
+                    const auto faces = faceRead.View<R::FixedRows<1>>();
+                    for (index iFace = 0; iFace < faces.RowCount(); ++iFace)
+                        if (faces(iFace, 0).interface && faces(iFace, 0).zone == settings.receiverZone)
+                            selectedRows.push_back({iFace, true});
+                    connection.receiverRows = R::Array<CPU::InterfacePacketRow>(
+                        R::RowLayout::Dense(selectedRows.size(), 1));
+                    connection.receiverReferencePoints = R::Array<real>(
+                        R::RowLayout::Dense(selectedRows.size(), 3));
+                    auto write = connection.receiverRows.Write();
+                    auto pointWrite = connection.receiverReferencePoints.Write();
+                    const auto rows = write.View<R::FixedRows<1>>();
+                    const auto locations = pointWrite.View<R::FixedRows<3>>();
+                    for (index iRow = 0; iRow < rows.RowCount(); ++iRow)
+                    {
+                        rows(iRow, 0) = selectedRows[size_t(iRow)];
+                        const auto row = selectedRows[size_t(iRow)];
+                        const auto point = row.faceCenter
+                                               ? faces(row.row, 0).point
+                                               : points(row.row, 0).point;
+                        for (int d = 0; d < 3; ++d)
+                            locations(iRow, d) = point[size_t(d)];
+                    }
+                    std::vector<index> vectors;
+                    index first = 0;
+                    for (const auto &block : fv->Equation().Schema().blocks)
+                    {
+                        for (const auto start : block.vectorStarts)
+                            vectors.push_back(first + start);
+                        first += index(block.components.size());
+                    }
+                    connection.vectorStarts = R::MetadataBuffer<index>(vectors);
                 }
             }
-            index counts[2]{connection.patch ? connection.patch->Size() : 0, index(connection.receiverRows.size())};
+            index counts[2]{connection.patch ? connection.patch->Size() : 0, connection.receiverRows.RowCount()};
             MPI::AllreduceInPlace<MPI::Reduction::Sum>(
                 MPI::ContiguousView<index>{counts, 2}, coupling);
             DNDS_check_throw_info(counts[0] > 0 && counts[1] > 0, "interface donor patch or receiver boundary quadrature is globally empty; check zone IDs");
@@ -236,7 +267,7 @@ namespace DNDS::Cauchy
         auto session = _data->Enter();
         InterfaceDiagnostics result;
         for (const auto &connection : _data->connections)
-            result.queryPoints += index(connection.receiverRows.size());
+            result.queryPoints += connection.receiverRows.RowCount();
         result.changedDonors = _data->changedDonors;
         index counts[2]{result.queryPoints, result.changedDonors};
         MPI::AllreduceInPlace<MPI::Reduction::Sum>(
@@ -369,7 +400,7 @@ namespace DNDS::Cauchy
                             mapping==schema.MapComponentsTo(receiver->Equation().Schema()),
                             "interface receiver ranks resolve different equation mappings"); });
                 connection.donorSchema = std::move(donorSchema);
-                connection.receiverComponents = std::move(mapping);
+                connection.receiverComponents = R::MetadataBuffer<index>(mapping);
             }
             else
                 MPI::LocalStage(data.mpi, [&]
@@ -436,8 +467,8 @@ namespace DNDS::Cauchy
                 std::optional<CFV::VariationalReconstructionPlan> reconstruction;
                 MPI::LocalStage(data.mpi, [&]
                                 {
-                    points=R::Array<real>(R::RowLayout::Dense(connection.receiverRows.size(),3));
-                    ids=R::Array<index>(R::RowLayout::Dense(connection.receiverRows.size(),1));
+                    points=R::Array<real>(R::RowLayout::Dense(connection.receiverRows.RowCount(),3));
+                    ids=R::Array<index>(R::RowLayout::Dense(connection.receiverRows.RowCount(),1));
                     if(donor)
                     {
                         patch=connection.patch->WithPose(donorPose);
@@ -449,14 +480,19 @@ namespace DNDS::Cauchy
                     {
                         const auto frame=receiver->Motion().At(time);
                         auto p=points.Write(); auto key=ids.Write();
-                        for(index iPoint=0;iPoint<index(connection.receiverRows.size());++iPoint)
+                        const auto reference = connection.receiverReferencePoints.Read();
+                        CPU::InterfaceQueryRequest request;
+                        request.referencePoints = reference.View<R::FixedRows<3>>();
+                        request.worldPoints = p.View<R::FixedRows<3>>();
+                        request.ids = key.View<R::FixedRows<1>>();
+                        request.moving = frame.moving;
+                        for (int d = 0; d < 3; ++d)
                         {
-                            const auto row=connection.receiverRows[iPoint];
-                            const auto &point = row.faceCenter ? receiver->BoundaryFaces()[row.row] : receiver->BoundaryPoints()[row.row];
-                            const auto world=frame.WorldPoint(point.point);
-                            for(int d=0;d<3;++d) p.View()(iPoint,d)=world[d];
-                            key.View()(iPoint,0)=iPoint;
+                            request.translation[size_t(d)] = frame.pose.translation[d];
+                            for (int e = 0; e < 3; ++e)
+                                request.rotation[size_t(3*d+e)] = frame.pose.rotation(d,e);
                         }
+                        CPU::BuildInterfaceQueries(request);
                     } });
                 Geom::InterfaceSearchSettings search;
                 search.maxGap = connection.settings.maxGap;
@@ -465,13 +501,17 @@ namespace DNDS::Cauchy
                                                                      connection.settings.routing == "coarseBoxes" ? Geom::InterfaceRoutingMode::CoarseBoxes : Geom::InterfaceRoutingMode::AllGatherBoundary, search);
                 MPI::LocalStage(data.mpi, [&]
                                 {
-                    std::vector<index> donors(map.Size());
+                    R::Array<index> donors(R::RowLayout::Dense(map.Size(), 1));
+                    auto write = donors.Write();
+                    const auto donorRows = write.View<R::FixedRows<1>>();
+                    const auto previousRead = connection.lastDonors.Read();
+                    const auto previous = previousRead.View<R::FixedRows<1>>();
                     for(index iPoint=0;iPoint<map.Size();++iPoint)
                     {
                         const auto match=map.Get(iPoint).geometry;
-                        donors[iPoint]=match.donorOriginalId;
+                        donorRows(iPoint,0)=match.donorOriginalId;
                         data.maximumGap=std::max(data.maximumGap,match.distance);
-                        if(!connection.lastDonors.empty()&&connection.lastDonors[iPoint]!=donors[iPoint]) ++data.changedDonors;
+                        if(previous.RowCount()&&previous(iPoint,0)!=donorRows(iPoint,0)) ++data.changedDonors;
                     }
                     connection.lastDonors=std::move(donors);
                     ++data.mapBuilds;
@@ -491,7 +531,7 @@ namespace DNDS::Cauchy
                         auto &field = connection.fields[size_t(iField)];
                         const index width =
                             connection.donorDescriptor[size_t(2 + iField)];
-                        field.logicalComponents.resize(size_t(width));
+                        std::vector<index> logicalComponents(size_t(width), index{});
                         for (index j = 0; j < width; ++j)
                         {
                             const index donorComponent =
@@ -501,14 +541,15 @@ namespace DNDS::Cauchy
                                     donorComponent <
                                         index(connection.receiverComponents.size()),
                                 "interface donor field contains an invalid logical component");
-                            field.logicalComponents[size_t(j)] =
+                            logicalComponents[size_t(j)] =
                                 connection.receiverComponents[size_t(donorComponent)];
                         }
+                        field.logicalComponents = R::MetadataBuffer<index>(logicalComponents);
                         offset += width;
                         field.workspace =
                             connection.sampling->BuildWorkspace(width);
                         field.values = R::Array<real>(R::RowLayout::Dense(
-                            connection.receiverRows.size(), width));
+                            connection.receiverRows.RowCount(), width));
                     } });
                 for (index iField = 0;
                      iField < index(connection.fields.size()); ++iField)
@@ -575,44 +616,30 @@ namespace DNDS::Cauchy
                                      .WriteOwned();
                 const auto outputLayout = write.ComponentLayout();
                 const auto faceOutputLayout = faceWrite.ComponentLayout();
-                const auto output = outputLayout.View();
-                const auto faceOutput = faceOutputLayout.View();
-                for(index iPoint=0;iPoint<index(connection.receiverRows.size());++iPoint)
-                {
-                    const auto row = connection.receiverRows[iPoint];
-                    const auto destination = row.faceCenter ? faceOutput : output;
-                    for (index iField = 0;
-                         iField < index(connection.fields.size()); ++iField)
+                std::vector<CPU::InterfacePacketFieldView> fieldViews;
+                fieldViews.reserve(connection.fields.size());
+                for (index iField = 0;
+                     iField < index(connection.fields.size()); ++iField)
+                    fieldViews.push_back({
+                        reads[size_t(iField)].View<R::UniformTableRows>(),
+                        connection.fields[size_t(iField)].logicalComponents.HostView()});
+                const R::MetadataBuffer<CPU::InterfacePacketFieldView> descriptors(fieldViews);
+                const auto rowRead = connection.receiverRows.Read();
+                CPU::InterfacePacketRequest request;
+                request.rows = rowRead.View<R::FixedRows<1>>();
+                request.fields = descriptors.HostView();
+                request.vectorStarts = connection.vectorStarts.HostView();
+                request.quadrature = outputLayout.View();
+                request.faceCenters = faceOutputLayout.View();
+                request.rotation.donorActive = donorFrame.moving;
+                request.rotation.receiverActive = receiverFrame.moving;
+                for (int d = 0; d < 3; ++d)
+                    for (int e = 0; e < 3; ++e)
                     {
-                        const auto values =
-                            reads[size_t(iField)]
-                                .View<R::UniformTableRows>();
-                        const auto &logical =
-                            connection.fields[size_t(iField)].logicalComponents;
-                        for (index j = 0; j < index(logical.size()); ++j)
-                            destination(row.row, logical[size_t(j)]) =
-                                values(iPoint, j);
+                        request.rotation.donor[size_t(3*d+e)] = donorFrame.pose.rotation(d,e);
+                        request.rotation.receiver[size_t(3*d+e)] = receiverFrame.pose.rotation(e,d);
                     }
-                    index first = 0;
-                    for (const auto &block : data.incoming[connection.receiver]
-                                                 ->QuadratureValues()
-                                                 .Schema()
-                                                 .blocks)
-                    {
-                        for (const index start : block.vectorStarts)
-                        {
-                            Vector3 value{
-                                destination(row.row, first + start),
-                                destination(row.row, first + start + 1),
-                                destination(row.row, first + start + 2)};
-                            value = receiverFrame.LocalVector(
-                                donorFrame.WorldVector(value));
-                            for (int d = 0; d < 3; ++d)
-                                destination(row.row, first + start + d) = value[d];
-                        }
-                        first += index(block.components.size());
-                    }
-                }
+                CPU::FillInterfacePacket(request);
                 DNDS_check_throw_info(
                     connection.mapGeneration > 0 &&
                         !connection.fields.empty() &&

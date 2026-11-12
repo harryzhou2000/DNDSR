@@ -1,6 +1,7 @@
+#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Implicit/LinearProblem.hpp"
-#include "Cauchy/Implicit/LinearBlockKernels.hpp"
-#include "Solver/BlockInverse.hpp"
+#include "Cauchy/Implicit/CPU/LinearBlockKernels.hpp"
+#include "Cauchy/Implicit/CPU/LinearProblemKernels.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include <limits>
 #include <optional>
@@ -32,9 +33,10 @@ namespace DNDS::Cauchy
     {
         DNDS_check_throw_info(space.OwnedRows() <= size_t(INT64_MAX) && space.GhostRows() <= size_t(INT64_MAX) - space.OwnedRows(),
                               "linear row space exceeds signed index range");
-        auto data = std::make_shared<Pattern>(space.Pin(), std::move(columns));
+        auto data = std::make_shared<Pattern>(space.Pin());
+        std::vector<index> dependent, order, position;
         const index rows = index(data->partition->owned), allRows = rows + index(data->partition->ghost);
-        DNDS_check_throw_info(index(data->columns.size()) == rows, "linear stencil row count differs from its DOF space");
+        DNDS_check_throw_info(index(columns.size()) == rows, "linear stencil row count differs from its DOF space");
         std::vector<unsigned char> isCore(rows, 0);
         for (auto iCell : core)
         {
@@ -43,7 +45,7 @@ namespace DNDS::Cauchy
         }
         for (index iCell = 0; iCell < rows; ++iCell)
         {
-            auto sorted = data->columns[iCell];
+            auto sorted = columns[iCell];
             std::sort(sorted.begin(), sorted.end());
             DNDS_check_throw_info(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end(), "duplicate linear stencil column");
             for (auto column : sorted)
@@ -53,14 +55,14 @@ namespace DNDS::Cauchy
                 data->hasGhostColumns |= column >= rows;
             }
             if (!isCore[iCell])
-                data->dependent.push_back(iCell);
+                dependent.push_back(iCell);
         }
-        data->core = std::move(core);
-        data->order = data->core;
-        data->order.insert(data->order.end(), data->dependent.begin(), data->dependent.end());
-        data->position.resize(rows);
+        order = core;
+        order.insert(order.end(), dependent.begin(), dependent.end());
+        position.resize(rows);
         for (index i = 0; i < rows; ++i)
-            data->position[data->order[i]] = i;
+            position[order[i]] = i;
+        data->rows = LinearPatternStorage(columns, order, position, core, dependent);
         return data;
     }
     LinearProblemContext::LinearProblemContext(Algebra::DofSpace space, index components,
@@ -73,7 +75,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(offDiagonal == OffDiagonalStorage::Assembled || offDiagonal == OffDiagonalStorage::DirectEvaluated,
                               "invalid off-diagonal storage mode");
         if (offDiagonal == OffDiagonalStorage::Assembled)
-            _offDiagonal.emplace(Counts(_pattern->columns), components);
+            _offDiagonal.emplace(Counts(Columns()), components);
         _diagonalStoragePin = _diagonal.SharedStorage();
         _diagonalShape = _diagonal.ShapeVersion();
         if (_offDiagonal)
@@ -116,9 +118,22 @@ namespace DNDS::Cauchy
     {
         ValidateMatrix();
         DNDS_check_throw_info(!_offDiagonal && evaluator && evaluator->Components() == _components &&
-                                  evaluator->RowSpaceIdentity() == _pattern->partition && evaluator->Columns() == _pattern->columns &&
+                                  evaluator->RowSpaceIdentity() == _pattern->partition &&
                                   _offDiagonalGeneration < UINT64_MAX,
                               "invalid evaluated off-diagonal publication");
+        // Compare retained CSR rows directly. Columns() is a diagnostic copy;
+        // rebuilding nested host vectors here would allocate every update.
+        const auto patternRead = _pattern->rows.Read();
+        const auto columns = patternRead.View().columns;
+        DNDS_check_throw_info(evaluator->RowNumber() == columns.RowCount(), "evaluated row count differs");
+        for (index iRow = 0; iRow < columns.RowCount(); ++iRow)
+        {
+            const auto expected = columns[iRow];
+            const auto actual = evaluator->ColumnRow(iRow);
+            DNDS_check_throw_info(actual.size() == expected.size() &&
+                                      std::equal(actual.begin(), actual.end(), expected.begin()),
+                                  "evaluated column order differs");
+        }
         auto publication = _diagonal.Write();
         _offDiagonalEvaluator = std::move(evaluator);
         ++_offDiagonalGeneration;
@@ -149,39 +164,10 @@ namespace DNDS::Cauchy
         const auto output = write->View<R::TableRows>();
         const index width = DiagonalWidth(_components, _diagonalStorage);
         DNDS_check_throw_info(input.RowCount() == index(_pattern->partition->owned) && input.Width() == width, "linear diagonal shape changed");
-        if (_diagonalStorage == DiagonalStorage::Entries)
-            for (index iCell = 0; iCell < input.RowCount(); ++iCell)
-                for (index j = 0; j < _components; ++j)
-                {
-                    DNDS_check_throw_info(std::isfinite(input(iCell, j)) && input(iCell, j) != 0, "nonfinite or zero linear diagonal entry");
-                    output(iCell, j) = 1 / input(iCell, j);
-                }
-        else
-        {
-            const auto invert = [&](auto width)
-            {
-                constexpr int Size = decltype(width)::value;
-                const auto matrices = Algebra::MakeEigenRowMatrices<Size, Size>(input, _components, _components);
-                const auto inverses = Algebra::MakeEigenRowMatrices<Size, Size>(output, _components, _components);
-                for (index iCell = 0; iCell < input.RowCount(); ++iCell)
-                {
-                    auto result = Direct::InvertDiagonalBlock(matrices[iCell]);
-                    inverses[iCell] = result.value;
-                    _inverseFallbacks += result.usedSVD;
-                }
-            };
-            // Match the common small-block ILU kernels without per-cell
-            // dynamic Eigen temporaries. Uncommon widths keep the same policy
-            // and generic path; no equation or layout choice is inferred here.
-            if (_components == 5)
-                invert(std::integral_constant<int, 5>{});
-            else if (_components == 6)
-                invert(std::integral_constant<int, 6>{});
-            else if (_components == 7)
-                invert(std::integral_constant<int, 7>{});
-            else
-                invert(std::integral_constant<int, Eigen::Dynamic>{});
-        }
+        _inverseFallbacks = RequireNumericalSuccess(CPU::InvertLinearDiagonal(
+                                                        {input, output, _components,
+                                                         _diagonalStorage == DiagonalStorage::Block}),
+                                                    "InvertLinearDiagonal");
         _diagonalVersion = _diagonal.Version();
         // Publish before recording the inverse generation.
         write.reset();
@@ -198,24 +184,17 @@ namespace DNDS::Cauchy
         if (region != LinearRegion::Core && _pattern->hasGhostColumns)
             ghost.emplace(input.Ghost().Read());
         const auto diagonal = _diagonal.Read();
+        const auto patternRead = _pattern->rows.Read();
+        const auto pattern = patternRead.View();
         const auto offDiagonal = ReadOffDiagonal();
         auto destination = output.Owned().Write();
-        const auto x = Algebra::MakeEigenRowMatrices(owned.View<R::UniformTableRows>(), _components, 1);
-        const auto y = Algebra::MakeEigenRowMatrices(destination.View<R::UniformTableRows>(), _components, 1);
-        const auto d = diagonal.View<R::TableRows>();
-        const auto matrix = Algebra::MakeEigenRowMatrices(d, _components, _diagonalStorage == DiagonalStorage::Block ? _components : 1);
-        const auto remote = ghost ? ghost->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{};
-        const auto xGhost = Algebra::MakeEigenRowMatrices(remote, _components, 1);
-        offDiagonal.WithActions([&](const auto &blocks)
-                                {
-            const auto &rows = region == LinearRegion::All ? _pattern->order : region == LinearRegion::Core ? _pattern->core : _pattern->dependent;
-            if (_components == 5 && _diagonalStorage == DiagonalStorage::Block)
-                Detail::ApplyBlockRows<5>(Algebra::MakeEigenRowMatrices<5, 1>(owned.View<R::UniformTableRows>(), 5, 1),
-                                          Algebra::MakeEigenRowMatrices<5, 1>(remote, 5, 1),
-                                          Algebra::MakeEigenRowMatrices<5, 1>(destination.View<R::UniformTableRows>(), 5, 1),
-                                          Algebra::MakeEigenRowMatrices<5, 5>(d, 5, 5), blocks, *_pattern, rows, 5, true);
-            else
-                Detail::ApplyBlockRows(x, xGhost, y, matrix, blocks, *_pattern, rows, _components, _diagonalStorage == DiagonalStorage::Block); });
+        const auto remote = ghost ? ghost->View<R::UniformTableRows>() : CPU::LinearReadRows{};
+        const auto rows = region == LinearRegion::All ? pattern.order : region == LinearRegion::Core ? pattern.core
+                                                                                                     : pattern.dependent;
+        CPU::ApplyLinearRows({offDiagonal.View(), pattern, rows, diagonal.View<R::TableRows>(),
+                              _components, _diagonalStorage == DiagonalStorage::Block},
+                             owned.View<R::UniformTableRows>(),
+                             remote, destination.View<R::UniformTableRows>());
     }
     void LinearProblemContext::JacobiImpl(const Field &rhs, const Field *input, Field &output, LinearRegion region) const
     {
@@ -236,24 +215,21 @@ namespace DNDS::Cauchy
             if (region != LinearRegion::Core && _pattern->hasGhostColumns)
                 ghost.emplace(input->Ghost().Read());
         }
+        const auto patternRead = _pattern->rows.Read();
+        const auto pattern = patternRead.View();
         const auto blocks = ReadOffDiagonal();
         auto destination = output.Owned().Write();
-        const auto b = Algebra::MakeEigenRowMatrices(right.View<R::UniformTableRows>(), _components, 1);
-        const auto x = owned ? Algebra::MakeEigenRowMatrices(owned->View<R::UniformTableRows>(), _components, 1) : b;
-        const auto remote = ghost ? ghost->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{};
-        const auto g = Algebra::MakeEigenRowMatrices(remote, _components, 1);
-        const auto y = Algebra::MakeEigenRowMatrices(destination.View<R::UniformTableRows>(), _components, 1);
-        const auto inv = Algebra::MakeEigenRowMatrices(inverse.View<R::TableRows>(), _components, _diagonalStorage == DiagonalStorage::Block ? _components : 1);
-        const auto &rows = region == LinearRegion::All ? _pattern->order : region == LinearRegion::Core ? _pattern->core
-                                                                                                        : _pattern->dependent;
+        const auto b = right.View<R::UniformTableRows>();
+        const auto x = owned ? owned->View<R::UniformTableRows>() : b;
+        const auto remote = ghost ? ghost->View<R::UniformTableRows>() : CPU::LinearReadRows{};
+        const auto rows = region == LinearRegion::All ? pattern.order : region == LinearRegion::Core ? pattern.core
+                                                                                                     : pattern.dependent;
         try
         {
-            blocks.WithActions([&](const auto &action)
-                               {
-                if (input)
-                    Detail::JacobiRows<false>(b, x, g, y, inv, action, *_pattern, rows, _components, _diagonalStorage == DiagonalStorage::Block);
-                else
-                    Detail::JacobiRows<true>(b, x, g, y, inv, action, *_pattern, rows, _components, _diagonalStorage == DiagonalStorage::Block); });
+            CPU::JacobiLinearRows({blocks.View(), pattern, rows, inverse.View<R::TableRows>(),
+                                   _components, _diagonalStorage == DiagonalStorage::Block},
+                                  b, x, remote,
+                                  destination.View<R::UniformTableRows>(), !input);
         }
         catch (...)
         {

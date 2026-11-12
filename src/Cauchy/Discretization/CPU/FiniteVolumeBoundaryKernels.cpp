@@ -1,108 +1,190 @@
-#include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
-#include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
-#include "Cauchy/Physics/EquationFlux.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
-#include "Cauchy/Physics/EquationTransport.hpp"
-#include "Cauchy/State/EquationDofAlgebra.hpp"
-#include "CFV/Math/PeriodicFrame.hpp"
+#include "Cauchy/Discretization/CPU/FiniteVolumeBoundaryKernels.hpp"
+#include "CFV/CPU/ReconstructionBasisKernels.hpp"
 
-namespace DNDS::Cauchy
+namespace DNDS::Cauchy::CPU
 {
-    namespace R = Runtime;
-    using namespace EquationFVDetail;
-
-    void FiniteVolume::Workspace::FillBoundary(const EquationDofs &state, bool polynomial, real time, EquationPointEvaluator &evaluator,
-                                               RHSScalarView incoming)
+    namespace
     {
-        const PhaseTime timing(*this, BoundaryPhase);
-        const auto mean = state.ReadOwned(), rec = Coefficients().ReadOwned();
-        const auto meanBlocks = BlockViews(state, mean), recBlocks = BlockViews(Coefficients(), rec);
-        std::optional<CFV::ReconstructionBasisRead> basisRead;
-        const bool direct = owner->settings.numerics.reconstruction != "variational";
-        if (!direct)
-            basisRead.emplace(owner->reconstruction->AcquireBasisRead());
-        CFV::Math::SmallMatrix scratch;
-        PointScratch point(state.ComponentNumber()), cellMean(state.ComponentNumber());
-        const auto *ransModel = owner->equation.HasRANS() ? &owner->equation.RANS() : nullptr;
-        const auto ransMean = ransModel ? mean.Block("rans") : EquationBlockReadView{};
-        std::optional<WallDistanceRead> wallRead;
-        if (ransModel && ransModel->ComponentNumber() == 2)
-            wallRead.emplace(owner->wallDistance->AcquireRead());
-        const auto wallValues = wallRead ? wallRead->HostView() : WallDistanceView{};
-        const auto frame = owner->motion.At(time);
-        const int modes = owner->reconstruction ? owner->reconstruction->NRecDOF() : 0;
+        void Gather(SpanView<const EquationBlockReadView> blocks, index iCell,
+                    std::vector<real> &point)
         {
-            auto output = boundary.WriteOwned();
-            for (index iPoint = 0; iPoint < index(owner->boundaryEntries.size()); ++iPoint)
-            {
-                const auto &sample = owner->samples[owner->boundaryEntries[iPoint]];
-                Gather(meanBlocks, sample.cell, cellMean);
-                point.values = cellMean.values;
-                if (polynomial)
-                {
-                    const auto basis = basisRead->FaceBasis(sample.face, sample.side, sample.point, 0, scratch);
-                    for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
-                    {
-                        const auto row = recBlocks[iBlock][sample.cell];
-                        for (index j = 0; j < meanBlocks[iBlock].ComponentNumber(); ++j)
-                            for (int mode = 0; mode < modes; ++mode)
-                                point.values[logicalFirst[iBlock] + j] += row[j * modes + mode] * basis(0, mode);
-                    }
-                }
-                if (ransModel)
-                    RANSStateView{ransModel->Kind(), ransModel->ComponentNumber()}.RepairReconstruction(ransMean[sample.cell], point.values.data() + ransFirst);
-                owner->boundaryPoint.Evaluate(
-                    point.values, sample.boundary, sample.boundaryPoint,
-                    {sample.normal[0], sample.normal[1], sample.normal[2]},
-                    {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]},
-                    evaluator, frame, time,
-                    BoundaryPointStateKind::FaceTrace,
-                    OptionalRef<const std::vector<real>>(cellMean.values),
-                    wallRead ? wallValues.cellMean(sample.cell, 0) : 0,
-                    incoming);
-#ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
-                // Euler's reconstruction callback uses fixUL=true: its
-                // returned SA target is zero, rather than a negative ghost.
-                if (ransModel && ransModel->Kind() == Physics::RANS::ModelKind::SA && sample.boundary.kind == BoundaryKind::NoSlipWall)
-                    point.values[ransFirst] = 0;
-#endif
-                for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
-                {
-                    const auto target = output.Block(iBlock);
-                    for (index j = 0; j < target.ComponentNumber(); ++j)
-                        target(iPoint, j) = point.values[logicalFirst[iBlock] + j];
-                }
-            }
-        }
-        // GradientPlan may select another face quadrature order. Its setup
-        // already maps these rows to the canonical boundary quadrature.
-        for (auto &field : fields)
-            if (field.gradientBoundary)
-            {
-                const auto source = field.boundaryValues.Read();
-                auto target = field.gradientBoundary->Write();
-                const auto a = source.View<R::UniformTableRows>();
-                const auto b = target.View<R::UniformTableRows>();
-                for (index iPoint = 0; iPoint < b.RowCount(); ++iPoint)
-                    for (index j = 0; j < b.Width(); ++j)
-                        b(iPoint, j) = a(owner->gradientBoundaryPoints[iPoint], j);
-            }
-        if (primitiveBoundary)
-        {
-            auto target = primitiveBoundary->Write();
-            const auto values = target.View<R::UniformTableRows>();
-            for (index iPoint = 0; iPoint < owner->gradient.NumBoundaryQuadrature(); ++iPoint)
-            {
-                const auto &sample = owner->samples[owner->boundaryEntries[owner->gradientBoundaryPoints[iPoint]]];
-                Gather(meanBlocks, sample.cell, cellMean);
-                const auto state = FiniteVolumeDetail::BoundaryGradientValue(
-                    sample, owner->equation.Gas(), cellMean.Flow(flowFirst), time, frame, incoming);
-                const auto value = owner->equation.Gas().Primitive(state);
-                const real converted[5]{value.density, value.velocity[0], value.velocity[1], value.velocity[2], value.temperature};
-                for (int j = 0; j < 5; ++j)
-                    values(iPoint, j) = converted[j];
-            }
+            index first = 0;
+            for (const auto &block : blocks)
+                for (const auto value : block[iCell])
+                    point[size_t(first++)] = value;
+            DNDS_assert(first == index(point.size()));
         }
     }
+
+    NumericalStatus FillBoundaryTraces(const BoundaryTraceRequest &request,
+                                       SpanView<const BoundaryCondition> conditions,
+                                       const BoundaryPointOperator &boundary,
+                                       EquationPointEvaluator &evaluator) noexcept
+    {
+        DNDS_assert(request.means.size() == request.coefficients.size() &&
+                    request.means.size() == request.output.size() &&
+                    request.means.size() == request.logicalFirst.size());
+        CFV::Math::SmallMatrix scratch;
+        std::vector<real> point(size_t(request.componentNumber)),
+            cellMean(size_t(request.componentNumber));
+        const index count = request.usePointRows ? request.pointRows.RowCount()
+                                                 : request.points.RowCount();
+        for (index iPoint = 0; iPoint < count; ++iPoint)
+        {
+            const auto sample = request.points(
+                request.usePointRows ? request.pointRows(iPoint, 0) : iPoint, 0);
+            const auto &condition = conditions[sample.condition];
+            Gather(request.means, sample.cell, cellMean);
+            point = cellMean;
+            if (request.polynomial)
+            {
+                const auto basis = CFV::CPU::EvaluateFaceBasis(
+                    request.basis, sample.face, sample.side, sample.point,
+                    0, scratch);
+                for (index iBlock = 0; iBlock < request.means.size(); ++iBlock)
+                {
+                    const auto row = request.coefficients[iBlock][sample.cell];
+                    for (index j = 0;
+                         j < request.means[iBlock].ComponentNumber(); ++j)
+                        for (int mode = 0; mode < request.modes; ++mode)
+                            point[size_t(request.logicalFirst[iBlock] + j)] +=
+                                row[j * request.modes + mode] * basis(0, mode);
+                }
+            }
+            if (request.rans.components && request.repairRANS)
+                request.rans.RepairReconstruction(
+                    request.ransMeans[sample.cell],
+                    point.data() + request.ransFirst);
+            {
+                if (const auto status = boundary.TryEvaluate(
+                        point, condition, sample.interfaceRow, sample.normal,
+                        sample.location, evaluator, request.frame, request.time,
+                        BoundaryPointStateKind::FaceTrace,
+                        OptionalRef<const std::vector<real>>(cellMean),
+                        request.rans.components == 2
+                            ? request.wallDistance.cellMean(sample.cell, 0)
+                            : 0,
+                        request.incoming);
+                    !status)
+                    return status;
+            }
+#ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
+            // Preserve Euler's fixUL=true reconstruction target. RHS exterior
+            // reflection remains a separate boundary-producer operation.
+            if (request.rans.components &&
+                request.rans.kind == Physics::RANS::ModelKind::SA &&
+                condition.kind == BoundaryKind::NoSlipWall)
+                point[size_t(request.ransFirst)] = 0;
+#endif
+            for (index iBlock = 0; iBlock < request.output.size(); ++iBlock)
+            {
+                const auto target = request.output[iBlock];
+                for (index j = 0; j < target.ComponentNumber(); ++j)
+                    target(iPoint, j) =
+                        point[size_t(request.logicalFirst[iBlock] + j)];
+            }
+        }
+        return {};
+    }
+
+    void CopyBoundaryRows(
+        Runtime::ArrayView<const real, Runtime::AccessBoundsChecks,
+                           Runtime::UniformTableRows>
+            source,
+        Runtime::ArrayView<real, Runtime::AccessBoundsChecks,
+                           Runtime::UniformTableRows>
+            destination,
+        Runtime::ArrayView<const index, Runtime::AccessBoundsChecks,
+                           Runtime::FixedRows<1>>
+            sourceRows)
+    {
+        DNDS_assert(sourceRows.RowCount() == destination.RowCount());
+        for (index iPoint = 0; iPoint < destination.RowCount(); ++iPoint)
+            for (index j = 0; j < destination.Width(); ++j)
+                destination(iPoint, j) = source(sourceRows(iPoint, 0), j);
+    }
+
+    void FillPrimitiveBoundary(const PrimitiveBoundaryRequest &request,
+                               SpanView<const BoundaryCondition> conditions)
+    {
+        std::vector<real> cellMean(size_t(request.componentNumber));
+        for (index iPoint = 0; iPoint < request.output.RowCount(); ++iPoint)
+        {
+            const auto sample =
+                request.points(request.sourceRows(iPoint, 0), 0);
+            const auto &condition = conditions[sample.condition];
+            Gather(request.means, sample.cell, cellMean);
+            FlowState inside{};
+            for (int j = 0; j < 5; ++j)
+                inside[j] = cellMean[size_t(request.flowFirst + j)];
+            FlowState state;
+            if (condition.kind == BoundaryKind::Interface)
+            {
+                for (int j = 0; j < 5; ++j)
+                    state[j] = request.incoming(sample.interfaceRow, j);
+            }
+            else
+            {
+                state = condition.Exterior(
+                    request.gas, inside, sample.normal, sample.location,
+                    request.time, OptionalRef<const RigidFrame>(request.frame));
+                for (int j = 0; j < 5; ++j)
+                    state[j] = .5 * (inside[j] + state[j]);
+            }
+            const auto value = request.gas.Primitive(state);
+            const real converted[5]{value.density, value.velocity[0],
+                                    value.velocity[1], value.velocity[2],
+                                    value.temperature};
+            for (int j = 0; j < 5; ++j)
+                request.output(iPoint, j) = converted[j];
+        }
+    }
+
+    NumericalStatus ValidateInterfacePacketRows(Algebra::DofComponentView<const real> rows, BoundaryPointRows points,
+                                                EquationThermalView thermal, RANSStateView rans, EquationBlockReadView ransValues) noexcept
+    {
+        for (index iPoint = 0; iPoint < rows.RowCount(); ++iPoint)
+            if (points(iPoint, 0).interface)
+            {
+                if (!(thermal.Admissible(
+                        EquationPositivityDetail::PointRow<decltype(rows)>{rows, iPoint})))
+                    return NumericalStatus{NumericalError::InvalidState, 1, iPoint};
+                if (rans.components)
+                    if (!(rans.Admissible(ransValues[iPoint])))
+                        return NumericalStatus{NumericalError::InvalidState, 2, iPoint};
+            }
+        return {};
+    }
+    Vector3 AccumulateBoundaryForce(FiniteVolumeStencilView stencil,
+                                    Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::FixedRows<3>> values,
+                                    SpanView<const int> zones)
+    {
+        Vector3 force{};
+        for (index iPoint = 0; iPoint < stencil.boundaryEntries.RowCount(); ++iPoint)
+        {
+            const auto &sample = stencil.samples(stencil.boundaryEntries(iPoint, 0), 0);
+            if (std::find(zones.begin(), zones.end(), sample.zone) != zones.end())
+                for (int d = 0; d < 3; ++d)
+                    force[d] += values(iPoint, d);
+        }
+        return force;
+    }
+    NumericalStatus ValidateInterfaceAliasRows(Algebra::DofComponentView<const real> rows,
+                                               BoundaryPointRows a, BoundaryPointRows b, EquationThermalView thermal) noexcept
+    {
+        for (index iPoint = 0; iPoint < a.RowCount(); ++iPoint)
+        {
+            if (!(a(iPoint, 0).cell == b(iPoint, 0).cell && a(iPoint, 0).face == b(iPoint, 0).face && a(iPoint, 0).quadrature == b(iPoint, 0).quadrature &&
+                  a(iPoint, 0).zone == b(iPoint, 0).zone && a(iPoint, 0).point == b(iPoint, 0).point && a(iPoint, 0).normal == b(iPoint, 0).normal && a(iPoint, 0).interface == b(iPoint, 0).interface))
+                return NumericalStatus{NumericalError::InvalidState, 1, iPoint};
+            if (b(iPoint, 0).interface)
+                if (!(
+                        thermal.Admissible(
+                            EquationPositivityDetail::PointRow<decltype(rows)>{
+                                rows, iPoint})))
+                    return NumericalStatus{NumericalError::InvalidState, 2, iPoint};
+        }
+        return {};
+    }
+
 }

@@ -1,184 +1,44 @@
-#include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
-#include "Cauchy/State/EquationDofAlgebra.hpp"
+#include "Cauchy/Discretization/CPU/FiniteVolumeGradientKernels.hpp"
 
-namespace DNDS::Cauchy
+namespace DNDS::Cauchy::CPU
 {
-    namespace R = Runtime;
-    using namespace EquationFVDetail;
-
-    void FiniteVolume::Workspace::RefreshDirectGradients(const EquationDofs &state, bool ghost,
-                                                         real time)
+    void LimitPhysicalGradients(const GradientLimiterRequest &request)
     {
-        if (owner->settings.numerics.reconstruction == "variational")
-            return;
-        if (owner->settings.numerics.reconstruction == "constant" && directGradients.empty())
-            return;
-        for (index iField = 0; iField < index(fields.size()); ++iField)
-        {
-            if (nativeDirectGradient)
-            {
-                const auto &mean = ghost
-                                       ? state.PhysicalField(iField).Ghost()
-                                       : state.PhysicalField(iField).Owned();
-                const auto &output = ghost
-                                         ? directGradients[iField].Ghost()
-                                         : directGradients[iField].Owned();
-                auto &published = directGradientPublications[iField][ghost ? 1 : 0];
-                published.Publish(*owner, mean, mean, output, incoming, time);
-                continue;
-            }
-            const bool fromGradientField = owner->settings.numerics.reconstruction == "constant" && fields[iField].gradient;
-            // Constant face fluxes never read remote source gradients.
-            if (fromGradientField && ghost)
-                continue;
-            // Pure P0 has no polynomial or physical-gradient publication.
-            // Its directGradients slot is retained only for the common
-            // workspace shape; no modal zero field is manufactured.
-            if (owner->settings.numerics.reconstruction == "constant" && !fromGradientField)
-                continue;
-            const auto refresh = [&]
-            {
-                if (fromGradientField)
-                {
-                    // The cache check may retain a compatible input read.
-                    // Use the explicit engine entry: the immediate algebra
-                    // wrapper deliberately requires completely idle fields.
-                    R::EagerEngine engine;
-                    const auto stream = engine.CreateCPUStream();
-                    Algebra::Copy(engine, stream, directGradients[iField], *fields[iField].gradient);
-                    engine.Synchronize();
-                }
-                else
-                {
-                    DNDS_check_throw_info(owner->reconstruction,
-                                          "modal gradient extraction requires variational reconstruction");
-                    owner->gradient.ExtractLinearGradients(FluxCoefficients().PhysicalField(iField), *owner->reconstruction,
-                                                           directGradients[iField], ghost);
-                }
-            };
-            // Only RANS source sampling repeats this pass. Flow-only and
-            // chemical-only paths retain their original preparation path.
-            if (ransFirst < 0)
-            {
-                refresh();
-                continue;
-            }
-            const auto &source = fromGradientField ? fields[iField].gradient->Owned()
-                                 : ghost           ? FluxCoefficients().PhysicalField(iField).Ghost()
-                                                   : FluxCoefficients().PhysicalField(iField).Owned();
-            const auto &mean = ghost ? state.PhysicalField(iField).Ghost()
-                                     : state.PhysicalField(iField).Owned();
-            const auto &destination = ghost ? directGradients[iField].Ghost() : directGradients[iField].Owned();
-            // Pin the input through both the check and a possible refresh:
-            // an unfinished writer has not published its next generation.
-            auto &published = directGradientPublications[iField][ghost ? 1 : 0];
-            if (published.Current(*owner, mean, source, destination,
-                                  incoming, time))
-            {
-                owner->metrics.Validate();
-                continue;
-            }
-            // The independently callable source path still executes this
-            // on a miss. P0 sources keep their physical gradients, and P1
-            // extracts the final limiter/PP coefficients, never raw slopes.
-            refresh();
-            published.Publish(*owner, mean, source, destination, incoming,
-                              time);
-        }
-        if (!nativeDirectGradient && !directViscousGradients.empty())
-        {
-            DNDS_check_throw_info(directViscousGradients.size() == fields.size(),
-                                  "unlimited direct viscous-gradient fields are incomplete");
-            for (index iField = 0; iField < index(fields.size()); ++iField)
-            {
-                DNDS_check_throw_info(owner->reconstruction,
-                                      "modal viscous-gradient extraction requires variational reconstruction");
-                owner->gradient.ExtractLinearGradients(Coefficients().PhysicalField(iField), *owner->reconstruction,
-                                                       directViscousGradients[iField], ghost);
-            }
-        }
-    }
-
-    /// Cauchy-owned explicit-P1 componentwise Barth stage. CFV supplies
-    /// the unlimited physical gradients; equation block layout, periodic
-    /// vector components and conservative state semantics remain here.
-    void FiniteVolume::Workspace::PrepareDirectGradientLimiter(const EquationDofs &state, bool barth)
-    {
-        DNDS_check_throw_info(nativeDirectGradient && directGradients.size() == fields.size(),
-                              "direct-P1 limiter workspace is incomplete");
-        const int dim = owner->metrics.Dimension();
-        const auto meanScope = state.ReadWithGhost();
-        const auto meanLayout = meanScope.ComponentLayout();
-        const auto means = meanLayout.View();
-        std::vector<R::Array<real>::ReadLease> sourceReads;
-        std::vector<R::Array<real>::WriteLease> destinationWrites;
-        sourceReads.reserve(fields.size());
-        destinationWrites.reserve(fields.size());
-        for (index iField = 0; iField < index(fields.size()); ++iField)
-        {
-            DNDS_check_throw_info(fields[iField].gradient,
-                                  "direct-P1 limiter has no unlimited gradient");
-            DNDS_check_throw_info(
-                fields[iField].gradient->Owned().SharedStorage() !=
-                    directGradients[iField].Owned().SharedStorage(),
-                "direct-P1 limiter needs distinct input and output fields");
-            sourceReads.emplace_back(fields[iField].gradient->Owned().Read());
-            destinationWrites.emplace_back(directGradients[iField].Owned().Write());
-        }
-        using ReadView = R::ArrayView<const real, R::AccessBoundsChecks,
-                                      R::UniformTableRows>;
-        using WriteView = R::ArrayView<real, R::AccessBoundsChecks,
-                                       R::UniformTableRows>;
-        std::vector<ReadView> source;
-        std::vector<WriteView> destination;
-        source.reserve(fields.size());
-        destination.reserve(fields.size());
-        for (index iField = 0; iField < index(fields.size()); ++iField)
-        {
-            source.push_back(sourceReads[iField].View<R::UniformTableRows>());
-            destination.push_back(destinationWrites[iField].View<R::UniformTableRows>());
-        }
-        const index components = state.ComponentNumber();
-        DNDS_check_throw_info(
-            directLimiterScratch.size() == size_t(6 * components),
-            "direct-P1 limiter scratch extent differs");
-        real *mean = directLimiterScratch.data();
-        real *neighbor = mean + components;
-        real *lower = neighbor + components;
-        real *upper = lower + components;
-        real *positive = upper + components;
-        real *negative = positive + components;
+        const index components = request.components;
+        const int dim = request.dimension;
+        const auto mean = request.scratch[0], neighbor = request.scratch[1],
+                   lower = request.scratch[2], upper = request.scratch[3],
+                   positive = request.scratch[4], negative = request.scratch[5];
         const auto gradient = [&](index logical, index iCell, int d)
         {
-            const index field = logicalField[size_t(logical)];
-            const index component = logicalComponent[size_t(logical)];
-            return source[field](iCell, component * dim + d);
+            const index field = request.logicalField[size_t(logical)];
+            const index component = request.logicalComponent[size_t(logical)];
+            return request.source[field](iCell, component * dim + d);
         };
-        for (index iCell = 0; iCell < owner->metrics.NumCell(); ++iCell)
+        for (index iCell = 0; iCell < request.means.ownedRows; ++iCell)
         {
             for (index j = 0; j < components; ++j)
             {
-                mean[j] = means(iCell, j);
+                mean[j] = request.means(iCell, j);
                 lower[j] = upper[j] = mean[j];
                 positive[j] = negative[j] = 0;
             }
-            if (barth)
-                for (index entry = owner->offsets[iCell];
-                     entry < owner->offsets[iCell + 1]; ++entry)
+            if (request.barth)
+                for (index entry = request.stencil.offsets(iCell, 0);
+                     entry < request.stencil.offsets(iCell + 1, 0); ++entry)
                 {
-                    const auto &sample = owner->samples[size_t(entry)];
+                    const auto &sample = request.stencil.samples(entry, 0);
                     if (sample.other != UnInitIndex)
                     {
                         for (index j = 0; j < components; ++j)
-                            neighbor[j] = means(sample.other, j);
+                            neighbor[j] = request.means(sample.other, j);
                         if (sample.changesFrame)
-                            for (const index first : vectorStarts)
+                            for (const index first : request.vectorStarts)
                             {
                                 const Geom::tPoint value{
                                     neighbor[first], neighbor[first + 1],
                                     neighbor[first + 2]};
-                                const auto rotated = sample.rotation * value;
+                                const auto rotated = Eigen::Map<const Geom::tGPoint>(sample.rotation.data()) * value;
                                 for (int d = 0; d < 3; ++d)
                                     neighbor[first + d] = rotated[d];
                             }
@@ -188,8 +48,8 @@ namespace DNDS::Cauchy
                             upper[j] = std::max(upper[j], neighbor[j]);
                         }
                     }
-                    const auto displacement = sample.ownPoint -
-                                              owner->metrics.GetCellCent(iCell);
+                    const auto displacement = Geom::tPoint{sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]} -
+                                              request.metric.GetCellCent(iCell);
                     for (index j = 0; j < components; ++j)
                     {
                         real increment = 0;
@@ -202,7 +62,7 @@ namespace DNDS::Cauchy
             for (index j = 0; j < components; ++j)
             {
                 real alpha = 1;
-                if (barth)
+                if (request.barth)
                 {
                     alpha = std::min(alpha,
                                      (upper[j] - mean[j]) /
@@ -212,130 +72,86 @@ namespace DNDS::Cauchy
                                          (-negative[j] + verySmallReal));
                     alpha = std::max(real(0), std::min(real(1), alpha));
                 }
-                const index field = logicalField[size_t(j)];
-                const index component = logicalComponent[size_t(j)];
+                const index field = request.logicalField[size_t(j)];
+                const index component = request.logicalComponent[size_t(j)];
                 for (int d = 0; d < dim; ++d)
-                    destination[field](iCell, component * dim + d) =
+                    request.destination[field](iCell, component * dim + d) =
                         alpha * gradient(j, iCell, d);
             }
         }
     }
-
-    /// Equation-aware P1 positivity stage. One beta scales the flow5 and
-    /// transported-species gradients; RANS uses its independent scalar
-    /// policy. This method deliberately lives in Cauchy rather than CFV.
-    void FiniteVolume::Workspace::ApplyDirectGradientPositivity(const EquationDofs &state)
+    NumericalResult<GradientPositivityResult> LimitPositivePhysicalGradients(const GradientPositivityRequest &request) noexcept
     {
-        DNDS_check_throw_info(nativeDirectGradient &&
-                                  owner->settings.numerics.positivity &&
-                                  !owner->positivityOffsets.empty() &&
-                                  owner->positivityDisplacements.size() ==
-                                      size_t(owner->positivityOffsets.back()),
-                              "direct-P1 positivity workspace is incomplete");
-        const int dim = owner->metrics.Dimension();
-        const index components = state.ComponentNumber();
-        const auto meanScope = state.ReadOwned();
-        // DofComponentView borrows its descriptor table. Retain the
-        // owning layout for the complete pointwise PP traversal.
-        const auto meanLayout = meanScope.ComponentLayout();
-        const auto means = meanLayout.View();
-        std::vector<R::Array<real>::WriteLease> gradientWrites;
-        gradientWrites.reserve(directGradients.size());
-        for (auto &field : directGradients)
-            gradientWrites.emplace_back(field.Owned().Write());
-        using WriteView = R::ArrayView<real, R::AccessBoundsChecks,
-                                       R::UniformTableRows>;
-        std::vector<WriteView> gradients;
-        for (auto &write : gradientWrites)
-            gradients.push_back(write.View<R::UniformTableRows>());
-        const auto bounds = thermal.View();
-        const auto rans = owner->equation.HasRANS()
-                              ? ResolveRANSReconstructionPolicy(owner->equation)
-                              : RANSReconstructionView{};
+        const index components = request.components;
+        const int dim = request.dimension;
+        const auto bounds = request.bounds;
+        const auto rans = request.rans;
         // PP POLICY -- direct-P1 publication. This is the same locked
         // flow5/species beta and clipped EOS/T endpoint as modal PP, applied
-        // directly to physical gradients. It imposes no simplex bound on
-        // raw rhoY gradients; RANS uses its separate model scalar.
-        struct PointValues
-        {
-            const std::vector<real> *values;
-            index width;
-            real operator()(index point, index component) const
-            {
-                return (*values)[size_t(point * width + component)];
-            }
-        } higher{&directPPSamples, components};
+        // directly to physical request.gradients. It imposes no simplex bound on
+        // raw rhoY request.gradients; RANS uses its separate model scalar.
+        const auto higher = request.samples;
         struct MeanValues
         {
-            decltype(means) values;
+            decltype(request.means) values;
             index cell;
             real operator()(index, index component) const
             {
                 return values(cell, component);
             }
-        } base{means, 0};
-        directPPLimited = 0;
-        directPPMinimum = 1;
-        for (index iCell = 0; iCell < owner->metrics.NumCell(); ++iCell)
+        } base{request.means, 0};
+        GradientPositivityResult result;
+        for (index iCell = 0; iCell < request.means.ownedRows; ++iCell)
         {
-            const EquationPositivityDetail::PointRow<decltype(means)> mean{
-                means, iCell};
-            DNDS_check_throw_info(bounds.Admissible(mean),
-                                  "direct-P1 PP requires an admissible cell mean");
-            const index begin = owner->positivityOffsets[iCell];
-            const index end = owner->positivityOffsets[iCell + 1];
+            const EquationPositivityDetail::PointRow<decltype(request.means)> mean{
+                request.means, iCell};
+            if (!(bounds.Admissible(mean)))
+                return NumericalStatus{NumericalError::InvalidState, 1, iCell};
+            const index begin = request.stencil.positivityOffsets(iCell, 0);
+            const index end = request.stencil.positivityOffsets(iCell + 1, 0);
             const index points = end - begin;
             for (index q = 0; q < points; ++q)
                 for (index j = 0; j < components; ++j)
                 {
-                    const index field = logicalField[size_t(j)];
-                    const index component = logicalComponent[size_t(j)];
+                    const index field = request.logicalField[size_t(j)];
+                    const index component = request.logicalComponent[size_t(j)];
                     real value = mean[j];
-                    const auto &displacement =
-                        owner->positivityDisplacements[size_t(begin + q)];
+                    const auto displacement = request.stencil.positivityDisplacements[begin + q];
                     for (int d = 0; d < dim; ++d)
-                        value += gradients[field](iCell, component * dim + d) *
+                        value += request.gradients[field](iCell, component * dim + d) *
                                  displacement[d];
-                    directPPSamples[size_t(q * components + j)] = value;
+                    request.samples(q, j) = value;
                 }
             base.cell = iCell;
-            const auto clippedPolicy = owner->settings.numerics.positivityClippedReferencePolicy == "backtracking"
-                                           ? ReconstructionClippedReferencePolicy::Backtracking
-                                           : ReconstructionClippedReferencePolicy::FallbackToBase;
+            const auto clippedPolicy = request.clippedPolicy;
             real beta = bounds.ReconstructionFraction(
                 mean, base, higher, 0, points,
-                owner->settings.numerics.positivityBetaPower,
-                owner->settings.numerics.positivityBetaCutoff, 1,
+                request.betaPower,
+                request.betaCutoff, 1,
                 clippedPolicy);
-            DNDS_check_throw_info(std::isfinite(beta) && beta >= 0 && beta <= 1,
-                                  "invalid direct-P1 thermal beta");
-            const real ransScale = rans.Compute(base, higher, ransFirst, 0, points);
-            DNDS_check_throw_info(std::isfinite(ransScale) && ransScale >= 0 &&
-                                      ransScale <= 1,
-                                  "invalid direct-P1 RANS factor");
+            if (!(std::isfinite(beta) && beta >= 0 && beta <= 1))
+                return NumericalStatus{NumericalError::InvalidState, 2, iCell};
+            const real ransScale = rans.Compute(base, higher, request.ransFirst, 0, points);
+            if (!(std::isfinite(ransScale) && ransScale >= 0 &&
+                  ransScale <= 1))
+                return NumericalStatus{NumericalError::InvalidState, 3, iCell};
             for (index j = 0; j < components; ++j)
             {
                 real scale = bounds.CompressesReconstructionComponent(j) ? beta : 1;
-                if (rans.components && j >= ransFirst &&
-                    j < ransFirst + rans.components)
+                if (rans.components && j >= request.ransFirst &&
+                    j < request.ransFirst + rans.components)
                     scale = ransScale;
                 if (scale == 1)
                     continue;
-                const index field = logicalField[size_t(j)];
-                const index component = logicalComponent[size_t(j)];
+                const index field = request.logicalField[size_t(j)];
+                const index component = request.logicalComponent[size_t(j)];
                 for (int d = 0; d < dim; ++d)
-                    gradients[field](iCell, component * dim + d) *= scale;
+                    request.gradients[field](iCell, component * dim + d) *= scale;
             }
 
             // PP POLICY -- verify the actual scaled gradient storage. Raw
             // rhoY remains the advection/diffusion polynomial; only this
             // predicate constructs the temporary clipped EOS/T composition.
-            struct ScratchRow
-            {
-                const std::vector<real> *values;
-                index first;
-                real operator[](index j) const { return (*values)[size_t(first + j)]; }
-            };
             for (int iteration = 0; iteration < 1000; ++iteration)
             {
                 bool clippedGood = true;
@@ -343,16 +159,15 @@ namespace DNDS::Cauchy
                 {
                     for (index j = 0; j < components; ++j)
                     {
-                        const index field = logicalField[size_t(j)];
-                        const index component = logicalComponent[size_t(j)];
+                        const index field = request.logicalField[size_t(j)];
+                        const index component = request.logicalComponent[size_t(j)];
                         real value = mean[j];
-                        const auto &displacement =
-                            owner->positivityDisplacements[size_t(begin + q)];
+                        const auto displacement = request.stencil.positivityDisplacements[begin + q];
                         for (int d = 0; d < dim; ++d)
-                            value += gradients[field](iCell, component * dim + d) * displacement[d];
-                        directPPSamples[size_t(q * components + j)] = value;
+                            value += request.gradients[field](iCell, component * dim + d) * displacement[d];
+                        request.samples(q, j) = value;
                     }
-                    const ScratchRow point{&directPPSamples, q * components};
+                    const auto point = request.samples[q];
                     clippedGood = clippedGood && bounds.ClippedReferenceAdmissible(point);
                 }
                 if (clippedGood)
@@ -362,73 +177,55 @@ namespace DNDS::Cauchy
                     beta = 0;
                 else
                     beta *= .9;
-                if (beta < owner->settings.numerics.positivityBetaCutoff)
+                if (beta < request.betaCutoff)
                     beta = 0;
-                DNDS_check_throw_info(previous > 0,
-                                      "direct-P1 mean base violates its final physical-state predicate");
+                if (!(previous > 0))
+                    return NumericalStatus{NumericalError::InvalidState, 4, iCell};
                 const real ratio = beta / previous;
                 for (index j = 0; j < components; ++j)
                     if (bounds.CompressesReconstructionComponent(j))
                     {
-                        const index field = logicalField[size_t(j)];
-                        const index component = logicalComponent[size_t(j)];
+                        const index field = request.logicalField[size_t(j)];
+                        const index component = request.logicalComponent[size_t(j)];
                         for (int d = 0; d < dim; ++d)
-                            gradients[field](iCell, component * dim + d) *= ratio;
+                            request.gradients[field](iCell, component * dim + d) *= ratio;
                     }
             }
             if (beta < 1)
             {
-                ++directPPLimited;
-                directPPMinimum = std::min(directPPMinimum, beta);
+                ++result.limited;
+                result.minimum = std::min(result.minimum, beta);
             }
             for (index q = 0; q < points; ++q)
             {
                 for (index j = 0; j < components; ++j)
                 {
-                    const index field = logicalField[size_t(j)];
-                    const index component = logicalComponent[size_t(j)];
+                    const index field = request.logicalField[size_t(j)];
+                    const index component = request.logicalComponent[size_t(j)];
                     real value = mean[j];
-                    const auto &displacement =
-                        owner->positivityDisplacements[size_t(begin + q)];
+                    const auto displacement = request.stencil.positivityDisplacements[begin + q];
                     for (int d = 0; d < dim; ++d)
-                        value += gradients[field](iCell, component * dim + d) * displacement[d];
-                    directPPSamples[size_t(q * components + j)] = value;
+                        value += request.gradients[field](iCell, component * dim + d) * displacement[d];
+                    request.samples(q, j) = value;
                 }
-                const ScratchRow point{&directPPSamples, q * components};
-                DNDS_check_throw_info(bounds.ClippedReferenceAdmissible(point),
-                                      "published direct-P1 gradient violates its clipped EOS/T bound");
+                const auto point = request.samples[q];
+                if (!(bounds.ClippedReferenceAdmissible(point)))
+                    return NumericalStatus{NumericalError::InvalidState, 5, iCell};
             }
         }
+        return result;
     }
-
-    void FiniteVolume::Workspace::PreparePrimitiveGradient(const EquationDofs &state, CFV::ReconstructionRegion region)
+    void FillPrimitiveMeans(GradientReadView from, GradientWriteView to, const PerfectGas &gas)
     {
-        if (!primitiveGradient)
-            return;
-        DNDS_assert_info(primitive && primitiveBoundary && state.PhysicalFieldNumber() == 1,
-                         "primitive-gradient workspace is incomplete");
-        const auto fill = [&](const R::Array<real> &source, R::Array<real> &destination)
+        for (index iCell = 0; iCell < to.RowCount(); ++iCell)
         {
-            const auto read = source.Read();
-            auto write = destination.Write();
-            const auto from = read.View<R::UniformTableRows>();
-            const auto to = write.View<R::UniformTableRows>();
-            for (index iCell = 0; iCell < to.RowCount(); ++iCell)
-            {
-                FlowState conservative;
-                for (int j = 0; j < 5; ++j)
-                    conservative[j] = from(iCell, j);
-                const auto value = owner->equation.Gas().Primitive(conservative);
-                const real converted[5]{value.density, value.velocity[0], value.velocity[1], value.velocity[2], value.temperature};
-                for (int j = 0; j < 5; ++j)
-                    to(iCell, j) = converted[j];
-            }
-        };
-        if (region != CFV::ReconstructionRegion::HaloDependent)
-            fill(state.PhysicalField(0).Owned(), primitive->Owned());
-        if (region != CFV::ReconstructionRegion::Core)
-            fill(state.PhysicalField(0).Ghost(), primitive->Ghost());
-        owner->gradient.Evaluate(*primitive, *primitiveBoundary, *primitiveGradient, {1}, region);
+            FlowState conservative;
+            for (int j = 0; j < 5; ++j)
+                conservative[j] = from(iCell, j);
+            const auto value = gas.Primitive(conservative);
+            const std::array<real, 5> converted{value.density, value.velocity[0], value.velocity[1], value.velocity[2], value.temperature};
+            for (int j = 0; j < 5; ++j)
+                to(iCell, j) = converted[j];
+        }
     }
-
 }

@@ -710,7 +710,7 @@ TEST_CASE("Owned logical table recognition retains pitch and rejects changed com
     std::vector<Algebra::DofComponentColumn<real>> columns;
     for (DNDS::index j = 0; j < 6; ++j)
         columns.push_back({parent, {}, j});
-    const Algebra::DofComponentView<real> logical{columns.data(), 3, 0, 6};
+    const Algebra::DofComponentView<real> logical{{columns.data(), DNDS::index(columns.size())}, 3, 0, 6};
     const auto table = Algebra::TryOwnedTable(logical);
     REQUIRE(table.has_value());
     CHECK(table->stride == 9);
@@ -718,7 +718,7 @@ TEST_CASE("Owned logical table recognition retains pitch and rejects changed com
     CHECK(logical(1, 4) == 7);
     for (auto &column : columns)
         column.ghost = parent;
-    const Algebra::DofComponentView<real> ghost{columns.data(), 0, 3, 6};
+    const Algebra::DofComponentView<real> ghost{{columns.data(), DNDS::index(columns.size())}, 0, 3, 6};
     const auto ghostTable = Algebra::TryGhostTable(ghost);
     REQUIRE(ghostTable.has_value());
     CHECK((*ghostTable)(1, 4) == 7);
@@ -779,7 +779,10 @@ TEST_CASE("Native small-block LU specializations solve coupled blocks on all uni
                         middleColumns.push_back({middle.View<R::UniformTableRows>(), {}, j});
                         outputColumns.push_back({write.View<R::UniformTableRows>(), {}, j});
                     }
-                    native.SolveRows({inputColumns.data(), 2, 0, width}, {middleColumns.data(), 2, 0, width}, {outputColumns.data(), 2, 0, width});
+                    const Algebra::DofComponentLayout<const real> inputLayout(std::move(inputColumns), 2, 0);
+                    const Algebra::DofComponentLayout<real> middleLayout(std::move(middleColumns), 2, 0);
+                    const Algebra::DofComponentLayout<real> outputLayout(std::move(outputColumns), 2, 0);
+                    native.SolveRows(inputLayout.View(), middleLayout.View(), outputLayout.View());
                 }
                 else
                     native.Solve(rhs, forward, output);

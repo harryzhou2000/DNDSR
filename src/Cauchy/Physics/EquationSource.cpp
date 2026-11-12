@@ -1,5 +1,7 @@
+#include "Cauchy/Core/NumericalFailure.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Physics/EquationSource.hpp"
+#include "Cauchy/Physics/CPU/EquationSourceKernels.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include <limits>
@@ -41,24 +43,11 @@ namespace DNDS::Cauchy
         const int independent = equation.Mixture().SpeciesNumber() - 1;
         const auto species = independent ? input.Block("species").owned : EquationBlockArrayView<const real>{};
         const auto target = independent ? output->Block("species") : EquationBlockArrayView<real>{};
-        auto rhoY = evaluator.SpeciesInput();
-        for (index iCell = 0; iCell < flow.RowCount(); ++iCell)
-        {
-            for (index iBlock = 0; iBlock < index(from.size()); ++iBlock)
-                for (index j = 0; j < from[iBlock].ComponentNumber(); ++j)
-                    to[iBlock](iCell, j) = from[iBlock](iCell, j);
-            if (dt == 0 || sourceScale == 0)
-                continue;
-            FlowState stateFlow;
-            for (int j = 0; j < 5; ++j)
-                stateFlow[j] = flow(iCell, j);
-            for (int k = 0; k < independent; ++k)
-                rhoY[k] = species(iCell, k);
-            const auto updated = evaluator.AdvanceConstVolume(stateFlow[0], Physics::Thermodynamics::ConservativeSpecificInternalEnergy<3>(stateFlow),
-                                                              {rhoY.data, independent}, dt, controls, sourceScale);
-            for (int k = 0; k < independent; ++k)
-                target(iCell, k) = updated.rhoY[k];
-        }
+        const Runtime::MetadataBuffer<EquationBlockArrayView<const real>> sourceMetadata(from);
+        const Runtime::MetadataBuffer<EquationBlockArrayView<real>> targetMetadata(to);
+        RequireNumericalSuccess(CPU::AdvanceChemicalRows(sourceMetadata.HostView(), targetMetadata.HostView(), flow, species, target,
+                                                         evaluator, independent, dt, controls, sourceScale),
+                                "AdvanceChemicalRows");
     }
     void EvaluateChemicalSource(const EquationSystem &equation, const EquationDofs &state,
                                 EquationDofs &values, Physics::Chemistry::ChemicalWorkerPool::Lease worker,
@@ -136,42 +125,11 @@ namespace DNDS::Cauchy
                 nonchemical.push_back(output->Block(iBlock));
         const auto sourceSpecies = species ? output->Block("species") : EquationBlockArrayView<real>{};
         const auto oldT = guess ? guess->Field(DerivedQuantity::Temperature) : EquationBlockArrayView<const real>{};
-        auto composition = evaluator.SpeciesInput();
-        // Any evaluation failure can leave scratch partial. Do not cancel
-        // leases or publish that failed call as a valid physical result.
-        for (index iCell = 0; iCell < flow.RowCount(); ++iCell)
-        {
-            for (const auto &block : nonchemical)
-                for (index j = 0; j < block.ComponentNumber(); ++j)
-                    block(iCell, j) = 0;
-            if (jacobian)
-                for (index j = 0; j < components * components; ++j)
-                    matrix(iCell, j) = 0;
-            if (sourceScale == 0)
-            {
-                for (int k = 0; k < species; ++k)
-                    sourceSpecies(iCell, k) = 0;
-                continue;
-            }
-            FlowState pointFlow;
-            for (int j = 0; j < 5; ++j)
-                pointFlow[j] = flow(iCell, j);
-            for (int k = 0; k < species; ++k)
-                composition[k] = rhoY(iCell, k);
-            const auto point = evaluator.Evaluate(pointFlow, {composition.data, composition.nSpecies}, guess ? oldT(iCell, 0) : 0);
-            for (int k = 0; k < species; ++k)
-            {
-                const real rate = sourceScale * point.chemicalSource[k];
-                DNDS_check_throw_info(std::isfinite(rate), "scaled chemical source is nonfinite");
-                sourceSpecies(iCell, k) = rate;
-                if (jacobian)
-                    for (index j = 0; j < index(columns.size()); ++j)
-                    {
-                        const real derivative = sourceScale * point.sourceJacobian(k, int(j));
-                        DNDS_check_throw_info(std::isfinite(derivative), "scaled chemical Jacobian is nonfinite");
-                        matrix(iCell, speciesFirst + k + components * columns[j]) = derivative;
-                    }
-            }
-        }
+        const Runtime::MetadataBuffer<EquationBlockArrayView<real>> outputs(nonchemical);
+        const Runtime::MetadataBuffer<index> columnMetadata(columns);
+        RequireNumericalSuccess(CPU::EvaluateChemicalRows(flow, rhoY, sourceSpecies, outputs.HostView(), columnMetadata.HostView(),
+                                                          components, speciesFirst, species, sourceScale, jacobianWrite ? std::optional(matrix) : std::nullopt,
+                                                          guess ? std::optional(oldT) : std::nullopt, evaluator),
+                                "EvaluateChemicalRows");
     }
 }

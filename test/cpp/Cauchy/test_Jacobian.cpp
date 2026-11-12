@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
-#include "Cauchy/Implicit/JacobianKernels.hpp"
+#include "Cauchy/Implicit/CPU/JacobianKernels.hpp"
 #include "Cauchy/Physics/EquationFlux.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "../CFV/ReconstructionFixture.hpp"
@@ -36,7 +36,7 @@ TEST_CASE("Six-component frozen face leaves retain EOS coupling and additive mat
     const auto initial = matrix;
     const C::Vector3 normal{.6, .8, 0}, grid{.03, -.07, .02};
     constexpr DNDS::real pressure = 1.1, factor = .27, lambda = 1.8;
-    C::Detail::AddFrozenFluxBlock6({mean.data(), 6}, {dp.data(), 6}, pressure, normal, grid, factor, lambda, {matrix.data(), 36});
+    C::CPU::AddFrozenFluxBlock6({mean.data(), 6}, {dp.data(), 6}, pressure, normal, grid, factor, lambda, {matrix.data(), 36});
     const C::FlowState flow{mean[0], mean[1], mean[2], mean[3], mean[4]};
     for (int column = 0; column < 6; ++column)
     {
@@ -66,8 +66,8 @@ TEST_CASE("Six-component frozen face leaves retain EOS coupling and additive mat
             product[j] = -.02 * (j + 1);
         }
         const auto original = product;
-        C::Detail::AddFrozenFluxProduct6({mean.data(), 6}, {dp.data(), 6}, pressure, normal, grid,
-                                         factor, lambda, {direction.data(), 6, stride}, {product.data(), 6});
+        C::CPU::AddFrozenFluxProduct6({mean.data(), 6}, {dp.data(), 6}, pressure, normal, grid,
+                                      factor, lambda, {direction.data(), 6, stride}, {product.data(), 6});
         for (DNDS::index row = 0; row < 6; ++row)
         {
             DNDS::real expected = original[row];
@@ -172,9 +172,10 @@ TEST_CASE("Integrated approximate Jacobian matches frozen-spectral flux differen
                     for (DNDS::rowsize slot = 0; slot < DNDS::rowsize(faces.size()); ++slot)
                     {
                         const auto iFace = faces[slot];
-                        const auto found = std::lower_bound(fv.AuxiliaryFaces().begin(), fv.AuxiliaryFaces().end(), iFace);
-                        REQUIRE(found != fv.AuxiliaryFaces().end());
-                        const auto iAux = found - fv.AuxiliaryFaces().begin();
+                        const auto auxiliaryFaces = fv.AuxiliaryFaces();
+                        const auto found = std::lower_bound(auxiliaryFaces.begin(), auxiliaryFaces.end(), iFace);
+                        REQUIRE(found != auxiliaryFaces.end());
+                        const auto iAux = found - auxiliaryFaces.begin();
                         const auto other = topology.CellFaceOther(iCell, iFace, slot);
                         const int sign = topology.CellIsFaceBack(iCell, iFace, slot) ? 1 : -1;
                         for (DNDS::index q = metric.FaceQuadratureBegin(iFace); q < metric.FaceQuadratureEnd(iFace); ++q)

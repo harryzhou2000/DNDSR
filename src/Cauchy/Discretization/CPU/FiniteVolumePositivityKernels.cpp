@@ -1,367 +1,221 @@
-#include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
-#include "Cauchy/Physics/ReconstructionPositivity.hpp"
-#include "Cauchy/State/EquationDofAlgebra.hpp"
-#include "CFV/Math/TaylorBasis.hpp"
+#include "Cauchy/Discretization/CPU/FiniteVolumePositivityKernels.hpp"
 
-namespace DNDS::Cauchy
+namespace DNDS::Cauchy::CPU
 {
-    namespace R = Runtime;
     namespace
     {
-        /// Owns only read leases and logical column metadata. Values remain in
-        /// per-physical-field sample arrays; no full-state sample packing.
-        struct SampleRead
+        struct RepeatedMean
         {
-            std::vector<R::Array<real>::ReadLease> leases;
-            std::optional<Algebra::DofComponentLayout<const real>> layout;
-            SampleRead(const EquationDofs &prototype, const std::vector<R::Array<real>> &arrays, index rows)
-            {
-                leases.reserve(arrays.size());
-                for (const auto &array : arrays)
-                    leases.emplace_back(array.Read());
-                std::vector<Algebra::DofComponentColumn<const real>> columns;
-                columns.reserve(size_t(prototype.ComponentNumber()));
-                for (index iBlock = 0; iBlock < prototype.BlockNumber(); ++iBlock)
-                {
-                    const auto location = prototype.LocateBlock(iBlock);
-                    const auto parent = leases[location.physicalField].View<R::UniformTableRows>();
-                    for (index j = 0; j < location.componentNumber; ++j)
-                        columns.push_back({parent, {}, location.firstComponent + j});
-                }
-                layout.emplace(std::move(columns), rows, 0);
-            }
-            auto View() const { return layout->View(); }
+            PPInput values;
+            index cell;
+            real operator()(index, index component) const { return values(cell, component); }
         };
-    }
-    struct FiniteVolume::PositivityWorkspace::State
-    {
-        std::shared_ptr<const Data> owner;
-        EquationDofs prototype;
-        EquationThermalPolicy policy;
-        RANSReconstructionView rans;
-        index ransFirst = -1;
-        std::vector<R::Array<real>> higherValues, baseValues;
-        std::optional<EquationDofs> reference;
-        R::Array<index> degree;
-        index limited = 0;
-        real minimum = 1;
-        State(std::shared_ptr<const Data> data, const EquationDofs &input, const EquationDofs &coefficients,
-              std::optional<Physics::Chemistry::ChemicalWorkerPool> workers)
-            : owner(std::move(data)), prototype(input.NumericAlias()),
-              policy(owner->equation, owner->settings.numerics.densityFloor, owner->settings.numerics.temperatureFloor,
-                     owner->settings.numerics.sensibleEnergyFloor, owner->settings.numerics.pressureFloor,
-                     workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}),
-              degree(R::RowLayout::Dense(owner->metrics.NumCell(), 1))
+        bool ReferenceGood(PPInput values, index q, const EquationThermalView &bounds)
         {
-            DNDS_check_throw_info(owner->positivitySamples, "equation PP sampling geometry is unavailable");
-            if (owner->equation.HasRANS())
-            {
-                rans = ResolveRANSReconstructionPolicy(owner->equation);
-                index first = 0;
-                for (const auto &block : owner->equation.Schema().blocks)
-                {
-                    if (block.name == "rans")
-                        ransFirst = first;
-                    first += index(block.components.size());
-                }
-                DNDS_assert(ransFirst >= 0);
-            }
-            for (index iField = 0; iField < input.PhysicalFieldNumber(); ++iField)
-                higherValues.emplace_back(FiniteVolumeDetail::FieldLayout(input.PhysicalField(iField).Owned().Layout(), owner->positivitySamples->Size(), index(input.PhysicalField(iField).Width())));
-            if (!owner->settings.numerics.positivityCompressToMean)
-            {
-                reference.emplace(EquationDofOperations::NewVector(coefficients));
-                for (const auto &array : higherValues)
-                    baseValues.emplace_back(array.Layout());
-            }
-        }
-        void Sample(const EquationDofs &input, const EquationDofs &coefficients, std::vector<R::Array<real>> &values) const
-        {
-            for (index iField = 0; iField < input.PhysicalFieldNumber(); ++iField)
-                owner->positivitySamples->EvaluateValues(input.PhysicalField(iField), coefficients.PhysicalField(iField), values[iField]);
-        }
-        template <class Values>
-        bool ReferenceGood(const Values &values, index q, const EquationThermalView &bounds) const
-        {
-            const EquationPositivityDetail::PointRow<Values> point{values, q};
-            // A selected base must support both the raw-affine beta construction
-            // and the clipped EOS/T endpoint. Final reconstructed points use
-            // only the latter as their physical acceptance invariant.
+            const EquationPositivityDetail::PointRow<PPInput> point{values, q};
+            // PP POLICY -- reference selection must support BOTH the raw-affine
+            // beta calculation and the final clipped EOS/T acceptance predicate.
+            // No independent simplex condition is imposed on raw polynomial rhoY.
             return bounds.RawThermallyAdmissible(point) && bounds.ClippedReferenceAdmissible(point);
         }
-    };
-    FiniteVolume::PositivityWorkspace::PositivityWorkspace(std::shared_ptr<const Data> owner,
-                                                           const EquationDofs &prototype, const EquationDofs &coefficients, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers)
-        : state(std::make_shared<State>(std::move(owner), prototype, coefficients, std::move(workers))) {}
-    std::pair<index, real> FiniteVolume::PositivityWorkspace::LocalStatistics() const { return {state->limited, state->minimum}; }
-
-    void FiniteVolume::PositivityWorkspace::Apply(const EquationDofs &input, const EquationDofs &unlimited, EquationDofs &flux, bool refresh)
+    }
+    NumericalStatus ValidateReconstructionMeans(const PolynomialPositivityRequest &r) noexcept
     {
-        auto &data = *state;
-        const auto &n = data.owner->settings.numerics;
-        const auto bounds = data.policy.View();
-        const auto clippedPolicy = n.positivityClippedReferencePolicy == "backtracking"
-                                       ? ReconstructionClippedReferencePolicy::Backtracking
-                                       : ReconstructionClippedReferencePolicy::FallbackToBase;
-        // PP POLICY -- modal publication. Flow5 and transported species select
-        // one lower-order base and one common beta; no species-simplex bound
-        // enters that beta and RANS is repaired independently. The analytic
-        // ratio uses raw affine rhoY, while final sampled-point acceptance uses
-        // the temporary clipped composition seen by EOS/T. Neither path writes
-        // that temporary composition back into these coefficients.
-        const index cells = data.owner->metrics.NumCell(), points = data.owner->positivitySamples->Size();
-        DNDS_check_throw_info(data.owner->reconstruction,
-                              "polynomial positivity requires variational reconstruction");
-        const int modes = data.owner->reconstruction->NRecDOF();
-        if (refresh)
-            EquationDofOperations::Copy(flux, unlimited);
-        const auto meanScope = input.ReadOwned();
-        const auto meanLayout = meanScope.ComponentLayout();
-        const auto means = meanLayout.View();
-        for (index iCell = 0; iCell < cells; ++iCell)
-            DNDS_check_throw_info(bounds.Admissible(EquationPositivityDetail::PointRow<decltype(means)>{means, iCell}), "equation reconstruction PP requires admissible means");
-        data.Sample(input, flux, data.higherValues);
+        for (index iCell = 0; iCell < r.means.ownedRows; ++iCell)
+            if (!(r.bounds.Admissible(EquationPositivityDetail::PointRow<PPInput>{r.means, iCell})))
+                return NumericalStatus{NumericalError::InvalidState, 1, iCell};
+        return {};
+    }
+    NumericalResult<bool> MarkAdmissibleDegrees(const PolynomialPositivityRequest &r, PPInput samples, PPIndexOutput degrees) noexcept
+    {
+        for (index q = 0; q < samples.RowCount(); ++q)
+            for (index j = 0; j < samples.ComponentNumber(); ++j)
+                if (!(std::isfinite(samples(q, j))))
+                    return NumericalStatus{NumericalError::InvalidState, 1, q};
         bool allGood = true;
+        for (index iCell = 0; iCell < r.means.ownedRows; ++iCell)
         {
-            const SampleRead read(data.prototype, data.higherValues, points);
-            const auto values = read.View();
-            for (index q = 0; q < points; ++q)
-                for (index j = 0; j < values.ComponentNumber(); ++j)
-                    DNDS_check_throw_info(std::isfinite(values(q, j)), "nonfinite equation reconstruction PP input");
-            auto write = data.degree.Write();
-            const auto degrees = write.View<R::FixedRows<1>>();
-            for (index iCell = 0; iCell < cells; ++iCell)
+            bool good = true;
+            for (index q = r.offsets(iCell, 0); q < r.offsets(iCell + 1, 0); ++q)
+                good = good && ReferenceGood(samples, q, r.bounds);
+            degrees(iCell, 0) = good ? r.maxOrder : -1;
+            allGood = allGood && good;
+            // Flow acceptance excludes RANS; the fast exit must prove its
+            // independent scalar repair unnecessary as well.
+            if (allGood && r.rans.components)
+                allGood = r.rans.Compute(RepeatedMean{r.means, iCell}, samples, r.ransFirst,
+                                         r.offsets(iCell, 0), r.offsets(iCell + 1, 0)) == 1;
+        }
+        return allGood;
+    }
+    void TruncateReferenceModes(const PolynomialPositivityRequest &r, PPIndexInput degrees, PPOutput coefficients, int keep)
+    {
+        for (index iCell = 0; iCell < r.means.ownedRows; ++iCell)
+            if (degrees(iCell, 0) < 0)
+                for (index j = 0; j < r.means.ComponentNumber(); ++j)
+                    if (r.bounds.CompressesReconstructionComponent(j))
+                        for (int mode = keep; mode < r.modes; ++mode)
+                            coefficients(iCell, j * r.modes + mode) = 0;
+    }
+    void SelectReferenceDegree(const PolynomialPositivityRequest &r, PPInput samples, PPInput reference,
+                               PPIndexOutput degrees, PPOutput coefficients, int order)
+    {
+        for (index iCell = 0; iCell < r.means.ownedRows; ++iCell)
+            if (degrees(iCell, 0) < 0)
             {
                 bool good = true;
-                for (index q = data.owner->positivityOffsets[iCell]; q < data.owner->positivityOffsets[iCell + 1]; ++q)
-                    good = good && data.ReferenceGood(values, q, bounds);
-                degrees(iCell, 0) = good ? n.cfv.maxOrder : -1;
-                allGood = allGood && good;
-                if (allGood && data.rans.components)
-                {
-                    struct RepeatedMean
-                    {
-                        decltype(means) values;
-                        index cell;
-                        real operator()(index, index component) const { return values(cell, component); }
-                    } base{means, iCell};
-                    // Flow admissibility intentionally excludes RANS. The
-                    // fast exit must also prove its independent scalar repair
-                    // unnecessary; SA's compile-time no-compression policy is
-                    // already implemented by Compute returning one.
-                    allGood = data.rans.Compute(base, values, data.ransFirst,
-                                                data.owner->positivityOffsets[iCell], data.owner->positivityOffsets[iCell + 1]) == 1;
-                }
-            }
-        }
-        // Same full-polynomial early exit as the per-cell Euler policy. The
-        // actual coefficients generated these samples and remain unchanged;
-        // no write scope, repeat sampling or publication is needed. This is
-        // local only: the enclosing operator owns collective ordering.
-        if (allGood && n.positivityReconstruction != "Segment")
-        {
-            data.limited = 0;
-            data.minimum = 1;
-            return;
-        }
-        if (data.reference)
-        {
-            EquationDofOperations::Copy(*data.reference, flux);
-            for (int order = n.cfv.maxOrder - 1; order >= 0; --order)
-            {
-                const int keep = order ? CFV::Math::PolynomialSize(data.owner->metrics.Dimension(), order) - 1 : 0;
-                {
-                    const auto status = data.degree.Read();
-                    const auto degrees = status.View<R::FixedRows<1>>();
-                    auto write = data.reference->WriteOwned();
-                    const auto layout = write.ComponentLayout();
-                    const auto coefficients = layout.View();
-                    for (index iCell = 0; iCell < cells; ++iCell)
-                        if (degrees(iCell, 0) < 0)
-                            for (index j = 0; j < input.ComponentNumber(); ++j)
-                                if (bounds.CompressesReconstructionComponent(j))
-                                    for (int mode = keep; mode < modes; ++mode)
-                                        coefficients(iCell, j * modes + mode) = 0;
-                }
-                data.Sample(input, *data.reference, data.baseValues);
-                const SampleRead read(data.prototype, data.baseValues, points);
-                const auto values = read.View();
-                const auto referenceScope = data.reference->ReadOwned();
-                const auto referenceLayout = referenceScope.ComponentLayout();
-                const auto reference = referenceLayout.View();
-                auto degreeWrite = data.degree.Write();
-                const auto degrees = degreeWrite.View<R::FixedRows<1>>();
-                auto write = flux.WriteOwned();
-                const auto layout = write.ComponentLayout();
-                const auto coefficients = layout.View();
-                for (index iCell = 0; iCell < cells; ++iCell)
-                    if (degrees(iCell, 0) < 0)
-                    {
-                        bool good = true;
-                        for (index q = data.owner->positivityOffsets[iCell]; q < data.owner->positivityOffsets[iCell + 1]; ++q)
-                            good = good && data.ReferenceGood(values, q, bounds);
-                        if (good)
-                            degrees(iCell, 0) = order;
-                        else
-                            for (index component = 0; component < input.ComponentNumber(); ++component)
-                                if (bounds.CompressesReconstructionComponent(component))
-                                    for (int mode = 0; mode < modes; ++mode)
-                                        coefficients(iCell, component * modes + mode) = reference(iCell, component * modes + mode);
-                    }
-            }
-            data.Sample(input, flux, data.higherValues);
-        }
-        data.limited = 0;
-        data.minimum = 1;
-        std::vector<real> cellBeta(size_t(cells), 1);
-        {
-            const SampleRead read(data.prototype, data.higherValues, points);
-            const auto higher = read.View();
-            std::optional<SampleRead> baseRead;
-            std::optional<EquationDofs::ReadScope> referenceScope;
-            std::optional<Algebra::DofComponentLayout<const real>> referenceLayout;
-            if (data.reference)
-            {
-                baseRead.emplace(data.prototype, data.baseValues, points);
-                referenceScope.emplace(data.reference->ReadOwned());
-                referenceLayout.emplace(referenceScope->ComponentLayout());
-            }
-            auto write = flux.WriteOwned();
-            const auto layout = write.ComponentLayout();
-            const auto coefficients = layout.View();
-            const auto degreeRead = data.degree.Read();
-            const auto degrees = degreeRead.View<R::FixedRows<1>>();
-            for (index iCell = 0; iCell < cells; ++iCell)
-            {
-                const EquationPositivityDetail::PointRow<decltype(means)> mean{means, iCell};
-                struct MeanValues
-                {
-                    decltype(mean) value;
-                    real operator()(index, index j) const { return value[j]; }
-                } base{mean};
-                const index begin = data.owner->positivityOffsets[iCell], end = data.owner->positivityOffsets[iCell + 1];
-                // RANS was excluded from every flow base test/write above.
-                // Correct its original polynomial about the mean even when
-                // flow is already admissible and will take the early exit.
-                const real scale = data.rans.Compute(base, higher, data.ransFirst, begin, end);
-                DNDS_check_throw_info(std::isfinite(scale) && scale >= 0 && scale <= 1, "invalid RANS reconstruction compression");
-                if (scale < 1)
-                    for (int component = 0; component < data.rans.components; ++component)
-                        for (int mode = 0; mode < modes; ++mode)
-                            coefficients(iCell, (data.ransFirst + component) * modes + mode) *= scale;
-                if (degrees(iCell, 0) == n.cfv.maxOrder)
-                    continue;
-                real beta = 1;
-                if (n.positivityReconstruction == "Segment")
-                {
-                    DNDS_check_throw_info(!data.owner->equation.HasMixture() && !data.owner->equation.HasRANS() &&
-                                              data.prototype.ComponentNumber() == 5,
-                                          "Segment reconstruction PP is a flow5 compatibility policy");
-                    const auto flowMean = bounds.Flow(mean);
-                    for (index q = begin; q < end; ++q)
-                        beta = std::min(beta, AdmissibleFraction(flowMean, bounds.Flow(EquationPositivityDetail::PointRow<decltype(higher)>{higher, q}),
-                                                                 data.owner->FixedFlowThermalBounds()));
-                    if (beta < n.positivityBetaCutoff)
-                        beta = 0;
-                }
+                for (index q = r.offsets(iCell, 0); q < r.offsets(iCell + 1, 0); ++q)
+                    good = good && ReferenceGood(samples, q, r.bounds);
+                if (good)
+                    degrees(iCell, 0) = order;
                 else
-                    beta = baseRead ? bounds.ReconstructionFraction(mean, baseRead->View(), higher, begin, end, n.positivityBetaPower, n.positivityBetaCutoff, 1, clippedPolicy)
-                                    : bounds.ReconstructionFraction(mean, base, higher, begin, end, n.positivityBetaPower, n.positivityBetaCutoff, 1, clippedPolicy);
-                DNDS_check_throw_info(std::isfinite(beta) && beta >= 0 && beta <= 1, "invalid equation reconstruction PP beta");
-                cellBeta[size_t(iCell)] = beta;
-                if (beta < 1)
-                {
-                    for (index component = 0; component < input.ComponentNumber(); ++component)
-                        if (bounds.CompressesReconstructionComponent(component))
-                            for (int mode = 0; mode < modes; ++mode)
-                            {
-                                const index j = component * modes + mode;
-                                const real reference = referenceLayout ? referenceLayout->View()(iCell, j) : 0;
-                                coefficients(iCell, j) = reference + beta * (coefficients(iCell, j) - reference);
-                            }
-                }
+                    for (index component = 0; component < r.means.ComponentNumber(); ++component)
+                        if (r.bounds.CompressesReconstructionComponent(component))
+                            for (int mode = 0; mode < r.modes; ++mode)
+                                coefficients(iCell, component * r.modes + mode) = reference(iCell, component * r.modes + mode);
             }
-        }
-        // PP POLICY -- final published-point guarantee. Raw rhoY remains in the
-        // polynomial and in advection/diffusion; only the final predicate uses
-        // the temporary clipped composition passed to EOS/T. Re-sample actual
-        // post-layout storage and recover rather than treating the analytic beta
-        // as an exact floating-point publication guarantee.
-        std::vector<uint8_t> recover(size_t(cells), 0);
-        std::vector<real> recoveryScale(size_t(cells), 1);
-        for (int iteration = 0; iteration < 1000; ++iteration)
+    }
+    NumericalStatus CompressPolynomial(const PolynomialPositivityRequest &r, PPInput higher, std::optional<PPInput> base,
+                                       std::optional<PPInput> reference, PPIndexInput degrees, PPOutput coefficients, PPScalarOutput cellBeta) noexcept
+    {
+        for (index iCell = 0; iCell < r.means.ownedRows; ++iCell)
         {
-            data.Sample(input, flux, data.higherValues);
-            bool any = false;
+            cellBeta(iCell, 0) = 1;
+            const EquationPositivityDetail::PointRow<PPInput> mean{r.means, iCell};
+            const RepeatedMean meanBase{r.means, iCell};
+            const index begin = r.offsets(iCell, 0), end = r.offsets(iCell + 1, 0);
+            // PP POLICY -- RANS is excluded from flow base tests/writes. Its
+            // original polynomial receives an independent scalar compression.
+            const real scale = r.rans.Compute(meanBase, higher, r.ransFirst, begin, end);
+            if (!(std::isfinite(scale) && scale >= 0 && scale <= 1))
+                return NumericalStatus{NumericalError::InvalidState, 1, iCell};
+            if (scale < 1)
+                for (int component = 0; component < r.rans.components; ++component)
+                    for (int mode = 0; mode < r.modes; ++mode)
+                        coefficients(iCell, (r.ransFirst + component) * r.modes + mode) *= scale;
+            if (degrees(iCell, 0) == r.maxOrder)
+                continue;
+            real beta = 1;
+            if (r.segmentBounds)
             {
-                const SampleRead read(data.prototype, data.higherValues, points);
-                const auto values = read.View();
-                for (index iCell = 0; iCell < cells; ++iCell)
-                {
-                    bool clippedGood = true;
-                    for (index q = data.owner->positivityOffsets[iCell]; q < data.owner->positivityOffsets[iCell + 1]; ++q)
-                    {
-                        const EquationPositivityDetail::PointRow<decltype(values)> point{values, q};
-                        clippedGood = clippedGood && bounds.ClippedReferenceAdmissible(point);
-                    }
-                    recover[size_t(iCell)] = uint8_t(!clippedGood);
-                    if (!recover[size_t(iCell)])
-                        continue;
-                    any = true;
-                    const real previous = cellBeta[size_t(iCell)];
-                    if (clippedPolicy == ReconstructionClippedReferencePolicy::FallbackToBase)
-                        cellBeta[size_t(iCell)] = 0;
-                    else
-                        cellBeta[size_t(iCell)] *= .9;
-                    if (cellBeta[size_t(iCell)] < n.positivityBetaCutoff)
-                        cellBeta[size_t(iCell)] = 0;
-                    DNDS_check_throw_info(previous > 0,
-                                          "validated reconstruction base violates its final physical-state predicate");
-                    recoveryScale[size_t(iCell)] = cellBeta[size_t(iCell)] / previous;
-                }
+                const auto flowMean = r.bounds.Flow(mean);
+                for (index q = begin; q < end; ++q)
+                    beta = std::min(beta, AdmissibleFraction(flowMean,
+                                                             r.bounds.Flow(EquationPositivityDetail::PointRow<PPInput>{higher, q}), *r.segmentBounds));
+                if (beta < r.betaCutoff)
+                    beta = 0;
             }
-            if (!any)
-                break;
-
-            std::optional<EquationDofs::ReadScope> referenceScope;
-            std::optional<Algebra::DofComponentLayout<const real>> referenceLayout;
-            if (data.reference)
-            {
-                referenceScope.emplace(data.reference->ReadOwned());
-                referenceLayout.emplace(referenceScope->ComponentLayout());
-            }
-            auto write = flux.WriteOwned();
-            const auto layout = write.ComponentLayout();
-            const auto coefficients = layout.View();
-            for (index iCell = 0; iCell < cells; ++iCell)
-                if (recover[size_t(iCell)])
-                    for (index component = 0; component < input.ComponentNumber(); ++component)
-                        if (bounds.CompressesReconstructionComponent(component))
-                            for (int mode = 0; mode < modes; ++mode)
-                            {
-                                const index j = component * modes + mode;
-                                const real reference = referenceLayout ? referenceLayout->View()(iCell, j) : 0;
-                                coefficients(iCell, j) = reference + recoveryScale[size_t(iCell)] * (coefficients(iCell, j) - reference);
-                            }
-        }
-        data.Sample(input, flux, data.higherValues);
-        {
-            const SampleRead read(data.prototype, data.higherValues, points);
-            const auto values = read.View();
-            for (index q = 0; q < points; ++q)
-            {
-                const EquationPositivityDetail::PointRow<decltype(values)> point{values, q};
-                DNDS_check_throw_info(bounds.ClippedReferenceAdmissible(point),
-                                      "published equation reconstruction violates its clipped EOS/T bound");
-            }
-        }
-        for (const real beta : cellBeta)
+            else
+                beta = base ? r.bounds.ReconstructionFraction(mean, *base, higher, begin, end, r.betaPower, r.betaCutoff, 1, r.clippedPolicy)
+                            : r.bounds.ReconstructionFraction(mean, meanBase, higher, begin, end, r.betaPower, r.betaCutoff, 1, r.clippedPolicy);
+            if (!(std::isfinite(beta) && beta >= 0 && beta <= 1))
+                return NumericalStatus{NumericalError::InvalidState, 2, iCell};
+            cellBeta(iCell, 0) = beta;
             if (beta < 1)
+                for (index component = 0; component < r.means.ComponentNumber(); ++component)
+                    if (r.bounds.CompressesReconstructionComponent(component))
+                        for (int mode = 0; mode < r.modes; ++mode)
+                        {
+                            const index j = component * r.modes + mode;
+                            const real value = reference ? (*reference)(iCell, j) : 0;
+                            coefficients(iCell, j) = value + beta * (coefficients(iCell, j) - value);
+                        }
+        }
+        return {};
+    }
+    NumericalResult<bool> MarkPolynomialRecovery(const PolynomialPositivityRequest &r, PPInput samples, PPScalarOutput beta,
+                                                 PPFlagOutput recover, PPScalarOutput recoveryScale) noexcept
+    {
+        bool any = false;
+        for (index iCell = 0; iCell < r.means.ownedRows; ++iCell)
+        {
+            bool clippedGood = true;
+            for (index q = r.offsets(iCell, 0); q < r.offsets(iCell + 1, 0); ++q)
+                clippedGood = clippedGood && r.bounds.ClippedReferenceAdmissible(
+                                                 EquationPositivityDetail::PointRow<PPInput>{samples, q});
+            recover(iCell, 0) = uint8_t(!clippedGood);
+            if (!recover(iCell, 0))
+                continue;
+            any = true;
+            const real previous = beta(iCell, 0);
+            beta(iCell, 0) = r.clippedPolicy == ReconstructionClippedReferencePolicy::FallbackToBase ? 0 : previous * .9;
+            if (beta(iCell, 0) < r.betaCutoff)
+                beta(iCell, 0) = 0;
+            if (!(previous > 0))
+                return NumericalStatus{NumericalError::InvalidState, 1, iCell};
+            recoveryScale(iCell, 0) = beta(iCell, 0) / previous;
+        }
+        return any;
+    }
+    void RecoverPolynomial(const PolynomialPositivityRequest &r, std::optional<PPInput> reference,
+                           PPOutput coefficients, PPFlagInput recover, PPScalarInput recoveryScale)
+    {
+        for (index iCell = 0; iCell < r.means.ownedRows; ++iCell)
+            if (recover(iCell, 0))
+                for (index component = 0; component < r.means.ComponentNumber(); ++component)
+                    if (r.bounds.CompressesReconstructionComponent(component))
+                        for (int mode = 0; mode < r.modes; ++mode)
+                        {
+                            const index j = component * r.modes + mode;
+                            const real value = reference ? (*reference)(iCell, j) : 0;
+                            coefficients(iCell, j) = value + recoveryScale(iCell, 0) * (coefficients(iCell, j) - value);
+                        }
+    }
+    NumericalStatus VerifyReconstructedPoints(const PolynomialPositivityRequest &r, PPInput samples) noexcept
+    {
+        // PP POLICY -- raw rhoY remains in the polynomial and fluxes. This
+        // final predicate uses only the clipped EOS/T composition. Sampling
+        // actual post-layout storage makes the guarantee about published values.
+        for (index q = 0; q < samples.RowCount(); ++q)
+            if (!(r.bounds.ClippedReferenceAdmissible(
+                    EquationPositivityDetail::PointRow<PPInput>{samples, q})))
+                return NumericalStatus{NumericalError::InvalidState, 1, q};
+        return {};
+    }
+    std::pair<index, real> PolynomialPositivityStatistics(PPScalarInput beta)
+    {
+        index limited = 0;
+        real minimum = 1;
+        for (index iCell = 0; iCell < beta.RowCount(); ++iCell)
+            if (beta(iCell, 0) < 1)
             {
-                ++data.limited;
-                data.minimum = std::min(data.minimum, beta);
+                ++limited;
+                minimum = std::min(minimum, beta(iCell, 0));
             }
+        return {limited, minimum};
+    }
+
+    NumericalResult<std::pair<index, real>> LimitPhysicalStepRows(PPInput mean, PPInput rhs, CFV::FiniteVolumeHostView metric,
+                                                                  EquationThermalView thermal, real dt, real relax, real scale, int compressionPower) noexcept
+    {
+        index limited = 0;
+        real minimum = 1;
+        std::vector<real> increment(size_t(mean.ComponentNumber()));
+        for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
+        {
+            const EquationPositivityDetail::PointRow<decltype(mean)> row{mean, iCell};
+            if (!(thermal.Admissible(row)))
+                return NumericalStatus{NumericalError::InvalidState, 1, iCell};
+            for (index j = 0; j < mean.ComponentNumber(); ++j)
+            {
+                increment[j] = (dt * scale) * rhs(iCell, j) / metric.GetCellVol(iCell);
+                if (!(std::isfinite(increment[j])))
+                    return NumericalStatus{NumericalError::InvalidState, 2, iCell};
+            }
+            // PP POLICY -- physical-dt forecast. The complete coupled trial
+            // enters one clipped-reference thermal estimate; no species
+            // simplex factor is formed and no state is changed. The scalar
+            // restricts the common dt only. Explicit stage acceptance and
+            // retry remain the actual update guarantee.
+            const real alpha = thermal.IncrementFraction(row, increment, relax, 1, compressionPower);
+            if (!(std::isfinite(alpha) && alpha >= 0 && alpha <= 1))
+                return NumericalStatus{NumericalError::InvalidState, 3, iCell};
+            if (alpha < 1)
+            {
+                ++limited;
+                minimum = std::min(minimum, alpha);
+            }
+        }
+        return std::pair<index, real>{limited, minimum};
     }
 }

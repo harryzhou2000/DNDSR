@@ -1,6 +1,5 @@
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
-#include "Cauchy/Discretization/AuxiliaryReduction.hpp"
 #include "DNDS/Algebra/DofAlgebra.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 
@@ -28,7 +27,7 @@ namespace DNDS::Cauchy
     AuxiliaryValues FiniteVolume::BuildAuxiliaryValues(AuxiliaryRequest request) const
     {
         AuxiliaryValues values;
-        const index faces = index(_data->stencilFaces.size());
+        const index faces = _data->stencil.stencilFaces.RowCount();
         if (request.derived.ComponentNumber())
         {
             values._derivedThermodynamics = request.meanThermodynamics;
@@ -66,5 +65,13 @@ namespace DNDS::Cauchy
         }
         return request;
     }
-    const std::vector<index> &FiniteVolume::AuxiliaryFaces() const { return _data->stencilFaces; }
+    std::vector<index> FiniteVolume::AuxiliaryFaces() const
+    {
+        const auto read = _data->stencil.stencilFaces.Read();
+        const auto view = read.View<R::FixedRows<1>>();
+        std::vector<index> faces(view.RowCount());
+        for (index iFace = 0; iFace < view.RowCount(); ++iFace)
+            faces[iFace] = view(iFace, 0);
+        return faces;
+    }
 }

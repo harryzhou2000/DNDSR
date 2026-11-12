@@ -328,9 +328,9 @@ namespace DNDS::Runtime
         }
         PythonArray New(RowLayout layout, Device device) const
         {
-            auto result = *this;
-            result._storage = ArrayStorage::Allocate(std::move(layout), _dtype.itemsize(), device, AllocationOptions{_schema->Alignment()});
-            return result;
+            // Replacement must not alias the old allocation: reset is also
+            // the recovery operation for an abandoned exclusive shape edit.
+            return WithStorage(ArrayStorage::Allocate(std::move(layout), _dtype.itemsize(), device, AllocationOptions{_schema->Alignment()}));
         }
         PythonArray WithStorage(ArrayStorage::Shared storage) const
         {

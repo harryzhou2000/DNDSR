@@ -4,6 +4,7 @@
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
 #include "Physics/Chemistry/SpeciesAdmissibility.hpp"
+#include "DNDS/Runtime/Storage/Metadata.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -61,7 +62,7 @@ namespace DNDS::Cauchy
     {
         real densityFloor;
         std::array<real, 2> floors, densityCoefficients;
-        std::array<const real *, 2> speciesEnergies{};
+        std::array<SpanView<const real>, 2> speciesEnergies{};
         index components, flowFirst, speciesFirst, independent;
 
         /// Flow and transported species share reconstruction compression.
@@ -92,8 +93,8 @@ namespace DNDS::Cauchy
         DNDS_DEVICE_CALLABLE real Reference(const Row &values, int constraint) const
         {
             const real rho = values[flowFirst];
-            const auto *energy = speciesEnergies[constraint];
-            if (!energy)
+            const auto energy = speciesEnergies[constraint];
+            if (energy.empty())
                 return rho * densityCoefficients[constraint];
             real value = rho * energy[independent];
             for (index k = 0; k < independent; ++k)
@@ -109,8 +110,8 @@ namespace DNDS::Cauchy
         DNDS_DEVICE_CALLABLE real ClippedReference(const Row &values, int constraint) const
         {
             const real rho = values[flowFirst];
-            const auto *energy = speciesEnergies[constraint];
-            if (!energy)
+            const auto energy = speciesEnergies[constraint];
+            if (energy.empty())
                 return rho * densityCoefficients[constraint];
             real sum = 0;
             for (index k = 0; k < independent; ++k)
@@ -384,12 +385,12 @@ namespace DNDS::Cauchy
     /// reference-energy margin. For a perfect gas these reduce to the existing
     /// temperature and pressure energy constraints. Mixtures use the preserved
     /// backend reference temperature and an explicit sensible-energy margin.
-    /// View pointers remain valid until owner mutation/move/destruction. A CUDA
-    /// consumer must upload the coefficient buffers and freeze device pointers;
-    /// passing this host owner's pointers to a device is not supported.
+    /// Immutable coefficient metadata uses shared backend allocations. View()
+    /// is a host projection; retain this policy for the full operation. A future
+    /// device operator must explicitly publish device coefficient descriptors.
     class EquationThermalPolicy
     {
-        std::array<std::vector<real>, 2> _energies;
+        std::array<Runtime::MetadataBuffer<real>, 2> _energies;
         EquationThermalView _view{};
 
     public:
@@ -399,7 +400,7 @@ namespace DNDS::Cauchy
         {
             auto result = _view;
             for (int c = 0; c < 2; ++c)
-                result.speciesEnergies[c] = _energies[c].empty() ? nullptr : _energies[c].data();
+                result.speciesEnergies[c] = _energies[c].HostView();
             return result;
         }
     };

@@ -163,6 +163,6 @@ namespace DNDS::Cauchy::Riemann
         /// Evaluate assumes that contract; unsupported/missing data never falls
         /// back to another numerical algorithm.
         void Validate(const FluxInput &input, const FluxSettings &settings = {}) const;
-        FluxResult Evaluate(const FluxInput &input, const FluxSettings &settings = {}) const;
+        FluxResult Evaluate(const FluxInput &input, const FluxSettings &settings = {}) const noexcept;
     };
 }

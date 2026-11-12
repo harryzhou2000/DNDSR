@@ -3,7 +3,7 @@
 // convergence is timed. Both factorizations include resetting numeric storage.
 #include "Euler/EulerJacobian.hpp"
 #include "Solver/NativeBlockLU.hpp"
-#include "Cauchy/Implicit/LinearBlockKernels.hpp"
+#include "Cauchy/Implicit/CPU/LinearBlockKernels.hpp"
 #include <iostream>
 
 namespace R = DNDS::Runtime;
@@ -107,18 +107,11 @@ int main(int argc, char **argv)
         const auto rhsVersion = rhs.Version();
         native.Factorize();
         factorLegacy();
-        struct ActionPattern
-        {
-            struct Partition
-            {
-                I owned;
-            } partitionStorage;
-            const Partition *partition = &partitionStorage;
-            const std::vector<std::vector<I>> &columns;
-        } pattern{{cells}, nullptr, adjacency};
-        pattern.partition = &pattern.partitionStorage;
         std::vector<I> rows(cells);
         std::iota(rows.begin(), rows.end(), I(0));
+        const DNDS::Cauchy::LinearPatternStorage patternStorage(adjacency, rows, rows, rows, {});
+        const auto patternRead = patternStorage.Read();
+        const auto pattern = patternRead.View();
         const auto solveNative = [&]
         {
             if (mode != "logical-solve" && mode != "logical-action")
@@ -150,7 +143,7 @@ int main(int argc, char **argv)
                     auto operator[](I iCell) const { return values(iCell, 0); }
                 } diagonal{matrix.View()};
                 const OffDiagonalActions blocks{matrix.View()};
-                DNDS::Cauchy::Detail::ApplyBlockRows(b.View(), b.View().GhostPart(), x.View(), diagonal, blocks, pattern, rows, components, true);
+                DNDS::Cauchy::CPU::ApplyBlockRows(b.View(), b.View().GhostPart(), x.View(), diagonal, blocks, pattern, pattern.order, components, true);
             }
             else
                 native.SolveRows(b.View(), y.View(), x.View());

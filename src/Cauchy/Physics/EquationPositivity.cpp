@@ -25,8 +25,8 @@ namespace DNDS::Cauchy
         if (equation.HasMixture())
         {
             const auto &material = equation.Mixture();
-            _energies[0] = material.BaseSpecificInternalEnergies();
-            _energies[1] = material.SpecificInternalEnergies(std::max(temperatureFloor, material.BaseTemperature()), std::move(worker));
+            _energies[0] = Runtime::MetadataBuffer<real>(material.BaseSpecificInternalEnergies());
+            _energies[1] = Runtime::MetadataBuffer<real>(material.SpecificInternalEnergies(std::max(temperatureFloor, material.BaseTemperature()), std::move(worker)));
             _view.independent = material.SpeciesNumber() - 1;
             _view.floors = {sensibleEnergyFloor, 0};
         }

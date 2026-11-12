@@ -273,7 +273,7 @@ TEST_CASE("Equation mean trial and thermal dt preserve all block layouts and the
     double minimum = 1;
     const auto referenceEnergy = [&](const auto &value, int c)
     {
-        const auto *energy = thermal.speciesEnergies[c];
+        const auto energy = thermal.speciesEnergies[c];
         double result = value[0] * energy[thermal.independent];
         for (DNDS::index k = 0; k < thermal.independent; ++k)
             result += value[thermal.speciesFirst + k] * (energy[k] - energy[thermal.independent]);
@@ -339,7 +339,7 @@ TEST_CASE("Equation mean trial and thermal dt preserve all block layouts and the
     ++wrong.speciesFirst;
     CHECK_THROWS(fv.LimitPhysicalStep(state, rhs, wrong, dt, relax, scale));
     wrong = thermal;
-    wrong.speciesEnergies[0] = nullptr;
+    wrong.speciesEnergies[0] = {};
     CHECK_THROWS(fv.LimitPhysicalStep(state, rhs, wrong, dt, relax, scale));
 }
 #endif

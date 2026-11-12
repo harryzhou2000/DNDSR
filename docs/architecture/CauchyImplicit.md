@@ -1433,7 +1433,10 @@ its next ESDIRK4 step after repartition, preserving loaded means and diagnostics
 
 ## Whole-equation CPU nonlinear adapter
 
-Pure row-wise host arithmetic is isolated in `NonlinearHostKernels.hpp`.
+Pure row-wise host arithmetic is isolated in `Implicit/CPU/NonlinearKernels.hpp`
+and its paired implementation. Linear Apply/Jacobi/SGS dispatch and their
+template instantiations live in `Implicit/CPU/LinearBlockKernels_*.cpp`;
+`LinearProblemContext` only validates, retains access and selects the region.
 Flow5 and whole-equation orchestration share the same stateless leaves for
 cached-rate scaling, rate normalization, defect/norm accumulation, and FAS
 equation assembly. The enclosing solver still owns leases, component

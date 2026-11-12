@@ -1,4 +1,7 @@
+#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
+#include "Cauchy/Discretization/CPU/FiniteVolumeBoundaryKernels.hpp"
+#include "Cauchy/State/CPU/FieldKernels.hpp"
 #include "Cauchy/Physics/EquationPositivity.hpp"
 #include "Cauchy/Physics/EquationRANS.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
@@ -64,15 +67,35 @@ namespace DNDS::Cauchy
             if(view.GetBndZone(iBnd)==zone) selected.push_back(iBnd); });
         return Geom::BoundaryPatch::Create(_data->mesh, selected);
     }
-    const std::vector<BoundaryPoint> &FiniteVolume::BoundaryPoints() const
+    std::vector<BoundaryPoint> FiniteVolume::BoundaryPoints() const
     {
         Metrics().Validate();
-        return _data->boundaryLayout->points;
+        const auto read = _data->boundaryLayout->points.Read();
+        const auto view = read.View<Runtime::FixedRows<1>>();
+        std::vector<BoundaryPoint> result(view.RowCount());
+        for (index iRow = 0; iRow < view.RowCount(); ++iRow)
+            result[iRow] = view(iRow, 0);
+        return result;
     }
-    const std::vector<BoundaryPoint> &FiniteVolume::BoundaryFaces() const
+    std::vector<BoundaryPoint> FiniteVolume::BoundaryFaces() const
     {
         Metrics().Validate();
-        return _data->boundaryLayout->faces;
+        const auto read = _data->boundaryLayout->faces.Read();
+        const auto view = read.View<Runtime::FixedRows<1>>();
+        std::vector<BoundaryPoint> result(view.RowCount());
+        for (index iRow = 0; iRow < view.RowCount(); ++iRow)
+            result[iRow] = view(iRow, 0);
+        return result;
+    }
+    Runtime::Array<BoundaryPoint>::ReadLease FiniteVolume::ReadBoundaryPoints() const
+    {
+        Metrics().Validate();
+        return _data->boundaryLayout->points.Read();
+    }
+    Runtime::Array<BoundaryPoint>::ReadLease FiniteVolume::ReadBoundaryFaces() const
+    {
+        Metrics().Validate();
+        return _data->boundaryLayout->faces.Read();
     }
     bool FiniteVolume::HasInterfaces() const { return _data->hasInterfaces; }
     BoundaryInputs FiniteVolume::BuildBoundaryInputs(
@@ -90,10 +113,10 @@ namespace DNDS::Cauchy
                     : Physics::Chemistry::ChemicalWorkerPool::Lease{});
         BoundaryInputs input(
             BuildPacketRows(_data->equation.Schema(),
-                            index(_data->boundaryLayout->points.size()),
+                            _data->boundaryLayout->points.RowCount(),
                             "boundary quadrature"),
             BuildPacketRows(_data->equation.Schema(),
-                            index(_data->boundaryLayout->faces.size()),
+                            _data->boundaryLayout->faces.RowCount(),
                             "boundary face centers"),
             _data->equation.PropertyKey(), std::move(thermal));
         input._layout = _data->boundaryLayout;
@@ -137,8 +160,8 @@ namespace DNDS::Cauchy
                     !values.PhysicalField(iField).Owned().Layout().IsVariable(),
                     "boundary packet field needs uniform rows");
         };
-        validate(input._quadrature, index(input._layout->points.size()));
-        validate(input._faceCenters, index(input._layout->faces.size()));
+        validate(input._quadrature, input._layout->points.RowCount());
+        validate(input._faceCenters, input._layout->faces.RowCount());
     }
     void FiniteVolume::BeginBoundaryUpdate(BoundaryInputs &input) const
     {
@@ -150,9 +173,7 @@ namespace DNDS::Cauchy
             auto write = values->WriteOwned();
             const auto layout = write.ComponentLayout();
             const auto rows = layout.View();
-            for (index iPoint = 0; iPoint < rows.RowCount(); ++iPoint)
-                for (index j = 0; j < rows.ComponentNumber(); ++j)
-                    rows(iPoint, j) = std::numeric_limits<real>::quiet_NaN();
+            CPU::FillRows(rows, rows.ComponentNumber(), std::numeric_limits<real>::quiet_NaN());
         }
     }
     void FiniteVolume::PublishBoundaryInputs(
@@ -172,6 +193,8 @@ namespace DNDS::Cauchy
             const auto read = values.ReadOwned();
             const auto layout = read.ComponentLayout();
             const auto rows = layout.View();
+            const auto pointRead = points.Read();
+            const auto pointView = pointRead.template View<Runtime::FixedRows<1>>();
             const auto thermal = input._thermal->View();
             const auto rans = _data->equation.HasRANS()
                                   ? RANSStateView{_data->equation.RANS().Kind(),
@@ -179,18 +202,7 @@ namespace DNDS::Cauchy
                                   : RANSStateView{};
             const auto ransBlock = rans.components ? read.Block("rans")
                                                    : EquationBlockReadView{};
-            for (index iPoint = 0; iPoint < rows.RowCount(); ++iPoint)
-                if (points[iPoint].interface)
-                {
-                    DNDS_check_throw_info(
-                        thermal.Admissible(
-                            EquationPositivityDetail::PointRow<decltype(rows)>{
-                                rows, iPoint}),
-                        "interface update has missing, nonfinite or thermally inadmissible equation rows");
-                    if (rans.components)
-                        DNDS_check_throw_info(rans.Admissible(ransBlock[iPoint]),
-                                              "interface update has inadmissible RANS rows");
-                }
+            RequireNumericalSuccess(CPU::ValidateInterfacePacketRows(rows, pointView, thermal, rans, ransBlock), "ValidateInterfacePacketRows");
         };
         validate(input._quadrature, input._layout->points);
         validate(input._faceCenters, input._layout->faces);
@@ -245,23 +257,14 @@ namespace DNDS::Cauchy
             const auto validate = [&](const auto &a, const auto &b,
                                       const EquationDofs &values)
             {
-                DNDS_check_throw_info(a.size() == b.size(), "boundary alias point counts differ");
+                DNDS_check_throw_info(a.RowCount() == b.RowCount(), "boundary alias point counts differ");
+                const auto aRead = a.Read(), bRead = b.Read();
+                const auto av = aRead.template View<Runtime::FixedRows<1>>(), bv = bRead.template View<Runtime::FixedRows<1>>();
                 const auto valueRead = values.ReadOwned();
                 const auto layout = valueRead.ComponentLayout();
                 const auto rows = layout.View();
                 const auto thermal = input._thermal->View();
-                for (index iPoint = 0; iPoint < index(a.size()); ++iPoint)
-                {
-                    DNDS_check_throw_info(a[iPoint].cell == b[iPoint].cell && a[iPoint].face == b[iPoint].face && a[iPoint].quadrature == b[iPoint].quadrature &&
-                                              a[iPoint].zone == b[iPoint].zone && a[iPoint].point == b[iPoint].point && a[iPoint].normal == b[iPoint].normal && a[iPoint].interface == b[iPoint].interface,
-                                          "boundary alias point order, geometry or semantics differ");
-                    if (b[iPoint].interface)
-                        DNDS_check_throw_info(
-                            thermal.Admissible(
-                                EquationPositivityDetail::PointRow<decltype(rows)>{
-                                    rows, iPoint}),
-                            "aliased boundary state violates the target level's admissibility bounds");
-                }
+                RequireNumericalSuccess(CPU::ValidateInterfaceAliasRows(rows, av, bv, thermal), "ValidateInterfaceAliasRows");
             };
             validate(input._layout->points, _data->boundaryLayout->points,
                      input._quadrature);

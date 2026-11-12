@@ -93,12 +93,28 @@ namespace DNDS::Cauchy
         /// Full thermochemical energy is retained for mixtures. The species
         /// buffer is borrowed, never modified, and may be this worker's input
         /// scratch. No new worker or point-time payload allocation is needed.
+        /// Numerical adapter; failed values must not be consumed. External EOS
+        /// exceptions are intercepted here and are never a fallback signal.
+        NumericalResult<FlowState> TryFromPrimitive(const FlowState &primitive,
+                                                    Physics::Chemistry::ConstSpeciesBufferView rhoY = {}, real temperature = 0) noexcept;
         FlowState FromPrimitive(const FlowState &primitive, Physics::Chemistry::ConstSpeciesBufferView rhoY = {},
                                 real temperature = 0);
+        /// Nonthrowing numerical property entry. All expected validation and
+        /// backend failures return an explicit code. output is valid only on
+        /// success; its species spans still borrow this worker until next use.
+        NumericalStatus TryEvaluate(const FlowState &flow, Physics::Chemistry::ConstSpeciesBufferView rhoY,
+                                    real temperatureGuess, Physics::Thermodynamics::MixturePropertyRequest request,
+                                    EquationPointProperties &output) noexcept;
+        NumericalStatus TryEvaluate(const FlowState &flow, Physics::Chemistry::ConstSpeciesBufferView rhoY,
+                                    real temperatureGuess, EquationPointProperties &output) noexcept
+        {
+            return TryEvaluate(flow, rhoY, temperatureGuess, _request, output);
+        }
         /// Input flow is [rho,rhou,rhov,rhow,rhoE], with full thermal energy for
         /// mixtures. rhoY has Ns-1 independent conservative species; it may be
         /// worker scratch gathered from any physical layout or allocation.
         /// A stale positive T guess seeds UV inversion, never its final answer.
+        /// Checked setup/compatibility adapter; numerical kernels use TryEvaluate.
         EquationPointProperties Evaluate(const FlowState &flow, Physics::Chemistry::ConstSpeciesBufferView rhoY = {},
                                          real temperatureGuess = 0);
         /// Per-point subset of the reserved outputs; intended for fused FV

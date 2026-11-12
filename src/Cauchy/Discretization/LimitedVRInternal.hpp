@@ -4,20 +4,15 @@
 // stencils/penalties; this private module supplies physical sampling and O2 PP.
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
 #include "CFV/Plans/LimitedVRPlan.hpp"
+#include "Cauchy/Discretization/LimitedVRFace.hpp"
 
 namespace DNDS::Cauchy
 {
     struct FiniteVolume::LimitedVRGeometry
     {
-        struct Face
-        {
-            index cell, other;
-            Geom::tPoint normal;
-            Geom::tGPoint rotation;
-        };
         CFV::GradientPlan gradient;
         CFV::LimitedVRPlan gates;
-        std::vector<Face> faces;
+        Runtime::Array<LimitedVRFace> faces;
         std::optional<CFV::PolynomialSamplingPlan> sampling;
         explicit LimitedVRGeometry(const Data &data);
     };

@@ -2,6 +2,9 @@
   "stage": "Cauchy Plan 60 source ownership",
   "namespace_changes": false,
   "owners": {
+    "Cauchy/Bindings/Operators_bind.hpp": {
+      "implementation": "Cauchy/Bindings/Operators_bind.cpp"
+    },
     "Cauchy/Discretization/FiniteVolume.hpp": {
       "plan": "Cauchy/Discretization/FiniteVolume.cpp",
       "workspace": [
@@ -12,25 +15,112 @@
         "Cauchy/Discretization/FiniteVolume_WorkspaceFactory.cpp"
       ],
       "orchestration": [
-        "Cauchy/Discretization/FiniteVolume_Evaluation.cpp",
+        "Cauchy/Discretization/FiniteVolume_SourcePreparation.cpp",
         "Cauchy/Discretization/FiniteVolume_ReconstructionState.cpp",
-        "Cauchy/Discretization/FiniteVolume_AuxiliaryValues.cpp",
-        "Cauchy/Discretization/FiniteVolume_BoundaryInputs.cpp",
-        "Cauchy/Discretization/FiniteVolume_Flux.cpp",
         "Cauchy/Discretization/FiniteVolume_Source.cpp",
-        "Cauchy/Discretization/FiniteVolume_Diagnostics.cpp"
-      ],
-      "cpu": [
-        "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp",
-        "Cauchy/Discretization/CPU/FiniteVolumeBoundaryKernels.cpp",
-        "Cauchy/Discretization/CPU/FiniteVolumeGradientKernels.cpp",
-        "Cauchy/Discretization/CPU/FiniteVolumeAuxiliaryKernels.cpp",
-        "Cauchy/Discretization/CPU/FiniteVolumeLimitedVRKernels.cpp",
-        "Cauchy/Discretization/CPU/FiniteVolumePositivityKernels.cpp",
-        "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels_Flow5.cpp",
-        "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels_Equation.cpp",
-        "Cauchy/Discretization/CPU/FiniteVolumeSourceKernels.cpp"
+        "Cauchy/Discretization/FiniteVolume_Diagnostics.cpp",
+        "Cauchy/Discretization/FiniteVolume_RHS.cpp",
+        "Cauchy/Discretization/FiniteVolume_LimitedVR.cpp",
+        "Cauchy/Discretization/FiniteVolume_BoundaryInputs.cpp",
+        "Cauchy/Discretization/FiniteVolume_RHSOperator.cpp",
+        "Cauchy/Discretization/FiniteVolume_Evaluation.cpp",
+        "Cauchy/Discretization/FiniteVolume_Workspace.cpp",
+        "Cauchy/Discretization/FiniteVolume_AuxiliaryValues.cpp",
+        "Cauchy/Discretization/FiniteVolume_Flux.cpp",
+        "Cauchy/Discretization/FiniteVolume_Boundary.cpp",
+        "Cauchy/Discretization/FiniteVolume_Gradient.cpp",
+        "Cauchy/Discretization/FiniteVolume_WorkspaceFactory.cpp",
+        "Cauchy/Discretization/FiniteVolume_InterfaceInputs.cpp",
+        "Cauchy/Discretization/FiniteVolume_TimeStep.cpp",
+        "Cauchy/Discretization/FiniteVolume_InitializeField.cpp",
+        "Cauchy/Discretization/FiniteVolume_LimitedVRExecution.cpp",
+        "Cauchy/Discretization/FiniteVolume_Positivity.cpp",
+        "Cauchy/Discretization/FiniteVolume_AuxiliaryPreparation.cpp",
+        "Cauchy/Discretization/FiniteVolume_PrepareAuxValues.cpp",
+        "Cauchy/IO/FiniteVolume_FieldOutput.cpp",
+        "Cauchy/Implicit/FiniteVolume_PrepareJacobian.cpp",
+        "Cauchy/Implicit/FiniteVolume_Jacobian.cpp"
       ]
+    },
+    "Cauchy/Interface/CPU/InterfacePacketKernels.hpp": {
+      "implementation": "Cauchy/Interface/CPU/InterfacePacketKernels.cpp"
+    },
+    "Cauchy/Interface/CPU/InterfaceSamplingKernels.hpp": {
+      "implementation": "Cauchy/Interface/CPU/InterfaceSamplingKernels.cpp"
+    },
+    "Cauchy/Implicit/CPU/LinearProblemKernels.hpp": {
+      "implementation": "Cauchy/Implicit/CPU/LinearProblemKernels_Diagonal.cpp"
+    },
+    "CFV/CPU/DistributedInterfaceSamplingKernels.hpp": {
+      "implementation": "CFV/CPU/DistributedInterfaceSamplingKernels.cpp"
+    },
+    "CFV/CPU/ReconstructionBasisKernels.hpp": {
+      "implementation": "CFV/CPU/ReconstructionBasisKernels.cpp"
+    },
+    "CFV/Plans/DistributedInterfaceSamplingPlan.hpp": {
+      "implementation": "CFV/Plans/DistributedInterfaceSamplingPlan.cpp"
+    },
+    "Cauchy/Discretization/CPU/FiniteVolumeStateKernels.hpp": {
+      "implementation": "Cauchy/Discretization/CPU/FiniteVolumeStateKernels.cpp"
+    },
+    "Cauchy/Discretization/CPU/FiniteVolumeGradientKernels.hpp": {
+      "implementation": "Cauchy/Discretization/CPU/FiniteVolumeGradientKernels.cpp"
+    },
+    "Cauchy/Discretization/CPU/FiniteVolumeBoundaryKernels.hpp": {
+      "implementation": "Cauchy/Discretization/CPU/FiniteVolumeBoundaryKernels.cpp"
+    },
+    "Cauchy/Discretization/CPU/FiniteVolumeAuxiliaryKernels.hpp": {
+      "implementation": "Cauchy/Discretization/CPU/FiniteVolumeAuxiliaryKernels.cpp"
+    },
+    "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels.hpp": {
+      "implementation": [
+        "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels_Equation.cpp",
+        "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels_Flow5.cpp"
+      ]
+    },
+    "Cauchy/Discretization/CPU/FiniteVolumeSourceKernels.hpp": {
+      "implementation": "Cauchy/Discretization/CPU/FiniteVolumeSourceKernels.cpp"
+    },
+    "Cauchy/Discretization/CPU/FiniteVolumeReconstructionKernels.hpp": {
+      "implementation": "Cauchy/Discretization/CPU/FiniteVolumeReconstructionKernels.cpp"
+    },
+    "Cauchy/Discretization/CPU/FiniteVolumePositivityKernels.hpp": {
+      "implementation": "Cauchy/Discretization/CPU/FiniteVolumePositivityKernels.cpp"
+    },
+    "Cauchy/Discretization/CPU/FiniteVolumeLimitedVRKernels.hpp": {
+      "implementation": "Cauchy/Discretization/CPU/FiniteVolumeLimitedVRKernels.cpp"
+    },
+    "Cauchy/Core/CPU/TimeStageKernels.hpp": {
+      "implementation": "Cauchy/Core/CPU/TimeStageKernels.cpp"
+    },
+    "Cauchy/Physics/CPU/EquationSourceKernels.hpp": {
+      "implementation": "Cauchy/Physics/CPU/EquationSourceKernels.cpp"
+    },
+    "Cauchy/Multigrid/CPU/PolynomialMultigridKernels.hpp": {
+      "implementation": "Cauchy/Multigrid/CPU/PolynomialMultigridKernels.cpp"
+    },
+    "Cauchy/State/CPU/StatePropertiesKernels.hpp": {
+      "implementation": "Cauchy/State/CPU/StatePropertiesKernels.cpp"
+    },
+    "Cauchy/Implicit/CPU/FiniteVolumeJacobianKernels.hpp": {
+      "implementation": [
+        "Cauchy/Implicit/CPU/FiniteVolumeJacobianKernels_Preparation.cpp",
+        "Cauchy/Implicit/CPU/FiniteVolumeJacobianKernels_Flow.cpp",
+        "Cauchy/Implicit/CPU/FiniteVolumeJacobianKernels_Equation.cpp"
+      ]
+    },
+    "Cauchy/Implicit/CPU/LinearBlockKernels.hpp": {
+      "implementation": [
+        "Cauchy/Implicit/CPU/LinearBlockKernels_ILU.cpp",
+        "Cauchy/Implicit/CPU/LinearBlockKernels_Array.cpp",
+        "Cauchy/Implicit/CPU/LinearBlockKernels_Dof.cpp"
+      ]
+    },
+    "Cauchy/Implicit/CPU/JacobianKernels.hpp": {
+      "implementation": "Cauchy/Implicit/CPU/JacobianKernels.cpp"
+    },
+    "Cauchy/Implicit/CPU/NonlinearKernels.hpp": {
+      "implementation": "Cauchy/Implicit/CPU/NonlinearKernels.cpp"
     }
   },
   "paths": [
@@ -1358,6 +1448,137 @@
       "old": "Geom/geom_pybind11.cpp",
       "canonical": "Geom/Bindings/geom_pybind11.cpp",
       "physical": "Geom/Bindings/geom_pybind11.cpp"
+    },
+    {
+      "old": "CFV/Prepare/VariationalReconstructionPlan.cpp",
+      "canonical": "CFV/Prepare/FiniteVolumePlan_Reconstruction.cpp",
+      "physical": "CFV/Prepare/FiniteVolumePlan_Reconstruction.cpp"
+    },
+    {
+      "old": "CFV/Prepare/ReconstructionDevicePlan.cpp",
+      "canonical": "CFV/Prepare/FiniteVolumePlan_Placement.cpp",
+      "physical": "CFV/Prepare/FiniteVolumePlan_Placement.cpp"
+    },
+    {
+      "old": "CFV/Operators/Gradient.cpp",
+      "canonical": "CFV/Operators/GradientPlan_Operators.cpp",
+      "physical": "CFV/Operators/GradientPlan_Operators.cpp"
+    },
+    {
+      "old": "CFV/Operators/PolynomialSampling.cpp",
+      "canonical": "CFV/Operators/PolynomialSamplingPlan_Values.cpp",
+      "physical": "CFV/Operators/PolynomialSamplingPlan_Values.cpp"
+    },
+    {
+      "old": "CFV/Operators/PolynomialSamplingValueGradient.cpp",
+      "canonical": "CFV/Operators/PolynomialSamplingPlan_ValueGradient.cpp",
+      "physical": "CFV/Operators/PolynomialSamplingPlan_ValueGradient.cpp"
+    },
+    {
+      "old": "CFV/Operators/LimitedVR.cpp",
+      "canonical": "CFV/Operators/LimitedVRPlan_Operators.cpp",
+      "physical": "CFV/Operators/LimitedVRPlan_Operators.cpp"
+    },
+    {
+      "old": "CFV/Operators/Reconstruction.cpp",
+      "canonical": "CFV/Operators/FiniteVolumePlan_Reconstruction.cpp",
+      "physical": "CFV/Operators/FiniteVolumePlan_Reconstruction.cpp"
+    },
+    {
+      "old": "CFV/Operators/ReconstructionLinear.cpp",
+      "canonical": "CFV/Operators/FiniteVolumePlan_Linear.cpp",
+      "physical": "CFV/Operators/FiniteVolumePlan_Linear.cpp"
+    },
+    {
+      "old": "Geom/Geometry/MeshGeometryEdit.cpp",
+      "canonical": "Geom/Geometry/UnstructuredMesh_Geometry.cpp",
+      "physical": "Geom/Geometry/UnstructuredMesh_Geometry.cpp"
+    },
+    {
+      "old": "Geom/Geometry/MeshWallDistance.cpp",
+      "canonical": "Geom/Geometry/UnstructuredMesh_WallDistance.cpp",
+      "physical": "Geom/Geometry/UnstructuredMesh_WallDistance.cpp"
+    },
+    {
+      "old": "Geom/Transition/MeshReorder.cpp",
+      "canonical": "Geom/Transition/ReorderPlan.cpp",
+      "physical": "Geom/Transition/ReorderPlan.cpp"
+    },
+    {
+      "old": "Geom/Refinement/Mesh_Elevation.cpp",
+      "canonical": "Geom/Refinement/UnstructuredMesh_Elevation.cpp",
+      "physical": "Geom/Refinement/UnstructuredMesh_Elevation.cpp"
+    },
+    {
+      "old": "Geom/Refinement/Mesh_Elevation_SmoothSolver.cpp",
+      "canonical": "Geom/Refinement/UnstructuredMesh_ElevationSmooth.cpp",
+      "physical": "Geom/Refinement/UnstructuredMesh_ElevationSmooth.cpp"
+    },
+    {
+      "old": "Geom/Refinement/Mesh_Elevation_SmoothV2.cpp",
+      "canonical": "Geom/Refinement/UnstructuredMesh_ElevationElasticity.cpp",
+      "physical": "Geom/Refinement/UnstructuredMesh_ElevationElasticity.cpp"
+    },
+    {
+      "old": "Geom/IO/UnstructuredMeshOutput.cpp",
+      "canonical": "Geom/IO/UnstructuredMesh_Output.cpp",
+      "physical": "Geom/IO/UnstructuredMesh_Output.cpp"
+    },
+    {
+      "old": "Geom/Compat/UnstructuredMeshSerialPartition.cpp",
+      "canonical": "Geom/Compat/UnstructuredMesh_SerialPartition.cpp",
+      "physical": "Geom/Compat/UnstructuredMesh_SerialPartition.cpp"
+    },
+    {
+      "old": "Geom/Unstructured/OwnedMeshPreparation.cpp",
+      "canonical": "Geom/Transition/NativeMeshPartitionGraph_Owned.cpp",
+      "physical": "Geom/Transition/NativeMeshPartitionGraph_Owned.cpp"
+    },
+    {
+      "old": "Geom/Refinement/NativeMeshElevation.cpp",
+      "canonical": "Geom/Refinement/NativeMeshRefinement_Elevation.cpp",
+      "physical": "Geom/Refinement/NativeMeshRefinement_Elevation.cpp"
+    },
+    {
+      "old": "Cauchy/Boundary/BoundaryInputs.cpp",
+      "canonical": "Cauchy/Discretization/FiniteVolume_InterfaceInputs.cpp",
+      "physical": "Cauchy/Discretization/FiniteVolume_InterfaceInputs.cpp"
+    },
+    {
+      "old": "Cauchy/Implicit/JacobianKernels.cpp",
+      "canonical": "Cauchy/Implicit/CPU/JacobianKernels.cpp",
+      "physical": "Cauchy/Implicit/CPU/JacobianKernels.cpp"
+    },
+    {
+      "old": "Cauchy/Implicit/JacobianKernels.hpp",
+      "canonical": "Cauchy/Implicit/CPU/JacobianKernels.hpp",
+      "physical": "Cauchy/Implicit/CPU/JacobianKernels.hpp"
+    },
+    {
+      "old": "Cauchy/Implicit/NonlinearHostKernels.hpp",
+      "canonical": "Cauchy/Implicit/CPU/NonlinearKernels.hpp",
+      "physical": "Cauchy/Implicit/CPU/NonlinearKernels.hpp"
+    },
+    {
+      "old": "Cauchy/Implicit/LinearBlockKernels.hpp",
+      "canonical": "Cauchy/Implicit/CPU/LinearBlockKernels.hpp",
+      "physical": "Cauchy/Implicit/CPU/LinearBlockKernels.hpp"
     }
-  ]
+  ],
+  "splits": {
+    "Geom/Connectivity/MeshConnectivity_Native.cpp": [
+      "Geom/Access/RelationAccess_Operations.cpp",
+      "Geom/Connectivity/AdjacencyRegistry_Operations.cpp"
+    ],
+    "Geom/Access/MeshAccess.cpp": [
+      "Geom/Access/MeshAccess.cpp",
+      "Geom/Access/UnstructuredMesh_Access.cpp"
+    ],
+    "Geom/Unstructured/NativeMeshPreparation.cpp": [
+      "Geom/Unstructured/NativeMeshPreparation.cpp",
+      "Geom/Unstructured/NativeMeshBuilder_Construct.cpp",
+      "Geom/Connectivity/NativeMeshTopology_Prepare.cpp",
+      "Geom/Unstructured/UnstructuredMesh_Topology.cpp"
+    ]
+  }
 }

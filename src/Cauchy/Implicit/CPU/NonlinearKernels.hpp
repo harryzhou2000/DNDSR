@@ -1,10 +1,15 @@
 #pragma once
 
+#include "DNDS/Core/NumericalStatus.hpp"
 #include "DNDS/Core/Errors.hpp"
+#include "Cauchy/State/EquationViews.hpp"
+#include "Cauchy/Physics/EquationPositivity.hpp"
+#include "CFV/Plans/FiniteVolumePlan.hpp"
+#include "Cauchy/Implicit/PositivityReduction.hpp"
 
 #include <cmath>
 
-namespace DNDS::Cauchy::Detail
+namespace DNDS::Cauchy::CPU
 {
     /// Scale an already evaluated cell rate by cell volume. The caller owns
     /// every lease and validates the row/component shapes before entering.
@@ -35,9 +40,9 @@ namespace DNDS::Cauchy::Detail
     /// Assemble the implicit stage defect and, when requested, its local norm
     /// contribution. Reduction and stopping decisions remain with the caller.
     template <class Mean, class Residual, class Constant, class Output, class Metric, class Active, class Norm>
-    void AssembleDefectRows(Mean mean, Residual residual, Constant constant, Output output,
-                            const Metric &metric, index components, real mass, real rhsScale, const Active &active,
-                            int normOrder, bool measureNorm, Norm &norm, const char *invalidMessage)
+    NumericalStatus AssembleDefectRows(Mean mean, Residual residual, Constant constant, Output output,
+                                       const Metric &metric, index components, real mass, real rhsScale, const Active &active,
+                                       int normOrder, bool measureNorm, Norm &norm) noexcept
     {
         for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
         {
@@ -47,12 +52,14 @@ namespace DNDS::Cauchy::Detail
             for (index j = 0; j < components; ++j)
             {
                 const real value = rhsScale * residual(iCell, j) + volume * (constant(iCell, j) - mass * mean(iCell, j));
-                DNDS_check_throw_info(std::isfinite(value), invalidMessage);
+                if (!(std::isfinite(value)))
+                    return NumericalStatus{NumericalError::InvalidState, 1, iCell};
                 output(iCell, j) = active(j) ? value : 0;
                 if (measureNorm)
                     norm[j] += normOrder == 1 ? std::abs(value) : value * value / volume;
             }
         }
+        return {};
     }
 
     /// Assemble mass*u-rhsScale*R(u)/volume and optionally publish the spatial
@@ -84,4 +91,49 @@ namespace DNDS::Cauchy::Detail
             }
         }
     }
+
+    struct CorrectionControls
+    {
+        EquationThermalView bounds;
+        RANSStateView rans;
+        SpanView<const uint8_t> active;
+        index components, flowFirst, speciesFirst, ransFirst;
+        int independentSpecies;
+        real scale, incrementRelax, compressionPower;
+        bool positivity;
+    };
+    struct CorrectionResult
+    {
+        index limited = 0;
+        real minimum = 1;
+        bool frozen = true;
+    };
+    /// Euler-compatible solved-increment compression, repaired species target,
+    /// final thermal line search, then independent RANS repair. No MPI/access.
+    NumericalResult<CorrectionResult> ApplyCorrection(const CorrectionControls &,
+                                                      Algebra::DofComponentView<const real> mean, Algebra::DofComponentView<const real> delta,
+                                                      Algebra::DofComponentView<real> candidate) noexcept;
+    NumericalStatus ValidateImplicitMeans(EquationLayoutView<const real>, EquationAdmissibilityView) noexcept;
+    NumericalStatus AssembleDefect(EquationLayoutView<const real> mean, EquationLayoutView<const real> residual,
+                                   EquationLayoutView<const real> constant, EquationLayoutView<real> output,
+                                   CFV::FiniteVolumeHostView metric, real mass, real rhsScale, SpanView<const uint8_t> active,
+                                   int normOrder, bool measureNorm, SpanView<real> norm) noexcept;
+
+    struct PseudoTimeRequest
+    {
+        CFV::FiniteVolumeHostView metric;
+        Algebra::DofComponentView<const real> means;
+        Algebra::DofComponentView<real> defect;
+        Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows> spectral;
+        Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows> inverse;
+        std::optional<Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>> alphas;
+        EquationThermalView bounds;
+        real pseudoCFL, forecastScale, relax, compressionPower;
+        bool positivity, compressRHS;
+    };
+    NumericalResult<AlphaStatistics> PreparePseudoTime(const PseudoTimeRequest &) noexcept;
+    void ApplyAgreedRHSAlpha(
+        Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows> alpha,
+        Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows> inverse,
+        Algebra::DofComponentView<real> defect, real minimum, AlphaReduction reduction, bool compressRHS);
 }

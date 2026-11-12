@@ -1,10 +1,11 @@
+#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
 
 #include "Cauchy/Core/DomainExecutionContext.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
-#include "Cauchy/Implicit/NonlinearHostKernels.hpp"
+#include "Cauchy/Implicit/CPU/NonlinearKernels.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
@@ -207,18 +208,7 @@ namespace DNDS::Cauchy
             const auto read = state.ReadOwned();
             const EquationViewLayout<const real> layout(state, read);
             const auto bounds = admissibility.View();
-            const auto validate = [&](auto values)
-            {
-                for (index iCell = 0; iCell < values.RowCount(); ++iCell)
-                    DNDS_check_throw_info(
-                        bounds.Admissible(
-                            EquationPositivityDetail::PointRow<decltype(values)>{
-                                values, iCell}),
-                        "implicit equation mean violates its thermal/species/RANS bounds");
-            };
-            // Resolve physical grouping/layout once. This changes only row
-            // access; all thermal, species and RANS acceptance checks remain.
-            DispatchCPUEquationLayouts(validate, layout);
+            RequireNumericalSuccess(CPU::ValidateImplicitMeans(layout.Descriptor(), bounds), "ValidateImplicitMeans");
         }
     };
 
@@ -326,7 +316,7 @@ namespace DNDS::Cauchy
             const auto to = write.ComponentLayout();
             const auto input = from.View();
             const auto output = to.View();
-            Detail::NormalizeRateByVolume(input, output, metric, input.ComponentNumber()); });
+            CPU::NormalizeRateByVolume(input, output, metric, input.ComponentNumber()); });
     }
     AuxiliaryValues NonlinearSolver::PreparedAuxValues() const
     {
@@ -380,6 +370,8 @@ namespace DNDS::Cauchy
             if (data.settings.collectiveChecks)
                 NonlinearDetail::AgreeControls(data.mpi, serialized);
         }
+        const auto activeComponents = R::MetadataBuffer<uint8_t>::Generate(nv, [&](index j)
+                                                                           { return uint8_t(selection.Includes(j)); });
         NonlinearIterationReport initial;
         initial.residual.resize(size_t(nv));
         BindControllerState(control);
@@ -412,7 +404,7 @@ namespace DNDS::Cauchy
                 {
                     const auto rate = read.Block(iBlock).owned;
                     const auto output = write.Block(iBlock);
-                    Detail::ScaleRateByVolume(rate, output, metric, rate.ComponentNumber());
+                    CPU::ScaleRateByVolume(rate, output, metric, rate.ComponentNumber());
                 } });
         };
         const auto measure = [&](auto &norms)
@@ -424,16 +416,9 @@ namespace DNDS::Cauchy
                     auto write = data.defect.WriteOwned();
                     const EquationViewLayout<const real> ul(state, u), rl(data.spatial, r), bl(source, b);
                     const EquationViewLayout<real> wl(data.defect, write);
-                    const auto assemble = [&](auto mean, auto residual, auto constant, auto output)
-                    {
-                        Detail::AssembleDefectRows(mean, residual, constant, output, metric, nv, mass, rhsScale,
-                                                   [&](index j) { return selection.Includes(j); },
-                                                   data.settings.normOrder, !singleCorrection, local,
-                                                   "nonfinite equation implicit defect");
-                    };
-                    // An operator-local AoS selection avoids per-component
-                    // logical block lookup without packing or changing sums.
-                    DispatchCPUEquationLayouts(assemble, ul, rl, bl, wl);
+                    RequireNumericalSuccess(CPU::AssembleDefect(ul.Descriptor(), rl.Descriptor(), bl.Descriptor(), wl.Descriptor(),
+                        metric, mass, rhsScale, activeComponents.HostView(), data.settings.normOrder, !singleCorrection,
+                        {local.data(), index(local.size())}), "AssembleDefect");
                 });
                 if (singleCorrection) return; // Defect is ready; no stopping norm is needed.
                 MPI::AllreduceInPlace<MPI::Reduction::Sum>(
@@ -466,36 +451,13 @@ namespace DNDS::Cauchy
                         const auto spectral = read.View<R::UniformTableRows>();
                         const auto inverse = write.View<R::UniformTableRows>();
                         const auto bounds = data.admissibility.View().thermal;
-                        for (index iCell = 0; iCell < inverse.RowCount(); ++iCell)
-                        {
-                            const real volume = metric.GetCellVol(iCell);
-                            real value = spectral(iCell, 0) / (report.pseudoCFL * volume);
-                            DNDS_check_throw_info(std::isfinite(value) && value > 0, "invalid equation pseudo-time spectral sum");
-                            if (data.positivity && data.settings.positivity.rhsFPPMode != "none")
-                            {
-                                // PP POLICY -- whole-vector forecast. The trial
-                                // includes every coupled component, while its
-                                // mixture energy reference uses only a temporary
-                                // clipped/normalized composition. No species
-                                // simplex alpha or storage mutation occurs. The
-                                // resulting scalar applies to the complete defect
-                                // or common dTau; ApplyCorrectionImpl owns the
-                                // exact repaired-mean guarantee.
-                                const EquationPositivityDetail::PointRow<decltype(means)> mean{means, iCell};
-                                struct TrialIncrement
-                                {
-                                    decltype(defect) values; index row; real factor;
-                                    real operator[](index j) const { return values(row, j) * factor; }
-                                } delta{defect, iCell, data.settings.positivity.rhsFPPScale / (value * volume)};
-                                const real alpha = bounds.IncrementFraction(mean, delta, data.settings.positivity.rhsFPPRelax, 2, data.settings.positivity.compressionPower);
-                                DNDS_check_throw_info(std::isfinite(alpha) && alpha >= 0 && alpha <= 1, "invalid equation RHS PP fraction");
-                                if (alpha < 1) { ++rhsLimited; rhsAlpha = std::min(rhsAlpha, alpha); }
-                                if (alphaWrite) alphas(iCell, 0) = alpha;
-                                else if (data.settings.positivity.rhsFPPMode == "rhs") for (index j = 0; j < nv; ++j) defect(iCell, j) *= alpha;
-                                else value /= std::max(alpha, smallReal);
-                            }
-                            inverse(iCell, 0) = value;
-                        }
+                        const auto statistics = RequireNumericalSuccess(CPU::PreparePseudoTime({metric, means, defect, spectral, inverse,
+                            alphaWrite ? std::optional(alphas) : std::nullopt, bounds, report.pseudoCFL,
+                            data.settings.positivity.rhsFPPScale, data.settings.positivity.rhsFPPRelax,
+                            data.settings.positivity.compressionPower,
+                            data.positivity && data.settings.positivity.rhsFPPMode != "none",
+                            data.settings.positivity.rhsFPPMode == "rhs"}), "PreparePseudoTime");
+                        rhsLimited = statistics.limited; rhsAlpha = statistics.minimum;
                     });
                     if (data.positivity && data.settings.positivity.rhsFPPMode != "none")
                     {
@@ -506,12 +468,8 @@ namespace DNDS::Cauchy
                             const auto read = data.cellRHSAlpha->Read(); const auto local = read.View<R::UniformTableRows>();
                             auto inverseWrite = data.inversePseudoTime.Write(); const auto inverse = inverseWrite.View<R::UniformTableRows>();
                             auto residualWrite = data.defect.WriteOwned(); const auto layout = residualWrite.ComponentLayout(); const auto defect = layout.View();
-                            for (index iCell = 0; iCell < local.RowCount(); ++iCell)
-                            {
-                                const real alpha = SelectAlpha(local(iCell, 0), rhsAlpha, data.rhsFPPReduction);
-                                if (data.settings.positivity.rhsFPPMode == "rhs") for (index j = 0; j < nv; ++j) defect(iCell, j) *= alpha;
-                                else inverse(iCell, 0) /= std::max(alpha, smallReal);
-                            }
+                            CPU::ApplyAgreedRHSAlpha(local, inverse, defect, rhsAlpha, data.rhsFPPReduction,
+                                data.settings.positivity.rhsFPPMode == "rhs");
                         });
                     }
                 }
@@ -654,150 +612,12 @@ namespace DNDS::Cauchy
             const auto bounds = data.admissibility.View().thermal;
             const auto &rans = data.admissibility.RANS();
             const int independent = data.discrete.Equation().HasMixture() ? data.discrete.Equation().Mixture().SpeciesNumber() - 1 : 0;
-            const index components = state.ComponentNumber();
-            const auto apply = [&](auto mean, auto delta, auto candidate)
-            {
-                std::vector<real> repairedSpecies(static_cast<size_t>(independent), 0);
-                for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
-                {
-                    const EquationPositivityDetail::PointRow<decltype(mean)> old{mean, iCell};
-                    struct SelectedIncrement
-                    {
-                        decltype(delta) values;
-                        index row;
-                        real scale;
-                        const uint8_t *active;
-                        real operator[](index j) const { return !active || active[j] ? scale * values(row, j) : 0; }
-                    } change{delta, iCell, scale, active.empty() ? nullptr : active.data()};
-                    real alpha = 1;
-                    if (data.positivity)
-                    {
-                        // PP POLICY -- preliminary solved-increment forecast.
-                        // Match Euler EvaluateCellRHSAlpha: one clipped-reference
-                        // scalar scales the complete flow/species/RANS correction.
-                        // This is not acceptance; the exact species target and
-                        // raw-affine FixFraction line search below remain mandatory.
-                        alpha = bounds.IncrementFraction(old, change, data.settings.positivity.incrementRelax, 2,
-                                                         data.settings.positivity.compressionPower);
-                        DNDS_check_throw_info(std::isfinite(alpha) && alpha >= 0 && alpha <= 1,
-                                              "invalid equation increment PP fraction");
-                    }
-                    struct LimitedIncrement
-                    {
-                        const SelectedIncrement &values;
-                        real factor;
-                        real operator[](index j) const { return factor * values[j]; }
-                    } limitedChange{change, alpha};
-                    if (data.positivity && independent)
-                    {
-                        // PP POLICY -- exact stored species target. Repair once
-                        // before final thermal restriction; this clipped rhoY is
-                        // the actual accepted/exchanged mean and EOS/T state. Both
-                        // endpoints are in the simplex, so the cheaper raw-affine
-                        // reference equals the clipped reference along the entire
-                        // line and merely proves the clipped stored-state invariant.
-                        // A raw out-of-simplex mean is never accepted, and no
-                        // projection may follow FixFraction. In contrast,
-                        // reconstruction retains raw polynomial rhoY for transport
-                        // and clips only its temporary point-property view.
-                        for (index k = 0; k < independent; ++k)
-                            repairedSpecies[size_t(k)] = old[data.speciesFirst + k] + limitedChange[data.speciesFirst + k];
-                        struct SpeciesScratch
-                        {
-                            real *values;
-                            real &operator[](index k) const { return values[k]; }
-                        } species{repairedSpecies.data()};
-                        Physics::Chemistry::RepairSpeciesDensities(
-                            old[data.flowFirst] + limitedChange[data.flowFirst], species, independent);
-                    }
-                    struct StoredIncrement
-                    {
-                        const LimitedIncrement &values;
-                        const decltype(old) &oldState;
-                        const std::vector<real> *species;
-                        index first, count;
-                        real operator[](index j) const
-                        {
-                            return species && j >= first && j < first + count
-                                       ? (*species)[size_t(j - first)] - oldState[j]
-                                       : values[j];
-                        }
-                    } storedChange{limitedChange, old,
-                                   data.positivity && independent ? &repairedSpecies : nullptr,
-                                   data.speciesFirst, independent};
-                    real fix = 1;
-                    if (data.positivity)
-                    {
-                        fix = bounds.FixFraction(old, storedChange);
-                        DNDS_check_throw_info(std::isfinite(fix) && fix >= 0 && fix <= 1,
-                                              "invalid equation final increment repair");
-                        const real combined = alpha * fix;
-                        if (combined < 1)
-                        {
-                            ++limited;
-                            minimum = std::min(minimum, combined);
-                        }
-                    }
-                    for (index j = 0; j < components; ++j)
-                    {
-                        if (data.positivity && independent &&
-                            j >= data.speciesFirst && j < data.speciesFirst + independent)
-                        {
-                            const real target = repairedSpecies[size_t(j - data.speciesFirst)];
-                            // Publish the exact repaired target when the final
-                            // thermal line needs no contraction. Computing
-                            // old+(target-old) can erase a tiny positive species
-                            // floor by cancellation. The convex form is retained
-                            // when FixFraction genuinely restricts the line.
-                            candidate(iCell, j) = fix == 1
-                                                      ? target
-                                                      : (1 - fix) * old[j] + fix * target;
-                        }
-                        else
-                            candidate(iCell, j) = mean(iCell, j) + fix * storedChange[j];
-                        if (!selection.Includes(j))
-                            frozen = frozen && candidate(iCell, j) == mean(iCell, j);
-                        // Exponential scalar repair must not hide an infinite or
-                        // NaN linear correction behind a finite floor.
-                        DNDS_check_throw_info(std::isfinite(candidate(iCell, j)),
-                                              "nonfinite equation correction candidate");
-                    }
-                    if (rans.components)
-                    {
-                        std::array<real, 2> oldRANS{}, changeRANS{}, nextRANS{};
-                        for (int j = 0; j < rans.components; ++j)
-                        {
-                            oldRANS[j] = mean(iCell, data.ransFirst + j);
-                            changeRANS[j] = fix * storedChange[data.ransFirst + j];
-                        }
-                        DNDS_check_throw_info(rans.Admissible(oldRANS),
-                                              "RANS correction requires an admissible old mean");
-                        // Preserve Euler's order: whole-vector thermal compression,
-                        // then component-wise RANS repair of that scaled increment.
-                        rans.RepairIncrement(oldRANS, changeRANS);
-                        for (int j = 0; j < rans.components; ++j)
-                            nextRANS[j] = oldRANS[j] + changeRANS[j];
-                        rans.RepairMean(candidate(iCell, data.flowFirst), nextRANS);
-                        for (int j = 0; j < rans.components; ++j)
-                        {
-                            const index component = data.ransFirst + j;
-                            candidate(iCell, component) = nextRANS[j];
-                            if (!selection.Includes(component))
-                                frozen = frozen && nextRANS[j] == oldRANS[j];
-                        }
-                    }
-                }
-            };
-            // Resolve a complete ordered AoS parent once, while all original
-            // payload/shape leases remain held. The same scalar PP/repair
-            // kernel then indexes direct table rows. Split/permuted or
-            // column-major states retain the logical-component path.
-            const auto meanTable = Algebra::TryOwnedTable(ul.View()), deltaTable = Algebra::TryOwnedTable(dl.View());
-            const auto candidateTable = Algebra::TryOwnedTable(wl.View());
-            if (meanTable && deltaTable && candidateTable)
-                apply(*meanTable, *deltaTable, *candidateTable);
-            else
-                apply(ul.View(), dl.View(), wl.View()); });
+            const R::MetadataBuffer<uint8_t> selectionMetadata(active);
+            const auto result = RequireNumericalSuccess(CPU::ApplyCorrection({bounds, rans, selectionMetadata.HostView(),
+                state.ComponentNumber(), data.flowFirst, data.speciesFirst, data.ransFirst, independent, scale,
+                data.settings.positivity.incrementRelax, data.settings.positivity.compressionPower, data.positivity},
+                ul.View(), dl.View(), wl.View()), "ApplyCorrection");
+            limited = result.limited; minimum = result.minimum; frozen = result.frozen; });
         // Candidate checks precede all state writers. Scalar repair may not
         // silently unfreeze a masked component, even when density changed.
         const auto validateCandidate = [&]
@@ -874,10 +694,10 @@ namespace DNDS::Cauchy
             if (rateWrite) rateLayout.emplace(rateWrite->ComponentLayout());
             const auto spatialRate = rateLayout ? rateLayout->View() : Algebra::DofComponentView<real>{};
             if (rate)
-                Detail::AssembleEquationAndRateRows(mean, residual, output, spatialRate, metric,
+                CPU::AssembleEquationAndRateRows(mean, residual, output, spatialRate, metric,
                                                     mean.ComponentNumber(), mass, rhsScale);
             else
-                Detail::AssembleEquationRows(mean, residual, output, metric, mean.ComponentNumber(), mass, rhsScale); });
+                CPU::AssembleEquationRows(mean, residual, output, metric, mean.ComponentNumber(), mass, rhsScale); });
     }
     R::SessionAccess::Lease NonlinearSolver::ReserveForMultigrid()
     {

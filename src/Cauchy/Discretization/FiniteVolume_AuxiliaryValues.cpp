@@ -1,7 +1,9 @@
+#include "Cauchy/Core/NumericalFailure.hpp"
+#include "Cauchy/Discretization/CPU/FiniteVolumeStateKernels.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
+#include "Cauchy/Discretization/CPU/FiniteVolumeBoundaryKernels.hpp"
 #include "Cauchy/Discretization/FiniteVolumeAuxiliaryInternal.hpp"
-#include "Cauchy/Discretization/AuxiliaryReduction.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/Physics/EquationProperties.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
@@ -10,6 +12,66 @@ namespace DNDS::Cauchy
 {
     namespace R = Runtime;
     using AuxiliaryDetail::EquationAuxiliaryArrays;
+    void FiniteVolume::FillMeanGradientBoundary(
+        const EquationDofs &state, MeanGradients &gradients,
+        EquationPointEvaluator &evaluator, real time,
+        RHSScalarView incoming) const
+    {
+        DNDS_check_throw_info(gradients._data,
+                              "mean gradient workspace is uninitialized");
+        const auto read = state.ReadOwned();
+        std::vector<EquationBlockReadView> means;
+        std::vector<R::Array<real>::WriteLease> writes;
+        std::vector<EquationBlockArrayView<real>> outputs;
+        std::vector<index> offsets;
+        for (auto &array : gradients._data->boundary)
+            writes.push_back(array.Write());
+        index first = 0, ransFirst = -1;
+        for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+        {
+            means.push_back(read.Block(iBlock));
+            offsets.push_back(first);
+            if (state.Schema().blocks[size_t(iBlock)].name == "rans")
+                ransFirst = first;
+            const auto location = state.LocateBlock(iBlock);
+            outputs.push_back({writes[size_t(location.physicalField)]
+                                   .View<R::UniformTableRows>(),
+                               location.firstComponent, location.componentNumber});
+            first += location.componentNumber;
+        }
+        const R::MetadataBuffer<EquationBlockReadView> meanMetadata(means);
+        const R::MetadataBuffer<EquationBlockArrayView<real>> outputMetadata(outputs);
+        const R::MetadataBuffer<index> logicalOffsets(offsets);
+        const auto geometry = _data->boundaryTraceGeometry.Read();
+        const auto pointRows = _data->gradientBoundaryRows.Read();
+        const auto *model = _data->equation.HasRANS()
+                                ? &_data->equation.RANS()
+                                : nullptr;
+        std::optional<WallDistanceRead> walls;
+        if (model && model->ComponentNumber() == 2)
+            walls.emplace(_data->wallDistance->AcquireRead());
+        CPU::BoundaryTraceRequest request;
+        request.points = geometry.View<R::FixedRows<1>>();
+        request.pointRows = pointRows.View<R::FixedRows<1>>();
+        request.usePointRows = true;
+        request.repairRANS = false;
+        request.means = meanMetadata.HostView();
+        request.coefficients = request.means; // Unread in the mean-only mode.
+        request.output = outputMetadata.HostView();
+        request.logicalFirst = logicalOffsets.HostView();
+        request.componentNumber = state.ComponentNumber();
+        request.ransFirst = ransFirst;
+        request.rans = model ? RANSStateView{model->Kind(), model->ComponentNumber()}
+                             : RANSStateView{};
+        request.wallDistance = walls ? walls->HostView() : WallDistanceView{};
+        request.frame = _data->motion.At(time);
+        request.time = time;
+        request.incoming = incoming;
+        RequireNumericalSuccess(CPU::FillBoundaryTraces(
+                                    request, {_data->boundaryConditions.data(), index(_data->boundaryConditions.size())},
+                                    _data->boundaryPoint, evaluator),
+                                "FillBoundaryTraces");
+    }
     MeanGradients FiniteVolume::BuildMeanGradients(EquationDofs &state) const
     {
         MeanGradients result;
@@ -98,8 +160,8 @@ namespace DNDS::Cauchy
         };
         const auto fillBoundary = [&]
         {
-            FillMeanGradientBoundaryCPU(state, gradients, *evaluator, time,
-                                        incoming);
+            FillMeanGradientBoundary(state, gradients, *evaluator, time,
+                                     incoming);
         };
         const auto gradient = [&](CFV::ReconstructionRegion region)
         {
@@ -181,12 +243,7 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(values.cellSpectralSum, "CFL selection requires prepared cell spectral sums");
             const auto geometry = Metrics().AcquireRead(); const auto metric = geometry.HostView();
             const auto read = values.cellSpectralSum->Owned().Read(); const auto sums = read.View<R::UniformTableRows>();
-            for (index iCell = 0; iCell < Metrics().NumCell(); ++iCell)
-            {
-                const real radius = sums(iCell, 0);
-                DNDS_check_throw_info(std::isfinite(radius) && radius > 0, "invalid cell spectral sum");
-                dt = std::min(dt, cfl * metric.GetCellVol(iCell) / radius);
-            } });
+            dt = RequireNumericalSuccess(CPU::MinimumStableStep(sums, metric, cfl), "MinimumStableStep"); });
         dt = MPI::AllreduceValue<MPI::Reduction::Min>(dt, Metrics().Communicator());
         return dt;
     }
@@ -205,7 +262,7 @@ namespace DNDS::Cauchy
             ValidateBoundaryInputs(*inputs.boundary, time);
         _data->boundary.ValidateEquationProducers(_data->boundaryZones);
         const auto arrays = EquationAuxiliaryArrays(output);
-        const index faces = index(_data->stencilFaces.size());
+        const index faces = _data->stencil.stencilFaces.RowCount();
         const index rows[9]{Metrics().NumCellProc(), faces, faces, faces, Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCellProc() - Metrics().NumCell()};
         const index widths[7]{3, 2, 1, 1, 1, 1, 1};
         for (int k = 0; k < 9; ++k)

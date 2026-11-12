@@ -2586,7 +2586,8 @@ TEST_CASE("Direct FV consumes physical gradients without coefficients and splits
             for (DNDS::rowsize slot = 0; slot < DNDS::rowsize(cellFaces.size()); ++slot)
             {
                 const auto iFace = cellFaces[slot];
-                const auto row = std::lower_bound(fv.AuxiliaryFaces().begin(), fv.AuxiliaryFaces().end(), iFace) - fv.AuxiliaryFaces().begin();
+                const auto auxiliaryFaces = fv.AuxiliaryFaces();
+                const auto row = std::lower_bound(auxiliaryFaces.begin(), auxiliaryFaces.end(), iFace) - auxiliaryFaces.begin();
                 const auto parents = topology.FaceCells(iFace);
                 const auto anchor = parents[0] >= 0 && parents[0] < fv.Metrics().NumCell() ? parents[0] : parents[1];
                 for (int j = 0; j < 5; ++j)
@@ -2660,8 +2661,17 @@ TEST_CASE("RHS checked and production-fatal policies share normal arithmetic")
         std::signal(SIGABRT, SIG_DFL);
         if (!std::freopen("/dev/null", "w", stderr))
             _exit(2);
-        (void)rhs.ApplyBorrowedFatal(input, {}, DNDS::CFV::ReconstructionRegion::All,
-                                     std::numeric_limits<DNDS::real>::quiet_NaN());
+        try
+        {
+            (void)rhs.ApplyBorrowedFatal(input, {}, DNDS::CFV::ReconstructionRegion::All,
+                                         std::numeric_limits<DNDS::real>::quiet_NaN());
+        }
+        catch (...)
+        {
+            // A regression must fail the death-test assertion, not re-enter
+            // doctest/MPI_Finalize in a fork child and hang the parent rank.
+            _exit(3);
+        }
         _exit(0);
     }
     int status = 0;

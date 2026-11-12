@@ -294,7 +294,7 @@ namespace DNDS::Cauchy::Riemann
         if (input.ausm)
             DNDS_check_throw_info(input.ausm->faceSoundSpeed > 0 && std::isfinite(input.ausm->faceSoundSpeed), "invalid AUSM acoustic input");
     }
-    FluxResult RiemannFlux::Evaluate(const FluxInput &input, const FluxSettings &settings) const
+    FluxResult RiemannFlux::Evaluate(const FluxInput &input, const FluxSettings &settings) const noexcept
     {
         const auto &left = input.left.flow.conservative, &right = input.right.flow.conservative;
         const auto fluxLeft = PhysicalFlux(input.left.flow, input.normal, input.gridVelocity), fluxRight = PhysicalFlux(input.right.flow, input.normal, input.gridVelocity);

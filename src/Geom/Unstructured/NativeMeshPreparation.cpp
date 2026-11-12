@@ -41,64 +41,6 @@ namespace DNDS::Geom
         return recipe;
     }
 
-    std::shared_ptr<const UnstructuredMeshState> ConstructNativeMesh(NativeMeshInput input, NativeMeshBuildOptions options)
-    {
-        const auto mpi = input.mpi;
-        auto owned = NativeMeshBuilder::Build(std::move(input), options);
-        GhostSpec recipe;
-        owned.LocalStage(mpi, [&]
-                         { recipe = DefaultNativeMeshGhostSpec(owned, options.cellLayers, options.completeNodeStar); });
-        return NativeMeshAssembler::Build(mpi, std::move(owned), recipe);
-    }
-
-    std::shared_ptr<const UnstructuredMeshState> PrepareNativeMeshTopology(
-        const UnstructuredMeshState &source, const MPIInfo &mpi,
-        bool faces, bool edges, int ghostLayers, const std::map<EntityKind, index> &generatedIdStarts)
-    {
-        const auto communication = source.PreparationCommunication();
-        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, !communication || communication->ChecksCollectivePreflight());
-        FieldTransferDetail::LocalStage(mpi, communication, [&]
-                                        { DNDS_check_throw_info(ghostLayers > 0, "topology finalization requires positive default cell layers"); });
-        auto owned = NativeMeshTopology::Build(NativeMeshAssembler::CaptureOwned(source, mpi), mpi, faces, edges, generatedIdStarts);
-        GhostSpec recipe;
-        owned.LocalStage(mpi, [&]
-                         { recipe = ExtendNativeMeshGhostSpecForTopology(owned, faces, edges, ghostLayers); });
-        owned.ghostSpec = std::move(recipe);
-        auto result = AssembleNativeMesh(mpi, std::move(owned), ghostLayers);
-        if (!result->Requirements().faces)
-            return result;
-        std::vector<index> partStarts;
-        for (int part = 0; part < source.NLocalParts(); ++part)
-            partStarts.push_back(source.LocalPartStart(part));
-        partStarts.push_back(source.NumOwned(EntityKind::Cell));
-        return result->WithLocalPartitions(std::move(partStarts));
-    }
-
-    void UnstructuredMesh::PrepareNativeTopology(bool faces, bool edges, int ghostLayers)
-    {
-        const auto communication = PreparationCommunication();
-        const bool checks = !communication || communication->ChecksCollectivePreflight();
-        Runtime::CommunicationDetail::AgreePolicy(mpi.comm, checks);
-        CheckCollectiveMutationAvailable(checks);
-        FieldTransferDetail::LocalStage(mpi, communication, [&]
-                                        { DNDS_check_throw_info(_nativeState, "native topology preparation requires a native mesh"); });
-        const auto stamp = versions.Stamp();
-        auto result = NativeMeshPreparation::PrepareTopology(*_nativeState, mpi, faces, edges, ghostLayers);
-        std::shared_ptr<UnstructuredMeshState> prepared;
-        FieldTransferDetail::LocalStage(mpi, communication, [&]
-                                        {
-            stamp.Validate();
-            prepared = std::shared_ptr<UnstructuredMeshState>(new UnstructuredMeshState(*result)); });
-        MeshMutationToken mutation(this, versions, Runtime::Change::Topology | Runtime::Change::Layout | Runtime::Change::Distribution | Runtime::Change::Allocation);
-        mutation.Commit();
-        prepared->BindPreparedEpoch(versions);
-        _nativeState = std::move(prepared);
-        _nativeSmoothing.reset();
-        node2bndNode.clear();
-        node2parentNode.clear();
-        cell2parentCell.clear();
-    }
-
     namespace
     {
         struct ActiveCommunicator

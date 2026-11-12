@@ -1441,9 +1441,10 @@ TEST_CASE("Physical mixture Jacobians match frozen-signal residual differences a
                 const auto iFace = faces[slot], neighbor = topology.CellFaceOther(iCell, iFace, slot);
                 REQUIRE(neighbor != DNDS::UnInitIndex);
                 const auto right = point(neighbor, h);
-                const auto found = std::lower_bound(fv.AuxiliaryFaces().begin(), fv.AuxiliaryFaces().end(), iFace);
-                REQUIRE(found != fv.AuxiliaryFaces().end());
-                const auto iAux = found - fv.AuxiliaryFaces().begin();
+                const auto auxiliaryFaces = fv.AuxiliaryFaces();
+                const auto found = std::lower_bound(auxiliaryFaces.begin(), auxiliaryFaces.end(), iFace);
+                REQUIRE(found != auxiliaryFaces.end());
+                const auto iAux = found - auxiliaryFaces.begin();
                 const int sign = topology.CellIsFaceBack(iCell, iFace, slot) ? 1 : -1;
                 for (I q = metric.FaceQuadratureBegin(iFace); q < metric.FaceQuadratureEnd(iFace); ++q)
                 {
