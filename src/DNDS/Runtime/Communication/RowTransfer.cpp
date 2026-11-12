@@ -919,6 +919,7 @@ namespace DNDS::Runtime
         {
             operation = {}; // MPI/provider owners are dropped only here.
             done.store(true, std::memory_order_release);
+            NotifyCompletion();
         }
         bool Poll() override
         {
@@ -1090,13 +1091,22 @@ namespace DNDS::Runtime
     }
     TransferOperation TransferBinding::BeginScheduled(const ExecutionStream &stream, bool callerValid) const
     {
-        return StartManaged(stream, false, callerValid);
+        return StartManaged(stream, false, callerValid, true);
     }
     TransferOperation TransferBinding::BeginChecked(const ExecutionStream &stream, bool callerValid) const
     {
-        return StartManaged(stream, true, callerValid);
+        return StartManaged(stream, true, callerValid, true);
     }
-    TransferOperation TransferBinding::StartManaged(const ExecutionStream &stream, bool checked, bool callerValid) const
+    TransferOperation TransferBinding::BeginReadyScheduled(const ExecutionStream &stream, bool callerValid) const
+    {
+        return StartManaged(stream, false, callerValid, false);
+    }
+    TransferOperation TransferBinding::BeginReadyChecked(const ExecutionStream &stream, bool callerValid) const
+    {
+        return StartManaged(stream, true, callerValid, false);
+    }
+    TransferOperation TransferBinding::StartManaged(const ExecutionStream &stream, bool checked,
+                                                    bool callerValid, bool observeProducer) const
     {
         DNDS_check_throw_info(_state, "managed MPI begin requires an MPI binding; native providers use Enqueue");
         auto managed = std::make_shared<TransferOperation::ManagedState>();
@@ -1106,7 +1116,7 @@ namespace DNDS::Runtime
         {
             stream.RegisterProgress(managed); // Before preparing/packing/posting.
             context = stream.Context();
-            if (!checked && context.device == Device::Host())
+            if (observeProducer && !checked && context.device == Device::Host())
                 stream.Record().WaitHost();
         }
         catch (...)
@@ -1116,7 +1126,8 @@ namespace DNDS::Runtime
         }
         try
         {
-            managed->operation = checked ? StartChecked(stream, valid) : Start(context, true, {}, 0, valid);
+            managed->operation = checked ? StartChecked(stream, valid, observeProducer)
+                                         : Start(context, true, {}, 0, valid);
             managed->order = managed->operation.CheckedOrder();
             managed->armed = true;
         }
@@ -1130,7 +1141,8 @@ namespace DNDS::Runtime
         result._managed = std::move(managed);
         return result;
     }
-    TransferOperation TransferBinding::StartChecked(const ExecutionStream &stream, bool callerValid) const
+    TransferOperation TransferBinding::StartChecked(const ExecutionStream &stream,
+                                                    bool callerValid, bool observeProducer) const
     {
         DNDS_check_throw_info(_state, "BeginChecked is an MPI bridge; native providers use Enqueue");
         auto tracking = stream._tracking;
@@ -1139,9 +1151,13 @@ namespace DNDS::Runtime
         try
         {
             DNDS_check_throw_info(tracking, "BeginChecked needs a checked execution stream");
-            const auto ready = stream.Record();
-            if (stream.Context().device == Device::Host())
-                ready.WaitHost();
+            StreamEvent ready;
+            if (observeProducer)
+            {
+                ready = stream.Record();
+                if (stream.Context().device == Device::Host())
+                    ready.WaitHost();
+            }
             {
                 std::lock_guard<std::mutex> lock(_state->mutex);
                 DNDS_check_throw_info(!_state->active, "checked transfer binding is active");
@@ -1154,7 +1170,8 @@ namespace DNDS::Runtime
                 }
                 lane = _state->lane;
             }
-            tracking->WaitFor(lane, ready._order, [] {});
+            if (observeProducer)
+                tracking->WaitFor(lane, ready._order, [] {});
         }
         catch (...)
         {
@@ -1331,6 +1348,12 @@ namespace DNDS::Runtime
         StreamEvent result(_managed);
         result._order = _managed->order;
         return result;
+    }
+    StreamEvent TransferOperation::CompletionEvent() const
+    {
+        DNDS_check_throw_info(_managed,
+                              "completion event requires a managed transfer");
+        return ManagedCompletion();
     }
     std::shared_ptr<const AccessOrder> TransferOperation::CheckedOrder() const
     {

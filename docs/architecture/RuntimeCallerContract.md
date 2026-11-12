@@ -188,6 +188,16 @@ requests/streams remain caller-managed interop and must finish before their
 borrowed stream/context is destroyed.
 Registration itself does not permit buffer access or supply dependency ordering.
 
+Queued CPU waits are notification-driven: a blocked stream consumes no worker,
+and workers do not use timed event polling. Backend event providers publish
+completion only after retiring the covered accesses, then call
+`StreamEvent::State::NotifyCompletion()`. Notification callbacks only wake
+executors and must not throw or call MPI/CUDA. A late subscriber is notified
+immediately. Providers without native push notification still need controller
+progress through `Ready`/`WaitHost`/`Synchronize`; those observations notify the
+consumer. This distinction preserves FUNNELED MPI and native CUDA stream
+ordering without placing a solver-side polling loop in the compute schedule.
+
 ## Halo overlap and MPI
 
 Owned and ghost Arrays have separate allocations. A core stencil may read only

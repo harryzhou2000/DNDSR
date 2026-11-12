@@ -15,6 +15,11 @@ namespace R = DNDS::Runtime;
 struct Gate : R::StreamEvent::State
 {
     std::atomic<bool> open{false};
+    void Signal()
+    {
+        open = true;
+        NotifyCompletion();
+    }
     bool Ready() const override { return open.load(); }
     void Wait() const override
     {
@@ -31,6 +36,57 @@ static void Await(const std::atomic<bool> &flag)
         DNDS_check_throw_info(std::chrono::steady_clock::now() < deadline, "mock overlap rendezvous timed out");
         std::this_thread::yield();
     }
+}
+
+TEST_CASE("Completion notifications wake CPU lanes without controller polling")
+{
+    struct NotifiedGate final : R::StreamEvent::State
+    {
+        const std::thread::id controller = std::this_thread::get_id();
+        std::atomic<bool> done{false};
+        mutable std::atomic<int> pendingWorkerQueries{0};
+        bool Ready() const override
+        {
+            const bool ready = done.load();
+            if (!ready && std::this_thread::get_id() != controller)
+                ++pendingWorkerQueries;
+            return ready;
+        }
+        void Wait() const override { DNDS_check_throw_info(done.load(), "test gate was not signalled"); }
+        void Signal()
+        {
+            done = true;
+            NotifyCompletion();
+        }
+    };
+    // Separate executors exercise cross-runtime notification, with one worker
+    // each: a blocked lane must not consume the producer's only worker.
+    R::EagerEngine producer(1), consumer(1);
+    const auto blocked = producer.CreateCPUStream(), independent = producer.CreateCPUStream();
+    const auto target = consumer.CreateCPUStream();
+    auto gate = std::make_shared<NotifiedGate>();
+    std::atomic<bool> independentDone{false}, consumed{false};
+    int payload = 0;
+    blocked.WaitFor(R::StreamEvent(gate));
+    producer.Submit(blocked, [&](R::ExecutionContext)
+                    { payload = 19; });
+    const auto ready = blocked.Record();
+    target.WaitFor(ready);
+    consumer.Submit(target, [&](R::ExecutionContext)
+                    { CHECK(payload == 19); consumed = true; });
+    producer.Submit(independent, [&](R::ExecutionContext)
+                    { independentDone = true; });
+    Await(independentDone);
+    CHECK_FALSE(consumed);
+    gate->Signal();
+    Await(consumed); // No Ready/WaitHost/Synchronize drives either runtime here.
+    CHECK(gate->pendingWorkerQueries == 0);
+    bool lateNotification = false;
+    R::StreamEvent(gate).OnCompletion([&]
+                                      { lateNotification = true; });
+    CHECK(lateNotification); // Completion before registration is not lost.
+    producer.Synchronize();
+    consumer.Synchronize();
 }
 
 TEST_CASE("Immediate context borrows prevent closure and weak runtime handles reject expiry")
@@ -75,11 +131,11 @@ TEST_CASE("Context shutdown progresses controller transport and CPU lanes before
                 ~Transport() override { signals->disposed = std::this_thread::get_id(); }
                 bool Poll() override
                 {
-                    signals->sendReady->open = true;
+                    signals->sendReady->Signal();
                     if (!signals->coreDone.load())
                         return false;
                     signals->payload = 37;
-                    signals->received->open = true;
+                    signals->received->Signal();
                     return true;
                 }
             };
@@ -203,7 +259,7 @@ TEST_CASE("Missing eager join produces a deterministic stale result without a da
         // gated until this read completes so the negative case has no C++ UB.
         R::SubmitArrays(engine, compute, copy, R::Read(ghost), R::Write(stale));
         compute.Record().WaitHost();
-        gate->open = true;
+        gate->Signal();
         compute.WaitFor(comm.Record());
         R::SubmitArrays(engine, compute, copy, R::Read(ghost), R::Write(correct));
         engine.Synchronize();
@@ -326,7 +382,7 @@ TEST_CASE("Record describes a fixed prefix and a waiting lane cannot exhaust wor
         CHECK_FALSE(tail.Ready());
         CHECK(value == 1);
         engine.Submit(other, [gate](R::ExecutionContext)
-                      { gate->open = true; });
+                      { gate->Signal(); });
         engine.Synchronize();
         CHECK(value == 2);
         CHECK(tail.Ready());
@@ -347,7 +403,7 @@ TEST_CASE("Imported CPU prefixes progress without blocking another executor")
     target.WaitFor(source.Record());
     consumer.Submit(target, [&](R::ExecutionContext)
                     { CHECK(state == 7); state = 9; });
-    gate->open = true;
+    gate->Signal();
     consumer.Synchronize();
     CHECK(state == 9);
     CHECK_THROWS(consumer.Submit(source, [](R::ExecutionContext) {}));
@@ -379,7 +435,7 @@ TEST_CASE("Queued temporary ownership and releases follow CPU completion on eith
         CHECK_FALSE(alias);
         CHECK_FALSE(weak.expired());
         CHECK(deletes == 0);
-        gate->open = true;
+        gate->Signal();
         engine.Synchronize();
         CHECK(weak.expired());
         CHECK(deletes == 1);
@@ -456,7 +512,7 @@ TEST_CASE("Failed lanes still honor joins before releasing shared resources")
     engine.ReleaseOn(std::move(owner), failed);
     CHECK_FALSE(weak.expired());
     CHECK(deletes == 0);
-    gate->open = true;
+    gate->Signal();
     CHECK_THROWS(engine.Synchronize());
     CHECK(weak.expired());
     CHECK(deletes == 1);
@@ -505,7 +561,7 @@ TEST_CASE("Array reservations publish at execution and preserve same stream read
         CHECK_THROWS(alias.Read());
         CHECK_THROWS(alias.Write());
         CHECK_THROWS(state.EditRows());
-        gate->open = true;
+        gate->Signal();
         stream.Record().WaitHost();
         CHECK(state.Storage().IsIdle());
         CHECK(state.Version() == initial + 31);
@@ -569,7 +625,7 @@ TEST_CASE("Owned only CSR stencil can complete while ghost receives remain pendi
                 expected += (row + 7 * n) % 257 + 4;
             CHECK(output.At(row, 4) == expected);
         }
-        gate->open = true;
+        gate->Signal();
         compute.WaitFor(comm.Record());
         R::Array<double> ring(R::RowLayout::Dense(19, 5));
         R::SubmitArrays(engine, compute, [](R::ExecutionContext, R::ArrayView<const double> owned, R::ArrayView<const double> ghost, R::ArrayView<double> rhs)
@@ -608,7 +664,7 @@ TEST_CASE("Pending operands retain old values and buffered row sizes across hand
     input.Reset(R::RowLayout::Dense(1, 2));
     CHECK_FALSE(storage.expired());
     CHECK_FALSE(metadata.expired());
-    gate->open = true;
+    gate->Signal();
     stream.Record().WaitHost();
     CHECK(storage.expired());
     CHECK(metadata.expired());
@@ -648,7 +704,7 @@ TEST_CASE("Rejected reservations cancel while failed or skipped writes stay inva
         value(17, 4) = 9;
         throw std::runtime_error("partial update"); }, R::Write(output));
     R::SubmitArrays(engine, stream, kernel, R::Read(output), R::Write(skipped));
-    gate->open = true;
+    gate->Signal();
     CHECK_THROWS(engine.Synchronize());
     CHECK(input.IsValid());
     CHECK_FALSE(output.IsValid());
@@ -683,7 +739,7 @@ TEST_CASE("Eager byte copies use the same pending access contract on inline and 
         CHECK_THROWS(R::CopyAsync(engine, stream, source, small));
         CHECK(small.IsIdle());
         source = {};
-        gate->open = true;
+        gate->Signal();
         engine.Synchronize();
         auto read = target.Read();
         auto values = read.View<int64_t>();
@@ -713,7 +769,7 @@ TEST_CASE("CPU async allocation facade preserves shared variable shape metadata 
     stream.WaitFor(R::StreamEvent(gate));
     engine.ReleaseOn(std::move(table), stream);
     CHECK(alias.IsValid());
-    gate->open = true;
+    gate->Signal();
     engine.Synchronize();
     CHECK(alias.Read().At(30, 5) == 0);
     engine.ReleaseOn(std::move(alias), stream);

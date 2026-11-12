@@ -277,8 +277,10 @@ namespace DNDS::Runtime
         TransferBinding(std::shared_ptr<const PayloadPlan::State> plan, Buffer source, Buffer destination,
                         std::shared_ptr<const Reducer> reducer, TransferTransport transport, TransferOptions options,
                         bool layoutsValid = true);
-        TransferOperation StartChecked(const ExecutionStream &stream, bool callerValid) const;
-        TransferOperation StartManaged(const ExecutionStream &stream, bool checked, bool callerValid) const;
+        TransferOperation StartChecked(const ExecutionStream &stream, bool callerValid,
+                                       bool observeProducer) const;
+        TransferOperation StartManaged(const ExecutionStream &stream, bool checked,
+                                       bool callerValid, bool observeProducer) const;
         TransferOperation Start(ExecutionContext context, bool scheduled, std::shared_ptr<AccessTrackingContext> tracking = {}, uint64_t lane = 0, bool callerValid = true) const;
 
     public:
@@ -321,6 +323,16 @@ namespace DNDS::Runtime
         /// callerValid joins the checked-stream preflight when enabled; false
         /// aborts with preflight disabled. Scheduled access checking is separate.
         TransferOperation BeginChecked(const ExecutionStream &stream, bool callerValid = true) const;
+        /// Managed begin for payloads already visible to the CPU controller.
+        /// This communication-lane entry does not record or host-wait the lane
+        /// prefix. Checked mode still reserves all transfer accesses and rejects
+        /// any unordered outstanding producer; unchecked mode leaves that proof
+        /// with the caller. Use the ordinary methods when this lane produces the
+        /// payload before the exchange.
+        TransferOperation BeginReadyScheduled(const ExecutionStream &stream,
+                                              bool callerValid = true) const;
+        TransferOperation BeginReadyChecked(const ExecutionStream &stream,
+                                            bool callerValid = true) const;
         /// Stream-native providers enqueue pack/transfer/unpack without host
         /// completion waits or per-exchange MPI preflight. Caller supplies input
         /// readiness and joins consumers using stream events. Private scratch
@@ -363,6 +375,10 @@ namespace DNDS::Runtime
         void WaitDestinationReady();
         void Wait();
         bool Test();
+        /// Full completion of a managed stream begin. The creating runtime
+        /// retains and progresses the transfer after this handle is released.
+        /// Raw-context and unmanaged provider operations reject this query.
+        StreamEvent CompletionEvent() const;
     };
 
     /// Opt-in prepared CPU MPI bundle; existing separate starts remain default.

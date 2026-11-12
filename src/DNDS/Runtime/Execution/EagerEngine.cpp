@@ -4,12 +4,77 @@
 #include <deque>
 #include <mutex>
 #include <thread>
-#include <chrono>
 #include <atomic>
 #include <algorithm>
 
 namespace DNDS::Runtime
 {
+    void StreamEvent::State::NotifyCompletion() const
+    {
+        std::vector<std::function<void()>> notifications;
+        {
+            std::lock_guard<std::mutex> lock(_notificationMutex);
+            if (_completed)
+                return;
+            _completed = true;
+            notifications.swap(_notifications);
+        }
+        for (const auto &notify : notifications)
+            notify();
+    }
+    void StreamEvent::State::OnCompletion(std::function<void()> notify) const
+    {
+        DNDS_check_throw_info(notify, "empty completion notification");
+        {
+            std::lock_guard<std::mutex> lock(_notificationMutex);
+            if (!_completed)
+            {
+                _notifications.push_back(std::move(notify));
+                return;
+            }
+        }
+        notify();
+    }
+    bool StreamEvent::Ready() const
+    {
+        if (!_state)
+            return true;
+        bool ready;
+        try
+        {
+            ready = _state->Ready();
+        }
+        catch (...)
+        {
+            _state->NotifyCompletion(); // Providers report only retired failures.
+            throw;
+        }
+        if (ready)
+            _state->NotifyCompletion();
+        return ready;
+    }
+    void StreamEvent::WaitHost() const
+    {
+        if (!_state)
+            return;
+        try
+        {
+            _state->Wait();
+        }
+        catch (...)
+        {
+            _state->NotifyCompletion();
+            throw;
+        }
+        _state->NotifyCompletion();
+    }
+    void StreamEvent::OnCompletion(std::function<void()> notify) const
+    {
+        if (_state)
+            _state->OnCompletion(std::move(notify));
+        else
+            notify();
+    }
     namespace
     {
         struct CPUCommand
@@ -18,6 +83,7 @@ namespace DNDS::Runtime
             StreamEvent dependency;
             bool wait = false, cleanup = false;
             StreamLauncher::Retirement retire;
+            std::shared_ptr<std::atomic<bool>> dependencyCompleted;
         };
         struct CPULane
         {
@@ -25,9 +91,10 @@ namespace DNDS::Runtime
             uint64_t submitted = 0, completed = 0, failedAt = 0;
             std::exception_ptr error;
             bool running = false;
+            std::vector<std::pair<uint64_t, std::weak_ptr<const StreamEvent::State>>> events;
         };
 
-        class CPUExecutor
+        class CPUExecutor : public std::enable_shared_from_this<CPUExecutor>
         {
             std::mutex _mutex;
             std::condition_variable _changed;
@@ -35,6 +102,9 @@ namespace DNDS::Runtime
             std::vector<std::thread> _workers;
             size_t _next = 0;
             bool _stopping = false;
+            uint64_t _wakeGeneration = 0;
+            const std::thread::id _controller = std::this_thread::get_id();
+            bool _progressingDependencies = false; // Controller thread only.
             const bool _solverFailures = MPI::SolverFailureScopeActive();
 
             bool Step()
@@ -49,7 +119,8 @@ namespace DNDS::Runtime
                     {
                         const auto candidate = (_next + i) % count;
                         auto current = _lanes[candidate].lock();
-                        if (current && !current->running && !current->commands.empty())
+                        if (current && !current->running && !current->commands.empty() &&
+                            (!current->commands.front().wait || current->commands.front().dependencyCompleted->load()))
                         {
                             lane = std::move(current);
                             lane->running = true;
@@ -64,14 +135,15 @@ namespace DNDS::Runtime
                 if (!lane)
                     return false;
                 std::exception_ptr error;
-                bool ready = true;
                 try
                 {
                     // Invoke backend/event/user code with no executor lock held.
-                    // An unresolved dependency is put back; no worker blocks.
+                    // Only signalled waits reach a worker. Observe the completed
+                    // result here to propagate errors, never to progress MPI.
                     if (command.wait)
-                        ready = command.dependency.Ready();
-                    if (ready && !command.wait && (!priorError || command.cleanup))
+                        DNDS_check_throw_info(command.dependency.Ready(),
+                                              "event notified before completion");
+                    if (!command.wait && (!priorError || command.cleanup))
                         command.work(ExecutionContext::Host());
                 }
                 catch (...)
@@ -83,45 +155,111 @@ namespace DNDS::Runtime
                     }
                     error = std::current_exception();
                 }
-                if (ready && command.retire)
+                if (command.retire)
                     command.retire(error ? error : priorError);
                 // Destroy captures before advancing completion: owning CPU
                 // resources and cleanup belong to this ordered command.
-                if (ready)
-                    command = {};
+                command = {};
+                std::vector<std::shared_ptr<const StreamEvent::State>> notifications;
                 {
                     std::lock_guard<std::mutex> lock(_mutex);
-                    if (ready)
+                    ++lane->completed;
+                    if (error && !lane->error)
                     {
-                        ++lane->completed;
-                        if (error && !lane->error)
-                        {
-                            lane->error = error;
-                            lane->failedAt = lane->completed;
-                        }
+                        lane->error = error;
+                        lane->failedAt = lane->completed;
                     }
-                    else
-                        lane->commands.push_front(std::move(command));
                     lane->running = false;
+                    for (auto it = lane->events.begin(); it != lane->events.end();)
+                        if (it->first <= lane->completed || it->second.expired())
+                        {
+                            if (auto event = it->second.lock())
+                                notifications.push_back(std::move(event));
+                            it = lane->events.erase(it);
+                        }
+                        else
+                            ++it;
+                    ++_wakeGeneration;
                 }
+                for (const auto &event : notifications)
+                    event->NotifyCompletion();
                 _changed.notify_all();
-                return ready;
+                return true;
             }
             void Worker()
             {
                 for (;;)
                 {
+                    uint64_t observed;
+                    {
+                        std::lock_guard<std::mutex> lock(_mutex);
+                        observed = _wakeGeneration;
+                    }
                     if (Step())
                         continue;
                     std::unique_lock<std::mutex> lock(_mutex);
                     if (_stopping)
                         return;
-                    // External completions may not signal our condition variable.
-                    _changed.wait_for(lock, std::chrono::milliseconds(1));
+                    _changed.wait(lock, [&]
+                                  { return _stopping || _wakeGeneration != observed; });
                 }
             }
 
         public:
+            void Wake()
+            {
+                {
+                    std::lock_guard<std::mutex> lock(_mutex);
+                    ++_wakeGeneration;
+                }
+                _changed.notify_all();
+            }
+            /// Observe foreign events only on the controller. Portable MPI and
+            /// CUDA host retirement may need progress; compute workers do not.
+            void ProgressDependencies()
+            {
+                if (std::this_thread::get_id() != _controller || _progressingDependencies)
+                    return;
+                struct ProgressScope
+                {
+                    bool &active;
+                    explicit ProgressScope(bool &value) : active(value) { active = true; }
+                    ~ProgressScope() { active = false; }
+                } scope(_progressingDependencies);
+                std::vector<StreamEvent> events;
+                {
+                    std::lock_guard<std::mutex> lock(_mutex);
+                    for (const auto &weak : _lanes)
+                        if (auto lane = weak.lock())
+                            for (const auto &command : lane->commands)
+                                if (command.wait && !command.dependencyCompleted->load())
+                                    events.push_back(command.dependency);
+                }
+                for (const auto &event : events)
+                    try
+                    {
+                        event.Ready();
+                    }
+                    catch (...)
+                    {
+                        // Ready notified the terminal failure. The queued wait
+                        // observes it on its own stream, preserving cleanup order.
+                        MPI::AbortIfSolverFailure("solver dependency progress failed");
+                    }
+            }
+            void ObservePrefix(const std::shared_ptr<CPULane> &lane, uint64_t prefix,
+                               const std::shared_ptr<const StreamEvent::State> &event)
+            {
+                {
+                    std::lock_guard<std::mutex> lock(_mutex);
+                    if (lane->completed < prefix)
+                    {
+                        lane->events.emplace_back(prefix, event);
+                        return;
+                    }
+                }
+                event->NotifyCompletion();
+            }
             explicit CPUExecutor(size_t threads)
             {
                 try
@@ -173,13 +311,26 @@ namespace DNDS::Runtime
             }
             void Submit(const std::shared_ptr<CPULane> &lane, CPUCommand command)
             {
+                const bool importsEvent = command.wait;
+                if (command.wait)
+                {
+                    command.dependencyCompleted = std::make_shared<std::atomic<bool>>(false);
+                    command.dependency.OnCompletion([weak = weak_from_this(), done = command.dependencyCompleted]
+                                                    {
+                        done->store(true);
+                        if (auto executor = weak.lock())
+                            executor->Wake(); });
+                }
                 {
                     std::lock_guard<std::mutex> lock(_mutex);
                     DNDS_check_throw_info(!_stopping && lane->submitted < UINT64_MAX, "CPU execution lane unavailable");
                     lane->commands.push_back(std::move(command));
                     ++lane->submitted;
+                    ++_wakeGeneration;
                 }
                 _changed.notify_all();
+                if (importsEvent)
+                    ProgressDependencies();
                 if (_workers.empty())
                     while (Step())
                     {
@@ -203,12 +354,14 @@ namespace DNDS::Runtime
             {
                 if (Ready(lane, prefix))
                     return true;
-                if (_workers.empty())
+                ProgressDependencies();
+                if (_workers.empty() && std::this_thread::get_id() == _controller)
                     Step(); // Allows an imported inline-executor dependency to progress.
                 return Ready(lane, prefix);
             }
             void ProgressInline()
             {
+                ProgressDependencies();
                 if (_workers.empty())
                     Step();
             }
@@ -216,10 +369,19 @@ namespace DNDS::Runtime
             {
                 while (!Ready(lane, prefix))
                 {
+                    ProgressDependencies();
                     if (_workers.empty() && Step())
                         continue;
+                    // Controller waits drive foreign backend progress. Worker
+                    // waits sleep; normal queued dependencies never enter here.
+                    if (std::this_thread::get_id() == _controller)
+                    {
+                        std::this_thread::yield();
+                        continue;
+                    }
                     std::unique_lock<std::mutex> lock(_mutex);
-                    _changed.wait_for(lock, std::chrono::milliseconds(1));
+                    _changed.wait(lock, [&]
+                                  { return lane->completed >= prefix || _stopping; });
                 }
             }
         };
@@ -254,7 +416,10 @@ namespace DNDS::Runtime
             void WaitFor(StreamEvent event) override { _executor->Submit(_lane, {{}, std::move(event), true, false}); }
             StreamEvent Record() override
             {
-                return StreamEvent(std::make_shared<CPUEvent>(_executor, _lane, _executor->Tail(_lane)));
+                const auto prefix = _executor->Tail(_lane);
+                auto event = std::make_shared<CPUEvent>(_executor, _lane, prefix);
+                _executor->ObservePrefix(_lane, prefix, event);
+                return StreamEvent(std::move(event));
             }
             void Drain() override { _executor->Wait(_lane, _executor->Tail(_lane)); }
             Buffer Allocate(size_t bytes) override { return Buffer::Allocate(bytes); }

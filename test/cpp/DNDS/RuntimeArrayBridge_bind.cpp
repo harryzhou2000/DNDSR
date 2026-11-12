@@ -52,7 +52,6 @@ void BridgeHoldCUDA(R::EagerEngine &, const R::ExecutionStream &, std::shared_pt
 struct AsyncGate
 {
     std::shared_ptr<std::atomic<bool>> flag = std::make_shared<std::atomic<bool>>(false);
-    ~AsyncGate() { *flag = true; }
     struct Event : R::StreamEvent::State
     {
         std::shared_ptr<std::atomic<bool>> flag;
@@ -64,6 +63,13 @@ struct AsyncGate
                 std::this_thread::yield();
         }
     };
+    std::shared_ptr<Event> event = std::make_shared<Event>(flag);
+    void Open()
+    {
+        *flag = true;
+        event->NotifyCompletion();
+    }
+    ~AsyncGate() { Open(); }
 };
 
 void ScaleAsync(R::EagerEngine &engine, const R::ExecutionStream &stream, State array, double factor)
@@ -138,12 +144,12 @@ PYBIND11_MODULE(runtime_array_bridge_test, m)
           { return plan.Bind(source, destination, std::move(reducer)); });
     py::class_<AsyncGate, std::shared_ptr<AsyncGate>>(m, "AsyncGate")
         .def("open", [](AsyncGate &gate)
-             { *gate.flag = true; });
+             { gate.Open(); });
     m.def("hold", [](R::EagerEngine &engine, const R::ExecutionStream &stream)
           {
         auto gate = std::make_shared<AsyncGate>();
         if (stream.Context().device.space == R::MemorySpace::Host)
-            stream.WaitFor(R::StreamEvent(std::make_shared<AsyncGate::Event>(gate->flag)));
+            stream.WaitFor(R::StreamEvent(gate->event));
 #ifdef DNDS_USE_CUDA
         else BridgeHoldCUDA(engine, stream, gate->flag);
 #endif

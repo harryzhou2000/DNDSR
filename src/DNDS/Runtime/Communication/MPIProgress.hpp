@@ -9,7 +9,8 @@
 namespace DNDS::Runtime
 {
     /// Portable host progress. MPI is called only on this object's creating
-    /// thread. Worker streams poll completion without entering MPI. Drain this
+    /// thread. Completion notifies waiting worker streams without entering MPI
+    /// on those workers. Drain this
     /// object before synchronizing dependent worker streams or submitting a
     /// dependent CUDA stream (portable MPI is not a native CUDA stream node).
     /// Caller initializes MPI with at least FUNNELED for worker execution and
@@ -51,6 +52,7 @@ namespace DNDS::Runtime
                 {
                     operation = {}; // Release MPI-owned state on the MPI thread.
                     done.store(true, std::memory_order_release);
+                    NotifyCompletion();
                 }
             }
             bool Ready() const override

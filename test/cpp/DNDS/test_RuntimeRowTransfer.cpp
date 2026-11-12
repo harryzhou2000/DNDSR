@@ -267,6 +267,7 @@ TEST_CASE("Managed MPI requests survive dropped handles and progress worker cons
     {
         EagerEngine engine(2, checked ? std::make_shared<AccessTrackingContext>() : nullptr);
         auto stream = engine.CreateCPUStream();
+        auto communication = engine.CreateCPUStream();
         Array<double> source(RowLayout::Dense(17, 5)), destination(source.Layout()), output(source.Layout());
         {
             auto write = source.Write();
@@ -286,8 +287,13 @@ TEST_CASE("Managed MPI requests survive dropped handles and progress worker cons
         }
         engine.Synchronize();
         CHECK(destination.Read().At(0, 0) == 1000 * ((rank + 1) % size) + 160);
-        MPIProgress bridge;
-        auto event = bridge.Import(checked ? binding->BeginChecked(stream) : binding->BeginScheduled(stream));
+        auto operation = checked ? binding->BeginReadyChecked(communication)
+                                 : binding->BeginReadyScheduled(communication);
+        auto event = operation.CompletionEvent();
+        operation = {}; // Runtime inventory and event retain the actual transfer.
+        std::atomic<bool> core{false};
+        engine.Submit(stream, [&](ExecutionContext)
+                      { core = true; });
         stream.WaitFor(event);
         SubmitArrays(engine, stream, [](ExecutionContext, auto input, auto result)
                      {
@@ -297,6 +303,7 @@ TEST_CASE("Managed MPI requests survive dropped handles and progress worker cons
         destination = {};
         binding.reset(); // Only runtime/operation scopes retain the payload owners.
         engine.Close();  // No bridge.Poll/Drain; registered operation drives the event.
+        CHECK(core.load());
         CHECK(event.Ready());
         const auto read = output.Read();
         for (DNDS::index iRow = 0; iRow < 17; ++iRow)

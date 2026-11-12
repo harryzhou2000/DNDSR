@@ -180,7 +180,8 @@ engine.Synchronize();
 ```
 
 MPIProgress owns outstanding operations until retirement on its creating thread.
-CPU worker polling does not call MPI. Use MPI_Init_thread with at least FUNNELED
+MPI completion signals the event waking dependent CPU streams; compute workers
+do not poll MPI or periodically probe an unfinished event. Use MPI_Init_thread with at least FUNNELED
 for a worker-thread application, and keep MPI on the main thread at that level.
 Explicitly drain progress before synchronizing dependent worker streams.
 The context must be destroyed on its creating thread before MPI_Finalize.

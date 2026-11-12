@@ -115,6 +115,22 @@ namespace DNDS::Algebra
                 Publish();
                 return true;
             }
+            Runtime::StreamEvent CompletionEvent() const
+            {
+                DNDS_check_throw_info(_data && !_observed,
+                                      "halo operation is empty or already published");
+                return _operation.CompletionEvent();
+            }
+            /// Called on a dependent execution lane after CompletionEvent.
+            /// No MPI routine is entered here; the managed runtime already
+            /// retired transport ownership on its controller.
+            void PublishCompleted()
+            {
+                DNDS_check_throw_info(_data && !_observed &&
+                                          _operation.CompletionEvent().Ready(),
+                                      "halo publication precedes transfer completion");
+                Publish();
+            }
         };
 
         /// Collective construction. Layouts remain AoS/SoA/AoSoA as bound;
@@ -158,6 +174,37 @@ namespace DNDS::Algebra
                 MPI::LocalStage(MPIInfo(_data->route.Communicator()), validate);
             _data->publication.reset();
             auto operation = engine.ChecksAccess() ? _data->binding.BeginChecked(stream, valid) : _data->binding.BeginScheduled(stream, valid);
+            _data->active = true;
+            return Operation(_data, std::move(operation), std::move(epoch));
+        }
+        /// Begin on a dedicated communication lane after the owned payload is
+        /// already CPU-visible. A later compute-lane event must precede every
+        /// ghost consumer and PublishCompleted.
+        Operation BeginReady(Epoch epoch, Runtime::EagerEngine &engine,
+                             const Runtime::ExecutionStream &stream,
+                             bool checks = false)
+        {
+            bool valid = false;
+            try
+            {
+                valid = !_data->active && _data->Matches(_data->field) &&
+                        stream.Context().device == Runtime::Device::Host();
+            }
+            catch (...)
+            {
+                MPI::AbortIfSolverFailure("tracked halo preparation failed");
+            }
+            const auto validate = [&]
+            {
+                DNDS_check_throw_info(valid,
+                                      "halo binding is stale, busy or not on CPU");
+            };
+            if (checks)
+                MPI::LocalStage(MPIInfo(_data->route.Communicator()), validate);
+            _data->publication.reset();
+            auto operation = engine.ChecksAccess()
+                                 ? _data->binding.BeginReadyChecked(stream, valid)
+                                 : _data->binding.BeginReadyScheduled(stream, valid);
             _data->active = true;
             return Operation(_data, std::move(operation), std::move(epoch));
         }

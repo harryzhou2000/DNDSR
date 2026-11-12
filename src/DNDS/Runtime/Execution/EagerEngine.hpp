@@ -5,6 +5,7 @@
 #include <functional>
 #include <vector>
 #include <optional>
+#include <mutex>
 
 namespace DNDS::Runtime
 {
@@ -73,10 +74,24 @@ namespace DNDS::Runtime
     public:
         class State
         {
+            mutable std::mutex _notificationMutex;
+            mutable bool _completed = false;
+            mutable std::vector<std::function<void()>> _notifications;
+
         public:
             virtual ~State() = default;
+            /// Nonblocking observation. Throws report terminal, retired errors;
+            /// a provider must not throw merely because work is still pending.
             virtual bool Ready() const = 0;
             virtual void Wait() const = 0;
+            /// Backend completion notification, including terminal failure.
+            /// Publish result/error and release completed accesses first. This
+            /// wakes consumers; it never runs their numerical work inline.
+            void NotifyCompletion() const;
+            /// Subscribe without racing completion. The callback must not throw
+            /// or perform backend work; it may run immediately on this thread.
+            /// Capture weak executor handles to avoid event/executor cycles.
+            void OnCompletion(std::function<void()> notify) const;
         };
 
     private:
@@ -90,12 +105,9 @@ namespace DNDS::Runtime
     public:
         StreamEvent() = default;
         explicit StreamEvent(std::shared_ptr<const State> state) : _state(std::move(state)) {}
-        bool Ready() const { return !_state || _state->Ready(); }
-        void WaitHost() const
-        {
-            if (_state)
-                _state->Wait();
-        }
+        bool Ready() const;
+        void WaitHost() const;
+        void OnCompletion(std::function<void()> notify) const;
         const std::shared_ptr<const State> &Provider() const { return _state; }
     };
 
@@ -181,6 +193,9 @@ namespace DNDS::Runtime
     /// Fully eager execution. The caller supplies dependency/release ordering.
     /// HostThreads=0 runs ready CPU work inline; >0 shares a bounded worker pool
     /// between all CPU lanes. Waiting lanes never consume blocked workers.
+    /// CPU prefix completion directly notifies dependent executors. Foreign
+    /// backends without push notification are progressed by the controller at
+    /// submission/wait/drain boundaries; workers never periodically probe them.
     /// @pre Caller orders all conflicting scheduled accesses and joins every
     /// independent use before a final release. An optional shared tracking
     /// context checks declared accesses at submission. Unchecked eager mode

@@ -44,10 +44,22 @@ drain required resource uses before reporting a completion error. Imported
 event providers must support thread-safe nonblocking readiness checks.
 
 CPU lanes share one bounded pool; a lane is not an OS thread. Same-lane
-commands complete in order. A wait that is not ready returns its lane to the
-queue and does not block a worker. Operators run outside executor locks.
-With zero workers, submitting or observing ready work performs it inline;
-polling an imported prefix can progress its inline executor. This compute
+commands complete in order. An unresolved wait suspends its lane; event
+completion notifies the executor and makes the lane runnable. Workers sleep on
+a condition variable when no lane is runnable; there is no timed worker poll.
+Registration and completion share a notification lock, so completion before or
+during subscription cannot lose a wake-up. Callbacks only wake executors and
+must not perform numerical work or backend progress. Operators run outside
+executor locks.
+With zero workers, submitting or observing ready work performs it inline on the
+controller. Controller observation of an imported prefix can progress its inline
+executor. Portable MPI and device-to-host completion observation may still need
+controller progress; that backend bridge signals the same event. Native CUDA
+stream waits remain native and require no host notification to order GPU work.
+Custom event providers should call `NotifyCompletion()` after publishing their
+result/error and retiring accesses. The event's `Ready`/`WaitHost` wrappers also
+notify when the controller observes completion. Those wrappers are a progress
+bridge, not autonomous background execution. This compute
 launcher does not promise thread affinity for external APIs such as MPI.
 Those APIs need a launcher honoring their thread/progress requirements.
 
@@ -55,6 +67,14 @@ Concurrent submitters linearize queue insertion. Ordering between racing
 host submissions is otherwise unspecified. Kernel access ordering is the
 caller's responsibility in the fully eager mode; the queue adds no dependency
 proof or inferred cross-stream joins.
+
+**TODO(sync-free-iteration-control), TODO(sync-free-gmres):** retain reduction
+results in managed device-aware scalar buffers and consume them in queued
+matrix/coefficient-update kernels. Dynamic stopping/restart without host
+observation requires a future controller, potentially CDP with device-managed
+streams or a persistent/megakernel driver. These mechanisms are not implemented.
+See [the implicit-solver roadmap](CauchyImplicit.md#cpu-linear-orchestration)
+for the numerical dependencies and distributed ordering requirements.
 
 ## Ownership and errors
 

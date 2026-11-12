@@ -106,6 +106,7 @@ namespace DNDS::Runtime
                                    _commands.clear();
                                    _stream.reset(); // A completed event does not own a live stream.
                                });
+                NotifyCompletion(); // CPU consumers wake only after host retirement.
                 if (_error)
                     std::rethrow_exception(_error);
             }

@@ -228,6 +228,11 @@ TEST_CASE("Fixed DOF component contract survives dynamic Array imports and repla
 struct AlgebraGate : R::StreamEvent::State
 {
     std::atomic<bool> open{false};
+    void Signal()
+    {
+        open = true;
+        NotifyCompletion();
+    }
     bool Ready() const override { return open.load(); }
     void Wait() const override
     {
@@ -246,7 +251,7 @@ TEST_CASE("Immediate DOF convenience rejects pending or active access before usi
     A::Fill(engine, stream, value, 3.);
     CHECK_THROWS(A::Fill(value, 7.));
     CHECK_THROWS(A::DotLocal(value, value));
-    gate->open = true;
+    gate->Signal();
     stream.Record().WaitHost();
     CHECK(A::DotLocal(value, value) == 17 * 5 * 9);
     A::Fill(value, 7.);
@@ -275,7 +280,7 @@ TEST_CASE("Native DOF commands retain values and honor explicit cross-stream joi
     A::Copy(engine, consumer, output, *input);
     input.reset();
     CHECK_FALSE(retained.expired());
-    gate->open = true;
+    gate->Signal();
     CHECK(A::NormLocal(engine, consumer, output).Get() == doctest::Approx(4 * std::sqrt(37 * 7)));
     engine.Synchronize();
     CHECK(retained.expired());
