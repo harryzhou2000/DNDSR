@@ -1,3 +1,4 @@
+#include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Implicit/JacobianGeometry.hpp"

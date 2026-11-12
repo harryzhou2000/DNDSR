@@ -1,4 +1,5 @@
 #include "Cauchy/Implicit/CPU/FiniteVolumeJacobianKernels.hpp"
+#include "Cauchy/Physics/RANSFlux.hpp"
 namespace DNDS::Cauchy::CPU
 {
     void EvaluateEquationJacobianBlock(const EquationJacobianView &snapshot, index iRow, index iBlock, Eigen::Ref<Eigen::MatrixXd> output)

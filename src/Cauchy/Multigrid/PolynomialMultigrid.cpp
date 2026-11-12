@@ -1,5 +1,5 @@
-#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Multigrid/PolynomialMultigrid.hpp"
+#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Multigrid/CPU/PolynomialMultigridKernels.hpp"
 
 #include "Cauchy/Core/DomainExecutionContext.hpp"

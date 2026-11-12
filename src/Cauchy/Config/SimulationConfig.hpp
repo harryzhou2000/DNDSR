@@ -702,6 +702,8 @@ namespace DNDS::Cauchy
             OutputSettings output;
             std::vector<InterfaceSettings> interfaces;
         };
+        /// Check a resolved domain before constructing collective resources.
+        static void ValidateDomain(const DomainConfig &domain, int simulationSize);
         std::shared_ptr<const Data> _data;
         explicit SimulationConfig(std::shared_ptr<const Data> data) : _data(std::move(data)) {}
 

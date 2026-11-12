@@ -1,5 +1,5 @@
-#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Implicit/LinearProblem.hpp"
+#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Implicit/CPU/LinearBlockKernels.hpp"
 #include "Cauchy/State/EquationDofs.hpp"
 

@@ -1,8 +1,8 @@
-#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePositivityKernels.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 
@@ -35,12 +35,12 @@ namespace DNDS::Cauchy
         }
     }
     PhysicalStepLimit FiniteVolume::LimitPhysicalStep(const EquationDofs &state, const EquationDofs &residual,
-                                                      const EquationThermalView &thermal, real dt, real relax, real scale, int compressionPower) const
+                                                      const ThermalView &thermal, real dt, real relax, real scale, int compressionPower) const
     {
         const MPIInfo mpi(Metrics().Communicator());
         MPI::LocalStage(mpi, [&]
                         {
-            Metrics().Validate(); Equation().ValidateStateSchema(state);
+            Metrics().Validate(); state.RequireSchema(Equation().Schema());
             state.RequireCompatible(residual); EquationDofOperations::RequireDistinct(state, residual);
             CheckStepControls(dt, relax, scale, compressionPower);
             DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && state.Device() == Runtime::Device::Host() &&

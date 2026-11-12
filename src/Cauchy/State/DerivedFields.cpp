@@ -1,8 +1,8 @@
-#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/State/DerivedFields.hpp"
+#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/State/CPU/StatePropertiesKernels.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
 #include <algorithm>
 #include <mutex>
 
@@ -62,7 +62,7 @@ namespace DNDS::Cauchy
         }
         void Validate(const EquationDofs &state, const EquationSystem &equation) const
         {
-            equation.ValidateStateSchema(state);
+            state.RequireSchema(equation.Schema());
             const auto profile = equation.ResolveKernelProfile(state.Device());
             DNDS_check_throw_info(profile == EquationKernelProfile::CompressiblePerfectGasCPU ||
                                       profile == EquationKernelProfile::CompressibleIdealMixtureCPU,
@@ -153,17 +153,17 @@ namespace DNDS::Cauchy
         auto evaluator = equation.MakePointEvaluator();
         return EvaluateDerivedPoint(evaluator, state);
     }
-    DerivedPointValues EvaluateDerivedPoint(EquationPointEvaluator &evaluator, const FlowState &state,
+    DerivedPointValues EvaluateDerivedPoint(PointEvaluator &evaluator, const FlowState &state,
                                             Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess)
     {
         const auto result = TryEvaluateDerivedPoint(evaluator, state, rhoY, temperatureGuess);
         DNDS_check_throw_info(result.status, "derived point evaluation failed");
         return result.value;
     }
-    NumericalResult<DerivedPointValues> TryEvaluateDerivedPoint(EquationPointEvaluator &evaluator, const FlowState &state,
+    NumericalResult<DerivedPointValues> TryEvaluateDerivedPoint(PointEvaluator &evaluator, const FlowState &state,
                                                                 Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess) noexcept
     {
-        EquationPointProperties point;
+        PointProperties point;
         if (const auto status = evaluator.TryEvaluate(state, rhoY, temperatureGuess, point); !status)
             return status;
         const auto &thermo = point.thermo;

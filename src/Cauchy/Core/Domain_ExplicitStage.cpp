@@ -1,5 +1,5 @@
-#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Core/Domain.hpp"
+#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Core/CPU/TimeStageKernels.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"

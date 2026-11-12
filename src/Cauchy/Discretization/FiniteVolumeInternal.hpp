@@ -10,8 +10,8 @@
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
 #include "Cauchy/Discretization/WallDistanceSamples.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
+#include "Cauchy/State/RANSState.hpp"
 #include "DNDS/Algebra/DofHalo.hpp"
 #include "DNDS/Runtime/Communication/CommunicationWorker.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
@@ -156,7 +156,7 @@ namespace DNDS::Cauchy
         /// Small fixed-flow leaves retain their five-component affine bounds;
         /// orchestration and complete equation checks use defaultAdmissibility.
         std::optional<ThermalBounds> fixedFlowThermalBounds;
-        std::optional<EquationAdmissibilityPolicy> defaultAdmissibility;
+        std::optional<AdmissibilityPolicy> defaultAdmissibility;
         std::optional<WallDistanceSamples> wallDistance;
         Runtime::Array<real> ransCellLength;
         Runtime::TransferBinding BindHalo(CFV::FVField &field, const char *channel = "cauchy-field") const

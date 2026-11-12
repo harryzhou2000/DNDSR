@@ -36,9 +36,9 @@ namespace DNDS::Cauchy::CPU
         bool chemical = false, fullBlock = false;
         real scale = 1;
     };
-    NumericalStatus AddMeanSourceJacobian(const SourceKernelRequest &, const EquationSystem &, EquationPointEvaluator &) noexcept;
-    NumericalStatus AddQuadratureSourceJacobian(const SourceKernelRequest &, const EquationSystem &, EquationPointEvaluator &) noexcept;
-    NumericalStatus AddVolumeSources(const SourceKernelRequest &, const EquationSystem &, EquationPointEvaluator &) noexcept;
+    NumericalStatus AddMeanSourceJacobian(const SourceKernelRequest &, const EquationSystem &, PointEvaluator &) noexcept;
+    NumericalStatus AddQuadratureSourceJacobian(const SourceKernelRequest &, const EquationSystem &, PointEvaluator &) noexcept;
+    NumericalStatus AddVolumeSources(const SourceKernelRequest &, const EquationSystem &, PointEvaluator &) noexcept;
     void ReplicateSourceValues(Runtime::ArrayView<const index, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>> offsets,
                                RHSScalarView input, RHSOutputView output, int stride = 1, int direction = 0);
     void AddEquationRotationSource(CFV::FiniteVolumeHostView metric, const RigidFrame &frame,

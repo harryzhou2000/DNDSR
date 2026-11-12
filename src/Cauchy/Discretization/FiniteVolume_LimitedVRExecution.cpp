@@ -1,6 +1,6 @@
+#include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Core/OperatorSchedule.hpp"
-#include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Discretization/LimitedVRInternal.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeLimitedVRKernels.hpp"
 #include "Cauchy/Physics/ReconstructionPositivity.hpp"

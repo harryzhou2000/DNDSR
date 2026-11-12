@@ -1,8 +1,9 @@
 #pragma once
 #include "DNDS/Core/NumericalStatus.hpp"
 #include "Cauchy/Discretization/FiniteVolumeStencil.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
+#include "Cauchy/State/RANSState.hpp"
+#include "Cauchy/Discretization/RANSReconstruction.hpp"
 #include "DNDS/Algebra/DofComponentView.hpp"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
 
@@ -33,7 +34,7 @@ namespace DNDS::Cauchy::CPU
         SpanView<const GradientWriteView> gradients;
         SpanView<const index> logicalField, logicalComponent;
         Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::TableRows> samples;
-        EquationThermalView bounds;
+        ThermalView bounds;
         RANSReconstructionView rans;
         index components = 0, ransFirst = -1;
         int dimension = 0;

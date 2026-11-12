@@ -1,3 +1,4 @@
+#include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
 #include "DNDS/Algebra/DofAlgebra.hpp"

@@ -1,7 +1,7 @@
+#include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/State/CPU/FieldKernels.hpp"
 #include "DNDS/MPI/Failure.hpp"
-#include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/StepResult.hpp"
 #include "Cauchy/Implicit/NonlinearIteration.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"

@@ -1,14 +1,14 @@
+#include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
 #include "DNDS/MPI/Failure.hpp"
-#include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Core/StepResult.hpp"
 #include "Cauchy/State/CPU/FieldKernels.hpp"
 #include "Cauchy/State/CPU/StatePropertiesKernels.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/StateInput.hpp"
-#include "Cauchy/Physics/EquationSource.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/Input/StateInput.hpp"
+#include "Cauchy/Operators/Source/ChemicalSource.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -23,23 +23,23 @@ namespace DNDS::Cauchy
                 result.equation.source = "none";
             return result;
         }
-        EquationSetup ResolveEquation(const std::string &name, const DomainSettings &settings, const MPIInfo &mpi)
+        PhysicsResources ResolveEquation(const std::string &name, const DomainSettings &settings, const MPIInfo &mpi)
         {
-            std::optional<EquationSetup> setup;
+            std::optional<PhysicsResources> setup;
             MPI::LocalStage(mpi, [&]
                             {
                 ResolvedExecutionPlan::Resolve({{name, {0}}, settings});
                 // Current EOS phases share one ordered CPU lane, even when
                 // its launcher runs on worker threads. Reserve actual required
                 // capacity rather than cloning once per engine worker.
-                setup.emplace(EquationSetup::Resolve(settings.equation, 1));
+                setup.emplace(PhysicsResources::Resolve(settings.equation, 1));
                 index width = 0;
                 for (const auto &block : setup->equation.Schema().blocks) width += index(block.components.size());
                 settings.implicit.ValidateComponents(width);
                 setup->equation.Schema().ResolveComponents(settings.implicit.residualComponents); });
             return std::move(*setup);
         }
-        ResolvedPhysicalInputs ResolveInputs(const DomainSettings &settings, const EquationSetup &setup, const MPIInfo &mpi)
+        ResolvedPhysicalInputs ResolveInputs(const DomainSettings &settings, const PhysicsResources &setup, const MPIInfo &mpi)
         {
             std::optional<ResolvedPhysicalInputs> result;
             MPI::LocalStage(mpi, [&]
@@ -51,9 +51,9 @@ namespace DNDS::Cauchy
     }
     Domain::Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time)
         : Domain(name, mesh, settings, time, ResolveEquation(name, settings, mesh->getMPI())) {}
-    Domain::Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time, EquationSetup setup)
+    Domain::Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time, PhysicsResources setup)
         : Domain(name, mesh, ResolveInputs(settings, setup, mesh->getMPI()), time, setup) {}
-    Domain::Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const ResolvedPhysicalInputs &inputs, const TimeSettings &time, EquationSetup setup)
+    Domain::Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const ResolvedPhysicalInputs &inputs, const TimeSettings &time, PhysicsResources setup)
         : _problem(std::move(name), mesh, inputs.settings, time,
                    std::move(setup.equation)),
           _state(_problem, inputs.settings, setup.workers,
@@ -68,7 +68,7 @@ namespace DNDS::Cauchy
         _sourceStrang = time.sourceSplitting == "strang" && inputs.settings.equation.source == "chemical";
         _reactorControls = time.reactor;
         _positivity = settings.numerics.positivity;
-        _problem.equation.ValidateStateSchema(_state.accepted);
+        _state.accepted.RequireSchema(_problem.equation.Schema());
         DNDS_check_throw_info(_problem.finiteVolume.Metrics().Dimension() == settings.mesh.dimension, "Cauchy config/mesh dimension differs");
         _problem.admissibility.emplace(_problem.finiteVolume.PrepareAdmissibility(_execution.ChemicalWorkers()));
         DNDS_check_throw_info(Admissible(_state.accepted), "Cauchy initial means violate density or minimum-temperature internal-energy bounds");

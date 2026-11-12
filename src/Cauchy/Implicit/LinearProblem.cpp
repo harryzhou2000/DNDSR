@@ -1,5 +1,5 @@
-#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Implicit/LinearProblem.hpp"
+#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Implicit/CPU/LinearBlockKernels.hpp"
 #include "Cauchy/Implicit/CPU/LinearProblemKernels.hpp"
 #include "DNDS/MPI/Failure.hpp"

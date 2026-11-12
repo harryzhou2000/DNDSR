@@ -1,9 +1,10 @@
+#include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Implicit/JacobianGeometry.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/EquationFlux.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/Physics/PhysicalFlux.hpp"
 #include "Cauchy/Implicit/CPU/FiniteVolumeJacobianKernels.hpp"
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
 
@@ -134,7 +135,7 @@ namespace DNDS::Cauchy
     {
         Metrics().Validate();
         _data->partition.Validate();
-        _data->equation.ValidateStateSchema(prototype);
+        prototype.RequireSchema(_data->equation.Schema());
         _data->equation.ResolveKernelProfile(prototype.Device());
         DNDS_check_throw_info(prototype.Space().Same(Metrics().Space()), "equation linear prototype row space differs");
         return std::make_shared<LinearProblemContext>(prototype.Space(), prototype.ComponentNumber(),

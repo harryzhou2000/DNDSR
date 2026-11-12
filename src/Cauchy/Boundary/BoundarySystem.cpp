@@ -1,6 +1,6 @@
 #include "Cauchy/Boundary/BoundarySystem.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
-#include "Cauchy/Physics/FlowProfile.hpp"
+#include "Cauchy/State/RANSState.hpp"
+#include "Cauchy/Input/FlowProfile.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include <set>
 

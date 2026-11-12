@@ -1,8 +1,8 @@
 // E3 observes the real composed flow5 RHS using a link-only wrapper. Production
 // CFV has no profiling branch/timer. GNU-compatible --wrap is required here.
 #include "Cauchy/Discretization/FiniteVolume.hpp"
-#include "Cauchy/Physics/EquationSetup.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/PhysicsResources.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "CartesianFixture.hpp"
 #include <chrono>
@@ -80,7 +80,7 @@ namespace
             settings.numerics.faceFallback = false;
             settings.numerics.characteristicLimiter = false;
         }
-        auto physical = C::EquationSetup::Resolve(settings.equation);
+        auto physical = C::PhysicsResources::Resolve(settings.equation);
         const auto &equation = physical.equation;
         C::FiniteVolume fv(mesh, settings, equation);
         std::optional<C::EquationDofs> equationMean, equationResidual;

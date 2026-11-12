@@ -1,5 +1,5 @@
-#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/IO/StateArchive.hpp"
+#include "DNDS/MPI/Failure.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 
 namespace DNDS::Cauchy

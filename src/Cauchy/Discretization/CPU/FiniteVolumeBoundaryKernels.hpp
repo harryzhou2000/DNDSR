@@ -4,13 +4,13 @@
 #include "Cauchy/Discretization/BoundaryTraceGeometry.hpp"
 #include "Cauchy/Boundary/BoundaryPointOperator.hpp"
 #include "Cauchy/State/EquationDofs.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/Discretization/WallDistanceSamples.hpp"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
 #include "DNDS/Core/Span.hpp"
 #include "Cauchy/Boundary/BoundaryInputs.hpp"
 #include "Cauchy/Discretization/FiniteVolumeStencil.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
 
 namespace DNDS::Cauchy::CPU
 {
@@ -43,7 +43,7 @@ namespace DNDS::Cauchy::CPU
     NumericalStatus FillBoundaryTraces(const BoundaryTraceRequest &request,
                                        SpanView<const BoundaryCondition> conditions,
                                        const BoundaryPointOperator &boundary,
-                                       EquationPointEvaluator &evaluator) noexcept;
+                                       PointEvaluator &evaluator) noexcept;
 
     void CopyBoundaryRows(
         Runtime::ArrayView<const real, Runtime::AccessBoundsChecks,
@@ -81,11 +81,11 @@ namespace DNDS::Cauchy::CPU
 
     using BoundaryPointRows = Runtime::ArrayView<const BoundaryPoint, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>>;
     NumericalStatus ValidateInterfacePacketRows(Algebra::DofComponentView<const real> rows, BoundaryPointRows points,
-                                                EquationThermalView thermal, RANSStateView rans, EquationBlockReadView ransValues) noexcept;
+                                                ThermalView thermal, RANSStateView rans, EquationBlockReadView ransValues) noexcept;
     Vector3 AccumulateBoundaryForce(FiniteVolumeStencilView stencil,
                                     Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::FixedRows<3>> values,
                                     SpanView<const int> zones);
     /// Check an alias between identical point layouts under retained scopes.
     NumericalStatus ValidateInterfaceAliasRows(Algebra::DofComponentView<const real> rows,
-                                               BoundaryPointRows a, BoundaryPointRows b, EquationThermalView thermal) noexcept;
+                                               BoundaryPointRows a, BoundaryPointRows b, ThermalView thermal) noexcept;
 }

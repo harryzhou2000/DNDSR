@@ -1,7 +1,8 @@
 #include "Cauchy/Boundary/BoundaryPointOperator.hpp"
 
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/State/RANSState.hpp"
+#include "Cauchy/Boundary/CPU/RANSWallKernels.hpp"
 
 #include <cmath>
 
@@ -43,7 +44,7 @@ namespace DNDS::Cauchy
     void BoundaryPointOperator::Evaluate(
         std::vector<real> &point, const BoundaryCondition &condition,
         index interfaceRow, const Vector3 &normal, const Vector3 &location,
-        EquationPointEvaluator &evaluator, const RigidFrame &frame, real time,
+        PointEvaluator &evaluator, const RigidFrame &frame, real time,
         BoundaryPointStateKind stateKind,
         OptionalRef<const std::vector<real>> mean, real meanWallDistance,
         InterfaceBoundaryRows interfaceValues) const
@@ -54,7 +55,7 @@ namespace DNDS::Cauchy
     NumericalStatus BoundaryPointOperator::TryEvaluate(
         std::vector<real> &point, const BoundaryCondition &condition,
         index interfaceRow, const Vector3 &normal, const Vector3 &location,
-        EquationPointEvaluator &evaluator, const RigidFrame &frame, real time,
+        PointEvaluator &evaluator, const RigidFrame &frame, real time,
         BoundaryPointStateKind stateKind,
         OptionalRef<const std::vector<real>> mean, real meanWallDistance,
         InterfaceBoundaryRows interfaceValues) const noexcept
@@ -124,7 +125,7 @@ namespace DNDS::Cauchy
                     viscosityFlow = flow;
                     viscositySpecies = {rhoY.data, rhoY.nSpecies};
                 }
-                EquationPointProperties properties;
+                PointProperties properties;
                 if (const auto status = evaluator.TryEvaluate(
                         viscosityFlow, viscositySpecies, 0, {true}, properties);
                     !status)
@@ -136,7 +137,7 @@ namespace DNDS::Cauchy
                     meanPoint.state[5 + j] = (*mean)[size_t(_ransFirst + j)];
                 meanPoint.molecularViscosity = properties.transport.viscosity;
                 meanPoint.wallDistance = meanWallDistance;
-                target = RANSWallTarget(_equation.RANS(), meanPoint, inside[0]);
+                target = CPU::RANSWallTarget(_equation.RANS(), meanPoint, inside[0]);
             }
             for (int j = 0; j < ransComponents; ++j)
             {

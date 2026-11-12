@@ -1,3 +1,4 @@
+#include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/State/CPU/FieldKernels.hpp"
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
 #include "DNDS/Runtime/Execution/SessionAccess.hpp"
@@ -5,11 +6,11 @@
 #include "DNDS/Algebra/DofHalo.hpp"
 #include "Cauchy/Core/DomainExecutionContext.hpp"
 #include "Cauchy/Core/OperatorSchedule.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/EquationTransport.hpp"
-#include "Cauchy/Physics/EquationFlux.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/Physics/ViscousFlux.hpp"
+#include "Cauchy/Physics/PhysicalFlux.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
+#include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
@@ -347,7 +348,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(engine.Owns(stream) &&
                                   engine.Owns(communication),
                               "FV execution lanes belong to another runtime");
-        std::optional<EquationPointEvaluator> evaluator;
+        std::optional<PointEvaluator> evaluator;
         std::optional<AuxiliaryPreparation> auxiliaryPreparation;
         std::optional<R::Array<real>::ReadLease> incomingRead;
         RHSScalarView incoming;
@@ -373,7 +374,7 @@ namespace DNDS::Cauchy
             if (residual)
             {
                 auto &output = *residual;
-                _data->equation.ValidateStateSchema(output);
+                output.RequireSchema(_data->equation.Schema());
                 state.RequireCompatible(output);
                 EquationDofOperations::RequireDistinct(state, output);
                 if (reconstruction.coefficients)

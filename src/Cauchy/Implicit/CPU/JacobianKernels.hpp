@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Cauchy/Physics/FlowState.hpp"
-#include "Cauchy/Physics/EquationFlux.hpp"
+#include "Cauchy/Physics/PhysicalFlux.hpp"
 #include "DNDS/Runtime/Array/ArrayView.hpp"
 
 namespace DNDS::Cauchy::CPU

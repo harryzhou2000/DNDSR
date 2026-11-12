@@ -3,7 +3,7 @@
 #include "DNDS/Core/NumericalStatus.hpp"
 #include "DNDS/Core/Errors.hpp"
 #include "Cauchy/State/EquationViews.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
 #include "Cauchy/Implicit/PositivityReduction.hpp"
 
@@ -94,7 +94,7 @@ namespace DNDS::Cauchy::CPU
 
     struct CorrectionControls
     {
-        EquationThermalView bounds;
+        ThermalView bounds;
         RANSStateView rans;
         SpanView<const uint8_t> active;
         index components, flowFirst, speciesFirst, ransFirst;
@@ -113,7 +113,7 @@ namespace DNDS::Cauchy::CPU
     NumericalResult<CorrectionResult> ApplyCorrection(const CorrectionControls &,
                                                       Algebra::DofComponentView<const real> mean, Algebra::DofComponentView<const real> delta,
                                                       Algebra::DofComponentView<real> candidate) noexcept;
-    NumericalStatus ValidateImplicitMeans(EquationLayoutView<const real>, EquationAdmissibilityView) noexcept;
+    NumericalStatus ValidateImplicitMeans(EquationLayoutView<const real>, AdmissibilityView) noexcept;
     NumericalStatus AssembleDefect(EquationLayoutView<const real> mean, EquationLayoutView<const real> residual,
                                    EquationLayoutView<const real> constant, EquationLayoutView<real> output,
                                    CFV::FiniteVolumeHostView metric, real mass, real rhsScale, SpanView<const uint8_t> active,
@@ -127,7 +127,7 @@ namespace DNDS::Cauchy::CPU
         Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows> spectral;
         Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows> inverse;
         std::optional<Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>> alphas;
-        EquationThermalView bounds;
+        ThermalView bounds;
         real pseudoCFL, forecastScale, relax, compressionPower;
         bool positivity, compressRHS;
     };

@@ -10,9 +10,9 @@ namespace DNDS::Cauchy::CPU
             index cell;
             real operator()(index, index component) const { return values(cell, component); }
         };
-        bool ReferenceGood(PPInput values, index q, const EquationThermalView &bounds)
+        bool ReferenceGood(PPInput values, index q, const ThermalView &bounds)
         {
-            const EquationPositivityDetail::PointRow<PPInput> point{values, q};
+            const ThermalAdmissibilityDetail::PointRow<PPInput> point{values, q};
             // PP POLICY -- reference selection must support BOTH the raw-affine
             // beta calculation and the final clipped EOS/T acceptance predicate.
             // No independent simplex condition is imposed on raw polynomial rhoY.
@@ -22,7 +22,7 @@ namespace DNDS::Cauchy::CPU
     NumericalStatus ValidateReconstructionMeans(const PolynomialPositivityRequest &r) noexcept
     {
         for (index iCell = 0; iCell < r.means.ownedRows; ++iCell)
-            if (!(r.bounds.Admissible(EquationPositivityDetail::PointRow<PPInput>{r.means, iCell})))
+            if (!(r.bounds.Admissible(ThermalAdmissibilityDetail::PointRow<PPInput>{r.means, iCell})))
                 return NumericalStatus{NumericalError::InvalidState, 1, iCell};
         return {};
     }
@@ -81,7 +81,7 @@ namespace DNDS::Cauchy::CPU
         for (index iCell = 0; iCell < r.means.ownedRows; ++iCell)
         {
             cellBeta(iCell, 0) = 1;
-            const EquationPositivityDetail::PointRow<PPInput> mean{r.means, iCell};
+            const ThermalAdmissibilityDetail::PointRow<PPInput> mean{r.means, iCell};
             const RepeatedMean meanBase{r.means, iCell};
             const index begin = r.offsets(iCell, 0), end = r.offsets(iCell + 1, 0);
             // PP POLICY -- RANS is excluded from flow base tests/writes. Its
@@ -101,7 +101,7 @@ namespace DNDS::Cauchy::CPU
                 const auto flowMean = r.bounds.Flow(mean);
                 for (index q = begin; q < end; ++q)
                     beta = std::min(beta, AdmissibleFraction(flowMean,
-                                                             r.bounds.Flow(EquationPositivityDetail::PointRow<PPInput>{higher, q}), *r.segmentBounds));
+                                                             r.bounds.Flow(ThermalAdmissibilityDetail::PointRow<PPInput>{higher, q}), *r.segmentBounds));
                 if (beta < r.betaCutoff)
                     beta = 0;
             }
@@ -132,7 +132,7 @@ namespace DNDS::Cauchy::CPU
             bool clippedGood = true;
             for (index q = r.offsets(iCell, 0); q < r.offsets(iCell + 1, 0); ++q)
                 clippedGood = clippedGood && r.bounds.ClippedReferenceAdmissible(
-                                                 EquationPositivityDetail::PointRow<PPInput>{samples, q});
+                                                 ThermalAdmissibilityDetail::PointRow<PPInput>{samples, q});
             recover(iCell, 0) = uint8_t(!clippedGood);
             if (!recover(iCell, 0))
                 continue;
@@ -168,7 +168,7 @@ namespace DNDS::Cauchy::CPU
         // actual post-layout storage makes the guarantee about published values.
         for (index q = 0; q < samples.RowCount(); ++q)
             if (!(r.bounds.ClippedReferenceAdmissible(
-                    EquationPositivityDetail::PointRow<PPInput>{samples, q})))
+                    ThermalAdmissibilityDetail::PointRow<PPInput>{samples, q})))
                 return NumericalStatus{NumericalError::InvalidState, 1, q};
         return {};
     }
@@ -186,14 +186,14 @@ namespace DNDS::Cauchy::CPU
     }
 
     NumericalResult<std::pair<index, real>> LimitPhysicalStepRows(PPInput mean, PPInput rhs, CFV::FiniteVolumeHostView metric,
-                                                                  EquationThermalView thermal, real dt, real relax, real scale, int compressionPower) noexcept
+                                                                  ThermalView thermal, real dt, real relax, real scale, int compressionPower) noexcept
     {
         index limited = 0;
         real minimum = 1;
         std::vector<real> increment(size_t(mean.ComponentNumber()));
         for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
         {
-            const EquationPositivityDetail::PointRow<decltype(mean)> row{mean, iCell};
+            const ThermalAdmissibilityDetail::PointRow<decltype(mean)> row{mean, iCell};
             if (!(thermal.Admissible(row)))
                 return NumericalStatus{NumericalError::InvalidState, 1, iCell};
             for (index j = 0; j < mean.ComponentNumber(); ++j)

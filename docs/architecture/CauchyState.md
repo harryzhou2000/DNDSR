@@ -593,7 +593,7 @@ fail unfinished numerical outputs. The origin keeps a numeric source alias and
 weak FV key. The preparation itself retains plans: keep FV and derived-bundle
 owners on the controller through worker joins so final MPI cleanup stays there.
 
-`Physics/EquationFlux.hpp` provides pure physical ALE flux derivatives with
+`Physics/PhysicalFlux.hpp` provides pure physical ALE flux derivatives with
 pressure and its directional derivative supplied explicitly by the EOS/energy
 producer. Scalar conservative transport uses the same relative normal velocity.
 The ideal-mixture primitive chain rule supplies composition/thermal derivatives;
@@ -889,7 +889,7 @@ it does not add a production RANS closure or complete the extended FV profile.
 `EquationSystem::FromIdealGasMixture(material, viscous)` constructs an explicit
 CPU property model with full thermochemical total energy and named independent
 species. Its immutable material comes from [shared Physics](Physics.md).
-`EquationPointEvaluator` takes a private worker once per loop/tile, gathers
+`PointEvaluator` takes a private worker once per loop/tile, gathers
 strided rhoY through `SpeciesInput()`, and evaluates actual EOS pressure,
 temperature, acoustics, caloric properties and requested molecular transport.
 It owns its worker and shared material lifetime; returned species result views
@@ -898,7 +898,7 @@ actual pressure/acoustic values into the common numerical Riemann interface.
 It does no equivalent-gamma substitution.
 
 The mixture factory supplies the property/schema interface and equation-state
-FV profile above. `EquationSetup::Resolve` loads configured material/scales and
+FV profile above. `PhysicsResources::Resolve` loads configured material/scales and
 returns immutable equation metadata plus explicit mutable worker capacity.
 Domain retains both; its one ordered CPU EOS lane needs one worker even when
 the launcher uses several threads. Perfect-gas-only methods such
@@ -931,7 +931,7 @@ matching the flow5 diagnostic. No full spatial-flame or RANS acceptance is impli
 
 ### Primitive initialization and equation boundary values
 
-`EquationPointEvaluator::FromPrimitive([rho,u,v,w,p], rhoY, temperature)` produces
+`PointEvaluator::FromPrimitive([rho,u,v,w,p], rhoY, temperature)` produces
 flow5 through the actual material. Zero temperature selects pressure; a positive
 temperature overrides it. The result retains full thermochemical internal energy
 and all three kinetic-energy components. Input species are conservative Ns-1
@@ -1134,7 +1134,7 @@ flowchart LR
     Point --> Model
 ```
 
-`EquationRANS.hpp` contains the scalar policies used when wiring numerical
+`State/RANSState.hpp`, `Discretization/RANSReconstruction.hpp` and `Boundary/CPU/RANSWallKernels.hpp` contains the scalar policies used when wiring numerical
 operators. It gathers conservative values and gradients from logical strided
 rows into the shared point representation. It neither allocates a distributed
 array nor infers species offsets from the physical storage tail. SA's extra

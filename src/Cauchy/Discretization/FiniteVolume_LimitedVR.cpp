@@ -1,3 +1,4 @@
+#include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Discretization/LimitedVRInternal.hpp"
 #include "Cauchy/Physics/ReconstructionPositivity.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"

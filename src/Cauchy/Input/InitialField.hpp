@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Cauchy/Physics/StateInput.hpp"
+#include "Cauchy/Input/StateInput.hpp"
 #include "DNDS/Config/ExprtkWrapper.hpp"
 
 namespace DNDS::Cauchy

@@ -1,5 +1,5 @@
-#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
+#include "Cauchy/Core/NumericalFailure.hpp"
 
 #include "Cauchy/Core/DomainExecutionContext.hpp"
 #include "DNDS/MPI/Failure.hpp"
@@ -8,9 +8,9 @@
 #include "Cauchy/Implicit/CPU/NonlinearKernels.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
+#include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/Implicit/PositivityReduction.hpp"
 #include "Cauchy/Core/LocalStage.hpp"
 #include "Cauchy/Implicit/LinearScaling.hpp"
@@ -40,7 +40,7 @@ namespace DNDS::Cauchy
         std::vector<uint64_t> auxiliaryGhostVersions;
         real auxiliaryTime = 0;
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
-        EquationAdmissibilityPolicy admissibility;
+        AdmissibilityPolicy admissibility;
         std::shared_ptr<LinearProblemContext> problem;
         std::unique_ptr<DofLinearSolver> linear;
         bool positivity;
@@ -214,7 +214,7 @@ namespace DNDS::Cauchy
                                   "strict implicit VR acceptance requires a positive reconstructionTolerance");
             DNDS_check_throw_info(reconstruction && workspace && stream.Context().device == R::Device::Host(), "equation implicit stage needs reconstruction state, CPU workspace and stream");
             stream.Record().WaitHost();
-            discrete.Equation().ValidateStateSchema(state);
+            state.RequireSchema(discrete.Equation().Schema());
             discrete.ValidateWorkspace(state, *workspace);
             DNDS_check_throw_info(state.Space().Same(discrete.Metrics().Space()) && discrete.Equation().HasMixture() == bool(workers), "equation nonlinear space/worker backend differs");
             serialized = Json{{"implicit", implicit}, {"numerics", settings.numerics}, {"execution", settings.execution}}.dump();
@@ -459,7 +459,7 @@ namespace DNDS::Cauchy
                              bounds, report.pseudoCFL,
                              data.settings.positivity.rhsFPPScale,
                              data.settings.positivity.rhsFPPRelax,
-                             data.settings.positivity.compressionPower,
+                             real(data.settings.positivity.compressionPower),
                              data.positivity &&
                                  data.settings.positivity.rhsFPPMode != "none",
                              data.settings.positivity.rhsFPPMode == "rhs"}),
@@ -709,7 +709,7 @@ namespace DNDS::Cauchy
                         const auto statistics = RequireNumericalSuccess(CPU::PreparePseudoTime({metric, means, defect, spectral, inverse,
                             alphaWrite ? std::optional(alphas) : std::nullopt, bounds, report.pseudoCFL,
                             data.settings.positivity.rhsFPPScale, data.settings.positivity.rhsFPPRelax,
-                            data.settings.positivity.compressionPower,
+                            real(data.settings.positivity.compressionPower),
                             data.positivity && data.settings.positivity.rhsFPPMode != "none",
                             data.settings.positivity.rhsFPPMode == "rhs"}), "PreparePseudoTime");
                         rhsLimited = statistics.limited; rhsAlpha = statistics.minimum;
@@ -862,7 +862,7 @@ namespace DNDS::Cauchy
             const R::MetadataBuffer<uint8_t> selectionMetadata(active);
             const auto result = RequireNumericalSuccess(CPU::ApplyCorrection({bounds, rans, selectionMetadata.HostView(),
                 state.ComponentNumber(), data.flowFirst, data.speciesFirst, data.ransFirst, independent, scale,
-                data.settings.positivity.incrementRelax, data.settings.positivity.compressionPower, data.positivity},
+                data.settings.positivity.incrementRelax, real(data.settings.positivity.compressionPower), data.positivity},
                 ul.View(), dl.View(), wl.View()), "ApplyCorrection");
             limited = result.limited; minimum = result.minimum; frozen = result.frozen; });
         // Candidate checks precede all state writers. Scalar repair may not

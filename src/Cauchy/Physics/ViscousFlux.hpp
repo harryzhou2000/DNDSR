@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
 #include "Physics/Transport/NewtonianFourier.hpp"
 #include "Physics/Transport/MixtureAveragedDiffusion.hpp"
 #include <utility>
@@ -10,17 +10,17 @@ namespace DNDS::Cauchy
     /// Private CPU-worker/tile scratch, allocated once for a fixed material.
     /// Never share concurrently or alias the point evaluator's property/rate
     /// buffers. No resize/allocation occurs inside the normal-flux kernel.
-    struct EquationTransportScratch
+    struct ViscousFluxScratch
     {
         std::vector<real> fractions, normalMassFlux;
-        explicit EquationTransportScratch(int species)
+        explicit ViscousFluxScratch(int species)
         {
             DNDS_check_throw_info(species >= 0, "transport scratch species count is negative");
             fractions.resize(size_t(species));
             normalMassFlux.resize(size_t(species));
         }
     };
-    struct EquationTransportOptions
+    struct ViscousFluxOptions
     {
         bool adiabatic = false, impermeable = false;
         /// Already prepared model contributions, in code units. QCR and RANS
@@ -39,18 +39,20 @@ namespace DNDS::Cauchy
     /// Caller validates access, extent, finite effective coefficients and output/
     /// scratch nonaliasing outside the point loop. All inputs use code units
     /// in one Cartesian frame. No EOS refresh, interpolation, clipping, MPI,
-    /// integration, persistent property cache or point-loop allocation.
+    /// integration, persistent property cache or point-loop allocation. Extent
+    /// assertions enforce setup contracts; this kernel never throws to select
+    /// a numerical fallback. The scratch constructor remains checked setup.
     template <class TSpecies, class TSpeciesGradient, class TSpeciesFlux>
-    FlowState PrepareViscousFlux(const FlowState &state, const FlowGradient &gradient, const EquationPointProperties &point,
+    FlowState PrepareViscousFlux(const FlowState &state, const FlowGradient &gradient, const PointProperties &point,
                                  const TSpecies &rawRhoY, const TSpeciesGradient &speciesGradient,
-                                 const Vector3 &normal, TSpeciesFlux &&speciesFlux, EquationTransportScratch &scratch,
-                                 EquationTransportOptions options = {})
+                                 const Vector3 &normal, TSpeciesFlux &&speciesFlux, ViscousFluxScratch &scratch,
+                                 ViscousFluxOptions options = {})
     {
         namespace T = Physics::Thermodynamics;
         const int species = point.fractions.nSpecies;
-        DNDS_check_throw_info(scratch.fractions.size() == size_t(species) && scratch.normalMassFlux.size() == size_t(species), "transport scratch belongs to another species count");
-        DNDS_check_throw_info(!species || options.impermeable || (point.diffusivity.nSpecies == species && point.speciesEnthalpy.nSpecies == species),
-                              "mixture diffusion needs full diffusivities and enthalpies");
+        DNDS_assert_info(scratch.fractions.size() == size_t(species) && scratch.normalMassFlux.size() == size_t(species), "transport scratch belongs to another species count");
+        DNDS_assert_info(!species || options.impermeable || (point.diffusivity.nSpecies == species && point.speciesEnthalpy.nSpecies == species),
+                         "mixture diffusion needs full diffusivities and enthalpies");
         const auto velocity = T::ConservativeVelocity<3>(state);
         std::array<std::array<real, 3>, 3> gradientVelocity;
         Vector3 gradientTemperature{};

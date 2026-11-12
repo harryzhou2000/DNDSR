@@ -199,7 +199,7 @@ namespace DNDS::Cauchy
         };
         std::shared_ptr<PositivityWorkspace> positivity;
         std::unique_ptr<LimitedVRWorkspace> limitedVR;
-        EquationThermalPolicy thermal;
+        ThermalPolicy thermal;
         /// Setup-resolved fixed-flow leaf. It owns immutable kernel reads; the
         /// surrounding Workspace still owns the only reconstruction/RHS
         /// schedule and all operand leases.
@@ -394,19 +394,19 @@ namespace DNDS::Cauchy
         void ApplyDirectGradientPositivity(const EquationDofs &state);
         void PreparePrimitiveGradient(const EquationDofs &state, CFV::ReconstructionRegion region);
         void FillBoundary(const EquationDofs &state, bool polynomial, real time,
-                          EquationPointEvaluator &evaluator, RHSScalarView incoming = {});
+                          PointEvaluator &evaluator, RHSScalarView incoming = {});
         void ApplyFixedFlowRHS(const EquationDofs &state, EquationDofs &result,
                                CFV::ReconstructionRegion region, real time,
                                OptionalRef<const AuxiliaryValues> auxiliary,
                                OptionalRef<R::Array<real>> faceOutput,
                                RHSScalarView incoming);
         void ApplyRHS(const EquationDofs &state, EquationDofs &result,
-                      CFV::ReconstructionRegion region, EquationPointEvaluator &evaluator,
+                      CFV::ReconstructionRegion region, PointEvaluator &evaluator,
                       real time, OptionalRef<const AuxiliaryValues> auxiliary = {},
                       OptionalRef<R::Array<real>> faceOutput = {},
                       RHSScalarView incoming = {});
         void ApplyEquationRHS(const EquationDofs &state, CFV::ReconstructionRegion region,
-                              EquationPointEvaluator &evaluator, real time,
+                              PointEvaluator &evaluator, real time,
                               OptionalRef<const AuxiliaryValues> auxiliary,
                               const EquationDofs::ReadScope &mean,
                               EquationLayoutView<const real> owned, EquationLayoutView<const real> remote,
@@ -415,17 +415,17 @@ namespace DNDS::Cauchy
         void SampleSourceState(const EquationDofs &state, real time);
         bool AddRHSQuadratureSourceJacobian(
             const EquationDofs &state, const R::Array<real>::WriteLease &diagonal,
-            DiagonalStorage storage, real scale, EquationPointEvaluator &evaluator,
+            DiagonalStorage storage, real scale, PointEvaluator &evaluator,
             OptionalRef<const EquationFVDetail::MeanLinearizationOutput> linearization) const;
         bool AddMeanSourceJacobian(
             const EquationDofs &state, const R::Array<real>::WriteLease &diagonal,
-            DiagonalStorage storage, real scale, EquationPointEvaluator &evaluator,
+            DiagonalStorage storage, real scale, PointEvaluator &evaluator,
             OptionalRef<const EquationFVDetail::MeanLinearizationOutput> linearization = {}) const;
         void PublishSourceState(const EquationDofs &state, real time);
         bool SourceSamplesCurrent(const EquationDofs &state, real time) const;
         void PrepareVolumeSource(const EquationDofs &state,
                                  OptionalRef<EquationDofs> result,
-                                 EquationPointEvaluator &evaluator, real time = 0,
+                                 PointEvaluator &evaluator, real time = 0,
                                  OptionalRef<EquationDofs> lowOrder = {});
     };
 

@@ -1,3 +1,4 @@
+#include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "DNDS/Runtime/Execution/SessionAccess.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeStateKernels.hpp"
 #include "DNDS/MPI/Failure.hpp"
@@ -7,12 +8,12 @@
 #include "Cauchy/Discretization/LimitedVRInternal.hpp"
 #include "Cauchy/Core/DomainExecutionContext.hpp"
 #include "Cauchy/Core/OperatorSchedule.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/EquationTransport.hpp"
-#include "Cauchy/Physics/EquationFlux.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
-#include "Cauchy/Physics/FlowProfile.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/Physics/ViscousFlux.hpp"
+#include "Cauchy/Physics/PhysicalFlux.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
+#include "Cauchy/State/RANSState.hpp"
+#include "Cauchy/Input/FlowProfile.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
@@ -514,7 +515,7 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::Initialize(EquationDofs &state, const FlowProfileSettings &profile, const FlowState &primitive) const
     {
-        _data->equation.ValidateStateSchema(state);
+        state.RequireSchema(_data->equation.Schema());
         DNDS_check_throw_info(!_data->equation.HasMixture() && !_data->equation.HasRANS() && state.ComponentNumber() == 5,
                               "analytic flow-profile initialization currently requires a pure flow5 equation");
         Metrics().Communication()->LocalStage([&]
@@ -528,7 +529,7 @@ namespace DNDS::Cauchy
     }
     std::array<FlowState, 3> FiniteVolume::Error(const EquationDofs &state, const FlowProfileSettings &profile, const FlowState &primitive, real time) const
     {
-        _data->equation.ValidateStateSchema(state);
+        state.RequireSchema(_data->equation.Schema());
         std::array<FlowState, 3> errors{};
         real volume = 0;
         Metrics().Communication()->LocalStage([&]
@@ -555,13 +556,13 @@ namespace DNDS::Cauchy
         }
         return errors;
     }
-    EquationAdmissibilityPolicy FiniteVolume::PrepareAdmissibility(
+    AdmissibilityPolicy FiniteVolume::PrepareAdmissibility(
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers) const
     {
         DNDS_check_throw_info(
             _data->equation.HasMixture() == bool(workers),
             "equation admissibility needs exactly its mixture worker pool");
-        std::optional<EquationAdmissibilityPolicy> result;
+        std::optional<AdmissibilityPolicy> result;
         Metrics().Communication()->LocalStage([&]
                                               { result.emplace(
                                                     _data->equation, _data->settings.numerics.densityFloor,
@@ -590,9 +591,9 @@ namespace DNDS::Cauchy
     }
     bool FiniteVolume::Admissible(
         const EquationDofs &state,
-        const EquationAdmissibilityPolicy &policy) const
+        const AdmissibilityPolicy &policy) const
     {
-        _data->equation.ValidateStateSchema(state);
+        state.RequireSchema(_data->equation.Schema());
         DNDS_check_throw_info(
             policy.PropertyKey() == _data->equation.PropertyKey(),
             "admissibility policy belongs to another equation material");

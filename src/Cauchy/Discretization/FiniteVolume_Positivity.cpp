@@ -1,9 +1,10 @@
-#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePositivityKernels.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
+#include "Cauchy/State/RANSState.hpp"
+#include "Cauchy/Discretization/RANSReconstruction.hpp"
 #include "Cauchy/Physics/ReconstructionPositivity.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "CFV/Math/TaylorBasis.hpp"
@@ -42,7 +43,7 @@ namespace DNDS::Cauchy
     {
         std::shared_ptr<const Data> owner;
         EquationDofs prototype;
-        EquationThermalPolicy policy;
+        ThermalPolicy policy;
         RANSReconstructionView rans;
         index ransFirst = -1;
         std::vector<R::Array<real>> higherValues, baseValues;

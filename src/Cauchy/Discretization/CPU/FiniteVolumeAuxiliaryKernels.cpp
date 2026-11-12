@@ -15,11 +15,11 @@ namespace DNDS::Cauchy::CPU
                 for (int d = 0; d < dim; ++d)
                     point.gradient(first, d) = request.gradients[location.physicalField](iCell, (location.firstComponent + j) * dim + d);
     }
-    NumericalResult<std::array<real, 3>> Properties(const AuxiliaryKernelRequest &request, const EquationSystem &equation, EquationFVDetail::PointScratch &point, EquationPointEvaluator &evaluator,
+    NumericalResult<std::array<real, 3>> Properties(const AuxiliaryKernelRequest &request, const EquationSystem &equation, EquationFVDetail::PointScratch &point, PointEvaluator &evaluator,
                                                     real wallDistance = 1, bool turbulent = true) noexcept
     {
         const auto flow = point.Flow(request.flowFirst);
-        EquationPointProperties result;
+        PointProperties result;
         const auto status = evaluator.TryEvaluate(flow, point.Species(request.speciesFirst, request.independentSpecies), 0, result);
         if (!status)
             return status;
@@ -33,7 +33,7 @@ namespace DNDS::Cauchy::CPU
         }
         return std::array<real, 3>{result.thermo.pressure, result.thermo.soundSpeed, diffusion};
     }
-    NumericalStatus PrepareAuxiliaryMeans(const AuxiliaryKernelRequest &request, const EquationSystem &equation, EquationPointEvaluator &evaluator, index first, index last) noexcept
+    NumericalStatus PrepareAuxiliaryMeans(const AuxiliaryKernelRequest &request, const EquationSystem &equation, PointEvaluator &evaluator, index first, index last) noexcept
     {
         if (!request.enabled[0])
             return {};
@@ -50,7 +50,7 @@ namespace DNDS::Cauchy::CPU
         }
         return {};
     }
-    NumericalStatus PrepareAuxiliaryFaces(const AuxiliaryKernelRequest &request, const EquationSystem &equation, const BoundaryPointOperator &boundary, EquationPointEvaluator &evaluator, FiniteVolumeStencilView::Indices faces) noexcept
+    NumericalStatus PrepareAuxiliaryFaces(const AuxiliaryKernelRequest &request, const EquationSystem &equation, const BoundaryPointOperator &boundary, PointEvaluator &evaluator, FiniteVolumeStencilView::Indices faces) noexcept
     {
         const bool spectral = request.enabled[1] || request.enabled[4], wave = request.enabled[2] || request.enabled[5], pressure = request.enabled[3] || request.enabled[6];
         if (!spectral && !wave && !pressure)

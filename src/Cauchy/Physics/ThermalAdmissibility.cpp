@@ -1,9 +1,9 @@
-#include "Cauchy/Physics/EquationPositivity.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
 
 namespace DNDS::Cauchy
 {
-    EquationThermalPolicy::EquationThermalPolicy(const EquationSystem &equation, real densityFloor, real temperatureFloor,
-                                                 real sensibleEnergyFloor, real pressureFloor, Physics::Chemistry::ChemicalWorkerPool::Lease worker)
+    ThermalPolicy::ThermalPolicy(const EquationSystem &equation, real densityFloor, real temperatureFloor,
+                                 real sensibleEnergyFloor, real pressureFloor, Physics::Chemistry::ChemicalWorkerPool::Lease worker)
     {
         DNDS_check_throw_info(std::isfinite(densityFloor) && densityFloor > 0 && std::isfinite(temperatureFloor) && temperatureFloor > 0 &&
                                   std::isfinite(sensibleEnergyFloor) && sensibleEnergyFloor >= 0 && std::isfinite(pressureFloor) && pressureFloor > 0,
@@ -39,7 +39,7 @@ namespace DNDS::Cauchy
         }
     }
 
-    EquationAdmissibilityPolicy::EquationAdmissibilityPolicy(
+    AdmissibilityPolicy::AdmissibilityPolicy(
         const EquationSystem &equation, real densityFloor,
         real temperatureFloor, real sensibleEnergyFloor, real pressureFloor,
         RANSStateView rans,

@@ -3,7 +3,7 @@
 #include "Cauchy/Discretization/FiniteVolumeAuxiliaryInternal.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeAuxiliaryKernels.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
 #include "DNDS/MPI/Failure.hpp"
 
 namespace DNDS::Cauchy
@@ -144,7 +144,7 @@ namespace DNDS::Cauchy
                     scratchWrite->Fail();
             }
         }
-        EquationPointEvaluator Evaluator() const
+        PointEvaluator Evaluator() const
         {
             return data->equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {true, true, false});
         }

@@ -4,7 +4,7 @@
 // times complete calls, not production counters. See OperatorDiagnostic.md.
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
-#include "Cauchy/Physics/StateInput.hpp"
+#include "Cauchy/Input/StateInput.hpp"
 #include "Euler/EulerSolver.hpp"
 #include "ExtractedEulerSA.hpp"
 // Diagnostic-only TU extraction: supplies the exact production definitions.

@@ -1,5 +1,5 @@
-#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels.hpp"
 #include <cstdio>

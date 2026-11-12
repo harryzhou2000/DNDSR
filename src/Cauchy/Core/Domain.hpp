@@ -4,8 +4,8 @@
 #include "Cauchy/Core/DomainComponents.hpp"
 #include "Cauchy/Core/CoordinatedSchedule.hpp"
 #include "Cauchy/Core/DomainStateSnapshot.hpp"
-#include "Cauchy/Physics/EquationSetup.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/Physics/PhysicsResources.hpp"
+#include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/IO/CheckpointTransaction.hpp"
 
 namespace DNDS::Cauchy
@@ -60,8 +60,8 @@ namespace DNDS::Cauchy
         bool RecordImplicitStage(NonlinearIterationReport report);
         Json UpdatePolicyMetadata() const;
         bool Admissible(const EquationDofs &state) const;
-        Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time, EquationSetup setup);
-        Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const ResolvedPhysicalInputs &inputs, const TimeSettings &time, EquationSetup setup);
+        Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const DomainSettings &settings, const TimeSettings &time, PhysicsResources setup);
+        Domain(std::string name, ssp<Geom::UnstructuredMesh> mesh, const ResolvedPhysicalInputs &inputs, const TimeSettings &time, PhysicsResources setup);
         void BeginTrial(real dt);
 
     public:

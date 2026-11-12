@@ -1,9 +1,10 @@
+#include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeBoundaryKernels.hpp"
 #include "Cauchy/State/CPU/FieldKernels.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
+#include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Geom/Interface/BoundaryInterface.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
@@ -104,7 +105,7 @@ namespace DNDS::Cauchy
         Metrics().Validate();
         DNDS_check_throw_info(_data->equation.HasMixture() == bool(workers),
                               "interface packet needs exactly its equation chemistry backend");
-        auto thermal = std::make_shared<const EquationThermalPolicy>(
+        auto thermal = std::make_shared<const ThermalPolicy>(
             _data->equation, _data->settings.numerics.densityFloor,
             _data->settings.numerics.temperatureFloor,
             _data->settings.numerics.sensibleEnergyFloor,
@@ -150,7 +151,7 @@ namespace DNDS::Cauchy
                               "boundary packet physical model differs");
         const auto validate = [&](const EquationDofs &values, index rows)
         {
-            _data->equation.ValidateStateSchema(values);
+            values.RequireSchema(_data->equation.Schema());
             DNDS_check_throw_info(values.Device() == Runtime::Device::Host() &&
                                       values.Space().OwnedRows() == size_t(rows) &&
                                       values.Space().GhostRows() == 0,

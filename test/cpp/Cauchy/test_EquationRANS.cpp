@@ -1,8 +1,12 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/State/RANSState.hpp"
+#include "Cauchy/Discretization/RANSReconstruction.hpp"
+#include "Cauchy/Physics/RANSPoint.hpp"
+#include "Cauchy/Physics/RANSFlux.hpp"
+#include "Cauchy/Boundary/CPU/RANSWallKernels.hpp"
 #include "Cauchy/Boundary/BoundaryPointOperator.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
 #include "Cauchy/State/EquationDofs.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
 
@@ -104,7 +108,7 @@ TEST_CASE("RANS model and point gathering follow logical blocks across split and
                     bindings = {{"flow", "coupled", n}, {"rans", "coupled", 0}};
                 }
                 C::EquationDofs state(equation.Schema(), std::move(fields), std::move(bindings));
-                equation.ValidateStateSchema(state);
+                state.RequireSchema(equation.Schema());
                 {
                     auto write = state.WriteOwned();
                     auto flow = write.Block("flow"), scalars = write.Block("rans");
@@ -126,7 +130,7 @@ TEST_CASE("RANS model and point gathering follow logical blocks across split and
                 scalarGradient << .1, -.2, .3, -.1, .05, .08;
                 for (I iCell = 0; iCell < 35; ++iCell)
                 {
-                    const auto point = C::PrepareRANSPoint(policy, flow[iCell], scalars[iCell], flowGradient, scalarGradient,
+                    const auto point = C::PrepareRANSPoint(policy.components, flow[iCell], scalars[iCell], flowGradient, scalarGradient,
                                                            .002, 3.5, 1.4, .1, .03);
                     for (int j = 0; j < 5; ++j)
                     {
@@ -167,7 +171,7 @@ TEST_CASE("RANS scalar repairs retain the Euler componentwise and exponential ru
         const bool sa = policy.components == 1;
         const std::array<double, 2> mean{.2, 1.};
         std::array<double, 2> sample{-.1, 2.};
-        policy.RepairReconstruction(mean, sample);
+        C::RANSReconstructionView{policy.kind, policy.components}.RepairPoint(mean, sample);
 #ifdef USE_NS_SA_NUT_REDUCED_ORDER
         CHECK(sample[0] == mean[0]);
 #else
@@ -259,7 +263,7 @@ TEST_CASE("RANS no-slip targets retain conservative density and viscosity conven
         for (const auto *name : {"SA", "KOmegaWilcox", "KOmegaSST", "RealizableKE"})
         {
             const auto equation = Equation(name);
-            const auto wall = C::RANSWallTarget(equation.RANS(), mean, 1.5);
+            const auto wall = C::CPU::RANSWallTarget(equation.RANS(), mean, 1.5);
             CHECK(wall[0] == 0);
             const double expected = std::string(name) == "SA" ? 0 : std::string(name) == "RealizableKE" ? 2 * mu / 2 * (.06 / 2) / (.02 * .02) * 1.5
                                                                                                         : 800 * mu / (.02 * .02);

@@ -1,8 +1,9 @@
 #pragma once
+#include "Cauchy/Physics/RANSFlux.hpp"
 #include "DNDS/Core/NumericalStatus.hpp"
 #include "Cauchy/Implicit/JacobianGeometry.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/EquationFlux.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/Physics/PhysicalFlux.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeSampleKernels.hpp"
 #include "Cauchy/Implicit/CPU/JacobianKernels.hpp"
 #include "Cauchy/Discretization/FiniteVolumeViews.hpp"
@@ -259,5 +260,5 @@ namespace DNDS::Cauchy::CPU
     /// Prepare the remaining EOS rows, boundary derivatives and face blocks.
     /// ownedPropertiesPrepared skips only means already emitted by the source kernel.
     NumericalStatus CompleteEquationJacobian(const EquationJacobianPreparation &, const BoundaryPointOperator &,
-                                             EquationPointEvaluator &, bool ownedPropertiesPrepared) noexcept;
+                                             PointEvaluator &, bool ownedPropertiesPrepared) noexcept;
 }

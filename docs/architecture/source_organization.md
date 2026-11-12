@@ -224,6 +224,40 @@ thermodynamic/transport helpers have no mesh/CFV dependency. See the
 [Physics ownership and units contract](Physics.md), including the distinction
 between source compatibility and rebuilding compiled namespace symbols.
 
+## Cauchy ownership and implementation partitions
+
+Cauchy has one equation-state FV path. Its renamed interfaces have no
+pre-Plan60 forwarding aliases. `EquationSystem` owns equation metadata and
+physical model selection; `EquationDofs::RequireSchema` validates concrete
+array bindings. Neither role substitutes for the other's validation.
+
+| Owner | Responsibility |
+| --- | --- |
+| `Physics/PointProperties`, `PhysicalFlux`, `ViscousFlux` | Point thermodynamics, conservative derivatives and flux arithmetic; no mesh scheduling |
+| `Physics/PhysicsResources` | Setup-only equation and chemistry worker capacity; retained by the domain |
+| `Physics/ThermalAdmissibility` | Thermal constraints and prepared admissibility policies; actual field updates remain operator kernels |
+| `Physics/RANSPoint`, `RANSFlux` | Bounded point gathering and turbulent flux arithmetic |
+| `State/RANSState` | Named conservative scalar input and mean/increment repairs |
+| `Discretization/RANSReconstruction` | Reconstruction-only scalar limiting and point fallback |
+| `Boundary/CPU/RANSWallKernels` | RANS wall target arithmetic |
+| `Operators/Source/ChemicalSource` and its `CPU/` kernels | Source-array access/submission and chemistry row arithmetic, respectively |
+| `Input/StateInput`, `InitialField`, `FlowProfile` | Configured state conversions and initial/analytic producers |
+
+The binding registrar calls state, linear, nonlinear and FV registration units
+in that order; this preserves Python default-argument type registration. Shared
+binding holders retain native resources and introduce no second solver loop.
+`SimulationConfig.cpp` resolves input layers, `_Validation.cpp` checks resolved
+settings/capabilities and `_Schema.cpp` emits the canonical input schema.
+
+Checkpoint domain methods are partitioned into write, read, internal-state read
+and reserve/commit units. `IO/CheckpointMetadata` owns compatibility normalization
+and exact mesh-envelope comparisons; `StateArchive` still owns scientific field
+serialization and persistent-ID redistribution. The split does not change
+checkpoint payloads, strengths or commit ordering.
+
+These source partitions use existing compile evidence. No post-split compile
+speedup is claimed; further compile profiling is outside the frozen Plan60 scope.
+
 ## Compatibility and validation
 
 Forwarding headers introduce no second class definition or storage authority.

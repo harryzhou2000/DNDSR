@@ -7,3 +7,14 @@ DNDS::ArrayDof	DNDS::Legacy::ArrayDof	Same class through namespace using-declara
 DNDS::Geom::NativeMeshState	DNDS::Geom::UnstructuredMeshState	Old name is a source alias
 DNDS::Geom::NativeMeshSnapshot	DNDS::Geom::UnstructuredMeshSnapshot	Old name is a source alias
 DNDSR.Geom.NativeMeshSnapshot	DNDSR.Geom.UnstructuredMeshSnapshot	Old Python module attribute aliases the same class
+DNDS::Cauchy::EquationPointProperties	DNDS::Cauchy::PointProperties	Renamed; no obsolete Cauchy alias
+DNDS::Cauchy::EquationPointEvaluator	DNDS::Cauchy::PointEvaluator	Renamed; no obsolete Cauchy alias
+DNDS::Cauchy::EquationPrimitiveDerivative	DNDS::Cauchy::PrimitiveDerivative	Renamed; no obsolete Cauchy alias
+DNDS::Cauchy::EquationTransportScratch	DNDS::Cauchy::ViscousFluxScratch	Renamed; no obsolete Cauchy alias
+DNDS::Cauchy::EquationTransportOptions	DNDS::Cauchy::ViscousFluxOptions	Renamed; no obsolete Cauchy alias
+DNDS::Cauchy::EquationSetup	DNDS::Cauchy::PhysicsResources	Renamed; no obsolete Cauchy alias
+DNDS::Cauchy::EquationPositivityDetail	DNDS::Cauchy::ThermalAdmissibilityDetail	Renamed; no obsolete Cauchy alias
+DNDS::Cauchy::EquationThermalView	DNDS::Cauchy::ThermalView	Renamed; no obsolete Cauchy alias
+DNDS::Cauchy::EquationThermalPolicy	DNDS::Cauchy::ThermalPolicy	Renamed; no obsolete Cauchy alias
+DNDS::Cauchy::EquationAdmissibilityView	DNDS::Cauchy::AdmissibilityView	Renamed; no obsolete Cauchy alias
+DNDS::Cauchy::EquationAdmissibilityPolicy	DNDS::Cauchy::AdmissibilityPolicy	Renamed; no obsolete Cauchy alias

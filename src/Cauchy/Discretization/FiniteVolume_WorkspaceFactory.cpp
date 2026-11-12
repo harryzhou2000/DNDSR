@@ -1,3 +1,4 @@
+#include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
 #include "Cauchy/State/CPU/FieldKernels.hpp"
 #include "DNDS/Runtime/Execution/SessionAccess.hpp"
@@ -5,11 +6,11 @@
 #include "DNDS/Algebra/DofHalo.hpp"
 #include "Cauchy/Core/DomainExecutionContext.hpp"
 #include "Cauchy/Core/OperatorSchedule.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/EquationTransport.hpp"
-#include "Cauchy/Physics/EquationFlux.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/Physics/ViscousFlux.hpp"
+#include "Cauchy/Physics/PhysicalFlux.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
+#include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
@@ -23,7 +24,7 @@ namespace DNDS::Cauchy
         Metrics().Communication()->LocalStage([&]
                                               {
             Metrics().Validate();
-            _data->equation.ValidateStateSchema(state);
+            state.RequireSchema(_data->equation.Schema());
             _data->equation.ResolveKernelProfile(state.Device());
             index width = 0;
             for (const auto &block : _data->equation.Schema().blocks) width += index(block.components.size());
@@ -52,7 +53,7 @@ namespace DNDS::Cauchy
         Metrics().Communication()->LocalStage([&]
                                               {
             Metrics().Validate();
-            _data->equation.ValidateStateSchema(state);
+            state.RequireSchema(_data->equation.Schema());
             _data->equation.ResolveKernelProfile(state.Device());
             const auto rans = ResolveRANSValues(_data->equation, ransConservative);
             DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && _data->equation.HasMixture() == bool(workers),
@@ -88,7 +89,7 @@ namespace DNDS::Cauchy
         std::shared_ptr<ReconstructionState> result;
         Metrics().Communication()->LocalStage([&]
                                               {
-            _data->equation.ValidateStateSchema(state);
+            state.RequireSchema(_data->equation.Schema());
             DNDS_check_throw_info(state.Space().Same(Metrics().Space()), "reconstruction state belongs to another row space");
             result = std::make_shared<ReconstructionState>(_data, state); });
         return result;
@@ -117,7 +118,7 @@ namespace DNDS::Cauchy
         std::string operationControls;
         Metrics().Communication()->LocalStage([&]
                                               {
-            _data->equation.ValidateStateSchema(state);
+            state.RequireSchema(_data->equation.Schema());
             _data->equation.ResolveKernelProfile(state.Device());
             DNDS_check_throw_info(state.Space().Same(Metrics().Space()), "equation FV state belongs to another row space");
             DNDS_check_throw_info(options.rhsKernel != RHSKernelPolicy::FixedFlow5 || flow5Profile,

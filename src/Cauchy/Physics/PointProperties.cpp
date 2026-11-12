@@ -1,16 +1,11 @@
-#include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
 #include <new>
 #include <limits>
 
 namespace DNDS::Cauchy
 {
-    EquationPointEvaluator EquationSystem::MakePointEvaluator(Physics::Chemistry::ChemicalWorkerPool::Lease worker,
-                                                              Physics::Thermodynamics::MixturePropertyRequest request) const
-    {
-        return EquationPointEvaluator(*this, std::move(worker), request);
-    }
-    EquationPointEvaluator::EquationPointEvaluator(const EquationSystem &equation,
-                                                   Physics::Chemistry::ChemicalWorkerPool::Lease worker, Physics::Thermodynamics::MixturePropertyRequest request)
+    PointEvaluator::PointEvaluator(const EquationSystem &equation,
+                                   Physics::Chemistry::ChemicalWorkerPool::Lease worker, Physics::Thermodynamics::MixturePropertyRequest request)
         : _viscous(equation.Viscous()), _request(request)
     {
         if (equation.HasMixture())
@@ -27,19 +22,19 @@ namespace DNDS::Cauchy
             _gas = equation.Gas();
         }
     }
-    Physics::Chemistry::SpeciesBufferView EquationPointEvaluator::SpeciesInput() const
+    Physics::Chemistry::SpeciesBufferView PointEvaluator::SpeciesInput() const
     {
         return _mixture ? _mixture->SpeciesInput() : Physics::Chemistry::SpeciesBufferView{};
     }
-    FlowState EquationPointEvaluator::FromPrimitive(const FlowState &primitive,
-                                                    Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperature)
+    FlowState PointEvaluator::FromPrimitive(const FlowState &primitive,
+                                            Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperature)
     {
         const auto result = TryFromPrimitive(primitive, rhoY, temperature);
         DNDS_check_throw_info(result.status, "primitive property evaluation failed");
         return result.value;
     }
-    NumericalResult<FlowState> EquationPointEvaluator::TryFromPrimitive(const FlowState &primitive,
-                                                                        Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperature) noexcept
+    NumericalResult<FlowState> PointEvaluator::TryFromPrimitive(const FlowState &primitive,
+                                                                Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperature) noexcept
     {
         // Adapter boundary: third-party thermodynamics may throw. No numerical
         // kernel catches exceptions, and these failures never request fallback.
@@ -75,25 +70,25 @@ namespace DNDS::Cauchy
         }
     }
 
-    EquationPointProperties EquationPointEvaluator::Evaluate(const FlowState &flow,
-                                                             Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess)
+    PointProperties PointEvaluator::Evaluate(const FlowState &flow,
+                                             Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess)
     {
         return Evaluate(flow, rhoY, temperatureGuess, _request);
     }
-    EquationPointProperties EquationPointEvaluator::Evaluate(const FlowState &flow,
-                                                             Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess,
-                                                             Physics::Thermodynamics::MixturePropertyRequest request)
+    PointProperties PointEvaluator::Evaluate(const FlowState &flow,
+                                             Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess,
+                                             Physics::Thermodynamics::MixturePropertyRequest request)
     {
-        EquationPointProperties output;
+        PointProperties output;
         const auto status = TryEvaluate(flow, rhoY, temperatureGuess, request, output);
         DNDS_check_throw_info(status, fmt::format("point evaluation failed (code={}, detail={})",
                                                   int(status.code), status.detail));
         return output;
     }
-    NumericalStatus EquationPointEvaluator::TryEvaluate(const FlowState &flow,
-                                                        Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess,
-                                                        Physics::Thermodynamics::MixturePropertyRequest request,
-                                                        EquationPointProperties &output) noexcept
+    NumericalStatus PointEvaluator::TryEvaluate(const FlowState &flow,
+                                                Physics::Chemistry::ConstSpeciesBufferView rhoY, real temperatureGuess,
+                                                Physics::Thermodynamics::MixturePropertyRequest request,
+                                                PointProperties &output) noexcept
     {
         using Physics::EvaluationError;
         using Physics::EvaluationFailure;
@@ -110,7 +105,7 @@ namespace DNDS::Cauchy
                 (request.speciesEnthalpy && !_request.speciesEnthalpy) || (request.sourceJacobian && !_request.sourceJacobian) ||
                 ((request.chemicalSource || request.sourceJacobian) && !_request.chemicalSource && !_request.sourceJacobian))
                 return EvaluationError(NumericalError::UnsupportedRequest, EvaluationFailure::Request);
-            EquationPointProperties result;
+            PointProperties result;
             if (!_mixture)
             {
                 if (rhoY.nSpecies)

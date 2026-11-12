@@ -10,7 +10,7 @@
 namespace DNDS::Cauchy
 {
     class EquationSystem;
-    class EquationPointEvaluator;
+    class PointEvaluator;
     enum class BoundaryKind
     {
         Interior,
@@ -49,20 +49,20 @@ namespace DNDS::Cauchy
         /// density. No exchange, Array access, worker acquisition or allocation.
         /// Prescribed velocities use ground axes; results use mesh axes.
         /// Numerical point entry; failure returns a status, never an exception.
-        NumericalResult<FlowState> TryFaceValue(EquationPointEvaluator &evaluator, const FlowState &inside,
+        NumericalResult<FlowState> TryFaceValue(PointEvaluator &evaluator, const FlowState &inside,
                                                 Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
                                                 const Vector3 &point = {}, real time = 0,
                                                 OptionalRef<const RigidFrame> frame = {}) const noexcept;
-        FlowState FaceValue(EquationPointEvaluator &evaluator, const FlowState &inside,
+        FlowState FaceValue(PointEvaluator &evaluator, const FlowState &inside,
                             Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
                             const Vector3 &point = {}, real time = 0,
                             OptionalRef<const RigidFrame> frame = {}) const;
         /// Numerical point entry; failure returns a status, never an exception.
-        NumericalResult<FlowState> TryExterior(EquationPointEvaluator &evaluator, const FlowState &inside,
+        NumericalResult<FlowState> TryExterior(PointEvaluator &evaluator, const FlowState &inside,
                                                Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
                                                const Vector3 &point = {}, real time = 0,
                                                OptionalRef<const RigidFrame> frame = {}) const noexcept;
-        FlowState Exterior(EquationPointEvaluator &evaluator, const FlowState &inside,
+        FlowState Exterior(PointEvaluator &evaluator, const FlowState &inside,
                            Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
                            const Vector3 &point = {}, real time = 0,
                            OptionalRef<const RigidFrame> frame = {}) const;

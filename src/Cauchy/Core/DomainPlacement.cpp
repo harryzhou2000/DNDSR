@@ -1,5 +1,5 @@
-#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Core/DomainPlacement.hpp"
+#include "DNDS/MPI/Failure.hpp"
 #include <nlohmann/json.hpp>
 #include <set>
 #include <climits>

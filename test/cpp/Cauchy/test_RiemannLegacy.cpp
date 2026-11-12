@@ -3,7 +3,7 @@
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Euler/Gas.hpp"
-#include "Cauchy/Physics/EquationFlux.hpp"
+#include "Cauchy/Physics/PhysicalFlux.hpp"
 
 namespace C = DNDS::Cauchy;
 namespace F = C::Riemann;

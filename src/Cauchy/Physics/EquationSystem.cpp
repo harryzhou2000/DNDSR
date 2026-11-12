@@ -1,6 +1,5 @@
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
-#include "Cauchy/State/EquationDofs.hpp"
 #include "Physics/RANS/Model.hpp"
 #include <Eigen/LU>
 
@@ -111,17 +110,6 @@ namespace DNDS::Cauchy
             return {_mixture->ModelIdentity(), {scales.rho0, scales.U0, scales.L0, scales.T0, _viscous ? 1. : 0.}};
         }
         return {{}, {_gas.gamma, _gas.gasConstant, _gas.viscosity, _gas.prandtl, _viscous ? 1. : 0., real(_gas.viscosityModel), _gas.viscosityReferenceTemperature, _gas.sutherlandConstant}};
-    }
-    void EquationSystem::ValidateStateSchema(const Algebra::DofBundle &state) const
-    {
-        state.Validate();
-        DNDS_check_throw_info(state.BlockNumber() == index(_schema.blocks.size()), "equation state block count differs");
-        for (const auto &block : _schema.blocks)
-            DNDS_check_throw_info(state.Block(block.name).Width() == index(block.components.size()), "equation component count differs");
-    }
-    void EquationSystem::ValidateStateSchema(const EquationDofs &state) const
-    {
-        state.RequireSchema(_schema);
     }
     EquationKernelProfile EquationSystem::ResolveKernelProfile(Runtime::Device device) const
     {

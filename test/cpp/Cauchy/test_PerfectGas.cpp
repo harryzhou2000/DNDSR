@@ -3,13 +3,13 @@
 #include "Cauchy/Physics/PerfectGas.hpp"
 #include "Cauchy/Riemann/RiemannFlux.hpp"
 #include "Cauchy/Boundary/BoundarySystem.hpp"
-#include "Cauchy/Physics/FlowProfile.hpp"
+#include "Cauchy/Input/FlowProfile.hpp"
 #include "Cauchy/Physics/Positivity.hpp"
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
 #include "Cauchy/Physics/ReconstructionPositivity.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
-#include "Cauchy/Physics/EquationTransport.hpp"
+#include "Cauchy/Physics/ViscousFlux.hpp"
 #include "Cauchy/Discretization/ViscousFlux.hpp"
 #include "Euler/Gas.hpp"
 #include <limits>
@@ -40,7 +40,7 @@ TEST_CASE("QCR stress and energy work match an independent commutator and legacy
         gradient[4][d] = state[0] * velocity.dot(derivative.col(d)); // Constant T/rho.
     }
     const Eigen::Matrix3d rotation = (derivative - derivative.transpose()) / (derivative.norm() + DNDS::verySmallReal);
-    C::EquationTransportScratch scratch(0);
+    C::ViscousFluxScratch scratch(0);
     const auto point = evaluator.Evaluate(state);
     Eigen::Matrix<double, 5, 1> oldState, oldFlux;
     for (int j = 0; j < 5; ++j)
@@ -54,7 +54,7 @@ TEST_CASE("QCR stress and energy work match an independent commutator and legacy
         const Eigen::Matrix3d linear = mu * (derivative + derivative.transpose() - (2. / 3.) * derivative.trace() * Eigen::Matrix3d::Identity());
         const Eigen::Matrix3d stress = linear - .3 * ratio * (rotation * linear - linear * rotation);
         const Eigen::Vector3d traction = stress * normal;
-        C::EquationTransportOptions options;
+        C::ViscousFluxOptions options;
         options.adiabatic = true;
         options.turbulentViscosity = turbulent;
         options.useQCR = true;
@@ -80,7 +80,7 @@ TEST_CASE("Equation thermal view preserves the established perfect-gas increment
     settings.gasConstant = 2.5;
     const auto equation = C::EquationSystem::Resolve(settings);
     const auto bounds = equation.PrepareThermalBounds(1e-8, .2, 1e-7);
-    const C::EquationThermalPolicy policy(equation, bounds.densityFloor, .2, 0, 1e-7);
+    const C::ThermalPolicy policy(equation, bounds.densityFloor, .2, 0, 1e-7);
     const auto thermal = policy.View();
     const auto mean = equation.Gas().Conservative({1.2, .4, -.3, .2, 2.1});
     for (const C::FlowState delta : {C::FlowState{-.5, .1, -.2, .3, -40}, C::FlowState{-2, 0, 0, 0, -2}, C::FlowState{.1, 0, 0, 0, 1}})

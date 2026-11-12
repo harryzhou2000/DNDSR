@@ -1,7 +1,9 @@
+#include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "Cauchy/Discretization/RANSReconstruction.hpp"
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include <fstream>
 #include <iomanip>
@@ -20,8 +22,8 @@ namespace DNDS::Cauchy
         std::vector<std::string> names;
         std::vector<index> first;
         index flowFirst = -1, speciesFirst = -1, ransFirst = -1;
-        std::optional<EquationPointEvaluator> evaluator;
-        std::optional<EquationThermalPolicy> thermal;
+        std::optional<PointEvaluator> evaluator;
+        std::optional<ThermalPolicy> thermal;
         Runtime::Array<real> derived;
         MPI::LocalStage(mpi, [&]
                         {
@@ -137,7 +139,7 @@ namespace DNDS::Cauchy
                 }
                 if (!thermal->View().Admissible(point.values)) Gather(blocks, sample.cell, point);
                 if (ransModel)
-                    RANSStateView{ransModel->Kind(), ransModel->ComponentNumber()}.RepairReconstruction(ransMean[sample.cell], point.values.data() + ransFirst);
+                    RANSReconstructionView{ransModel->Kind(), ransModel->ComponentNumber()}.RepairPoint(ransMean[sample.cell], point.values.data() + ransFirst);
                 if (wallRead) Gather(blocks, sample.cell, cellMean);
                 OptionalRef<const std::vector<real>> mean;
                 if (wallRead)

@@ -1,8 +1,9 @@
 #pragma once
 
 #include "Cauchy/Discretization/FiniteVolumeViews.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/State/RANSState.hpp"
+#include "Cauchy/Physics/RANSPoint.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
 
 namespace DNDS::Cauchy::EquationFVDetail
@@ -45,7 +46,7 @@ namespace DNDS::Cauchy::EquationFVDetail
         Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::TableRows> pressureDerivative, pressure;
         std::optional<Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::TableRows>> means;
 
-        NumericalStatus FillRow(index iCell, const PointScratch &point, const EquationPointProperties &properties) const noexcept
+        NumericalStatus FillRow(index iCell, const PointScratch &point, const PointProperties &properties) const noexcept
         {
             const int species = properties.fractions.nSpecies;
             if (species && (properties.speciesEnthalpy.nSpecies != species || properties.speciesGasConstant.nSpecies != species))
@@ -107,7 +108,7 @@ namespace DNDS::Cauchy::EquationFVDetail
     /// cellLength is explicit: source consumers require the prepared mesh
     /// length; transport/diffusion do not use it and may pass zero.
     inline Physics::RANS::Point RANSPoint(const PointScratch &point, index flowFirst, index ransFirst,
-                                          const Physics::RANS::Model &model, const EquationPointProperties &properties,
+                                          const Physics::RANS::Model &model, const PointProperties &properties,
                                           real wallDistance, real cellLength)
     {
         struct Gradient
@@ -117,7 +118,7 @@ namespace DNDS::Cauchy::EquationFVDetail
             real operator()(int j, int d) const { return point.gradient(first + j, d); }
         };
         const RANSStateView policy{model.Kind(), model.ComponentNumber()};
-        return PrepareRANSPoint(policy, point.values.data() + flowFirst, point.values.data() + ransFirst,
+        return PrepareRANSPoint(policy.components, point.values.data() + flowFirst, point.values.data() + ransFirst,
                                 Gradient{point, flowFirst}, Gradient{point, ransFirst}, properties.transport.viscosity,
                                 properties.thermo.cp, properties.thermo.cp / properties.thermo.cv, wallDistance, cellLength);
     }

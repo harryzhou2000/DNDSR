@@ -103,7 +103,7 @@ namespace DNDS::Cauchy::CPU
         GradientPositivityResult result;
         for (index iCell = 0; iCell < request.means.ownedRows; ++iCell)
         {
-            const EquationPositivityDetail::PointRow<decltype(request.means)> mean{
+            const ThermalAdmissibilityDetail::PointRow<decltype(request.means)> mean{
                 request.means, iCell};
             if (!(bounds.Admissible(mean)))
                 return NumericalStatus{NumericalError::InvalidState, 1, iCell};

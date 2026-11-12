@@ -4,7 +4,7 @@
 // trial/guess data outside nonlinear timers and check actual numerical work.
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
 #include "Solver/FieldTimeStepper.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 
@@ -31,10 +31,10 @@ namespace CauchyBenchmark
         auto increment = metrics.BuildField(5), integrated = metrics.BuildField(5), corrected = metrics.BuildField(5);
         auto integratedState = frozenState.RebindCoupled(integrated);
         auto correctedState = frozenState.RebindCoupled(corrected);
-        const C::EquationThermalPolicy thermalPolicy(fv.Equation(), settings.numerics.densityFloor,
-                                                     settings.numerics.temperatureFloor,
-                                                     settings.numerics.sensibleEnergyFloor,
-                                                     settings.numerics.pressureFloor);
+        const C::ThermalPolicy thermalPolicy(fv.Equation(), settings.numerics.densityFloor,
+                                             settings.numerics.temperatureFloor,
+                                             settings.numerics.sensibleEnergyFloor,
+                                             settings.numerics.pressureFloor);
         R::Array<double> fractions(R::RowLayout::Dense(rows, 1));
         I expectedActive = 0;
         double expectedAlpha = 1;

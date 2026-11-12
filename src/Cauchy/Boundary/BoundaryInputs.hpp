@@ -10,7 +10,7 @@ namespace DNDS::Cauchy
 {
     class FiniteVolume;
     class InterfaceDonorPublication;
-    class EquationThermalPolicy;
+    class ThermalPolicy;
     namespace Detail
     {
         struct BoundaryPointLayout;
@@ -62,7 +62,7 @@ namespace DNDS::Cauchy
         EquationDofs _quadrature;
         EquationDofs _faceCenters;
         EquationPropertyKey _property;
-        std::shared_ptr<const EquationThermalPolicy> _thermal;
+        std::shared_ptr<const ThermalPolicy> _thermal;
         std::shared_ptr<const Detail::BoundaryPointLayout> _layout;
         struct Publication
         {
@@ -75,7 +75,7 @@ namespace DNDS::Cauchy
         bool _updating = false;
         BoundaryInputs(EquationDofs quadrature, EquationDofs faceCenters,
                        EquationPropertyKey property,
-                       std::shared_ptr<const EquationThermalPolicy> thermal)
+                       std::shared_ptr<const ThermalPolicy> thermal)
             : _quadrature(std::move(quadrature)),
               _faceCenters(std::move(faceCenters)),
               _property(std::move(property)), _thermal(std::move(thermal)) {}

@@ -1,7 +1,8 @@
+#include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeStateKernels.hpp"
 #include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
-#include "Cauchy/Physics/InitialField.hpp"
+#include "Cauchy/Input/InitialField.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "Geom/Quadratures/Quadrature.hpp"
 
@@ -14,7 +15,7 @@ namespace DNDS::Cauchy
             if (_data->settings.initialField.Empty()) return;
             DNDS_check_throw_info(_data->settings.initialProfile.kind == "constant", "spatial overrides require a constant background profile");
             Metrics().Validate();
-            _data->equation.ValidateStateSchema(state);
+            state.RequireSchema(_data->equation.Schema());
             _data->equation.ResolveKernelProfile(state.Device());
             DNDS_check_throw_info(state.Space().Same(Metrics().Space()), "initial field row space differs from mesh");
             InitialFieldEvaluator evaluator(_data->settings.initialField, _data->equation, ResolveReferenceScales(_data->settings.equation),

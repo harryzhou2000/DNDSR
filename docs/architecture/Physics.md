@@ -201,7 +201,7 @@ The optional temperature guess is passed to the actual UV inversion. It can be
 stale; the returned temperature is solved for current energy/composition. An
 invalid or missing guess uses the backend's existing initialization. These
 point methods can serve explicit derived-field refresh and fused quadrature
-work. Cauchy's `EquationPointEvaluator` and explicit mixture derived refresh
+work. Cauchy's `PointEvaluator` and explicit mixture derived refresh
 now use them, including material/scale publication keys and actual stale
 temperature warm starts; see [Cauchy state](CauchyState.md). The production
 Domain still needs extended BC/PP/checkpoint integration. The equation-state FV,
@@ -236,7 +236,7 @@ matching the active Euler contributor's `kDebugEigenFilter=0` branch. Nonfinite
 rates or derivatives fail explicitly in the new caller. Euler's historical
 contributor, including its dormant diagnostic/filter branches, is unchanged.
 
-`Cauchy/Physics/EquationSource` supplies the owned-array adapter. It maps this
+`Cauchy/Operators/Source/ChemicalSource` supplies the owned-array adapter. It maps this
 point convention into the named logical flow/species blocks and optional dense
 logical block-Jacobian rows, without inferring offsets from physical grouping.
 See [Cauchy state](CauchyState.md) for reservation, failure and integration scope.
@@ -345,7 +345,7 @@ communication or normal normalization. The kernel is device-callable; using it
 does not establish a complete Cauchy CUDA path. Existing perfect-gas Cauchy
 viscous flux delegates this same mathematics.
 
-`Cauchy/Physics/EquationTransport.hpp` composes the shared constitutive kernel,
+`Cauchy/Physics/ViscousFlux.hpp` composes the shared constitutive kernel,
 actual mixture primitive derivatives and the existing conservative diffusion
 correction. It takes raw transported rhoY/gradients separately from repaired
 property composition. The dependent last-species gradient is minus the
@@ -353,9 +353,9 @@ independent sum; full species enthalpies contribute to energy diffusion. For
 `F_total=F_convective-F_viscous`, the stored independent species fluxes are
 `-J_k` and the energy contribution is `-sum(h_k*J_k)`.
 
-`EquationTransportScratch` owns two full-species temporary vectors allocated
+`ViscousFluxScratch` owns two full-species temporary vectors allocated
 once per CPU worker/tile. The caller serializes/reuses it and retains its
-point evaluator. `EquationTransportOptions` can add explicitly prepared scalar
+point evaluator. `ViscousFluxOptions` can add explicitly prepared scalar
 turbulent viscosity, conductivity and diffusivity, with a separate `useQCR`
 choice. These inputs do not select an SA/SST closure or supply the isotropic
 two-equation turbulent stress; those remain separate equation-level producers.

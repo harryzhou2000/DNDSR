@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/State/RANSState.hpp"
+#include "Cauchy/Discretization/RANSReconstruction.hpp"
 
 TEST_CASE("Reduced-order SA reconstruction compresses its scalar about the mean")
 {

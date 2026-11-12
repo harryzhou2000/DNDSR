@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumeBoundaryKernels.hpp"
+#include "Cauchy/Discretization/RANSReconstruction.hpp"
 #include "CFV/CPU/ReconstructionBasisKernels.hpp"
 
 namespace DNDS::Cauchy::CPU
@@ -19,7 +20,7 @@ namespace DNDS::Cauchy::CPU
     NumericalStatus FillBoundaryTraces(const BoundaryTraceRequest &request,
                                        SpanView<const BoundaryCondition> conditions,
                                        const BoundaryPointOperator &boundary,
-                                       EquationPointEvaluator &evaluator) noexcept
+                                       PointEvaluator &evaluator) noexcept
     {
         DNDS_assert((request.polynomial ? request.means.size() == request.coefficients.size()
                                         : request.coefficients.empty()) &&
@@ -53,7 +54,7 @@ namespace DNDS::Cauchy::CPU
                 }
             }
             if (request.rans.components && request.repairRANS)
-                request.rans.RepairReconstruction(
+                RANSReconstructionView{request.rans.kind, request.rans.components}.RepairPoint(
                     request.ransMeans[sample.cell],
                     point.data() + request.ransFirst);
             {
@@ -142,13 +143,13 @@ namespace DNDS::Cauchy::CPU
     }
 
     NumericalStatus ValidateInterfacePacketRows(Algebra::DofComponentView<const real> rows, BoundaryPointRows points,
-                                                EquationThermalView thermal, RANSStateView rans, EquationBlockReadView ransValues) noexcept
+                                                ThermalView thermal, RANSStateView rans, EquationBlockReadView ransValues) noexcept
     {
         for (index iPoint = 0; iPoint < rows.RowCount(); ++iPoint)
             if (points(iPoint, 0).interface)
             {
                 if (!(thermal.Admissible(
-                        EquationPositivityDetail::PointRow<decltype(rows)>{rows, iPoint})))
+                        ThermalAdmissibilityDetail::PointRow<decltype(rows)>{rows, iPoint})))
                     return NumericalStatus{NumericalError::InvalidState, 1, iPoint};
                 if (rans.components)
                     if (!(rans.Admissible(ransValues[iPoint])))
@@ -171,7 +172,7 @@ namespace DNDS::Cauchy::CPU
         return force;
     }
     NumericalStatus ValidateInterfaceAliasRows(Algebra::DofComponentView<const real> rows,
-                                               BoundaryPointRows a, BoundaryPointRows b, EquationThermalView thermal) noexcept
+                                               BoundaryPointRows a, BoundaryPointRows b, ThermalView thermal) noexcept
     {
         for (index iPoint = 0; iPoint < a.RowCount(); ++iPoint)
         {
@@ -181,7 +182,7 @@ namespace DNDS::Cauchy::CPU
             if (b(iPoint, 0).interface)
                 if (!(
                         thermal.Admissible(
-                            EquationPositivityDetail::PointRow<decltype(rows)>{
+                            ThermalAdmissibilityDetail::PointRow<decltype(rows)>{
                                 rows, iPoint})))
                     return NumericalStatus{NumericalError::InvalidState, 2, iPoint};
         }

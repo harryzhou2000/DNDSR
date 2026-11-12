@@ -1661,7 +1661,7 @@ in the caller's code units, then rescales them if their sum exceeds
 `rho*(1-1e-14)`. Density, momentum and full total energy do not change. This is
 distinct from the clipped/normalized temporary composition used for properties.
 
-`EquationThermalPolicy` prepares two energy references outside point loops.
+`ThermalPolicy` prepares two energy references outside point loops.
 For ideal mixtures, one is the backend's cached reference-temperature energy
 with `numerics.sensibleEnergyFloor` above it. The other uses full species
 internal energies at `max(numerics.temperatureFloor, material.BaseTemperature())`.
@@ -1685,7 +1685,7 @@ at preparation; policy views retain no worker or EOS callback. The coefficient
 owner must outlive its borrowed view. CUDA would require uploading coefficients
 and replacing the host pointers; no Cauchy CUDA kernel is claimed here.
 
-`EquationAdmissibilityPolicy` owns this thermal policy together with the
+`AdmissibilityPolicy` owns this thermal policy together with the
 resolved RANS mean-state predicate. Its property provenance and schema offsets
 are checked once, after which `FiniteVolume::Admissible` performs the common
 collective row check for Domain, restart and standalone callers.

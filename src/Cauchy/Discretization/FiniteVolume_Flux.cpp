@@ -1,5 +1,6 @@
+#include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 

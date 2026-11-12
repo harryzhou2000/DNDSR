@@ -1,8 +1,8 @@
+#include "Cauchy/Operators/Source/ChemicalSource.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
 #include "DNDS/MPI/Failure.hpp"
-#include "Cauchy/Physics/EquationSource.hpp"
-#include "Cauchy/Physics/CPU/EquationSourceKernels.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Operators/Source/CPU/ChemicalSourceKernels.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include <limits>
 
@@ -12,7 +12,7 @@ namespace DNDS::Cauchy
                                Physics::Chemistry::ChemicalWorkerPool::Lease worker, real dt,
                                const Physics::Chemistry::ReactorStepSettings &controls, real sourceScale)
     {
-        equation.ValidateStateSchema(state);
+        state.RequireSchema(equation.Schema());
         state.RequireCompatible(values);
         EquationDofOperations::RequireDistinct(state, values);
         controls.Validate();
@@ -55,7 +55,7 @@ namespace DNDS::Cauchy
                                 real sourceScale,
                                 OptionalRef<const DerivedFields> temperatureGuess)
     {
-        equation.ValidateStateSchema(state);
+        state.RequireSchema(equation.Schema());
         state.RequireCompatible(values);
         DNDS_check_throw_info(equation.HasMixture() && state.Device() == Runtime::Device::Host(), "chemical source has no kernel for the requested profile/backend");
         DNDS_check_throw_info(std::isfinite(sourceScale) && sourceScale >= 0, "chemical source scale must be finite and nonnegative");

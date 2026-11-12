@@ -3,10 +3,10 @@
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeSourceKernels.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
-#include "Cauchy/Physics/EquationFlux.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
-#include "Cauchy/Physics/EquationTransport.hpp"
+#include "Cauchy/Physics/PhysicalFlux.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/State/RANSState.hpp"
+#include "Cauchy/Physics/ViscousFlux.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
 
@@ -77,7 +77,7 @@ namespace DNDS::Cauchy
     bool FiniteVolume::Workspace::AddRHSQuadratureSourceJacobian(const EquationDofs &state,
                                                                  const R::Array<real>::WriteLease &diagonal,
                                                                  DiagonalStorage storage, real scale,
-                                                                 EquationPointEvaluator &evaluator,
+                                                                 PointEvaluator &evaluator,
                                                                  OptionalRef<const MeanLinearizationOutput> linearization) const
     {
         if (!sourceSampling)
@@ -173,7 +173,7 @@ namespace DNDS::Cauchy
     /// were filled. This entry neither samples RHS quadrature nor publishes
     /// source freshness; the production wrapper validates its provenance.
     bool FiniteVolume::Workspace::AddMeanSourceJacobian(const EquationDofs &state, const R::Array<real>::WriteLease &diagonal,
-                                                        DiagonalStorage storage, real scale, EquationPointEvaluator &evaluator,
+                                                        DiagonalStorage storage, real scale, PointEvaluator &evaluator,
                                                         OptionalRef<const MeanLinearizationOutput> linearization) const
     {
         if (sourceOffsets.RowCount() == 0)
@@ -327,7 +327,7 @@ namespace DNDS::Cauchy
     /// default Jacobian continues to sample its own center gradients.
     void FiniteVolume::Workspace::PrepareVolumeSource(const EquationDofs &state,
                                                       OptionalRef<EquationDofs> result,
-                                                      EquationPointEvaluator &evaluator, real time,
+                                                      PointEvaluator &evaluator, real time,
                                                       OptionalRef<EquationDofs> lowOrder)
     {
         const PhaseTime timing(*this, SourcePhase);

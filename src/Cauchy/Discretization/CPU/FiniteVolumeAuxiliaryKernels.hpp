@@ -34,11 +34,11 @@ namespace DNDS::Cauchy::CPU
         real time = 0;
     };
     NumericalStatus PrepareAuxiliaryMeans(const AuxiliaryKernelRequest &request,
-                                          const EquationSystem &equation, EquationPointEvaluator &worker,
+                                          const EquationSystem &equation, PointEvaluator &worker,
                                           index first, index end) noexcept;
     NumericalStatus PrepareAuxiliaryFaces(const AuxiliaryKernelRequest &request,
                                           const EquationSystem &equation, const BoundaryPointOperator &boundary,
-                                          EquationPointEvaluator &worker,
+                                          PointEvaluator &worker,
                                           FiniteVolumeStencilView::Indices faces) noexcept;
     void ReduceAuxiliaryCells(const AuxiliaryKernelRequest &request,
                               FiniteVolumeStencilView::Indices cells);

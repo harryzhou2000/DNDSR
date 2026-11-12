@@ -2,10 +2,12 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumeSampleKernels.hpp"
 #include "CFV/CPU/ReconstructionBasisKernels.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
-#include "Cauchy/Physics/EquationFlux.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
-#include "Cauchy/Physics/EquationTransport.hpp"
+#include "Cauchy/Physics/PhysicalFlux.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/State/RANSState.hpp"
+#include "Cauchy/Discretization/RANSReconstruction.hpp"
+#include "Cauchy/Physics/RANSFlux.hpp"
+#include "Cauchy/Physics/ViscousFlux.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
 
 namespace DNDS::Cauchy::CPU
@@ -14,7 +16,7 @@ namespace DNDS::Cauchy::CPU
     template <class Input, class Output>
     NumericalResult<index> EvaluateEquationRows(const EquationRHSRequest &request, const EquationSystem &equation,
                                                 const BoundaryPointOperator &boundary, const Riemann::RiemannFlux &fluxOperator,
-                                                EquationPointEvaluator &evaluator, Input owned, Input remote,
+                                                PointEvaluator &evaluator, Input owned, Input remote,
                                                 Output destination, Output lowDestination, CFV::ReconstructionRegion region) noexcept
     {
         index localFallbacks = 0;
@@ -50,7 +52,7 @@ namespace DNDS::Cauchy::CPU
         const auto ransMean = request.ransMean;
         std::vector<real> integrated(size_t(width), 0), flux(size_t(width), 0), speciesFlux(size_t(independent), 0);
         std::vector<real> integratedLow(request.produceLow ? size_t(width) : 0, 0), lowFlux(request.produceLow ? size_t(width) : 0, 0);
-        EquationTransportScratch transport(species);
+        ViscousFluxScratch transport(species);
         const auto wallValues = request.wall;
         CFV::Math::SmallMatrix basisScratch;
         const auto reconstruct = [&](index iCell, const FiniteVolumeDetail::SampleValue &sample, int side, PointScratch &point)
@@ -100,7 +102,7 @@ namespace DNDS::Cauchy::CPU
                 }
             }
             if (ransModel)
-                RANSStateView{ransModel->Kind(), ransModel->ComponentNumber()}.RepairReconstruction(ransMean[iCell], point.values.data() + request.ransFirst);
+                RANSReconstructionView{ransModel->Kind(), ransModel->ComponentNumber()}.RepairPoint(ransMean[iCell], point.values.data() + request.ransFirst);
             if (request.primitiveGradient)
             {
                 const auto row = request.primitiveGradientValues[iCell];
@@ -131,7 +133,7 @@ namespace DNDS::Cauchy::CPU
                                                     const FiniteVolumeDetail::SampleValue &sample, bool neighborFrame,
                                                     Riemann::AcousticState &output) -> NumericalStatus
         {
-            EquationPointProperties properties;
+            PointProperties properties;
             const auto evaluate = [&]
             {
                 return evaluator.TryEvaluate(flow, point.Species(request.speciesFirst, independent), 0, {}, properties);
@@ -159,7 +161,7 @@ namespace DNDS::Cauchy::CPU
             }
             if (!status)
                 return status.At(iCell, sample.point);
-            output = EquationPointEvaluator::FluxState(flow, properties);
+            output = PointEvaluator::FluxState(flow, properties);
             return {};
         };
         const auto computeFace = [&](index iAux) -> NumericalStatus
@@ -244,11 +246,11 @@ namespace DNDS::Cauchy::CPU
                 const auto evaluateDirect = [&](const FlowState &flow, const PointScratch &point,
                                                 Riemann::AcousticState &output) -> NumericalStatus
                 {
-                    EquationPointProperties properties;
+                    PointProperties properties;
                     const auto status = evaluator.TryEvaluate(flow, point.Species(request.speciesFirst, independent), 0, {}, properties);
                     if (!status)
                         return status.At(iCell, sample.point);
-                    output = EquationPointEvaluator::FluxState(flow, properties);
+                    output = PointEvaluator::FluxState(flow, properties);
                     return {};
                 };
                 auto status = wallFluxState ? evaluateDirect(leftFlow, face, leftData)
@@ -434,7 +436,7 @@ namespace DNDS::Cauchy::CPU
                         if (wallFluxState)
                             prepareWallState();
                         const auto faceFlow = face.Flow(request.flowFirst);
-                        EquationPointProperties point;
+                        PointProperties point;
                         const auto propertyStatus = evaluator.TryEvaluate(faceFlow, face.Species(request.speciesFirst, independent),
                                                                           0, {true, true, true, false, false}, point);
                         if (!propertyStatus)
@@ -445,7 +447,7 @@ namespace DNDS::Cauchy::CPU
                             index first;
                             real operator()(int k, int d) const { return point.gradient(first + k, d); }
                         };
-                        EquationTransportOptions transportOptions{wall && !sample.boundary.isothermal, wall};
+                        ViscousFluxOptions transportOptions{wall && !sample.boundary.isothermal, wall};
                         if (request.ransFirst >= 0)
                         {
                             const auto &model = equation.RANS();
@@ -575,7 +577,7 @@ namespace DNDS::Cauchy::CPU
     }
     NumericalResult<index> EvaluateEquationFlux(const EquationRHSRequest &request, const EquationSystem &equation,
                                                 const BoundaryPointOperator &boundary, const Riemann::RiemannFlux &flux,
-                                                EquationPointEvaluator &worker, EquationLayoutView<const real> owned,
+                                                PointEvaluator &worker, EquationLayoutView<const real> owned,
                                                 EquationLayoutView<const real> remote, EquationLayoutView<real> destination,
                                                 EquationLayoutView<real> lowDestination, CFV::ReconstructionRegion region) noexcept
     {

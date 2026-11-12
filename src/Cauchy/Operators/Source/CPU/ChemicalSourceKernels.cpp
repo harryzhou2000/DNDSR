@@ -1,4 +1,4 @@
-#include "Cauchy/Physics/CPU/EquationSourceKernels.hpp"
+#include "Cauchy/Operators/Source/CPU/ChemicalSourceKernels.hpp"
 namespace DNDS::Cauchy::CPU
 {
     NumericalStatus AdvanceChemicalRows(SpanView<const EquationBlockArrayView<const real>> from,
@@ -33,7 +33,7 @@ namespace DNDS::Cauchy::CPU
                                          EquationBlockArrayView<real> sourceSpecies, SpanView<const EquationBlockArrayView<real>> nonchemical,
                                          SpanView<const index> columns, index components, index speciesFirst, int species, real sourceScale,
                                          std::optional<Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>> matrix,
-                                         std::optional<EquationBlockArrayView<const real>> oldT, EquationPointEvaluator &evaluator) noexcept
+                                         std::optional<EquationBlockArrayView<const real>> oldT, PointEvaluator &evaluator) noexcept
     {
         auto composition = evaluator.SpeciesInput();
         // Any evaluation failure can leave scratch partial. Do not cancel
@@ -57,7 +57,7 @@ namespace DNDS::Cauchy::CPU
                 pointFlow[j] = flow(iCell, j);
             for (int k = 0; k < species; ++k)
                 composition[k] = rhoY(iCell, k);
-            EquationPointProperties point;
+            PointProperties point;
             if (const auto status = evaluator.TryEvaluate(pointFlow, {composition.data, composition.nSpecies}, oldT ? (*oldT)(iCell, 0) : 0, point); !status)
                 return status.At(iCell);
             for (int k = 0; k < species; ++k)

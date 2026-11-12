@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "Cauchy/Physics/ImplicitPositivity.hpp"
 #include "Physics/Chemistry/SpeciesAdmissibility.hpp"
@@ -17,7 +17,7 @@ namespace DNDS::Cauchy
         Backtracking
     };
 
-    namespace EquationPositivityDetail
+    namespace ThermalAdmissibilityDetail
     {
         template <class Values>
         struct PointRow
@@ -58,7 +58,7 @@ namespace DNDS::Cauchy
     /// not EOS callbacks. Caller retains the policy owner and declared input
     /// scopes. Rows supply operator[] and may span several physical arrays.
     /// This view contains no ownership, Array, worker, MPI or allocation.
-    struct EquationThermalView
+    struct ThermalView
     {
         real densityFloor;
         std::array<real, 2> floors, densityCoefficients;
@@ -204,7 +204,7 @@ namespace DNDS::Cauchy
         template <class Row, class Increment>
         DNDS_DEVICE_CALLABLE real IncrementFraction(const Row &state, const Increment &increment, real relax, int compression, int power) const
         {
-            using namespace EquationPositivityDetail;
+            using namespace ThermalAdmissibilityDetail;
             const real rho = state[flowFirst], deltaRho = increment[flowFirst];
             const real relaxedDensity = densityFloor * relax + rho * (1 - relax);
             const real density = deltaRho < 0 ? std::min(real(1), (rho - relaxedDensity) / (-deltaRho - smallReal * deltaRho)) : 1;
@@ -253,7 +253,7 @@ namespace DNDS::Cauchy
         template <class Row, class Increment>
         DNDS_DEVICE_CALLABLE real FixFraction(const Row &state, const Increment &increment) const
         {
-            using namespace EquationPositivityDetail;
+            using namespace ThermalAdmissibilityDetail;
             real fraction = 1;
             if (state[flowFirst] + increment[flowFirst] <= densityFloor)
                 fraction = (densityFloor - state[flowFirst]) / (increment[flowFirst] - verySmallReal);
@@ -309,7 +309,7 @@ namespace DNDS::Cauchy
                                                          index begin, index end, int power, real cutoff, real densityLimit = 1,
                                                          ReconstructionClippedReferencePolicy clippedPolicy = ReconstructionClippedReferencePolicy::FallbackToBase) const
         {
-            using namespace EquationPositivityDetail;
+            using namespace ThermalAdmissibilityDetail;
             bool rawGood = true, clippedGood = true;
             for (index q = begin; q < end; ++q)
             {
@@ -388,15 +388,15 @@ namespace DNDS::Cauchy
     /// Immutable coefficient metadata uses shared backend allocations. View()
     /// is a host projection; retain this policy for the full operation. A future
     /// device operator must explicitly publish device coefficient descriptors.
-    class EquationThermalPolicy
+    class ThermalPolicy
     {
         std::array<Runtime::MetadataBuffer<real>, 2> _energies;
-        EquationThermalView _view{};
+        ThermalView _view{};
 
     public:
-        EquationThermalPolicy(const EquationSystem &equation, real densityFloor, real temperatureFloor,
-                              real sensibleEnergyFloor, real pressureFloor, Physics::Chemistry::ChemicalWorkerPool::Lease worker = {});
-        EquationThermalView View() const
+        ThermalPolicy(const EquationSystem &equation, real densityFloor, real temperatureFloor,
+                      real sensibleEnergyFloor, real pressureFloor, Physics::Chemistry::ChemicalWorkerPool::Lease worker = {});
+        ThermalView View() const
         {
             auto result = _view;
             for (int c = 0; c < 2; ++c)
@@ -408,11 +408,11 @@ namespace DNDS::Cauchy
     /// PP POLICY -- accepted mean-state boundary.
     /// Frozen complete mean-state admissibility view. Thermal flow/species
     /// constraints and model-specific RANS scalar constraints are resolved once
-    /// by EquationAdmissibilityPolicy; row checks perform no EOS inversion,
+    /// by AdmissibilityPolicy; row checks perform no EOS inversion,
     /// allocation, worker acquisition, MPI, or physical-layout dispatch.
-    struct EquationAdmissibilityView
+    struct AdmissibilityView
     {
-        EquationThermalView thermal;
+        ThermalView thermal;
         RANSStateView rans;
         index ransFirst = -1;
 
@@ -425,7 +425,7 @@ namespace DNDS::Cauchy
             if (!rans.components)
                 return true;
             return rans.Admissible(
-                EquationPositivityDetail::OffsetRow<Row>{values, ransFirst});
+                ThermalAdmissibilityDetail::OffsetRow<Row>{values, ransFirst});
         }
     };
 
@@ -434,21 +434,21 @@ namespace DNDS::Cauchy
     /// the resulting View remains valid until this owner is moved, mutated, or
     /// destroyed. RANS repair remains a separate explicit operation, but its
     /// acceptance predicate is part of the same frozen view.
-    class EquationAdmissibilityPolicy
+    class AdmissibilityPolicy
     {
-        EquationThermalPolicy _thermal;
+        ThermalPolicy _thermal;
         EquationPropertyKey _property;
         RANSStateView _rans;
         index _ransFirst = -1;
 
     public:
-        EquationAdmissibilityPolicy(
+        AdmissibilityPolicy(
             const EquationSystem &equation, real densityFloor,
             real temperatureFloor, real sensibleEnergyFloor,
             real pressureFloor, RANSStateView rans = {},
             Physics::Chemistry::ChemicalWorkerPool::Lease worker = {});
 
-        EquationAdmissibilityView View() const
+        AdmissibilityView View() const
         {
             return {_thermal.View(), _rans, _ransFirst};
         }

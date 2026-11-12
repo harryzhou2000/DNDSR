@@ -3,7 +3,7 @@ namespace DNDS::Cauchy::CPU
 {
     NumericalStatus RefreshDerivedRows(EquationBlockArrayView<const real> rows, EquationBlockArrayView<const real> species,
                                        Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows> values,
-                                       std::array<int, DerivedQuantityNumber> columns, bool useTemperatureGuess, EquationPointEvaluator &evaluator) noexcept
+                                       std::array<int, DerivedQuantityNumber> columns, bool useTemperatureGuess, PointEvaluator &evaluator) noexcept
     {
         auto rhoY = evaluator.SpeciesInput();
         for (index iRow = 0; iRow < values.RowCount(); ++iRow)
@@ -25,7 +25,7 @@ namespace DNDS::Cauchy::CPU
     }
     NumericalStatus AccumulateStateDiagnostics(EquationBlockReadView flow, std::optional<EquationBlockReadView> species,
                                                Algebra::DofComponentView<const real> rhs, CFV::FiniteVolumeHostView metric,
-                                               EquationPointEvaluator &evaluator, SpanView<real> result) noexcept
+                                               PointEvaluator &evaluator, SpanView<real> result) noexcept
     {
         const index width = rhs.ComponentNumber();
         const int independent = species ? int(species->ComponentNumber()) : 0;
@@ -40,7 +40,7 @@ namespace DNDS::Cauchy::CPU
                 for (int k = 0; k < independent; ++k)
                     rhoY[k] = (*species)(iCell, k);
             }
-            EquationPointProperties point;
+            PointProperties point;
             if (const auto status = evaluator.TryEvaluate(value, rhoY, 0, point); !status)
                 return status.At(iCell);
             const real volume = metric.GetCellVol(iCell);

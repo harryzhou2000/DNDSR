@@ -9,7 +9,7 @@ namespace DNDS::Cauchy
 {
     /// Scalars own their values. Species views borrow the evaluator's worker
     /// scratch until its next point or destruction; no layout/Array assumption.
-    struct EquationPointProperties
+    struct PointProperties
     {
         Physics::Thermodynamics::Properties thermo;
         Physics::Transport::Properties transport;
@@ -20,7 +20,7 @@ namespace DNDS::Cauchy
         real diffusionBound = std::numeric_limits<real>::quiet_NaN();
     };
 
-    struct EquationPrimitiveDerivative
+    struct PrimitiveDerivative
     {
         /// Directional derivative of [rho,u,v,w,T], in code units.
         FlowState rhoVelocityTemperature;
@@ -33,25 +33,27 @@ namespace DNDS::Cauchy
     /// Retain its worker/material and consume the borrowed point before the next
     /// evaluation. Caller supplies a point from this state and prevalidates the
     /// species extent; no implicit property refresh, repair or gamma closure.
+    /// Extent assertions are programming preconditions, not numerical fallback
+    /// signals; failed EOS evaluations are handled before this arithmetic call.
     template <class TSpeciesDerivative>
-    EquationPrimitiveDerivative PreparePrimitiveDerivative(const FlowState &state, const FlowState &derivative,
-                                                           const EquationPointProperties &point, const TSpeciesDerivative &speciesDerivative)
+    PrimitiveDerivative PreparePrimitiveDerivative(const FlowState &state, const FlowState &derivative,
+                                                   const PointProperties &point, const TSpeciesDerivative &speciesDerivative)
     {
         namespace T = Physics::Thermodynamics;
         const auto velocity = T::ConservativeVelocity<3>(state);
         const real internalEnergy = T::ConservativeSpecificInternalEnergy<3>(state);
         const real internalDerivative = T::ConservativeInternalEnergyDensityDerivative<3>(state, derivative);
         const int species = point.fractions.nSpecies;
-        DNDS_check_throw_info(!species || (point.speciesEnthalpy.nSpecies == species && point.speciesGasConstant.nSpecies == species),
-                              "primitive mixture derivative needs full species enthalpies and gas constants");
+        DNDS_assert_info(!species || (point.speciesEnthalpy.nSpecies == species && point.speciesGasConstant.nSpecies == species),
+                         "primitive mixture derivative needs full species enthalpies and gas constants");
         struct SpeciesEnergy
         {
-            const EquationPointProperties &point;
+            const PointProperties &point;
             real operator[](int k) const { return point.speciesEnthalpy[k] - point.speciesGasConstant[k] * point.thermo.temperature; }
         };
         const real temperatureDerivative = T::IdealMixtureTemperatureDerivative(state[0], internalEnergy, point.thermo.cv,
                                                                                 derivative[0], internalDerivative, point.fractions, SpeciesEnergy{point}, speciesDerivative, species);
-        EquationPrimitiveDerivative result;
+        PrimitiveDerivative result;
         result.rhoVelocityTemperature[0] = derivative[0];
         for (int d = 0; d < 3; ++d)
             result.rhoVelocityTemperature[1 + d] = T::ConservativeSpecificDerivative(state[0], velocity[d], derivative[0], derivative[1 + d]);
@@ -65,21 +67,21 @@ namespace DNDS::Cauchy
     /// operator work. Owns one exclusive chemistry worker for mixtures. Names,
     /// backend, units and material compatibility are resolved before the loop.
     /// Caller serializes use; move this evaluator into asynchronous CPU work.
-    class EquationPointEvaluator
+    class PointEvaluator
     {
         friend class EquationSystem;
         PerfectGas _gas;
         bool _viscous;
         std::optional<Physics::Thermodynamics::IdealGasMixture::PointEvaluator> _mixture;
         Physics::Thermodynamics::MixturePropertyRequest _request;
-        EquationPointEvaluator(const EquationSystem &equation, Physics::Chemistry::ChemicalWorkerPool::Lease worker,
-                               Physics::Thermodynamics::MixturePropertyRequest request);
+        PointEvaluator(const EquationSystem &equation, Physics::Chemistry::ChemicalWorkerPool::Lease worker,
+                       Physics::Thermodynamics::MixturePropertyRequest request);
 
     public:
-        EquationPointEvaluator(const EquationPointEvaluator &) = delete;
-        EquationPointEvaluator &operator=(const EquationPointEvaluator &) = delete;
-        EquationPointEvaluator(EquationPointEvaluator &&) noexcept = default;
-        EquationPointEvaluator &operator=(EquationPointEvaluator &&) noexcept = default;
+        PointEvaluator(const PointEvaluator &) = delete;
+        PointEvaluator &operator=(const PointEvaluator &) = delete;
+        PointEvaluator(PointEvaluator &&) noexcept = default;
+        PointEvaluator &operator=(PointEvaluator &&) noexcept = default;
         Physics::Chemistry::SpeciesBufferView SpeciesInput() const;
         /// Perfect-gas profile parameter for setup-validated analytic boundary
         /// producers. Mixtures must use an equation-specific profile adapter.
@@ -104,9 +106,9 @@ namespace DNDS::Cauchy
         /// success; its species spans still borrow this worker until next use.
         NumericalStatus TryEvaluate(const FlowState &flow, Physics::Chemistry::ConstSpeciesBufferView rhoY,
                                     real temperatureGuess, Physics::Thermodynamics::MixturePropertyRequest request,
-                                    EquationPointProperties &output) noexcept;
+                                    PointProperties &output) noexcept;
         NumericalStatus TryEvaluate(const FlowState &flow, Physics::Chemistry::ConstSpeciesBufferView rhoY,
-                                    real temperatureGuess, EquationPointProperties &output) noexcept
+                                    real temperatureGuess, PointProperties &output) noexcept
         {
             return TryEvaluate(flow, rhoY, temperatureGuess, _request, output);
         }
@@ -115,14 +117,14 @@ namespace DNDS::Cauchy
         /// worker scratch gathered from any physical layout or allocation.
         /// A stale positive T guess seeds UV inversion, never its final answer.
         /// Checked setup/compatibility adapter; numerical kernels use TryEvaluate.
-        EquationPointProperties Evaluate(const FlowState &flow, Physics::Chemistry::ConstSpeciesBufferView rhoY = {},
-                                         real temperatureGuess = 0);
+        PointProperties Evaluate(const FlowState &flow, Physics::Chemistry::ConstSpeciesBufferView rhoY = {},
+                                 real temperatureGuess = 0);
         /// Per-point subset of the reserved outputs; intended for fused FV
         /// face/source phases sharing one explicit worker context.
-        EquationPointProperties Evaluate(const FlowState &flow, Physics::Chemistry::ConstSpeciesBufferView rhoY,
-                                         real temperatureGuess, Physics::Thermodynamics::MixturePropertyRequest request);
+        PointProperties Evaluate(const FlowState &flow, Physics::Chemistry::ConstSpeciesBufferView rhoY,
+                                 real temperatureGuess, Physics::Thermodynamics::MixturePropertyRequest request);
         /// Numerical fluxes consume these actual EOS values; no gamma closure.
-        static Riemann::AcousticState FluxState(const FlowState &flow, const EquationPointProperties &point)
+        static Riemann::AcousticState FluxState(const FlowState &flow, const PointProperties &point)
         {
             return {{flow, point.thermo.pressure}, point.thermo.soundSpeed};
         }

@@ -2,7 +2,7 @@
 
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -18,7 +18,7 @@ namespace DNDS::Cauchy
     {
         EquationSystem _equation;
         Physics::ReferenceScales _scales;
-        EquationPointEvaluator _evaluator;
+        PointEvaluator _evaluator;
         std::vector<real> _scalarScales;
         int _rans, _species;
 

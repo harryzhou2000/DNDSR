@@ -3,7 +3,13 @@
   "namespace_changes": false,
   "owners": {
     "Cauchy/Bindings/Operators_bind.hpp": {
-      "implementation": "Cauchy/Bindings/Operators_bind.cpp"
+      "implementation": [
+        "Cauchy/Bindings/Operators_bind.cpp",
+        "Cauchy/Bindings/Operators_bind_FiniteVolume.cpp",
+        "Cauchy/Bindings/Operators_bind_Linear.cpp",
+        "Cauchy/Bindings/Operators_bind_Nonlinear.cpp",
+        "Cauchy/Bindings/Operators_bind_State.cpp"
+      ]
     },
     "Cauchy/Discretization/FiniteVolume.hpp": {
       "plan": "Cauchy/Discretization/FiniteVolume.cpp",
@@ -40,6 +46,34 @@
         "Cauchy/IO/FiniteVolume_FieldOutput.cpp",
         "Cauchy/Implicit/FiniteVolume_PrepareJacobian.cpp",
         "Cauchy/Implicit/FiniteVolume_Jacobian.cpp"
+      ],
+      "implementation": [
+        "Cauchy/Discretization/FiniteVolume.cpp",
+        "Cauchy/Discretization/FiniteVolume_AuxiliaryPreparation.cpp",
+        "Cauchy/Discretization/FiniteVolume_AuxiliaryValues.cpp",
+        "Cauchy/Discretization/FiniteVolume_Boundary.cpp",
+        "Cauchy/Discretization/FiniteVolume_BoundaryInputs.cpp",
+        "Cauchy/Discretization/FiniteVolume_Diagnostics.cpp",
+        "Cauchy/Discretization/FiniteVolume_Evaluation.cpp",
+        "Cauchy/Discretization/FiniteVolume_Flux.cpp",
+        "Cauchy/Discretization/FiniteVolume_Gradient.cpp",
+        "Cauchy/Discretization/FiniteVolume_InitializeField.cpp",
+        "Cauchy/Discretization/FiniteVolume_InterfaceInputs.cpp",
+        "Cauchy/Discretization/FiniteVolume_LimitedVR.cpp",
+        "Cauchy/Discretization/FiniteVolume_LimitedVRExecution.cpp",
+        "Cauchy/Discretization/FiniteVolume_Positivity.cpp",
+        "Cauchy/Discretization/FiniteVolume_PrepareAuxValues.cpp",
+        "Cauchy/Discretization/FiniteVolume_RHS.cpp",
+        "Cauchy/Discretization/FiniteVolume_RHSOperator.cpp",
+        "Cauchy/Discretization/FiniteVolume_ReconstructionState.cpp",
+        "Cauchy/Discretization/FiniteVolume_Source.cpp",
+        "Cauchy/Discretization/FiniteVolume_SourcePreparation.cpp",
+        "Cauchy/Discretization/FiniteVolume_TimeStep.cpp",
+        "Cauchy/Discretization/FiniteVolume_Workspace.cpp",
+        "Cauchy/Discretization/FiniteVolume_WorkspaceFactory.cpp",
+        "Cauchy/IO/FiniteVolume_FieldOutput.cpp",
+        "Cauchy/Implicit/FiniteVolume_Jacobian.cpp",
+        "Cauchy/Implicit/FiniteVolume_PrepareJacobian.cpp"
       ]
     },
     "Cauchy/Interface/CPU/InterfacePacketKernels.hpp": {
@@ -93,8 +127,8 @@
     "Cauchy/Core/CPU/TimeStageKernels.hpp": {
       "implementation": "Cauchy/Core/CPU/TimeStageKernels.cpp"
     },
-    "Cauchy/Physics/CPU/EquationSourceKernels.hpp": {
-      "implementation": "Cauchy/Physics/CPU/EquationSourceKernels.cpp"
+    "Cauchy/Operators/Source/CPU/ChemicalSourceKernels.hpp": {
+      "implementation": "Cauchy/Operators/Source/CPU/ChemicalSourceKernels.cpp"
     },
     "Cauchy/Multigrid/CPU/PolynomialMultigridKernels.hpp": {
       "implementation": "Cauchy/Multigrid/CPU/PolynomialMultigridKernels.cpp"
@@ -104,16 +138,16 @@
     },
     "Cauchy/Implicit/CPU/FiniteVolumeJacobianKernels.hpp": {
       "implementation": [
-        "Cauchy/Implicit/CPU/FiniteVolumeJacobianKernels_Preparation.cpp",
+        "Cauchy/Implicit/CPU/FiniteVolumeJacobianKernels_Equation.cpp",
         "Cauchy/Implicit/CPU/FiniteVolumeJacobianKernels_Flow.cpp",
-        "Cauchy/Implicit/CPU/FiniteVolumeJacobianKernels_Equation.cpp"
+        "Cauchy/Implicit/CPU/FiniteVolumeJacobianKernels_Preparation.cpp"
       ]
     },
     "Cauchy/Implicit/CPU/LinearBlockKernels.hpp": {
       "implementation": [
-        "Cauchy/Implicit/CPU/LinearBlockKernels_ILU.cpp",
         "Cauchy/Implicit/CPU/LinearBlockKernels_Array.cpp",
-        "Cauchy/Implicit/CPU/LinearBlockKernels_Dof.cpp"
+        "Cauchy/Implicit/CPU/LinearBlockKernels_Dof.cpp",
+        "Cauchy/Implicit/CPU/LinearBlockKernels_ILU.cpp"
       ]
     },
     "Cauchy/Implicit/CPU/JacobianKernels.hpp": {
@@ -121,6 +155,162 @@
     },
     "Cauchy/Implicit/CPU/NonlinearKernels.hpp": {
       "implementation": "Cauchy/Implicit/CPU/NonlinearKernels.cpp"
+    },
+    "Cauchy/Boundary/BoundarySystem.hpp": {
+      "implementation": [
+        "Cauchy/Boundary/BoundarySystem.cpp",
+        "Cauchy/Boundary/BoundarySystem_Operators.cpp"
+      ]
+    },
+    "Cauchy/Boundary/BoundaryPointOperator.hpp": {
+      "implementation": "Cauchy/Boundary/BoundaryPointOperator.cpp"
+    },
+    "Cauchy/Config/SimulationConfig.hpp": {
+      "implementation": [
+        "Cauchy/Config/SimulationConfig.cpp",
+        "Cauchy/Config/SimulationConfig_Schema.cpp",
+        "Cauchy/Config/SimulationConfig_Validation.cpp"
+      ]
+    },
+    "Cauchy/Interface/InterfaceCoupling.hpp": {
+      "implementation": "Cauchy/Interface/InterfaceCoupling.cpp"
+    },
+    "Cauchy/Multigrid/PolynomialMultigrid.hpp": {
+      "implementation": "Cauchy/Multigrid/PolynomialMultigrid.cpp"
+    },
+    "Cauchy/State/EquationDofs.hpp": {
+      "implementation": "Cauchy/State/EquationDofs.cpp"
+    },
+    "Cauchy/State/DerivedFields.hpp": {
+      "implementation": "Cauchy/State/DerivedFields.cpp"
+    },
+    "Cauchy/State/RANSState.hpp": {
+      "implementation": "Cauchy/State/RANSState.cpp"
+    },
+    "Cauchy/State/EquationDofCommunication.hpp": {
+      "implementation": "Cauchy/State/EquationDofCommunication.cpp"
+    },
+    "Cauchy/Physics/PointProperties.hpp": {
+      "implementation": "Cauchy/Physics/PointProperties.cpp"
+    },
+    "Cauchy/Physics/ThermalAdmissibility.hpp": {
+      "implementation": "Cauchy/Physics/ThermalAdmissibility.cpp"
+    },
+    "Cauchy/Physics/EquationSystem.hpp": {
+      "implementation": [
+        "Cauchy/Physics/EquationSystem.cpp",
+        "Cauchy/Physics/EquationSystem_PointProperties.cpp"
+      ]
+    },
+    "Cauchy/Physics/PhysicsResources.hpp": {
+      "implementation": "Cauchy/Physics/PhysicsResources.cpp"
+    },
+    "Cauchy/Implicit/LinearPattern.hpp": {
+      "implementation": "Cauchy/Implicit/LinearPattern.cpp"
+    },
+    "Cauchy/Implicit/JacobianGeometry.hpp": {
+      "implementation": "Cauchy/Implicit/JacobianGeometry.cpp"
+    },
+    "Cauchy/Implicit/LinearProblem.hpp": {
+      "implementation": [
+        "Cauchy/Implicit/LinearProblem.cpp",
+        "Cauchy/Implicit/LinearProblem_Dof.cpp",
+        "Cauchy/Implicit/LinearProblem_DofSGS.cpp",
+        "Cauchy/Implicit/LinearProblem_ILU.cpp",
+        "Cauchy/Implicit/LinearProblem_SGS.cpp"
+      ]
+    },
+    "Cauchy/Implicit/NonlinearSolve.hpp": {
+      "implementation": "Cauchy/Implicit/NonlinearSolve.cpp"
+    },
+    "Cauchy/Implicit/LinearSolver.hpp": {
+      "implementation": "Cauchy/Implicit/LinearSolver.cpp"
+    },
+    "Cauchy/Implicit/UpdatePolicy.hpp": {
+      "implementation": "Cauchy/Implicit/UpdatePolicy.cpp"
+    },
+    "Cauchy/Implicit/NonlinearSolver.hpp": {
+      "implementation": [
+        "Cauchy/Implicit/NonlinearSolver.cpp",
+        "Cauchy/Implicit/NonlinearSolver_State.cpp"
+      ]
+    },
+    "Cauchy/Core/DomainPlacement.hpp": {
+      "implementation": "Cauchy/Core/DomainPlacement.cpp"
+    },
+    "Cauchy/Core/DomainComponents.hpp": {
+      "implementation": "Cauchy/Core/DomainComponents.cpp"
+    },
+    "Cauchy/Core/DomainStateSnapshot.hpp": {
+      "implementation": "Cauchy/Core/DomainStateSnapshot.cpp"
+    },
+    "Cauchy/Core/Simulation.hpp": {
+      "implementation": [
+        "Cauchy/Core/Simulation.cpp",
+        "Cauchy/Core/Simulation_Advance.cpp",
+        "Cauchy/IO/Simulation_Checkpoint.cpp"
+      ]
+    },
+    "Cauchy/Core/Domain.hpp": {
+      "implementation": [
+        "Cauchy/Core/Domain.cpp",
+        "Cauchy/Core/Domain_ExplicitStage.cpp",
+        "Cauchy/Core/Domain_ImplicitStep.cpp",
+        "Cauchy/Core/Domain_Operations.cpp",
+        "Cauchy/Core/Domain_TimeStep.cpp",
+        "Cauchy/IO/Domain_Checkpoint.cpp",
+        "Cauchy/IO/Domain_CheckpointRead.cpp",
+        "Cauchy/IO/Domain_CheckpointReadInternal.cpp",
+        "Cauchy/IO/Domain_CheckpointWrite.cpp"
+      ]
+    },
+    "Cauchy/Core/DomainExecutionContext.hpp": {
+      "implementation": "Cauchy/Core/DomainExecutionContext.cpp"
+    },
+    "Cauchy/Motion/RigidMotion.hpp": {
+      "implementation": "Cauchy/Motion/RigidMotion.cpp"
+    },
+    "Cauchy/IO/OutputCoordinator.hpp": {
+      "implementation": "Cauchy/IO/OutputCoordinator.cpp"
+    },
+    "Cauchy/IO/ProgressOutput.hpp": {
+      "implementation": "Cauchy/IO/ProgressOutput.cpp"
+    },
+    "Cauchy/IO/CheckpointMetadata.hpp": {
+      "implementation": "Cauchy/IO/CheckpointMetadata.cpp"
+    },
+    "Cauchy/IO/StateArchive.hpp": {
+      "implementation": "Cauchy/IO/StateArchive.cpp"
+    },
+    "Cauchy/IO/OutputPlan.hpp": {
+      "implementation": "Cauchy/IO/OutputPlan.cpp"
+    },
+    "Cauchy/Input/InitialField.hpp": {
+      "implementation": "Cauchy/Input/InitialField.cpp"
+    },
+    "Cauchy/Input/StateInput.hpp": {
+      "implementation": "Cauchy/Input/StateInput.cpp"
+    },
+    "Cauchy/Riemann/RiemannFlux.hpp": {
+      "implementation": "Cauchy/Riemann/RiemannFlux.cpp"
+    },
+    "Cauchy/Discretization/RANSReconstruction.hpp": {
+      "implementation": "Cauchy/Discretization/RANSReconstruction.cpp"
+    },
+    "Cauchy/Discretization/FiniteVolumeViews.hpp": {
+      "implementation": "Cauchy/Discretization/FiniteVolumeViews.cpp"
+    },
+    "Cauchy/Discretization/WallDistanceSamples.hpp": {
+      "implementation": "Cauchy/Discretization/WallDistanceSamples.cpp"
+    },
+    "Cauchy/Boundary/CPU/RANSWallKernels.hpp": {
+      "implementation": "Cauchy/Boundary/CPU/RANSWallKernels.cpp"
+    },
+    "Cauchy/Operators/Source/ChemicalSource.hpp": {
+      "implementation": "Cauchy/Operators/Source/ChemicalSource.cpp"
+    },
+    "Cauchy/Bindings/OperatorsBindInternal.hpp": {
+      "implementation": "Cauchy/Bindings/OperatorsBindInternal.cpp"
     }
   },
   "paths": [
@@ -1563,6 +1753,91 @@
       "old": "Cauchy/Implicit/LinearBlockKernels.hpp",
       "canonical": "Cauchy/Implicit/CPU/LinearBlockKernels.hpp",
       "physical": "Cauchy/Implicit/CPU/LinearBlockKernels.hpp"
+    },
+    {
+      "old": "Cauchy/Physics/EquationProperties.hpp",
+      "canonical": "Cauchy/Physics/PointProperties.hpp",
+      "physical": "Cauchy/Physics/PointProperties.hpp"
+    },
+    {
+      "old": "Cauchy/Physics/EquationProperties.cpp",
+      "canonical": "Cauchy/Physics/PointProperties.cpp",
+      "physical": "Cauchy/Physics/PointProperties.cpp"
+    },
+    {
+      "old": "Cauchy/Physics/EquationFlux.hpp",
+      "canonical": "Cauchy/Physics/PhysicalFlux.hpp",
+      "physical": "Cauchy/Physics/PhysicalFlux.hpp"
+    },
+    {
+      "old": "Cauchy/Physics/EquationTransport.hpp",
+      "canonical": "Cauchy/Physics/ViscousFlux.hpp",
+      "physical": "Cauchy/Physics/ViscousFlux.hpp"
+    },
+    {
+      "old": "Cauchy/Physics/EquationSetup.hpp",
+      "canonical": "Cauchy/Physics/PhysicsResources.hpp",
+      "physical": "Cauchy/Physics/PhysicsResources.hpp"
+    },
+    {
+      "old": "Cauchy/Physics/EquationSetup.cpp",
+      "canonical": "Cauchy/Physics/PhysicsResources.cpp",
+      "physical": "Cauchy/Physics/PhysicsResources.cpp"
+    },
+    {
+      "old": "Cauchy/Physics/EquationSource.hpp",
+      "canonical": "Cauchy/Operators/Source/ChemicalSource.hpp",
+      "physical": "Cauchy/Operators/Source/ChemicalSource.hpp"
+    },
+    {
+      "old": "Cauchy/Physics/EquationSource.cpp",
+      "canonical": "Cauchy/Operators/Source/ChemicalSource.cpp",
+      "physical": "Cauchy/Operators/Source/ChemicalSource.cpp"
+    },
+    {
+      "old": "Cauchy/Physics/CPU/EquationSourceKernels.hpp",
+      "canonical": "Cauchy/Operators/Source/CPU/ChemicalSourceKernels.hpp",
+      "physical": "Cauchy/Operators/Source/CPU/ChemicalSourceKernels.hpp"
+    },
+    {
+      "old": "Cauchy/Physics/CPU/EquationSourceKernels.cpp",
+      "canonical": "Cauchy/Operators/Source/CPU/ChemicalSourceKernels.cpp",
+      "physical": "Cauchy/Operators/Source/CPU/ChemicalSourceKernels.cpp"
+    },
+    {
+      "old": "Cauchy/Physics/EquationPositivity.hpp",
+      "canonical": "Cauchy/Physics/ThermalAdmissibility.hpp",
+      "physical": "Cauchy/Physics/ThermalAdmissibility.hpp"
+    },
+    {
+      "old": "Cauchy/Physics/EquationPositivity.cpp",
+      "canonical": "Cauchy/Physics/ThermalAdmissibility.cpp",
+      "physical": "Cauchy/Physics/ThermalAdmissibility.cpp"
+    },
+    {
+      "old": "Cauchy/Physics/InitialField.hpp",
+      "canonical": "Cauchy/Input/InitialField.hpp",
+      "physical": "Cauchy/Input/InitialField.hpp"
+    },
+    {
+      "old": "Cauchy/Physics/InitialField.cpp",
+      "canonical": "Cauchy/Input/InitialField.cpp",
+      "physical": "Cauchy/Input/InitialField.cpp"
+    },
+    {
+      "old": "Cauchy/Physics/FlowProfile.hpp",
+      "canonical": "Cauchy/Input/FlowProfile.hpp",
+      "physical": "Cauchy/Input/FlowProfile.hpp"
+    },
+    {
+      "old": "Cauchy/Physics/StateInput.hpp",
+      "canonical": "Cauchy/Input/StateInput.hpp",
+      "physical": "Cauchy/Input/StateInput.hpp"
+    },
+    {
+      "old": "Cauchy/Physics/StateInput.cpp",
+      "canonical": "Cauchy/Input/StateInput.cpp",
+      "physical": "Cauchy/Input/StateInput.cpp"
     }
   ],
   "splits": {
@@ -1579,6 +1854,38 @@
       "Geom/Unstructured/NativeMeshBuilder_Construct.cpp",
       "Geom/Connectivity/NativeMeshTopology_Prepare.cpp",
       "Geom/Unstructured/UnstructuredMesh_Topology.cpp"
+    ],
+    "Cauchy/Bindings/Operators_bind.cpp": [
+      "Cauchy/Bindings/Operators_bind.cpp",
+      "Cauchy/Bindings/Operators_bind_FiniteVolume.cpp",
+      "Cauchy/Bindings/Operators_bind_Linear.cpp",
+      "Cauchy/Bindings/Operators_bind_Nonlinear.cpp",
+      "Cauchy/Bindings/Operators_bind_State.cpp",
+      "Cauchy/Bindings/OperatorsBindInternal.cpp"
+    ],
+    "Cauchy/Config/SimulationConfig.cpp": [
+      "Cauchy/Config/SimulationConfig.cpp",
+      "Cauchy/Config/SimulationConfig_Schema.cpp",
+      "Cauchy/Config/SimulationConfig_Validation.cpp"
+    ],
+    "Cauchy/IO/Domain_Checkpoint.cpp": [
+      "Cauchy/IO/Domain_Checkpoint.cpp",
+      "Cauchy/IO/Domain_CheckpointRead.cpp",
+      "Cauchy/IO/Domain_CheckpointReadInternal.cpp",
+      "Cauchy/IO/Domain_CheckpointWrite.cpp",
+      "Cauchy/IO/CheckpointMetadata.cpp"
+    ],
+    "Cauchy/Physics/EquationRANS.cpp": [
+      "Cauchy/State/RANSState.cpp",
+      "Cauchy/Discretization/RANSReconstruction.cpp",
+      "Cauchy/Boundary/CPU/RANSWallKernels.cpp"
+    ],
+    "Cauchy/Physics/EquationRANS.hpp": [
+      "Cauchy/State/RANSState.hpp",
+      "Cauchy/Discretization/RANSReconstruction.hpp",
+      "Cauchy/Boundary/CPU/RANSWallKernels.hpp",
+      "Cauchy/Physics/RANSPoint.hpp",
+      "Cauchy/Physics/RANSFlux.hpp"
     ]
   }
 }

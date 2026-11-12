@@ -1,5 +1,5 @@
-#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/State/EquationDofs.hpp"
+#include "DNDS/MPI/Failure.hpp"
 #include <limits>
 #include <algorithm>
 #include <utility>

@@ -1,10 +1,11 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumeSourceKernels.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/State/RANSState.hpp"
+#include "Cauchy/Discretization/RANSReconstruction.hpp"
 
 namespace DNDS::Cauchy::CPU
 {
     using namespace EquationFVDetail;
-    NumericalStatus AddMeanSourceJacobian(const SourceKernelRequest &request, const EquationSystem &equation, EquationPointEvaluator &evaluator) noexcept
+    NumericalStatus AddMeanSourceJacobian(const SourceKernelRequest &request, const EquationSystem &equation, PointEvaluator &evaluator) noexcept
     {
         // Direction descriptors have exactly three entries. Validate once,
         // before both the point scratch fill and any output mutation.
@@ -25,7 +26,7 @@ namespace DNDS::Cauchy::CPU
                         for (int d = 0; d < dimension; ++d)
                             point.gradient(request.logicalFirst[iBlock] + j, d) = request.gradients[location.physicalField][d](iCell, location.firstComponent + j);
                 }
-            EquationPointProperties properties;
+            PointProperties properties;
             const auto status = evaluator.TryEvaluate(point.Flow(request.flowFirst), point.Species(request.speciesFirst, independent), 0,
                                                       {request.ransFirst >= 0, false, bool(request.linearization), request.chemical, request.chemical}, properties);
             if (!status)
@@ -67,7 +68,7 @@ namespace DNDS::Cauchy::CPU
         }
         return {};
     }
-    NumericalStatus AddQuadratureSourceJacobian(const SourceKernelRequest &request, const EquationSystem &equation, EquationPointEvaluator &evaluator) noexcept
+    NumericalStatus AddQuadratureSourceJacobian(const SourceKernelRequest &request, const EquationSystem &equation, PointEvaluator &evaluator) noexcept
     {
         const int dimension = request.dimension;
         if (dimension < 1 || dimension > 3)
@@ -80,7 +81,7 @@ namespace DNDS::Cauchy::CPU
             for (index iCell = 0; iCell < request.cells; ++iCell)
             {
                 Gather(request.blocks, iCell, point, false);
-                EquationPointProperties properties;
+                PointProperties properties;
                 const auto status = evaluator.TryEvaluate(
                     point.Flow(request.flowFirst), point.Species(request.speciesFirst, independent), 0,
                     {request.ransFirst >= 0, false, true, false, false}, properties);
@@ -92,7 +93,7 @@ namespace DNDS::Cauchy::CPU
             }
         }
         const auto addTerms = [&](index iCell, const PointScratch &at,
-                                  const EquationPointProperties &properties, real weight,
+                                  const PointProperties &properties, real weight,
                                   real wallDistance) -> NumericalStatus
         {
             if (request.ransFirst >= 0)
@@ -148,10 +149,10 @@ namespace DNDS::Cauchy::CPU
                 if (request.ransFirst >= 0)
                 {
                     const auto &model = equation.RANS();
-                    RANSStateView{model.Kind(), model.ComponentNumber()}.RepairReconstruction(
+                    RANSReconstructionView{model.Kind(), model.ComponentNumber()}.RepairPoint(
                         request.ransMean[iCell], point.values.data() + request.ransFirst);
                 }
-                EquationPointProperties properties;
+                PointProperties properties;
                 const auto status = evaluator.TryEvaluate(
                     point.Flow(request.flowFirst), point.Species(request.speciesFirst, independent), 0,
                     {request.ransFirst >= 0, false, false, request.chemical, request.chemical}, properties);
@@ -167,7 +168,7 @@ namespace DNDS::Cauchy::CPU
         }
         return {};
     }
-    NumericalStatus AddVolumeSources(const SourceKernelRequest &request, const EquationSystem &equation, EquationPointEvaluator &evaluator) noexcept
+    NumericalStatus AddVolumeSources(const SourceKernelRequest &request, const EquationSystem &equation, PointEvaluator &evaluator) noexcept
     {
         const int dimension = request.dimension;
         if (dimension < 1 || dimension > 3)
@@ -199,9 +200,9 @@ namespace DNDS::Cauchy::CPU
                 if (request.ransFirst >= 0)
                 {
                     const auto &model = equation.RANS();
-                    RANSStateView{model.Kind(), model.ComponentNumber()}.RepairReconstruction(request.ransMean[iCell], point.values.data() + request.ransFirst);
+                    RANSReconstructionView{model.Kind(), model.ComponentNumber()}.RepairPoint(request.ransMean[iCell], point.values.data() + request.ransFirst);
                 }
-                EquationPointProperties properties;
+                PointProperties properties;
                 const auto status = evaluator.TryEvaluate(point.Flow(request.flowFirst), point.Species(request.speciesFirst, independent), 0,
                                                           {request.ransFirst >= 0, false, false, request.chemical, false}, properties);
                 if (!status)

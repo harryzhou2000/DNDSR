@@ -3,7 +3,7 @@
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
 #include "Cauchy/Multigrid/PolynomialMultigrid.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
-#include "Cauchy/Physics/StateInput.hpp"
+#include "Cauchy/Input/StateInput.hpp"
 #include "Euler/EulerSolver.hpp"
 #include <functional>
 #include <iostream>

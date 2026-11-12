@@ -2,7 +2,7 @@
 #include "doctest.h"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Implicit/CPU/JacobianKernels.hpp"
-#include "Cauchy/Physics/EquationFlux.hpp"
+#include "Cauchy/Physics/PhysicalFlux.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "../CFV/ReconstructionFixture.hpp"
 #include "../CFV/RotatedSectorFixture.hpp"

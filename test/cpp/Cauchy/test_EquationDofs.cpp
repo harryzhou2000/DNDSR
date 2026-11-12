@@ -583,9 +583,9 @@ TEST_CASE("Semantic validation and writer reservation reject bad bindings withou
     auto pressureState = C::EquationDofs::Coupled(pressure, A::DofField<double>(fixture.space, 5));
     CHECK(pressureState.ComponentNumber() == 5);
     CHECK_THROWS(pressureState.RequireSchema(model.Schema())); // Same width, different equation meaning.
-    CHECK_THROWS(model.ValidateStateSchema(pressureState));
+    CHECK_THROWS(pressureState.RequireSchema(model.Schema()));
     auto ordinaryState = C::EquationDofs::Coupled(model.Schema(), A::DofField<double>(fixture.space, 5));
-    CHECK_NOTHROW(model.ValidateStateSchema(ordinaryState));
+    CHECK_NOTHROW(ordinaryState.RequireSchema(model.Schema()));
     CHECK(model.ResolveKernelProfile(R::Device::Host()) == C::EquationKernelProfile::CompressiblePerfectGasCPU);
     CHECK_THROWS(model.ResolveKernelProfile(R::Device::CUDA(0))); // No CPU fallback for a missing device kernel.
 }

@@ -1,4 +1,4 @@
-#include "Cauchy/Physics/InitialField.hpp"
+#include "Cauchy/Input/InitialField.hpp"
 
 namespace DNDS::Cauchy
 {

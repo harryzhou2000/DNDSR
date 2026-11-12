@@ -4,7 +4,7 @@
 #include "Cauchy/Core/Domain.hpp"
 #include "Cauchy/Implicit/ResidualConvergence.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
 #include "CartesianFixture.hpp"
 #include <cstring>
 
@@ -673,7 +673,7 @@ TEST_CASE("Logical polynomial FAS recovers nonconstant RANS and reacting mixture
         }
         settings.implicit.linear.method = "sgs";
         settings.implicit.linear.iterations = 3;
-        const auto setup = C::EquationSetup::Resolve(settings.equation);
+        const auto setup = C::PhysicsResources::Resolve(settings.equation);
         C::FiniteVolume fine(mesh, settings, setup.equation);
         A::DofBundle fields(fine.Metrics().Space());
         // Deliberately permute the physical allocation order and couple SA
@@ -822,7 +822,7 @@ TEST_CASE("Equation Domain performs one spatial FAS update per DITR coupled stag
     time.ditr.absoluteTolerance = 1e-7;
     time.ditr.relativeTolerance = 1e-7;
     C::Domain reference("reference", mesh, settings, time), retry("retry", mesh, settings, time);
-    const auto equation = C::EquationSetup::Resolve(settings.equation).equation;
+    const auto equation = C::PhysicsResources::Resolve(settings.equation).equation;
     Fill(reference.Discretization(), equation, reference.Dofs(), 0);
     Fill(retry.Discretization(), equation, retry.Dofs(), 0);
     REQUIRE(reference.Advance(.001).accepted);

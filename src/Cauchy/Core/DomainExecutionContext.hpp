@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Cauchy/Physics/EquationSetup.hpp"
+#include "Cauchy/Physics/PhysicsResources.hpp"
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
 
 #include <memory>

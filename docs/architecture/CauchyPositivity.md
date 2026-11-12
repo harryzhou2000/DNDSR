@@ -27,9 +27,9 @@ margin and the energy at `max(temperatureFloor, material.BaseTemperature())`.
 No equivalent gamma is used. The equation owner prepares the species energies;
 the numerical view performs arithmetic without chemistry callbacks.
 
-`EquationAdmissibilityPolicy` is the owning mean-state contract. It combines
+`AdmissibilityPolicy` is the owning mean-state contract. It combines
 the prepared thermal/species coefficients with the resolved RANS scalar policy
-and publishes one layout-independent `EquationAdmissibilityView`. `Domain`,
+and publishes one layout-independent `AdmissibilityView`. `Domain`,
 standalone finite-volume checks, restart validation and nonlinear acceptance
 therefore use the same row predicate. A mixture policy acquires a chemistry
 worker only during preparation; row checks perform no EOS inversion, worker

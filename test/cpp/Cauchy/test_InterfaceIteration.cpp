@@ -2,7 +2,7 @@
 #include "doctest.h"
 #include "Cauchy/Core/DomainPlacement.hpp"
 #include "Cauchy/Implicit/NonlinearSolve.hpp"
-#include "Cauchy/Physics/EquationSetup.hpp"
+#include "Cauchy/Physics/PhysicsResources.hpp"
 #include "DNDS/Runtime/Communication/RowTransfer.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"

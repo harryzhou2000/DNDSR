@@ -1,3 +1,4 @@
+#include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Core/OperatorSchedule.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeStateKernels.hpp"
@@ -6,7 +7,7 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumeBoundaryKernels.hpp"
 #include "Cauchy/Discretization/FiniteVolumeAuxiliaryInternal.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 
 namespace DNDS::Cauchy
@@ -15,7 +16,7 @@ namespace DNDS::Cauchy
     using AuxiliaryDetail::EquationAuxiliaryArrays;
     void FiniteVolume::FillMeanGradientBoundary(
         const EquationDofs &state, MeanGradients &gradients,
-        EquationPointEvaluator &evaluator, real time,
+        PointEvaluator &evaluator, real time,
         RHSScalarView incoming) const
     {
         DNDS_check_throw_info(gradients._data,
@@ -78,7 +79,7 @@ namespace DNDS::Cauchy
         const MPIInfo mpi(Metrics().Communicator());
         Metrics().Communication()->LocalStage([&]
                                               {
-            _data->equation.ValidateStateSchema(state);
+            state.RequireSchema(_data->equation.Schema());
             DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && state.Device() == R::Device::Host(), "mean gradient state space/backend differs");
             result._data = std::make_shared<MeanGradients::Data>(_data, state);
             auto &work = *result._data;
@@ -127,7 +128,7 @@ namespace DNDS::Cauchy
         {
             Metrics().Communication()->LocalStage(std::forward<decltype(action)>(action));
         };
-        std::optional<EquationPointEvaluator> evaluator;
+        std::optional<PointEvaluator> evaluator;
         std::optional<BoundaryInputs> boundary;
         std::optional<R::Array<real>::ReadLease> boundaryRead;
         RHSScalarView incoming;
@@ -138,7 +139,7 @@ namespace DNDS::Cauchy
               {
             DNDS_check_throw_info(gradients._data && gradients._data->owner.lock() == _data && stream.Context().device == R::Device::Host(), "foreign mean gradient workspace or non-CPU stream");
             gradients._data->binding.Check(state);
-            _data->equation.ValidateStateSchema(state);
+            state.RequireSchema(_data->equation.Schema());
             DNDS_check_throw_info(gradients.fields.size() == gradients._data->fields.size(), "mean gradient fields replaced");
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             {
@@ -256,7 +257,7 @@ namespace DNDS::Cauchy
     {
         Metrics().Validate();
         _data->partition.Validate();
-        _data->equation.ValidateStateSchema(state);
+        state.RequireSchema(_data->equation.Schema());
         _data->equation.ResolveKernelProfile(state.Device());
         DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && std::isfinite(time), "equation auxiliary row space/time differs");
         DNDS_check_throw_info(_data->equation.HasMixture() == bool(workers), "equation auxiliary needs exactly its matching worker backend");
@@ -333,7 +334,7 @@ namespace DNDS::Cauchy
     void FiniteVolume::ValidateAuxValues(const EquationDofs &state, const AuxiliaryValues &values, real time) const
     {
         Metrics().Validate();
-        _data->equation.ValidateStateSchema(state);
+        state.RequireSchema(_data->equation.Schema());
         DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && values._equationOrigin,
                               "equation auxiliary publication is missing or belongs to another path");
         const auto read = state.ReadWithGhost();

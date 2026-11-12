@@ -9,7 +9,7 @@
 
 namespace DNDS::Cauchy
 {
-    class EquationPointEvaluator;
+    class PointEvaluator;
 
     /// The mathematical state requested from a prepared physical boundary.
     /// Interface sources ignore this distinction: their sampled receiver-frame
@@ -27,7 +27,7 @@ namespace DNDS::Cauchy
     /// Prepared CPU equation-boundary producer. It owns an immutable equation
     /// descriptor and resolved logical offsets; each call receives only point
     /// scratch, geometry and an already-bound interface view. No worker is
-    /// acquired here: the caller constructs one EquationPointEvaluator per
+    /// acquired here: the caller constructs one PointEvaluator per
     /// concurrent batch and retains it through completion.
     ///
     /// Physical sources evaluate EOS/RANS laws without mutating a cell mean.
@@ -57,7 +57,7 @@ namespace DNDS::Cauchy
         NumericalStatus TryEvaluate(
             std::vector<real> &point, const BoundaryCondition &condition,
             index interfaceRow, const Vector3 &normal, const Vector3 &location,
-            EquationPointEvaluator &evaluator, const RigidFrame &frame,
+            PointEvaluator &evaluator, const RigidFrame &frame,
             real time, BoundaryPointStateKind stateKind,
             OptionalRef<const std::vector<real>> mean = {},
             real meanWallDistance = 0,
@@ -65,7 +65,7 @@ namespace DNDS::Cauchy
         void Evaluate(
             std::vector<real> &point, const BoundaryCondition &condition,
             index interfaceRow, const Vector3 &normal, const Vector3 &location,
-            EquationPointEvaluator &evaluator, const RigidFrame &frame,
+            PointEvaluator &evaluator, const RigidFrame &frame,
             real time, BoundaryPointStateKind stateKind,
             OptionalRef<const std::vector<real>> mean = {},
             real meanWallDistance = 0,

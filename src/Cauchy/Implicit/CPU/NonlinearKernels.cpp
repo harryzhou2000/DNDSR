@@ -2,13 +2,13 @@
 
 namespace DNDS::Cauchy::CPU
 {
-    NumericalStatus ValidateImplicitMeans(EquationLayoutView<const real> layout, EquationAdmissibilityView bounds) noexcept
+    NumericalStatus ValidateImplicitMeans(EquationLayoutView<const real> layout, AdmissibilityView bounds) noexcept
     {
         return DispatchCPUEquationLayouts([&](auto values) -> NumericalStatus
                                           {
             for (index iCell = 0; iCell < values.RowCount(); ++iCell)
                 if (!(bounds.Admissible(
-                    EquationPositivityDetail::PointRow<decltype(values)>{values, iCell})))
+                    ThermalAdmissibilityDetail::PointRow<decltype(values)>{values, iCell})))
                     return NumericalStatus{NumericalError::InvalidState, 1, iCell};
             return {}; }, layout);
     }
@@ -39,7 +39,7 @@ namespace DNDS::Cauchy::CPU
             std::vector<real> repairedSpecies(static_cast<size_t>(independent), 0);
             for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
             {
-                const EquationPositivityDetail::PointRow<decltype(mean)> old{mean, iCell};
+                const ThermalAdmissibilityDetail::PointRow<decltype(mean)> old{mean, iCell};
                 struct SelectedIncrement
                 {
                     decltype(delta) values;
@@ -204,7 +204,7 @@ namespace DNDS::Cauchy::CPU
                 // resulting scalar applies to the complete defect
                 // or common dTau; ApplyCorrectionImpl owns the
                 // exact repaired-mean guarantee.
-                const EquationPositivityDetail::PointRow<decltype(means)> mean{means, iCell};
+                const ThermalAdmissibilityDetail::PointRow<decltype(means)> mean{means, iCell};
                 struct TrialIncrement
                 {
                     decltype(defect) values;

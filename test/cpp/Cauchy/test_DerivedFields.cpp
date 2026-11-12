@@ -3,7 +3,7 @@
 #include "Cauchy/State/DerivedFields.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
 #include <cstdlib>
 
 namespace C = DNDS::Cauchy;

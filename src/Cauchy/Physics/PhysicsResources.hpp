@@ -7,7 +7,7 @@ namespace DNDS::Cauchy
     /// Setup-only ownership result. Immutable equation metadata and mutable
     /// worker capacity stay separate; neither kernels nor EquationSystem hide
     /// a global/thread-ID chemistry context. Domain retains both owners.
-    struct EquationSetup
+    struct PhysicsResources
     {
         EquationSystem equation;
         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers;
@@ -15,6 +15,6 @@ namespace DNDS::Cauchy
         /// performs no MPI; callers coordinate local failures before collectives.
         /// Paths follow Cantera lookup, with DNDS_MECH_PATH as an explicit
         /// fallback for a relative file that exists there. No backend fallback.
-        static EquationSetup Resolve(const EquationSettings &settings, index workerNumber = 1);
+        static PhysicsResources Resolve(const EquationSettings &settings, index workerNumber = 1);
     };
 }

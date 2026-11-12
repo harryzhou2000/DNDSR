@@ -13,16 +13,21 @@ set(CPPS
     Core/Simulation_Advance.cpp
 
     Config/SimulationConfig.cpp
+    Config/SimulationConfig_Validation.cpp
+    Config/SimulationConfig_Schema.cpp
 
     Physics/EquationSystem.cpp
-    Physics/EquationSetup.cpp
-    Physics/EquationProperties.cpp
-    Physics/EquationPositivity.cpp
-    Physics/EquationSource.cpp
-    Physics/CPU/EquationSourceKernels.cpp
-    Physics/EquationRANS.cpp
-    Physics/StateInput.cpp
-    Physics/InitialField.cpp
+    Physics/PhysicsResources.cpp
+    Physics/PointProperties.cpp
+    Physics/EquationSystem_PointProperties.cpp
+    Physics/ThermalAdmissibility.cpp
+    Operators/Source/ChemicalSource.cpp
+    Operators/Source/CPU/ChemicalSourceKernels.cpp
+    State/RANSState.cpp
+    Discretization/RANSReconstruction.cpp
+    Boundary/CPU/RANSWallKernels.cpp
+    Input/StateInput.cpp
+    Input/InitialField.cpp
 
     State/EquationDofs.cpp
     State/EquationDofCommunication.cpp
@@ -100,6 +105,10 @@ set(CPPS
     Multigrid/CPU/PolynomialMultigridKernels.cpp
 
     IO/Domain_Checkpoint.cpp
+    IO/Domain_CheckpointWrite.cpp
+    IO/Domain_CheckpointRead.cpp
+    IO/Domain_CheckpointReadInternal.cpp
+    IO/CheckpointMetadata.cpp
     IO/StateArchive.cpp
     IO/FiniteVolume_FieldOutput.cpp
     IO/Simulation_Checkpoint.cpp
@@ -112,6 +121,6 @@ dnds_add_lib(cauchy "${CPPS}" "physics;cfv;geom;dnds;${DNDS_EXTERNAL_LIBS}" "${D
 dnds_add_lib(cauchy_shared "${CPPS}" "physics_shared;cfv_shared;geom_shared;dnds_shared;${DNDS_EXTERNAL_LIBS}" "${DNDS_PCH_TARGETS_FAST}" ON ON ON)
 install(TARGETS cauchy_shared LIBRARY DESTINATION "DNDSR/lib" COMPONENT py OPTIONAL)
 install(TARGETS cauchy_shared LIBRARY DESTINATION "${PROJECT_SOURCE_DIR}/python/DNDSR/_lib" COMPONENT py OPTIONAL)
-dnds_add_py_module(cauchy_pybind11 "Bindings/cauchy_pybind11.cpp;Bindings/Operators_bind.cpp" "cauchy_shared;cfv_shared;geom_shared;dnds_shared;${DNDS_EXTERNAL_LIBS}" "${DNDS_PCH_TARGETS_FAST}" ON ON ON)
+dnds_add_py_module(cauchy_pybind11 "Bindings/cauchy_pybind11.cpp;Bindings/OperatorsBindInternal.cpp;Bindings/Operators_bind.cpp;Bindings/Operators_bind_State.cpp;Bindings/Operators_bind_Linear.cpp;Bindings/Operators_bind_Nonlinear.cpp;Bindings/Operators_bind_FiniteVolume.cpp" "cauchy_shared;cfv_shared;geom_shared;dnds_shared;${DNDS_EXTERNAL_LIBS}" "${DNDS_PCH_TARGETS_FAST}" ON ON ON)
 install(TARGETS cauchy_pybind11 DESTINATION "DNDSR/Cauchy/_ext" COMPONENT py OPTIONAL)
 install(TARGETS cauchy_pybind11 DESTINATION "${PROJECT_SOURCE_DIR}/python/DNDSR/Cauchy/_ext" COMPONENT py OPTIONAL)

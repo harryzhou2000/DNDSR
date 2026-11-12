@@ -1,6 +1,6 @@
 #include "Cauchy/Boundary/BoundarySystem.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/FlowProfile.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/Input/FlowProfile.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -15,7 +15,7 @@ namespace DNDS::Cauchy
     }
     namespace
     {
-        NumericalResult<FlowState> EquationValue(const BoundaryCondition &condition, EquationPointEvaluator &evaluator,
+        NumericalResult<FlowState> EquationValue(const BoundaryCondition &condition, PointEvaluator &evaluator,
                                                  const FlowState &inside, Physics::Chemistry::SpeciesBufferView rhoY,
                                                  const Vector3 &normal, const Vector3 &point, real time,
                                                  OptionalRef<const RigidFrame> frame, bool exterior) noexcept
@@ -44,7 +44,7 @@ namespace DNDS::Cauchy
                 }
                 if (condition.kind == BoundaryKind::Farfield)
                 {
-                    EquationPointProperties properties;
+                    PointProperties properties;
                     if (const auto status = evaluator.TryEvaluate(inside, rhoY, 0, {}, properties); !status)
                         return status;
                     const auto grid = frame ? frame.Get()->GridVelocity(point) : Vector3{};
@@ -91,7 +91,7 @@ namespace DNDS::Cauchy
                     target[d] += factor * (wall[d] - velocity[d]);
             if (condition.kind == BoundaryKind::NoSlipWall && condition.isothermal)
             {
-                EquationPointProperties properties;
+                PointProperties properties;
                 if (const auto status = evaluator.TryEvaluate(inside, rhoY, 0, {}, properties); !status)
                     return status;
                 const real density = properties.thermo.pressure / (properties.thermo.gasConstant * condition.temperature);
@@ -109,7 +109,7 @@ namespace DNDS::Cauchy
             return result;
         }
     }
-    FlowState BoundaryCondition::FaceValue(EquationPointEvaluator &evaluator, const FlowState &inside,
+    FlowState BoundaryCondition::FaceValue(PointEvaluator &evaluator, const FlowState &inside,
                                            Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
                                            const Vector3 &point, real time,
                                            OptionalRef<const RigidFrame> frame) const
@@ -118,7 +118,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(result.status, "boundary point evaluation failed");
         return result.value;
     }
-    NumericalResult<FlowState> BoundaryCondition::TryFaceValue(EquationPointEvaluator &evaluator, const FlowState &inside,
+    NumericalResult<FlowState> BoundaryCondition::TryFaceValue(PointEvaluator &evaluator, const FlowState &inside,
                                                                Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
                                                                const Vector3 &point, real time,
                                                                OptionalRef<const RigidFrame> frame) const noexcept
@@ -126,7 +126,7 @@ namespace DNDS::Cauchy
         return EquationValue(*this, evaluator, inside, rhoY, normal, point, time, frame, false);
     }
 
-    FlowState BoundaryCondition::Exterior(EquationPointEvaluator &evaluator, const FlowState &inside,
+    FlowState BoundaryCondition::Exterior(PointEvaluator &evaluator, const FlowState &inside,
                                           Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
                                           const Vector3 &point, real time,
                                           OptionalRef<const RigidFrame> frame) const
@@ -135,7 +135,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(result.status, "boundary point evaluation failed");
         return result.value;
     }
-    NumericalResult<FlowState> BoundaryCondition::TryExterior(EquationPointEvaluator &evaluator, const FlowState &inside,
+    NumericalResult<FlowState> BoundaryCondition::TryExterior(PointEvaluator &evaluator, const FlowState &inside,
                                                               Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
                                                               const Vector3 &point, real time,
                                                               OptionalRef<const RigidFrame> frame) const noexcept

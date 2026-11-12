@@ -1,8 +1,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/Core/Domain.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
 #include "Euler/Gas.hpp"
 #include "CartesianFixture.hpp"
 #include <limits>
@@ -72,10 +72,10 @@ TEST_CASE("Physical timestep PP agrees with Euler global compress-one bounds acr
         auto state = fv.Metrics().BuildField(Layout(scenario)), residual = fv.Metrics().BuildField(Layout(scenario));
         auto logicalState = C::EquationDofs::Coupled(equation.Schema(), state);
         auto logicalResidual = logicalState.RebindCoupled(residual);
-        const C::EquationThermalPolicy thermalPolicy(equation, settings.numerics.densityFloor,
-                                                     settings.numerics.temperatureFloor,
-                                                     settings.numerics.sensibleEnergyFloor,
-                                                     settings.numerics.pressureFloor);
+        const C::ThermalPolicy thermalPolicy(equation, settings.numerics.densityFloor,
+                                             settings.numerics.temperatureFloor,
+                                             settings.numerics.sensibleEnergyFloor,
+                                             settings.numerics.pressureFloor);
         const auto thermal = thermalPolicy.View();
         fv.Initialize(logicalState, {}, {1, 0, 0, 0, 1});
         const C::FlowState mean{1, 0, 0, 0, 2.5};
@@ -175,7 +175,7 @@ TEST_CASE("Equation mean trial and thermal dt preserve all block layouts and the
         settings.numerics.reconstruction = "gradient";
         settings.numerics.cfv.maxOrder = 1;
     }
-    const auto setup = C::EquationSetup::Resolve(settings.equation);
+    const auto setup = C::PhysicsResources::Resolve(settings.equation);
     const auto &equation = setup.equation;
     C::FiniteVolume fv(mesh, settings, equation);
     A::DofBundle fields(fv.Metrics().Space());
@@ -273,7 +273,7 @@ TEST_CASE("Equation mean trial and thermal dt preserve all block layouts and the
     }
     fv.InitializeConstant(state, {1.3, .1, -.2, .05, 1}, {{"H2", .03}, {"O2", .23}}, 4, setup.workers, {{"rhoNuTilde", .02}});
     const C::EquationDofOperations::Binding boundBefore(state);
-    const C::EquationThermalPolicy policy(equation, .1, 1, 0, 1e-12, setup.workers->Acquire());
+    const C::ThermalPolicy policy(equation, .1, 1, 0, 1e-12, setup.workers->Acquire());
     const auto thermal = policy.View();
     std::vector<double> old(size_t(state.ComponentNumber())), delta(old.size());
     {

@@ -1,6 +1,6 @@
-#include "Cauchy/Physics/StateInput.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/Input/StateInput.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/State/RANSState.hpp"
 
 namespace DNDS::Cauchy
 {

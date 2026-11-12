@@ -1,5 +1,5 @@
-#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Core/Simulation.hpp"
+#include "DNDS/MPI/Failure.hpp"
 #include "Cauchy/Interface/InterfaceCoupling.hpp"
 #include "DNDS/Serializer/SerializerH5.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"

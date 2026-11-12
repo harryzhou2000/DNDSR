@@ -64,11 +64,11 @@ namespace DNDS::Cauchy::CPU
         }
         return result;
     }
-    bool AdmissibleMeans(Algebra::DofComponentView<const real> values, EquationAdmissibilityView bounds)
+    bool AdmissibleMeans(Algebra::DofComponentView<const real> values, AdmissibilityView bounds)
     {
         bool valid = true;
         for (index iCell = 0; iCell < values.RowCount(); ++iCell)
-            valid &= bounds.Admissible(EquationPositivityDetail::PointRow<decltype(values)>{values, iCell});
+            valid &= bounds.Admissible(ThermalAdmissibilityDetail::PointRow<decltype(values)>{values, iCell});
         return valid;
     }
     NumericalResult<real> MinimumStableStep(Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows> sums,

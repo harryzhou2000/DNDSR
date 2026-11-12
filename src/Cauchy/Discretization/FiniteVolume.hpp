@@ -34,8 +34,8 @@ namespace DNDS::Cauchy
     {
         struct MeanLinearizationOutput;
     }
-    struct EquationThermalView;
-    class EquationAdmissibilityPolicy;
+    struct ThermalView;
+    class AdmissibilityPolicy;
     /// Persistent buffers/plans for explicit mean-gradient preparation. One
     /// field per physical equation allocation, columns component*dim+direction.
     /// Gradient values use the cell's mesh frame; periodic tensors are rotated
@@ -662,7 +662,7 @@ namespace DNDS::Cauchy
         /// thermal line; RANS positivity adds no separate dt ratio. Inputs must
         /// be ready, distinct and admissible. No EOS, mutation or payload MPI.
         PhysicalStepLimit LimitPhysicalStep(const EquationDofs &state, const EquationDofs &meanResidual,
-                                            const EquationThermalView &thermal, real dt, real relax, real scale, int compressionPower = 1) const;
+                                            const ThermalView &thermal, real dt, real relax, real scale, int compressionPower = 1) const;
         /// Initialize the logical flow block from a cell-averaged analytic
         /// profile. The current producer is available for pure perfect-gas
         /// flow5 states; extended states use InitializeConstant/InitializeField.
@@ -693,7 +693,7 @@ namespace DNDS::Cauchy
         /// Prepare the complete equation mean-state predicate. Mixtures require
         /// their retained worker pool exactly once here; subsequent row checks
         /// perform no EOS inversion or worker acquisition.
-        EquationAdmissibilityPolicy PrepareAdmissibility(
+        AdmissibilityPolicy PrepareAdmissibility(
             std::optional<Physics::Chemistry::ChemicalWorkerPool> workers =
                 std::nullopt) const;
         /// Collective owned-only admissibility using the plan's default
@@ -703,7 +703,7 @@ namespace DNDS::Cauchy
         /// Collective, layout-agnostic complete-equation mean-state check.
         /// The policy owner must outlive this synchronous call.
         bool Admissible(const EquationDofs &state,
-                        const EquationAdmissibilityPolicy &policy) const;
+                        const AdmissibilityPolicy &policy) const;
         index LastFaceFallbacks(const Workspace &workspace) const;
         /// Full-state variant also refreshes sampled source inputs from the
         /// retained polynomial before publishing their Jacobian provenance.
@@ -766,7 +766,7 @@ namespace DNDS::Cauchy
         /// array access and passes frozen operands to the free boundary kernel.
         void FillMeanGradientBoundary(
             const EquationDofs &state, MeanGradients &gradients,
-            EquationPointEvaluator &evaluator, real time,
+            PointEvaluator &evaluator, real time,
             RHSScalarView incoming) const;
         /// Established fixed perfect-gas Roe leaf selected by the equation
         /// Jacobian resolver. It is not a second public state API.
@@ -791,7 +791,7 @@ namespace DNDS::Cauchy
         bool AddEquationSourceJacobian(const EquationDofs &state,
                                        const JacobianContext &context,
                                        const Runtime::Array<real>::WriteLease &diagonal, DiagonalStorage storage,
-                                       real scale, EquationPointEvaluator &evaluator,
+                                       real scale, PointEvaluator &evaluator,
                                        OptionalRef<const EquationFVDetail::MeanLinearizationOutput> linearization = {}) const;
         index PrepareFaceCharacteristicMatrices(const CFV::FVField &state, index firstComponent,
                                                 Runtime::Array<real> &forward,

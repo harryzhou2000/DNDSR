@@ -3,10 +3,10 @@
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeRHSKernels.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
-#include "Cauchy/Physics/EquationFlux.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
-#include "Cauchy/Physics/EquationTransport.hpp"
+#include "Cauchy/Physics/PhysicalFlux.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/State/RANSState.hpp"
+#include "Cauchy/Physics/ViscousFlux.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
 
@@ -89,7 +89,7 @@ namespace DNDS::Cauchy
         diagnostics.Merge(fixedFlowRHS->ApplyFluxBorrowedFatal(input, scope.output, region, time));
     }
     void FiniteVolume::Workspace::ApplyRHS(const EquationDofs &state, EquationDofs &result, CFV::ReconstructionRegion region,
-                                           EquationPointEvaluator &evaluator, real time,
+                                           PointEvaluator &evaluator, real time,
                                            OptionalRef<const AuxiliaryValues> auxiliary,
                                            OptionalRef<R::Array<real>> faceOutput,
                                            RHSScalarView incoming)
@@ -121,7 +121,7 @@ namespace DNDS::Cauchy
                          destination.Descriptor(), false, faceOutput, incoming);
     }
     void FiniteVolume::Workspace::ApplyEquationRHS(const EquationDofs &state, CFV::ReconstructionRegion region,
-                                                   EquationPointEvaluator &evaluator, real time,
+                                                   PointEvaluator &evaluator, real time,
                                                    OptionalRef<const AuxiliaryValues> auxiliary,
                                                    const EquationDofs::ReadScope &mean, EquationLayoutView<const real> owned, EquationLayoutView<const real> remote,
                                                    EquationLayoutView<real> destination, EquationLayoutView<real> lowDestination, bool produceLow,

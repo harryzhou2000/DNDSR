@@ -6,7 +6,7 @@
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
 #include "Cauchy/State/EquationViews.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
 #include "Cauchy/Discretization/WallDistanceSamples.hpp"
 #include "Cauchy/Boundary/BoundaryPointOperator.hpp"
 
@@ -54,7 +54,7 @@ namespace DNDS::Cauchy::CPU
         RHSOutputView faceValues, lowFaceValues;
         Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::FixedRows<3>> wallFlux;
         WallDistanceView wall;
-        EquationThermalView thermal;
+        ThermalView thermal;
         RigidFrame frame;
         FiniteVolumeDetail::FluxKernelPolicy fluxPolicy;
         index ownedCells = 0, width = 0, flowFirst = -1, speciesFirst = -1, ransFirst = -1;
@@ -68,7 +68,7 @@ namespace DNDS::Cauchy::CPU
     /// Returns local fallback count; the facade publishes diagnostics afterward.
     NumericalResult<index> EvaluateEquationFlux(const EquationRHSRequest &, const EquationSystem &,
                                                 const BoundaryPointOperator &, const Riemann::RiemannFlux &,
-                                                EquationPointEvaluator &, EquationLayoutView<const real>,
+                                                PointEvaluator &, EquationLayoutView<const real>,
                                                 EquationLayoutView<const real>, EquationLayoutView<real>,
                                                 EquationLayoutView<real>, CFV::ReconstructionRegion) noexcept;
 }

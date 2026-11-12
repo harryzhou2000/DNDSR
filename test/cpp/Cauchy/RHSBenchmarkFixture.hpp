@@ -3,8 +3,8 @@
 // Private generated workload for the remaining plan53 measurements. No solver
 // algorithm lives here: all spatial/source/nonlinear work uses public Cauchy APIs.
 #include "Cauchy/Discretization/FiniteVolume.hpp"
-#include "Cauchy/Physics/EquationSetup.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Physics/PhysicsResources.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "CartesianFixture.hpp"
 
@@ -56,12 +56,12 @@ namespace Plan53
             return C::EquationDofs::Separate(fv.Equation().Schema(), std::move(bundle));
         }
         C::DomainSettings settings;
-        C::EquationSetup physical;
+        C::PhysicsResources physical;
         C::FiniteVolume fv;
         C::EquationDofs state, residual;
         std::vector<uint64_t> versions;
         RHSFixture(const DNDS::MPIInfo &mpi, I width, bool mixture, const std::string &limiter)
-            : settings(Settings(mixture, limiter)), physical(C::EquationSetup::Resolve(settings.equation)),
+            : settings(Settings(mixture, limiter)), physical(C::PhysicsResources::Resolve(settings.equation)),
               fv(CauchyTest::PeriodicQuads(mpi, width), settings, physical.equation),
               state(State(fv, mixture)), residual(C::EquationDofOperations::NewVector(state))
         {

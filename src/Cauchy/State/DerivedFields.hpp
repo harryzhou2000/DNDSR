@@ -10,7 +10,7 @@
 namespace DNDS::Cauchy
 {
     class EquationSystem;
-    class EquationPointEvaluator;
+    class PointEvaluator;
     enum class DerivedQuantity
     {
         Temperature,
@@ -97,9 +97,9 @@ namespace DNDS::Cauchy
     /// Same point core for a reserved mixture/perfect-gas worker. Species are
     /// explicit logical inputs, not inferred from the tail of a physical Array.
     /// Nonthrowing point-property projection; borrowed worker data is consumed here.
-    NumericalResult<DerivedPointValues> TryEvaluateDerivedPoint(EquationPointEvaluator &evaluator, const FlowState &state,
+    NumericalResult<DerivedPointValues> TryEvaluateDerivedPoint(PointEvaluator &evaluator, const FlowState &state,
                                                                 Physics::Chemistry::ConstSpeciesBufferView rhoY = {}, real temperatureGuess = 0) noexcept;
-    DerivedPointValues EvaluateDerivedPoint(EquationPointEvaluator &evaluator, const FlowState &state,
+    DerivedPointValues EvaluateDerivedPoint(PointEvaluator &evaluator, const FlowState &state,
                                             Physics::Chemistry::ConstSpeciesBufferView rhoY = {}, real temperatureGuess = 0);
 
     /// Refresh every enabled property at every row of the selected part. State

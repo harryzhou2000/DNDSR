@@ -1,12 +1,12 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
-#include "Cauchy/Physics/EquationSource.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/EquationTransport.hpp"
-#include "Cauchy/Physics/EquationFlux.hpp"
+#include "Cauchy/Operators/Source/ChemicalSource.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/Physics/ViscousFlux.hpp"
+#include "Cauchy/Physics/PhysicalFlux.hpp"
 #include "Cauchy/State/EquationTimeStepper.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
+#include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/Implicit/LinearSolver.hpp"
 #include "Cauchy/Boundary/BoundarySystem.hpp"
 #include "Euler/SourceTermContributor.hpp"
@@ -278,7 +278,7 @@ TEST_CASE("Mixture thermal references enforce a requested temperature through ac
     Fixture fixture;
     constexpr double temperature = 900;
     const double codeTemperature = temperature / fixture.scales.T0;
-    const C::EquationThermalPolicy policy(fixture.equation, 1e-12, codeTemperature, 1e-12, 1e-12, fixture.workers.Acquire());
+    const C::ThermalPolicy policy(fixture.equation, 1e-12, codeTemperature, 1e-12, 1e-12, fixture.workers.Acquire());
     const auto bounds = policy.View();
     for (int sample : {0, 5})
     {
@@ -347,7 +347,7 @@ TEST_CASE("Mixture thermal references enforce a requested temperature through ac
     base.row(0) = base.row(1) = one.transpose();
     higher = base;
     higher(0, 5) = -one[0] * 1e-12;
-    const C::EquationPositivityDetail::PointRow<Eigen::MatrixXd> speciesOnly{higher, 0};
+    const C::ThermalAdmissibilityDetail::PointRow<Eigen::MatrixXd> speciesOnly{higher, 0};
     CHECK(bounds.ClippedReference(speciesOnly, 0) != doctest::Approx(bounds.Reference(speciesOnly, 0)).epsilon(1e-14));
     CHECK_FALSE(bounds.Admissible(speciesOnly));
     CHECK(bounds.Admissible(speciesOnly, false));
@@ -447,8 +447,8 @@ TEST_CASE("Attached RANS leaves mixture thermal bounds and chemical Jacobian col
     R::Array<double> baseJac(R::RowLayout::Dense(rows, fixture.components * fixture.components));
     C::EvaluateChemicalSource(fixture.equation, base, baseSource, fixture.workers.Acquire(), std::ref(baseJac));
     C::EvaluateChemicalSource(equation, state, source, fixture.workers.Acquire(), std::ref(jac));
-    C::EquationThermalPolicy bounds(equation, 1e-10, .5, 0., 1e-10, fixture.workers.Acquire());
-    C::EquationThermalPolicy baseBounds(fixture.equation, 1e-10, .5, 0., 1e-10, fixture.workers.Acquire());
+    C::ThermalPolicy bounds(equation, 1e-10, .5, 0., 1e-10, fixture.workers.Acquire());
+    C::ThermalPolicy baseBounds(fixture.equation, 1e-10, .5, 0., 1e-10, fixture.workers.Acquire());
     const auto input = state.ReadOwned(), output = source.ReadOwned(), baseInput = base.ReadOwned(), baseOutput = baseSource.ReadOwned();
     const auto inputLayout = input.ComponentLayout(), outputLayout = output.ComponentLayout(),
                baseInputLayout = baseInput.ComponentLayout(), baseOutputLayout = baseOutput.ComponentLayout();
@@ -460,8 +460,8 @@ TEST_CASE("Attached RANS leaves mixture thermal bounds and chemical Jacobian col
     for (I iCell = 0; iCell < rows; ++iCell)
     {
         for (int constraint = 0; constraint < 2; ++constraint)
-            CHECK(bounds.View().Sensible(C::EquationPositivityDetail::PointRow<decltype(u)>{u, iCell}, constraint) ==
-                  doctest::Approx(baseBounds.View().Sensible(C::EquationPositivityDetail::PointRow<decltype(ub)>{ub, iCell}, constraint)).epsilon(1e-13));
+            CHECK(bounds.View().Sensible(C::ThermalAdmissibilityDetail::PointRow<decltype(u)>{u, iCell}, constraint) ==
+                  doctest::Approx(baseBounds.View().Sensible(C::ThermalAdmissibilityDetail::PointRow<decltype(ub)>{ub, iCell}, constraint)).epsilon(1e-13));
         for (I j = 0; j < fixture.components; ++j)
         {
             CHECK(s(iCell, mapped(j)) == doctest::Approx(sb(iCell, j)).epsilon(1e-11));
@@ -776,12 +776,12 @@ TEST_CASE("Mixture viscous transport matches Euler heat and species enthalpy flu
     const auto thermal = legacy.conservativeThermal(u, point.thermo.temperature, 1e-12);
     Eigen::Matrix<double, 3, Eigen::Dynamic> primitiveGradient;
     DNDS::Euler::Gas::GradientCons2Prim_IdealGas<3>(u, oldGradient, primitiveGradient, thermal.gammaEq, legacy.mixtureBaseInternalRhoESpecies());
-    C::EquationTransportScratch scratch(fixture.species);
+    C::ViscousFluxScratch scratch(fixture.species);
     const C::Vector3 normal{2. / 3, -1. / 3, 2. / 3};
     for (bool wall : {false, true})
     {
         CAPTURE(wall);
-        C::EquationTransportOptions options;
+        C::ViscousFluxOptions options;
         options.adiabatic = options.impermeable = wall;
         options.turbulentViscosity = .3 * point.transport.viscosity;
         options.turbulentConductivity = .2 * point.transport.conductivity;

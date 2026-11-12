@@ -1,5 +1,5 @@
-#include "Cauchy/State/CPU/FieldKernels.hpp"
 #include "Cauchy/Implicit/LinearSolver.hpp"
+#include "Cauchy/State/CPU/FieldKernels.hpp"
 #include "Cauchy/Core/OperatorSchedule.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"

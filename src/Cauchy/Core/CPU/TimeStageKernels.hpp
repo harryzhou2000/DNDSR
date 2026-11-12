@@ -1,7 +1,7 @@
 #pragma once
 #include "DNDS/Core/NumericalStatus.hpp"
 #include "Cauchy/Discretization/FiniteVolumeViews.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/Physics/Positivity.hpp"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
 namespace DNDS::Cauchy::CPU

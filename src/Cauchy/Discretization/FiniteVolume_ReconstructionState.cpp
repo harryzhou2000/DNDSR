@@ -1,3 +1,4 @@
+#include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
 #include "DNDS/Runtime/Execution/SessionAccess.hpp"
@@ -7,11 +8,11 @@
 #include "DNDS/Algebra/DofHalo.hpp"
 #include "Cauchy/Core/DomainExecutionContext.hpp"
 #include "Cauchy/Core/OperatorSchedule.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
-#include "Cauchy/Physics/EquationTransport.hpp"
-#include "Cauchy/Physics/EquationFlux.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/Physics/ViscousFlux.hpp"
+#include "Cauchy/Physics/PhysicalFlux.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
+#include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/State/EquationDofCommunication.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
@@ -232,7 +233,7 @@ namespace DNDS::Cauchy
                                   _meanVersions.size() ==
                                       size_t(_means.PhysicalFieldNumber()),
                               "invalid interface donor publication");
-        _owner->equation.ValidateStateSchema(_means);
+        _means.RequireSchema(_owner->equation.Schema());
         for (index iField = 0; iField < _means.PhysicalFieldNumber(); ++iField)
         {
             _owner->metrics.ValidateField(
@@ -346,7 +347,7 @@ namespace DNDS::Cauchy
     FiniteVolume::PublishVariationalInterfaceDonor(
         const EquationDofs &state, const EquationDofs &coefficients) const
     {
-        _data->equation.ValidateStateSchema(state);
+        state.RequireSchema(_data->equation.Schema());
         DNDS_check_throw_info(
             _data->reconstruction && state.Space().Same(Metrics().Space()) &&
                 coefficients.Space().Same(state.Space()) &&
@@ -369,7 +370,7 @@ namespace DNDS::Cauchy
     void FiniteVolume::ValidateWorkspace(const EquationDofs &state, const Workspace &work) const
     {
         DNDS_check_throw_info(work.owner == _data, "foreign equation workspace");
-        _data->equation.ValidateStateSchema(state);
+        state.RequireSchema(_data->equation.Schema());
         DNDS_check_throw_info(state.Space().Same(Metrics().Space()) &&
                                   state.ComponentNumber() == work.componentNumber &&
                                   state.PhysicalFieldNumber() == work.physicalFieldNumber,

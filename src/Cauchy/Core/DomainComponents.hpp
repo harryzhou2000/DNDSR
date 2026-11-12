@@ -5,7 +5,7 @@
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
 #include "Cauchy/Implicit/NonlinearSolve.hpp"
 #include "Cauchy/Multigrid/PolynomialMultigrid.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
 #include "Cauchy/State/EquationTimeStepper.hpp"
 
 #include <array>
@@ -20,7 +20,7 @@ namespace DNDS::Cauchy
         std::string name;
         EquationSystem equation;
         FiniteVolume finiteVolume;
-        std::optional<EquationAdmissibilityPolicy> admissibility;
+        std::optional<AdmissibilityPolicy> admissibility;
 
         DomainProblem(std::string name, ssp<Geom::UnstructuredMesh> mesh,
                       const DomainSettings &settings, const TimeSettings &time,

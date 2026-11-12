@@ -1,7 +1,7 @@
 #pragma once
 #include "DNDS/Core/NumericalStatus.hpp"
-#include "Cauchy/Physics/EquationSource.hpp"
-#include "Cauchy/Physics/EquationProperties.hpp"
+#include "Cauchy/Operators/Source/ChemicalSource.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
 #include "DNDS/Core/Span.hpp"
 namespace DNDS::Cauchy::CPU
 {
@@ -14,5 +14,5 @@ namespace DNDS::Cauchy::CPU
                                          EquationBlockArrayView<real> sourceSpecies, SpanView<const EquationBlockArrayView<real>> nonchemical,
                                          SpanView<const index> columns, index components, index speciesFirst, int species, real sourceScale,
                                          std::optional<Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows>> matrix,
-                                         std::optional<EquationBlockArrayView<const real>> oldT, EquationPointEvaluator &evaluator) noexcept;
+                                         std::optional<EquationBlockArrayView<const real>> oldT, PointEvaluator &evaluator) noexcept;
 }

@@ -47,7 +47,7 @@ namespace DNDS::Cauchy::CPU
         return {};
     }
     NumericalStatus CompleteEquationJacobian(const EquationJacobianPreparation &request, const BoundaryPointOperator &boundaryOperator,
-                                             EquationPointEvaluator &evaluator, bool ownedPropertiesPrepared) noexcept
+                                             PointEvaluator &evaluator, bool ownedPropertiesPrepared) noexcept
     {
         const auto &snapshot = request.snapshot;
         const auto &blocks = request.blocks;
@@ -76,7 +76,7 @@ namespace DNDS::Cauchy::CPU
         {
             EquationFVDetail::Gather(blocks, iCell, point, false);
             const bool source = request.directChemicalSource && iCell < owned && request.independent > 0;
-            EquationPointProperties properties;
+            PointProperties properties;
             const auto status = evaluator.TryEvaluate(point.Flow(snapshot.flowFirst), point.Species(snapshot.speciesFirst, request.independent), 0, {false, false, true, source, source}, properties);
             if (!status)
                 return status.At(iCell);
@@ -130,7 +130,7 @@ namespace DNDS::Cauchy::CPU
             }
             for (index j = 0; j < nv; ++j)
                 boundaryMeans(entry, j) = point.values[size_t(j)];
-            EquationPointProperties properties;
+            PointProperties properties;
             const auto status = evaluator.TryEvaluate(
                 point.Flow(snapshot.flowFirst),
                 point.Species(snapshot.speciesFirst,

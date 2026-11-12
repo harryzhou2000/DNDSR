@@ -1,7 +1,8 @@
 #pragma once
 #include "DNDS/Core/NumericalStatus.hpp"
-#include "Cauchy/Physics/EquationPositivity.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
+#include "Cauchy/Physics/ThermalAdmissibility.hpp"
+#include "Cauchy/State/RANSState.hpp"
+#include "Cauchy/Discretization/RANSReconstruction.hpp"
 #include "DNDS/Algebra/DofComponentView.hpp"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
 
@@ -19,7 +20,7 @@ namespace DNDS::Cauchy::CPU
     {
         PPInput means;
         PPIndexInput offsets;
-        EquationThermalView bounds;
+        ThermalView bounds;
         RANSReconstructionView rans;
         index ransFirst = -1;
         int modes = 0, maxOrder = 0;
@@ -43,5 +44,5 @@ namespace DNDS::Cauchy::CPU
     /// Read-only whole-equation physical-step forecast. The caller reduces
     /// these statistics and chooses the common dt; no state repair occurs.
     NumericalResult<std::pair<index, real>> LimitPhysicalStepRows(PPInput mean, PPInput rhs, CFV::FiniteVolumeHostView metric,
-                                                                  EquationThermalView thermal, real dt, real relax, real scale, int compressionPower) noexcept;
+                                                                  ThermalView thermal, real dt, real relax, real scale, int compressionPower) noexcept;
 }

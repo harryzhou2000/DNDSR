@@ -1,12 +1,12 @@
-#include "Cauchy/Physics/EquationSetup.hpp"
+#include "Cauchy/Physics/PhysicsResources.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
-#include "Cauchy/Physics/StateInput.hpp"
+#include "Cauchy/Input/StateInput.hpp"
 #include <filesystem>
 #include <cstdlib>
 
 namespace DNDS::Cauchy
 {
-    EquationSetup EquationSetup::Resolve(const EquationSettings &settings, index workerNumber)
+    PhysicsResources PhysicsResources::Resolve(const EquationSettings &settings, index workerNumber)
     {
         const auto scales = ResolveReferenceScales(settings);
         if (settings.eos == "perfectGas")

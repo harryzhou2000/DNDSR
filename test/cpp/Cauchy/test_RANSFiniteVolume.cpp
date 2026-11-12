@@ -4,8 +4,8 @@
 #include "Cauchy/Discretization/FiniteVolume.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
 #include "Cauchy/Discretization/WallDistanceSamples.hpp"
-#include "Cauchy/Physics/EquationRANS.hpp"
-#include "Cauchy/Physics/EquationSetup.hpp"
+#include "Cauchy/State/RANSState.hpp"
+#include "Cauchy/Physics/PhysicsResources.hpp"
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/Implicit/LinearProblem.hpp"
 #include "Cauchy/Implicit/NonlinearSolver.hpp"
@@ -733,7 +733,7 @@ TEST_CASE("Two-equation boundary points use mean wall distance and the correct t
                 settings.equation.viscosity = 0;
                 settings.equation.mixture.mechanismFile = "h2o2.yaml";
             }
-            auto setup = C::EquationSetup::Resolve(settings.equation);
+            auto setup = C::PhysicsResources::Resolve(settings.equation);
             const auto &equation = setup.equation;
             const auto &model = equation.RANS();
             const C::BoundaryPointOperator boundaryPoint(equation);

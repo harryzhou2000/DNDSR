@@ -1,5 +1,5 @@
-#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "Cauchy/Core/NumericalFailure.hpp"
 #include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeBoundaryKernels.hpp"
 
@@ -9,7 +9,7 @@ namespace DNDS::Cauchy
 
     void FiniteVolume::Workspace::FillBoundary(
         const EquationDofs &state, bool polynomial, real time,
-        EquationPointEvaluator &evaluator, RHSScalarView incoming)
+        PointEvaluator &evaluator, RHSScalarView incoming)
     {
         const PhaseTime timing(*this, BoundaryPhase);
         const auto mean = state.ReadOwned();

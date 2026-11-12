@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
-#include "Cauchy/Physics/FlowProfile.hpp"
+#include "Cauchy/Input/FlowProfile.hpp"
 #include "../CFV/ReconstructionFixture.hpp"
 
 namespace C = DNDS::Cauchy;
