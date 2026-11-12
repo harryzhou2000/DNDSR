@@ -67,6 +67,23 @@ Do not add independent maxima or count them again in composed totals.
 
 ## Broad production-process batch (preferred starting point)
 
+The driver accepts CPU-inline overlap-on/off configurations with caller-driven
+MPI. With overlap enabled, auxiliary exchange spans include concurrent core
+work, so only `composed-correction` is emitted as a `BROAD_OPERATOR` elapsed
+comparison; exclusive phase/rank decompositions are suppressed. Nested detail
+scopes remain raw host observations and are not additive. The timing contract
+is printed explicitly. Each measured native batch joins its computation stream
+before stopping the elapsed clock; this does not insert waits between kernels.
+The solver's normal nonlinear synchronization remains unchanged.
+
+For stable timing, use an untimed warm-up (already performed for both solvers),
+then repeated reset batches and multiple trials. Plan60 uses 32 corrections,
+10 repetitions and five trials, alternating solver order by trial. Each emitted
+time is the average 32-correction batch duration within that trial, followed by
+maximum across ranks. Report trial median/spread; this is not a converged solve
+or 1600 consecutive corrections. Preflight safety agreements are controlled by
+the input and must be explicitly off in the acceptance comparison.
+
 ```sh
 cmake --build build-refactor -t cauchy_diagnostic_driver_phases -j16
 OMP_NUM_THREADS=1 mpirun -np 2 \

@@ -48,8 +48,15 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
     DNDS_check_throw_info(counts[0] >= 50000 && counts[1] >= 1000,
                           "broad diagnosis requires >=50000 real SA cells and >=1000 owned cells/rank");
     const auto &oldConfig = solver.getConfiguration();
-    DNDS_check_throw_info(!settings.execution.overlap && settings.execution.hostThreads == 0,
-                          "broad timing partition currently requires synchronous CPU-inline execution");
+    DNDS_check_throw_info(settings.execution.hostThreads == 0 && settings.execution.communicationExecution == "caller",
+                          "broad timing scopes require CPU-inline kernels and caller-driven MPI");
+    // MPI may progress while inline core kernels run. In that mode the
+    // auxiliary exchange interval includes core work: subtracting nested
+    // scopes would double-count it. Only the completed batch is a comparable
+    // elapsed interval; raw scope observations remain diagnostic evidence.
+    const bool exclusiveTiming = !settings.execution.overlap;
+    if (!mpi.rank)
+        std::cout << "BROAD_TIMING_CONTRACT " << C::Json{{"overlap", settings.execution.overlap}, {"exclusive_phase_decomposition", exclusiveTiming}, {"primary_comparison", "completed-composed-correction-batch"}, {"detail_scopes", "nested-host-observations-not-additive"}}.dump() << std::endl;
     const auto &linear = oldConfig.linearSolverControl;
     DNDS_check_throw_info((linear.jacobiCode == 1 || linear.jacobiCode == 2) && (linear.gmresCode == 0 || linear.gmresCode == 1) &&
                               oldConfig.implicitReconstructionControl.nInternalRecStep == 1 &&
@@ -424,6 +431,8 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
                 composed();
             else
                 legacy.composed();
+            if (native)
+                stream.Record().WaitHost();
             const double elapsed = MPI_Wtime() - start;
             DiagnosticTiming::active = nullptr;
             if (traceAuxiliary)
@@ -459,19 +468,20 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
             }
             DNDS_check_throw_info(observation.spatialCalls >= 1 && observation.auxiliaryCalls > 0,
                                   "broad production scopes did not observe one complete pipeline");
-            const double spatial = observation.spatialInclusive - (native ? observation.auxiliary : 0.);
-            const double correction = elapsed - observation.auxiliary - spatial;
-            DNDS_check_throw_info(spatial >= 0 && correction >= 0, "overlapping/invalid synchronous timing scopes");
+            const double spatial = exclusiveTiming ? observation.spatialInclusive - (native ? observation.auxiliary : 0.)
+                                                   : observation.spatialInclusive;
+            const double correction = exclusiveTiming ? elapsed - observation.auxiliary - spatial : 0.;
+            DNDS_check_throw_info(spatial >= 0 && correction >= 0, "invalid synchronous timing scopes");
             total[0] += observation.auxiliary;
             total[1] += spatial;
             total[2] += correction;
             total[3] += elapsed;
             const double matrixLinear = std::accumulate(observation.levelMatrixLinear.begin(), observation.levelMatrixLinear.end(), 0.);
             total[4] += matrixLinear;
-            total[5] += correction - matrixLinear;
+            total[5] += exclusiveTiming ? correction - matrixLinear : 0.;
             total[6] += std::accumulate(observation.levelMatrix.begin(), observation.levelMatrix.end(), 0.);
             total[7] += std::accumulate(observation.levelLinear.begin(), observation.levelLinear.end(), 0.);
-            DNDS_check_throw_info(matrixLinear >= 0 && correction + 1e-9 >= matrixLinear, "matrix/linear scopes exceed implicit remainder");
+            DNDS_check_throw_info(matrixLinear >= 0 && (!exclusiveTiming || correction + 1e-9 >= matrixLinear), "matrix/linear scopes exceed implicit remainder");
             for (int level = 0; level < 3; ++level)
             {
                 sourceRefreshes[level] += observation.correctionSourceCalls[level];
@@ -480,7 +490,7 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
                     details[3 * detail + level] += observation.details[detail][level];
                 perLevel[2 * level] += observation.levelAuxiliary[level];
                 perLevel[2 * level + 1] += observation.levelSpatialInclusive[level] -
-                                           (native ? observation.levelAuxiliary[level] : 0.);
+                                           (native && exclusiveTiming ? observation.levelAuxiliary[level] : 0.);
                 perLevel[6 + 2 * level] += observation.levelAuxiliaryCalls[level];
                 perLevel[7 + 2 * level] += observation.levelSpatialCalls[level];
                 perLevel[12 + level] += observation.levelMatrixLinear[level];
@@ -509,7 +519,7 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
         std::copy(perLevel.begin(), perLevel.end(), rankRecord.begin() + 4);
         std::vector<double> rankRecords(!mpi.rank ? 37 * mpi.size : 0);
         MPI_Gather(rankRecord.data(), 37, MPI_DOUBLE, rankRecords.data(), 37, MPI_DOUBLE, 0, mpi.comm);
-        if (!mpi.rank)
+        if (!mpi.rank && exclusiveTiming)
             std::cout << "BROAD_RANK_TIMES " << C::Json{{"solver", native ? "Cauchy" : "Euler"}, {"columns", {"aux", "reconstructionRHS", "implicit", "total", "P3aux", "P3RHS", "P1aux", "P1RHS", "P0aux", "P0RHS", "P3auxScopes", "P3RHScalls", "P1auxScopes", "P1RHScalls", "P0auxScopes", "P0RHScalls", "P3matrixLinear", "P1matrixLinear", "P0matrixLinear", "P3matrixLinearCalls", "P1matrixLinearCalls", "P0matrixLinearCalls", "P3matrix", "P1matrix", "P0matrix", "P3linear", "P1linear", "P0linear", "P3auxPrepare", "P1auxPrepare", "P0auxPrepare", "P3auxExchange", "P1auxExchange", "P0auxExchange", "P3auxCompute", "P1auxCompute", "P0auxCompute"}}, {"rank_rows", rankRecords}}.dump() << std::endl;
         // These are maxima of local sums. The critical rank can differ across
         // blocks, so do not add reduced blocks to claim a composed interval.
@@ -527,8 +537,15 @@ static void RunBatch(E::EulerSolver<E::NS_SA> &solver, C::DomainSettings setting
         DNDS_check_throw_info(outputs == baseline, "broad frozen-repeat output changed");
         const std::array<const char *, 8> phases{"auxiliary", "reconstruction-rhs", "implicit-correction", "composed-correction", "matrix-linear", "implicit-other", "matrix", "linear"};
         for (int iPhase = 0; iPhase < 8; ++iPhase)
+        {
+            // Do not publish an exclusive decomposition for overlapping work.
+            // BROAD_* scope records are raw host observations, not additive
+            // costs. The complete batch includes all nonlinear synchronization.
+            if (!exclusiveTiming && iPhase != 3)
+                continue;
             if (!mpi.rank)
                 std::cout << "BROAD_OPERATOR " << C::Json{{"phase", phases[iPhase]}, {"trial", trial}, {"repetitions", repetitions}, {"native_seconds", nativeSeconds[iPhase]}, {"euler_seconds", oldSeconds[iPhase]}, {"outputs", outputs}, {"timing", "external-whole-call-max-rank"}, {"preserves_production_call_sequence", true}, {"Euler_ODE_arithmetic", "production-BDF1-Step"}, {"pMG_levels", levels}, {"nonlinear_corrections", corrections}, {"nonlinear_stopping_norm_in_scope", nonlinearController}, {"reset_and_prerequisites_timed", false}, {"internal_counters_used", false}}.dump() << std::endl;
+        }
     }
 }
 
