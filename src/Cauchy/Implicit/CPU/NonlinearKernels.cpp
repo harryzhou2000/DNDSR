@@ -21,6 +21,49 @@ namespace DNDS::Cauchy::CPU
                                           { return AssembleDefectRows(u, r, b, y, metric, mean.ComponentNumber(), mass, rhsScale, [&](index j)
                                                                       { return active.empty() || active[j]; }, normOrder, measureNorm, norm); }, mean, residual, constant, output);
     }
+
+    // Keep these helpers at namespace scope: clangd 21.1.0 and 23.1.0
+    // segfault in Sema::tryCaptureVariable while instantiating a local class
+    // whose member type depends on a generic-lambda parameter.
+    namespace
+    {
+        template <class IncrementView>
+        struct SelectedIncrement
+        {
+            IncrementView values;
+            index row;
+            real scale;
+            SpanView<const uint8_t> active;
+            real operator[](index j) const
+            {
+                return active.empty() || active[j] ? scale * values(row, j) : 0;
+            }
+        };
+
+        template <class Increment>
+        struct LimitedIncrement
+        {
+            const Increment &values;
+            real factor;
+            real operator[](index j) const { return factor * values[j]; }
+        };
+
+        template <class Increment, class OldState>
+        struct StoredIncrement
+        {
+            const Increment &values;
+            const OldState &oldState;
+            SpanView<const real> species;
+            index first, count;
+            real operator[](index j) const
+            {
+                return !species.empty() && j >= first && j < first + count
+                           ? species[j - first] - oldState[j]
+                           : values[j];
+            }
+        };
+    }
+
     NumericalResult<CorrectionResult> ApplyCorrection(const CorrectionControls &control,
                                                       Algebra::DofComponentView<const real> inputMean, Algebra::DofComponentView<const real> inputDelta,
                                                       Algebra::DofComponentView<real> output) noexcept
@@ -40,14 +83,8 @@ namespace DNDS::Cauchy::CPU
             for (index iCell = 0; iCell < mean.RowCount(); ++iCell)
             {
                 const ThermalAdmissibilityDetail::PointRow<decltype(mean)> old{mean, iCell};
-                struct SelectedIncrement
-                {
-                    decltype(delta) values;
-                    index row;
-                    real scale;
-                    SpanView<const uint8_t> active;
-                    real operator[](index j) const { return active.empty() || active[j] ? scale * values(row, j) : 0; }
-                } change{delta, iCell, scale, active};
+                using Selected = SelectedIncrement<decltype(delta)>;
+                Selected change{delta, iCell, scale, active};
                 real alpha = 1;
                 if (control.positivity)
                 {
@@ -61,12 +98,8 @@ namespace DNDS::Cauchy::CPU
                     if (!(std::isfinite(alpha) && alpha >= 0 && alpha <= 1))
                         return NumericalStatus{NumericalError::InvalidState, 1, iCell};
                 }
-                struct LimitedIncrement
-                {
-                    const SelectedIncrement &values;
-                    real factor;
-                    real operator[](index j) const { return factor * values[j]; }
-                } limitedChange{change, alpha};
+                using Limited = LimitedIncrement<Selected>;
+                Limited limitedChange{change, alpha};
                 if (control.positivity && independent)
                 {
                     // PP POLICY -- exact stored species target. Repair once
@@ -89,21 +122,9 @@ namespace DNDS::Cauchy::CPU
                     Physics::Chemistry::RepairSpeciesDensities(
                         old[control.flowFirst] + limitedChange[control.flowFirst], species, independent);
                 }
-                struct StoredIncrement
-                {
-                    const LimitedIncrement &values;
-                    const decltype(old) &oldState;
-                    SpanView<const real> species;
-                    index first, count;
-                    real operator[](index j) const
-                    {
-                        return !species.empty() && j >= first && j < first + count
-                                   ? species[j - first] - oldState[j]
-                                   : values[j];
-                    }
-                } storedChange{limitedChange, old,
-                               control.positivity && independent ? SpanView<const real>{repairedSpecies.data(), index(repairedSpecies.size())} : SpanView<const real>{},
-                               control.speciesFirst, independent};
+                StoredIncrement<Limited, decltype(old)> storedChange{limitedChange, old,
+                                                                     control.positivity && independent ? SpanView<const real>{repairedSpecies.data(), index(repairedSpecies.size())} : SpanView<const real>{},
+                                                                     control.speciesFirst, independent};
                 real fix = 1;
                 if (control.positivity)
                 {
