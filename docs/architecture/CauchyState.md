@@ -952,6 +952,9 @@ same `BoundaryCondition::FaceValue/Exterior` overloads take an explicit point
 evaluator and preallocated Ns-1 scratch. They retain no worker or Array. Validate
 the supported producer once with `ValidateEquationProducer` before a point loop;
 keep the evaluator exclusive and provide correctly sized ready point inputs.
+An optional rigid frame is an explicit synchronous `OptionalRef`, not a nullable
+owning pointer; point kernels resolve its bare view once before their arithmetic
+and the caller retains the frame through the call.
 Copy/gather a mean or reconstructed state into scratch before calling: species
 may change with prescribed composition or wall density. No transfer is needed
 for these local physical boundary buffers.

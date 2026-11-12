@@ -129,7 +129,8 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         if (sample.boundary.kind == BoundaryKind::Interface)
             return Load(incoming, sample.boundaryPoint);
         return sample.boundary.FaceValue(gas, inside, {sample.normal[0], sample.normal[1], sample.normal[2]},
-                                         {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time, &frame);
+                                         {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time,
+                                         OptionalRef<const RigidFrame>(frame));
     }
     inline FlowState BoundaryExterior(const Sample &sample, const PerfectGas &gas, const FlowState &inside,
                                       real time, const RigidFrame &frame, RHSScalarView incoming)
@@ -137,7 +138,8 @@ namespace DNDS::Cauchy::FiniteVolumeDetail
         if (sample.boundary.kind == BoundaryKind::Interface)
             return Load(incoming, sample.boundaryPoint);
         return sample.boundary.Exterior(gas, inside, {sample.normal[0], sample.normal[1], sample.normal[2]},
-                                        {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time, &frame);
+                                        {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time,
+                                        OptionalRef<const RigidFrame>(frame));
     }
     /// GradientPlan consumes a face trace; Euler's GG/LS construction consumes
     /// a mirrored exterior at twice the wall distance. This conservative mean

@@ -367,7 +367,9 @@ namespace DNDS::Cauchy
                 {
                     if (controls.roeDissipation)
                     {
-                        const auto boundary = sample.boundary.ApproximateExteriorJacobian(_data->equation.Gas(), left, normal, point, time, &frame);
+                        const auto boundary = sample.boundary.ApproximateExteriorJacobian(
+                            _data->equation.Gas(), left, normal, point, time,
+                            OptionalRef<const RigidFrame>(frame));
                         own.noalias() += other * Eigen::Map<const Matrix>(boundary.data());
                     }
                 }

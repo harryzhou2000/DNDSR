@@ -8,6 +8,9 @@ namespace DNDS::Cauchy
     /// Production output/progress owner. It installs and removes Domain
     /// observers, owns CSV/logger state and serializes accepted/internal output
     /// decisions without leaking file/control logic into the solver frontend.
+    /// The caller retains `simulation` and `config` through destruction and
+    /// serializes all coordinator calls with Simulation stepping. Destruction
+    /// withdraws every installed observer before releasing the sink state.
     class OutputCoordinator
     {
         struct Data;
@@ -20,9 +23,13 @@ namespace DNDS::Cauchy
         OutputCoordinator(const OutputCoordinator &) = delete;
         OutputCoordinator &operator=(const OutputCoordinator &) = delete;
 
+        /// Apply exact output/end-time snapping to one proposed physical step.
         OutputPlan::StepTarget SnapStep(real proposedDt) const;
+        /// Start one retryable attempt in every local domain's progress sink.
         void BeginAttempt(real dt, index retries, real targetTime);
+        /// Drain buffered nonlinear rows after the collective solve returns.
         void FlushPending();
+        /// Emit an operational retry diagnostic; this performs no solver work.
         void WarnRetry(const std::string &reason);
         /// Record one accepted step, emit due snapshots and return the global
         /// configured steady/residual stopping decision.

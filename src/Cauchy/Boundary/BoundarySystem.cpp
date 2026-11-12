@@ -8,27 +8,31 @@ namespace DNDS::Cauchy
 {
     namespace
     {
-        Vector3 WallVelocity(const BoundaryCondition &condition, const Vector3 &point, const RigidFrame *frame)
+        Vector3 WallVelocity(const BoundaryCondition &condition, const Vector3 &point,
+                             OptionalRef<const RigidFrame> frame)
         {
-            if (!frame || !frame->moving)
+            if (!frame || !frame.Get()->moving)
                 return condition.velocity;
             if (!condition.wallMovesWithMesh)
-                return frame->LocalVector(condition.velocity);
-            auto velocity = frame->GridVelocity(point);
+                return frame.Get()->LocalVector(condition.velocity);
+            auto velocity = frame.Get()->GridVelocity(point);
             for (int d = 0; d < 3; ++d)
                 velocity[d] += condition.velocity[d];
             return velocity;
         }
-        FlowState AnalyticValue(const BoundaryCondition &condition, const PerfectGas &gas, const Vector3 &point, real time, const RigidFrame *frame)
+        FlowState AnalyticValue(const BoundaryCondition &condition, const PerfectGas &gas,
+                                const Vector3 &point, real time,
+                                OptionalRef<const RigidFrame> frame)
         {
-            const auto value = ProfileValue(condition.profile, condition.prescribedPrimitive, gas, frame ? frame->WorldPoint(point) : point, time);
-            return frame ? frame->LocalState(value) : value;
+            const auto value = ProfileValue(condition.profile, condition.prescribedPrimitive, gas, frame ? frame.Get()->WorldPoint(point) : point, time);
+            return frame ? frame.Get()->LocalState(value) : value;
         }
-        real GridNormalSpeed(const Vector3 &normal, const Vector3 &point, const RigidFrame *frame)
+        real GridNormalSpeed(const Vector3 &normal, const Vector3 &point,
+                             OptionalRef<const RigidFrame> frame)
         {
-            if (!frame || !frame->moving)
+            if (!frame || !frame.Get()->moving)
                 return 0;
-            const auto velocity = frame->GridVelocity(point);
+            const auto velocity = frame.Get()->GridVelocity(point);
             real speed = 0;
             for (int d = 0; d < 3; ++d)
                 speed += velocity[d] * normal[d];
@@ -50,11 +54,14 @@ namespace DNDS::Cauchy
             return gas.Conservative({source.density, source.velocity[0], source.velocity[1], source.velocity[2], normalSpeed > 0 ? far.pressure : local.pressure});
         }
     }
-    Vector3 BoundaryCondition::WallVelocityAt(const Vector3 &point, const RigidFrame *frame) const
+    Vector3 BoundaryCondition::WallVelocityAt(
+        const Vector3 &point, OptionalRef<const RigidFrame> frame) const
     {
         return WallVelocity(*this, point, frame);
     }
-    FlowState BoundaryCondition::FaceValue(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point, real time, const RigidFrame *frame) const
+    FlowState BoundaryCondition::FaceValue(
+        const PerfectGas &gas, const FlowState &inside, const Vector3 &normal,
+        const Vector3 &point, real time, OptionalRef<const RigidFrame> frame) const
     {
         DNDS_check_throw_info(hasPerfectGasState, "boundary needs its equation-specific value producer");
         DNDS_check_throw_info(kind != BoundaryKind::Interface, "interface boundary needs a ready incoming packet");
@@ -63,11 +70,11 @@ namespace DNDS::Cauchy
         if (kind == BoundaryKind::DoubleMachBottom)
         {
             auto condition = *this;
-            condition.kind = (frame ? frame->WorldPoint(point) : point)[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
+            condition.kind = (frame ? frame.Get()->WorldPoint(point) : point)[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
             return condition.FaceValue(gas, inside, normal, point, time, frame);
         }
         if (kind == BoundaryKind::Farfield)
-            return FarfieldValue(gas, inside, frame ? frame->LocalState(farfield) : farfield, normal, GridNormalSpeed(normal, point, frame));
+            return FarfieldValue(gas, inside, frame ? frame.Get()->LocalState(farfield) : farfield, normal, GridNormalSpeed(normal, point, frame));
         if (kind == BoundaryKind::Extrapolate)
             return inside;
         const auto p = gas.Primitive(inside);
@@ -90,7 +97,9 @@ namespace DNDS::Cauchy
         }
         return gas.Conservative(face);
     }
-    FlowState BoundaryCondition::Exterior(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point, real time, const RigidFrame *frame) const
+    FlowState BoundaryCondition::Exterior(
+        const PerfectGas &gas, const FlowState &inside, const Vector3 &normal,
+        const Vector3 &point, real time, OptionalRef<const RigidFrame> frame) const
     {
         DNDS_check_throw_info(hasPerfectGasState, "boundary needs its equation-specific exterior producer");
         DNDS_check_throw_info(kind != BoundaryKind::Interface, "interface boundary needs a ready incoming packet");
@@ -99,11 +108,11 @@ namespace DNDS::Cauchy
         if (kind == BoundaryKind::DoubleMachBottom)
         {
             auto condition = *this;
-            condition.kind = (frame ? frame->WorldPoint(point) : point)[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
+            condition.kind = (frame ? frame.Get()->WorldPoint(point) : point)[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
             return condition.Exterior(gas, inside, normal, point, time, frame);
         }
         if (kind == BoundaryKind::Farfield)
-            return FarfieldValue(gas, inside, frame ? frame->LocalState(farfield) : farfield, normal, GridNormalSpeed(normal, point, frame));
+            return FarfieldValue(gas, inside, frame ? frame.Get()->LocalState(farfield) : farfield, normal, GridNormalSpeed(normal, point, frame));
         if (kind == BoundaryKind::Extrapolate)
             return inside;
         const auto p = gas.Primitive(inside);
@@ -128,7 +137,9 @@ namespace DNDS::Cauchy
         }
         return gas.Conservative(exterior);
     }
-    std::array<real, 25> BoundaryCondition::ExteriorJacobian(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point, real time, const RigidFrame *frame) const
+    std::array<real, 25> BoundaryCondition::ExteriorJacobian(
+        const PerfectGas &gas, const FlowState &inside, const Vector3 &normal,
+        const Vector3 &point, real time, OptionalRef<const RigidFrame> frame) const
     {
         DNDS_check_throw_info(hasPerfectGasState, "boundary needs its equation-specific derivative producer");
         DNDS_check_throw_info(kind != BoundaryKind::Interface, "interface boundary Jacobian needs a frozen incoming packet");
@@ -138,7 +149,7 @@ namespace DNDS::Cauchy
         if (kind == BoundaryKind::DoubleMachBottom)
         {
             auto condition = *this;
-            condition.kind = (frame ? frame->WorldPoint(point) : point)[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
+            condition.kind = (frame ? frame.Get()->WorldPoint(point) : point)[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
             return condition.ExteriorJacobian(gas, inside, normal, point, time, frame);
         }
         for (int j = 0; j < 5; ++j)
@@ -237,21 +248,23 @@ namespace DNDS::Cauchy
         }
         return result;
     }
-    std::array<real, 25> BoundaryCondition::ApproximateExteriorJacobian(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal,
-                                                                        const Vector3 &point, real time, const RigidFrame *frame) const
+    std::array<real, 25> BoundaryCondition::ApproximateExteriorJacobian(
+        const PerfectGas &gas, const FlowState &inside, const Vector3 &normal,
+        const Vector3 &point, real time, OptionalRef<const RigidFrame> frame) const
     {
         (void)gas;
         return ApproximateExteriorJacobian(inside, normal, point, time, frame);
     }
-    std::array<real, 25> BoundaryCondition::ApproximateExteriorJacobian(const FlowState &inside, const Vector3 &normal,
-                                                                        const Vector3 &point, real time, const RigidFrame *frame) const
+    std::array<real, 25> BoundaryCondition::ApproximateExteriorJacobian(
+        const FlowState &inside, const Vector3 &normal, const Vector3 &point,
+        real time, OptionalRef<const RigidFrame> frame) const
     {
         (void)inside;
         // Euler's linMode=1 returns homogeneous wall reflection before its
         // thermal/scalar wall treatment, and zero for prescribed/open BCs.
         auto wallKind = kind;
         if (kind == BoundaryKind::DoubleMachBottom)
-            wallKind = (frame ? frame->WorldPoint(point) : point)[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
+            wallKind = (frame ? frame.Get()->WorldPoint(point) : point)[0] < 1. / 6 ? BoundaryKind::Analytic : BoundaryKind::SlipWall;
         if (wallKind != BoundaryKind::SlipWall && wallKind != BoundaryKind::NoSlipWall)
             return {};
         std::array<real, 25> result{};
@@ -286,11 +299,14 @@ namespace DNDS::Cauchy
         return result;
     }
     BoundarySystem::BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const PerfectGas &gas)
-        : BoundarySystem(settings, &gas) {}
+        : BoundarySystem(settings, OptionalRef<const PerfectGas>(gas)) {}
     BoundarySystem::BoundarySystem(const std::map<std::string, BoundarySettings> &settings)
-        : BoundarySystem(settings, nullptr) {}
+        : BoundarySystem(settings, OptionalRef<const PerfectGas>{}) {}
     BoundarySystem::BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const EquationSystem &equation)
-        : BoundarySystem(settings, equation.HasMixture() ? nullptr : &equation.Gas())
+        : BoundarySystem(settings,
+                         equation.HasMixture()
+                             ? OptionalRef<const PerfectGas>{}
+                             : OptionalRef<const PerfectGas>(equation.Gas()))
     {
         for (const auto &[zone, source] : settings)
         {
@@ -305,7 +321,8 @@ namespace DNDS::Cauchy
                 condition.prescribedRANS = ResolveRANSValues(equation, source.ransConservative);
         }
     }
-    BoundarySystem::BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const PerfectGas *gas)
+    BoundarySystem::BoundarySystem(const std::map<std::string, BoundarySettings> &settings,
+                                   OptionalRef<const PerfectGas> gas)
     {
         for (const auto &[zone, source] : settings)
         {

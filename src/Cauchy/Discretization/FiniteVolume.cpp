@@ -2356,7 +2356,8 @@ namespace DNDS::Cauchy
                         const Physics::Chemistry::SpeciesBufferView wallSpecies{independent ? face.values.data() + speciesFirst : nullptr, independent};
                         const auto wall = sample.boundary.FaceValue(evaluator, original, wallSpecies,
                                                                     {sample.normal[0], sample.normal[1], sample.normal[2]},
-                                                                    {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time, &frame);
+                                                                    {sample.ownPoint[0], sample.ownPoint[1], sample.ownPoint[2]}, time,
+                                                                    OptionalRef<const RigidFrame>(frame));
                         for (int j = 0; j < 5; ++j)
                             face.values[flowFirst + j] = wall[j];
                         if (ransModel)
@@ -2741,12 +2742,16 @@ namespace DNDS::Cauchy
                                             const R::Array<real>::WriteLease &diagonal,
                                             DiagonalStorage storage, real scale,
                                             EquationPointEvaluator &evaluator,
-                                            const MeanLinearizationOutput *linearization) const
+                                            OptionalRef<const MeanLinearizationOutput> linearization) const
         {
             if (!sourceSampling)
                 return false;
             if (owner->settings.numerics.reconstruction != "variational")
                 return false;
+            // OptionalRef is an API/lifetime marker. Resolve it once before the
+            // quadrature loop so its checked operator-> is not part of the hot
+            // point path.
+            const auto *linearizationOutput = linearization.Get();
             const auto means = state.ReadOwned();
             const auto blocks = BlockViews(state, means);
             const auto geometry = owner->metrics.AcquireRead();
@@ -2772,7 +2777,7 @@ namespace DNDS::Cauchy
             // conservative derivative. Fill it separately from quadrature
             // source points so the high-order source path does not silently
             // replace the mean-state EOS contract.
-            if (linearization)
+            if (linearizationOutput)
             {
                 for (index iCell = 0; iCell < owner->metrics.NumCell(); ++iCell)
                 {
@@ -2780,7 +2785,7 @@ namespace DNDS::Cauchy
                     const auto properties = evaluator.Evaluate(
                         point.Flow(flowFirst), point.Species(speciesFirst, independent), 0,
                         {ransFirst >= 0, false, true, false, false});
-                    linearization->Publish(iCell, point, properties);
+                    linearizationOutput->Publish(iCell, point, properties);
                 }
             }
             std::vector<R::Array<real>::ReadLease> sourceReads;
@@ -2881,12 +2886,15 @@ namespace DNDS::Cauchy
         /// source freshness; the production wrapper validates its provenance.
         bool AddMeanSourceJacobian(const EquationDofs &state, const R::Array<real>::WriteLease &diagonal,
                                    DiagonalStorage storage, real scale, EquationPointEvaluator &evaluator,
-                                   const MeanLinearizationOutput *linearization = nullptr) const
+                                   OptionalRef<const MeanLinearizationOutput> linearization = {}) const
         {
             if (sourceOffsets.empty())
                 return false;
             if (owner->settings.implicit.sourceJacobianMode == "rhsQuadrature")
                 return AddRHSQuadratureSourceJacobian(state, diagonal, storage, scale, evaluator, linearization);
+            // Resolve the synchronous nullable borrow once; property sampling
+            // below must not pay a checked OptionalRef dereference per cell.
+            const auto *linearizationOutput = linearization.Get();
             // The default approximate source matrix is a one-point,
             // mean-state operator. The opt-in quadrature path is a separate
             // branch selected by the explicit implicit source mode.
@@ -2969,9 +2977,9 @@ namespace DNDS::Cauchy
                                 point.gradient(logicalFirst[iBlock] + j, d) = gradients[location.physicalField][d](iCell, location.firstComponent + j);
                     }
                 const auto properties = evaluator.Evaluate(point.Flow(flowFirst), point.Species(speciesFirst, independent), 0,
-                                                           {ransFirst >= 0, false, bool(linearization), chemical, chemical});
-                if (linearization)
-                    linearization->Publish(iCell, point, properties);
+                                                           {ransFirst >= 0, false, bool(linearizationOutput), chemical, chemical});
+                if (linearizationOutput)
+                    linearizationOutput->Publish(iCell, point, properties);
                 const real volume = metric.GetCellVol(iCell);
                 if (ransFirst >= 0)
                 {
@@ -4758,7 +4766,7 @@ namespace DNDS::Cauchy
     bool FiniteVolume::AddEquationSourceJacobian(const EquationDofs &state,
                                                  const JacobianContext &context,
                                                  const R::Array<real>::WriteLease &diagonal, DiagonalStorage storage, real scale, EquationPointEvaluator &evaluator,
-                                                 const EquationFVDetail::MeanLinearizationOutput *linearization) const
+                                                 OptionalRef<const EquationFVDetail::MeanLinearizationOutput> linearization) const
     {
         DNDS_check_throw_info(context.reconstruction,
                               "source Jacobian context has no reconstruction publication");

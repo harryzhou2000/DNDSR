@@ -529,7 +529,7 @@ namespace DNDS::Cauchy
             if ((chemical || rans) && sourceWorkspace)
                 ownedPropertiesPrepared = AddEquationSourceJacobian(state, *context, *diagonal,
                                                                     output.DiagonalMode(), controls.residualScale,
-                                                                    evaluator, &linearization);
+                                                                    evaluator, std::cref(linearization));
             // Only O(N) scalar thermodynamic linearization data are frozen per
             // cell. Never cache a complete N*N flux matrix per cell/face.
             // A source-free/no-sampling workspace returns false: its owned EOS

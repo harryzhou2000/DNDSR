@@ -82,9 +82,11 @@ namespace DNDS::Cauchy
         const bool exterior = stateKind == BoundaryPointStateKind::ExteriorState;
         const auto flow = exterior
                               ? condition.Exterior(evaluator, inside, rhoY, normal,
-                                                   location, time, &frame)
+                                                   location, time,
+                                                   OptionalRef<const RigidFrame>(frame))
                               : condition.FaceValue(evaluator, inside, rhoY, normal,
-                                                    location, time, &frame);
+                                                    location, time,
+                                                    OptionalRef<const RigidFrame>(frame));
         for (int j = 0; j < 5; ++j)
             point[size_t(_flowFirst + j)] = flow[j];
 
@@ -157,7 +159,7 @@ namespace DNDS::Cauchy
         for (int j = 0; j < 5; ++j)
             flow[j] = inside[size_t(_flowFirst + j)];
         const auto derivative = condition.ApproximateExteriorJacobian(
-            flow, normal, location, time, &frame);
+            flow, normal, location, time, OptionalRef<const RigidFrame>(frame));
         for (int column = 0; column < 5; ++column)
             for (int row = 0; row < 5; ++row)
                 output(_flowFirst + row, _flowFirst + column) =

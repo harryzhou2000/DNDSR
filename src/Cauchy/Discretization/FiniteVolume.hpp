@@ -873,7 +873,7 @@ namespace DNDS::Cauchy
                                        const JacobianContext &context,
                                        const Runtime::Array<real>::WriteLease &diagonal, DiagonalStorage storage,
                                        real scale, EquationPointEvaluator &evaluator,
-                                       const EquationFVDetail::MeanLinearizationOutput *linearization = nullptr) const;
+                                       OptionalRef<const EquationFVDetail::MeanLinearizationOutput> linearization = {}) const;
         index PrepareFaceCharacteristicMatrices(const CFV::FVField &state, index firstComponent,
                                                 Runtime::Array<real> &forward,
                                                 Runtime::Array<real> &inverse) const;

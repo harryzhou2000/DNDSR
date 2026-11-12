@@ -2,6 +2,7 @@
 
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/Physics/PerfectGas.hpp"
+#include "DNDS/Core/OptionalRef.hpp"
 #include "Physics/Chemistry/ChemicalSource.hpp"
 #include <set>
 
@@ -48,53 +49,73 @@ namespace DNDS::Cauchy
         /// Prescribed velocities use ground axes; results use mesh axes.
         FlowState FaceValue(EquationPointEvaluator &evaluator, const FlowState &inside,
                             Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
-                            const Vector3 &point = {}, real time = 0, const RigidFrame *frame = nullptr) const;
+                            const Vector3 &point = {}, real time = 0,
+                            OptionalRef<const RigidFrame> frame = {}) const;
         FlowState Exterior(EquationPointEvaluator &evaluator, const FlowState &inside,
                            Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
-                           const Vector3 &point = {}, real time = 0, const RigidFrame *frame = nullptr) const;
+                           const Vector3 &point = {}, real time = 0,
+                           OptionalRef<const RigidFrame> frame = {}) const;
         /// Resolved absolute wall velocity in the mesh-bound Cartesian frame.
         /// Shared kinematics for equation-specific adiabatic wall producers.
-        Vector3 WallVelocityAt(const Vector3 &point, const RigidFrame *frame = nullptr) const;
+        Vector3 WallVelocityAt(const Vector3 &point,
+                               OptionalRef<const RigidFrame> frame = {}) const;
         /// Physical wall trace for diagnostics/prescribed wall data. Wall normal
         /// is outward from the interior parent. Extrapolation leaves U unchanged.
-        FlowState FaceValue(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0, const RigidFrame *frame = nullptr) const;
+        FlowState FaceValue(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal,
+                            const Vector3 &point = {}, real time = 0,
+                            OptionalRef<const RigidFrame> frame = {}) const;
         /// Euler-compatible Riemann/VR exterior state. Isothermal no-slip
         /// reflects velocity and sets rho=p/(R*T_wall), preserving composition.
         /// Direct conservative gradients instead consume (inside+exterior)/2.
         /// Wall velocity is prescribed; this initial
         /// rigid-frame implementation does not imply deforming ALE support.
-        FlowState Exterior(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0, const RigidFrame *frame = nullptr) const;
+        FlowState Exterior(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal,
+                           const Vector3 &point = {}, real time = 0,
+                           OptionalRef<const RigidFrame> frame = {}) const;
         /// Column-major derivative of Exterior with respect to its conservative
         /// interior state, with branch, normal, prescribed data and time frozen.
         /// The derivative is one-sided at characteristic/DMR branch switches;
         /// callers linearize a selected physical state, not the switch itself.
         /// This model-owned BC derivative is separate from Riemann dissipation.
-        std::array<real, 25> ExteriorJacobian(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0, const RigidFrame *frame = nullptr) const;
+        std::array<real, 25> ExteriorJacobian(const PerfectGas &gas, const FlowState &inside,
+                                              const Vector3 &normal, const Vector3 &point = {},
+                                              real time = 0,
+                                              OptionalRef<const RigidFrame> frame = {}) const;
         /// Euler's approximate linMode=1 protocol: homogeneous wall reflection
         /// before thermal/scalar correction; zero for non-wall boundaries.
         /// Distinct from the exact physical derivative above. No branch
         /// derivative or wall-temperature derivative enters LU-SGS/Roe blocks.
-        std::array<real, 25> ApproximateExteriorJacobian(const PerfectGas &gas, const FlowState &inside, const Vector3 &normal, const Vector3 &point = {}, real time = 0, const RigidFrame *frame = nullptr) const;
+        std::array<real, 25> ApproximateExteriorJacobian(const PerfectGas &gas, const FlowState &inside,
+                                                         const Vector3 &normal, const Vector3 &point = {},
+                                                         real time = 0,
+                                                         OptionalRef<const RigidFrame> frame = {}) const;
         /// Equation-generic form of the same approximate protocol. The
         /// homogeneous wall reflection is independent of EOS; prescribed/open
         /// and interface states are frozen. Thermal/species/RANS corrections
         /// are composed by BoundaryPointOperator rather than hidden here.
         std::array<real, 25> ApproximateExteriorJacobian(const FlowState &inside, const Vector3 &normal,
                                                          const Vector3 &point = {}, real time = 0,
-                                                         const RigidFrame *frame = nullptr) const;
+                                                         OptionalRef<const RigidFrame> frame = {}) const;
     };
+    /// Immutable zone-to-condition registry. Constructors resolve configuration
+    /// and equation metadata once; point operators borrow individual conditions
+    /// without retaining a chemistry worker, mesh or mutable field.
     class BoundarySystem
     {
         std::map<int, BoundaryCondition> _conditions;
-        BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const PerfectGas *gas);
+        BoundarySystem(const std::map<std::string, BoundarySettings> &settings,
+                       OptionalRef<const PerfectGas> gas);
 
     public:
+        /// Resolve the legacy perfect-gas boundary profile set.
         explicit BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const PerfectGas &gas);
         /// Resolve equation-specific composition once; retains no worker.
         explicit BoundarySystem(const std::map<std::string, BoundarySettings> &settings, const EquationSystem &equation);
         /// Resolve metadata only; equation-specific operators prepare values.
         explicit BoundarySystem(const std::map<std::string, BoundarySettings> &settings);
+        /// Return the resolved condition for one mesh boundary-zone identifier.
         const BoundaryCondition &At(int zone) const;
+        /// Require every locally/globally used zone to have a resolved condition.
         void ValidateUsed(const std::set<int> &zones) const;
         /// Check distinct resolved producers, independent of mesh quadrature
         /// count. This is also valid for standalone auxiliary preparation.

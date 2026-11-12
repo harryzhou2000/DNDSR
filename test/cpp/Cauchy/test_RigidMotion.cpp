@@ -66,14 +66,20 @@ TEST_CASE("Rigid frames preserve absolute energy and provide consistent mesh vel
         C::BoundaryCondition boundary;
         boundary.kind = kind;
         boundary.farfield = world;
-        const auto jacobian = boundary.ExteriorJacobian(gas, local, normal, point, time, &frame);
+        const auto jacobian = boundary.ExteriorJacobian(
+            gas, local, normal, point, time,
+            DNDS::OptionalRef<const C::RigidFrame>(frame));
         for (int column = 0; column < 5; ++column)
         {
             auto uPlus = local, uMinus = local;
             uPlus[column] += h;
             uMinus[column] -= h;
-            const auto bPlus = boundary.Exterior(gas, uPlus, normal, point, time, &frame);
-            const auto bMinus = boundary.Exterior(gas, uMinus, normal, point, time, &frame);
+            const auto bPlus = boundary.Exterior(
+                gas, uPlus, normal, point, time,
+                DNDS::OptionalRef<const C::RigidFrame>(frame));
+            const auto bMinus = boundary.Exterior(
+                gas, uMinus, normal, point, time,
+                DNDS::OptionalRef<const C::RigidFrame>(frame));
             for (int row = 0; row < 5; ++row)
                 CHECK(jacobian[row + 5 * column] == doctest::Approx((bPlus[row] - bMinus[row]) / (2 * h)).epsilon(1e-8).scale(1));
         }

@@ -184,7 +184,7 @@ TEST_CASE("Integrated approximate Jacobian matches frozen-spectral flux differen
                             const auto point = metric.GetFacePoint(q);
                             const C::Vector3 location{point[0], point[1], point[2]};
                             const auto gridVelocity = frame.GridVelocity(location);
-                            const auto right = other == DNDS::UnInitIndex ? boundaries.At(topology.GetFaceZone(iFace)).Exterior(equation.Gas(), left, n, location, time, &frame) : perturbed(other, h);
+                            const auto right = other == DNDS::UnInitIndex ? boundaries.At(topology.GetFaceZone(iFace)).Exterior(equation.Gas(), left, n, location, time, DNDS::OptionalRef<const C::RigidFrame>(frame)) : perturbed(other, h);
                             double lambda = radius(iAux, 0) + radius(iAux, 1);
                             if (controls.roeDissipation)
                             {
@@ -192,7 +192,7 @@ TEST_CASE("Integrated approximate Jacobian matches frozen-spectral flux differen
                                 // signals; the auxiliary radius is a face max.
                                 // Rotation makes w.n vary along one face.
                                 const auto baseLeft = perturbed(iCell, 0);
-                                const auto baseRight = other == DNDS::UnInitIndex ? boundaries.At(topology.GetFaceZone(iFace)).Exterior(equation.Gas(), baseLeft, n, location, time, &frame) : perturbed(other, 0);
+                                const auto baseRight = other == DNDS::UnInitIndex ? boundaries.At(topology.GetFaceZone(iFace)).Exterior(equation.Gas(), baseLeft, n, location, time, DNDS::OptionalRef<const C::RigidFrame>(frame)) : perturbed(other, 0);
                                 const auto signal = [&](const C::FlowState &u)
                                 {
                                     double speed = 0;

@@ -227,7 +227,8 @@ TEST_CASE("Equation primitive and mixture boundary producers preserve full energ
             inside[1 + d] = inside[0] * velocity;
             inside[4] += .5 * inside[0] * velocity * velocity;
         }
-        const auto value = condition.Exterior(evaluator, inside, {rhoY.data(), fixture.species - 1}, normal, location, .4, &frame);
+        const auto value = condition.Exterior(evaluator, inside, {rhoY.data(), fixture.species - 1}, normal, location, .4,
+                                              DNDS::OptionalRef<const C::RigidFrame>(frame));
         const auto point = evaluator.Evaluate(value, {rhoY.data(), fixture.species - 1});
         const bool inflow = mach < 0;
         const double rho = inflow ? primitive[0] : inside[0];
@@ -247,17 +248,20 @@ TEST_CASE("Equation primitive and mixture boundary producers preserve full energ
     C::BoundarySystem walls({{"7", input}}, fixture.equation);
     auto rhoY = std::vector<double>(expected.data() + 5, expected.data() + fixture.components);
     const auto before = rhoY;
-    const auto face = walls.At(7).FaceValue(evaluator, fromPressure, {rhoY.data(), fixture.species - 1}, normal, location, .4, &frame);
+    const auto face = walls.At(7).FaceValue(evaluator, fromPressure, {rhoY.data(), fixture.species - 1}, normal, location, .4,
+                                            DNDS::OptionalRef<const C::RigidFrame>(frame));
     const auto faceProperties = evaluator.Evaluate(face, {rhoY.data(), fixture.species - 1});
     CHECK(faceProperties.thermo.temperature == doctest::Approx(input.temperature).epsilon(3e-12));
     CHECK(faceProperties.thermo.pressure == doctest::Approx(pressure).epsilon(3e-12));
-    const auto wallVelocity = walls.At(7).WallVelocityAt(location, &frame);
+    const auto wallVelocity = walls.At(7).WallVelocityAt(
+        location, DNDS::OptionalRef<const C::RigidFrame>(frame));
     for (int d = 0; d < 3; ++d)
         CHECK(face[1 + d] / face[0] == doctest::Approx(wallVelocity[d]).epsilon(3e-12));
     for (int k = 0; k < fixture.species - 1; ++k)
         CHECK(rhoY[k] / face[0] == doctest::Approx(before[k] / expected[0]).epsilon(3e-12));
     rhoY = before;
-    const auto exterior = walls.At(7).Exterior(evaluator, fromPressure, {rhoY.data(), fixture.species - 1}, normal, location, .4, &frame);
+    const auto exterior = walls.At(7).Exterior(evaluator, fromPressure, {rhoY.data(), fixture.species - 1}, normal, location, .4,
+                                               DNDS::OptionalRef<const C::RigidFrame>(frame));
     const auto exteriorProperties = evaluator.Evaluate(exterior, {rhoY.data(), fixture.species - 1});
     // Isothermal exterior uses prescribed temperature and interior pressure,
     // with velocity mirrored about the wall. Density and rhoY change together;

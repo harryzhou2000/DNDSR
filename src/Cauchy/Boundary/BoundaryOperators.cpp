@@ -18,7 +18,7 @@ namespace DNDS::Cauchy
         FlowState EquationValue(const BoundaryCondition &condition, EquationPointEvaluator &evaluator,
                                 const FlowState &inside, Physics::Chemistry::SpeciesBufferView rhoY,
                                 const Vector3 &normal, const Vector3 &point, real time,
-                                const RigidFrame *frame, bool exterior)
+                                OptionalRef<const RigidFrame> frame, bool exterior)
         {
             if (condition.kind == BoundaryKind::Extrapolate)
                 return inside;
@@ -28,8 +28,8 @@ namespace DNDS::Cauchy
                                  "nonconstant analytic boundary requires a perfect-gas flow5 profile");
                 const auto value = ProfileValue(condition.profile, condition.prescribedPrimitive,
                                                 evaluator.PerfectGasModel(),
-                                                frame ? frame->WorldPoint(point) : point, time);
-                return frame ? frame->LocalState(value) : value;
+                                                frame ? frame.Get()->WorldPoint(point) : point, time);
+                return frame ? frame.Get()->LocalState(value) : value;
             }
             if (condition.kind == BoundaryKind::Farfield || condition.kind == BoundaryKind::Analytic)
             {
@@ -37,14 +37,14 @@ namespace DNDS::Cauchy
                 auto primitive = condition.prescribedPrimitive;
                 if (frame)
                 {
-                    const auto velocity = frame->LocalVector({primitive[1], primitive[2], primitive[3]});
+                    const auto velocity = frame.Get()->LocalVector({primitive[1], primitive[2], primitive[3]});
                     for (int d = 0; d < 3; ++d)
                         primitive[1 + d] = velocity[d];
                 }
                 if (condition.kind == BoundaryKind::Farfield)
                 {
                     const auto properties = evaluator.Evaluate(inside, rhoY, 0, {});
-                    const auto grid = frame ? frame->GridVelocity(point) : Vector3{};
+                    const auto grid = frame ? frame.Get()->GridVelocity(point) : Vector3{};
                     real speed = 0;
                     for (int d = 0; d < 3; ++d)
                         speed += (inside[1 + d] / inside[0] - grid[d]) * normal[d];
@@ -105,13 +105,15 @@ namespace DNDS::Cauchy
     }
     FlowState BoundaryCondition::FaceValue(EquationPointEvaluator &evaluator, const FlowState &inside,
                                            Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
-                                           const Vector3 &point, real time, const RigidFrame *frame) const
+                                           const Vector3 &point, real time,
+                                           OptionalRef<const RigidFrame> frame) const
     {
         return EquationValue(*this, evaluator, inside, rhoY, normal, point, time, frame, false);
     }
     FlowState BoundaryCondition::Exterior(EquationPointEvaluator &evaluator, const FlowState &inside,
                                           Physics::Chemistry::SpeciesBufferView rhoY, const Vector3 &normal,
-                                          const Vector3 &point, real time, const RigidFrame *frame) const
+                                          const Vector3 &point, real time,
+                                          OptionalRef<const RigidFrame> frame) const
     {
         return EquationValue(*this, evaluator, inside, rhoY, normal, point, time, frame, true);
     }
