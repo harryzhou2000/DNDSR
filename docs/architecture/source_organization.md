@@ -1,5 +1,22 @@
 # Runtime, algebra, legacy storage and unstructured mesh sources
 
+## Cauchy owner-qualified implementation units
+
+Cauchy public headers retain their paths and namespaces. Implementation units
+with no standalone header use `<owning-header>_<responsibility>.cpp`, so a file
+name identifies the public owner whose private definitions it emits. Examples
+are `FiniteVolume_RHS.cpp`, `LinearProblem_ILU.cpp`,
+`Domain_ImplicitStep.cpp` and `Simulation_Checkpoint.cpp`. This is a source-path
+and CMake-list cleanup only: it creates no second facade, compatibility header,
+numerical path or compiled symbol spelling. Binding entry points retain their
+conventional `_bind.cpp`/`pybind11.cpp` names.
+
+The exact private-TU renames are in [source_paths.json](source_paths.json).
+Large arithmetic units remain separate by responsibility and may later move
+under CPU/CUDA subdirectories only with measured build/runtime evidence. The
+current rename deliberately does not duplicate `FiniteVolume::Data`, workspace
+ownership or hot kernel definitions merely to reduce a line count.
+
 ## Cauchy preliminary source cleanup
 
 The current canonical relocation list is [source_paths.json](source_paths.json).

@@ -1,8 +1,70 @@
-set(CPPS Core/DomainPlacement.cpp Core/DomainExecutionContext.cpp Core/DomainComponents.cpp Core/DomainController.cpp Core/DomainStateSnapshot.cpp Core/Domain.cpp Core/ImplicitStep.cpp Core/Simulation.cpp Core/SimulationController.cpp Config/SimulationConfig.cpp Physics/EquationSystem.cpp Physics/EquationSetup.cpp Physics/EquationProperties.cpp Physics/EquationPositivity.cpp State/EquationDofs.cpp State/EquationDofCommunication.cpp State/DerivedFields.cpp Motion/RigidMotion.cpp Boundary/BoundaryInputs.cpp Interface/InterfaceCoupling.cpp
-    Boundary/BoundarySystem.cpp Boundary/BoundaryOperators.cpp Boundary/BoundaryPointOperator.cpp Physics/EquationSource.cpp Discretization/FiniteVolume.cpp Discretization/Reconstruction.cpp Discretization/AuxiliaryValues.cpp Discretization/LimitedVR.cpp Discretization/PrepareAuxValues.cpp Discretization/RHS.cpp Discretization/TimeStep.cpp Core/TimeStep.cpp Implicit/LinearProblem.cpp Implicit/DofLinearProblem.cpp Implicit/SGS.cpp Implicit/DofSGS.cpp Implicit/ILU.cpp Implicit/LinearSolver.cpp Implicit/NonlinearController.cpp Implicit/NonlinearSolver.cpp Implicit/UpdatePolicy.cpp Implicit/PrepareJacobian.cpp Implicit/Jacobian.cpp Multigrid/PolynomialMultigrid.cpp IO/Checkpoint.cpp IO/StateArchive.cpp IO/FieldOutput.cpp Riemann/RiemannFlux.cpp)
-list(APPEND CPPS Discretization/WallDistanceSamples.cpp Physics/EquationRANS.cpp Physics/StateInput.cpp Physics/InitialField.cpp Discretization/InitializeField.cpp IO/SimulationCheckpoint.cpp)
-list(APPEND CPPS Implicit/JacobianKernels.cpp)
-list(APPEND CPPS IO/ProgressOutput.cpp IO/OutputPlan.cpp IO/OutputCoordinator.cpp)
+set(CPPS
+    Core/DomainPlacement.cpp
+    Core/DomainExecutionContext.cpp
+    Core/DomainComponents.cpp
+    Core/DomainController.cpp
+    Core/DomainStateSnapshot.cpp
+    Core/Domain.cpp
+    Core/Domain_ImplicitStep.cpp
+    Core/Domain_TimeStep.cpp
+    Core/Simulation.cpp
+    Core/SimulationController.cpp
+
+    Config/SimulationConfig.cpp
+
+    Physics/EquationSystem.cpp
+    Physics/EquationSetup.cpp
+    Physics/EquationProperties.cpp
+    Physics/EquationPositivity.cpp
+    Physics/EquationSource.cpp
+    Physics/EquationRANS.cpp
+    Physics/StateInput.cpp
+    Physics/InitialField.cpp
+
+    State/EquationDofs.cpp
+    State/EquationDofCommunication.cpp
+    State/DerivedFields.cpp
+    Motion/RigidMotion.cpp
+
+    Boundary/BoundaryInputs.cpp
+    Boundary/BoundarySystem.cpp
+    Boundary/BoundarySystem_Operators.cpp
+    Boundary/BoundaryPointOperator.cpp
+    Interface/InterfaceCoupling.cpp
+
+    Discretization/FiniteVolume.cpp
+    Discretization/FiniteVolume_Reconstruction.cpp
+    Discretization/FiniteVolume_AuxiliaryValues.cpp
+    Discretization/FiniteVolume_LimitedVR.cpp
+    Discretization/FiniteVolume_PrepareAuxValues.cpp
+    Discretization/FiniteVolume_RHS.cpp
+    Discretization/FiniteVolume_TimeStep.cpp
+    Discretization/FiniteVolume_InitializeField.cpp
+    Discretization/WallDistanceSamples.cpp
+
+    Implicit/LinearProblem.cpp
+    Implicit/LinearProblem_Dof.cpp
+    Implicit/LinearProblem_SGS.cpp
+    Implicit/LinearProblem_DofSGS.cpp
+    Implicit/LinearProblem_ILU.cpp
+    Implicit/LinearSolver.cpp
+    Implicit/NonlinearController.cpp
+    Implicit/NonlinearSolver.cpp
+    Implicit/UpdatePolicy.cpp
+    Implicit/FiniteVolume_PrepareJacobian.cpp
+    Implicit/FiniteVolume_Jacobian.cpp
+    Implicit/JacobianKernels.cpp
+    Multigrid/PolynomialMultigrid.cpp
+
+    IO/Domain_Checkpoint.cpp
+    IO/StateArchive.cpp
+    IO/FiniteVolume_FieldOutput.cpp
+    IO/Simulation_Checkpoint.cpp
+    IO/ProgressOutput.cpp
+    IO/OutputPlan.cpp
+    IO/OutputCoordinator.cpp
+
+    Riemann/RiemannFlux.cpp)
 dnds_add_lib(cauchy "${CPPS}" "physics;cfv;geom;dnds;${DNDS_EXTERNAL_LIBS}" "${DNDS_PCH_TARGETS_FAST}" OFF ON ON)
 dnds_add_lib(cauchy_shared "${CPPS}" "physics_shared;cfv_shared;geom_shared;dnds_shared;${DNDS_EXTERNAL_LIBS}" "${DNDS_PCH_TARGETS_FAST}" ON ON ON)
 install(TARGETS cauchy_shared LIBRARY DESTINATION "DNDSR/lib" COMPONENT py OPTIONAL)

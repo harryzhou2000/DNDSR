@@ -1,7 +1,102 @@
 {
-  "stage": "Cauchy preliminary P1",
+  "stage": "Cauchy Plan 60 source ownership",
   "namespace_changes": false,
   "paths": [
+    {
+      "old": "Cauchy/Boundary/BoundaryOperators.cpp",
+      "canonical": "Cauchy/Boundary/BoundarySystem_Operators.cpp",
+      "physical": "Cauchy/Boundary/BoundarySystem_Operators.cpp"
+    },
+    {
+      "old": "Cauchy/Core/ImplicitStep.cpp",
+      "canonical": "Cauchy/Core/Domain_ImplicitStep.cpp",
+      "physical": "Cauchy/Core/Domain_ImplicitStep.cpp"
+    },
+    {
+      "old": "Cauchy/Core/TimeStep.cpp",
+      "canonical": "Cauchy/Core/Domain_TimeStep.cpp",
+      "physical": "Cauchy/Core/Domain_TimeStep.cpp"
+    },
+    {
+      "old": "Cauchy/Discretization/AuxiliaryValues.cpp",
+      "canonical": "Cauchy/Discretization/FiniteVolume_AuxiliaryValues.cpp",
+      "physical": "Cauchy/Discretization/FiniteVolume_AuxiliaryValues.cpp"
+    },
+    {
+      "old": "Cauchy/Discretization/InitializeField.cpp",
+      "canonical": "Cauchy/Discretization/FiniteVolume_InitializeField.cpp",
+      "physical": "Cauchy/Discretization/FiniteVolume_InitializeField.cpp"
+    },
+    {
+      "old": "Cauchy/Discretization/LimitedVR.cpp",
+      "canonical": "Cauchy/Discretization/FiniteVolume_LimitedVR.cpp",
+      "physical": "Cauchy/Discretization/FiniteVolume_LimitedVR.cpp"
+    },
+    {
+      "old": "Cauchy/Discretization/PrepareAuxValues.cpp",
+      "canonical": "Cauchy/Discretization/FiniteVolume_PrepareAuxValues.cpp",
+      "physical": "Cauchy/Discretization/FiniteVolume_PrepareAuxValues.cpp"
+    },
+    {
+      "old": "Cauchy/Discretization/RHS.cpp",
+      "canonical": "Cauchy/Discretization/FiniteVolume_RHS.cpp",
+      "physical": "Cauchy/Discretization/FiniteVolume_RHS.cpp"
+    },
+    {
+      "old": "Cauchy/Discretization/Reconstruction.cpp",
+      "canonical": "Cauchy/Discretization/FiniteVolume_Reconstruction.cpp",
+      "physical": "Cauchy/Discretization/FiniteVolume_Reconstruction.cpp"
+    },
+    {
+      "old": "Cauchy/Discretization/TimeStep.cpp",
+      "canonical": "Cauchy/Discretization/FiniteVolume_TimeStep.cpp",
+      "physical": "Cauchy/Discretization/FiniteVolume_TimeStep.cpp"
+    },
+    {
+      "old": "Cauchy/IO/Checkpoint.cpp",
+      "canonical": "Cauchy/IO/Domain_Checkpoint.cpp",
+      "physical": "Cauchy/IO/Domain_Checkpoint.cpp"
+    },
+    {
+      "old": "Cauchy/IO/FieldOutput.cpp",
+      "canonical": "Cauchy/IO/FiniteVolume_FieldOutput.cpp",
+      "physical": "Cauchy/IO/FiniteVolume_FieldOutput.cpp"
+    },
+    {
+      "old": "Cauchy/IO/SimulationCheckpoint.cpp",
+      "canonical": "Cauchy/IO/Simulation_Checkpoint.cpp",
+      "physical": "Cauchy/IO/Simulation_Checkpoint.cpp"
+    },
+    {
+      "old": "Cauchy/Implicit/DofLinearProblem.cpp",
+      "canonical": "Cauchy/Implicit/LinearProblem_Dof.cpp",
+      "physical": "Cauchy/Implicit/LinearProblem_Dof.cpp"
+    },
+    {
+      "old": "Cauchy/Implicit/DofSGS.cpp",
+      "canonical": "Cauchy/Implicit/LinearProblem_DofSGS.cpp",
+      "physical": "Cauchy/Implicit/LinearProblem_DofSGS.cpp"
+    },
+    {
+      "old": "Cauchy/Implicit/ILU.cpp",
+      "canonical": "Cauchy/Implicit/LinearProblem_ILU.cpp",
+      "physical": "Cauchy/Implicit/LinearProblem_ILU.cpp"
+    },
+    {
+      "old": "Cauchy/Implicit/Jacobian.cpp",
+      "canonical": "Cauchy/Implicit/FiniteVolume_Jacobian.cpp",
+      "physical": "Cauchy/Implicit/FiniteVolume_Jacobian.cpp"
+    },
+    {
+      "old": "Cauchy/Implicit/PrepareJacobian.cpp",
+      "canonical": "Cauchy/Implicit/FiniteVolume_PrepareJacobian.cpp",
+      "physical": "Cauchy/Implicit/FiniteVolume_PrepareJacobian.cpp"
+    },
+    {
+      "old": "Cauchy/Implicit/SGS.cpp",
+      "canonical": "Cauchy/Implicit/LinearProblem_SGS.cpp",
+      "physical": "Cauchy/Implicit/LinearProblem_SGS.cpp"
+    },
     {
       "old": "CFV/BenchmarkFiniteVolume.cpp",
       "canonical": "CFV/Legacy/Benchmarks/BenchmarkFiniteVolume.cpp",

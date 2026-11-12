@@ -959,8 +959,8 @@ if(Python_EXECUTABLE)
     set(_jacobian_diagnostic "${CMAKE_CURRENT_BINARY_DIR}/operator-diagnostic/ExtractedJacobian.cpp")
     add_custom_command(OUTPUT "${_jacobian_diagnostic}"
         COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/Cauchy/extract_jacobian_diagnostic.py"
-            "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/Jacobian.cpp" "${_jacobian_diagnostic}"
-        DEPENDS Cauchy/extract_jacobian_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/Jacobian.cpp"
+            "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/FiniteVolume_Jacobian.cpp" "${_jacobian_diagnostic}"
+        DEPENDS Cauchy/extract_jacobian_diagnostic.py "${PROJECT_SOURCE_DIR}/src/Cauchy/Implicit/FiniteVolume_Jacobian.cpp"
         VERBATIM)
     target_sources(cauchy_diagnostic_driver_phases PRIVATE "${_jacobian_diagnostic}")
     target_include_directories(cauchy_diagnostic_driver_phases PRIVATE
