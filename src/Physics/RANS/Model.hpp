@@ -1,6 +1,7 @@
 #pragma once
 
-#include "Physics/RANS/RANSModels.hpp"
+#include "Physics/RANS/Point.hpp"
+#include "DNDS/Core/NumericalStatus.hpp"
 #include <Eigen/Core>
 #include <array>
 
@@ -37,32 +38,6 @@ namespace DNDS::Physics::RANS
         }
     };
 
-    enum class ModelKind
-    {
-        None,
-        SA,
-        KOmegaWilcox,
-        KOmegaSST,
-        RealizableKE
-    };
-
-    /// Bounded CPU point scratch in one Cartesian frame, using three momentum
-    /// components even on 2D geometry. Gather logical blocks into [flow5,RANS2];
-    /// the unused seventh component for SA is zero. Gradient is
-    /// (direction,conservative component). All quantities use common code units.
-    /// No pointer to a mesh, Array, EOS worker or persistent cache is retained.
-    struct Point
-    {
-        Eigen::Matrix<real, 7, 1> state = Eigen::Matrix<real, 7, 1>::Zero();
-        Eigen::Matrix<real, 3, 7> gradient = Eigen::Matrix<real, 3, 7>::Zero();
-        real molecularViscosity = 0, wallDistance = 1, cellLength = 0;
-        real cp = 1, gamma = 1.4;
-    };
-    struct TurbulentTransport
-    {
-        real viscosity = 0, conductivity = 0, speciesDiffusivity = 0;
-    };
-
     /// Setup-selected CPU closure. Calls the same source/diffusion functions as
     /// Euler, with no EOS, quadrature, wall search, MPI, clipping or allocation.
     /// Caller validates finite/admissible point inputs and positive molecular
@@ -75,12 +50,21 @@ namespace DNDS::Physics::RANS
     {
         ModelSettings _settings;
         ModelKind _kind;
+        PointParameters _parameters;
         std::array<real, 2> EvaluateSource(const Point &point, int mode) const;
 
     public:
         explicit Model(ModelSettings settings = {});
         ModelKind Kind() const { return _kind; }
         const ModelSettings &Settings() const { return _settings; }
+        /// Setup-frozen numeric payload. CUDA wrappers reject unsupported kinds
+        /// before enqueuing; copying this value never retains a host model.
+        const PointParameters &KernelParameters() const { return _parameters; }
+        /// Status-returning point calls for numerical kernels. Supported SA and
+        /// k-omega profiles share the device math; RealizableKE remains CPU-only.
+        NumericalResult<TurbulentTransport> TryTransport(const Point &point) const noexcept;
+        NumericalResult<std::array<real, 2>> TryDiffusionFlux(const Point &point, const Eigen::Vector3d &normal, real turbulentViscosity) const noexcept;
+        NumericalResult<std::array<real, 2>> TrySource(const Point &point, int mode = 0) const noexcept;
         int ComponentNumber() const { return _kind == ModelKind::None ? 0 : _kind == ModelKind::SA ? 1
                                                                                                    : 2; }
         /// Stable logical component names; this metadata does not prescribe an

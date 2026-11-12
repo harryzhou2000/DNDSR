@@ -9,6 +9,7 @@
 #include "Cauchy/Physics/RANSFlux.hpp"
 #include "Cauchy/Physics/ViscousFlux.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
+#include "Cauchy/Riemann/RiemannFluxMath.hpp"
 
 namespace DNDS::Cauchy::CPU
 {
@@ -317,8 +318,8 @@ namespace DNDS::Cauchy::CPU
                         minimum = std::min(minimum, request.pressureMinimum(sample.other, 0));
                     fluxSettings.pressureStencilMin = std::min(fluxSettings.pressureStencilMin, minimum);
                 }
-                const auto convection = equation.EvaluateFlowFlux(fluxOperator, leftData, rightData, meanLeftData, meanRightData,
-                                                                  normal, grid, fluxSettings);
+                const auto preparedFlux = equation.PrepareRiemann(fluxOperator, leftData, rightData, meanLeftData, meanRightData, normal, grid);
+                const auto convection = Riemann::Math::Evaluate(fluxOperator.Kind(), preparedFlux.Input(leftData, rightData, normal, grid), fluxSettings);
                 const auto &flowFlux = convection.flux;
                 FlowState lowFlowFlux{};
                 if (request.produceLow)
@@ -477,14 +478,18 @@ namespace DNDS::Cauchy::CPU
                             const index iQ = sample.point - metric.FaceQuadratureBegin(sample.face);
                             // Transport does not consume the DES source length.
                             const auto ransPoint = RANSPoint(face, request.flowFirst, request.ransFirst, model, point, wallValues.faces(sample.face, iQ), 0);
-                            const auto turbulent = model.Transport(ransPoint);
-                            transportOptions.turbulentViscosity = turbulent.viscosity;
-                            transportOptions.turbulentConductivity = turbulent.conductivity;
-                            transportOptions.turbulentSpeciesDiffusivity = turbulent.speciesDiffusivity;
+                            const auto turbulent = model.TryTransport(ransPoint);
+                            if (!turbulent)
+                                return turbulent.status.At(iCell, sample.point);
+                            transportOptions.turbulentViscosity = turbulent.value.viscosity;
+                            transportOptions.turbulentConductivity = turbulent.value.conductivity;
+                            transportOptions.turbulentSpeciesDiffusivity = turbulent.value.speciesDiffusivity;
                             transportOptions.useQCR = model.Settings().useQCR;
-                            const auto diffusionRANS = model.DiffusionFlux(ransPoint, Eigen::Vector3d{normal[0], normal[1], normal[2]}, turbulent.viscosity);
+                            const auto diffusionRANS = model.TryDiffusionFlux(ransPoint, Eigen::Vector3d{normal[0], normal[1], normal[2]}, turbulent.value.viscosity);
+                            if (!diffusionRANS)
+                                return diffusionRANS.status.At(iCell, sample.point);
                             for (int j = 0; j < model.ComponentNumber(); ++j)
-                                flux[request.ransFirst + j] -= diffusionRANS[j];
+                                flux[request.ransFirst + j] -= diffusionRANS.value[j];
                         }
                         const auto diffusion = PrepareViscousFlux(faceFlow, face.FlowDerivative(request.flowFirst), point, face.Species(request.speciesFirst, independent),
                                                                   SpeciesGradient{face, request.speciesFirst}, normal, speciesFlux, transport, transportOptions);

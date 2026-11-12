@@ -5,35 +5,12 @@
 
 namespace DNDS::Physics::Thermodynamics
 {
-    namespace
-    {
-        bool ValidInput(real p, real t, real v2)
-        {
-            return std::isfinite(p) && p > 0 && std::isfinite(t) && t > 0 &&
-                   std::isfinite(v2) && v2 >= 0;
-        }
-    }
-    NumericalResult<TotalConditionStaticState> TotalToStaticPerfectGas(
-        real pressure, real temperature, real speedSquared, real gasConstant, real gamma) noexcept
-    {
-        if (!ValidInput(pressure, temperature, speedSquared) ||
-            !(std::isfinite(gasConstant) && gasConstant > 0 && std::isfinite(gamma) && gamma > 1))
-            return NumericalStatus{NumericalError::InvalidState, 1, -1};
-        const real cp = gamma * gasConstant / (gamma - 1);
-        const real v2 = std::min(speedSquared, .95 * 2 * cp * temperature);
-        const real t = temperature - .5 * v2 / cp;
-        const real p = pressure * std::pow(t / temperature, gamma / (gamma - 1));
-        const real rho = p / (gasConstant * t);
-        if (!ValidInput(p, t, v2) || !(std::isfinite(rho) && rho > 0))
-            return NumericalStatus{NumericalError::InvalidState, 2, -1};
-        return TotalConditionStaticState{rho, p, t, v2};
-    }
     NumericalResult<TotalConditionStaticState> TotalToStaticIdealMixture(
         Chemistry::ChemicalSource &source, const ReferenceScales &scales,
         real pressure, real temperature, real speedSquared,
         Chemistry::ConstSpeciesBufferView fractions) noexcept
     {
-        if (!ValidInput(pressure, temperature, speedSquared))
+        if (!Detail::ValidTotalConditionInput(pressure, temperature, speedSquared))
             return NumericalStatus{NumericalError::InvalidState, 1, -1};
         try
         {
@@ -69,7 +46,7 @@ namespace DNDS::Physics::Thermodynamics
             const real entropy = source.mixtureEntropy(t, fractions, p0);
             const real p = p0 * std::exp((entropy - s0) / std::max(gasConstant, 1e-30));
             const real rho = p / (gasConstant * t) / scales.rho0;
-            if (!ValidInput(p, t, v2) || !(std::isfinite(rho) && rho > 0))
+            if (!Detail::ValidTotalConditionInput(p, t, v2) || !(std::isfinite(rho) && rho > 0))
                 return NumericalStatus{NumericalError::InvalidState, 4, -1};
             return TotalConditionStaticState{rho, p / scales.Pressure(), t / scales.T0, v2};
         }

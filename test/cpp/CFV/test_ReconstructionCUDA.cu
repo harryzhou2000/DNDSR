@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
+#include "DNDS/Runtime/Execution/KernelArguments.hpp"
 #include "DNDS/Runtime/Communication/NCCLTransfer.hpp"
 #include "Geom/Unstructured/UnstructuredMeshSnapshot.hpp"
 #include "../Geom/NativeMeshOverlapFixture.hpp"
@@ -54,6 +55,55 @@ __global__ void MetricProbe(C::FiniteVolumeHostView metrics, C::ReconstructionBa
     result(0, 2) = basis.FaceMatrix(iPoint, side)[1][1];
     result(0, 3) = mesh.CellNodes(0).size();
     result(0, 4) = mesh.Coord(mesh.CellNodes(0)[0])[0];
+}
+__global__ void PlainMetricProbe(C::FiniteVolumeHostView metrics, R::ArrayView<double> result)
+{
+    for (I iCell = I(blockIdx.x) * blockDim.x + threadIdx.x; iCell < result.RowCount(); iCell += I(gridDim.x) * blockDim.x)
+    {
+        result(iCell, 0) = metrics.GetCellVol(iCell);
+        const auto center = metrics.GetCellCent(iCell);
+        for (int d = 0; d < 3; ++d)
+            result(iCell, 1 + d) = center[d];
+    }
+}
+TEST_CASE("Geometry-only FV metrics can live on CUDA without retaining a host metric plan or allocating VR")
+{
+    auto fixture = G::OverlapTest::BuildNativeFixture(mpi, false);
+    std::optional<C::FiniteVolumePlan> host{C::FiniteVolumePlan::ConstructMetrics(fixture.mesh)};
+    const I cells = host->NumCellProc();
+    std::vector<std::array<double, 4>> expected(cells);
+    {
+        const auto read = host->AcquireRead();
+        const auto view = read.View();
+        for (I iCell = 0; iCell < cells; ++iCell)
+        {
+            const auto center = view.GetCellCent(iCell);
+            expected[iCell] = {view.GetCellVol(iCell), center[0], center[1], center[2]};
+        }
+    }
+    auto resident = host->Placed(R::Device::CUDA(0), R::ExecutionContext::CUDA(0));
+    CHECK(resident.Space().Same(host->Space()));
+    host.reset();
+    auto read = resident.AcquireRead(R::ExecutionContext::CUDA(0));
+    const auto view = read.View();
+    view.ValidateDevice(R::Device::CUDA(0));
+    CHECK_THROWS(read.HostView());
+    R::Array<double> output(R::RowLayout::Dense(cells, 4), R::Device::CUDA(0));
+    {
+        auto writer = output.Write(R::ExecutionContext::CUDA(0));
+        const auto result = writer.View();
+        R::ValidateViewDevices(R::Device::CUDA(0), view, result);
+        R::CheckKernelArgumentBudget<decltype(view), decltype(result)>();
+        PlainMetricProbe<<<2, 128>>>(view, result);
+        REQUIRE(cudaGetLastError() == cudaSuccess);
+        writer.Complete(R::Completion::Record(R::ExecutionContext::CUDA(0)));
+        writer.Wait();
+    }
+    const auto downloaded = output.To(R::Device::Host());
+    const auto result = downloaded.Read();
+    for (I iCell = 0; iCell < cells; ++iCell)
+        for (int j = 0; j < 4; ++j)
+            CHECK(result.View()(iCell, j) == expected[iCell][j]);
 }
 TEST_CASE("Device publications retain actual mesh metrics and basis with explicit optional capabilities")
 {

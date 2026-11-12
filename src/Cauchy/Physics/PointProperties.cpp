@@ -1,4 +1,5 @@
 #include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/Physics/PerfectGasPoint.hpp"
 #include <new>
 #include <limits>
 
@@ -121,19 +122,12 @@ namespace DNDS::Cauchy
             {
                 if (rhoY.nSpecies)
                     return EvaluationError(NumericalError::InvalidInput, EvaluationFailure::Composition);
-                if (!_gas.Admissible(flow))
-                    return EvaluationError(NumericalError::InvalidState, EvaluationFailure::Properties);
-                const auto primitive = _gas.Primitive(flow);
-                const real cv = _gas.gasConstant / (_gas.gamma - 1), cp = _gas.gamma * cv;
-                const real energy = primitive.pressure / (flow[0] * (_gas.gamma - 1));
-                result.thermo = {flow[0], primitive.temperature, primitive.pressure, primitive.soundSpeed,
-                                 energy, energy + primitive.pressure / flow[0], cp, cv, _gas.gasConstant};
-                // Convective face properties and thermal admissibility need no
-                // transport. Honor the explicit output request just like the
-                // mixture backend; Sutherland evaluation is not free.
-                const real mu = request.transport ? _gas.MolecularViscosity(flow[0], primitive.temperature) : 0;
-                result.transport = {mu, mu * cp / _gas.prandtl};
-                result.diffusionBound = mu / flow[0] * std::max(real(4. / 3), _gas.gamma / _gas.prandtl);
+                const auto point = TryPerfectGasPoint(_gas, flow, request.transport);
+                if (!point)
+                    return point.status;
+                result.thermo = point.value.thermo;
+                result.transport = point.value.transport;
+                result.diffusionBound = point.value.diffusionBound;
                 output = result;
                 return {};
             }

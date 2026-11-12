@@ -42,13 +42,13 @@ namespace DNDS::Cauchy::CPU
             {
                 const auto &model = equation.RANS();
                 const auto input = RANSPoint(point, request.flowFirst, request.ransFirst, model, properties, request.walls.cellMean(iCell, 0), request.lengths(iCell, 0));
-                const auto destruction = model.ImplicitSourceDiagonal(input);
+                const auto destruction = model.TrySource(input, 1);
+                if (!destruction)
+                    return destruction.status.At(iCell);
                 for (int j = 0; j < model.ComponentNumber(); ++j)
                 {
-                    if (!std::isfinite(destruction[j]))
-                        return NumericalStatus{NumericalError::InvalidState}.At(iCell);
                     const index row = request.ransFirst + j;
-                    request.matrix(iCell, request.fullBlock ? row + nv * row : row) += request.scale * volume * destruction[j];
+                    request.matrix(iCell, request.fullBlock ? row + nv * row : row) += request.scale * volume * destruction.value[j];
                 }
             }
             if (request.chemical)
@@ -100,14 +100,14 @@ namespace DNDS::Cauchy::CPU
             {
                 const auto &model = equation.RANS();
                 const auto input = RANSPoint(at, request.flowFirst, request.ransFirst, model, properties, wallDistance, request.lengths(iCell, 0));
-                const auto destruction = model.ImplicitSourceDiagonal(input);
+                const auto destruction = model.TrySource(input, 1);
+                if (!destruction)
+                    return destruction.status.At(iCell);
                 for (int j = 0; j < model.ComponentNumber(); ++j)
                 {
-                    if (!std::isfinite(destruction[j]))
-                        return NumericalStatus{NumericalError::InvalidState}.At(iCell);
                     const index row = request.ransFirst + j;
                     request.matrix(iCell, request.fullBlock ? row + nv * row : row) +=
-                        request.scale * weight * destruction[j];
+                        request.scale * weight * destruction.value[j];
                 }
             }
             if (request.chemical)
@@ -214,12 +214,12 @@ namespace DNDS::Cauchy::CPU
                 {
                     const auto &model = equation.RANS();
                     const auto input = RANSPoint(point, request.flowFirst, request.ransFirst, model, properties, request.walls.cells(iCell, iPoint - request.offsets(iCell, 0)), request.lengths(iCell, 0));
-                    const auto source = model.Source(input);
+                    const auto source = model.TrySource(input);
+                    if (!source)
+                        return source.status.At(iCell, iPoint);
                     for (int j = 0; j < model.ComponentNumber(); ++j)
                     {
-                        if (!std::isfinite(source[j]))
-                            return NumericalStatus{NumericalError::InvalidState}.At(iCell, iPoint);
-                        request.ransOutput(iCell, j) += request.weights(iPoint, 0) * source[j];
+                        request.ransOutput(iCell, j) += request.weights(iPoint, 0) * source.value[j];
                     }
                 }
             }

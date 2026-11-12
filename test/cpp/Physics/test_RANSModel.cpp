@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 #include "Physics/RANS/Model.hpp"
+#include "Physics/RANS/PointKernels.hpp"
 #include <Eigen/Geometry>
 
 namespace R = DNDS::Physics::RANS;
@@ -150,4 +151,49 @@ TEST_CASE("SST omega production independently blends inner and outer shear coeff
         const double expected = (inner ? innerGamma : outerGamma) * 9 - (inner ? .075 : .0828) * 4;
         CHECK(model.Source(point)[1] == doctest::Approx(expected).epsilon(1e-12));
     }
+}
+
+TEST_CASE("Status-returning RANS point math preserves the CPU closure and reports missing source geometry")
+{
+    const Eigen::Vector3d normal(.6, .8, 0);
+    for (const char *name : {"SA", "KOmegaWilcox", "KOmegaSST"})
+        for (int desMode = 0; desMode < 4; ++desMode)
+        {
+            R::ModelSettings settings;
+            settings.model = name;
+            settings.viscosityReference = .004;
+            settings.desScale = desMode == 0 ? DNDS::veryLargeReal : .65;
+            settings.desMode = desMode;
+            settings.sst.implicitAdditionalSinks = true;
+            const R::Model model(settings);
+            auto point = Fixture();
+            const auto turbulent = R::TryTransport(model.KernelParameters(), point);
+            REQUIRE(turbulent);
+            const auto reference = model.Transport(point);
+            Near(turbulent.value.viscosity, reference.viscosity);
+            Near(turbulent.value.conductivity, reference.conductivity);
+            Near(turbulent.value.speciesDiffusivity, reference.speciesDiffusivity);
+            const auto diffusion = model.TryDiffusionFlux(point, normal, reference.viscosity);
+            REQUIRE(diffusion);
+            const auto expectedDiffusion = model.DiffusionFlux(point, normal, reference.viscosity);
+            for (int j = 0; j < 2; ++j)
+                Near(diffusion.value[j], expectedDiffusion[j]);
+            for (int mode : {0, 1})
+            {
+                const auto actual = model.TrySource(point, mode);
+                REQUIRE(actual);
+                const auto expected = mode ? model.ImplicitSourceDiagonal(point) : model.Source(point);
+                for (int j = 0; j < 2; ++j)
+                    Near(actual.value[j], expected[j]);
+            }
+            // Transport needs no source cell length. Only enabled DES and SST
+            // consume it, and the kernel-facing API returns an error, not throw.
+            point.cellLength = 0;
+            CHECK(model.TryTransport(point));
+            if ((model.Kind() == R::ModelKind::SA && settings.desScale <= 100) || model.Kind() == R::ModelKind::KOmegaSST)
+                CHECK(model.TrySource(point).status.code == DNDS::NumericalError::InvalidInput);
+        }
+    R::PointParameters unsupported;
+    unsupported.kind = R::ModelKind::RealizableKE;
+    CHECK(R::TryTransport(unsupported, Fixture()).status.code == DNDS::NumericalError::UnsupportedRequest);
 }

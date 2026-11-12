@@ -90,6 +90,13 @@ namespace DNDS::Cauchy
         /// plus the remaining interface-dependent subset of the MPI core.
         Indices auxiliaryInterfaceIndependentFaces, auxiliaryInterfaceFaces,
             interfaceIndependentCells, interfaceCoreCells;
+        /// Validate all field pointers once in the C++ launcher. A partial
+        /// numerical request should pass only its selected subviews instead of
+        /// constructing a partially bound full stencil descriptor.
+        void ValidateDevice(Runtime::Device device) const
+        {
+            Runtime::ValidateViewDevices(device, samples, jacobianSamples, offsets, jacobianOffsets, stencilFaces, faceEntries, auxiliaryCoreFaces, auxiliaryDependentFaces, rhsCoreFaces, rhsDependentFaces, auxiliaryCellOffsets, auxiliaryCellFaces, positivityOffsets, boundaryEntries, coreCells, dependentCells, auxiliaryFaceArea, positivityDisplacements, auxiliaryInterfaceIndependentFaces, auxiliaryInterfaceFaces, interfaceIndependentCells, interfaceCoreCells);
+        }
     };
 
     /** @brief Mesh-sized numerical fields, independent of small physics metadata.
@@ -127,27 +134,27 @@ namespace DNDS::Cauchy
             Runtime::Array<real>::ReadLease auxiliaryFaceArea, positivityDisplacements;
             Runtime::Array<index>::ReadLease auxiliaryInterfaceIndependentFaces,
                 auxiliaryInterfaceFaces, interfaceIndependentCells, interfaceCoreCells;
-            explicit ReadAccess(const FiniteVolumeStencilStorage &storage)
-                : samples(storage.samples.Read()), jacobianSamples(storage.jacobianSamples.Read()),
-                  offsets(storage.offsets.Read()),
-                  jacobianOffsets(storage.jacobianOffsets.Read()),
-                  stencilFaces(storage.stencilFaces.Read()),
-                  faceEntries(storage.faceEntries.Read()),
-                  auxiliaryCoreFaces(storage.auxiliaryCoreFaces.Read()),
-                  auxiliaryDependentFaces(storage.auxiliaryDependentFaces.Read()),
-                  rhsCoreFaces(storage.rhsCoreFaces.Read()),
-                  rhsDependentFaces(storage.rhsDependentFaces.Read()),
-                  auxiliaryCellOffsets(storage.auxiliaryCellOffsets.Read()),
-                  auxiliaryCellFaces(storage.auxiliaryCellFaces.Read()),
-                  positivityOffsets(storage.positivityOffsets.Read()),
-                  boundaryEntries(storage.boundaryEntries.Read()),
-                  coreCells(storage.coreCells.Read()),
-                  dependentCells(storage.dependentCells.Read()),
-                  auxiliaryFaceArea(storage.auxiliaryFaceArea.Read()), positivityDisplacements(storage.positivityDisplacements.Read()),
-                  auxiliaryInterfaceIndependentFaces(storage.auxiliaryInterfaceIndependentFaces.Read()),
-                  auxiliaryInterfaceFaces(storage.auxiliaryInterfaceFaces.Read()),
-                  interfaceIndependentCells(storage.interfaceIndependentCells.Read()),
-                  interfaceCoreCells(storage.interfaceCoreCells.Read()) {}
+            explicit ReadAccess(const FiniteVolumeStencilStorage &storage, Runtime::ExecutionContext context)
+                : samples(storage.samples.Read(context)), jacobianSamples(storage.jacobianSamples.Read(context)),
+                  offsets(storage.offsets.Read(context)),
+                  jacobianOffsets(storage.jacobianOffsets.Read(context)),
+                  stencilFaces(storage.stencilFaces.Read(context)),
+                  faceEntries(storage.faceEntries.Read(context)),
+                  auxiliaryCoreFaces(storage.auxiliaryCoreFaces.Read(context)),
+                  auxiliaryDependentFaces(storage.auxiliaryDependentFaces.Read(context)),
+                  rhsCoreFaces(storage.rhsCoreFaces.Read(context)),
+                  rhsDependentFaces(storage.rhsDependentFaces.Read(context)),
+                  auxiliaryCellOffsets(storage.auxiliaryCellOffsets.Read(context)),
+                  auxiliaryCellFaces(storage.auxiliaryCellFaces.Read(context)),
+                  positivityOffsets(storage.positivityOffsets.Read(context)),
+                  boundaryEntries(storage.boundaryEntries.Read(context)),
+                  coreCells(storage.coreCells.Read(context)),
+                  dependentCells(storage.dependentCells.Read(context)),
+                  auxiliaryFaceArea(storage.auxiliaryFaceArea.Read(context)), positivityDisplacements(storage.positivityDisplacements.Read(context)),
+                  auxiliaryInterfaceIndependentFaces(storage.auxiliaryInterfaceIndependentFaces.Read(context)),
+                  auxiliaryInterfaceFaces(storage.auxiliaryInterfaceFaces.Read(context)),
+                  interfaceIndependentCells(storage.interfaceIndependentCells.Read(context)),
+                  interfaceCoreCells(storage.interfaceCoreCells.Read(context)) {}
             FiniteVolumeStencilView View() const
             {
                 return {samples.View<Runtime::FixedRows<1>>(), jacobianSamples.View<Runtime::FixedRows<1>>(),
@@ -172,6 +179,37 @@ namespace DNDS::Cauchy
                         interfaceCoreCells.View<Runtime::FixedRows<1>>()};
             }
         };
-        ReadAccess Read() const { return ReadAccess(*this); }
+        /// Retain through asynchronous use; the borrowed view has no ownership.
+        ReadAccess Read(Runtime::ExecutionContext context = Runtime::ExecutionContext::Host()) const { return ReadAccess(*this, context); }
+        /// Setup-time immutable placement copy. Array::To completes each copy
+        /// before publication. Replacing the original storage can then release
+        /// its host payloads; this object retains no source Array handles.
+        FiniteVolumeStencilStorage Placed(Runtime::Device device, Runtime::ExecutionContext context) const
+        {
+            FiniteVolumeStencilStorage result;
+            result.samples = samples.To(device, context);
+            result.jacobianSamples = jacobianSamples.To(device, context);
+            result.offsets = offsets.To(device, context);
+            result.jacobianOffsets = jacobianOffsets.To(device, context);
+            result.stencilFaces = stencilFaces.To(device, context);
+            result.faceEntries = faceEntries.To(device, context);
+            result.auxiliaryCoreFaces = auxiliaryCoreFaces.To(device, context);
+            result.auxiliaryDependentFaces = auxiliaryDependentFaces.To(device, context);
+            result.rhsCoreFaces = rhsCoreFaces.To(device, context);
+            result.rhsDependentFaces = rhsDependentFaces.To(device, context);
+            result.auxiliaryCellOffsets = auxiliaryCellOffsets.To(device, context);
+            result.auxiliaryCellFaces = auxiliaryCellFaces.To(device, context);
+            result.positivityOffsets = positivityOffsets.To(device, context);
+            result.boundaryEntries = boundaryEntries.To(device, context);
+            result.coreCells = coreCells.To(device, context);
+            result.dependentCells = dependentCells.To(device, context);
+            result.auxiliaryFaceArea = auxiliaryFaceArea.To(device, context);
+            result.positivityDisplacements = positivityDisplacements.To(device, context);
+            result.auxiliaryInterfaceIndependentFaces = auxiliaryInterfaceIndependentFaces.To(device, context);
+            result.auxiliaryInterfaceFaces = auxiliaryInterfaceFaces.To(device, context);
+            result.interfaceIndependentCells = interfaceIndependentCells.To(device, context);
+            result.interfaceCoreCells = interfaceCoreCells.To(device, context);
+            return result;
+        }
     };
 }

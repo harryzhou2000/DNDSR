@@ -9,7 +9,7 @@ namespace DNDS::Physics::Thermodynamics
     /// Flow rows are [rho, momentum(Dim), rhoE]. Callers validate positive rho,
     /// sizes and access once; row types need only operator[]. Dim is 2 or 3.
     template <int Dim, class TFlow>
-    std::array<real, Dim> ConservativeVelocity(const TFlow &flow)
+    DNDS_DEVICE_CALLABLE std::array<real, Dim> ConservativeVelocity(const TFlow &flow)
     {
         static_assert(Dim == 2 || Dim == 3);
         std::array<real, Dim> velocity;
@@ -18,7 +18,7 @@ namespace DNDS::Physics::Thermodynamics
         return velocity;
     }
     template <int Dim, class TFlow>
-    real ConservativeSpecificInternalEnergy(const TFlow &flow)
+    DNDS_DEVICE_CALLABLE real ConservativeSpecificInternalEnergy(const TFlow &flow)
     {
         const auto velocity = ConservativeVelocity<Dim>(flow);
         real speedSquared = 0;
@@ -28,7 +28,7 @@ namespace DNDS::Physics::Thermodynamics
     }
     /// specificEnergy includes any thermochemical formation/reference energy.
     template <int Dim, class TVelocity>
-    real ConservativeTotalEnergyDensity(real rho, const TVelocity &velocity, real specificEnergy)
+    DNDS_DEVICE_CALLABLE real ConservativeTotalEnergyDensity(real rho, const TVelocity &velocity, real specificEnergy)
     {
         static_assert(Dim == 2 || Dim == 3);
         real speedSquared = 0;
@@ -38,7 +38,7 @@ namespace DNDS::Physics::Thermodynamics
     }
     /// One directional derivative d(rho*e), including all kinetic terms.
     template <int Dim, class TFlow, class TDerivative>
-    real ConservativeInternalEnergyDensityDerivative(const TFlow &flow, const TDerivative &derivative)
+    DNDS_DEVICE_CALLABLE real ConservativeInternalEnergyDensityDerivative(const TFlow &flow, const TDerivative &derivative)
     {
         const auto velocity = ConservativeVelocity<Dim>(flow);
         real speedSquared = 0, momentumDerivative = 0;
@@ -50,7 +50,7 @@ namespace DNDS::Physics::Thermodynamics
         return derivative[Dim + 1] - momentumDerivative + .5 * speedSquared * derivative[0];
     }
     /// d(phi) from conservative d(rho*phi), e.g. velocity, species or RANS.
-    inline real ConservativeSpecificDerivative(real rho, real phi, real densityDerivative, real conservedDerivative)
+    DNDS_DEVICE_CALLABLE inline real ConservativeSpecificDerivative(real rho, real phi, real densityDerivative, real conservedDerivative)
     {
         return (conservedDerivative - phi * densityDerivative) / rho;
     }

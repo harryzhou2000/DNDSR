@@ -2,7 +2,7 @@
 
 #include "Cauchy/Physics/PerfectGas.hpp"
 #include "Cauchy/Physics/Positivity.hpp"
-#include "Cauchy/Riemann/RiemannFlux.hpp"
+#include "Cauchy/Physics/RiemannPreparation.hpp"
 #include "Cauchy/Physics/EquationSchema.hpp"
 #include "DNDS/Runtime/Storage/Buffer.hpp"
 #include "Physics/Thermodynamics/IdealGasMixture.hpp"
@@ -36,23 +36,6 @@ namespace DNDS::Cauchy
         std::array<real, 8> parameters{};
         bool operator==(const EquationPropertyKey &other) const { return material == other.material && parameters == other.parameters; }
         bool operator!=(const EquationPropertyKey &other) const { return !(*this == other); }
-    };
-    /// Value owner for optional model-prepared data. Input() creates borrowed
-    /// pointers after this owner reaches its final location; copies/moves never
-    /// leave embedded pointers referring to an old stack object.
-    struct PreparedRiemannData
-    {
-        Riemann::AcousticState leftMean, rightMean;
-        Riemann::RoeData roe;
-        Riemann::WaveBounds outerWaves;
-        Riemann::AUSMData ausm;
-        Riemann::Requirements required;
-        Riemann::FluxInput Input(Riemann::AcousticState left, Riemann::AcousticState right,
-                                 Vector3 normal, Vector3 gridVelocity = {}) const
-        {
-            return {left, right, normal, gridVelocity, required.meanStates ? &leftMean : nullptr, required.meanStates ? &rightMean : nullptr,
-                    required.roe ? &roe : nullptr, required.outerWaveBounds ? &outerWaves : nullptr, required.ausmFaceSpeed ? &ausm : nullptr};
-        }
     };
     struct FlowCharacteristics
     {

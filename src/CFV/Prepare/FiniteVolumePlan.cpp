@@ -187,21 +187,37 @@ namespace DNDS::CFV
         DNDS_check_throw_info(_data && _data->stamp.Valid(), "finite-volume plan is stale; reconstruct metrics");
         _data->cells.Validate();
     }
-    FiniteVolumeRead::FiniteVolumeRead(std::shared_ptr<const Detail::FiniteVolumeData> data)
+    FiniteVolumeRead::FiniteVolumeRead(std::shared_ptr<const Detail::FiniteVolumeData> data, R::ExecutionContext context)
         : _data(std::move(data)),
           _meshRead(std::make_shared<MeshReadAccess>(_data->mesh->AcquireRead(MeshReadRequirements::CellFlux()))),
-          _cells(_data->cell.Read()), _quadrature(_data->faceQuadrature.Read()), _radialMoment(_data->radialMoment.Read()), _faceMean(_data->faceMean.Read()), _offsets(_data->faceOffsets.Read())
+          _cells(_data->cell.Read(context)), _quadrature(_data->faceQuadrature.Read(context)), _radialMoment(_data->radialMoment.Read(context)), _faceMean(_data->faceMean.Read(context)), _offsets(_data->faceOffsets.Read(context))
     {
         DNDS_check_throw_info(_data->stamp.Valid(), "finite-volume metrics changed before acquisition");
     }
     FiniteVolumeHostView FiniteVolumeRead::HostView() const
     {
+        DNDS_check_throw_info(_data->cell.GetDevice() == R::Device::Host(), "HostView requested from device FV metrics");
+        return View();
+    }
+    FiniteVolumeHostView FiniteVolumeRead::View() const
+    {
         return {_cells.View<R::FixedRows<8>>(), _offsets.View<R::FixedRows<1>>(), _quadrature.View<R::FixedRows<7>>(), _radialMoment.View<R::FixedRows<3>>(), _faceMean.View<R::FixedRows<7>>()};
     }
-    FiniteVolumeRead FiniteVolumePlan::AcquireRead() const
+    FiniteVolumeRead FiniteVolumePlan::AcquireRead(R::ExecutionContext context) const
     {
         Validate();
-        return FiniteVolumeRead(_data);
+        DNDS_check_throw_info(context.device == Device(), "FV metric read context differs from placement");
+        return FiniteVolumeRead(_data, context);
+    }
+    R::Device FiniteVolumePlan::Device() const { return _data->cell.GetDevice(); }
+    FiniteVolumePlan FiniteVolumePlan::Placed(R::Device device, R::ExecutionContext context) const
+    {
+        Validate();
+        if (device == Device())
+            return *this;
+        auto data = std::make_shared<Detail::FiniteVolumeData>(*_data, device, context);
+        DNDS_check_throw_info(data->stamp.Valid(), "FV geometry changed during metric placement");
+        return FiniteVolumePlan(std::move(data));
     }
     index FiniteVolumePlan::NumCell() const { return _data->cells.NumOwned(); }
     MPI_Comm FiniteVolumePlan::Communicator() const { return _data->communication->Communicator(); }
@@ -214,7 +230,7 @@ namespace DNDS::CFV
     {
         Validate();
         std::call_once(_data->partitionOnce, [&]
-                       { _data->workPartition.emplace(EntityWorkPartition::CellNodeCell(*_data->mesh)); });
+                       { if (!_data->workPartition) _data->workPartition.emplace(EntityWorkPartition::CellNodeCell(*_data->mesh)); });
         _data->workPartition->Validate();
         return *_data->workPartition;
     }

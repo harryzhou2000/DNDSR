@@ -2,7 +2,7 @@
 
 Baseline: `c1700f6d`, branch `codex/cauchy-cuda`. Updated 2026-11-13 (Asia/Taipei).
 
-**Phase A source work, not validation evidence.** The initial header catalog
+**Phase A validated; phase B source editing in progress.** The initial header catalog
 below is a navigation aid. The recursive source-linked call/leaf audit is still
 open; header enumeration alone does not establish complete hot-path coverage.
 Every numerical helper reached by supported flow5/SA/2EQ AoS perfect-gas paths
@@ -72,7 +72,7 @@ from required iterative work; excluded CPU algorithms are not deleted.
 
 ## Work and validation groups
 
-- **A editing:** whole-array Device tags and projections; host wrapper checks;
+- **A validated:** whole-array Device tags and projections; host wrapper checks;
   launch argument budget; import checks; complete inventory; context/placement;
   allocation naming/accounting; CPU/setup OMP; source-built single-device AmgX.
 - **B:** every supported spatial/CFV/device physics path and precision option.
@@ -108,4 +108,35 @@ Spatial CPU OMP completion remains grouped with B; implicit/time/reduction OMP
 completion with C. The source-linked transitive catalog above remains open.
 Finish each group's source/test-source editing before its build/test round;
 end-to-end solver acceptance remains group D.
+
+## Spatial group B source checkpoint (not yet built)
+
+- Riemann numerical arithmetic now lives in `RiemannFluxMath.hpp`, shared by
+  CPU and CUDA. Names and throwing validation stay in the host facade.
+  `RiemannPreparation.hpp` supplies model-dependent Roe/wave/AUSM inputs;
+  thermodynamic recovery has not moved into the gas-agnostic Riemann kernels.
+- Perfect-gas point properties, conservative-gradient conversions, total-to-
+  static inlet math and the RANS wall target have host/device numerical entries.
+- `Physics/RANS/PointKernels.hpp` uses a small value-only `PointParameters`
+  descriptor and the existing SA/Wilcox/SST formulas. Kernel-facing transport,
+  diffusion and source calls return explicit numerical status. Legacy default
+  fatal diagnostics remain available; status adapters explicitly disable those
+  diagnostics and check the results. RealizableKE remains CPU-only.
+- Cauchy's auxiliary, source/Jacobian and RANS viscous-flux CPU leaves now
+  consume those statuses, removing the visible DES/SST throwing source guard
+  from the numerical path. Existing checked host convenience methods remain.
+- `FiniteVolumePlan::Placed` supports metric-only CUDA storage independently
+  of VR allocations. Payload placement does not change mesh/entity/halo
+  identity. The placed object does not retain source metric arrays. Read scopes
+  retain the placed arrays and geometry guard. Stencil field storage also has
+  explicit placement and context-aware retained reads, with once-per-wrapper
+  residency validation. These facilities are not yet full solver dispatch.
+- Test sources cover all 17 Riemann schemes with distinct means and moving
+  faces, SA/Wilcox/SST transport/diffusion/source/implicit-diagonal comparisons,
+  source-geometry errors, and standalone CUDA metric use after dropping the
+  host metric plan. They will run with group B, not as a new validation group.
+
+Still pending in B: spatial CUDA launchers and operator wiring, boundary/PP/
+gradient/LVR/sampling/device-cache completion, optional matrix precision and
+remaining spatial OMP work. No source checkpoint here is numerical acceptance.
 

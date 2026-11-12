@@ -28,9 +28,11 @@ namespace DNDS::Cauchy::CPU
         if (request.ransFirst >= 0 && turbulent)
         {
             const auto &model = equation.RANS();
-            const auto transport = model.Transport(EquationFVDetail::RANSPoint(point, request.flowFirst, request.ransFirst, model, result, wallDistance, 0));
-            diffusion = std::max({diffusion, real(4. / 3.) * (result.transport.viscosity + transport.viscosity) / flow[0],
-                                  (result.transport.conductivity + transport.conductivity) / (flow[0] * result.thermo.cv)});
+            const auto transport = model.TryTransport(EquationFVDetail::RANSPoint(point, request.flowFirst, request.ransFirst, model, result, wallDistance, 0));
+            if (!transport)
+                return transport.status;
+            diffusion = std::max({diffusion, real(4. / 3.) * (result.transport.viscosity + transport.value.viscosity) / flow[0],
+                                  (result.transport.conductivity + transport.value.conductivity) / (flow[0] * result.thermo.cv)});
         }
         return std::array<real, 3>{result.thermo.pressure, result.thermo.soundSpeed, diffusion};
     }

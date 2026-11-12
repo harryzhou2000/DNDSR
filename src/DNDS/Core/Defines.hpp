@@ -522,7 +522,7 @@ namespace DNDS
 {
     /// @brief `a * a`, constexpr. Works for all arithmetic types.
     template <typename T>
-    constexpr T sqr(const T &a)
+    DNDS_DEVICE_CALLABLE constexpr T sqr(const T &a)
     {
         static_assert(std::is_arithmetic_v<T>, "need arithmetic");
         return a * a;
@@ -530,32 +530,32 @@ namespace DNDS
 
     /// @brief `a * a * a`, constexpr.
     template <typename T>
-    constexpr T cube(const T &a)
+    DNDS_DEVICE_CALLABLE constexpr T cube(const T &a)
     {
         static_assert(std::is_arithmetic_v<T>, "need arithmetic");
         return a * a * a;
     }
 
     /// @brief Signum function: +1, 0, or -1.
-    constexpr real sign(real a)
+    DNDS_DEVICE_CALLABLE constexpr real sign(real a)
     {
         return a > 0 ? 1 : (a < 0 ? -1 : 0);
     }
 
     /// @brief Tolerant signum: returns 0 inside `[-tol, tol]`.
-    constexpr real signTol(real a, real tol)
+    DNDS_DEVICE_CALLABLE constexpr real signTol(real a, real tol)
     {
         return a > tol ? 1 : (a < -tol ? -1 : 0);
     }
 
     /// @brief "Signum, biased toward +1": treats 0 as positive.
-    constexpr real signP(real a)
+    DNDS_DEVICE_CALLABLE constexpr real signP(real a)
     {
         return a >= 0 ? 1 : -1;
     }
 
     /// @brief "Signum, biased toward -1": treats 0 as negative.
-    constexpr real signM(real a)
+    DNDS_DEVICE_CALLABLE constexpr real signM(real a)
     {
         return a <= 0 ? -1 : 1;
     }

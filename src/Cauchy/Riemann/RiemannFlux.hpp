@@ -49,6 +49,16 @@ namespace DNDS::Cauchy::Riemann
         AUSMPlusUp2
     };
 
+    /// Pure scheme metadata, shared by host preparation and device point code.
+    DNDS_DEVICE_CALLABLE constexpr Requirements RequiredInputs(Solver solver)
+    {
+        const bool roe = solver >= Solver::Roe && solver <= Solver::Roe_M9;
+        const bool linearization = (roe && solver != Solver::Roe_M2) ||
+                                   solver == Solver::HLLEP || solver == Solver::HLLEP_V1 || solver == Solver::HLLC;
+        return {true, true, linearization, solver != Solver::Rusanov, linearization,
+                solver == Solver::HLLC, solver >= Solver::AUSMPWPlus};
+    }
+
     /// Equation-prepared Roe linearization. contactProjection is a row of its
     /// inverse eigenbasis, mapping conservative jumps onto the density/contact
     /// wave. contactEnergy and enthalpy are the energy entries of its right
@@ -152,7 +162,7 @@ namespace DNDS::Cauchy::Riemann
     public:
         static RiemannFlux Resolve(const std::string &name);
         static bool Available(const std::string &name);
-        Solver Kind() const { return _solver; }
+        DNDS_DEVICE_CALLABLE Solver Kind() const { return _solver; }
         Requirements RequiredInputs() const;
         /// These optional spatial inputs are prepared by the FV caller, never
         /// by the pointwise flux. A manual scalar remains valid for unit tests

@@ -1,4 +1,5 @@
 #include "Physics/RANS/Model.hpp"
+#include "Physics/RANS/PointKernels.hpp"
 #include "Physics/Thermodynamics/ConservativeConversion.hpp"
 
 namespace DNDS::Physics::RANS
@@ -30,6 +31,9 @@ namespace DNDS::Physics::RANS
                                   nonnegative(_settings.kOmega.turbulentViscosityLimit) && nonnegative(_settings.sst.productionLimit) &&
                                   nonnegative(_settings.sst.turbulentViscosityLimit) && nonnegative(_settings.realizableKE.turbulentViscosityLimit),
                               "invalid RANS kernel limit");
+        _parameters = {_kind, _settings.viscosityReference, _settings.turbulentPrandtl, _settings.turbulentSchmidt,
+                       _settings.desScale, _settings.desMode, _settings.saVersion, _settings.saRotationCorrection,
+                       _settings.sa, _settings.kOmega, _settings.sst};
     }
     std::array<const char *, 2> Model::ComponentNames() const
     {
@@ -68,6 +72,39 @@ namespace DNDS::Physics::RANS
         }
         return {viscosity, point.cp * viscosity / _settings.turbulentPrandtl,
                 viscosity / std::max(point.state[0] * _settings.turbulentSchmidt, verySmallReal)};
+    }
+
+    NumericalResult<TurbulentTransport> Model::TryTransport(const Point &point) const noexcept
+    {
+        if (_parameters.Supported())
+            return RANS::TryTransport(_parameters, point);
+        const auto result = Transport(point); // CPU-only legacy RealizableKE.
+        if (!std::isfinite(result.viscosity) || !std::isfinite(result.conductivity) || !std::isfinite(result.speciesDiffusivity))
+            return NumericalStatus{NumericalError::InvalidState};
+        return result;
+    }
+
+    NumericalResult<std::array<real, 2>> Model::TryDiffusionFlux(const Point &point, const Eigen::Vector3d &normal, real turbulentViscosity) const noexcept
+    {
+        if (_parameters.Supported())
+            return RANS::TryDiffusionFlux(_parameters, point, normal, turbulentViscosity);
+        const auto result = DiffusionFlux(point, normal, turbulentViscosity);
+        if (!std::isfinite(result[0]) || !std::isfinite(result[1]))
+            return NumericalStatus{NumericalError::InvalidState};
+        return result;
+    }
+
+    NumericalResult<std::array<real, 2>> Model::TrySource(const Point &point, int mode) const noexcept
+    {
+        if (_parameters.Supported())
+            return RANS::TrySource(_parameters, point, mode);
+        if (mode != 0 && mode != 1)
+            return NumericalStatus{NumericalError::InvalidInput};
+        // RealizableKE does not enter the DES/SST cellLength throw path.
+        const auto result = EvaluateSource(point, mode);
+        if (!std::isfinite(result[0]) || !std::isfinite(result[1]))
+            return NumericalStatus{NumericalError::InvalidState};
+        return result;
     }
     std::array<real, 2> Model::DiffusionFlux(const Point &point, const Eigen::Vector3d &normal, real turbulentViscosity) const
     {

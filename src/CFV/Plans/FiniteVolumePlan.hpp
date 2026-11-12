@@ -113,6 +113,11 @@ namespace DNDS::CFV
         Runtime::ArrayView<const real, false, Runtime::FixedRows<7>> quadrature;
         Runtime::ArrayView<const real, false, Runtime::FixedRows<3>> radialMoment;
         Runtime::ArrayView<const real, false, Runtime::FixedRows<7>> faceMean;
+        /// Host launcher validation, once before the numerical loop/launch.
+        void ValidateDevice(Runtime::Device device) const
+        {
+            Runtime::ValidateViewDevices(device, cells, faceOffsets, quadrature, radialMoment, faceMean);
+        }
         DNDS_DEVICE_CALLABLE real GetCellVol(index iCell) const { return cells(iCell, 0); }
         DNDS_DEVICE_CALLABLE Geom::tPoint GetCellCent(index iCell) const
         {
@@ -148,10 +153,13 @@ namespace DNDS::CFV
         std::shared_ptr<Geom::MeshReadAccess> _meshRead;
         Runtime::Array<real>::ReadLease _cells, _quadrature, _radialMoment, _faceMean;
         Runtime::Array<index>::ReadLease _offsets;
-        explicit FiniteVolumeRead(std::shared_ptr<const Detail::FiniteVolumeData> data);
+        explicit FiniteVolumeRead(std::shared_ptr<const Detail::FiniteVolumeData> data, Runtime::ExecutionContext context);
         friend class FiniteVolumePlan;
 
     public:
+        /// Borrowed numeric view in this scope's declared address space. The
+        /// retained scope owns metric leases and protects the mesh generation.
+        FiniteVolumeHostView View() const;
         FiniteVolumeHostView HostView() const;
     };
 
@@ -193,7 +201,15 @@ namespace DNDS::CFV
             return ConstructMetrics(std::move(mesh), options);
         }
         void Validate() const;
-        FiniteVolumeRead AcquireRead() const;
+        FiniteVolumeRead AcquireRead(Runtime::ExecutionContext context = Runtime::ExecutionContext::Host()) const;
+        /// Explicit setup copy of immutable metrics, independent of VR buffers.
+        /// Row-space/halo/mesh identities are shared, but payload arrays belong
+        /// only to the returned placement. Release the original host plan when
+        /// it is no longer needed; the placed plan does not retain those arrays.
+        /// Copy completion precedes return. Serialize this setup operation with
+        /// lazy work-partition preparation and mesh mutation.
+        FiniteVolumePlan Placed(Runtime::Device device, Runtime::ExecutionContext context) const;
+        Runtime::Device Device() const;
         index NumCell() const;
         index NumCellProc() const;
         index NumFaceProc() const;

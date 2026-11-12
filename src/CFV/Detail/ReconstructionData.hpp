@@ -45,6 +45,13 @@ namespace DNDS::CFV::Detail
               cells(mesh->Entities(Geom::EntityKind::Cell)),
               communication(std::move(context)), dofs(communication, cells.NumOwned(), cells.NumGhost(), "FV cells"),
               dim(mesh->getDim()), intOrder(order), axisymmetric(axis) {}
+        FiniteVolumeData(const FiniteVolumeData &source, Runtime::Device device, Runtime::ExecutionContext context)
+            : mesh(source.mesh), stamp(source.stamp), cells(source.cells), communication(source.communication),
+              dofs(source.dofs), halo(source.halo), workPartition(source.workPartition),
+              dim(source.dim), intOrder(source.intOrder), axisymmetric(source.axisymmetric),
+              cell(source.cell.To(device, context)), radialMoment(source.radialMoment.To(device, context)),
+              faceQuadrature(source.faceQuadrature.To(device, context)), faceMean(source.faceMean.To(device, context)),
+              faceOffsets(source.faceOffsets.To(device, context)) {}
     };
     struct ReconstructionData
     {

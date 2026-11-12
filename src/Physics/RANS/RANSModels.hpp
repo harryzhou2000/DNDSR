@@ -22,6 +22,13 @@
  *
  *  Kernels depend only on DNDS math/configuration facilities. Legacy Euler
  *  includes forward here; mesh ownership and solver scheduling stay outside.
+ *
+ *  SA and k-omega numerical templates are shared host/device implementations.
+ *  The optional @c Diagnose template parameter preserves historical fatal
+ *  diagnostics by default. Status-returning PointKernels.hpp adapters disable
+ *  that policy and inspect the result explicitly; disabling it without checking
+ *  outputs is not a supported error policy. Device fatal diagnostics trap but
+ *  do not use host iostreams. Runtime model names/config ownership stay on CPU.
  */
 #pragma once
 
@@ -74,14 +81,14 @@ namespace DNDS::Physics::RANS
      * distance. Its default zero explicitly omits that term when unavailable.
      * psi is the SA low-Re correction, evaluated using the selected ft2 policy.
      */
-    inline real GetLength_SA_DES(real d, real hMax, real cDES, int DESMode,
-                                 real nuTur, real nuLam, real gradUNorm, real psi,
-                                 real hWallNormal = 0)
+    DNDS_DEVICE_CALLABLE inline real GetLength_SA_DES(real d, real hMax, real cDES, int DESMode,
+                                                      real nuTur, real nuLam, real gradUNorm, real psi,
+                                                      real hWallNormal = 0)
     {
-        DNDS_assert(DESMode >= 0 && DESMode <= 3);
+        DNDS_HD_assert(DESMode >= 0 && DESMode <= 3);
         if (cDES > 100)
             return d;
-        DNDS_assert(cDES > 0 && hMax > 0 && d > 0 && hWallNormal >= 0);
+        DNDS_HD_assert(cDES > 0 && hMax > 0 && d > 0 && hWallNormal >= 0);
         if (DESMode == 3)
             return std::min(d, cDES * hMax);
 
@@ -96,7 +103,7 @@ namespace DNDS::Physics::RANS
             return shield * d + (1 - shield) * std::min(d, cDES * hMax * psi);
         }
 
-        const real delta = std::min(std::max({0.15 * d, 0.15 * hMax, hWallNormal}), hMax);
+        const real delta = std::min(std::max(std::max(0.15 * d, 0.15 * hMax), hWallNormal), hMax);
         const real lLES = cDES * delta * psi;
         const real alpha = 0.25 - d / hMax;
         const real fB = std::min(2 * std::exp(-9 * sqr(alpha)), 1.0);
@@ -171,7 +178,7 @@ namespace DNDS::Physics::RANS
     /// property evaluation for the SA-neg transported variable. State is
     /// conservative; muRef is the SA variable scale, not molecular viscosity.
     template <int dim, class TU>
-    real GetMut_SA(const TU &state, real muRef, real molecularViscosity)
+    DNDS_DEVICE_CALLABLE real GetMut_SA(const TU &state, real muRef, real molecularViscosity)
     {
         real chi = state(dim + 2) * muRef / molecularViscosity;
 #ifdef USE_NS_SA_NEGATIVE_MODEL
@@ -187,8 +194,8 @@ namespace DNDS::Physics::RANS
     /// preserves Euler's fn branch and sigma scaling, including negative SA.
     /// Other flux components are untouched; SA adds no isotropic normal stress.
     template <int dim, class TU, class TGradient, class TNormal, class TFlux>
-    void GetVisFlux_SA(const TU &state, const TGradient &primitiveGradient, const TNormal &normal,
-                       real muRef, real molecularViscosity, TFlux &flux)
+    DNDS_DEVICE_CALLABLE void GetVisFlux_SA(const TU &state, const TGradient &primitiveGradient, const TNormal &normal,
+                                            real muRef, real molecularViscosity, TFlux &flux)
     {
         real fn = 1;
 #ifdef USE_NS_SA_NEGATIVE_MODEL
@@ -199,7 +206,7 @@ namespace DNDS::Physics::RANS
         }
 #endif
         const auto directions = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
-        flux(dim + 2) = primitiveGradient(directions, {dim + 2}).dot(normal) *
+        flux(dim + 2) = primitiveGradient.template block<dim, 1>(0, dim + 2).dot(normal) *
                         (molecularViscosity + state(dim + 2) * muRef * fn) / SA::sigma;
     }
 
@@ -579,23 +586,23 @@ namespace DNDS::Physics::RANS
      * @param d        Wall distance.
      * @return         Turbulent dynamic viscosity mu_t (>= 0).
      */
-    template <int dim, class TU, class TDiffU>
-    real GetMut_SST(TU &&UMeanXy, TDiffU &&DiffUxy, real muf, real d, const KOmegaSSTConfig &config)
+    template <int dim, class TU, class TDiffU, bool Diagnose = true>
+    DNDS_DEVICE_CALLABLE real GetMut_SST(TU &&UMeanXy, TDiffU &&DiffUxy, real muf, real d, const KOmegaSSTConfig &config)
     {
-        static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
-        static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
-        static const auto I4 = dim + 1;
-        static const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
-        static const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
+        const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
+        const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
+        const auto I4 = dim + 1;
+        const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
+        const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
 
         real a1 = 0.31;
         real betaStar = 0.09;
         real sigOmega2 = 0.856;
         real cmu = 0.09;
         real phi = 2. / 3.;
-        Eigen::Matrix<real, dim, 1> velo = UMeanXy(Seq123) / UMeanXy(0);
-        Eigen::Matrix<real, dim, 1> diffRho = DiffUxy(Seq012, {0});
-        Eigen::Matrix<real, dim, dim> diffRhoU = DiffUxy(Seq012, Seq123);
+        Eigen::Matrix<real, dim, 1> velo = UMeanXy.template segment<dim>(1) / UMeanXy(0);
+        Eigen::Matrix<real, dim, 1> diffRho = DiffUxy.template block<dim, 1>(0, 0);
+        Eigen::Matrix<real, dim, dim> diffRhoU = DiffUxy.template block<dim, dim>(0, 1);
         Eigen::Matrix<real, dim, dim> diffU = (diffRhoU - diffRho * velo.transpose()) / UMeanXy(0);
         Eigen::Matrix<real, dim, dim> SR2 = diffU + diffU.transpose();                                                  // 2 times strain rate
         Eigen::Matrix<real, dim, dim> SS = SR2 - (2. / 3.) * diffU.trace() * Eigen::Matrix<real, dim, dim>::Identity(); // 2 times shear strain rate
@@ -613,11 +620,16 @@ namespace DNDS::Physics::RANS
         mut = std::min(mut, config.turbulentViscosityLimit * muf); // CFL3D
 #endif
 
-        if (std::isnan(mut) || !std::isfinite(mut))
+        if constexpr (Diagnose)
         {
-            std::cerr << k << " " << omegaaa << " " << mut << " " << S << "\n";
-            std::cerr << SS << std::endl;
-            DNDS_assert(false);
+            if (std::isnan(mut) || !std::isfinite(mut))
+            {
+#ifndef __CUDA_ARCH__
+                std::cerr << k << " " << omegaaa << " " << mut << " " << S << "\n";
+                std::cerr << SS << std::endl;
+#endif
+                DNDS_HD_assert(false);
+            }
         }
         return mut;
     }
@@ -647,14 +659,14 @@ namespace DNDS::Physics::RANS
      * @param muf          Laminar (molecular) dynamic viscosity.
      * @param[out] vFlux   Output viscous flux vector; entries at I4+1 and I4+2 are set.
      */
-    template <int dim, class TU, class TN, class TDiffU, class TVFlux>
-    void GetVisFlux_SST(TU &&UMeanXy, TDiffU &&DiffUxyPrim, TN &&uNorm, real mutIn, real d, real muf, TVFlux &vFlux, const KOmegaSSTConfig &config)
+    template <int dim, class TU, class TN, class TDiffU, class TVFlux, bool Diagnose = true>
+    DNDS_DEVICE_CALLABLE void GetVisFlux_SST(TU &&UMeanXy, TDiffU &&DiffUxyPrim, TN &&uNorm, real mutIn, real d, real muf, TVFlux &vFlux, const KOmegaSSTConfig &config)
     {
-        static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
-        static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
-        static const auto I4 = dim + 1;
-        static const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
-        static const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
+        const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
+        const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
+        const auto I4 = dim + 1;
+        const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
+        const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
 
         real a1 = 0.31;
         real betaStar = 0.09;
@@ -667,12 +679,12 @@ namespace DNDS::Physics::RANS
         real kap = 0.41;
         real gamma1 = beta1 / betaStar - sigO1 * sqr(kap) / std::sqrt(betaStar);
         real gamma2 = beta2 / betaStar - sigO2 * sqr(kap) / std::sqrt(betaStar);
-        Eigen::Matrix<real, dim, 1> velo = UMeanXy(Seq123) / UMeanXy(0);
-        Eigen::Matrix<real, dim, 1> diffRho = DiffUxyPrim(Seq012, {0});
-        Eigen::Matrix<real, dim, dim> diffU = DiffUxyPrim(Seq012, Seq123);
+        Eigen::Matrix<real, dim, 1> velo = UMeanXy.template segment<dim>(1) / UMeanXy(0);
+        Eigen::Matrix<real, dim, 1> diffRho = DiffUxyPrim.template block<dim, 1>(0, 0);
+        Eigen::Matrix<real, dim, dim> diffU = DiffUxyPrim.template block<dim, dim>(0, 1);
         Eigen::Matrix<real, dim, dim> SR2 = diffU + diffU.transpose();                                                  // 2 times strain rate
         Eigen::Matrix<real, dim, dim> SS = SR2 - (2. / 3.) * diffU.trace() * Eigen::Matrix<real, dim, dim>::Identity(); // 2 times shear strain rate
-        Eigen::Matrix<real, dim, 2> diffKO = DiffUxyPrim(Seq012, {I4 + 1, I4 + 2});
+        Eigen::Matrix<real, dim, 2> diffKO = DiffUxyPrim.template block<dim, 2>(0, I4 + 1);
 
         Eigen::Matrix<real, dim, dim> OmegaM = (diffU.transpose() - diffU) * 0.5;
         real OmegaMag = OmegaM.norm() * std::sqrt(2);
@@ -681,7 +693,7 @@ namespace DNDS::Physics::RANS
         real omegaaa = std::max(UMeanXy(I4 + 2) / rho, verySmallReal_4);
         real S = std::sqrt(SS.squaredNorm() / 2) + verySmallReal_4;
         real nuPhy = muf / rho;
-        real CDKW = std::max(2 * rho * sigO2 / omegaaa * diffKO(EigenAll, 0).dot(diffKO(EigenAll, 1)), 1e-10);
+        real CDKW = std::max(2 * rho * sigO2 / omegaaa * diffKO.col(0).dot(diffKO.col(1)), 1e-10);
         real F1 = std::tanh(std::pow(
             std::min(std::max(std::sqrt(k) / (betaStar * omegaaa * d), 500 * nuPhy / (sqr(d) * omegaaa)),
                      4 * rho * sigO2 * k / (CDKW * sqr(d))),
@@ -696,18 +708,23 @@ namespace DNDS::Physics::RANS
         real sigK = sigK1 * F1 + sigK2 * (1 - F1);
         real sigO = sigO1 * F1 + sigO2 * (1 - F1);
 
-        vFlux(I4 + 1) = diffKO(Seq012, 0).dot(uNorm) * (muf + mutIn * sigK);
-        vFlux(I4 + 2) = diffKO(Seq012, 1).dot(uNorm) * (muf + mutIn * sigO);
+        vFlux(I4 + 1) = diffKO.col(0).dot(uNorm) * (muf + mutIn * sigK);
+        vFlux(I4 + 2) = diffKO.col(1).dot(uNorm) * (muf + mutIn * sigO);
 
-        if (!vFlux.allFinite() || vFlux.hasNaN())
+        if constexpr (Diagnose)
         {
-            std::cerr << vFlux << "\n";
-            std::cerr << sigK << " " << sigO << "\n";
-            std::cerr << F1 << " " << F2 << "\n";
-            std::cerr << CDKW << "\n";
-            std::cerr << k << " " << omegaaa << "\n";
-            std::cerr << muf << " " << mut << "\n";
-            std::cerr << std::endl;
+            if (!vFlux.allFinite() || vFlux.hasNaN())
+            {
+#ifndef __CUDA_ARCH__
+                std::cerr << vFlux << "\n";
+                std::cerr << sigK << " " << sigO << "\n";
+                std::cerr << F1 << " " << F2 << "\n";
+                std::cerr << CDKW << "\n";
+                std::cerr << k << " " << omegaaa << "\n";
+                std::cerr << muf << " " << mut << "\n";
+                std::cerr << std::endl;
+#endif
+            }
         }
     }
 
@@ -748,13 +765,13 @@ namespace DNDS::Physics::RANS
      * @param mode      Source computation mode: 0 = full source, 1 = nonnegative implicit diagonal.
      */
     template <int dim, class TU, class TDiffU, class TSource>
-    void GetSource_SST(TU &&UMeanXy, TDiffU &&DiffUxy, real muf, real d, real lLES, TSource &source, int mode, const KOmegaSSTConfig &config)
+    DNDS_DEVICE_CALLABLE void GetSource_SST(TU &&UMeanXy, TDiffU &&DiffUxy, real muf, real d, real lLES, TSource &source, int mode, const KOmegaSSTConfig &config)
     {
-        static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
-        static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
-        static const auto I4 = dim + 1;
-        static const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
-        static const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
+        const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
+        const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
+        const auto I4 = dim + 1;
+        const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
+        const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
 
         real a1 = 0.31;
         real betaStar = 0.09;
@@ -767,14 +784,14 @@ namespace DNDS::Physics::RANS
         real kap = 0.41;
         real gamma1 = beta1 / betaStar - sigO1 * sqr(kap) / std::sqrt(betaStar);
         real gamma2 = beta2 / betaStar - sigO2 * sqr(kap) / std::sqrt(betaStar);
-        Eigen::Matrix<real, dim, 1> velo = UMeanXy(Seq123) / UMeanXy(0);
-        Eigen::Matrix<real, dim, 1> diffRho = DiffUxy(Seq012, {0});
-        Eigen::Matrix<real, dim, dim> diffRhoU = DiffUxy(Seq012, Seq123);
+        Eigen::Matrix<real, dim, 1> velo = UMeanXy.template segment<dim>(1) / UMeanXy(0);
+        Eigen::Matrix<real, dim, 1> diffRho = DiffUxy.template block<dim, 1>(0, 0);
+        Eigen::Matrix<real, dim, dim> diffRhoU = DiffUxy.template block<dim, dim>(0, 1);
         Eigen::Matrix<real, dim, dim> diffU = (diffRhoU - diffRho * velo.transpose()) / UMeanXy(0);
         Eigen::Matrix<real, dim, dim> SR2 = diffU + diffU.transpose();                                                  // 2 times strain rate
         Eigen::Matrix<real, dim, dim> SS = SR2 - (2. / 3.) * diffU.trace() * Eigen::Matrix<real, dim, dim>::Identity(); // 2 times shear strain rate
-        Eigen::Matrix<real, dim, 2> diffRhoKO = DiffUxy(Seq012, {I4 + 1, I4 + 2});
-        Eigen::Matrix<real, dim, 2> diffKO = (diffRhoKO - 1. / UMeanXy(0) * diffRho * UMeanXy({I4 + 1, I4 + 2}).transpose()) / UMeanXy(0);
+        Eigen::Matrix<real, dim, 2> diffRhoKO = DiffUxy.template block<dim, 2>(0, I4 + 1);
+        Eigen::Matrix<real, dim, 2> diffKO = (diffRhoKO - 1. / UMeanXy(0) * diffRho * UMeanXy.template segment<2>(I4 + 1).transpose()) / UMeanXy(0);
         Eigen::Matrix<real, dim, dim> OmegaM = (diffU.transpose() - diffU) * 0.5;
         real OmegaMag = OmegaM.norm() * std::sqrt(2);
         real rho = UMeanXy(0);
@@ -782,7 +799,7 @@ namespace DNDS::Physics::RANS
         real omegaaa = std::max(UMeanXy(I4 + 2) / rho, verySmallReal_4);
         real S = std::sqrt(SS.squaredNorm() / 2) + verySmallReal_4;
         real nuPhy = muf / rho;
-        real CDKW = std::max(2 * rho * sigO2 / omegaaa * diffKO(EigenAll, 0).dot(diffKO(EigenAll, 1)), 1e-10);
+        real CDKW = std::max(2 * rho * sigO2 / omegaaa * diffKO.col(0).dot(diffKO.col(1)), 1e-10);
         real F1 = std::tanh(std::pow(
             std::min(std::max(std::sqrt(k) / (betaStar * omegaaa * d), 500 * nuPhy / (sqr(d) * omegaaa)),
                      4 * rho * sigO2 * k / (CDKW * sqr(d))),
@@ -822,9 +839,9 @@ namespace DNDS::Physics::RANS
         {
             source(I4 + 1) = PkTilde - betaStar * rho * k * omegaaa * FDES;
             source(I4 + 2) = POmega - beta * rho * sqr(omegaaa) +
-                             2 * (1 - F1) * rho * sigO2 / omegaaa * diffKO(EigenAll, 0).dot(diffKO(EigenAll, 1));
+                             2 * (1 - F1) * rho * sigO2 / omegaaa * diffKO.col(0).dot(diffKO.col(1));
             // source(I4 + 2) = POmega - beta * rho * sqr(omegaaa) +
-            //                  2 * (1 - F1) * rho * sigO2 / omegaaa * diffKO(EigenAll, 0).dot(diffKO(EigenAll, 1));
+            //                  2 * (1 - F1) * rho * sigO2 / omegaaa * diffKO.col(0).dot(diffKO.col(1));
         }
         else
         {
@@ -840,7 +857,7 @@ namespace DNDS::Physics::RANS
                 if (Pk < config.productionLimit * betaStar * rho * k * omegaaa)
                     source(I4 + 1) += std::max((2. / 3.) * diffU.trace(), real(0));
                 const real crossDiffusion = 2 * (1 - F1) * rho * sigO2 / omegaaa *
-                                            diffKO(EigenAll, 0).dot(diffKO(EigenAll, 1));
+                                            diffKO.col(0).dot(diffKO.col(1));
                 source(I4 + 2) += std::max(crossDiffusion, real(0)) / (rho * omegaaa);
             }
         }
@@ -867,20 +884,20 @@ namespace DNDS::Physics::RANS
      * @param d        Wall distance (unused in this model but kept for interface consistency).
      * @return         Turbulent dynamic viscosity mu_t (>= 0).
      */
-    template <int dim, class TU, class TDiffU>
-    real GetMut_KOWilcox(TU &&UMeanXy, TDiffU &&DiffUxy, real muf, real d, const KOmegaConfig &config)
+    template <int dim, class TU, class TDiffU, bool Diagnose = true>
+    DNDS_DEVICE_CALLABLE real GetMut_KOWilcox(TU &&UMeanXy, TDiffU &&DiffUxy, real muf, real d, const KOmegaConfig &config)
     {
-        static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
-        static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
-        static const auto I4 = dim + 1;
-        static const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
-        static const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
+        const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
+        const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
+        const auto I4 = dim + 1;
+        const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
+        const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
 
         real CLim = 7. / 8.;
         real betaS = 0.09;
-        Eigen::Matrix<real, dim, 1> velo = UMeanXy(Seq123) / UMeanXy(0);
-        Eigen::Matrix<real, dim, 1> diffRho = DiffUxy(Seq012, {0});
-        Eigen::Matrix<real, dim, dim> diffRhoU = DiffUxy(Seq012, Seq123);
+        Eigen::Matrix<real, dim, 1> velo = UMeanXy.template segment<dim>(1) / UMeanXy(0);
+        Eigen::Matrix<real, dim, 1> diffRho = DiffUxy.template block<dim, 1>(0, 0);
+        Eigen::Matrix<real, dim, dim> diffRhoU = DiffUxy.template block<dim, dim>(0, 1);
         Eigen::Matrix<real, dim, dim> diffU = (diffRhoU - diffRho * velo.transpose()) / UMeanXy(0);
         Eigen::Matrix<real, dim, dim> SR2 = diffU + diffU.transpose();
         real rho = UMeanXy(0);
@@ -896,10 +913,15 @@ namespace DNDS::Physics::RANS
         mut = std::min(mut, config.turbulentViscosityLimit * muf); // CFL3D
 #endif
 
-        if (std::isnan(mut) || !std::isfinite(mut))
+        if constexpr (Diagnose)
         {
-            std::cerr << k << " " << omegaaa << " " << mut << "\n";
-            DNDS_assert(false);
+            if (std::isnan(mut) || !std::isfinite(mut))
+            {
+#ifndef __CUDA_ARCH__
+                std::cerr << k << " " << omegaaa << " " << mut << "\n";
+#endif
+                DNDS_HD_assert(false);
+            }
         }
         return mut;
     }
@@ -929,13 +951,13 @@ namespace DNDS::Physics::RANS
      * @param[out] vFlux   Output viscous flux vector; entries at I4+1 and I4+2 are set.
      */
     template <int dim, class TU, class TN, class TDiffU, class TVFlux>
-    void GetVisFlux_KOWilcox(TU &&UMeanXy, TDiffU &&DiffUxyPrim, TN &&uNorm, real mutIn, real d, real muf, TVFlux &vFlux, const KOmegaConfig &config)
+    DNDS_DEVICE_CALLABLE void GetVisFlux_KOWilcox(TU &&UMeanXy, TDiffU &&DiffUxyPrim, TN &&uNorm, real mutIn, real d, real muf, TVFlux &vFlux, const KOmegaConfig &config)
     {
-        static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
-        static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
-        static const auto I4 = dim + 1;
-        static const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
-        static const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
+        const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
+        const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
+        const auto I4 = dim + 1;
+        const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
+        const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
 
         real alpha = 13. / 25.;
         real betaS = 0.09;
@@ -943,12 +965,12 @@ namespace DNDS::Physics::RANS
         real sigO = 0.5;
         real Prt = 0.9;
         real CLim = 7. / 8.;
-        Eigen::Matrix<real, dim, 1> velo = UMeanXy(Seq123) / UMeanXy(0);
-        Eigen::Matrix<real, dim, 1> diffRho = DiffUxyPrim(Seq012, {0});
-        Eigen::Matrix<real, dim, dim> diffU = DiffUxyPrim(Seq012, Seq123);
+        Eigen::Matrix<real, dim, 1> velo = UMeanXy.template segment<dim>(1) / UMeanXy(0);
+        Eigen::Matrix<real, dim, 1> diffRho = DiffUxyPrim.template block<dim, 1>(0, 0);
+        Eigen::Matrix<real, dim, dim> diffU = DiffUxyPrim.template block<dim, dim>(0, 1);
         Eigen::Matrix<real, dim, dim> SR2 = diffU + diffU.transpose();                                                  // 2 times strain rate
         Eigen::Matrix<real, dim, dim> SS = SR2 - (2. / 3.) * diffU.trace() * Eigen::Matrix<real, dim, dim>::Identity(); // 2 times shear strain rate
-        Eigen::Matrix<real, dim, 2> diffKO = DiffUxyPrim(Seq012, {I4 + 1, I4 + 2});
+        Eigen::Matrix<real, dim, 2> diffKO = DiffUxyPrim.template block<dim, 2>(0, I4 + 1);
         real rho = UMeanXy(0);
         real k = std::max(UMeanXy(I4 + 1) / rho, sqr(verySmallReal_4));
         real omegaaa = std::max(UMeanXy(I4 + 2) / rho, verySmallReal_4);
@@ -962,8 +984,8 @@ namespace DNDS::Physics::RANS
         mut = std::min(mut, config.turbulentViscosityLimit * muf); // CFL3D
 #endif
 
-        vFlux(I4 + 1) = diffKO(Seq012, 0).dot(uNorm) * (muf + mut * sigK);
-        vFlux(I4 + 2) = diffKO(Seq012, 1).dot(uNorm) * (muf + mut * sigO);
+        vFlux(I4 + 1) = diffKO.col(0).dot(uNorm) * (muf + mut * sigK);
+        vFlux(I4 + 2) = diffKO.col(1).dot(uNorm) * (muf + mut * sigO);
     }
 
     /**
@@ -1003,13 +1025,13 @@ namespace DNDS::Physics::RANS
      * @param mode      Source computation mode: 0 = full source, 1 = implicit diagonal (destruction only).
      */
     template <int dim, class TU, class TDiffU, class TSource>
-    void GetSource_KOWilcox(TU &&UMeanXy, TDiffU &&DiffUxy, real muf, real d, TSource &source, int mode, const KOmegaConfig &config)
+    DNDS_DEVICE_CALLABLE void GetSource_KOWilcox(TU &&UMeanXy, TDiffU &&DiffUxy, real muf, real d, TSource &source, int mode, const KOmegaConfig &config)
     {
-        static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
-        static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
-        static const auto I4 = dim + 1;
-        static const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
-        static const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
+        const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
+        const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
+        const auto I4 = dim + 1;
+        const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
+        const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
 #if KW_WILCOX_VER == 0
         real alpha = 5. / 9.;
 #else
@@ -1023,15 +1045,15 @@ namespace DNDS::Physics::RANS
         real betaO = 0.0708;
         real kappa = 0.41;
 
-        Eigen::Matrix<real, dim, 1> velo = UMeanXy(Seq123) / UMeanXy(0);
-        Eigen::Matrix<real, dim, 1> diffRho = DiffUxy(Seq012, {0});
-        Eigen::Matrix<real, dim, dim> diffRhoU = DiffUxy(Seq012, Seq123);
+        Eigen::Matrix<real, dim, 1> velo = UMeanXy.template segment<dim>(1) / UMeanXy(0);
+        Eigen::Matrix<real, dim, 1> diffRho = DiffUxy.template block<dim, 1>(0, 0);
+        Eigen::Matrix<real, dim, dim> diffRhoU = DiffUxy.template block<dim, dim>(0, 1);
         Eigen::Matrix<real, dim, dim> diffU = (diffRhoU - diffRho * velo.transpose()) / UMeanXy(0);
         Eigen::Matrix<real, dim, dim> SR2 = diffU + diffU.transpose();                                                  // 2 times strain rate
         Eigen::Matrix<real, dim, dim> OmegaM2 = diffU.transpose() - diffU;                                              // 2 times rotation
         Eigen::Matrix<real, dim, dim> SS = SR2 - (2. / 3.) * diffU.trace() * Eigen::Matrix<real, dim, dim>::Identity(); // 2 times shear strain rate
-        Eigen::Matrix<real, dim, 2> diffRhoKO = DiffUxy(Seq012, {I4 + 1, I4 + 2});
-        Eigen::Matrix<real, dim, 2> diffKO = (diffRhoKO - 1. / UMeanXy(0) * diffRho * UMeanXy({I4 + 1, I4 + 2}).transpose()) / UMeanXy(0);
+        Eigen::Matrix<real, dim, 2> diffRhoKO = DiffUxy.template block<dim, 2>(0, I4 + 1);
+        Eigen::Matrix<real, dim, 2> diffKO = (diffRhoKO - 1. / UMeanXy(0) * diffRho * UMeanXy.template segment<2>(I4 + 1).transpose()) / UMeanXy(0);
         real rho = UMeanXy(0);
         real k = std::max(UMeanXy(I4 + 1) / rho, sqr(verySmallReal_4)); // make nu -> 0 when k,O->0
         real omegaaa = std::max(UMeanXy(I4 + 2) / rho, verySmallReal_4);
@@ -1054,7 +1076,7 @@ namespace DNDS::Physics::RANS
 #else
         real beta = 0.075;
 #endif
-        real crossDiff = diffKO(EigenAll, 0).dot(diffKO(EigenAll, 1));
+        real crossDiff = diffKO.col(0).dot(diffKO.col(1));
 #if KW_WILCOX_VER == 0 || KW_WILCOX_VER == 2
         real SigD = 0;
 #else
@@ -1149,34 +1171,34 @@ namespace DNDS::Physics::RANS
      *        Null means the supplied gradients already use absolute velocity.
      *        Frame policy belongs to the caller, not this constitutive kernel.
      */
-    template <int dim, class TU, class TDiffU, class TSource>
-    void GetSource_SAWithVorticity(TU &&UMeanXy, TDiffU &&DiffUxy, real muRef, real mufPhy, real gamma,
-                                   real d,
-                                   real cDES,
-                                   real hMax,
-                                   int DESMode,
-                                   TSource &source, int rotCor, int mode,
-                                   const SAConfig &saConfig,
-                                   int SAVersion, const Eigen::Matrix<real, dim, dim> *vorticityCorrection)
+    template <int dim, class TU, class TDiffU, class TSource, bool Diagnose = true>
+    DNDS_DEVICE_CALLABLE void GetSource_SAWithVorticity(TU &&UMeanXy, TDiffU &&DiffUxy, real muRef, real mufPhy, real gamma,
+                                                        real d,
+                                                        real cDES,
+                                                        real hMax,
+                                                        int DESMode,
+                                                        TSource &source, int rotCor, int mode,
+                                                        const SAConfig &saConfig,
+                                                        int SAVersion, const Eigen::Matrix<real, dim, dim> *vorticityCorrection)
     {
-        static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
-        static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
-        static const auto I4 = dim + 1;
+        const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<dim>);
+        const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<dim - 1>);
+        const auto I4 = dim + 1;
 
-        static const real cb1 = 0.1355;
-        static const real cb2 = 0.622;
-        static const real sigma = SA::sigma;
-        static const real cnu1 = SA::cnu1;
-        static const real cnu2 = 0.7;
-        static const real cnu3 = 0.9;
-        static const real cw2 = 0.3;
-        static const real cw3 = 2;
-        static const real kappa = 0.41;
-        static const real rlim = 10;
-        static const real cw1 = cb1 / sqr(kappa) + (1 + cb2) / sigma;
+        const real cb1 = 0.1355;
+        const real cb2 = 0.622;
+        const real sigma = SA::sigma;
+        const real cnu1 = SA::cnu1;
+        const real cnu2 = 0.7;
+        const real cnu3 = 0.9;
+        const real cw2 = 0.3;
+        const real cw3 = 2;
+        const real kappa = 0.41;
+        const real rlim = 10;
+        const real cw1 = cb1 / sqr(kappa) + (1 + cb2) / sigma;
 
-        static const real ct3 = 1.2;
-        static const real ct4 = 0.5;
+        const real ct3 = 1.2;
+        const real ct4 = 0.5;
 
         const real nuh = UMeanXy(I4 + 1) * muRef / UMeanXy(0);
 
@@ -1185,11 +1207,11 @@ namespace DNDS::Physics::RANS
         const real fnu1 = Chi3 / (Chi3 + cube(cnu1));
         const real fnu2 = 1 - Chi / (1 + Chi * fnu1);
 
-        const Eigen::Matrix<real, dim, 1> velo = UMeanXy(Seq123) / UMeanXy(0);
-        const Eigen::Matrix<real, dim, 1> diffRhoNu = DiffUxy(Seq012, {I4 + 1}) * muRef;
-        const Eigen::Matrix<real, dim, 1> diffRho = DiffUxy(Seq012, {0});
+        const Eigen::Matrix<real, dim, 1> velo = UMeanXy.template segment<dim>(1) / UMeanXy(0);
+        const Eigen::Matrix<real, dim, 1> diffRhoNu = DiffUxy.template block<dim, 1>(0, I4 + 1) * muRef;
+        const Eigen::Matrix<real, dim, 1> diffRho = DiffUxy.template block<dim, 1>(0, 0);
         const Eigen::Matrix<real, dim, 1> diffNu = (diffRhoNu - nuh * diffRho) / UMeanXy(0);
-        const Eigen::Matrix<real, dim, dim> diffRhoU = DiffUxy(Seq012, Seq123);
+        const Eigen::Matrix<real, dim, dim> diffRhoU = DiffUxy.template block<dim, dim>(0, 1);
         const Eigen::Matrix<real, dim, dim> diffU = (diffRhoU - diffRho * velo.transpose()) / UMeanXy(0);
 
         Eigen::Matrix<real, dim, dim> Omega = 0.5 * (diffU.transpose() - diffU);
@@ -1306,34 +1328,39 @@ namespace DNDS::Physics::RANS
                                  ? -std::min(UMeanXy(0) * (std::min(P, 0.0) * 1 - D * 2) / muRef / (std::abs(UMeanXy(I4 + 1)) + verySmallReal), -verySmallReal)
                                  : -std::min(UMeanXy(0) * (P * 0 - D * 2) / muRef / (std::abs(UMeanXy(I4 + 1)) + verySmallReal), -verySmallReal);
 
-        if (!source.allFinite())
+        if constexpr (Diagnose)
         {
-            std::cout << P << std::endl;
-            std::cout << D << std::endl;
-            std::cout << UMeanXy(0) << std::endl;
-            std::cout << Sh << std::endl;
-            std::cout << nuh << std::endl;
-            std::cout << g << std::endl;
-            std::cout << r << std::endl;
-            std::cout << S << std::endl;
-            std::cout << d << std::endl;
-            std::cout << fnu2 << std::endl;
-            std::cout << mufPhy << std::endl;
-            DNDS_assert(false);
+            if (!source.allFinite())
+            {
+#ifndef __CUDA_ARCH__
+                std::cout << P << std::endl;
+                std::cout << D << std::endl;
+                std::cout << UMeanXy(0) << std::endl;
+                std::cout << Sh << std::endl;
+                std::cout << nuh << std::endl;
+                std::cout << g << std::endl;
+                std::cout << r << std::endl;
+                std::cout << S << std::endl;
+                std::cout << d << std::endl;
+                std::cout << fnu2 << std::endl;
+                std::cout << mufPhy << std::endl;
+#endif
+                DNDS_HD_assert(false);
+            }
         }
     }
 
     /// Historical SA signature. Absolute-velocity gradients need no additional
     /// frame correction. This forwarding call keeps existing source/function-
     /// pointer types and compiles away the null correction branch.
-    template <int dim, class TU, class TDiffU, class TSource>
-    void GetSource_SA(TU &&state, TDiffU &&gradient, real muRef, real viscosity, real gamma,
-                      real wallDistance, real cDES, real hMax, int DESMode,
-                      TSource &source, int rotationCorrection, int mode,
-                      const SAConfig &config, int version = 0)
+    template <int dim, class TU, class TDiffU, class TSource, bool Diagnose = true>
+    DNDS_DEVICE_CALLABLE void GetSource_SA(TU &&state, TDiffU &&gradient, real muRef, real viscosity, real gamma,
+                                           real wallDistance, real cDES, real hMax, int DESMode,
+                                           TSource &source, int rotationCorrection, int mode,
+                                           const SAConfig &config, int version = 0)
     {
-        GetSource_SAWithVorticity<dim>(std::forward<TU>(state), std::forward<TDiffU>(gradient),
-                                       muRef, viscosity, gamma, wallDistance, cDES, hMax, DESMode,
-                                       source, rotationCorrection, mode, config, version, nullptr);
+        GetSource_SAWithVorticity<dim, TU, TDiffU, TSource, Diagnose>(std::forward<TU>(state), std::forward<TDiffU>(gradient),
+                                                                      muRef, viscosity, gamma, wallDistance, cDES, hMax, DESMode,
+                                                                      source, rotationCorrection, mode, config, version, nullptr);
     }
 }
