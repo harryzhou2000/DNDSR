@@ -15,6 +15,38 @@
 
 namespace R = DNDS::Runtime;
 
+TEST_CASE("Array mutation epochs cover aliases and canceled reservations without claiming completion")
+{
+    R::Array<double> array(R::RowLayout::Dense(7, 5));
+    auto alias = array;
+    const auto initial = array.MutationEpoch();
+    const auto version = array.Version();
+    auto pending = array.Storage().Reserve(R::AccessMode::Write, R::Device::Host(), false);
+    CHECK(alias.MutationEpoch() == initial + 1);
+    CHECK(alias.Version() == version);
+    CHECK_THROWS(alias.Read());
+    pending.Cancel();
+    CHECK(array.MutationEpoch() == initial + 1);
+    CHECK(array.Version() == version);
+    {
+        auto write = alias.Write();
+        CHECK(array.MutationEpoch() == initial + 2);
+        write.CancelUnmodified();
+    }
+    CHECK(array.Version() == version);
+    {
+        auto write = array.Write();
+        write.View()(0, 0) = 3.;
+    }
+    CHECK(alias.MutationEpoch() == initial + 3);
+    CHECK(alias.Version() == version + 1);
+    {
+        auto read = alias.Read();
+        CHECK(read.View()(0, 0) == 3.);
+    }
+    CHECK(array.MutationEpoch() == initial + 3);
+}
+
 TEST_CASE("Allocation diagnostics count shared capacity once and do not retain arrays")
 {
     struct DiagnosticsScope

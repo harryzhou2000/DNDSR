@@ -118,9 +118,13 @@ def test_runtime_leases_and_snapshots(dtype):
         read.row(0)
     clone = alias.clone()
     assert clone.identity != alias.identity
+    epoch = alias.mutation_epoch
     with alias.write() as write:
+        assert alias.mutation_epoch == epoch + 1
+        assert alias.version == old_version
         write.assign_row(0, values[1])
     assert alias.version == old_version + 1
+    assert alias.mutation_epoch == epoch + 1
     np.testing.assert_array_equal(clone.numpy(), values)
 
 

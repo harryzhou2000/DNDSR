@@ -314,6 +314,7 @@ namespace DNDS::Runtime
         Device device;
         uint64_t identity = nextIdentity.fetch_add(1);
         uint64_t version = 0;
+        uint64_t mutationEpoch = 0;
         size_t readers = 0;
         size_t pendingReaders = 0, pendingWriters = 0;
         size_t checkedReaders = 0, checkedWriters = 0;
@@ -450,6 +451,13 @@ namespace DNDS::Runtime
         std::lock_guard<std::mutex> lock(_state->mutex);
         return _state->version;
     }
+    uint64_t Buffer::MutationEpoch() const
+    {
+        if (!_state)
+            return 0;
+        std::lock_guard<std::mutex> lock(_state->mutex);
+        return _state->mutationEpoch;
+    }
     bool Buffer::IsIdle() const
     {
         if (!_state)
@@ -528,6 +536,11 @@ namespace DNDS::Runtime
                               "runtime: conflicting checked/unchecked access; observe completion at the policy boundary");
         auto &count = _write ? _state->pendingWriters : _state->pendingReaders;
         DNDS_check_throw_info(count < SIZE_MAX, "runtime: scheduled access count overflow");
+        if (_write)
+        {
+            DNDS_check_throw_info(_state->mutationEpoch != UINT64_MAX, "runtime: mutation epoch overflow");
+            ++_state->mutationEpoch;
+        }
         ++count;
         if (_checked)
             ++(_write ? _state->checkedWriters : _state->checkedReaders);
@@ -627,7 +640,11 @@ namespace DNDS::Runtime
         DNDS_check_throw_info(!_state->pendingWriters && (!write || !_state->pendingReaders),
                               "runtime: pending scheduled access; observe stream completion first");
         if (write)
+        {
+            DNDS_check_throw_info(_state->mutationEpoch != UINT64_MAX, "runtime: mutation epoch overflow");
+            ++_state->mutationEpoch;
             _state->writer = true;
+        }
         else
             ++_state->readers;
     }

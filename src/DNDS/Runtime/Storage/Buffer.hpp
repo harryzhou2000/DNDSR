@@ -285,6 +285,12 @@ namespace DNDS::Runtime
         std::weak_ptr<void> AccessLifetime() const { return _state; }
         std::vector<Buffer> ReleaseBuffers() const { return {*this}; }
         uint64_t Version() const;
+        /// Monotone mutation-intent epoch, advanced when a write lease or
+        /// scheduled write reservation is issued, not when it completes.
+        /// Cache provenance may use this across queued producers; it is NOT
+        /// a readiness/completion test or permission to read a pointer. Canceled
+        /// writes conservatively invalidate old epochs, preventing ABA reuse.
+        uint64_t MutationEpoch() const;
         bool IsIdle() const;
         bool IsUnique() const;
         bool IsValid() const;

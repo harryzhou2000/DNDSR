@@ -402,6 +402,8 @@ namespace DNDS::Runtime
         void SetName(std::string name, AllocationSite site = {}) const { RequireStorage().SetName(std::move(name), site); }
         uint64_t Identity() const { return Storage().Identity(); }
         uint64_t Version() const { return Storage().Version(); }
+        /// Submission-time content provenance; see Buffer::MutationEpoch.
+        uint64_t MutationEpoch() const { return Storage().MutationEpoch(); }
         bool IsValid() const { return _storage && _storage->IsValid(); }
         Buffer Storage() const { return RequireStorage().Values(); }
         bool CanReleaseOrdered(ExecutionContext context) const { return !_storage || _storage->CanReleaseOrdered(context); }

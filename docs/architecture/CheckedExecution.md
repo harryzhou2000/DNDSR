@@ -63,6 +63,20 @@ crossing policy boundaries. Finish the old conflicting uses before switching
 policy. Read/read may coexist. This guard cannot intercept independently imported
 foreign aliases or a caller using raw pointers outside the declared API.
 
+`Array::MutationEpoch()` / `Buffer::MutationEpoch()` identify the latest issued
+mutation intent. A write lease or scheduled write reservation advances this
+epoch immediately, whereas `Version()` still advances at successful publication.
+This lets a queued consumer capture input provenance after a producer is queued
+without waiting for it. The caller must still supply the stream dependency.
+An unchanged epoch proves neither readiness nor numerical success. Pair it with
+storage identity and shape generation, and reject a failed allocation. Canceled
+or rejected writes may conservatively advance the epoch; it never rolls back,
+so a later unrelated write cannot masquerade as the canceled producer. Reads,
+polling, synchronization and write completion do not change the epoch.
+The epoch is process-local access bookkeeping, not a persistent entity ID or
+restart datum. It is shared at the allocation/access-domain level, including
+overlapping Buffer subranges; it intentionally does not infer disjoint rows.
+
 ## Portable MPI bridge
 
 ```cpp

@@ -161,6 +161,36 @@ static void PreloadKernels()
     DNDS_check_throw_info(cudaFuncGetAttributes(&attributes, ProlongLevel) == cudaSuccess, "test prolongation preload failed");
 }
 
+TEST_CASE("CUDA mutation epochs precede completion and survive stream retirement")
+{
+    PreloadKernels();
+    R::Array<double> host(R::RowLayout::Dense(17, 5));
+    {
+        auto write = host.Write();
+        for (DNDS::index iRow = 0; iRow < 17; ++iRow)
+            for (DNDS::index j = 0; j < 5; ++j)
+                write.View()(iRow, j) = 1.;
+    }
+    auto values = host.To(R::Device::CUDA(0));
+    auto alias = values;
+    R::EagerEngine engine;
+    const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+    Gate gate; // Opens before engine destruction, including assertion unwinding.
+    const auto version = values.Version(), epoch = values.MutationEpoch();
+    gate.Enqueue(engine, stream);
+    R::SubmitArrays(engine, stream, [](R::ExecutionContext context, auto output)
+                    { LaunchAdd(context, output); }, R::ReadWrite(values));
+    CHECK(alias.MutationEpoch() == epoch + 1);
+    CHECK(alias.Version() == version);
+    CHECK_THROWS(alias.Read(R::ExecutionContext::CUDA(0)));
+    *gate.open = true;
+    engine.Synchronize();
+    CHECK(alias.MutationEpoch() == epoch + 1);
+    CHECK(alias.Version() == version + 1);
+    const auto result = values.To(R::Device::Host());
+    CHECK(result.Read().View()(16, 4) == 2.);
+}
+
 TEST_CASE("Closing mixed CPU CUDA execution retains temporary operands and observes completed events")
 {
     PreloadKernels();

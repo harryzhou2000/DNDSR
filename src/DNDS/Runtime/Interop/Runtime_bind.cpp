@@ -457,6 +457,8 @@ namespace DNDS::Runtime
                                    { return a.Storage().Identity(); })
             .def_property_readonly("version", [](const PythonArray &a)
                                    { return a.Storage().Version(); })
+            .def_property_readonly("mutation_epoch", [](const PythonArray &a)
+                                   { return a.Storage().MutationEpoch(); }, "Shared submission-time mutation intent, including canceled writes. Not a readiness or completion test; version records completed writes.")
             .def_property_readonly("valid", [](const PythonArray &a)
                                    { return a.IsValid(); })
             .def_property_readonly("shape_version", &PythonArray::ShapeVersion)
