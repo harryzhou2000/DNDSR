@@ -273,6 +273,7 @@ namespace DNDS::Cauchy
             primitiveGradientHalo.emplace(owner->BindHalo(*primitiveGradient, "cauchy-primitive-gradient"));
         }
         BuildSourceSampling(state);
+        BuildBoundaryStatus();
         if (nativeDirectGradient || ransFirst >= 0)
             directGradientPublications.resize(directGradients.size());
     }

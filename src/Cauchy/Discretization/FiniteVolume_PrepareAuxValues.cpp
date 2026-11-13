@@ -35,6 +35,8 @@ namespace DNDS::Cauchy
             request.meanThermodynamics = true;
         AuxiliaryValues values;
         const index faces = _data->stencil.stencilFaces.RowCount();
+        DNDS_check_throw_info(Device() == R::Device::Host() || request.derived.ComponentNumber() == 0,
+                              "queued CUDA derived-field publication is not connected yet");
         if (request.derived.ComponentNumber())
         {
             values._derivedThermodynamics = request.meanThermodynamics;
@@ -50,13 +52,13 @@ namespace DNDS::Cauchy
             values.derivedGhost.emplace(Metrics().Space(), request.derived, true);
         }
         if (request.meanThermodynamics && !values._derivedThermodynamics)
-            values.meanThermodynamics.emplace(R::RowLayout::Dense(Metrics().NumCellProc(), _data->equation.HasMixture() ? 5 : 3));
+            values.meanThermodynamics.emplace(R::RowLayout::Dense(Metrics().NumCellProc(), _data->equation.HasMixture() ? 5 : 3), Device());
         if (request.faceSpectralRadius)
-            values.faceSpectralRadius.emplace(R::RowLayout::Dense(faces, 2));
+            values.faceSpectralRadius.emplace(R::RowLayout::Dense(faces, 2), Device());
         if (request.faceWaveJump)
-            values.faceWaveJump.emplace(R::RowLayout::Dense(faces, 1));
+            values.faceWaveJump.emplace(R::RowLayout::Dense(faces, 1), Device());
         if (request.facePressureMinimum)
-            values.facePressureMinimum.emplace(R::RowLayout::Dense(faces, 1));
+            values.facePressureMinimum.emplace(R::RowLayout::Dense(faces, 1), Device());
         if (request.cellSpectralSum)
             values.cellSpectralSum.emplace(Metrics().BuildField(1));
         if (request.cellWaveJump)
@@ -65,7 +67,7 @@ namespace DNDS::Cauchy
             values.cellPressureMinimum.emplace(Metrics().BuildField(1));
         if ((request.cellSpectralSum && !request.faceSpectralRadius) || (request.cellWaveJump && !request.faceWaveJump) ||
             (request.cellPressureMinimum && !request.facePressureMinimum))
-            values._faceScratch.emplace(R::RowLayout::Dense(faces, 3));
+            values._faceScratch.emplace(R::RowLayout::Dense(faces, 3), Device());
         return values;
     }
     AuxiliaryRequest FiniteVolume::CompleteRHSAuxiliaryRequest(AuxiliaryRequest request) const

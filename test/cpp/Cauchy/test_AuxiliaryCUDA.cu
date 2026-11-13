@@ -63,8 +63,6 @@ TEST_CASE("CUDA boundary producers match generic CPU face exterior and interface
         parameters.gas = equation.Gas();
         parameters.rans = equation.HasRANS() ? equation.RANS().Kind() : DNDS::Physics::RANS::ModelKind::None;
         parameters.thermal = thermal.View();
-        parameters.frame = frame.KernelParameters();
-        parameters.time = .2;
         parameters.allowPointFallback = true;
         parameters.Validate(components);
         auto params = DeviceRows<K::BoundaryKernelParameters>({parameters});
@@ -124,9 +122,10 @@ TEST_CASE("CUDA boundary producers match generic CPU face exterior and interface
             R::EagerEngine engine;
             const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
             const auto polynomial = DNDS::CFV::Math::TaylorBasis(2, 1).KernelParameters();
-            R::SubmitArrays(engine, stream, [components, exterior, primitive, polynomial](auto execution, auto p, auto bc, auto geo, auto rows, auto wall, auto mean, auto coefs, auto incoming, auto basis, auto out, auto status)
+            R::SubmitArrays(engine, stream, [components, exterior, primitive, polynomial, frame](auto execution, auto p, auto bc, auto geo, auto rows, auto wall, auto mean, auto coefs, auto incoming, auto basis, auto out, auto status)
                             {
                 K::BoundaryTraceRequest request;
+                request.frame = frame.KernelParameters(); request.time = .2;
                 request.parameters = p; request.conditions = bc; request.points = geo; request.sourceRows = rows;
                 request.wallMean = wall; request.means = mean; request.coefficients = coefs; request.incoming = incoming;
                 request.basis.cached = basis; request.basis.polynomial = polynomial;

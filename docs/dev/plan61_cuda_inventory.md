@@ -433,3 +433,30 @@ sampling, and quantized MMA evaluation. Characteristics, LVR, state/error
 reductions and the FP32 SIMT baseline have source implementations, but are not
 yet qualified as a complete solver path. C/D remain pending.
 
+### B queued auxiliary and boundary integration (source-only)
+
+Runtime now exposes shared `MutationEpoch` provenance at write issuance;
+completed-write `Version` and readiness remain separate. Auxiliary preparation
+uses this to retain/check queued inputs, executes core and halo-dependent CUDA
+passes with optional output arrays, and publishes after the caller's drain and
+one reduced numerical-status readback. Its CPU queued overload retains the
+existing numerical preparation scope. Full spatial-schedule integration and
+the two-equation mean-gradient producer remain unfinished.
+
+`FiniteVolume_BoundaryQueued.cpp` retains mesh/metric/basis and immutable policy
+scopes, submits managed means/coefficients/packets and output/status operands,
+and preserves physical-trace versus mirrored VR targets. Time and frame are
+per-launch POD values, not mutable resident metadata. Gradient and primitive
+boundary targets remain distinct. A persistent device status accumulator keeps
+earlier failures across repeated boundary updates, with explicit segment reset
+and post-drain checking; successful later updates cannot erase them. Reduction
+uses a bounded two-launch tree without floating-point atomics.
+
+Test sources cover queued auxiliary preparation with a real halo transfer,
+optional caches/outputs and split/unsplit calls; repeated P3 boundary updates
+with cached/direct basis and primitive targets; and sticky status reduction,
+including empty inputs. They are **not yet built or run**. Spatial workspace
+construction resolves CUDA placement without enabling the still-incomplete
+solver backend; the remaining operator/schedule integration is required before
+the grouped B build/test and any CUDA production acceptance.
+

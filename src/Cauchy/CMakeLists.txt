@@ -53,11 +53,13 @@ set(CPPS
     Discretization/FiniteVolume_SourcePreparation.cpp
     Discretization/FiniteVolume_Positivity.cpp
     Discretization/FiniteVolume_AuxiliaryPreparation.cpp
+    Discretization/FiniteVolume_AuxiliaryQueued.cpp
     Discretization/FiniteVolume_Workspace.cpp
     Discretization/FiniteVolume_WorkspaceFactory.cpp
     Discretization/FiniteVolume_Evaluation.cpp
     Discretization/FiniteVolume_ReconstructionState.cpp
     Discretization/FiniteVolume_BoundaryInputs.cpp
+    Discretization/FiniteVolume_BoundaryQueued.cpp
     Discretization/FiniteVolume_Boundary.cpp
     Discretization/FiniteVolume_Flux.cpp
     Discretization/FiniteVolume_Source.cpp

@@ -21,6 +21,40 @@ namespace DNDS::Cauchy::CUDA
         {
             __device__ StateReductionValue operator()(StateReductionValue a, StateReductionValue b) const { return Merge(a, b); }
         };
+        struct MergeStatus
+        {
+            __device__ NumericalStatus operator()(NumericalStatus a, NumericalStatus b) const
+            {
+                if (a)
+                    return b ? NumericalStatus{} : b;
+                if (b)
+                    return a;
+                if (a.row != b.row)
+                    return a.row < b.row ? a : b;
+                if (a.point != b.point)
+                    return a.point < b.point ? a : b;
+                if (a.code != b.code)
+                    return int(a.code) < int(b.code) ? a : b;
+                return a.detail < b.detail ? a : b;
+            }
+        };
+        __global__ void ClearStatusRows(StatusOutput output)
+        {
+            for (index iRow = index(blockIdx.x) * blockDim.x + threadIdx.x; iRow < output.RowCount(); iRow += index(gridDim.x) * blockDim.x)
+                output(iRow, 0) = {};
+        }
+        __global__ void StatusRows(StatusInput first, StatusInput second, StatusOutput output)
+        {
+            NumericalStatus value;
+            const index count = first.RowCount() + second.RowCount();
+            for (index iRow = index(blockIdx.x) * blockDim.x + threadIdx.x; iRow < count; iRow += index(gridDim.x) * blockDim.x)
+                value = MergeStatus{}(value, iRow < first.RowCount() ? first(iRow, 0) : second(iRow - first.RowCount(), 0));
+            using Reduce = cub::BlockReduce<NumericalStatus, Threads, cub::BLOCK_REDUCE_RAKING_COMMUTATIVE_ONLY>;
+            __shared__ typename Reduce::TempStorage temporary;
+            const auto result = Reduce(temporary).Reduce(value, MergeStatus{});
+            if (!threadIdx.x)
+                output(blockIdx.x, 0) = result;
+        }
         __device__ void BlockResult(StateReductionValue value, StateReductionOutput output)
         {
             using Reduce = cub::BlockReduce<StateReductionValue, Threads, cub::BLOCK_REDUCE_RAKING_COMMUTATIVE_ONLY>;
@@ -76,6 +110,33 @@ namespace DNDS::Cauchy::CUDA
     {
         DNDS_check_throw_info(ownedRows >= 0, "negative CUDA state reduction row count");
         return std::max<index>(1, std::min<index>(256, ownedRows / Threads + (ownedRows % Threads != 0)));
+    }
+    void ClearNumericalStatus(R::ExecutionContext context, StatusOutput output)
+    {
+        DNDS_check_throw_info(context.device.space == R::MemorySpace::CUDA, "CUDA status clear needs a CUDA context");
+        output.ValidateDevice(context.device);
+        R::CheckKernelArgumentBudget<StatusOutput>();
+        if (!output.RowCount())
+            return;
+        ClearStatusRows<<<unsigned(StateReductionScratchRows(output.RowCount())), Threads, 0, static_cast<cudaStream_t>(context.stream)>>>(output);
+        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "CUDA status clear launch failed");
+    }
+    void ReduceNumericalStatus(R::ExecutionContext context, StatusInput first, StatusInput second,
+                               StatusOutput scratch, StatusOutput result)
+    {
+        DNDS_check_throw_info(context.device.space == R::MemorySpace::CUDA, "CUDA status reduction needs a CUDA context");
+        R::ValidateViewDevices(context.device, first, second, scratch, result);
+        DNDS_check_throw_info(first.RowCount() <= std::numeric_limits<index>::max() - second.RowCount() &&
+                                  scratch.RowCount() >= StateReductionScratchRows(first.RowCount() + second.RowCount()) && scratch.RowCount() <= 256 &&
+                                  result.RowCount() == 1 && scratch.data != result.data &&
+                                  scratch.data != first.data && scratch.data != second.data,
+                              "CUDA status reduction workspace shape or alias differs");
+        R::CheckKernelArgumentBudget<StatusInput, StatusInput, StatusOutput>();
+        const auto stream = static_cast<cudaStream_t>(context.stream);
+        StatusRows<<<unsigned(scratch.RowCount()), Threads, 0, stream>>>(first, second, scratch);
+        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "CUDA status partial reduction launch failed");
+        StatusRows<<<1, Threads, 0, stream>>>(scratch.ConstView(), {}, result);
+        DNDS_check_throw_info(cudaGetLastError() == cudaSuccess, "CUDA status final reduction launch failed");
     }
     void AdmissibleMeans(R::ExecutionContext context, StateInput means, AdmissibilityView bounds,
                          StateReductionOutput scratch, StateReductionOutput result)

@@ -4,6 +4,7 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumeStateKernels.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
 #include "DNDS/Algebra/DofAlgebra.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
@@ -17,6 +18,56 @@ namespace R = DNDS::Runtime;
 using I = DNDS::index;
 using DNDS::real;
 static DNDS::MPIInfo mpi;
+
+TEST_CASE("Queued status reduction preserves earlier failures across reused producer buffers")
+{
+    const auto device = R::Device::CUDA(0);
+    R::EagerEngine engine;
+    const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+    for (const I rows : {I(0), I(1031)})
+    {
+        R::Array<DNDS::NumericalStatus> host(R::RowLayout::Dense(rows, 1));
+        const auto failure = DNDS::NumericalStatus{DNDS::NumericalError::InvalidState, 7}.At(3, 2);
+        {
+            auto write = host.Write();
+            for (I iRow = 0; iRow < rows; ++iRow)
+                write.View()(iRow, 0) = {};
+            if (rows)
+            {
+                write.View()(0, 0) = DNDS::NumericalStatus{DNDS::NumericalError::InvalidInput, 4}.At(8, 1);
+                write.View()(rows - 1, 0) = failure;
+            }
+        }
+        auto input = host.To(device);
+        R::Array<DNDS::NumericalStatus> accumulator(R::RowLayout::Dense(1, 1), device);
+        R::Array<DNDS::NumericalStatus> partial(R::RowLayout::Dense(K::StateReductionScratchRows(rows + 1), 1), device);
+        R::SubmitArrays(engine, stream, [](auto context, auto result)
+                        { K::ClearNumericalStatus(context, result); }, R::WriteAs<R::FixedRows<1>>(accumulator));
+        const auto append = [&]
+        {
+            R::SubmitArrays(engine, stream, [](auto context, auto values, auto scratch, auto result)
+                            { K::ReduceNumericalStatus(context, values, result.ConstView(), scratch, result); }, R::ReadAs<R::FixedRows<1>>(input), R::WriteAs<R::FixedRows<1>>(partial), R::ReadWriteAs<R::FixedRows<1>>(accumulator));
+        };
+        append();
+        // A later successful producer must not erase an earlier failure in
+        // the same queued segment. No host observation between submissions.
+        R::SubmitArrays(engine, stream, [](auto context, auto values)
+                        { K::ClearNumericalStatus(context, values); }, R::WriteAs<R::FixedRows<1>>(input));
+        append();
+        engine.Synchronize();
+        const auto result = accumulator.To(R::Device::Host());
+        const auto read = result.Read();
+        const auto status = read.View()(0, 0);
+        CHECK(bool(status) == (rows == 0));
+        if (rows)
+        {
+            CHECK(status.code == failure.code);
+            CHECK(status.detail == failure.detail);
+            CHECK(status.row == failure.row);
+            CHECK(status.point == failure.point);
+        }
+    }
+}
 
 TEST_CASE("Spatial placement retains metric identity and allocates VR boundary values without host staging")
 {
@@ -55,6 +106,155 @@ TEST_CASE("Spatial placement retains metric identity and allocates VR boundary v
             CHECK(DNDS::Algebra::DotLocal(coefficients, coefficients) == 0);
         }
     }
+}
+
+TEST_CASE("Queued boundary operator retains P3 basis and matches CPU physical and mirrored targets")
+{
+    const auto mesh = CFVTest::CartesianHexes(mpi, 3);
+    const auto device = R::Device::CUDA(0);
+    const auto context = R::ExecutionContext::CUDA(0);
+    for (const bool cached : {true, false})
+    {
+        C::DomainSettings settings;
+        settings.mesh.dimension = 3;
+        settings.equation.transport = "NewtonianFourier";
+        settings.equation.viscosity = .003;
+        settings.numerics.reconstruction = "variational";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.cfv.SORInstead = false;
+        settings.numerics.cfv.cacheDiffBase = cached;
+        settings.numerics.limiter = "none";
+        settings.numerics.positivity = false;
+        settings.numerics.viscousGradient = "primitive";
+        settings.numerics.vrBoundaryValue = cached ? "physicalMirrored" : "physicalTrace";
+        settings.boundaries["7"].kind = "noSlipWall";
+        settings.motion.angularVelocity = {0, 0, .2};
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume cpu(mesh, settings, equation);
+        auto gpu = cpu.Placed(device, context);
+        auto mean = C::EquationDofs::Coupled(equation.Schema(), cpu.Metrics().BuildField(5));
+        cpu.InitializeConstant(mean, {1.1, .2, -.1, .05, 1.2});
+        auto resident = C::EquationDofs::Coupled(equation.Schema(), gpu.Metrics().BuildField(5));
+        resident.CoupledField().Owned().CopyFrom(mean.CoupledField().Owned(), context).Wait();
+        auto cpuRec = cpu.BuildReconstructionState(mean), gpuRec = gpu.BuildReconstructionState(resident);
+        {
+            auto write = cpuRec->WarmValues().CoupledField().Owned().Write();
+            const auto view = write.View<R::TableRows>();
+            for (I iCell = 0; iCell < view.RowCount(); ++iCell)
+                for (I j = 0; j < view.Width(); ++j)
+                    view(iCell, j) = 1e-5 * (1 + j % 7);
+        }
+        gpuRec->WarmValues().CoupledField().Owned().CopyFrom(cpuRec->WarmValues().CoupledField().Owned(), context).Wait();
+        auto cpuWork = cpu.BuildWorkspace(mean), gpuWork = gpu.BuildWorkspace(resident);
+        auto cpuBinding = cpuWork->BindReconstruction(*cpuRec), gpuBinding = gpuWork->BindReconstruction(*gpuRec);
+        auto evaluator = equation.MakePointEvaluator();
+        cpuWork->FillBoundary(mean, true, .4, evaluator);
+        R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+        gpuWork->ResetBoundaryStatus(engine, stream);
+        // Repeated VR updates reuse stable scratch. Time/frame are captured
+        // per launch; immutable policy metadata is never rewritten between them.
+        gpuWork->SubmitDeviceBoundary(engine, stream, resident, true, .2);
+        gpuWork->SubmitDeviceBoundary(engine, stream, resident, true, .4);
+        engine.Synchronize();
+        gpuWork->CheckBoundaryStatus();
+        const auto compare = [](const auto &expected, const auto &actual)
+        {
+            const auto host = actual.To(R::Device::Host());
+            const auto x = expected.Read(), y = host.Read();
+            for (I iRow = 0; iRow < expected.RowCount(); ++iRow)
+                for (I j = 0; j < expected.Layout().Width(); ++j)
+                    CHECK(y.View()(iRow, j) == doctest::Approx(x.View()(iRow, j)).epsilon(3e-12).scale(1));
+        };
+        compare(cpuWork->fields.front().boundaryValues, gpuWork->fields.front().boundaryValues);
+        REQUIRE(cpuWork->primitiveBoundary);
+        REQUIRE(gpuWork->primitiveBoundary);
+        compare(*cpuWork->primitiveBoundary, *gpuWork->primitiveBoundary);
+    }
+}
+
+TEST_CASE("Queued auxiliary operator matches CPU on a distributed periodic mesh with optional outputs")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 8);
+    C::DomainSettings settings;
+    settings.numerics.reconstruction = "constant";
+    settings.numerics.limiter = "none";
+    settings.numerics.positivity = false;
+    settings.equation.transport = "NewtonianFourier";
+    settings.equation.viscosity = .003;
+    settings.motion.angularVelocity = {0, 0, .2};
+    const auto equation = C::EquationSystem::Resolve(settings.equation);
+    C::FiniteVolume cpu(mesh, settings, equation);
+    const auto device = R::Device::CUDA(0);
+    const auto context = R::ExecutionContext::CUDA(0);
+    auto gpu = cpu.Placed(device, context);
+    auto means = C::EquationDofs::Coupled(equation.Schema(), cpu.Metrics().BuildField(5));
+    {
+        const auto geometry = cpu.Metrics().AcquireRead();
+        const auto metric = geometry.HostView();
+        auto write = means.CoupledField().Owned().Write();
+        for (I iCell = 0; iCell < cpu.Metrics().NumCell(); ++iCell)
+        {
+            const auto center = metric.GetCellCent(iCell);
+            const auto row = equation.Gas().Conservative({1 + .1 * center[0], .2 + .03 * center[1], -.1, .02, 1 + .07 * center[1]});
+            for (int j = 0; j < 5; ++j)
+                write.View()(iCell, j) = row[j];
+        }
+    }
+    cpu.BindHalo(means.CoupledField()).Begin().Wait();
+    auto resident = C::EquationDofs::Coupled(equation.Schema(), gpu.Metrics().BuildField(5));
+    resident.CoupledField().Owned().CopyFrom(means.CoupledField().Owned(), context).Wait();
+    auto halo = gpu.BindHalo(resident.CoupledField());
+    for (bool cacheMean : {false, true})
+        for (bool faceOutputs : {false, true})
+        {
+            C::AuxiliaryRequest request;
+            request.meanThermodynamics = cacheMean;
+            request.faceSpectralRadius = request.faceWaveJump = request.facePressureMinimum = faceOutputs;
+            request.cellSpectralSum = request.cellWaveJump = request.cellPressureMinimum = true;
+            auto expected = cpu.BuildAuxiliaryValues(request), actual = gpu.BuildAuxiliaryValues(request);
+            cpu.PrepareAuxValues(means, expected, .3);
+            for (bool split : {true, false})
+            {
+                R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
+                const auto compute = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+                const auto communication = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+                // The producer may still be queued when preparation captures
+                // its input epoch; completion Version is deliberately distinct.
+                DNDS::Algebra::Scale(engine, compute, resident.CoupledField(), 1.);
+                auto preparation = gpu.BeginAuxValues(resident, actual, .3);
+                auto transfer = halo.SubmitAfter(engine, communication, compute.Record());
+                if (split)
+                    preparation.Apply(engine, compute, DNDS::CFV::ReconstructionRegion::Core);
+                transfer.EnqueueWait(compute);
+                preparation.Apply(engine, compute, split ? DNDS::CFV::ReconstructionRegion::HaloDependent : DNDS::CFV::ReconstructionRegion::All);
+                engine.Synchronize();
+                preparation.Finish(actual);
+                gpu.ValidateAuxValues(resident, actual, .3);
+                const auto compare = [](const auto &host, const auto &deviceArray)
+                {
+                    const auto downloaded = deviceArray.To(R::Device::Host());
+                    const auto a = host.Read(), b = downloaded.Read();
+                    const auto x = a.template View<R::TableRows>(), y = b.template View<R::TableRows>();
+                    REQUIRE(x.RowCount() == y.RowCount());
+                    REQUIRE(x.Width() == y.Width());
+                    for (I iRow = 0; iRow < x.RowCount(); ++iRow)
+                        for (I j = 0; j < x.Width(); ++j)
+                            CHECK(y(iRow, j) == doctest::Approx(x(iRow, j)).epsilon(3e-12).scale(1));
+                };
+                if (cacheMean)
+                    compare(*expected.meanThermodynamics, *actual.meanThermodynamics);
+                if (faceOutputs)
+                {
+                    compare(*expected.faceSpectralRadius, *actual.faceSpectralRadius);
+                    compare(*expected.faceWaveJump, *actual.faceWaveJump);
+                    compare(*expected.facePressureMinimum, *actual.facePressureMinimum);
+                }
+                compare(expected.cellSpectralSum->Owned(), actual.cellSpectralSum->Owned());
+                compare(expected.cellWaveJump->Owned(), actual.cellWaveJump->Owned());
+                compare(expected.cellPressureMinimum->Owned(), actual.cellPressureMinimum->Owned());
+            }
+        }
 }
 
 TEST_CASE("Queued CUDA owned-mean and CFL reductions match CPU including empty partitions and first failure")

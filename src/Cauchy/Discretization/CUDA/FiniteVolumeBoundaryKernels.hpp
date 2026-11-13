@@ -9,15 +9,14 @@ namespace DNDS::Cauchy::CUDA
 {
     /// Setup-resolved small parameters, kept in one resident metadata row.
     /// Perfect gas has no species-energy arrays: thermal's spans are empty.
-    /// Updating time/frame is an explicit ordered metadata upload by the owner.
+    /// Time/frame belong to the per-call request, so repeated boundary updates
+    /// do not overwrite this immutable publication or require a metadata copy.
     struct BoundaryKernelParameters
     {
         PerfectGas gas;
         Physics::RANS::ModelKind rans = Physics::RANS::ModelKind::None;
         ThermalView thermal{};
-        RigidFrameParameters frame;
-        real time = 0;
-        bool allowPointFallback = false, repairRANS = true;
+        bool allowPointFallback = false;
         void Validate(int components) const;
     };
     static_assert(std::is_trivially_copyable_v<BoundaryKernelParameters>);
@@ -37,8 +36,10 @@ namespace DNDS::Cauchy::CUDA
         CFV::ReconstructionPointBasisView basis;
         BoundaryOutput output;
         BoundaryStatus status;
+        RigidFrameParameters frame;
+        real time = 0;
         int components = 5, modes = 0;
-        bool useSourceRows = false, polynomial = false, exterior = false, hasIncoming = false;
+        bool useSourceRows = false, polynomial = false, exterior = false, hasIncoming = false, repairRANS = true;
     };
 
     /** Host launchers receive borrowed, device-tagged array views. Operators

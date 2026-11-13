@@ -13,6 +13,8 @@
 #include "Cauchy/Physics/ThermalAdmissibility.hpp"
 #include "Cauchy/State/RANSState.hpp"
 #include "Cauchy/Boundary/PerfectGasBoundary.hpp"
+#include "Cauchy/Discretization/PerfectGasKernelPoint.hpp"
+#include "Cauchy/Discretization/CUDA/FiniteVolumeBoundaryKernels.hpp"
 #include "DNDS/Algebra/DofHalo.hpp"
 #include "DNDS/Runtime/Communication/CommunicationWorker.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
@@ -153,6 +155,12 @@ namespace DNDS::Cauchy
         /// these resolved records, never the host condition owners/callbacks.
         /// Empty on the CPU plan; CUDA placement resolves and uploads it once.
         Runtime::MetadataBuffer<PerfectGasBoundaryParameters> deviceBoundaryConditions;
+        Runtime::MetadataBuffer<PerfectGasSpatialParameters> devicePhysics;
+        Runtime::MetadataBuffer<BoundaryKind> deviceBoundaryKinds;
+        Runtime::MetadataBuffer<CUDA::BoundaryKernelParameters> deviceBoundaryPolicy;
+        /// Resident zero-row operand for absent optional fields. It is never
+        /// a fallback host pointer or a hidden allocation during submission.
+        Runtime::Array<real> deviceEmpty;
         /// Domain-wide coupling participation. Every rank uses this to retain
         /// the collective interface publication protocol, including ranks
         /// with no locally owned interface quadrature.

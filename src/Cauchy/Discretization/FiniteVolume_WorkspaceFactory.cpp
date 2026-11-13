@@ -120,7 +120,20 @@ namespace DNDS::Cauchy
         Metrics().Communication()->LocalStage([&]
                                               {
             state.RequireSchema(_data->equation.Schema());
-            _data->equation.ResolveKernelProfile(state.Device());
+            if (state.Device() == R::Device::Host())
+                _data->equation.ResolveKernelProfile(state.Device());
+            else
+            {
+                // Placement/workspace construction does not enable the full
+                // solver backend. Each queued operator resolves its own leaf;
+                // Execute keeps its capability gate until all paths are wired.
+                const auto physics = PerfectGasSpatialParameters::FromEquation(_data->equation, Metrics().Dimension());
+                physics.Validate(int(state.ComponentNumber()));
+                const auto &field = state.CoupledField();
+                DNDS_check_throw_info(field.Owned().Layout().Kind() == R::RowLayoutKind::Table &&
+                                          field.Ghost().Layout().Kind() == R::RowLayoutKind::Table,
+                                      "CUDA FV workspace requires combined AoS state");
+            }
             DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && state.Device() == Device(),
                                   "equation FV state belongs to another row space or device");
             DNDS_check_throw_info(options.rhsKernel != RHSKernelPolicy::FixedFlow5 || flow5Profile,
@@ -155,7 +168,7 @@ namespace DNDS::Cauchy
         Metrics().Communication()->LocalStage([&]
                                               { result = std::make_shared<Workspace>(_data, state, std::move(workers), meanOnly); });
         result->BindHalos(state);
-        if (flow5Profile && options.rhsKernel != RHSKernelPolicy::Generic)
+        if (flow5Profile && state.Device() == R::Device::Host() && options.rhsKernel != RHSKernelPolicy::Generic)
             result->fixedFlowRHS.emplace(AcquireRHSOperator());
         auto request = CompleteRHSAuxiliaryRequest({});
         if (request.meanThermodynamics || request.cellWaveJump || request.cellPressureMinimum)

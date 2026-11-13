@@ -9,6 +9,7 @@
 #include "Cauchy/State/EquationDofAlgebra.hpp"
 #include "Cauchy/Physics/PointProperties.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
+#include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -256,8 +257,20 @@ namespace DNDS::Cauchy
         Metrics().Validate();
         _data->partition.Validate();
         state.RequireSchema(_data->equation.Schema());
-        _data->equation.ResolveKernelProfile(state.Device());
-        DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && std::isfinite(time), "equation auxiliary row space/time differs");
+        if (state.Device() == R::Device::Host())
+            _data->equation.ResolveKernelProfile(state.Device());
+        else
+        {
+            const auto physics = PerfectGasSpatialParameters::FromEquation(_data->equation, Metrics().Dimension());
+            physics.Validate(int(state.ComponentNumber()));
+            const auto &field = state.CoupledField();
+            DNDS_check_throw_info(field.Owned().Layout().Kind() == R::RowLayoutKind::Table &&
+                                      field.Ghost().Layout().Kind() == R::RowLayoutKind::Table,
+                                  "CUDA auxiliary preparation requires combined AoS fields");
+            DNDS_check_throw_info(!output.derivedOwned && !output.derivedGhost,
+                                  "queued CUDA derived-field publication is not connected yet");
+        }
+        DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && state.Device() == Device() && std::isfinite(time), "equation auxiliary row space/device/time differs");
         DNDS_check_throw_info(_data->equation.HasMixture() == bool(workers), "equation auxiliary needs exactly its matching worker backend");
         DNDS_check_throw_info(!HasInterfaces() || inputs.boundary || inputs.deferBoundary,
                               "equation auxiliary preparation needs an incoming interface packet");
@@ -273,7 +286,7 @@ namespace DNDS::Cauchy
         for (int k = 0; k < 9; ++k)
             if (arrays[k])
             {
-                DNDS_check_throw_info(arrays[k]->GetDevice() == R::Device::Host() && arrays[k]->RowCount() == rows[k] && !arrays[k]->Layout().IsVariable() && (k >= 7 || arrays[k]->Layout().Width() == widths[k]), "equation auxiliary output shape/device differs");
+                DNDS_check_throw_info(arrays[k]->GetDevice() == Device() && arrays[k]->RowCount() == rows[k] && !arrays[k]->Layout().IsVariable() && (k >= 7 || arrays[k]->Layout().Width() == widths[k]), "equation auxiliary output shape/device differs");
                 for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
                     for (const auto *input : {&state.PhysicalField(iField).Owned(), &state.PhysicalField(iField).Ghost()})
                         DNDS_check_throw_info(!Algebra::Detail::Overlaps(input->Storage(), arrays[k]->Storage()), "equation auxiliary output aliases state");
@@ -322,8 +335,10 @@ namespace DNDS::Cauchy
         }
         const bool needScratch = (arrays[4] && !arrays[1]) || (arrays[5] && !arrays[2]) || (arrays[6] && !arrays[3]);
         if (needScratch && (!output._faceScratch || output._faceScratch->RowCount() != faces))
-            output._faceScratch.emplace(R::RowLayout::Dense(faces, 3));
+            output._faceScratch.emplace(R::RowLayout::Dense(faces, 3), Device());
         output._equationOrigin.reset();
+        if (Device() != R::Device::Host())
+            return AuxiliaryPreparation::BuildQueuedState(*this, state, output, time, inputs);
         return AuxiliaryPreparation::BuildState(
             *this, state, output, time, std::move(workers), inputs);
     }
@@ -331,7 +346,19 @@ namespace DNDS::Cauchy
                                         std::optional<Physics::Chemistry::ChemicalWorkerPool> workers, AuxiliaryInputs inputs) const
     {
         auto scope = BeginAuxValues(state, output, time, std::move(workers), inputs);
-        scope.Apply();
+        if (Device() == R::Device::Host())
+            scope.Apply();
+        else
+        {
+#ifdef DNDS_USE_CUDA
+            R::EagerEngine engine;
+            const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(Device().ordinal));
+            scope.Apply(engine, stream);
+            engine.Synchronize();
+#else
+            DNDS_check_throw_info(false, "CUDA auxiliary preparation is not built");
+#endif
+        }
         scope.Finish(output);
     }
     void FiniteVolume::ValidateAuxValues(const EquationDofs &state, const AuxiliaryValues &values, real time) const
@@ -340,7 +367,8 @@ namespace DNDS::Cauchy
         state.RequireSchema(_data->equation.Schema());
         DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && values._equationOrigin,
                               "equation auxiliary publication is missing or belongs to another path");
-        const auto read = state.ReadWithGhost();
+        const R::ExecutionContext context{state.Device(), nullptr};
+        const auto read = state.ReadWithGhost(context);
         const auto &origin = *values._equationOrigin;
         DNDS_check_throw_info(origin.owner.lock().get() == _data.get() && origin.time == time, "equation auxiliary plan/time is stale");
         if (origin.boundary)
@@ -350,7 +378,7 @@ namespace DNDS::Cauchy
         origin.source.Check(state, true);
         for (index k = 0; k < index(origin.gradientInputs.size()); ++k)
         {
-            const auto read = origin.gradientInputs[k].Read();
+            const auto read = origin.gradientInputs[k].Read(context);
             DNDS_check_throw_info(origin.gradientInputs[k].Version() == origin.gradientVersions[k][0] &&
                                       origin.gradientInputs[k].ShapeVersion() == origin.gradientVersions[k][1],
                                   "equation auxiliary gradient input changed");
@@ -364,7 +392,7 @@ namespace DNDS::Cauchy
             DNDS_check_throw_info(bool(stamp.storage) == bool(arrays[k]), "equation auxiliary selection changed");
             if (arrays[k])
             {
-                const auto pin = arrays[k]->Read();
+                const auto pin = arrays[k]->Read(context);
                 DNDS_check_throw_info(stamp.storage == arrays[k]->SharedStorage() && stamp.version == arrays[k]->Version() && stamp.shape == arrays[k]->ShapeVersion(), "equation auxiliary output changed");
             }
         }

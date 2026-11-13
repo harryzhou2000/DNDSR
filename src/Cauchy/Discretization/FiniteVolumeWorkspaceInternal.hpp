@@ -120,6 +120,15 @@ namespace DNDS::Cauchy
         /// this workspace but consumed by the same fixed-flow RHS leaf.
         std::optional<CFV::FVField> primitive, primitiveGradient;
         std::optional<R::Array<real>> primitiveBoundary;
+        /// Temporary device status, separate from durable reconstruction state.
+        /// Reset once per FV evaluation; every repeated boundary producer folds
+        /// into result before reusing its row buffer. Inspect only after drain.
+        struct BoundaryStatusStorage
+        {
+            R::Array<NumericalStatus> quadrature, primitive, partial, result;
+            bool pending = false;
+        };
+        std::optional<BoundaryStatusStorage> boundaryStatus;
         std::optional<R::TransferBinding> primitiveGradientHalo;
         struct DirectGradientPublication
         {
@@ -427,6 +436,14 @@ namespace DNDS::Cauchy
         void PreparePrimitiveGradient(const EquationDofs &state, CFV::ReconstructionRegion region);
         void FillBoundary(const EquationDofs &state, bool polynomial, real time,
                           PointEvaluator &evaluator, RHSScalarView incoming = {});
+        void BuildBoundaryStatus();
+        void ResetBoundaryStatus(R::EagerEngine &, const R::ExecutionStream &);
+        void CheckBoundaryStatus();
+        /// Device branch of the boundary operator; called by the common
+        /// spatial schedule, never from a numerical leaf. No host wait.
+        void SubmitDeviceBoundary(R::EagerEngine &, const R::ExecutionStream &,
+                                  const EquationDofs &, bool polynomial, real time,
+                                  OptionalRef<const R::Array<real>> incoming = {});
         void ApplyFixedFlowRHS(const EquationDofs &state, EquationDofs &result,
                                CFV::ReconstructionRegion region, real time,
                                OptionalRef<const AuxiliaryValues> auxiliary,

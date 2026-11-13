@@ -106,6 +106,10 @@ namespace DNDS::Cauchy
         // Only needed when a cell reduction is requested without its matching
         // public face output. Columns: spectral sum, wave jump, pressure min.
         std::optional<Runtime::Array<real>> _faceScratch;
+        struct QueuedStorage;
+        /// Persistent mandatory status/empty operands for queued preparation.
+        /// Shared aliases are guarded by an exclusive preparation session.
+        std::shared_ptr<QueuedStorage> _queuedStorage;
     };
     /// Named phase selection for one prepared finite-volume execution.
     enum class FiniteVolumeEvaluationMode
@@ -145,7 +149,7 @@ namespace DNDS::Cauchy
             return {FiniteVolumeEvaluationMode::SamplingInputs, {}, {}, 0};
         }
     };
-    /// CPU cell-centered discretization. Preparation retains immutable geometry,
+    /// Cell-centered discretization with explicit backend placement. Preparation retains immutable geometry,
     /// incidence, quadrature and polynomial data. Each simultaneous residual
     /// requires a distinct Workspace. No solver clock/history/IO policy here.
     class FiniteVolume
@@ -160,6 +164,27 @@ namespace DNDS::Cauchy
         std::shared_ptr<const Data> _data;
         explicit FiniteVolume(std::shared_ptr<const Data> data) : _data(std::move(data)) {}
         void ValidateBoundaryLayout(const BoundaryInputs &input) const;
+        enum class BoundaryTarget
+        {
+            Quadrature,
+            Gradient,
+            PrimitiveGradient
+        };
+        struct BoundarySubmission
+        {
+            BoundaryTarget target = BoundaryTarget::Quadrature;
+            bool exterior = false, repairRANS = true;
+            real time = 0;
+        };
+        /// Queued boundary producer used by spatial/mean-gradient operators.
+        /// Retains geometry and every operand through completion. Status is
+        /// overwritten per output row; the enclosing operator must accumulate
+        /// failures before reusing it and inspect them at its reporting drain.
+        /// No chemistry, MPI, payload allocation, host observation or hidden fallback.
+        void SubmitBoundaryValues(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                  const EquationDofs &, OptionalRef<const EquationDofs> coefficients,
+                                  Runtime::Array<real> &output, Runtime::Array<NumericalStatus> &status,
+                                  BoundarySubmission, OptionalRef<const Runtime::Array<real>> incoming = {}) const;
 
     public:
         enum class RHSKernelPolicy
@@ -419,13 +444,22 @@ namespace DNDS::Cauchy
         class AuxiliaryPreparation
         {
             struct State;
-            std::unique_ptr<State> _state;
+            struct QueuedState;
+            std::shared_ptr<State> _state;
+            std::shared_ptr<QueuedState> _queued;
             explicit AuxiliaryPreparation(std::unique_ptr<State> state);
+            explicit AuxiliaryPreparation(std::shared_ptr<QueuedState> state);
             static AuxiliaryPreparation BuildState(
                 const FiniteVolume &plan, const EquationDofs &state,
                 const AuxiliaryValues &output, real time,
                 std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
                 AuxiliaryInputs inputs);
+            static AuxiliaryPreparation BuildQueuedState(const FiniteVolume &, const EquationDofs &,
+                                                         AuxiliaryValues &, real, AuxiliaryInputs);
+            void BindQueuedBoundary(const BoundaryInputs &);
+            void FinishQueued(AuxiliaryValues &);
+            void ApplyQueued(Runtime::EagerEngine &, const Runtime::ExecutionStream &, CFV::ReconstructionRegion);
+            void ApplyIndependentQueued(Runtime::EagerEngine &, const Runtime::ExecutionStream &);
             friend class FiniteVolume;
 
         public:
@@ -441,9 +475,17 @@ namespace DNDS::Cauchy
             /// scope retains packet reads until Finish; no MPI is performed.
             void BindBoundary(const BoundaryInputs &input);
             void Apply(CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All);
+            /// Enqueue the same core/dependent protocol. CUDA uses retained
+            /// Array operands and leaves status/results on device; no wait,
+            /// transfer or MPI is hidden here. Finish is called only after the
+            /// caller's segment drain, before externally publishing the bundle.
+            void Apply(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                       CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All);
+            void ApplyInterfaceIndependent(Runtime::EagerEngine &, const Runtime::ExecutionStream &);
             void Finish(AuxiliaryValues &output);
         };
-        /// Synchronous CPU property preparation with explicit mixture workers.
+        /// Property preparation with explicit CPU mixture workers. A resident
+        /// CUDA plan returns a queued scope; use its engine/stream Apply overload.
         /// The caller owns collective order/error handling and halo completion;
         /// even an empty rank uses the same outer schedule. Boundary producers
         /// match Workspace. Two-equation closures require a current

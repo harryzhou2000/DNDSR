@@ -13,7 +13,7 @@ namespace DNDS::Cauchy::CUDA
         DNDS_check_throw_info((components == 5 && rans == Kind::None) || (components == 6 && rans == Kind::SA) ||
                                   (components == 7 && (rans == Kind::KOmegaWilcox || rans == Kind::KOmegaSST)),
                               "unsupported CUDA boundary equation profile");
-        DNDS_check_throw_info(std::isfinite(time) && thermal.components == components && thermal.flowFirst == 0 && thermal.independent == 0 &&
+        DNDS_check_throw_info(thermal.components == components && thermal.flowFirst == 0 && thermal.independent == 0 &&
                                   thermal.speciesEnergies[0].empty() && thermal.speciesEnergies[1].empty(),
                               "CUDA boundary parameters require a perfect-gas thermal policy");
     }
@@ -23,7 +23,7 @@ namespace DNDS::Cauchy::CUDA
         {
             DNDS_check_throw_info(context.device.space == R::MemorySpace::CUDA, "CUDA boundary requires a CUDA stream");
             R::ValidateViewDevices(context.device, request.parameters, request.conditions, request.points, request.means, request.output, request.status);
-            DNDS_check_throw_info(request.components >= 5 && request.components <= 7 && request.parameters.RowCount() == 1 &&
+            DNDS_check_throw_info(std::isfinite(request.time) && request.components >= 5 && request.components <= 7 && request.parameters.RowCount() == 1 &&
                                       request.means.Width() == request.components && request.output.Width() == (primitive ? 5 : request.components) &&
                                       request.status.RowCount() == request.output.RowCount() && request.means.kind == R::RowLayoutKind::Table &&
                                       request.output.kind == R::RowLayoutKind::Table,
@@ -92,17 +92,17 @@ namespace DNDS::Cauchy::CUDA
                 if (request.polynomial && parameters.allowPointFallback && !parameters.thermal.ClippedReferenceAdmissible(point))
                     point = mean;
                 if constexpr (Components > 5)
-                    if (parameters.repairRANS)
+                    if (request.repairRANS)
                         RANSReconstructionView{parameters.rans, Components - 5}.RepairPoint(
                             SpanView<const real>{mean.data() + 5, Components - 5}, SpanView<real>{point.data() + 5, Components - 5});
                 const real wallDistance = Components == 7 ? request.wallMean(sample.cell, 0) : 0;
                 status = TryPerfectGasBoundaryState<Components>(condition, parameters.gas, parameters.rans, point, mean, wallDistance,
-                                                                sample.normal, sample.location, parameters.time, parameters.frame, request.exterior);
+                                                                sample.normal, sample.location, request.time, request.frame, request.exterior);
                 if (!status && request.polynomial && parameters.allowPointFallback && Physics::AllowsMeanFallback(status))
                 {
                     point = mean;
                     status = TryPerfectGasBoundaryState<Components>(condition, parameters.gas, parameters.rans, point, mean, wallDistance,
-                                                                    sample.normal, sample.location, parameters.time, parameters.frame, request.exterior);
+                                                                    sample.normal, sample.location, request.time, request.frame, request.exterior);
                 }
                 if (!status)
                 {
@@ -149,7 +149,7 @@ namespace DNDS::Cauchy::CUDA
                         continue;
                     }
                     const auto exterior = TryPerfectGasBoundaryValue(condition, parameters.gas, inside, sample.normal, sample.location,
-                                                                     parameters.time, parameters.frame, true);
+                                                                     request.time, request.frame, true);
                     if (!exterior)
                     {
                         status = exterior.status.At(sample.cell, iPoint);

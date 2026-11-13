@@ -19,6 +19,22 @@ namespace DNDS::Cauchy::CUDA
     /// Reserve this many rows once in an operator workspace, on the execution
     /// device. The result has one row. Both buffers remain owned by the caller.
     index StateReductionScratchRows(index ownedRows);
+    using StatusInput = Runtime::ArrayView<const NumericalStatus, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>>;
+    using StatusOutput = Runtime::ArrayView<NumericalStatus, Runtime::AccessBoundsChecks, Runtime::FixedRows<1>>;
+    /// Begin a numerical segment with successful status, ordered on the same
+    /// stream as its producers. This resets diagnostics, never solution data.
+    void ClearNumericalStatus(Runtime::ExecutionContext, StatusOutput);
+    /// Reduce two status tables into one device result without a host wait.
+    /// Success is the identity; failures are ordered lexicographically by
+    /// row, point, code and detail so scheduling does not choose the diagnostic.
+    /// Scratch has at least StateReductionScratchRows(first.rows + second.rows)
+    /// rows (at most 256), permitting reuse for different producer sizes. This
+    /// mandatory error publication is independent of optional diagnostic counts.
+    /// Result may alias a one-row input accumulator: all input reads complete
+    /// in the first launch before the second overwrites the result. Scratch
+    /// must be disjoint from every operand. This supports sticky segment errors.
+    void ReduceNumericalStatus(Runtime::ExecutionContext, StatusInput first, StatusInput second,
+                               StatusOutput scratch, StatusOutput result);
     /// Two stream-ordered reduction launches, without allocation or host sync.
     /// Only owned input is read, so a ghost exchange may proceed independently.
     /// Complete combined AoS, perfect-gas flow5/SA/2EQ policy only; no mixture

@@ -67,6 +67,27 @@ namespace DNDS::Cauchy
         placed->ransCellLength = moveField(_data->ransCellLength, "ransCellLength");
         placed->deviceBoundaryConditions = R::MetadataBuffer<PerfectGasBoundaryParameters>(conditions).CopyTo(device, context);
         placed->deviceBoundaryConditions.SetDiagnosticName("Cauchy/boundaryConditions", DNDS_ALLOCATION_SITE());
+        placed->devicePhysics = R::MetadataBuffer<PerfectGasSpatialParameters>({physics}).CopyTo(device, context);
+        placed->devicePhysics.SetDiagnosticName("Cauchy/pointPhysics", DNDS_ALLOCATION_SITE());
+        placed->deviceBoundaryKinds = R::MetadataBuffer<BoundaryKind>::Generate(conditions.size(),
+                                                                                [&](index iCondition)
+                                                                                { return conditions[iCondition].kind; })
+                                          .CopyTo(device, context);
+        placed->deviceBoundaryKinds.SetDiagnosticName("Cauchy/boundaryKinds", DNDS_ALLOCATION_SITE());
+        const auto &numerics = _data->settings.numerics;
+        const ThermalPolicy thermal(_data->equation, numerics.densityFloor, numerics.temperatureFloor,
+                                    numerics.sensibleEnergyFloor, numerics.pressureFloor);
+        CUDA::BoundaryKernelParameters boundaryPolicy;
+        boundaryPolicy.gas = _data->equation.Gas();
+        boundaryPolicy.rans = physics.rans.kind;
+        boundaryPolicy.thermal = thermal.View();
+        boundaryPolicy.allowPointFallback = numerics.positivity || numerics.faceFallback;
+#ifdef DNDS_USE_CUDA
+        boundaryPolicy.Validate(5 + physics.rans.ComponentNumber());
+#endif
+        placed->deviceBoundaryPolicy = R::MetadataBuffer<CUDA::BoundaryKernelParameters>({boundaryPolicy}).CopyTo(device, context);
+        placed->deviceBoundaryPolicy.SetDiagnosticName("Cauchy/boundaryPolicy", DNDS_ALLOCATION_SITE());
+        placed->deviceEmpty = R::Array<real>(R::RowLayout::Dense(0, 0), device);
         if (_data->wallDistance)
             placed->wallDistance = _data->wallDistance->Placed(device, context);
         if (_data->positivitySamples)

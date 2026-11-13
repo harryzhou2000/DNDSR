@@ -307,6 +307,11 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::AuxiliaryPreparation::BindBoundary(const BoundaryInputs &input)
     {
+        if (_queued)
+        {
+            BindQueuedBoundary(input);
+            return;
+        }
         DNDS_check_throw_info(_state, "equation auxiliary scope is finished or moved");
         _state->BindBoundary(input);
     }
@@ -321,6 +326,11 @@ namespace DNDS::Cauchy
     }
     void FiniteVolume::AuxiliaryPreparation::Finish(AuxiliaryValues &output)
     {
+        if (_queued)
+        {
+            FinishQueued(output);
+            return;
+        }
         DNDS_check_throw_info(_state && _state->phase == 2, "cannot publish incomplete equation auxiliary preparation");
         const auto a = EquationAuxiliaryArrays(_state->buffers), b = EquationAuxiliaryArrays(output);
         for (int k = 0; k < 9; ++k)
@@ -346,6 +356,35 @@ namespace DNDS::Cauchy
                 }
         output._equationOrigin = std::move(origin);
         _state.reset();
+    }
+
+    void FiniteVolume::AuxiliaryPreparation::Apply(R::EagerEngine &engine, const R::ExecutionStream &stream,
+                                                   CFV::ReconstructionRegion region)
+    {
+        if (_queued)
+        {
+            ApplyQueued(engine, stream, region);
+            return;
+        }
+        DNDS_check_throw_info(_state && stream.Context().device == R::Device::Host(), "auxiliary preparation/backend mismatch");
+        DNDS_check_throw_info(region == CFV::ReconstructionRegion::All || region == CFV::ReconstructionRegion::Core ||
+                                  region == CFV::ReconstructionRegion::HaloDependent,
+                              "invalid auxiliary region");
+        engine.Submit(stream, [state = _state, region](R::ExecutionContext)
+                      {
+            if (region != CFV::ReconstructionRegion::HaloDependent) state->Core();
+            if (region != CFV::ReconstructionRegion::Core) state->Dependent(); });
+    }
+    void FiniteVolume::AuxiliaryPreparation::ApplyInterfaceIndependent(R::EagerEngine &engine, const R::ExecutionStream &stream)
+    {
+        if (_queued)
+        {
+            ApplyIndependentQueued(engine, stream);
+            return;
+        }
+        DNDS_check_throw_info(_state && stream.Context().device == R::Device::Host(), "auxiliary preparation/backend mismatch");
+        engine.Submit(stream, [state = _state](R::ExecutionContext)
+                      { state->InterfaceIndependent(); });
     }
 
 }
