@@ -151,13 +151,13 @@ TEST_CASE("Queued boundary operator retains P3 basis and matches CPU physical an
         cpuWork->FillBoundary(mean, true, .4, evaluator);
         R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
         const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
-        gpuWork->ResetBoundaryStatus(engine, stream);
+        gpuWork->ResetPreparationStatus(engine, stream);
         // Repeated VR updates reuse stable scratch. Time/frame are captured
         // per launch; immutable policy metadata is never rewritten between them.
         gpuWork->SubmitDeviceBoundary(engine, stream, resident, true, .2);
         gpuWork->SubmitDeviceBoundary(engine, stream, resident, true, .4);
         engine.Synchronize();
-        gpuWork->CheckBoundaryStatus();
+        gpuWork->CheckPreparationStatus();
         const auto compare = [](const auto &expected, const auto &actual)
         {
             const auto host = actual.To(R::Device::Host());
@@ -255,6 +255,137 @@ TEST_CASE("Queued auxiliary operator matches CPU on a distributed periodic mesh 
                 compare(expected.cellPressureMinimum->Owned(), actual.cellPressureMinimum->Owned());
             }
         }
+}
+
+TEST_CASE("Managed CUDA flux matches generic CPU for P0 P1 and P3 with distributed inputs")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 8);
+    const auto device = R::Device::CUDA(0);
+    const auto context = R::ExecutionContext::CUDA(0);
+    for (const int degree : {0, 1, 3})
+    {
+        C::DomainSettings settings;
+        settings.numerics.reconstruction = degree == 3 ? "variational" : degree == 1 ? "gradient"
+                                                                                     : "constant";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.cfv.SORInstead = false;
+        settings.numerics.cfv.cacheDiffBase = false;
+        settings.numerics.limiter = degree == 1 ? "Barth" : "none";
+        settings.numerics.positivity = degree == 1;
+        settings.numerics.viscousGradient = degree == 1 ? "primitive" : "polynomial";
+        settings.equation.transport = "NewtonianFourier";
+        settings.equation.viscosity = .003;
+        settings.motion.angularVelocity = {0, 0, .1};
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        C::FiniteVolume cpu(mesh, settings, equation);
+        auto gpu = cpu.Placed(device, context);
+        auto mean = C::EquationDofs::Coupled(equation.Schema(), cpu.Metrics().BuildField(5));
+        {
+            const auto geometry = cpu.Metrics().AcquireRead();
+            const auto metric = geometry.HostView();
+            auto write = mean.CoupledField().Owned().Write();
+            for (I iCell = 0; iCell < cpu.Metrics().NumCell(); ++iCell)
+            {
+                const auto x = metric.GetCellCent(iCell);
+                const auto value = equation.Gas().Conservative({1 + .05 * x[0], .2 + .02 * x[1], -.1, .03, 1 + .04 * x[1]});
+                for (int j = 0; j < 5; ++j)
+                    write.View()(iCell, j) = value[j];
+            }
+        }
+        cpu.BindHalo(mean.CoupledField()).Begin().Wait();
+        auto resident = C::EquationDofs::Coupled(equation.Schema(), gpu.Metrics().BuildField(5));
+        resident.CoupledField().Owned().CopyFrom(mean.CoupledField().Owned(), context).Wait();
+        auto cpuRec = cpu.BuildReconstructionState(mean), gpuRec = gpu.BuildReconstructionState(resident);
+        if (degree == 3)
+        {
+            {
+                auto write = cpuRec->WarmValues().CoupledField().Owned().Write();
+                const auto view = write.View<R::TableRows>();
+                for (I iCell = 0; iCell < view.RowCount(); ++iCell)
+                    for (I j = 0; j < view.Width(); ++j)
+                        view(iCell, j) = 1e-5 * (1 + j % 5);
+            }
+            cpu.BindHalo(cpuRec->WarmValues().CoupledField()).Begin().Wait();
+            gpuRec->WarmValues().CoupledField().Owned().CopyFrom(cpuRec->WarmValues().CoupledField().Owned(), context).Wait();
+        }
+        auto expected = C::EquationDofOperations::NewVector(mean), actual = C::EquationDofOperations::NewVector(resident);
+        auto cpuWork = cpu.BuildWorkspace(mean, {}, C::FiniteVolume::WorkspaceOptions(C::FiniteVolume::RHSKernelPolicy::Generic));
+        auto gpuWork = gpu.BuildWorkspace(resident);
+        auto cpuBinding = cpuWork->BindReconstruction(*cpuRec), gpuBinding = gpuWork->BindReconstruction(*gpuRec);
+        auto evaluator = equation.MakePointEvaluator();
+        if (degree == 1)
+        {
+            cpuWork->FillBoundary(mean, false, .3, evaluator);
+            auto &field = cpuWork->fields.front();
+            cpuWork->owner->gradient.Evaluate(mean.CoupledField(), *field.gradientBoundary, *field.gradient, {1});
+            cpuWork->PreparePrimitiveGradient(mean, DNDS::CFV::ReconstructionRegion::All);
+            cpuWork->PrepareDirectGradientLimiter(mean, true);
+            cpuWork->ApplyDirectGradientPositivity(mean);
+            cpu.BindHalo(cpuWork->directGradients.front()).Begin().Wait();
+            cpu.BindHalo(*cpuWork->primitiveGradient).Begin().Wait();
+        }
+        cpuWork->ApplyRHS(mean, expected, DNDS::CFV::ReconstructionRegion::All, evaluator, .3);
+        auto meanHalo = gpu.BindHalo(resident.CoupledField());
+        std::optional<R::TransferBinding> coefficientHalo;
+        if (degree == 3)
+            coefficientHalo.emplace(gpu.BindHalo(gpuRec->WarmValues().CoupledField()));
+        std::optional<R::TransferBinding> gradientHalo, primitiveHalo;
+        if (degree == 1)
+        {
+            gradientHalo.emplace(gpu.BindHalo(gpuWork->directGradients.front()));
+            primitiveHalo.emplace(gpu.BindHalo(*gpuWork->primitiveGradient));
+        }
+        for (bool split : {true, false})
+        {
+            R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
+            const auto compute = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+            const auto communication = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+            gpuWork->ResetDeviceFluxStatus(engine, compute);
+            if (degree == 1)
+            {
+                gpuWork->ResetPreparationStatus(engine, compute);
+                gpuWork->SubmitDeviceBoundary(engine, compute, resident, false, .3);
+            }
+            auto meanTransfer = meanHalo.SubmitAfter(engine, communication, compute.Record());
+            std::optional<R::TransferOperation> recTransfer;
+            if (coefficientHalo)
+                recTransfer.emplace(coefficientHalo->SubmitAfter(engine, communication, compute.Record()));
+            if (split)
+            {
+                if (degree == 1)
+                    gpuWork->SubmitGradients(engine, compute, resident, DNDS::CFV::ReconstructionRegion::Core);
+                else
+                    gpuWork->SubmitDeviceRHS(engine, compute, resident, actual, DNDS::CFV::ReconstructionRegion::Core, .3);
+            }
+            meanTransfer.EnqueueWait(compute);
+            if (recTransfer)
+                recTransfer->EnqueueWait(compute);
+            if (degree == 1)
+            {
+                gpuWork->SubmitGradients(engine, compute, resident,
+                                         split ? DNDS::CFV::ReconstructionRegion::HaloDependent : DNDS::CFV::ReconstructionRegion::All);
+                gpuWork->SubmitDeviceGradientLimiter(engine, compute, resident, true, DNDS::CFV::ReconstructionRegion::All);
+                gpuWork->SubmitDeviceGradientPositivity(engine, compute, resident);
+                auto gradientTransfer = gradientHalo->SubmitAfter(engine, communication, compute.Record());
+                auto primitiveTransfer = primitiveHalo->SubmitAfter(engine, communication, compute.Record());
+                if (split)
+                    gpuWork->SubmitDeviceRHS(engine, compute, resident, actual, DNDS::CFV::ReconstructionRegion::Core, .3);
+                gradientTransfer.EnqueueWait(compute);
+                primitiveTransfer.EnqueueWait(compute);
+            }
+            gpuWork->SubmitDeviceRHS(engine, compute, resident, actual,
+                                     split ? DNDS::CFV::ReconstructionRegion::HaloDependent : DNDS::CFV::ReconstructionRegion::All, .3);
+            engine.Synchronize();
+            if (degree == 1)
+                gpuWork->CheckPreparationStatus();
+            gpuWork->CheckDeviceFluxStatus();
+            const auto downloaded = actual.CoupledField().Owned().To(R::Device::Host());
+            const auto x = expected.CoupledField().Owned().Read(), y = downloaded.Read();
+            for (I iCell = 0; iCell < cpu.Metrics().NumCell(); ++iCell)
+                for (int j = 0; j < 5; ++j)
+                    CHECK(y.View()(iCell, j) == doctest::Approx(x.View()(iCell, j)).epsilon(3e-11).scale(1));
+        }
+    }
 }
 
 TEST_CASE("Queued CUDA owned-mean and CFL reductions match CPU including empty partitions and first failure")

@@ -104,7 +104,7 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(false, "CUDA boundary execution is not built");
 #endif
     }
-    void FiniteVolume::Workspace::BuildBoundaryStatus()
+    void FiniteVolume::Workspace::BuildPreparationStatus()
     {
         if (owner->metrics.Device() == Runtime::Device::Host())
             return;
@@ -112,37 +112,56 @@ namespace DNDS::Cauchy
         const auto device = owner->metrics.Device();
         const index quadrature = owner->boundaryTraceGeometry.RowCount();
         const index primitive = primitiveBoundary ? primitiveBoundary->RowCount() : 0;
-        boundaryStatus.emplace(BoundaryStatusStorage{
+        const bool gradientPP = nativeDirectGradient && owner->settings.numerics.positivity;
+        const index owned = primitiveGradient || gradientPP ? owner->metrics.NumCell() : 0;
+        const index ghost = primitiveGradient ? owner->metrics.NumCellProc() - owner->metrics.NumCell() : 0;
+        preparationStatus.emplace(PreparationStatusStorage{
             R::Array<NumericalStatus>(R::RowLayout::Dense(quadrature, 1), device),
             R::Array<NumericalStatus>(R::RowLayout::Dense(primitive, 1), device),
-            R::Array<NumericalStatus>(R::RowLayout::Dense(CUDA::StateReductionScratchRows(std::max(quadrature, primitive) + 1), 1), device),
-            R::Array<NumericalStatus>(R::RowLayout::Dense(1, 1), device)});
-        boundaryStatus->quadrature.SetName("Cauchy/boundaryStatus", DNDS_ALLOCATION_SITE());
-        boundaryStatus->primitive.SetName("Cauchy/primitiveBoundaryStatus", DNDS_ALLOCATION_SITE());
-        boundaryStatus->partial.SetName("Cauchy/boundaryStatusPartials", DNDS_ALLOCATION_SITE());
-        boundaryStatus->result.SetName("Cauchy/boundaryStatusResult", DNDS_ALLOCATION_SITE());
+            R::Array<NumericalStatus>(R::RowLayout::Dense(owned, 1), device),
+            R::Array<NumericalStatus>(R::RowLayout::Dense(ghost, 1), device),
+            R::Array<NumericalStatus>(R::RowLayout::Dense(CUDA::StateReductionScratchRows(std::max({quadrature, primitive, owned, ghost}) + 1), 1), device),
+            R::Array<NumericalStatus>(R::RowLayout::Dense(1, 1), device),
+            R::Array<real>(R::RowLayout::Dense(gradientPP ? owned : 0, 1), device)});
+        preparationStatus->quadrature.SetName("Cauchy/preparationStatus", DNDS_ALLOCATION_SITE());
+        preparationStatus->primitive.SetName("Cauchy/primitiveBoundaryStatus", DNDS_ALLOCATION_SITE());
+        preparationStatus->partial.SetName("Cauchy/preparationStatusPartials", DNDS_ALLOCATION_SITE());
+        preparationStatus->result.SetName("Cauchy/preparationStatusResult", DNDS_ALLOCATION_SITE());
+        preparationStatus->meanOwned.SetName("Cauchy/preparationOwnedStatus", DNDS_ALLOCATION_SITE());
+        preparationStatus->meanGhost.SetName("Cauchy/preparationGhostStatus", DNDS_ALLOCATION_SITE());
+        preparationStatus->gradientBeta.SetName("Cauchy/gradientBeta", DNDS_ALLOCATION_SITE());
 #else
         DNDS_check_throw_info(false, "CUDA boundary execution is not built");
 #endif
     }
-    void FiniteVolume::Workspace::ResetBoundaryStatus(R::EagerEngine &engine, const R::ExecutionStream &stream)
+    void FiniteVolume::Workspace::ResetPreparationStatus(R::EagerEngine &engine, const R::ExecutionStream &stream)
     {
 #ifdef DNDS_USE_CUDA
-        DNDS_check_throw_info(boundaryStatus && !boundaryStatus->pending, "boundary status workspace is unavailable or still pending");
+        DNDS_check_throw_info(preparationStatus && !preparationStatus->pending, "preparation status workspace is unavailable or still pending");
         R::SubmitArrays(engine, stream, [](R::ExecutionContext context, auto result)
-                        { CUDA::ClearNumericalStatus(context, result); }, R::WriteAs<R::FixedRows<1>>(boundaryStatus->result));
-        boundaryStatus->pending = true;
+                        { CUDA::ClearNumericalStatus(context, result); }, R::WriteAs<R::FixedRows<1>>(preparationStatus->result));
+        preparationStatus->pending = true;
 #else
         DNDS_check_throw_info(false, "CUDA boundary execution is not built");
 #endif
     }
-    void FiniteVolume::Workspace::CheckBoundaryStatus()
+    void FiniteVolume::Workspace::CheckPreparationStatus()
     {
-        DNDS_check_throw_info(boundaryStatus && boundaryStatus->pending && boundaryStatus->result.Storage().IsIdle(),
-                              "boundary status requires a completed numerical segment");
-        const auto result = boundaryStatus->result.To(R::Device::Host());
-        boundaryStatus->pending = false;
-        RequireNumericalSuccess(result.Read().View()(0, 0), "queued boundary evaluation");
+        DNDS_check_throw_info(preparationStatus && preparationStatus->pending && preparationStatus->result.Storage().IsIdle(),
+                              "preparation status requires a completed numerical segment");
+        const auto result = preparationStatus->result.To(R::Device::Host());
+        preparationStatus->pending = false;
+        RequireNumericalSuccess(result.Read().View()(0, 0), "queued spatial preparation");
+    }
+    void FiniteVolume::Workspace::AppendPreparationStatus(R::EagerEngine &engine, const R::ExecutionStream &stream, const R::Array<NumericalStatus> &rows)
+    {
+#ifdef DNDS_USE_CUDA
+        DNDS_check_throw_info(preparationStatus && preparationStatus->pending, "preparation status segment is not initialized");
+        R::SubmitArrays(engine, stream, [](R::ExecutionContext context, auto rows, auto partial, auto result)
+                        { CUDA::ReduceNumericalStatus(context, rows, result.ConstView(), partial, result); }, R::ReadAs<R::FixedRows<1>>(rows), R::WriteAs<R::FixedRows<1>>(preparationStatus->partial), R::ReadWriteAs<R::FixedRows<1>>(preparationStatus->result));
+#else
+        DNDS_check_throw_info(false, "CUDA preparation status is not built");
+#endif
     }
     void FiniteVolume::Workspace::SubmitDeviceBoundary(
         R::EagerEngine &engine, const R::ExecutionStream &stream,
@@ -150,25 +169,20 @@ namespace DNDS::Cauchy
         OptionalRef<const R::Array<real>> incoming)
     {
 #ifdef DNDS_USE_CUDA
-        DNDS_check_throw_info(boundaryStatus && boundaryStatus->pending && fields.size() == 1,
+        DNDS_check_throw_info(preparationStatus && preparationStatus->pending && fields.size() == 1,
                               "queued boundary needs a combined device workspace and an initialized status segment");
         const FiniteVolume plan(owner);
         const bool mirrored = owner->settings.numerics.reconstruction == "variational" &&
                               owner->settings.numerics.vrBoundaryValue == "physicalMirrored";
         auto &field = fields.front();
         const bool gradientBoundary = bool(field.gradientBoundary);
-        const auto append = [&](R::Array<NumericalStatus> &rows)
-        {
-            R::SubmitArrays(engine, stream, [](R::ExecutionContext context, auto rows, auto partial, auto result)
-                            { CUDA::ReduceNumericalStatus(context, rows, result.ConstView(), partial, result); }, R::ReadAs<R::FixedRows<1>>(rows), R::WriteAs<R::FixedRows<1>>(boundaryStatus->partial), R::ReadWriteAs<R::FixedRows<1>>(boundaryStatus->result));
-        };
         const auto fill = [&](bool exterior)
         {
             plan.SubmitBoundaryValues(engine, stream, state,
                                       polynomial ? OptionalRef<const EquationDofs>(Coefficients()) : OptionalRef<const EquationDofs>{},
-                                      field.boundaryValues, boundaryStatus->quadrature,
+                                      field.boundaryValues, preparationStatus->quadrature,
                                       {BoundaryTarget::Quadrature, exterior, true, time}, incoming);
-            append(boundaryStatus->quadrature);
+            AppendPreparationStatus(engine, stream, preparationStatus->quadrature);
         };
         fill(mirrored && !gradientBoundary);
         if (gradientBoundary)
@@ -178,9 +192,9 @@ namespace DNDS::Cauchy
             fill(true);
         if (primitiveBoundary)
         {
-            plan.SubmitBoundaryValues(engine, stream, state, {}, *primitiveBoundary, boundaryStatus->primitive,
+            plan.SubmitBoundaryValues(engine, stream, state, {}, *primitiveBoundary, preparationStatus->primitive,
                                       {BoundaryTarget::PrimitiveGradient, false, false, time}, incoming);
-            append(boundaryStatus->primitive);
+            AppendPreparationStatus(engine, stream, preparationStatus->primitive);
         }
 #else
         DNDS_check_throw_info(false, "CUDA boundary execution is not built");

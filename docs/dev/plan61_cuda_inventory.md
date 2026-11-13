@@ -460,3 +460,36 @@ construction resolves CUDA placement without enabling the still-incomplete
 solver backend; the remaining operator/schedule integration is required before
 the grouped B build/test and any CUDA production acceptance.
 
+### B managed flux and gradient integration (source-only)
+
+`FiniteVolume_RHSQueued.cpp` now builds a retained resident geometry descriptor
+once per workspace. Mutable means, coefficients/physical gradients, optional
+auxiliary inputs, face outputs and cell residuals are declared Runtime operands.
+Core submissions omit ghost reads; the same face/cell leaves serve split and
+unsplit regions. Time/frame are per-call POD arguments, while physics metadata
+stay immutable. A sticky status accumulator is checked after complete region
+submission and the caller's drain. Source terms remain a separate operator.
+
+`FiniteVolume_GradientQueued.cpp` submits CFV gradient evaluation through its
+backend-neutral entry, with reusable per-layout workspaces. Primitive means
+dispatch to CPU/CUDA leaves. Direct-gradient Barth and positivity device
+submissions retain their geometry and use explicit output/status arrays. Their
+failures fold into the same preparation accumulator as boundary evaluation;
+primitive/PP scratch allocates only when that option is active. Equation scratch
+allocation now preserves the prototype device without changing arithmetic
+dispatch or initializing payloads implicitly.
+
+The managed-flux test source compares generic CPU P0/P1/P3 fluxes against CUDA,
+including mean/coefficient/gradient transfers, core/dependent scheduling,
+primitive viscous gradients and direct Barth/PP preparation. It is **unbuilt**.
+Rotating-frame periodic cases are intentionally included as a numerical check
+of face-oriented gathering, not accepted as equivalent without execution.
+
+The common `EvaluateImpl` transition is still required: CPU callbacks currently
+acquire some immediate leases at execution, so replacing them with a queued
+consumer alone would conflict with pending reservations. Complete the producer
+contract as well as CUDA dispatch. Other open items include source/mean-gradient
+integration, modal PP/LVR/characteristics scheduling, gradient-PP statistics,
+state/error reporting, OMP coverage and the quantized MMA experiment. No B
+build/test or full CUDA solver acceptance is claimed by this checkpoint.
+

@@ -118,6 +118,7 @@ namespace DNDS::Cauchy
           targetCoefficients(data.reconstruction->BuildCoefficients(prototype.components, prototype.temporary.Owned().Layout())),
           gradients(data.metrics.BuildField(prototype.components * data.metrics.Dimension())), scalars(data.metrics.BuildField(2)),
           branches(data.metrics.BuildField(3)), seeds(data.metrics.BuildField(3)), temporary(data.metrics.BuildField(3)),
+          gradientExecution(data.limitedVRGeometry->gradient.BuildWorkspace(prototype.components, prototype.periodicVectorStarts)),
           base(R::RowLayout::Dense(data.metrics.NumCell(), 2)),
           alpha(R::RowLayout::Dense(data.metrics.NumCell(), 1)), sampledFaces(R::RowLayout::Dense(data.limitedVRGeometry ? 2 * data.limitedVRGeometry->faces.RowCount() : 0, prototype.components)),
           sampledPP(R::RowLayout::Dense(data.positivitySamples ? data.positivitySamples->Size() : 0, prototype.components)), targetHalo(data.BindHalo(targetCoefficients)),

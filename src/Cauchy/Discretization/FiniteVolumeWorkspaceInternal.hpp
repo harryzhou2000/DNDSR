@@ -55,6 +55,7 @@ namespace DNDS::Cauchy
             std::optional<CFV::ReconstructionBoundaryValues> reconstructionBoundary;
             Runtime::Array<real> boundaryValues;
             std::optional<CFV::FVField> gradient;
+            std::optional<CFV::GradientWorkspace> gradientExecution;
             std::optional<R::Array<real>> gradientBoundary;
             std::vector<index> vectorStarts;
         };
@@ -120,15 +121,19 @@ namespace DNDS::Cauchy
         /// this workspace but consumed by the same fixed-flow RHS leaf.
         std::optional<CFV::FVField> primitive, primitiveGradient;
         std::optional<R::Array<real>> primitiveBoundary;
+        std::optional<CFV::GradientWorkspace> primitiveGradientExecution;
         /// Temporary device status, separate from durable reconstruction state.
-        /// Reset once per FV evaluation; every repeated boundary producer folds
+        /// Reset once per FV evaluation; every boundary/gradient producer folds
         /// into result before reusing its row buffer. Inspect only after drain.
-        struct BoundaryStatusStorage
+        struct PreparationStatusStorage
         {
-            R::Array<NumericalStatus> quadrature, primitive, partial, result;
+            R::Array<NumericalStatus> quadrature, primitive, meanOwned, meanGhost, partial, result;
+            R::Array<real> gradientBeta;
             bool pending = false;
         };
-        std::optional<BoundaryStatusStorage> boundaryStatus;
+        std::optional<PreparationStatusStorage> preparationStatus;
+        struct DeviceFluxData;
+        std::shared_ptr<DeviceFluxData> deviceFlux;
         std::optional<R::TransferBinding> primitiveGradientHalo;
         struct DirectGradientPublication
         {
@@ -436,14 +441,31 @@ namespace DNDS::Cauchy
         void PreparePrimitiveGradient(const EquationDofs &state, CFV::ReconstructionRegion region);
         void FillBoundary(const EquationDofs &state, bool polynomial, real time,
                           PointEvaluator &evaluator, RHSScalarView incoming = {});
-        void BuildBoundaryStatus();
-        void ResetBoundaryStatus(R::EagerEngine &, const R::ExecutionStream &);
-        void CheckBoundaryStatus();
+        void BuildPreparationStatus();
+        void ResetPreparationStatus(R::EagerEngine &, const R::ExecutionStream &);
+        void CheckPreparationStatus();
+        void AppendPreparationStatus(R::EagerEngine &, const R::ExecutionStream &, const R::Array<NumericalStatus> &);
+        /// Queued CFV gradient construction uses the same entry for CPU/CUDA.
+        /// Primitive conversion is an operator-local backend dispatch; neither
+        /// this entry nor CFV hides halo communication or host observation.
+        void SubmitGradients(R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &, CFV::ReconstructionRegion);
+        void SubmitDeviceGradientLimiter(R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &, bool barth, CFV::ReconstructionRegion);
+        void SubmitDeviceGradientPositivity(R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &);
         /// Device branch of the boundary operator; called by the common
         /// spatial schedule, never from a numerical leaf. No host wait.
         void SubmitDeviceBoundary(R::EagerEngine &, const R::ExecutionStream &,
                                   const EquationDofs &, bool polynomial, real time,
                                   OptionalRef<const R::Array<real>> incoming = {});
+        /// Device flux preparation owns only immutable descriptor scopes and
+        /// reusable scratch. Durable means/coefficients are explicit operands.
+        void BuildDeviceFlux();
+        const R::Array<index> &DeviceCellSelection(CFV::ReconstructionRegion) const;
+        void ResetDeviceFluxStatus(R::EagerEngine &, const R::ExecutionStream &);
+        void CheckDeviceFluxStatus();
+        void SubmitDeviceRHS(R::EagerEngine &, const R::ExecutionStream &,
+                             const EquationDofs &, EquationDofs &, CFV::ReconstructionRegion,
+                             real time, OptionalRef<const AuxiliaryValues> auxiliary = {},
+                             OptionalRef<const R::Array<real>> incoming = {});
         void ApplyFixedFlowRHS(const EquationDofs &state, EquationDofs &result,
                                CFV::ReconstructionRegion region, real time,
                                OptionalRef<const AuxiliaryValues> auxiliary,

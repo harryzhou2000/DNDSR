@@ -123,6 +123,7 @@ namespace DNDS::Cauchy::CUDA::Detail
         return result;
     }
     DNDS_DEVICE_CALLABLE inline NumericalResult<FlowState> BoundaryFlow(const RHSGeometry &geometry, const RHSKernelParameters &parameters,
+                                                                        const RHSKernelControls &controls,
                                                                         const RHSFields &fields, const FiniteVolumeDetail::SampleRecord &sample,
                                                                         const FlowState &inside, bool exterior) noexcept
     {
@@ -137,10 +138,11 @@ namespace DNDS::Cauchy::CUDA::Detail
             return result;
         }
         return TryPerfectGasBoundaryValue(condition, parameters.physics.gas, inside, sample.normal, sample.ownPoint,
-                                          parameters.time, parameters.frame, exterior);
+                                          controls.time, controls.frame, exterior);
     }
     template <int Components>
     DNDS_DEVICE_CALLABLE NumericalStatus ExteriorPoint(const RHSGeometry &geometry, const RHSKernelParameters &parameters,
+                                                       const RHSKernelControls &controls,
                                                        const RHSFields &fields, const FiniteVolumeDetail::SampleRecord &sample,
                                                        PerfectGasKernelPoint<Components> &point) noexcept
     {
@@ -157,6 +159,6 @@ namespace DNDS::Cauchy::CUDA::Detail
         for (int j = 0; j < Components; ++j)
             mean[j] = fields.mean(sample.cell, j);
         return TryPerfectGasBoundaryState<Components>(condition, parameters.physics.gas, parameters.physics.rans.kind, point.values, mean,
-                                                      geometry.hasWall ? geometry.wallMean(sample.cell, 0) : 0, sample.normal, sample.ownPoint, parameters.time, parameters.frame, true);
+                                                      geometry.hasWall ? geometry.wallMean(sample.cell, 0) : 0, sample.normal, sample.ownPoint, controls.time, controls.frame, true);
     }
 }

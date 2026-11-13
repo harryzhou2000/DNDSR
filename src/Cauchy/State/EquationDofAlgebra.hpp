@@ -17,13 +17,16 @@ namespace DNDS::Cauchy
         static State NewVector(const State &prototype)
         {
             prototype.Validate();
-            DNDS_check_throw_info(prototype.Device() == Runtime::Device::Host(), "CPU equation algebra has no device fallback");
+            // Allocation preserves the prototype backend independently of
+            // arithmetic dispatch. This creates uninitialized scratch, with
+            // no copy, host fallback or change to the equation grouping.
+            const auto device = prototype.Device();
             Algebra::DofBundle fields(prototype.Space());
             for (index iField = 0; iField < prototype.PhysicalFieldNumber(); ++iField)
             {
                 const auto &field = prototype.PhysicalField(iField);
                 fields.Add(prototype.Fields().Name(iField), Algebra::DofField<real>(prototype.Space(),
-                                                                                    Runtime::Array<real>(field.Owned().Layout()), Runtime::Array<real>(field.Ghost().Layout())));
+                                                                                    Runtime::Array<real>(field.Owned().Layout(), device), Runtime::Array<real>(field.Ghost().Layout(), device)));
             }
             return prototype.RebindFields(std::move(fields));
         }

@@ -10,10 +10,11 @@ namespace DNDS::Cauchy::CUDA::Detail
 {
     template <int Components>
     DNDS_DEVICE_CALLABLE NumericalStatus WallPoint(const RHSGeometry &geometry, const RHSKernelParameters &parameters,
+                                                   const RHSKernelControls &controls,
                                                    const RHSFields &fields, const FiniteVolumeDetail::SampleRecord &sample,
                                                    const PerfectGasKernelPoint<Components> &left, PerfectGasKernelPoint<Components> &face) noexcept
     {
-        const auto wall = BoundaryFlow(geometry, parameters, fields, sample, left.Flow(), false);
+        const auto wall = BoundaryFlow(geometry, parameters, controls, fields, sample, left.Flow(), false);
         if (!wall)
             return wall.status;
         face.values = left.values;
@@ -25,6 +26,7 @@ namespace DNDS::Cauchy::CUDA::Detail
     }
     template <int Components>
     DNDS_DEVICE_CALLABLE NumericalResult<FlowState> PrimitiveDiffusion(const RHSGeometry &geometry, const RHSKernelParameters &parameters,
+                                                                       const RHSKernelControls &controls,
                                                                        const RHSFields &fields, const FiniteVolumeDetail::SampleRecord &sample,
                                                                        const PerfectGasKernelPoint<Components> &left,
                                                                        const PerfectGasKernelPoint<Components> &right) noexcept
@@ -45,7 +47,7 @@ namespace DNDS::Cauchy::CUDA::Detail
         }
         else
         {
-            const auto boundary = BoundaryFlow(geometry, parameters, fields, sample, mean.Flow(), true);
+            const auto boundary = BoundaryFlow(geometry, parameters, controls, fields, sample, mean.Flow(), true);
             if (!boundary)
                 return boundary.status;
             otherFlow = boundary.value;
@@ -130,7 +132,7 @@ namespace DNDS::Cauchy::CUDA::Detail
             else
             {
                 right = left;
-                const auto status = ExteriorPoint(geometry, parameters, fields, sample, right);
+                const auto status = ExteriorPoint(geometry, parameters, controls, fields, sample, right);
                 if (!status)
                     return status.At(sample.cell, sample.point);
             }
@@ -145,7 +147,7 @@ namespace DNDS::Cauchy::CUDA::Detail
 #endif
             if (wallFluxState)
             {
-                const auto status = WallPoint(geometry, parameters, fields, sample, left, face);
+                const auto status = WallPoint(geometry, parameters, controls, fields, sample, left, face);
                 if (!status)
                     return status.At(sample.cell, sample.point);
             }
@@ -173,7 +175,7 @@ namespace DNDS::Cauchy::CUDA::Detail
                 }
                 else
                 {
-                    const auto result = BoundaryFlow(geometry, parameters, fields, sample, leftMean, true);
+                    const auto result = BoundaryFlow(geometry, parameters, controls, fields, sample, leftMean, true);
                     if (!result)
                         return result.status.At(sample.cell, sample.point);
                     rightMean = result.value;
@@ -197,7 +199,7 @@ namespace DNDS::Cauchy::CUDA::Detail
                     meanRightData = result.value;
                 }
             }
-            const auto grid = parameters.frame.GridVelocity(sample.ownPoint);
+            const auto grid = controls.frame.GridVelocity(sample.ownPoint);
             auto settings = controls.fluxPolicy.settings;
             if (controls.useStencil && controls.fluxPolicy.transverseSignal)
             {
@@ -246,7 +248,7 @@ namespace DNDS::Cauchy::CUDA::Detail
             {
                 if (controls.primitiveGradient)
                 {
-                    const auto diffusion = PrimitiveDiffusion(geometry, parameters, fields, sample, left, right);
+                    const auto diffusion = PrimitiveDiffusion(geometry, parameters, controls, fields, sample, left, right);
                     if (!diffusion)
                         return diffusion.status.At(sample.cell, sample.point);
                     for (int j = 0; j < 5; ++j)
@@ -274,7 +276,7 @@ namespace DNDS::Cauchy::CUDA::Detail
 #endif
                     if (wallFluxState)
                     {
-                        const auto status = WallPoint(geometry, parameters, fields, sample, left, face);
+                        const auto status = WallPoint(geometry, parameters, controls, fields, sample, left, face);
                         if (!status)
                             return status.At(sample.cell, sample.point);
                     }

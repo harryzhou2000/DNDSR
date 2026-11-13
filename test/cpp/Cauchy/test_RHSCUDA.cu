@@ -169,10 +169,10 @@ TEST_CASE("CUDA integrated RHS matches generic CPU with periodic halo wall and i
             K::RHSKernelParameters parameters;
             parameters.physics = C::PerfectGasSpatialParameters::FromEquation(equation, 2);
             parameters.thermal = thermal.View();
-            parameters.frame = frame.KernelParameters();
-            parameters.time = .2;
             parameters.Validate(width);
             K::RHSKernelControls controls;
+            controls.frame = frame.KernelParameters();
+            controls.time = .2;
             controls.components = width;
             controls.dimension = 2;
             controls.modes = modes;
@@ -323,7 +323,7 @@ TEST_CASE("CUDA integrated RHS matches generic CPU with periodic halo wall and i
                 request.firstOrder = controls.firstOrder;
                 request.viscous = request.hasWall = request.positivity = request.useStencil = request.preparedWaveJump = request.preparedPressureMinimum = true;
                 request.produceLow = controls.produceLow;
-                request.time = parameters.time;
+                request.time = controls.time;
                 C::BoundaryPointOperator bc(equation);
                 auto worker = equation.MakePointEvaluator();
                 const auto status = C::CPU::EvaluateEquationFlux(request, equation, bc, C::Riemann::RiemannFlux(controls.solver), worker, own.View(), ghost.View(), result.View(), lowResult.View(), F::ReconstructionRegion::All);

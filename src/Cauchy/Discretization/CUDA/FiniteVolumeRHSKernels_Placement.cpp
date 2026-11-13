@@ -44,13 +44,13 @@ namespace DNDS::Cauchy::CUDA
     void RHSKernelParameters::Validate(int components) const
     {
         physics.Validate(components);
-        DNDS_check_throw_info(std::isfinite(time) && thermal.flowFirst == 0 && thermal.components == components && thermal.independent == 0 &&
+        DNDS_check_throw_info(thermal.flowFirst == 0 && thermal.components == components && thermal.independent == 0 &&
                                   thermal.speciesEnergies[0].empty() && thermal.speciesEnergies[1].empty(),
                               "invalid perfect-gas RHS policy");
     }
     void RHSKernelControls::Validate() const
     {
-        DNDS_check_throw_info(components >= 5 && components <= 7 && (dimension == 2 || dimension == 3), "invalid CUDA RHS shape/profile");
+        DNDS_check_throw_info(std::isfinite(time) && components >= 5 && components <= 7 && (dimension == 2 || dimension == 3), "invalid CUDA RHS shape/profile");
         DNDS_check_throw_info(solver >= Riemann::Solver::Rusanov && solver <= Riemann::Solver::AUSMPlusUp2, "unknown CUDA Riemann solver");
         DNDS_check_throw_info(direct || firstOrder || (modes > 0 && modes <= 19), "RHS polynomial degree/shape is missing");
         DNDS_check_throw_info(!primitiveGradient || components == 5, "primitive viscous gradients require pure flow5");

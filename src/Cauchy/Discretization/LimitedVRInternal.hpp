@@ -24,6 +24,7 @@ namespace DNDS::Cauchy
         CFV::ReconstructionWorkspace target;
         CFV::FVField targetCoefficients;
         CFV::FVField gradients, scalars, branches, seeds, temporary;
+        CFV::GradientWorkspace gradientExecution;
         Runtime::Array<real> base, alpha, sampledFaces, sampledPP;
         Runtime::TransferBinding targetHalo, branchHalo, seedHalo;
         explicit LimitedVRWorkspace(const Data &data, const CFV::ReconstructionWorkspace &prototype);

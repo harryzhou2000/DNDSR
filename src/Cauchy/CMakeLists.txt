@@ -49,7 +49,9 @@ set(CPPS
     Discretization/FiniteVolumeViews.cpp
     Discretization/FiniteVolume_RHSOperator.cpp
     Discretization/FiniteVolume_RHS.cpp
+    Discretization/FiniteVolume_RHSQueued.cpp
     Discretization/FiniteVolume_Gradient.cpp
+    Discretization/FiniteVolume_GradientQueued.cpp
     Discretization/FiniteVolume_SourcePreparation.cpp
     Discretization/FiniteVolume_Positivity.cpp
     Discretization/FiniteVolume_AuxiliaryPreparation.cpp

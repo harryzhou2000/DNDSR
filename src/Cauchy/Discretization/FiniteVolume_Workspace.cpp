@@ -54,6 +54,9 @@ namespace DNDS::Cauchy
             }
             else if (!meanOnly && data.limitedVRGeometry)
                 field.gradientBoundary.emplace(data.gradient.BuildBoundaryValues(index(physical.Width())));
+            if (field.gradient)
+                field.gradientExecution.emplace(data.gradient.BuildWorkspace(index(physical.Width()), vectors,
+                                                                             !meanOnly && data.settings.numerics.limiter == "WBAP"));
             result.push_back(std::move(field));
         }
         return result;
@@ -270,10 +273,12 @@ namespace DNDS::Cauchy
             primitive.emplace(owner->metrics.BuildField(5));
             primitiveGradient.emplace(owner->metrics.BuildField(5 * owner->metrics.Dimension()));
             primitiveBoundary.emplace(owner->gradient.BuildBoundaryValues(5));
+            primitiveGradientExecution.emplace(owner->gradient.BuildWorkspace(5, {1}));
             primitiveGradientHalo.emplace(owner->BindHalo(*primitiveGradient, "cauchy-primitive-gradient"));
         }
         BuildSourceSampling(state);
-        BuildBoundaryStatus();
+        BuildPreparationStatus();
+        BuildDeviceFlux();
         if (nativeDirectGradient || ransFirst >= 0)
             directGradientPublications.resize(directGradients.size());
     }

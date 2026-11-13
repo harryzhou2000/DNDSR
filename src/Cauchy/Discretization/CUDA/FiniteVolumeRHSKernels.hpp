@@ -57,17 +57,17 @@ namespace DNDS::Cauchy::CUDA
     {
         PerfectGasSpatialParameters physics;
         ThermalView thermal{};
-        RigidFrameParameters frame;
-        real time = 0;
         void Validate(int components) const;
     };
     static_assert(std::is_trivially_copyable_v<RHSKernelParameters>);
     /// Small launch controls travel by value, so host shape validation and
-    /// device indexing use the same flags. Larger physics/frame records live
-    /// in the separately retained immutable metadata allocation.
+    /// device indexing use the same flags. Immutable physics records live in
+    /// resident metadata; per-call time/frame travel by value without uploads.
     struct RHSKernelControls
     {
         FiniteVolumeDetail::FluxKernelPolicy fluxPolicy;
+        RigidFrameParameters frame;
+        real time = 0;
         Riemann::Solver solver = Riemann::Solver::Rusanov;
         int components = 5, modes = 0, dimension = 3;
         bool direct = false, linear = false, firstOrder = false;
