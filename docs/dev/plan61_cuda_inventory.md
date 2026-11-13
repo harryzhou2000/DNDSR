@@ -59,8 +59,21 @@ Opt-in device diagnostic failure guards limiter output; the controller checks st
 after the segment. Gradient workspaces now have the same deferred status contract.
 Test sources enqueue producers, validation, multiple WBAP passes and publication
 without an intermediate drain, compare each pass with CPU, and check one invalid
-producer. These are not yet executed. The actual Cauchy physical characteristic
-producer and production orchestration integration remain pending.
+producer. These are not yet executed.
+
+Cauchy's physical CUDA producer now has source for analytic flow-five L/R
+matrices (no numerical inversion) and bounded shared host/device point helpers.
+It uses Roe averages of cell means, never reconstructed face states, and restores
+canonical parent-zero periodic orientation even for a side-one-owned incidence.
+The stencil optionally publishes a canonical-face incidence map; unused faces
+receive identity. CPU still uses its existing analytic right basis plus Eigen
+inverse as the oracle. The existing near-singular componentwise fallback is
+preserved separately from optional CFV diagnostic scans. Focused test sources
+cover 5/6/7-wide inputs, periodic side-one and physical/unused faces, the fallback
+and one invalid-state status. Production operator wiring and execution remain
+pending. Mean auxiliaries could supply pressure for enthalpy in future, but are
+not required or reused by this producer; their cached sound speed is not a Roe
+sound speed and cannot simply be averaged.
 
 ## Execution and ownership contract
 

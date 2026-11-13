@@ -444,6 +444,21 @@ namespace DNDS::Cauchy
             publishIndices(build.jacobianOffsets, data->stencil.jacobianOffsets);
             publishIndices(build.stencilFaces, data->stencil.stencilFaces);
             publishIndices(build.faceEntries, data->stencil.faceEntries);
+            if (settings.numerics.characteristicLimiter && !equation.HasMixture() &&
+                (settings.numerics.limiter == "WBAP" || limitedVR))
+            {
+                // Full local canonical face registry, not a global-sized map.
+                // A device producer can fill all output rows independently;
+                // unused faces receive identity without a separate reset pass.
+                data->stencil.characteristicFaceEntries = R::Array<index>(R::RowLayout::Dense(data->metrics.NumFaceProc(), 1));
+                data->stencil.characteristicFaceEntries.SetName("Cauchy/characteristicFaceEntries", DNDS_ALLOCATION_SITE());
+                auto write = data->stencil.characteristicFaceEntries.Write();
+                const auto entries = write.View<R::FixedRows<1>>();
+                for (index iFace = 0; iFace < entries.RowCount(); ++iFace)
+                    entries(iFace, 0) = UnInitIndex;
+                for (index iAux = 0; iAux < index(build.stencilFaces.size()); ++iAux)
+                    entries(build.stencilFaces[iAux], 0) = build.faceEntries[iAux];
+            }
             publishIndices(build.auxiliaryCoreFaces, data->stencil.auxiliaryCoreFaces);
             publishIndices(build.auxiliaryDependentFaces, data->stencil.auxiliaryDependentFaces);
             publishIndices(build.rhsCoreFaces, data->stencil.rhsCoreFaces);

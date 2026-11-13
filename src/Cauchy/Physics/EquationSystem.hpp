@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cauchy/Physics/PerfectGas.hpp"
+#include "Cauchy/Physics/FlowCharacteristics.hpp"
 #include "Cauchy/Physics/Positivity.hpp"
 #include "Cauchy/Physics/RiemannPreparation.hpp"
 #include "Cauchy/Physics/EquationSchema.hpp"
@@ -36,13 +37,6 @@ namespace DNDS::Cauchy
         std::array<real, 8> parameters{};
         bool operator==(const EquationPropertyKey &other) const { return material == other.material && parameters == other.parameters; }
         bool operator!=(const EquationPropertyKey &other) const { return !(*this == other); }
-    };
-    struct FlowCharacteristics
-    {
-        std::array<real, 25> forward, inverse;
-        Vector3 velocity{};
-        real soundSpeed = 0;
-        bool componentwiseFallback = false;
     };
     /// Coarse physical-model owner. Schema and accumulation choices belong here;
     /// mesh/DOF allocations, time history and reconstruction belong to Domain.

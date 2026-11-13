@@ -90,12 +90,16 @@ namespace DNDS::Cauchy
         /// plus the remaining interface-dependent subset of the MPI core.
         Indices auxiliaryInterfaceIndependentFaces, auxiliaryInterfaceFaces,
             interfaceIndependentCells, interfaceCoreCells;
+        /// Canonical face -> first quadrature incidence, UnInitIndex if unused.
+        /// Only populated for mean-state characteristic limiting.
+        Indices characteristicFaceEntries;
         /// Validate all field pointers once in the C++ launcher. A partial
         /// numerical request should pass only its selected subviews instead of
         /// constructing a partially bound full stencil descriptor.
         void ValidateDevice(Runtime::Device device) const
         {
             Runtime::ValidateViewDevices(device, samples, jacobianSamples, offsets, jacobianOffsets, stencilFaces, faceEntries, auxiliaryCoreFaces, auxiliaryDependentFaces, rhsCoreFaces, rhsDependentFaces, auxiliaryCellOffsets, auxiliaryCellFaces, positivityOffsets, boundaryEntries, coreCells, dependentCells, auxiliaryFaceArea, positivityDisplacements, auxiliaryInterfaceIndependentFaces, auxiliaryInterfaceFaces, interfaceIndependentCells, interfaceCoreCells);
+            characteristicFaceEntries.ValidateDevice(device);
         }
     };
 
@@ -127,6 +131,7 @@ namespace DNDS::Cauchy
         Runtime::Array<index> auxiliaryInterfaceFaces{Runtime::RowLayout::Dense(0, 1)};
         Runtime::Array<index> interfaceIndependentCells{Runtime::RowLayout::Dense(0, 1)};
         Runtime::Array<index> interfaceCoreCells{Runtime::RowLayout::Dense(0, 1)};
+        Runtime::Array<index> characteristicFaceEntries{Runtime::RowLayout::Dense(0, 1)};
         struct ReadAccess
         {
             Runtime::Array<FiniteVolumeDetail::SampleRecord>::ReadLease samples, jacobianSamples;
@@ -134,6 +139,7 @@ namespace DNDS::Cauchy
             Runtime::Array<real>::ReadLease auxiliaryFaceArea, positivityDisplacements;
             Runtime::Array<index>::ReadLease auxiliaryInterfaceIndependentFaces,
                 auxiliaryInterfaceFaces, interfaceIndependentCells, interfaceCoreCells;
+            Runtime::Array<index>::ReadLease characteristicFaceEntries;
             explicit ReadAccess(const FiniteVolumeStencilStorage &storage, Runtime::ExecutionContext context)
                 : samples(storage.samples.Read(context)), jacobianSamples(storage.jacobianSamples.Read(context)),
                   offsets(storage.offsets.Read(context)),
@@ -154,7 +160,8 @@ namespace DNDS::Cauchy
                   auxiliaryInterfaceIndependentFaces(storage.auxiliaryInterfaceIndependentFaces.Read(context)),
                   auxiliaryInterfaceFaces(storage.auxiliaryInterfaceFaces.Read(context)),
                   interfaceIndependentCells(storage.interfaceIndependentCells.Read(context)),
-                  interfaceCoreCells(storage.interfaceCoreCells.Read(context)) {}
+                  interfaceCoreCells(storage.interfaceCoreCells.Read(context)),
+                  characteristicFaceEntries(storage.characteristicFaceEntries.Read(context)) {}
             FiniteVolumeStencilView View() const
             {
                 return {samples.View<Runtime::FixedRows<1>>(), jacobianSamples.View<Runtime::FixedRows<1>>(),
@@ -176,7 +183,8 @@ namespace DNDS::Cauchy
                         auxiliaryInterfaceIndependentFaces.View<Runtime::FixedRows<1>>(),
                         auxiliaryInterfaceFaces.View<Runtime::FixedRows<1>>(),
                         interfaceIndependentCells.View<Runtime::FixedRows<1>>(),
-                        interfaceCoreCells.View<Runtime::FixedRows<1>>()};
+                        interfaceCoreCells.View<Runtime::FixedRows<1>>(),
+                        characteristicFaceEntries.View<Runtime::FixedRows<1>>()};
             }
         };
         /// Retain through asynchronous use; the borrowed view has no ownership.
@@ -209,6 +217,7 @@ namespace DNDS::Cauchy
             result.auxiliaryInterfaceFaces = auxiliaryInterfaceFaces.To(device, context);
             result.interfaceIndependentCells = interfaceIndependentCells.To(device, context);
             result.interfaceCoreCells = interfaceCoreCells.To(device, context);
+            result.characteristicFaceEntries = characteristicFaceEntries.To(device, context);
             return result;
         }
     };
