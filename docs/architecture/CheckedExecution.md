@@ -26,6 +26,15 @@ borrowed views and must use their supplied stream. Custom providers must declare
 all accesses through `SubmitOperation` and retain/publish their actual completion;
 plain `Submit` is a control/externally managed boundary, not pointer discovery.
 
+`SubmitArrayBatch` (`EagerArrayBatch.hpp`) provides the same contract for a
+runtime-sized collection of typed input/output arrays, such as separated flow
+and species fields. It uses ordinary `ReadAs`, `WriteAs` or `ReadWriteAs`
+operands; all reservations happen on submission and retire on completion.
+Launchers receive host spans of bare whole-array views. Those spans are host
+argument metadata, **not device buffers**: CUDA launchers may pass selected views
+by value, or explicitly prepare a resident descriptor table. The batch copies
+no field payload and adds no per-element lease checks.
+
 ## Order and lifetime
 
 Each stream has a process-unique lane ID and a monotonically increasing position.

@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "DNDS/Runtime/Execution/EagerEngine.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
+#include "DNDS/Runtime/Execution/EagerArrayBatch.hpp"
 #include "DNDS/Runtime/Execution/EagerCopy.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "DNDS/Runtime/Array/RowBuilder.hpp"
@@ -703,6 +704,69 @@ TEST_CASE("Pending operands retain old values and buffered row sizes across hand
     for (size_t i = 0; i < lengths.size(); ++i)
         for (size_t j = 0; j < lengths[i]; ++j)
             CHECK(values.At(i, j) == int64_t(i * 100 + j + 1));
+}
+
+TEST_CASE("Dynamic array batches retain segmented fields and order queued producers")
+{
+    using Input = R::ArrayOperand<double, false, R::UniformTableRows>;
+    using Output = R::ArrayOperand<double, true, R::UniformTableRows>;
+    for (int workers : {0, 2})
+    {
+        R::EagerEngine engine(workers, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateCPUStream();
+        const auto gate = std::make_shared<Gate>();
+        stream.WaitFor(R::StreamEvent(gate));
+        R::Array<double> flow(R::RowLayout::Dense(17, 5));
+        R::Array<double> species(R::RowLayout::ColMajorWithPitch(17, 11, 32));
+        R::Array<double> sum(R::RowLayout::Dense(17, 1));
+        const auto epoch = flow.MutationEpoch(), version = flow.Version();
+        std::weak_ptr<const R::ArrayStorage> retained = flow.SharedStorage();
+        R::SubmitArrayBatch(engine, stream, [](R::ExecutionContext, auto inputs, auto outputs)
+                            {
+            CHECK(inputs.empty());
+            for (DNDS::index iField = 0; iField < outputs.size(); ++iField)
+                for (DNDS::index iRow = 0; iRow < outputs[iField].RowCount(); ++iRow)
+                    for (DNDS::index j = 0; j < outputs[iField].Width(); ++j)
+                        outputs[iField](iRow, j) = 100 * iField + iRow + j; }, std::vector<Input>{}, std::vector<Output>{R::WriteAs<R::UniformTableRows>(flow), R::WriteAs<R::UniformTableRows>(species)});
+        CHECK(flow.MutationEpoch() > epoch);
+        CHECK(flow.Version() == version);
+        CHECK_THROWS(flow.Read());
+        R::SubmitArrayBatch(engine, stream, [](R::ExecutionContext, auto inputs, auto outputs)
+                            {
+            for (DNDS::index iRow = 0; iRow < outputs[0].RowCount(); ++iRow)
+            {
+                double total = 0;
+                for (const auto &field : inputs)
+                    for (DNDS::index j = 0; j < field.Width(); ++j) total += field(iRow, j);
+                outputs[0](iRow, 0) = total;
+            } }, std::vector<Input>{R::ReadAs<R::UniformTableRows>(flow), R::ReadAs<R::UniformTableRows>(species)}, std::vector<Output>{R::WriteAs<R::UniformTableRows>(sum)});
+        flow.Reset(R::RowLayout::Dense(1, 1));
+        CHECK_FALSE(retained.expired());
+        gate->Signal();
+        engine.Synchronize();
+        CHECK(retained.expired());
+        const auto read = sum.Read();
+        for (DNDS::index iRow = 0; iRow < 17; ++iRow)
+            CHECK(read.View()(iRow, 0) == 1165 + 16 * iRow);
+    }
+}
+
+TEST_CASE("Dynamic array batch failure invalidates every declared output")
+{
+    using Input = R::ArrayOperand<double, false, R::TableRows>;
+    using Output = R::ArrayOperand<double, true, R::TableRows>;
+    R::EagerEngine engine(2);
+    const auto stream = engine.CreateCPUStream();
+    R::Array<double> a(R::RowLayout::Dense(3, 5)), b(R::RowLayout::Dense(3, 2));
+    R::SubmitArrayBatch(engine, stream, [](R::ExecutionContext, auto, auto output)
+                        {
+        output[0](0, 0) = 1;
+        throw std::runtime_error("test-only partial batch failure"); }, std::vector<Input>{}, std::vector<Output>{R::WriteAs<R::TableRows>(a), R::WriteAs<R::TableRows>(b)});
+    CHECK_THROWS(engine.Synchronize());
+    CHECK_FALSE(a.IsValid());
+    CHECK_FALSE(b.IsValid());
+    CHECK(a.Storage().IsIdle());
+    CHECK(b.Storage().IsIdle());
 }
 
 TEST_CASE("Rejected reservations cancel while failed or skipped writes stay invalid")

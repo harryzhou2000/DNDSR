@@ -170,6 +170,26 @@ TEST_CASE("Queued boundary operator retains P3 basis and matches CPU physical an
         REQUIRE(cpuWork->primitiveBoundary);
         REQUIRE(gpuWork->primitiveBoundary);
         compare(*cpuWork->primitiveBoundary, *gpuWork->primitiveBoundary);
+        for (const int workers : {0, 2})
+        {
+            auto queuedWork = cpu.BuildWorkspace(mean);
+            auto binding = queuedWork->BindReconstruction(*cpuRec);
+            R::EagerEngine hostEngine(workers, std::make_shared<R::AccessTrackingContext>());
+            const auto hostStream = hostEngine.CreateCPUStream();
+            auto pointEvaluator = std::make_shared<C::PointEvaluator>(equation.MakePointEvaluator());
+            queuedWork->SubmitBoundary(hostEngine, hostStream, mean, true, .2, pointEvaluator);
+            queuedWork->SubmitBoundary(hostEngine, hostStream, mean, true, .4, pointEvaluator);
+            // Consume a boundary buffer before draining: the producer must use
+            // scheduled access, not acquire an immediate write on the worker.
+            R::Array<double> copied(queuedWork->fields.front().boundaryValues.Layout());
+            R::SubmitArrays(hostEngine, hostStream, [](R::ExecutionContext, auto input, auto output)
+                            {
+                for (I iRow = 0; iRow < output.RowCount(); ++iRow)
+                    for (I j = 0; j < output.Width(); ++j) output(iRow, j) = input(iRow, j); }, R::ReadAs<R::TableRows>(queuedWork->fields.front().boundaryValues), R::WriteAs<R::TableRows>(copied));
+            hostEngine.Synchronize();
+            compare(cpuWork->fields.front().boundaryValues, copied);
+            compare(*cpuWork->primitiveBoundary, *queuedWork->primitiveBoundary);
+        }
     }
 }
 

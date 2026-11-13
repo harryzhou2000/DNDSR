@@ -441,6 +441,14 @@ namespace DNDS::Cauchy
         void PreparePrimitiveGradient(const EquationDofs &state, CFV::ReconstructionRegion region);
         void FillBoundary(const EquationDofs &state, bool polynomial, real time,
                           PointEvaluator &evaluator, RHSScalarView incoming = {});
+        /// Common queued boundary producer. Mutable fields are reserved at
+        /// submission, including split CPU equation layouts. The CPU evaluator
+        /// is retained until completion; CUDA uses its placed immutable policy.
+        /// The caller must not share a mutable chemistry evaluator across lanes.
+        void SubmitBoundary(R::EagerEngine &, const R::ExecutionStream &,
+                            const EquationDofs &, bool polynomial, real time,
+                            std::shared_ptr<PointEvaluator> evaluator = {},
+                            OptionalRef<const R::Array<real>> incoming = {});
         void BuildPreparationStatus();
         void ResetPreparationStatus(R::EagerEngine &, const R::ExecutionStream &);
         void CheckPreparationStatus();

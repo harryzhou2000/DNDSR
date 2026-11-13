@@ -62,6 +62,7 @@ set(CPPS
     Discretization/FiniteVolume_ReconstructionState.cpp
     Discretization/FiniteVolume_BoundaryInputs.cpp
     Discretization/FiniteVolume_BoundaryQueued.cpp
+    Discretization/FiniteVolume_BoundaryHostQueued.cpp
     Discretization/FiniteVolume_Boundary.cpp
     Discretization/FiniteVolume_Flux.cpp
     Discretization/FiniteVolume_Source.cpp

@@ -493,3 +493,14 @@ integration, modal PP/LVR/characteristics scheduling, gradient-PP statistics,
 state/error reporting, OMP coverage and the quantized MMA experiment. No B
 build/test or full CUDA solver acceptance is claimed by this checkpoint.
 
+The next source increment adds Runtime `SubmitArrayBatch`, retaining the normal
+Array operand/access contract for dynamically grouped fields. Cauchy's common
+`Workspace::SubmitBoundary` entry now dispatches to a queued CPU producer or
+the CUDA producer. CPU means, coefficients, optional interface values and all
+boundary targets are declared operands; geometry, thermal metadata and the
+point evaluator are retained through completion. This entry supports split CPU
+equation fields without a Cauchy-specific lease implementation. The old
+synchronous entry remains while the full `EvaluateImpl` schedule is migrated.
+Batch lifetime/failure and CPU inline/worker boundary comparison test sources
+are present, still awaiting the grouped B validation.
+
