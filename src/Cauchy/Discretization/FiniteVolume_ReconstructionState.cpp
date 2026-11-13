@@ -393,7 +393,7 @@ namespace DNDS::Cauchy
             state, firstComponent, transform.forward, transform.inverse);
         DNDS_check_throw_info(_data->reconstruction,
                               "modal characteristic transform requires variational reconstruction");
-        _data->reconstruction->FinalizeFaceTransform(transform);
+        _data->reconstruction->FinalizeFaceTransform(transform, _data->settings.numerics.characteristicDiagnostics);
         return fallbacks;
     }
     index FiniteVolume::PrepareFaceCharacteristics(
@@ -404,7 +404,7 @@ namespace DNDS::Cauchy
                               "flow gradient characteristic range differs from its physical field");
         const auto fallbacks = PrepareFaceCharacteristicMatrices(
             state, firstComponent, transform.forward, transform.inverse);
-        _data->gradient.FinalizeFaceTransform(transform);
+        _data->gradient.FinalizeFaceTransform(transform, _data->settings.numerics.characteristicDiagnostics);
         return fallbacks;
     }
     FiniteVolume::FinalizedReconstruction FiniteVolume::AcquireFinalizedReconstruction(

@@ -102,13 +102,14 @@ namespace DNDS::CFV
         BoundaryQuadraturePoint GetBoundaryQuadrature(index iPoint) const;
         Runtime::Array<real> BuildBoundaryValues(index components) const;
         GradientFaceCharacteristicTransform BuildFaceTransform(index first, index count) const;
-        /// Mutable device matrices. Caller queues validation once after each
-        /// producer, then limiting, and checks status after draining the segment.
+        /// Mutable device matrices. Caller orders producer then limiting.
+        /// Numerical inverse checking is a separate opt-in diagnostic.
         GradientFaceCharacteristicTransform BuildQueuedFaceTransform(index first, index count) const;
+        /// Opt-in diagnostic, not called automatically by a limiter.
         void SubmitValidateFaceTransform(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                                          const GradientFaceCharacteristicTransform &, GradientWorkspace &) const;
         void CheckStatus(const GradientWorkspace &workspace) const;
-        void FinalizeFaceTransform(GradientFaceCharacteristicTransform &transform) const;
+        void FinalizeFaceTransform(GradientFaceCharacteristicTransform &transform, bool checkInverses = false) const;
         /// Copy an already validated host transform to this plan's placement.
         /// Shape/value identities are frozen until a new validated publication.
         GradientFaceCharacteristicTransform PlaceFaceTransform(const GradientFaceCharacteristicTransform &transform,

@@ -270,12 +270,12 @@ namespace DNDS::CFV
         FinalizeFaceTransform(result);
         return result;
     }
-    void VariationalReconstructionPlan::FinalizeFaceTransform(FaceCharacteristicTransform &transform) const
+    void VariationalReconstructionPlan::FinalizeFaceTransform(FaceCharacteristicTransform &transform, bool checkInverses) const
     {
         Require(ReconstructionOperation::WBAP);
         Validate();
         DNDS_check_throw_info(!_device, "finalize characteristic transforms before backend placement");
-        DNDS_check_throw_info(transform.validation == CharacteristicValidation::Frozen, "queued characteristics must be validated by their consuming device operator");
+        DNDS_check_throw_info(transform.validation == CharacteristicValidation::Frozen, "queued characteristics do not use host version finalization");
         transform.forwardVersion = transform.inverseVersion = 0;
         DNDS_check_throw_info(transform.plan == _identity && transform.first >= 0 && transform.count >= 0 && transform.count <= 64,
                               "characteristic transform belongs to another plan or has an invalid range");
@@ -288,15 +288,18 @@ namespace DNDS::CFV
         }
         CheckArray(transform.forward, Metrics().NumFaceProc(), count * count);
         CheckArray(transform.inverse, Metrics().NumFaceProc(), count * count);
-        auto forward = transform.forward.Read(), inverse = transform.inverse.Read();
-        const auto left = forward.View<R::TableRows>(), right = inverse.View<R::TableRows>();
-        Matrix product(count, count);
-        for (index iFace = 0; iFace < Metrics().NumFaceProc(); ++iFace)
+        if (checkInverses)
         {
-            const ConstMap L(left[iFace].data(), count, count), R(right[iFace].data(), count, count);
-            product.noalias() = L * R;
-            DNDS_check_throw_info(L.allFinite() && R.allFinite() && product.isApprox(Matrix::Identity(count, count), 1e-10),
-                                  "face characteristic matrices must be finite mutual inverses");
+            auto forward = transform.forward.Read(), inverse = transform.inverse.Read();
+            const auto left = forward.View<R::TableRows>(), right = inverse.View<R::TableRows>();
+            Matrix product(count, count);
+            for (index iFace = 0; iFace < Metrics().NumFaceProc(); ++iFace)
+            {
+                const ConstMap L(left[iFace].data(), count, count), R(right[iFace].data(), count, count);
+                product.noalias() = L * R;
+                DNDS_check_throw_info(L.allFinite() && R.allFinite() && product.isApprox(Matrix::Identity(count, count), 1e-10),
+                                      "face characteristic matrices must be finite mutual inverses");
+            }
         }
         transform.forwardVersion = transform.forward.Version();
         transform.inverseVersion = transform.inverse.Version();
@@ -676,8 +679,6 @@ namespace DNDS::CFV
         {
             R::EagerEngine engine;
             const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(Device().ordinal));
-            if (transform && transform->get().count && transform->get().validation == CharacteristicValidation::Queued)
-                SubmitValidateFaceTransform(engine, stream, transform->get(), work);
             SubmitDeviceLimiterWBAP_3OrderTo(engine, stream, coefficients, work, order, transform, region, indicatorArray, threshold);
             engine.Synchronize();
             CheckStatus(work);

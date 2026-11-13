@@ -94,7 +94,10 @@ TEST_CASE("Queued matrix production validates once before modal WBAP without a h
     {
         HostMatrices(plan, transform, shear);
         Produce(engine, stream, queued, shear);
-        resident.SubmitValidateFaceTransform(engine, stream, queued, work);
+        // Default production sequence has no inverse-check launch. Exercise
+        // the opt-in diagnostic on the second refresh only.
+        if (shear < 0)
+            resident.SubmitValidateFaceTransform(engine, stream, queued, work);
         for (const int order : {3, 2, 1})
         {
             plan.DoLimiterWBAP_3OrderTo(input, reference, order, std::cref(transform));
@@ -146,7 +149,6 @@ TEST_CASE("Queued gradient WBAP shares the producer validation contract and leav
     R::EagerEngine engine;
     const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
     Produce(engine, stream, queued, .4);
-    resident.SubmitValidateFaceTransform(engine, stream, queued, work);
     resident.LimitWBAP3(engine, stream, din, result, work, std::cref(queued));
     engine.Close();
     resident.CheckStatus(work);

@@ -173,8 +173,6 @@ namespace DNDS::CFV
             DNDS_check_throw_info(false, "CUDA gradient limiter is not built");
 #endif
         }
-        if (transform && transform->get().count && transform->get().validation == CharacteristicValidation::Queued)
-            SubmitValidateFaceTransform(engine, stream, transform->get(), workspace);
         LimitWBAP3(engine, stream, input, output, workspace, transform, region, indicator, threshold, centerWeight);
         engine.Close();
         CheckStatus(workspace);

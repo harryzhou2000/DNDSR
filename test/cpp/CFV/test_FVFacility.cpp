@@ -473,7 +473,10 @@ TEST_CASE("WBAP explicit five-component face transforms match legacy and preserv
             write.View()(0, 0) = 7;
     }
     if (metrics.NumFaceProc())
-        CHECK_THROWS(plan.FinalizeFaceTransform(characteristic));
+    {
+        CHECK_NOTHROW(plan.FinalizeFaceTransform(characteristic));
+        CHECK_THROWS(plan.FinalizeFaceTransform(characteristic, true));
+    }
 }
 
 TEST_CASE("FV rejects wrong association and invalid shapes before writes")

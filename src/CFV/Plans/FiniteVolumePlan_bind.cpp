@@ -211,7 +211,8 @@ namespace DNDS::CFV
             .def("BuildFaceTransform", &VariationalReconstructionPlan::BuildFaceTransform)
             .def("PlaceFaceTransform", &VariationalReconstructionPlan::PlaceFaceTransform)
             .def("FinalizeFaceTransform", &VariationalReconstructionPlan::FinalizeFaceTransform,
-                 "Validate and publish matrices after filling from cell means; any later write requires re-finalization.")
+                 py::arg("transform"), py::arg("checkInverses") = false,
+                 "Publish matrices after filling from cell means; optional inverse diagnostics are off by default. Any later write requires re-finalization.")
             .def("DoReconstructionIter", &VariationalReconstructionPlan::DoReconstructionIter,
                  py::arg("mean"), py::arg("coefficients"), py::arg("workspace"), py::arg("boundary"),
                  py::arg("kernel") = ReconstructionDeviceKernel::FP64,
@@ -278,7 +279,8 @@ namespace DNDS::CFV
             .def("BuildWorkspace", &GradientPlan::BuildWorkspace, py::arg("components"),
                  py::arg("periodicVectorStarts") = std::vector<index>{}, py::arg("withLimiter") = false)
             .def("BuildFaceTransform", &GradientPlan::BuildFaceTransform)
-            .def("FinalizeFaceTransform", &GradientPlan::FinalizeFaceTransform)
+            .def("FinalizeFaceTransform", &GradientPlan::FinalizeFaceTransform,
+                 py::arg("transform"), py::arg("checkInverses") = false)
             .def("PlaceFaceTransform", &GradientPlan::PlaceFaceTransform)
             .def("BuildBoundaryValues", [](const GradientPlan &plan, index components)
                  { return Runtime::PythonArray::Share(plan.BuildBoundaryValues(components)); })

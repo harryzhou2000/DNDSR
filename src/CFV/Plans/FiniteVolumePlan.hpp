@@ -271,9 +271,10 @@ namespace DNDS::CFV
     /// the periodic component map precedes characteristic limiting.
     /// Frozen transforms are finalized on CPU and guarded by completed-write
     /// versions. Queued transforms are produced on device. Caller orders
-    /// producer -> numerical validation -> limiter on one stream (or supplies
+    /// producer -> limiter on one stream (or supplies
     /// cross-stream events). Completed host versions are not readiness proofs
-    /// for queued writers. Revalidate after mutation, not for every WBAP order.
+    /// for queued writers. Optional numerical diagnostics are separate from
+    /// this ordering contract and are off by default.
     enum class CharacteristicValidation
     {
         Frozen,
@@ -535,22 +536,22 @@ namespace DNDS::CFV
         BoundaryQuadraturePoint GetBoundaryQuadrature(index iPoint) const;
         FaceCharacteristicTransform BuildFaceTransform(index first, index count) const;
         /// Device-owned mutable transform buffers, initially zero (not valid
-        /// inverses). A queued producer must fill them before first use and
-        /// SubmitValidateFaceTransform must follow every production/mutation.
-        /// All subsequent WBAP orders may reuse that publication until mutation.
-        /// count=0 requires no producer or matrix allocation. CheckStatus after
-        /// draining a consuming segment; a failed validation prevents limiting.
+        /// inverses). A queued producer must supply finite inverse matrices
+        /// before first use. All WBAP orders may reuse them until mutation.
+        /// count=0 requires no producer or matrix allocation. Numerical inverse
+        /// checking is an explicit diagnostic, never an automatic launch.
         FaceCharacteristicTransform BuildQueuedFaceTransform(index first, index count) const;
-        /// Explicit numerical publication check, queued once after a matrix
-        /// producer. Uses the same stream as limiting normally. Caller must not
-        /// modify matrices between validation and their consumers; scheduled
-        /// leases check ordering, not this semantic validity precondition.
+        /// Opt-in numerical diagnostic, normally queued once after a producer.
+        /// Not needed for stream ordering and not called by limiter operators.
+        /// Failure sets workspace status; observe CheckStatus after draining.
+        /// Caller supplies valid matrices even when diagnostics are disabled.
         void SubmitValidateFaceTransform(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
                                          const FaceCharacteristicTransform &, ReconstructionWorkspace &) const;
         FaceCharacteristicTransform PlaceFaceTransform(const FaceCharacteristicTransform &) const;
-        /// Validate finite mutually inverse matrices once after filling. Later
-        /// writes invalidate this publication; no matrix validation in hot loops.
-        void FinalizeFaceTransform(FaceCharacteristicTransform &transform) const;
+        /// Publish identity/version after filling. Shape checks always apply;
+        /// finite/inverse scans are opt-in diagnostics. Later writes invalidate
+        /// the frozen publication. No payload read/copy is needed by default.
+        void FinalizeFaceTransform(FaceCharacteristicTransform &transform, bool checkInverses = false) const;
         /// One local sweep. Caller refreshes mean/coefficient halos first.
         /// Both methods write temporary then publish owned output. SOR follows
         /// logical cell order using new local predecessors and old other values.

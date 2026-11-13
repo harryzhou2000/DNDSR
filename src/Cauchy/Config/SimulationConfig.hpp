@@ -148,6 +148,7 @@ namespace DNDS::Cauchy
         int reconstructionResidualCheckInterval = 4;
         real reconstructionTolerance = 0;
         bool characteristicLimiter = true, faceFallback = true;
+        bool characteristicDiagnostics = false;
         bool reconstructionBoundaryFromPolynomial = true;
         /// VR boundary equation target only. Direct gradients and flux exterior
         /// states retain their own contracts; interface samples are unchanged.
@@ -183,6 +184,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(reconstructionResidualCheckInterval, "Observe the VR update norm every N sweeps and at the final sweep when reconstructionTolerance is positive; each observation is an explicit host stopping boundary");
             DNDS_FIELD(reconstructionTolerance, "Relative Jacobi update tolerance; zero uses the fixed sweep count");
             DNDS_FIELD(characteristicLimiter, "Use equation-provided cell-mean face characteristics for 3WBAP");
+            DNDS_FIELD(characteristicDiagnostics, "Opt-in finite/inverse-matrix diagnostics after characteristic production; not an execution-order check");
             DNDS_FIELD(faceFallback, "Fall back to the cell mean at inadmissible face values; disable for non-PP accuracy studies");
             DNDS_FIELD(reconstructionBoundaryFromPolynomial, "Project current face polynomial through BC each VR sweep; false uses mean-based boundary values");
             DNDS_FIELD(vrBoundaryValue, "VR-only boundary target: physicalTrace or physicalMirrored (Euler reflected-state target); interface values remain prescribed samples");

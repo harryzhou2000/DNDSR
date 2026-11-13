@@ -51,12 +51,12 @@ namespace DNDS::CFV
         return result;
     }
 
-    void GradientPlan::FinalizeFaceTransform(GradientFaceCharacteristicTransform &transform) const
+    void GradientPlan::FinalizeFaceTransform(GradientFaceCharacteristicTransform &transform, bool checkInverses) const
     {
         namespace R = Runtime;
         _data->metrics.Validate();
         transform.forwardVersion = transform.inverseVersion = 0;
-        DNDS_check_throw_info(transform.validation == CharacteristicValidation::Frozen, "queued characteristics must be validated by their consuming device operator");
+        DNDS_check_throw_info(transform.validation == CharacteristicValidation::Frozen, "queued characteristics do not use host version finalization");
         transform.forwardIdentity = transform.inverseIdentity = 0;
         DNDS_check_throw_info(transform.plan == _data->identity && transform.first >= 0 &&
                                   transform.count >= 0 && transform.count <= 64,
@@ -71,17 +71,20 @@ namespace DNDS::CFV
         };
         DNDS_check_throw_info(valid(transform.forward) && valid(transform.inverse),
                               "gradient characteristic matrix shape or placement differs");
-        const auto forward = transform.forward.Read(), inverse = transform.inverse.Read();
-        const auto left = forward.View<R::TableRows>(), right = inverse.View<R::TableRows>();
-        Eigen::MatrixXd product(count, count);
-        for (index iFace = 0; iFace < _data->metrics.NumFaceProc(); ++iFace)
+        if (checkInverses)
         {
-            const Eigen::Map<const Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic>> L(left[iFace].data(), count, count);
-            const Eigen::Map<const Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic>> Rm(right[iFace].data(), count, count);
-            product.noalias() = L * Rm;
-            DNDS_check_throw_info(L.allFinite() && Rm.allFinite() &&
-                                      product.isApprox(Eigen::MatrixXd::Identity(count, count), 1e-10),
-                                  "gradient characteristic matrices must be finite mutual inverses");
+            const auto forward = transform.forward.Read(), inverse = transform.inverse.Read();
+            const auto left = forward.View<R::TableRows>(), right = inverse.View<R::TableRows>();
+            Eigen::MatrixXd product(count, count);
+            for (index iFace = 0; iFace < _data->metrics.NumFaceProc(); ++iFace)
+            {
+                const Eigen::Map<const Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic>> L(left[iFace].data(), count, count);
+                const Eigen::Map<const Eigen::Matrix<real, Eigen::Dynamic, Eigen::Dynamic>> Rm(right[iFace].data(), count, count);
+                product.noalias() = L * Rm;
+                DNDS_check_throw_info(L.allFinite() && Rm.allFinite() &&
+                                          product.isApprox(Eigen::MatrixXd::Identity(count, count), 1e-10),
+                                      "gradient characteristic matrices must be finite mutual inverses");
+            }
         }
         transform.forwardVersion = transform.forward.Version();
         transform.inverseVersion = transform.inverse.Version();

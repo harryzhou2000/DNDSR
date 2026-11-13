@@ -37,22 +37,25 @@ complete; neither kernel presence nor test source constitutes solver acceptance.
 ### Queued characteristic publication (source editing, unbuilt)
 
 The normal schedule is one compute stream:
-`produce matrices -> validate once -> WBAP(order P..1)`. Same-stream ordering
+`produce matrices -> WBAP(order P..1)`. Same-stream ordering
 establishes readiness without a host wait or CUDA event; cross-stream producers
 need an explicit event dependency. Frozen CPU-finalized transforms retain their
 identity/completed-version checks. Device-produced transforms retain identity,
 shape and residency checks but do not interpret a pending writer's completed
 version as readiness.
 
-`BuildQueuedFaceTransform` and `SubmitValidateFaceTransform` provide that explicit
-publication contract for modal and gradient WBAP. After each production/mutation,
-the caller queues one inverse-consistency check into the consuming workspace's
-sticky status, then may run multiple limiter passes without repeating the matrix
-check. Caller must not mutate matrices between validation and consumption.
-Scheduled leases prove access ordering, not that numerical precondition. The
-synchronous convenience APIs perform their own validation before their drain.
+`BuildQueuedFaceTransform` provides that explicit publication contract for modal
+and gradient WBAP. The producer supplies finite inverse matrices.
+`SubmitValidateFaceTransform` is an **opt-in numerical diagnostic**, not a
+mandatory publication or ordering operation. Cauchy defaults
+`numerics.characteristicDiagnostics=false`; CPU `FinalizeFaceTransform` normally
+publishes shape/identity/version without reading matrix payloads. Neither queued
+nor synchronous limiter APIs automatically run inverse checks. When enabled,
+check once per refreshed matrices, not per WBAP order. Scheduled leases prove
+access ordering, not numerical matrix validity. The existing physical producer's
+near-singular componentwise fallback remains a distinct numerical policy.
 
-Device validation failure guards limiter output; the controller checks status
+Opt-in device diagnostic failure guards limiter output; the controller checks status
 after the segment. Gradient workspaces now have the same deferred status contract.
 Test sources enqueue producers, validation, multiple WBAP passes and publication
 without an intermediate drain, compare each pass with CPU, and check one invalid
