@@ -14,6 +14,7 @@ namespace DNDS::Cauchy
         std::vector<CFV::FVField> fields;
         std::vector<R::Array<real>> boundary;
         std::vector<std::vector<index>> vectors;
+        std::vector<CFV::GradientWorkspace> execution;
         std::vector<R::TransferBinding> meanHalo, gradientHalo;
         std::vector<uint64_t> sourceGhost, ownedVersion, ghostVersion, ownedShape, ghostShape;
         real time = 0;

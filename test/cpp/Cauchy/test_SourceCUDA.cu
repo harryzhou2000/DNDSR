@@ -54,13 +54,15 @@ TEST_CASE("CUDA RANS quadrature sources and destruction diagonals match generic 
             auto selected = Table<I>(2, 1, [](I i, I)
                                      { return 1 - i; })
                                 .To(device);
-            auto lengths = Table<real>(2, 1, [](I i, I)
+            // Geometry includes a ghost row, as the production mesh caches do.
+            // Source operands/outputs still have only two owned cell rows.
+            auto lengths = Table<real>(3, 1, [](I i, I)
                                        { return .3 + .1 * i; });
-            auto wallMean = Table<real>(2, 1, [](I i, I)
+            auto wallMean = Table<real>(3, 1, [](I i, I)
                                         { return .1 + .01 * i; });
             auto weights = Table<real>(5, 1, [](I i, I)
                                        { return std::array<real, 5>{.4, .6, .3, .7, 1}[i]; });
-            auto metric = Table<real>(2, 8, [](I i, I j)
+            auto metric = Table<real>(3, 8, [](I i, I j)
                                       { return j == 0 ? 1 + i : 0; });
             const auto state = [&](I iRow, I j)
             {
@@ -74,10 +76,10 @@ TEST_CASE("CUDA RANS quadrature sources and destruction diagonals match generic 
             for (int d = 0; d < 3; ++d)
                 gradients[d] = Table<real>(gradientRows, width, [d](I i, I j)
                                            { return .001 * (i + 1) * (j + 1) * (d + 1); });
-            R::Array<real> wallPoints(R::RowLayout::Ragged({2, 3}));
+            R::Array<real> wallPoints(R::RowLayout::Ragged({2, 3, 1}));
             {
                 auto wall = wallPoints.Write();
-                for (I i = 0; i < 2; ++i)
+                for (I i = 0; i < 3; ++i)
                     for (I q = 0; q < wall.View().RowSize(i); ++q)
                         wall.View()(i, q) = .1 + .02 * (i + q);
             }

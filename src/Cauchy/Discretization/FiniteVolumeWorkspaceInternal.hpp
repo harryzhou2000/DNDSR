@@ -7,6 +7,8 @@
 #include "DNDS/Runtime/Execution/SessionAccess.hpp"
 
 #include <chrono>
+#include <atomic>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -474,6 +476,29 @@ namespace DNDS::Cauchy
                              const EquationDofs &, EquationDofs &, CFV::ReconstructionRegion,
                              real time, OptionalRef<const AuxiliaryValues> auxiliary = {},
                              OptionalRef<const R::Array<real>> incoming = {});
+        struct RHSSubmission
+        {
+            std::optional<RHSKernelDiagnostics> fixedDiagnostics;
+            index faceFallbacks = 0;
+            CFV::ReconstructionRegion region = CFV::ReconstructionRegion::All;
+            std::atomic<bool> completed{false};
+            bool published = false; ///< Controller-only publication guard.
+        };
+        /// Backend-local flux dispatch with submission-time Array operands.
+        /// CPU returns retained diagnostics to publish after the enclosing
+        /// segment drains. CUDA uses the workspace's device status segment and
+        /// returns an empty record. The same scheduling caller uses both.
+        /// A shared point evaluator is exclusive to this stream until drain.
+        std::shared_ptr<RHSSubmission> SubmitRHS(
+            R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &, EquationDofs &,
+            CFV::ReconstructionRegion, real time, std::shared_ptr<PointEvaluator> evaluator = {},
+            OptionalRef<const AuxiliaryValues> auxiliary = {},
+            OptionalRef<R::Array<real>> faceOutput = {},
+            OptionalRef<const R::Array<real>> incoming = {});
+        /// Publish one CPU region's diagnostics after successful execution.
+        /// Empty CUDA records are harmless; CheckDeviceFluxStatus is the
+        /// device segment's numerical-failure observation boundary.
+        void PublishRHS(const std::shared_ptr<RHSSubmission> &);
         void ApplyFixedFlowRHS(const EquationDofs &state, EquationDofs &result,
                                CFV::ReconstructionRegion region, real time,
                                OptionalRef<const AuxiliaryValues> auxiliary,
@@ -492,6 +517,15 @@ namespace DNDS::Cauchy
                               EquationLayoutView<real> destination, EquationLayoutView<real> lowDestination, bool produceLow,
                               OptionalRef<R::Array<real>> faceOutput, RHSScalarView incoming);
         void SampleSourceState(const EquationDofs &state, real time);
+        /// Queued CPU/CUDA sampling of the finalized reconstruction. Direct
+        /// source gradients must already be ready on the supplied stream.
+        /// No halo transfer or source-provenance publication is hidden here.
+        void SubmitSourceSamples(R::EagerEngine &, const R::ExecutionStream &, const EquationDofs &);
+        /// Device source addition uses owned means and the same source
+        /// quadrature as CPU. Errors append to the active preparation segment.
+        /// Sampling-only calls omit result; publication follows caller drain.
+        void SubmitDeviceVolumeSource(R::EagerEngine &, const R::ExecutionStream &,
+                                      const EquationDofs &, OptionalRef<EquationDofs> result, real time);
         bool AddRHSQuadratureSourceJacobian(
             const EquationDofs &state, const R::Array<real>::WriteLease &diagonal,
             DiagonalStorage storage, real scale, PointEvaluator &evaluator,

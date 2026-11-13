@@ -193,6 +193,91 @@ TEST_CASE("Queued boundary operator retains P3 basis and matches CPU physical an
     }
 }
 
+TEST_CASE("Managed CUDA volume sources retain distributed geometry and match CPU sampling")
+{
+    auto mesh = CFVTest::CartesianHexes(mpi, 3);
+    mesh->BuildNodeWallDist([](auto zone)
+                            { return zone == 7; });
+    const auto device = R::Device::CUDA(0);
+    const auto context = R::ExecutionContext::CUDA(0);
+    for (const bool polynomial : {false, true})
+    {
+        C::DomainSettings settings;
+        settings.mesh.dimension = 3;
+        settings.equation.transport = "NewtonianFourier";
+        settings.equation.viscosity = .003;
+        settings.equation.rans.model = polynomial ? "KOmegaSST" : "SA";
+        settings.equation.rans.viscosityReference = .01;
+        settings.numerics.reconstruction = polynomial ? "variational" : "constant";
+        settings.numerics.cfv.maxOrder = 3;
+        settings.numerics.cfv.SORInstead = false;
+        settings.numerics.limiter = "none";
+        settings.numerics.positivity = false;
+        settings.numerics.viscousGradient = "polynomial";
+        settings.boundaries["7"].kind = "extrapolate";
+        settings.motion.angularVelocity = {0, 0, .2};
+        const auto equation = C::EquationSystem::Resolve(settings.equation);
+        const I width = 5 + equation.RANS().ComponentNumber();
+        C::FiniteVolume cpu(mesh, settings, equation);
+        auto gpu = cpu.Placed(device, context);
+        auto state = C::EquationDofs::Coupled(equation.Schema(), cpu.Metrics().BuildField(width));
+        auto resident = C::EquationDofs::Coupled(equation.Schema(), gpu.Metrics().BuildField(width));
+        {
+            auto write = state.CoupledField().Owned().Write();
+            const auto values = write.View<R::TableRows>();
+            const auto flow = equation.Gas().Conservative({1.1, .2, -.1, .03, 1.2});
+            for (I iCell = 0; iCell < values.RowCount(); ++iCell)
+                for (I j = 0; j < width; ++j)
+                    values(iCell, j) = j < 5 ? flow[j] : j == 5 ? .02
+                                                                : 20.;
+        }
+        resident.CoupledField().Owned().CopyFrom(state.CoupledField().Owned(), context).Wait();
+        auto cpuRec = cpu.BuildReconstructionState(state), gpuRec = gpu.BuildReconstructionState(resident);
+        auto cpuWork = cpu.BuildWorkspace(state), gpuWork = gpu.BuildWorkspace(resident);
+        auto cpuBinding = cpuWork->BindReconstruction(*cpuRec), gpuBinding = gpuWork->BindReconstruction(*gpuRec);
+        if (polynomial)
+        {
+            {
+                auto write = cpuRec->WarmValues().CoupledField().Owned().Write();
+                const auto values = write.View<R::TableRows>();
+                for (I iCell = 0; iCell < values.RowCount(); ++iCell)
+                    for (I j = 0; j < values.Width(); ++j)
+                        values(iCell, j) = 1e-6 * (1 + j % 7);
+            }
+            gpuRec->WarmValues().CoupledField().Owned().CopyFrom(cpuRec->WarmValues().CoupledField().Owned(), context).Wait();
+        }
+        else
+        {
+            CHECK(cpuWork->directGradients.front().Owned().SharedStorage() == cpuWork->fields.front().gradient->Owned().SharedStorage());
+            CHECK(gpuWork->directGradients.front().Owned().SharedStorage() == gpuWork->fields.front().gradient->Owned().SharedStorage());
+            auto write = cpuWork->fields.front().gradient->Owned().Write();
+            const auto values = write.View<R::TableRows>();
+            for (I iCell = 0; iCell < values.RowCount(); ++iCell)
+                for (I j = 0; j < values.Width(); ++j)
+                    values(iCell, j) = 1e-3 * (1 + j % 5);
+        }
+        auto expected = C::EquationDofOperations::NewVector(state);
+        auto actual = C::EquationDofOperations::NewVector(resident);
+        DNDS::Algebra::Fill(expected.CoupledField(), .125);
+        DNDS::Algebra::Fill(actual.CoupledField(), .125);
+        auto evaluator = equation.MakePointEvaluator({}, {true});
+        cpuWork->PrepareVolumeSource(state, std::ref(expected), evaluator, .4);
+        if (!polynomial)
+            gpuWork->directGradients.front().Owned().CopyFrom(cpuWork->directGradients.front().Owned(), context).Wait();
+        R::EagerEngine engine(0, std::make_shared<R::AccessTrackingContext>());
+        const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+        gpuWork->ResetPreparationStatus(engine, stream);
+        gpuWork->SubmitDeviceVolumeSource(engine, stream, resident, std::ref(actual), .4);
+        engine.Synchronize();
+        gpuWork->CheckPreparationStatus();
+        const auto copied = actual.CoupledField().Owned().To(R::Device::Host());
+        const auto x = expected.CoupledField().Owned().Read(), y = copied.Read();
+        for (I iCell = 0; iCell < copied.RowCount(); ++iCell)
+            for (I j = 0; j < width; ++j)
+                CHECK(y.View()(iCell, j) == doctest::Approx(x.View()(iCell, j)).epsilon(3e-10).scale(1));
+    }
+}
+
 TEST_CASE("Queued auxiliary operator matches CPU on a distributed periodic mesh with optional outputs")
 {
     const auto mesh = CauchyTest::PeriodicQuads(mpi, 8);
@@ -345,6 +430,38 @@ TEST_CASE("Managed CUDA flux matches generic CPU for P0 P1 and P3 with distribut
             cpu.BindHalo(*cpuWork->primitiveGradient).Begin().Wait();
         }
         cpuWork->ApplyRHS(mean, expected, DNDS::CFV::ReconstructionRegion::All, evaluator, .3);
+        if (degree == 3)
+            for (const auto policy : {C::FiniteVolume::RHSKernelPolicy::Generic, C::FiniteVolume::RHSKernelPolicy::FixedFlow5})
+                for (const int workers : {0, 2})
+                {
+                    auto queuedWork = cpu.BuildWorkspace(mean, {}, C::FiniteVolume::WorkspaceOptions(policy));
+                    auto binding = queuedWork->BindReconstruction(*cpuRec);
+                    auto reference = C::EquationDofOperations::NewVector(mean);
+                    auto queued = C::EquationDofOperations::NewVector(mean);
+                    auto pointEvaluator = std::make_shared<C::PointEvaluator>(equation.MakePointEvaluator());
+                    queuedWork->ApplyRHS(mean, reference, DNDS::CFV::ReconstructionRegion::All, *pointEvaluator, .3);
+                    queuedWork->diagnostics.Reset();
+                    queuedWork->faceFallbacks = {};
+                    R::EagerEngine hostEngine(workers, std::make_shared<R::AccessTrackingContext>());
+                    const auto compute = hostEngine.CreateCPUStream(), communication = hostEngine.CreateCPUStream();
+                    auto meanBinding = cpu.BindHalo(mean.CoupledField());
+                    auto recBinding = cpu.BindHalo(cpuRec->WarmValues().CoupledField());
+                    auto meanTransfer = meanBinding.SubmitAfter(hostEngine, communication, compute.Record());
+                    auto recTransfer = recBinding.SubmitAfter(hostEngine, communication, compute.Record());
+                    const auto core = queuedWork->SubmitRHS(hostEngine, compute, mean, queued,
+                                                            DNDS::CFV::ReconstructionRegion::Core, .3, pointEvaluator);
+                    meanTransfer.EnqueueWait(compute);
+                    recTransfer.EnqueueWait(compute);
+                    const auto dependent = queuedWork->SubmitRHS(hostEngine, compute, mean, queued,
+                                                                 DNDS::CFV::ReconstructionRegion::HaloDependent, .3, pointEvaluator);
+                    hostEngine.Synchronize();
+                    queuedWork->PublishRHS(core);
+                    queuedWork->PublishRHS(dependent);
+                    const auto x = reference.CoupledField().Owned().Read(), y = queued.CoupledField().Owned().Read();
+                    for (I iCell = 0; iCell < cpu.Metrics().NumCell(); ++iCell)
+                        for (int j = 0; j < 5; ++j)
+                            CHECK(y.View()(iCell, j) == doctest::Approx(x.View()(iCell, j)).epsilon(3e-12).scale(1));
+                }
         auto meanHalo = gpu.BindHalo(resident.CoupledField());
         std::optional<R::TransferBinding> coefficientHalo;
         if (degree == 3)

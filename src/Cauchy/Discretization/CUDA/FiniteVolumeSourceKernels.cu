@@ -114,17 +114,20 @@ namespace DNDS::Cauchy::CUDA
         const index cells = request.means.RowCount();
         CheckTable(request.means, cells, request.components);
         CheckTable(request.output, cells, jacobian && request.fullBlock ? request.components * request.components : request.components);
-        DNDS_check_throw_info(request.lengths.RowCount() == cells && request.status.RowCount() == cells, "CUDA source cell fields differ");
+        // Mesh geometry is a whole owned+ghost publication. Numerical means,
+        // status and outputs are owned-only here; do not slice the geometry
+        // descriptors or require an otherwise redundant owned-only copy.
+        DNDS_check_throw_info(request.lengths.RowCount() >= cells && request.status.RowCount() == cells, "CUDA source cell fields differ");
         if (mean)
         {
             R::ValidateViewDevices(context.device, request.wallMean, request.cells);
-            DNDS_check_throw_info(request.wallMean.RowCount() == cells && request.cells.RowCount() >= cells, "CUDA mean source geometry differs");
+            DNDS_check_throw_info(request.wallMean.RowCount() >= cells && request.cells.RowCount() >= cells, "CUDA mean source geometry differs");
         }
         else
         {
             R::ValidateViewDevices(context.device, request.samples, request.offsets, request.weights, request.wallPoints);
             CheckTable(request.samples, request.weights.RowCount(), request.components);
-            DNDS_check_throw_info(request.offsets.RowCount() == cells + 1 && request.wallPoints.RowCount() == cells, "CUDA quadrature source geometry differs");
+            DNDS_check_throw_info(request.offsets.RowCount() == cells + 1 && request.wallPoints.RowCount() >= cells, "CUDA quadrature source geometry differs");
         }
         for (int d = 0; d < request.dimension; ++d)
         {

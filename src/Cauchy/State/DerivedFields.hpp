@@ -62,6 +62,10 @@ namespace DNDS::Cauchy
         bool GhostPart() const;
         index RowNumber() const;
         const DerivedRequest &Request() const;
+        /// Immutable selected-column metadata; grants no payload access or
+        /// freshness. Queued consumers still declare Values() as an operand
+        /// and validate the publication against their source state.
+        int Column(DerivedQuantity quantity) const;
         /// Debug/export owner. Writes through an exported shallow handle
         /// invalidate publication by generation; prefer checked read scopes.
         const Runtime::Array<real> &Values() const;

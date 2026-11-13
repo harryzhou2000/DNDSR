@@ -113,7 +113,7 @@ namespace DNDS::Cauchy
         const index quadrature = owner->boundaryTraceGeometry.RowCount();
         const index primitive = primitiveBoundary ? primitiveBoundary->RowCount() : 0;
         const bool gradientPP = nativeDirectGradient && owner->settings.numerics.positivity;
-        const index owned = primitiveGradient || gradientPP ? owner->metrics.NumCell() : 0;
+        const index owned = primitiveGradient || gradientPP || owner->equation.HasRANS() ? owner->metrics.NumCell() : 0;
         const index ghost = primitiveGradient ? owner->metrics.NumCellProc() - owner->metrics.NumCell() : 0;
         preparationStatus.emplace(PreparationStatusStorage{
             R::Array<NumericalStatus>(R::RowLayout::Dense(quadrature, 1), device),

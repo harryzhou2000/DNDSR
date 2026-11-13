@@ -99,6 +99,12 @@ namespace DNDS::Cauchy
     bool DerivedFields::GhostPart() const { return _data->ghost; }
     index DerivedFields::RowNumber() const { return index(_data->ghost ? _data->space.GhostRows() : _data->space.OwnedRows()); }
     const DerivedRequest &DerivedFields::Request() const { return _data->request; }
+    int DerivedFields::Column(DerivedQuantity quantity) const
+    {
+        const int column = _data->columns[Ordinal(quantity)];
+        DNDS_check_throw_info(column >= 0, "derived field absent");
+        return column;
+    }
     const R::Array<real> &DerivedFields::Values() const { return _data->values; }
     void DerivedFields::PreflightRefresh() const
     {

@@ -504,3 +504,40 @@ synchronous entry remains while the full `EvaluateImpl` schedule is migrated.
 Batch lifetime/failure and CPU inline/worker boundary comparison test sources
 are present, still awaiting the grouped B validation.
 
+### B source sampling and RANS addition (source-only)
+
+`FiniteVolume_SourceQueued.cpp` submits source sampling through the same CFV
+entry on CPU and CUDA, with direct mean/gradient replication dispatched inside
+the operator. Its device volume-source adapter adds rigid-frame rotation and
+RANS quadrature sources using retained complete geometry views and explicit
+mutable Runtime operands. RANS numerical failure joins the preparation status
+segment; provenance is published only after the caller's drain. The direct
+gradient input must already be prepared; this operator hides no halo exchange.
+
+RANS source wrapper bounds now accept owned+ghost geometry publications while
+means/status/output remain owned-only. The former exact-owned-row requirement
+would reject valid distributed wall and length caches. Source tests now use
+extra geometry rows; a managed source test compares direct SA and P3 SST
+sampling/addition with the CPU source operator. These tests remain unrun.
+Mean-gradient workspaces can now allocate at plan residency and retain CFV
+execution metadata; their scheduling/publication migration is still pending.
+P0/mean-only RANS source gradients share the already prepared field; no second
+allocation/copy is needed. Pure P0 also allocates no unused modal viscous-gradient
+field when unlimited viscosity is selected.
+
+`FiniteVolume_RHSHostQueued.cpp` provides the common RHS submission entry and
+retains the existing fixed-flow/generic CPU arithmetic. Runtime batches declare
+segmented inputs, gradients, auxiliary values and outputs; the callback holds no
+workspace borrow. Small diagnostic records publish after execution. Derived
+cache columns are immutable metadata, with payload reservations and completed
+publication validation kept separate. Added P3 CPU inline/worker comparison
+test source remains unrun.
+
+The next shared-schedule prerequisite is CPU auxiliary preparation: its current
+constructor takes immediate mean/gradient/packet reads and seven output writes.
+Queued RHS cannot safely reserve those outputs until they retire. Migrate
+request assembly, derived refresh/publication and deferred packet binding
+together to scheduled operands, while sharing the existing pure auxiliary
+kernels. A partial output-only change or a new inter-operator drain is not the
+intended completion of the common schedule.
+

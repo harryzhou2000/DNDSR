@@ -50,9 +50,11 @@ set(CPPS
     Discretization/FiniteVolume_RHSOperator.cpp
     Discretization/FiniteVolume_RHS.cpp
     Discretization/FiniteVolume_RHSQueued.cpp
+    Discretization/FiniteVolume_RHSHostQueued.cpp
     Discretization/FiniteVolume_Gradient.cpp
     Discretization/FiniteVolume_GradientQueued.cpp
     Discretization/FiniteVolume_SourcePreparation.cpp
+    Discretization/FiniteVolume_SourceQueued.cpp
     Discretization/FiniteVolume_Positivity.cpp
     Discretization/FiniteVolume_AuxiliaryPreparation.cpp
     Discretization/FiniteVolume_AuxiliaryQueued.cpp

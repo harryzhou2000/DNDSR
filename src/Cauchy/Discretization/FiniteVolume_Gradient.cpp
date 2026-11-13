@@ -58,6 +58,8 @@ namespace DNDS::Cauchy
                     auto &output = directGradients[iField];
                     input.Validate();
                     output.Validate();
+                    if (input.Owned().SharedStorage() == output.Owned().SharedStorage())
+                        return; // P0/mean-only sources share their ready gradient.
                     DNDS_check_throw_info(input.Space().Same(output.Space()) &&
                                               input.Width() == output.Width() &&
                                               input.Device() == R::Device::Host() &&

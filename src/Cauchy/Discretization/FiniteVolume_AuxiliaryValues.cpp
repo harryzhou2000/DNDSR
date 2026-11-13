@@ -81,13 +81,13 @@ namespace DNDS::Cauchy
         Metrics().Communication()->LocalStage([&]
                                               {
             state.RequireSchema(_data->equation.Schema());
-            DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && state.Device() == R::Device::Host(), "mean gradient state space/backend differs");
+            DNDS_check_throw_info(state.Space().Same(Metrics().Space()) && state.Device() == Device(), "mean gradient state space/backend differs");
             result._data = std::make_shared<MeanGradients::Data>(_data, state);
             auto &work = *result._data;
             for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
             {
                 const auto &field = state.PhysicalField(iField);
-                result.fields.push_back(Metrics().BuildField(FiniteVolumeDetail::FieldLayout(field.Owned().Layout(), Metrics().NumCell(), field.Width() * Metrics().Dimension())));
+                result.fields.push_back(Metrics().BuildField(FiniteVolumeDetail::FieldLayout(field.Owned().Layout(), Metrics().NumCell(), field.Width() * Metrics().Dimension()), Device()));
                 work.boundary.push_back(_data->gradient.BuildBoundaryValues(field.Width()));
                 work.vectors.emplace_back();
                 for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
@@ -97,6 +97,7 @@ namespace DNDS::Cauchy
                         for (auto first : state.Schema().blocks[iBlock].vectorStarts)
                             work.vectors.back().push_back(location.firstComponent + first);
                 }
+                work.execution.push_back(_data->gradient.BuildWorkspace(field.Width(), work.vectors.back()));
             }
             work.fields = result.fields; });
         for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)

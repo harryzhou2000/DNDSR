@@ -252,13 +252,18 @@ namespace DNDS::Cauchy
                             "cauchy-direct-unlimited-viscous-gradient"));
                     }
                 }
+                else if ((meanOnly || owner->settings.numerics.reconstruction == "constant") && fields[iField].gradient)
+                    // P0/mean-only RANS sources use this same unlimited
+                    // physical gradient. No limiter writes a second version,
+                    // so retain the field instead of allocating/copying it.
+                    directGradients.push_back(*fields[iField].gradient);
                 else
                     directGradients.push_back(owner->metrics.BuildField(
                         FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owner->metrics.NumCell(),
                                                         state.PhysicalField(iField).Width() * owner->metrics.Dimension()),
                         owner->metrics.Device()));
                 if (!meanOnly && owner->equation.Viscous() && owner->settings.numerics.viscousGradient == "polynomial" &&
-                    !owner->settings.numerics.viscousLimited && !nativeDirectGradient)
+                    !owner->settings.numerics.viscousLimited && !nativeDirectGradient && owner->reconstruction)
                     directViscousGradients.push_back(owner->metrics.BuildField(
                         FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owner->metrics.NumCell(),
                                                         state.PhysicalField(iField).Width() * owner->metrics.Dimension()),
