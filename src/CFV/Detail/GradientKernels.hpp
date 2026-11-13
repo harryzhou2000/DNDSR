@@ -91,5 +91,5 @@ namespace DNDS::CFV::Detail
     void LimitGradient(GradientLimiterView plan, DeviceWorkSelection selection, GradientVectorRanges vectors,
                        GradientLimiterValues values, GradientOutput output, GradientOutput scratch);
     void LaunchGradientLimiter(Runtime::ExecutionContext context, GradientLimiterView plan, DeviceWorkSelection selection,
-                               DevicePeriodicBlocks vectors, GradientLimiterValues values, GradientOutput output);
+                               DevicePeriodicBlocks vectors, GradientLimiterValues values, GradientOutput output, Runtime::ArrayView<int> status);
 }

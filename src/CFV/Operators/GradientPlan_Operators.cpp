@@ -56,6 +56,7 @@ namespace DNDS::CFV
         namespace R = Runtime;
         _data->metrics.Validate();
         transform.forwardVersion = transform.inverseVersion = 0;
+        DNDS_check_throw_info(transform.validation == CharacteristicValidation::Frozen, "queued characteristics must be validated by their consuming device operator");
         transform.forwardIdentity = transform.inverseIdentity = 0;
         DNDS_check_throw_info(transform.plan == _data->identity && transform.first >= 0 &&
                                   transform.count >= 0 && transform.count <= 64,

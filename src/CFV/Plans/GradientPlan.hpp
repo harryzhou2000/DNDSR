@@ -27,6 +27,7 @@ namespace DNDS::CFV
         std::shared_ptr<const Detail::GradientIdentity> plan;
         uint64_t forwardVersion = 0, inverseVersion = 0;
         uint64_t forwardIdentity = 0, inverseIdentity = 0;
+        CharacteristicValidation validation = CharacteristicValidation::Frozen;
     };
     using GradientFaceCharacteristicTransformRef =
         std::optional<std::reference_wrapper<const GradientFaceCharacteristicTransform>>;
@@ -45,6 +46,8 @@ namespace DNDS::CFV
         /// CUDA uses bounded local scratch; this table has zero rows there.
         Runtime::Array<real> limiterScratch;
         bool withLimiter = false;
+        /// Sticky device validation status, only allocated for CUDA limiting.
+        Runtime::Array<int> deviceStatus;
     };
 
     /// Independent cell-centered FV gradient preparation. BC inputs are physical
@@ -99,6 +102,12 @@ namespace DNDS::CFV
         BoundaryQuadraturePoint GetBoundaryQuadrature(index iPoint) const;
         Runtime::Array<real> BuildBoundaryValues(index components) const;
         GradientFaceCharacteristicTransform BuildFaceTransform(index first, index count) const;
+        /// Mutable device matrices. Caller queues validation once after each
+        /// producer, then limiting, and checks status after draining the segment.
+        GradientFaceCharacteristicTransform BuildQueuedFaceTransform(index first, index count) const;
+        void SubmitValidateFaceTransform(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                         const GradientFaceCharacteristicTransform &, GradientWorkspace &) const;
+        void CheckStatus(const GradientWorkspace &workspace) const;
         void FinalizeFaceTransform(GradientFaceCharacteristicTransform &transform) const;
         /// Copy an already validated host transform to this plan's placement.
         /// Shape/value identities are frozen until a new validated publication.

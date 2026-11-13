@@ -813,6 +813,7 @@ if(DNDS_USE_CUDA)
     target_link_libraries(cfv_benchmark_reconstruction_cuda PRIVATE cfv geom dnds ${DNDS_EXTERNAL_LIBS})
     cfv_add_cuda_mpi_test(reconstruction_cuda "CFV/test_ReconstructionCUDA.cu" "cfv;geom;dnds")
     cfv_add_cuda_mpi_test(limited_vr_cuda "CFV/test_LimitedVRCUDA.cu" "cfv;geom;dnds")
+    cfv_add_cuda_mpi_test(characteristic_cuda "CFV/test_CharacteristicCUDA.cu" "cfv;geom;dnds")
     add_test(NAME cfv_limited_vr_cuda_np2
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
             ${Python_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/demos/one_rank_per_gpu.py

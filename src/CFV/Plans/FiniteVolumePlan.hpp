@@ -269,6 +269,16 @@ namespace DNDS::CFV
     /// field stage. Geometry periodic transforms and characteristic transforms
     /// are different operations. Declare vector triples in BuildWorkspace so
     /// the periodic component map precedes characteristic limiting.
+    /// Frozen transforms are finalized on CPU and guarded by completed-write
+    /// versions. Queued transforms are produced on device. Caller orders
+    /// producer -> numerical validation -> limiter on one stream (or supplies
+    /// cross-stream events). Completed host versions are not readiness proofs
+    /// for queued writers. Revalidate after mutation, not for every WBAP order.
+    enum class CharacteristicValidation
+    {
+        Frozen,
+        Queued
+    };
     struct FaceCharacteristicTransform
     {
         index first = 0, count = 0;
@@ -276,6 +286,7 @@ namespace DNDS::CFV
         std::shared_ptr<const Detail::ReconstructionIdentity> plan;
         uint64_t forwardVersion = 0, inverseVersion = 0;
         uint64_t forwardIdentity = 0, inverseIdentity = 0;
+        CharacteristicValidation validation = CharacteristicValidation::Frozen;
     };
     using FaceCharacteristicTransformRef = std::optional<std::reference_wrapper<const FaceCharacteristicTransform>>;
     using LimiterIndicatorRef = std::optional<std::reference_wrapper<const Runtime::Array<real>>>;
@@ -523,6 +534,19 @@ namespace DNDS::CFV
         index NumBoundaryQuadrature() const;
         BoundaryQuadraturePoint GetBoundaryQuadrature(index iPoint) const;
         FaceCharacteristicTransform BuildFaceTransform(index first, index count) const;
+        /// Device-owned mutable transform buffers, initially zero (not valid
+        /// inverses). A queued producer must fill them before first use and
+        /// SubmitValidateFaceTransform must follow every production/mutation.
+        /// All subsequent WBAP orders may reuse that publication until mutation.
+        /// count=0 requires no producer or matrix allocation. CheckStatus after
+        /// draining a consuming segment; a failed validation prevents limiting.
+        FaceCharacteristicTransform BuildQueuedFaceTransform(index first, index count) const;
+        /// Explicit numerical publication check, queued once after a matrix
+        /// producer. Uses the same stream as limiting normally. Caller must not
+        /// modify matrices between validation and their consumers; scheduled
+        /// leases check ordering, not this semantic validity precondition.
+        void SubmitValidateFaceTransform(Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                         const FaceCharacteristicTransform &, ReconstructionWorkspace &) const;
         FaceCharacteristicTransform PlaceFaceTransform(const FaceCharacteristicTransform &) const;
         /// Validate finite mutually inverse matrices once after filling. Later
         /// writes invalidate this publication; no matrix validation in hot loops.

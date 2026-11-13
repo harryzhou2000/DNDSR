@@ -65,10 +65,13 @@ namespace DNDS::CFV
         work.vectorShapeVersion = work.periodicVectorStarts.ShapeVersion();
         work.withLimiter = withLimiter;
         if (withLimiter)
+        {
             work.limiterScratch = R::Array<real>(Device() == R::Device::Host()
                                                      ? R::RowLayout::Dense(OMP::DistributedThreads(), 6 * components * _data->metrics.Dimension())
                                                      : R::RowLayout::Dense(0, 0),
                                                  Device());
+            work.deviceStatus = R::Array<int>(R::RowLayout::Dense(Device() == R::Device::Host() ? 0 : 1, 1), Device());
+        }
         return work;
     }
 }

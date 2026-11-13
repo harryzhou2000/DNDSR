@@ -1,5 +1,6 @@
 #include "CFV/Plans/GradientPlan.hpp"
 #include "CFV/Detail/GradientKernels.hpp"
+#include "CFV/Detail/CharacteristicKernels.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 
@@ -17,11 +18,62 @@ namespace DNDS::CFV
             };
             DNDS_check_throw_info(valid(transform.forward) && valid(transform.inverse),
                                   "gradient characteristic matrix shape or placement differs");
-            DNDS_check_throw_info(transform.forwardVersion != 0 && transform.forwardVersion == transform.forward.Version() &&
-                                      transform.inverseVersion == transform.inverse.Version() &&
+            const bool queued = transform.validation == CharacteristicValidation::Queued;
+            DNDS_check_throw_info((queued ? device.space == R::MemorySpace::CUDA : (transform.validation == CharacteristicValidation::Frozen && transform.forwardVersion != 0 && transform.forwardVersion == transform.forward.Version() && transform.inverseVersion == transform.inverse.Version())) &&
                                       transform.forwardIdentity == transform.forward.Identity() && transform.inverseIdentity == transform.inverse.Identity(),
                                   "gradient characteristic matrices changed; finalize them before limiting");
         }
+    }
+    GradientFaceCharacteristicTransform GradientPlan::BuildQueuedFaceTransform(index first, index count) const
+    {
+        _data->metrics.Validate();
+        DNDS_check_throw_info(Device().space == R::MemorySpace::CUDA && first >= 0 && count >= 0 && count <= 64,
+                              "queued gradient characteristics require CUDA placement and a valid component range");
+        GradientFaceCharacteristicTransform result{first, count, {}, {}, _data->identity};
+        result.validation = CharacteristicValidation::Queued;
+        if (!count)
+            return result;
+        result.forward = R::Array<real>(R::RowLayout::Dense(_data->metrics.NumFaceProc(), count * count), Device());
+        result.inverse = R::Array<real>(R::RowLayout::Dense(_data->metrics.NumFaceProc(), count * count), Device());
+        result.forwardIdentity = result.forward.Identity();
+        result.inverseIdentity = result.inverse.Identity();
+        return result;
+    }
+    void GradientPlan::SubmitValidateFaceTransform(R::EagerEngine &engine, const R::ExecutionStream &stream,
+                                                   const GradientFaceCharacteristicTransform &transform, GradientWorkspace &workspace) const
+    {
+        _data->metrics.Validate();
+        ValidateWorkspace(workspace, workspace.components);
+        DNDS_check_throw_info(Device().space == R::MemorySpace::CUDA && stream.Context().device == Device() && workspace.withLimiter &&
+                                  transform.plan == _data->identity && transform.validation == CharacteristicValidation::Queued &&
+                                  transform.first >= 0 && transform.first <= workspace.components && transform.count >= 0 &&
+                                  transform.count <= 64 && transform.count <= workspace.components - transform.first,
+                              "queued gradient characteristic publication belongs to another plan/range");
+        if (!transform.count)
+            return;
+        ValidateTransform(transform, Device(), _data->metrics.NumFaceProc());
+        DNDS_check_throw_info(workspace.deviceStatus.GetDevice() == Device() && workspace.deviceStatus.RowCount() == 1 &&
+                                  workspace.deviceStatus.Layout().Kind() == R::RowLayoutKind::Table && workspace.deviceStatus.Layout().Width() == 1,
+                              "gradient device validation status shape differs");
+        for (const auto *array : {&transform.forward, &transform.inverse})
+            DNDS_check_throw_info(!Algebra::Detail::Overlaps(array->Storage(), workspace.deviceStatus.Storage()), "characteristic matrices alias validation status");
+#ifdef DNDS_USE_CUDA
+        R::SubmitArrays(engine, stream, [first = transform.first, count = transform.count](R::ExecutionContext c, auto left, auto right, auto status)
+                        { Detail::LaunchValidateCharacteristics(c, {left, right, first, count}, status); }, R::Read(transform.forward), R::Read(transform.inverse), R::ReadWrite(workspace.deviceStatus));
+#else
+        DNDS_check_throw_info(false, "queued CUDA characteristic validation unavailable");
+#endif
+    }
+    void GradientPlan::CheckStatus(const GradientWorkspace &workspace) const
+    {
+        ValidateWorkspace(workspace, workspace.components);
+        if (Device() == R::Device::Host() || !workspace.withLimiter)
+            return;
+        DNDS_check_throw_info(workspace.deviceStatus.GetDevice() == Device() && workspace.deviceStatus.RowCount() == 1 &&
+                                  workspace.deviceStatus.Layout().Width() == 1,
+                              "gradient device validation status shape differs");
+        const auto host = workspace.deviceStatus.To(R::Device::Host());
+        DNDS_check_throw_info(host.Read().View()(0, 0) == 0, "device gradient limiter validation failed; do not publish the queued result");
     }
     GradientFaceCharacteristicTransform GradientPlan::PlaceFaceTransform(const GradientFaceCharacteristicTransform &transform,
                                                                          R::ExecutionContext context) const
@@ -101,8 +153,8 @@ namespace DNDS::CFV
     {
         ValidateLimiter(input, output, transform, region, indicator, threshold, centerWeight);
         // Synchronous CPU convenience API preserves its input diagnostic.
-        // Queued producers cannot be inspected on the controller; their leaf
-        // asserts the finite-indicator precondition on the execution backend.
+        // Queued producers cannot be inspected on the controller. CPU leaves
+        // assert this precondition; device validation reports through status.
         if (indicator && Device() == R::Device::Host())
         {
             const auto read = indicator->get().Read();
@@ -121,8 +173,11 @@ namespace DNDS::CFV
             DNDS_check_throw_info(false, "CUDA gradient limiter is not built");
 #endif
         }
+        if (transform && transform->get().count && transform->get().validation == CharacteristicValidation::Queued)
+            SubmitValidateFaceTransform(engine, stream, transform->get(), workspace);
         LimitWBAP3(engine, stream, input, output, workspace, transform, region, indicator, threshold, centerWeight);
         engine.Close();
+        CheckStatus(workspace);
     }
     void GradientPlan::LimitWBAP3(R::EagerEngine &engine, const R::ExecutionStream &stream, const FVField &input, FVField &output,
                                   GradientWorkspace &workspace, GradientFaceCharacteristicTransformRef transform, ReconstructionRegion region,
@@ -142,6 +197,10 @@ namespace DNDS::CFV
         const auto &forward = count ? transform->get().forward : workspace.empty;
         const auto &inverse = count ? transform->get().inverse : workspace.empty;
         const auto &activation = indicator ? indicator->get() : workspace.empty;
+        if (Device().space == R::MemorySpace::CUDA)
+            DNDS_check_throw_info(workspace.deviceStatus.GetDevice() == Device() && workspace.deviceStatus.RowCount() == 1 &&
+                                      workspace.deviceStatus.Layout().Kind() == R::RowLayoutKind::Table && workspace.deviceStatus.Layout().Width() == 1,
+                                  "gradient limiter device status shape differs");
         for (const auto *array : std::initializer_list<const R::Array<real> *>{&input.Owned(), &input.Ghost(), &output.Owned(), &forward, &inverse, &activation})
             DNDS_check_throw_info(workspace.limiterScratch.Identity() != array->Identity() &&
                                       !Algebra::Detail::Overlaps(workspace.limiterScratch.Storage(), array->Storage()),
@@ -151,7 +210,7 @@ namespace DNDS::CFV
         engine.RetainUntilSynchronize(geometry);
         const auto &selected = region == ReconstructionRegion::HaloDependent ? _data->dependent : _data->core;
         const index workCount = region == ReconstructionRegion::All ? _data->metrics.NumCell() : selected.RowCount();
-        R::SubmitArrays(engine, stream, [geometry, region, workCount, dimension, rotated = _data->hasRotatedFrames, first, count, threshold, centerWeight, activated = bool(indicator)](R::ExecutionContext context, auto offsets, auto neighbors, auto faces, auto rotations, auto rotationActive, auto rows, auto starts, auto owned, auto ghost, auto forward, auto inverse, auto activation, auto output, auto scratch)
+        R::SubmitArrays(engine, stream, [geometry, region, workCount, dimension, rotated = _data->hasRotatedFrames, first, count, threshold, centerWeight, activated = bool(indicator)](R::ExecutionContext context, auto offsets, auto neighbors, auto faces, auto rotations, auto rotationActive, auto rows, auto starts, auto owned, auto ghost, auto forward, auto inverse, auto activation, auto output, auto scratch, auto status)
                         {
                             const Detail::GradientLimiterView plan{offsets, neighbors, faces, rotations, rotationActive, int(dimension), rotated};
                             const Detail::DeviceWorkSelection selection{rows.DynamicView(), workCount, region != ReconstructionRegion::All};
@@ -160,9 +219,11 @@ namespace DNDS::CFV
                                 Detail::LimitGradient(plan, selection, {{starts.data, starts.RowCount()}}, values, output, scratch);
 #ifdef DNDS_USE_CUDA
                             else
-                                Detail::LaunchGradientLimiter(context, plan, selection, {starts.DynamicView()}, values, output);
+                            {
+                                Detail::LaunchGradientLimiter(context, plan, selection, {starts.DynamicView()}, values, output, status);
+                            }
 #endif
                         },
-                        R::ReadAs<R::FixedRows<1>>(_data->offsets), R::ReadAs<R::FixedRows<1>>(_data->neighbors), R::ReadAs<R::FixedRows<1>>(_data->faces), R::ReadAs<R::FixedRows<9>>(_data->rotations), R::ReadAs<R::FixedRows<1>>(_data->rotationActive), R::ReadAs<R::FixedRows<1>>(selected), R::ReadAs<R::FixedRows<1>>(workspace.periodicVectorStarts), R::ReadAs<R::UniformTableRows>(input.Owned()), R::ReadAs<R::UniformTableRows>(region == ReconstructionRegion::Core ? workspace.empty : input.Ghost()), R::ReadAs<R::UniformTableRows>(forward), R::ReadAs<R::UniformTableRows>(inverse), R::ReadAs<R::UniformTableRows>(activation), R::WriteAs<R::UniformTableRows>(output.Owned()), R::WriteAs<R::UniformTableRows>(workspace.limiterScratch));
+                        R::ReadAs<R::FixedRows<1>>(_data->offsets), R::ReadAs<R::FixedRows<1>>(_data->neighbors), R::ReadAs<R::FixedRows<1>>(_data->faces), R::ReadAs<R::FixedRows<9>>(_data->rotations), R::ReadAs<R::FixedRows<1>>(_data->rotationActive), R::ReadAs<R::FixedRows<1>>(selected), R::ReadAs<R::FixedRows<1>>(workspace.periodicVectorStarts), R::ReadAs<R::UniformTableRows>(input.Owned()), R::ReadAs<R::UniformTableRows>(region == ReconstructionRegion::Core ? workspace.empty : input.Ghost()), R::ReadAs<R::UniformTableRows>(forward), R::ReadAs<R::UniformTableRows>(inverse), R::ReadAs<R::UniformTableRows>(activation), R::WriteAs<R::UniformTableRows>(output.Owned()), R::WriteAs<R::UniformTableRows>(workspace.limiterScratch), R::ReadWrite(workspace.deviceStatus));
     }
 }

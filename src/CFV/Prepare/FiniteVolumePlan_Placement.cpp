@@ -2,6 +2,7 @@
 #include "CFV/Detail/ReconstructionData.hpp"
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "CFV/Detail/ReconstructionDeviceKernels.hpp"
+#include "CFV/Detail/CharacteristicKernels.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "Geom/Unstructured/UnstructuredMeshSnapshot.hpp"
@@ -439,7 +440,7 @@ namespace DNDS::CFV
             return result;
         }
         DNDS_check_throw_info(
-            source.forwardVersion == source.forward.Version() && source.inverseVersion == source.inverse.Version() && source.forwardVersion &&
+            source.validation == CharacteristicValidation::Frozen && source.forwardVersion == source.forward.Version() && source.inverseVersion == source.inverse.Version() && source.forwardVersion &&
                 source.forwardIdentity == source.forward.Identity() && source.inverseIdentity == source.inverse.Identity(),
             "unfinalized device characteristic source");
         FaceCharacteristicTransform result{source.first, source.count, source.forward.To(Device()), source.inverse.To(Device()), _identity};
@@ -449,6 +450,43 @@ namespace DNDS::CFV
         result.inverseIdentity = result.inverse.Identity();
         result.plan = _identity;
         return result;
+    }
+    FaceCharacteristicTransform VariationalReconstructionPlan::BuildQueuedFaceTransform(index first, index count) const
+    {
+        Require(ReconstructionOperation::WBAP);
+        Validate();
+        DNDS_check_throw_info(_device && first >= 0 && count >= 0 && count <= 64,
+                              "queued characteristic buffers require a resident plan and valid component range");
+        FaceCharacteristicTransform result{first, count, {}, {}, _identity};
+        result.validation = CharacteristicValidation::Queued;
+        if (!count)
+            return result;
+        result.forward = R::Array<real>(R::RowLayout::Dense(_device->faces, count * count), Device());
+        result.inverse = R::Array<real>(R::RowLayout::Dense(_device->faces, count * count), Device());
+        result.forwardIdentity = result.forward.Identity();
+        result.inverseIdentity = result.inverse.Identity();
+        return result;
+    }
+    void VariationalReconstructionPlan::SubmitValidateFaceTransform(R::EagerEngine &engine, const R::ExecutionStream &stream,
+                                                                    const FaceCharacteristicTransform &transform, ReconstructionWorkspace &work) const
+    {
+        ValidateDeviceStream(*this, stream);
+        ValidateDeviceWorkspace(_device, work);
+        DNDS_check_throw_info(transform.plan == _identity && transform.validation == CharacteristicValidation::Queued &&
+                                  transform.first >= 0 && transform.first <= work.components && transform.count >= 0 &&
+                                  transform.count <= 64 && transform.count <= work.components - transform.first,
+                              "queued characteristic publication belongs to another plan/range");
+        if (!transform.count)
+            return;
+        DNDS_check_throw_info(transform.forwardIdentity == transform.forward.Identity() && transform.inverseIdentity == transform.inverse.Identity(),
+                              "queued characteristic buffers were replaced");
+        for (const auto *array : {&transform.forward, &transform.inverse})
+        {
+            ValidateArray(*array, Device(), _device->faces, transform.count * transform.count);
+            DNDS_check_throw_info(!Algebra::Detail::Overlaps(array->Storage(), work.deviceStatus.Storage()), "characteristic matrices alias validation status");
+        }
+        R::SubmitArrays(engine, stream, [first = transform.first, count = transform.count](R::ExecutionContext c, auto left, auto right, auto status)
+                        { Detail::LaunchValidateCharacteristics(c, {left, right, first, count}, status); }, R::Read(transform.forward), R::Read(transform.inverse), R::ReadWrite(work.deviceStatus));
     }
     void VariationalReconstructionPlan::SubmitDeviceReconstructionIterTo(
         R::EagerEngine &engine, const R::ExecutionStream &stream, const FVField &mean,
@@ -572,7 +610,9 @@ namespace DNDS::CFV
         {
             DNDS_check_throw_info(selectedTransform->plan == _identity && selectedTransform->first >= 0 && selectedTransform->count > 0 && selectedTransform->count <= 64 && selectedTransform->count <= work.components - selectedTransform->first &&
                                       selectedTransform->forwardIdentity == selectedTransform->forward.Identity() && selectedTransform->inverseIdentity == selectedTransform->inverse.Identity() &&
-                                      selectedTransform->forwardVersion == selectedTransform->forward.Version() && selectedTransform->inverseVersion == selectedTransform->inverse.Version(),
+                                      (selectedTransform->validation == CharacteristicValidation::Queued ||
+                                       (selectedTransform->validation == CharacteristicValidation::Frozen && selectedTransform->forwardVersion != 0 &&
+                                        selectedTransform->forwardVersion == selectedTransform->forward.Version() && selectedTransform->inverseVersion == selectedTransform->inverse.Version())),
                                   "device characteristic data changed/unfinalized");
             ValidateArray(selectedTransform->forward, Device(), _device->faces, selectedTransform->count * selectedTransform->count);
             ValidateArray(selectedTransform->inverse, Device(), _device->faces, selectedTransform->count * selectedTransform->count);
@@ -590,7 +630,10 @@ namespace DNDS::CFV
                    &inverse = selectedTransform ? selectedTransform->inverse : _device->empty,
                    &activation = indicator ? *indicator : _device->empty;
         auto launch = [pin, selection, first, count, begin, modes, threshold, blocksCount](R::ExecutionContext context, auto owned, auto ghost, auto output, auto scratch, auto blocks, auto left, auto right, auto active, auto status)
-        { Detail::LaunchWBAP(context, pin->view, selection, {blocks}, {owned, ghost}, output, scratch, {left, right, first, count}, active, status, begin, modes, threshold, blocksCount); };
+        {
+            const Detail::DeviceCharacteristicView matrices{left, right, first, count};
+            Detail::LaunchWBAP(context, pin->view, selection, {blocks}, {owned, ghost}, output, scratch, matrices, active, status, begin, modes, threshold, blocksCount);
+        };
         if (region == ReconstructionRegion::Core)
             R::SubmitArrays(engine, stream, [launch](R::ExecutionContext c, auto owned, auto output, auto scratch, auto blocks, auto left, auto right, auto active, auto status)
                             { launch(c, owned, R::ArrayView<const real>{}, output, scratch, blocks, left, right, active, status); }, R::Read(coefficients.Owned()), R::Write(work.temporary.Owned()), R::ReadWrite(work.scratch), R::Read(work.devicePeriodicVectorStarts), R::Read(forward), R::Read(inverse), R::Read(activation), R::ReadWrite(work.deviceStatus));
@@ -605,7 +648,7 @@ namespace DNDS::CFV
             return;
         ValidateDeviceWorkspace(_device, work);
         const auto host = work.deviceStatus.To(R::Device::Host());
-        DNDS_check_throw_info(host.Read().View()(0, 0) == 0, "device reconstruction validation failed (indicator or LVR penalty); do not publish the queued result");
+        DNDS_check_throw_info(host.Read().View()(0, 0) == 0, "device reconstruction validation failed (indicator, LVR penalty or characteristics); do not publish the queued result");
     }
     bool VariationalReconstructionPlan::SupportsKernel(ReconstructionDeviceKernel kernel) const
     {
@@ -620,6 +663,10 @@ namespace DNDS::CFV
 #ifndef DNDS_USE_CUDA
     namespace Detail
     {
+        void LaunchValidateCharacteristics(R::ExecutionContext, DeviceCharacteristicView, R::ArrayView<int>)
+        {
+            DNDS_check_throw_info(false, "queued CUDA characteristic validation unavailable");
+        }
         bool FP64TensorCoreAvailable(R::Device) { return false; }
         void LaunchJacobiTensorCoreShared(R::ExecutionContext, ReconstructionDeviceView, DeviceWorkSelection, DevicePeriodicBlocks, R::PairReadView<real>, R::PairReadView<real>, R::ArrayView<const real>, R::ArrayView<real>, R::ArrayView<const int>, bool)
         {
