@@ -19,6 +19,7 @@ namespace DNDS::CFV
             ReconstructionResidencyOptions options;
             ReconstructionSettings settings;
             ReconstructionCapabilities capabilities;
+            R::VersionStamp geometryStamp;
             ReconstructionInverseDiagnostics inverseDiagnostics;
             int n = 0, dimension = 0;
             index boundaryPoints = 0, faces = 0;
@@ -39,6 +40,7 @@ namespace DNDS::CFV
             ReconstructionDeviceView view;
             FiniteVolumeHostView metricView;
             ReconstructionBasisHostView basisView;
+            ReconstructionPointBasisView pointBasisView;
             std::shared_ptr<Geom::UnstructuredMeshSnapshot> mesh;
             ReconstructionPlacementData(const std::shared_ptr<const ReconstructionData> &source, R::Device placement,
                                         ReconstructionResidencyOptions requested)
@@ -207,6 +209,9 @@ namespace DNDS::CFV
                                   _device->realArrays.size() == _device->realReads.size() &&
                                   _device->indexArrays.size() == _device->indexReads.size(),
                               "device reconstruction publication is incomplete or inconsistent");
+        // Dropping host payloads must not drop cache invalidation. Device
+        // storage is immutable, but still represents this source generation.
+        _device->geometryStamp.Validate();
         for (const auto &array : _device->realArrays)
             DNDS_check_throw_info(array.IsValid() && array.GetDevice() == _device->device,
                                   "device reconstruction real payload is invalid");
@@ -231,6 +236,8 @@ namespace DNDS::CFV
         Validate();
         DNDS_check_throw_info(device.space == R::MemorySpace::CUDA && context.device == device, "device reconstruction requires explicit CUDA placement/context");
         DNDS_check_throw_info(!Settings().SORInstead, "CUDA SOR requires a logical parallel sweep design and is unsupported");
+        DNDS_check_throw_info(!options.basis || (options.basisDerivativeOrder >= 0 && options.basisDerivativeOrder <= 3),
+                              "invalid resident basis derivative order");
         _data->workPartition->Validate();
         auto geometry = Metrics().AcquireRead();
         auto result = std::make_shared<Detail::ReconstructionPlacementData>(_data, device, options);
@@ -271,12 +278,13 @@ namespace DNDS::CFV
                 view.dependent = selected;
         }
         const auto &metric = *Metrics()._data;
+        result->geometryStamp = metric.stamp;
         result->dofs = metric.dofs;
         result->communication = metric.communication;
         result->halo = metric.halo;
         result->dimension = metric.dim;
         result->faces = metric.faceOffsets.RowCount() - 1;
-        if (options.metrics || options.basis)
+        if (options.metrics)
         {
             const auto cell = result->Add("cellMetrics", metric.cell, context);
             const auto offsets = result->Add("faceOffsets", metric.faceOffsets, context);
@@ -291,9 +299,26 @@ namespace DNDS::CFV
         }
         if (options.basis)
         {
-            DNDS_check_throw_info(Settings().cacheDiffBase, "device basis publication requires prepared cacheDiffBase");
-            const auto basis = result->Add("faceBasis", host.faceBasis, context);
-            result->basisView = {R::Detail::ProjectView<const real, false, R::TableRows>(basis, host.faceBasis.Layout()), result->metricView.faceOffsets, host.n, host.cachedDerivatives};
+            auto &pointBasis = result->pointBasisView;
+            const Math::TaylorBasis polynomial(metric.dim, Settings().maxOrder);
+            pointBasis.polynomial = polynomial.KernelParameters();
+            pointBasis.availableDerivatives = polynomial.DerivativeNumber(options.basisDerivativeOrder);
+            pointBasis.cachedDerivatives = Settings().cacheDiffBase ? host.cachedDerivatives : 0;
+            if (pointBasis.cachedDerivatives)
+            {
+                const auto basis = result->Add("faceBasis", host.faceBasis, context);
+                pointBasis.cached = R::Detail::ProjectView<const real, false, R::TableRows>(basis, host.faceBasis.Layout());
+                const auto offsets = options.metrics ? result->metricView.faceOffsets
+                                                     : R::Detail::ProjectView<const index, false, R::FixedRows<1>>(result->Add("faceOffsets", metric.faceOffsets, context), metric.faceOffsets.Layout());
+                result->basisView = {pointBasis.cached, offsets, host.n, host.cachedDerivatives};
+            }
+            if (pointBasis.cachedDerivatives < pointBasis.availableDerivatives)
+            {
+                const auto moments = result->Add("cellMoments", host.moments, context);
+                pointBasis.moments = R::Detail::ProjectView<const real, false, R::TableRows>(moments, host.moments.Layout());
+                pointBasis.cells = options.metrics ? result->metricView.cells
+                                                   : R::Detail::ProjectView<const real, false, R::FixedRows<8>>(result->Add("cellMetrics", metric.cell, context), metric.cell.Layout());
+            }
         }
         if (options.mesh)
         {
@@ -329,15 +354,20 @@ namespace DNDS::CFV
     }
     FiniteVolumeHostView ReconstructionResidentRead::MetricView() const
     {
-        DNDS_check_throw_info(_data && (_data->options.metrics || _data->options.basis),
+        DNDS_check_throw_info(_data && _data->options.metrics,
                               "resident reconstruction metrics were not requested");
         return _data->metricView;
     }
     ReconstructionBasisHostView ReconstructionResidentRead::BasisView() const
     {
-        DNDS_check_throw_info(_data && _data->options.basis,
-                              "resident reconstruction basis was not requested");
+        DNDS_check_throw_info(_data && _data->options.basis && _data->settings.cacheDiffBase,
+                              "resident cached basis was not requested; use PointBasisView for on-demand evaluation");
         return _data->basisView;
+    }
+    ReconstructionPointBasisView ReconstructionResidentRead::PointBasisView() const
+    {
+        DNDS_check_throw_info(_data && _data->options.basis, "resident point basis was not requested");
+        return _data->pointBasisView;
     }
     const Geom::UnstructuredMeshSnapshot &VariationalReconstructionPlan::MeshSnapshot() const
     {

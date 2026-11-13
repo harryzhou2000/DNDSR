@@ -26,11 +26,22 @@ flowchart TD
 
 `source.Place(Device::CUDA(i), context, options)` synchronously uploads only
 the supported operators' numeric inputs. It validates the selected device and
-rejects CPU placement, unavailable CUDA builds and SOR before returning a usable
-publication. `options.mesh`, `metrics` and `basis` select additional query data;
-basis also needs the metric quadrature offsets. Missing optional capabilities
+rejects unavailable CUDA builds and device SOR before returning a usable
+publication. `options.mesh`, `metrics` and `basis` select independent query data;
+full `MetricView()` access requires `metrics=true`. Missing optional capabilities
 throw. Mesh data uses the existing `UnstructuredMeshSnapshot`, including its
 device-callable view; CFV does not create another topology implementation.
+
+`basis=true` supplies `PointBasisView()` for cached or direct point evaluation.
+`basisDerivativeOrder` defaults to one (value and first derivatives); setup
+retains moments and cell geometry only when the configured cache does not
+cover that request. A cached-only basis retains no direct-evaluation cell
+payloads. Basis placement alone does not copy face quadrature, face means or
+axisymmetric metric tables. `BasisView()` remains the raw cache accessor and
+explicitly rejects cache-off placement. The point evaluator receives the
+query position in the selected parent cell frame; the stencil producer owns
+that periodic-frame convention. All whole-array inputs are checked for
+residency by the C++ kernel launcher, outside point arithmetic.
 
 Host-payload retention is explicit. `options.retainHostPayloads=true` is the
 default and keeps the CPU plan available for setup queries and diagnostics.
@@ -38,6 +49,10 @@ With `false`, the returned placed plan releases the originating reconstruction
 and metric arrays after upload. It retains only a stable logical identity,
 settings/capabilities and global diagnostics, the distributed row-space,
 communication context and halo route, plus the requested device publications.
+The source geometry/version stamp also survives host-payload release, so a
+mesh geometry or numbering change still invalidates subsequent operator entry.
+Placed arrays are immutable snapshots; callers must serialize mesh mutation
+with submission and must not publish an old-generation result as current.
 Build and place mutable boundary values and characteristic transforms while the
 host plan is available. A device-only handle can still validate, allocate
 coefficients/workspace, bind halos and execute Jacobi/WBAP/commit; host-only

@@ -159,7 +159,8 @@ namespace DNDS::CFV
             .def_readwrite("mesh", &ReconstructionResidencyOptions::mesh)
             .def_readwrite("metrics", &ReconstructionResidencyOptions::metrics)
             .def_readwrite("basis", &ReconstructionResidencyOptions::basis)
-            .def_readwrite("retain_host_payloads", &ReconstructionResidencyOptions::retainHostPayloads);
+            .def_readwrite("retain_host_payloads", &ReconstructionResidencyOptions::retainHostPayloads)
+            .def_readwrite("basis_derivative_order", &ReconstructionResidencyOptions::basisDerivativeOrder);
         py::class_<ResidentBufferInfo>(m, "ResidentBufferInfo")
             .def_readonly("name", &ResidentBufferInfo::name)
             .def_readonly("bytes", &ResidentBufferInfo::bytes)

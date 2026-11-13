@@ -186,3 +186,13 @@ stencil followed by cell reduction with an independent acoustic oracle.
 Group B still requires source completion, grouped compilation and numerical
 validation. No end-to-end CUDA capability or timing result is claimed.
 
+Resident VR face-basis placement now exposes `PointBasisView()` for cached or
+direct evaluation, with an explicit derivative-order request (default one).
+It does not implicitly request all FV metric tables. Direct inputs are copied
+only when cache coverage is insufficient. The source generation stamp is now
+retained independently of host payloads, closing an invalidation gap when
+`retainHostPayloads=false`. Added test source compares cache-off/value-only/
+value-gradient placement against CPU face-basis evaluation and checks the
+retained buffer names and invalidation after host-plan release. This follow-up
+is also unbuilt and belongs to the same group B validation.
+

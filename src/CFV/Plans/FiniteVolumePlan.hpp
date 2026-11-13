@@ -288,6 +288,11 @@ namespace DNDS::CFV
         /// plan separately; device operators retain their own immutable arrays,
         /// row space, halo route and scalar metadata.
         bool retainHostPayloads = true;
+        /// Highest derivative needed by placed point evaluation, 0..3.
+        /// Uncached requests retain moments/cell geometry; cached-only requests
+        /// do not. Ignored when basis=false. Full metric publication is an
+        /// independent request and must be enabled explicitly with metrics.
+        int basisDerivativeOrder = 1;
     };
     /// Explicit CUDA numerical kernel selection. CPU placement ignores this
     /// choice; backend resolution occurs once per submitted CFV operation.
@@ -360,6 +365,35 @@ namespace DNDS::CFV
         Geom::UnstructuredMeshView mesh;
         int dimension = 0, degree = 0, modes = 0, cachedDerivatives = 0;
     };
+    /// Compact resident point basis for a prepared face incidence. The caller
+    /// supplies its physical point in the selected parent cell's frame, so no
+    /// mesh owner, periodic lookup or host geometry service enters evaluation.
+    /// Cached matrices already use that same parent frame. mode omits the
+    /// constant term; derivative uses the canonical Taylor ordinal.
+    struct ReconstructionPointBasisView
+    {
+        Runtime::ArrayView<const real, false, Runtime::TableRows> cached, moments;
+        Runtime::ArrayView<const real, false, Runtime::FixedRows<8>> cells;
+        Math::TaylorBasisParameters polynomial;
+        int cachedDerivatives = 0, availableDerivatives = 0;
+        void ValidateDevice(Runtime::Device device) const
+        {
+            Runtime::ValidateViewDevices(device, cached, moments, cells);
+        }
+        DNDS_DEVICE_CALLABLE real Evaluate(index iCell, index iPoint, int side, const std::array<real, 3> &point,
+                                           int derivative, int mode) const noexcept
+        {
+            DNDS_HD_assert(derivative >= 0 && derivative < availableDerivatives && mode >= 0 && mode < polynomial.size - 1);
+            if (derivative < cachedDerivatives)
+                return cached(2 * iPoint + side, mode * cachedDerivatives + derivative);
+            std::array<real, 3> x{};
+            const real scale = cells(iCell, 7);
+            for (int d = 0; d < 3; ++d)
+                x[d] = (point[d] - cells(iCell, 1 + d)) / scale;
+            const real value = polynomial.Derivative(derivative, mode + 1, x, scale);
+            return derivative == 0 ? value - moments(iCell, mode + 1) : value;
+        }
+    };
     /// Pins the geometry generation and Runtime cache allocations once outside
     /// a hot loop. Face queries must be in an owned-cell stencil and select a
     /// real parent. Generic/debug access can use checked GetCachedFaceBasis.
@@ -399,6 +433,9 @@ namespace DNDS::CFV
         Detail::ReconstructionDeviceView DeviceView() const;
         FiniteVolumeHostView MetricView() const;
         ReconstructionBasisHostView BasisView() const;
+        /// Cached or on-demand point evaluation up to the placed derivative
+        /// order. Unlike BasisView(), this also supports cacheDiffBase=false.
+        ReconstructionPointBasisView PointBasisView() const;
     };
 
     /// Composition of metrics, basis/moments and factored VR systems on Runtime

@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
+#include "CFV/Math/PeriodicFrame.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "DNDS/Runtime/Execution/KernelArguments.hpp"
 #include "DNDS/Runtime/Communication/NCCLTransfer.hpp"
@@ -145,6 +146,116 @@ __global__ void PlainMetricProbe(C::FiniteVolumeHostView metrics, R::ArrayView<d
         const auto center = metrics.GetCellCent(iCell);
         for (int d = 0; d < 3; ++d)
             result(iCell, 1 + d) = center[d];
+    }
+}
+struct BasisQuery
+{
+    I cell, point;
+    int side;
+    std::array<double, 3> position;
+};
+__global__ void PointBasisProbe(C::ReconstructionPointBasisView basis,
+                                R::ArrayView<const BasisQuery, R::AccessBoundsChecks, R::FixedRows<1>> queries,
+                                R::ArrayView<double, R::AccessBoundsChecks, R::TableRows> output)
+{
+    const int modes = basis.polynomial.size - 1;
+    for (I iRow = I(blockIdx.x) * blockDim.x + threadIdx.x; iRow < queries.RowCount(); iRow += I(gridDim.x) * blockDim.x)
+    {
+        const auto query = queries(iRow, 0);
+        for (int derivative = 0; derivative < basis.availableDerivatives; ++derivative)
+            for (int mode = 0; mode < modes; ++mode)
+                output(iRow, derivative * modes + mode) = basis.Evaluate(query.cell, query.point, query.side, query.position, derivative, mode);
+    }
+}
+TEST_CASE("Resident face basis supports direct and partial caches without unrelated metric payloads")
+{
+    const auto device = R::Device::CUDA(0);
+    const auto context = R::ExecutionContext::CUDA(0);
+    for (int cacheOrder : {-1, 0, 1})
+    {
+        INFO("cacheOrder=" << cacheOrder);
+        auto fixture = G::OverlapTest::BuildNativeFixture(mpi, true);
+        auto metrics = C::FiniteVolumePlan::ConstructMetrics(fixture.mesh);
+        C::ReconstructionSettings settings;
+        settings.maxOrder = 3;
+        settings.cacheDiffBase = cacheOrder >= 0;
+        settings.cacheDiffBaseOrder = std::max(0, cacheOrder);
+        std::optional<C::VariationalReconstructionPlan> plan{C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings)};
+        const I modes = plan->NRecDOF();
+        std::vector<BasisQuery> queries;
+        std::vector<std::vector<double>> expected;
+        {
+            const auto scope = fixture.mesh->AcquireRead(G::MeshReadRequirements::CellFlux());
+            const auto mesh = scope.HostView();
+            const auto geometry = metrics.AcquireRead();
+            const auto view = geometry.HostView();
+            const auto basisRead = plan->AcquireBasisRead();
+            for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+                for (const I iFace : mesh.CellFaces(iCell))
+                {
+                    const int side = mesh.FaceCells(iFace)[0] == iCell ? 0 : 1;
+                    const I iPoint = view.FaceQuadratureBegin(iFace);
+                    const auto point = C::Detail::FacePointInCell(mesh, iFace, side, view.GetFacePoint(iPoint));
+                    queries.push_back({iCell, iPoint, side, {point[0], point[1], point[2]}});
+                    C::Math::SmallMatrix scratch;
+                    const auto matrix = basisRead.FaceBasis(iFace, side, iPoint, 1, scratch);
+                    expected.emplace_back(3 * modes);
+                    for (int derivative = 0; derivative < 3; ++derivative)
+                        for (I mode = 0; mode < modes; ++mode)
+                            expected.back()[derivative * modes + mode] = matrix(derivative, mode);
+                }
+        }
+        R::Array<BasisQuery> hostQueries(R::RowLayout::Dense(I(queries.size()), 1));
+        {
+            auto write = hostQueries.Write();
+            for (I iRow = 0; iRow < I(queries.size()); ++iRow)
+                write.View()(iRow, 0) = queries[iRow];
+        }
+        auto residentQueries = hostQueries.To(device, context);
+        C::ReconstructionResidencyOptions options;
+        options.basis = true;
+        options.retainHostPayloads = false;
+        auto resident = plan->Place(device, context, options);
+        plan.reset();
+        auto read = resident.AcquireResidentRead();
+        CHECK_THROWS(read.MetricView());
+        bool moments = false, cellGeometry = false;
+        for (const auto &buffer : resident.ResidentBuffers())
+        {
+            CHECK(buffer.name != "faceQuadrature");
+            CHECK(buffer.name != "radialMoment");
+            CHECK(buffer.name != "faceMean");
+            moments |= buffer.name == "cellMoments";
+            cellGeometry |= buffer.name == "cellMetrics";
+        }
+        CHECK(moments == (cacheOrder < 1));
+        CHECK(cellGeometry == (cacheOrder < 1));
+        R::Array<double> output(R::RowLayout::Dense(I(queries.size()), 3 * modes), device);
+        {
+            const auto queryRead = residentQueries.Read(context);
+            auto write = output.Write(context);
+            const auto basis = read.PointBasisView();
+            const auto input = queryRead.View<R::FixedRows<1>>();
+            const auto result = write.View<R::TableRows>();
+            R::ValidateViewDevices(device, basis, input, result);
+            R::CheckKernelArgumentBudget<decltype(basis), decltype(input), decltype(result)>();
+            PointBasisProbe<<<2, 128>>>(basis, input, result);
+            REQUIRE(cudaGetLastError() == cudaSuccess);
+            write.Complete(R::Completion::Record(context));
+            write.Wait();
+        }
+        const auto downloaded = output.To(R::Device::Host());
+        const auto actual = downloaded.Read();
+        for (I iRow = 0; iRow < I(queries.size()); ++iRow)
+            for (I j = 0; j < 3 * modes; ++j)
+                CHECK(actual.View()(iRow, j) == doctest::Approx(expected[iRow][j]).epsilon(2e-11).scale(1));
+        {
+            auto mutation = fixture.mesh->versions.BeginMutation(R::Change::Geometry);
+            mutation.Commit();
+        }
+        // Invalidation survives retainHostPayloads=false and the destruction
+        // of the host reconstruction owner; device data is not silently reused.
+        CHECK_THROWS(resident.Validate());
     }
 }
 TEST_CASE("Geometry-only FV metrics can live on CUDA without retaining a host metric plan or allocating VR")
