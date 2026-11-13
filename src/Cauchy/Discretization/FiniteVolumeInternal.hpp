@@ -132,6 +132,9 @@ namespace DNDS::Cauchy
         /// Present only for the variational family. Constant/P0 and explicit
         /// physical-gradient P1 own no Taylor basis, VR matrices or modal plan.
         std::optional<CFV::VariationalReconstructionPlan> reconstruction;
+        /// Frozen operator dispatch, resolved at placement. The schedule has
+        /// no device branch and CFV owns all numerical kernel selection.
+        CFV::ReconstructionDeviceKernel reconstructionKernel = CFV::ReconstructionDeviceKernel::FP64;
         CFV::GradientPlan gradient;
         Geom::EntityWorkPartition partition;
         FiniteVolumeStencilStorage stencil;

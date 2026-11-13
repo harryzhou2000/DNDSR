@@ -3,6 +3,25 @@
 #include "Cauchy/Config/SimulationConfig.hpp"
 
 namespace C = DNDS::Cauchy;
+TEST_CASE("Reconstruction kernel selection is explicit and retains the FP64 default")
+{
+    using Kernel = DNDS::CFV::ReconstructionDeviceKernel;
+    C::ExecutionSettings execution;
+    CHECK(execution.ReconstructionKernel() == Kernel::FP64);
+    for (const auto &[name, kernel] : std::vector<std::pair<std::string, Kernel>>{
+             {"fp64Tensor", Kernel::FP64TensorCore}, {"fp64TensorShared", Kernel::FP64TensorCoreShared}, {"fp64TensorAsync", Kernel::FP64TensorCoreAsync}, {"fp32", Kernel::FP32}, {"tf32", Kernel::TF32TensorCore}})
+    {
+        execution.reconstructionKernel = name;
+        CHECK(execution.ReconstructionKernel() == kernel);
+        const C::ExecutionSettings restored = C::Json(execution).get<C::ExecutionSettings>();
+        CHECK(restored.ReconstructionKernel() == kernel);
+    }
+    C::DomainConfig domain;
+    domain.settings.execution.reconstructionKernel = "fp32";
+    CHECK_THROWS_WITH(C::ResolvedExecutionPlan::Resolve(domain), doctest::Contains("requires CUDA"));
+    domain.settings.execution.reconstructionKernel = "automatic-low-precision";
+    CHECK_THROWS_WITH(C::ResolvedExecutionPlan::Resolve(domain), doctest::Contains("unknown reconstruction kernel"));
+}
 TEST_CASE("CUDA capability resolution requires a complete combined perfect gas profile")
 {
     C::DomainConfig domain;
@@ -26,6 +45,12 @@ TEST_CASE("CUDA capability resolution requires a complete combined perfect gas p
         settings.equation.transport = "NewtonianFourier";
         CHECK_NOTHROW(C::ResolvedExecutionPlan::Resolve(domain));
     }
+    settings.execution.reconstructionKernel = "fp32";
+    CHECK_NOTHROW(C::ResolvedExecutionPlan::Resolve(domain));
+    settings.numerics.limiter = "LVR";
+    CHECK_THROWS_WITH(C::ResolvedExecutionPlan::Resolve(domain), doctest::Contains("LVR currently requires"));
+    settings.numerics.limiter = "none";
+    settings.execution.reconstructionKernel = "fp64";
     settings.implicit.multigrid.coarseLevelSettings["1"].solver = {{"linear", {{"method", "ilu"}}}};
     CHECK_THROWS_WITH(C::ResolvedExecutionPlan::Resolve(domain), doctest::Contains("pMG level 1 CUDA linear solve"));
     settings.implicit.multigrid.coarseLevelSettings.clear();

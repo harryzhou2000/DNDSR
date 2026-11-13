@@ -397,7 +397,7 @@ namespace DNDS::Cauchy
                                       "VR schedule lacks polynomial workspace");
                 _data->reconstruction->SubmitReconstructionIterTo(
                     engine, stream, state.PhysicalField(iField), reconstruction.WarmValues().PhysicalField(iField),
-                    *field.reconstruction, *field.reconstructionBoundary, region);
+                    *field.reconstruction, *field.reconstructionBoundary, region, _data->reconstructionKernel);
             }
             work.EndQueuedPhase(engine, stream, timing);
         };

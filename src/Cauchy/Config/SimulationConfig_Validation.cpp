@@ -242,6 +242,24 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(hostThreads == 0 || provided >= MPI_THREAD_FUNNELED,
                               "Cauchy CPU workers require at least MPI_THREAD_FUNNELED; disable workers or request a higher MPI thread level");
     }
+    CFV::ReconstructionDeviceKernel ExecutionSettings::ReconstructionKernel() const
+    {
+        using Kernel = CFV::ReconstructionDeviceKernel;
+        if (reconstructionKernel == "fp64")
+            return Kernel::FP64;
+        if (reconstructionKernel == "fp64Tensor")
+            return Kernel::FP64TensorCore;
+        if (reconstructionKernel == "fp64TensorShared")
+            return Kernel::FP64TensorCoreShared;
+        if (reconstructionKernel == "fp64TensorAsync")
+            return Kernel::FP64TensorCoreAsync;
+        if (reconstructionKernel == "fp32")
+            return Kernel::FP32;
+        if (reconstructionKernel == "tf32")
+            return Kernel::TF32TensorCore;
+        DNDS_check_throw_info(false, "unknown reconstruction kernel: " + reconstructionKernel);
+        return Kernel::FP64;
+    }
     ResolvedExecutionPlan ResolvedExecutionPlan::Resolve(const DomainConfig &domain)
     {
         const auto &s = domain.settings;
@@ -249,6 +267,11 @@ namespace DNDS::Cauchy
         auto require = [&](bool found, const std::string &operation)
         { if (!found) missing.push_back(operation); };
         const bool cuda = s.execution.device == "cuda";
+        const auto reconstructionKernel = s.execution.ReconstructionKernel();
+        require(cuda || reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64,
+                "nondefault reconstruction kernel requires CUDA");
+        require(s.numerics.limiter != "LVR" || reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64,
+                "LVR currently requires the fp64 reconstruction kernel");
         require(s.execution.device == "cpu" || cuda, "residual/BC/reconstruction backend " + s.execution.device);
 #ifndef DNDS_USE_CUDA
         require(!cuda, "backend cuda requires a CUDA-enabled build");

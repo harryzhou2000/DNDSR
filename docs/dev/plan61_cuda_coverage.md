@@ -103,6 +103,37 @@ TF32 did, with a larger error. This is not physical-solution accuracy evidence.
 Final physical gates and full completion remain open. Compact application
 records are in the plan repository's `evidence/cauchy-plan61/phase-d/`.
 
+### Explicit reconstruction kernel selection
+
+`execution.reconstructionKernel` selects `fp64` (unchanged default),
+`fp64Tensor`, `fp64TensorShared`, `fp64TensorAsync`, `fp32`, or `tf32`.
+The operator resolves this once when placing its CFV plan, quantizes only
+already-inverted sweep maps for the last two choices, and verifies the device
+capability before advancing. The common queued sweep passes the frozen policy
+to CFV; it contains no CUDA launch or backend-specific schedule. Coefficients,
+means, relaxation/publication and WBAP tables remain FP64.
+
+CPU rejects nondefault choices. LVR currently rejects nondefault choices
+because its penalized sweep has a distinct kernel contract; it must not silently
+ignore a requested policy. Gradient-only pMG levels have no VR sweep, so the
+inherited selection has no numerical work there. FP64 tensor modes require
+device FP64 tensor support; TF32 requires its corresponding device capability.
+These explicit optional modes do not change the required FP64 acceptance gate.
+The Phase D selector build and focused config/domain/spatial checks passed,
+including one-rank device1 and two-rank/two-device execution. Rebuilt/installed
+Python operator tests passed three cases; the mixture case skipped because its
+installed mechanism was unavailable. Logs are under
+`workspace/plan61-validation/D/quantized-*`.
+
+Matched one-device, 20-update P3 cylinder pilots quantify the optional modes:
+FP32/TF32 halve resident sweep-map bytes (6,426,432 to 3,213,216), but their
+reconstruction coefficients fail the predeclared pointwise comparison bounds.
+The conservative fields pass those bounds. Maximum coefficient differences
+are 3.366e-8 (FP32) and 1.459e-4 (TF32); these short pilots establish neither a
+converged residual floor nor a useful whole-solver speedup. Keep these modes
+explicit experiments, retain the failed comparisons, and do not weaken the
+FP64 acceptance gate. The plan repository records the bounds and full metrics.
+
 ## CPU threading and device leaf map
 
 The earlier inventory is a chronological implementation record; its original

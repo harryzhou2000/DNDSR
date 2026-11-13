@@ -72,6 +72,11 @@ namespace DNDS::Cauchy
         std::string fieldGrouping = "coupled";
         std::string transferPreflight = "collective";
         std::string communicationExecution = "caller";
+        /// Explicit CFV CUDA sweep policy. Quantized variants keep solution
+        /// coefficients in FP64; only already-inverted sweep maps/products
+        /// change precision. CPU and existing solver defaults remain FP64.
+        std::string reconstructionKernel = "fp64";
+        CFV::ReconstructionDeviceKernel ReconstructionKernel() const;
         int hostThreads = 0;
         int deviceOrdinal = 0;
         bool checkAccess = true;
@@ -91,6 +96,7 @@ namespace DNDS::Cauchy
             DNDS_FIELD(transferPreflight, "MPI launch validation: collective (default) or abortOnFailure (local checks, fatal MPI abort, no per-launch global agreement); setup remains collective");
             DNDS_FIELD(hostThreads, "CPU worker count; zero means inline execution");
             DNDS_FIELD(communicationExecution, "MPI payload execution: caller (default) or worker (CPU Direct/HostPacked, requires MPI_THREAD_MULTIPLE)");
+            DNDS_FIELD(reconstructionKernel, "CUDA VR sweep: fp64 (default), fp64Tensor, fp64TensorShared, fp64TensorAsync, fp32, or tf32. fp32/tf32 quantize inverted sweep maps; coefficients and WBAP remain FP64. Nondefault modes require CUDA and are unavailable with LVR; gradient-only levels have no VR sweep. Device support is checked at placement.");
             DNDS_FIELD(checkAccess, "Validate declared scheduled accesses at submission");
             DNDS_FIELD(overlap, "Overlap input halo exchanges with owned-only core work; false waits then runs unsplit kernels");
             DNDS_FIELD(haloFreshnessChecks, "Extra collective halo-publication audits; default off, also disabled by implicit.collectiveChecks=false");

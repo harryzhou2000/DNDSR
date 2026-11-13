@@ -106,6 +106,61 @@ TEST_CASE("Device domains advance nonuniform implicit flow through single grid a
     }
 }
 
+TEST_CASE("Domain reconstruction selection runs quantized maps with FP64 evolving fields")
+{
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 6);
+    const auto metrics = DNDS::CFV::FiniteVolumePlan::ConstructMetrics(mesh);
+    C::DomainSettings settings;
+    settings.execution.device = "cuda";
+    settings.execution.deviceOrdinal = 0;
+    settings.numerics.reconstruction = "variational";
+    settings.numerics.cfv.maxOrder = 3;
+    settings.numerics.cfv.SORInstead = false;
+    settings.numerics.reconstructionIterations = 12;
+    settings.numerics.reconstructionTolerance = 0;
+    settings.numerics.limiter = "none";
+    settings.numerics.faceFallback = false;
+    settings.implicit.linear.method = "jacobi";
+    C::TimeSettings time;
+    time.method = "ssprk3";
+    const auto gas = C::EquationSystem::Resolve(settings.equation).Gas();
+    R::Array<double> initial(R::RowLayout::Dense(metrics.NumCell(), 5));
+    {
+        auto write = initial.Write();
+        for (I iCell = 0; iCell < initial.RowCount(); ++iCell)
+        {
+            const auto x = metrics.GetCellCent(iCell);
+            const auto value = gas.Conservative({1 + .02 * std::sin(2 * DNDS::pi * (x[0] + x[1])), .3, .2, .1, 1});
+            for (int j = 0; j < 5; ++j)
+                write.View()(iCell, j) = value[j];
+        }
+    }
+    std::optional<R::Array<double>> reference;
+    for (const char *kernel : {"fp64", "fp32"})
+    {
+        CAPTURE(kernel);
+        settings.execution.reconstructionKernel = kernel;
+        C::Domain domain("fluid", mesh, settings, time);
+        domain.Dofs().CoupledField().Owned().CopyFrom(initial, {R::Device::CUDA(0), nullptr}).Wait();
+        for (int step = 0; step < 3; ++step)
+            REQUIRE(domain.Advance(1e-3).accepted);
+        const auto result = domain.Dofs().CoupledField().Owned().To(R::Device::Host());
+        if (!reference)
+            reference = result.Clone();
+        const auto actual = result.Read(), expected = reference->Read(), seed = initial.Read();
+        double change = 0;
+        for (I iCell = 0; iCell < result.RowCount(); ++iCell)
+            for (int j = 0; j < 5; ++j)
+            {
+                CHECK(actual.View()(iCell, j) == doctest::Approx(expected.View()(iCell, j)).epsilon(2e-6).scale(1));
+                change = std::max(change, std::abs(actual.View()(iCell, j) - seed.View()(iCell, j)));
+            }
+        // Nonconstant data and an actual change prevent a vacuous constant
+        // state test from passing when sweep selection is disconnected.
+        CHECK(change > 1e-6);
+    }
+}
+
 int main(int argc, char **argv)
 {
     DNDS::MPI::Init_thread(&argc, &argv);

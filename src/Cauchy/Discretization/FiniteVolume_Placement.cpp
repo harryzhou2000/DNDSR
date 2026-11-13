@@ -54,7 +54,16 @@ namespace DNDS::Cauchy
             options.arbitraryPointSampling = _data->hasInterfaces;
             options.basis = true;
             options.basisDerivativeOrder = 1;
+            placed->reconstructionKernel = _data->settings.execution.ReconstructionKernel();
+            if (placed->reconstructionKernel == CFV::ReconstructionDeviceKernel::FP32 ||
+                placed->reconstructionKernel == CFV::ReconstructionDeviceKernel::TF32TensorCore)
+                options.matrixPrecision = CFV::ReconstructionMatrixPrecision::FP32;
+            DNDS_check_throw_info(_data->settings.numerics.limiter != "LVR" ||
+                                      placed->reconstructionKernel == CFV::ReconstructionDeviceKernel::FP64,
+                                  "LVR currently requires the fp64 reconstruction kernel");
             placed->reconstruction = _data->reconstruction->Place(device, context, options);
+            DNDS_check_throw_info(placed->reconstruction->SupportsKernel(placed->reconstructionKernel),
+                                  "requested CFV reconstruction kernel is unsupported on this CUDA device");
         }
         placed->stencil = _data->stencil.Placed(device, context);
         const auto moveField = [&](const auto &source, const char *name)
