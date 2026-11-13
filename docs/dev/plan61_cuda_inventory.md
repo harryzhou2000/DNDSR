@@ -270,3 +270,35 @@ the agreed Plan61 oracle. Do not infer equivalence of those other conventions
 from this fixture. Group B remains source-only and the full CUDA capability
 remains disabled.
 
+### Volume source and positivity/gradient source additions (unvalidated)
+
+- `Discretization/CUDA/FiniteVolumeSourceKernels.*`: quadrature RANS residuals,
+  mean/quadrature positive destruction diagonal approximations (diagonal vector
+  or full-block destinations), directional-value replication, and the moving
+  component-axis flow source. The source uses shared RANS point arithmetic and
+  preserves model scalar repair at quadrature points. Cell-local integration
+  commits only after every point succeeds. Mean thermodynamic linearization
+  cache output remains separate work in the implicit integration batch.
+- `Discretization/CUDA/FiniteVolumePositivityKernels.*`: modal degree selection,
+  reference truncation, flow/RANS compression, endpoint recovery/verification,
+  and physical-dt forecasts. Thermal formulas remain shared. Per-cell status,
+  beta and flags leave reductions and controller decisions outside the leaves.
+  The physical-dt bound never compresses an explicit per-cell update.
+- `Discretization/CUDA/FiniteVolumeGradientKernels.*`: periodic-aware Barth
+  limiting, direct-gradient thermal/RANS positivity and primitive means. These
+  are Cauchy physics operations; WBAP remains a CFV operator. Direct PP samples
+  are evaluated from bounded per-cell gradient scratch, with no quadrature-count
+  limit on a local sample array.
+- Source review fixed the RHS publication's initially absent read lease to use
+  an explicit optional scope; the retained device descriptor still owns no
+  nested field allocation implicitly.
+
+Test sources compare RANS residual/destruction outputs against the generic CPU
+source kernels, cover source replication/rotation, modal PP/reference/recovery,
+physical-dt scaling independent of RANS bounds, and direct-gradient Barth/PP
+and primitive means. One invalid-mean case checks explicit numerical status.
+All remain **unbuilt/unrun**, and production placement/queued dispatch is still
+pending. Dynamic characteristic production, LVR, state/reduction leaves,
+workspace integration, remaining OMP and optional quantized CFV matrices are
+still part of batch B; no CUDA solver acceptance is claimed.
+

@@ -1,4 +1,5 @@
 #include "Cauchy/Discretization/CUDA/FiniteVolumeRHSKernels.hpp"
+#include <optional>
 
 namespace DNDS::Cauchy::CUDA
 {
@@ -15,7 +16,7 @@ namespace DNDS::Cauchy::CUDA
     {
         RHSGeometry host;
         R::Array<RHSGeometry> storage;
-        R::Array<RHSGeometry>::ReadLease read;
+        std::optional<R::Array<RHSGeometry>::ReadLease> read;
         Data(RHSGeometry geometry, R::ExecutionContext context) : host(geometry)
         {
             host.ValidateDevice(context.device);
@@ -29,7 +30,7 @@ namespace DNDS::Cauchy::CUDA
             }
             storage = staging.To(context.device, context);
             storage.SetName("Cauchy/RHSGeometryArguments", DNDS_ALLOCATION_SITE());
-            read = storage.Read(context);
+            read.emplace(storage.Read(context));
         }
     };
     RHSGeometryPublication::RHSGeometryPublication(RHSGeometry geometry, R::ExecutionContext context)
@@ -37,7 +38,7 @@ namespace DNDS::Cauchy::CUDA
     const RHSGeometry &RHSGeometryPublication::HostDescriptor() const { return _data->host; }
     R::ArrayView<const RHSGeometry, R::AccessBoundsChecks, R::FixedRows<1>> RHSGeometryPublication::View() const
     {
-        return _data->read.View<R::FixedRows<1>>();
+        return _data->read->View<R::FixedRows<1>>();
     }
     R::Device RHSGeometryPublication::Device() const { return _data->storage.GetDevice(); }
     void RHSKernelParameters::Validate(int components) const
