@@ -181,6 +181,23 @@ close, but recording events, allocating or submitting through its streams fails.
 `Synchronize()` uses the same progress loop and leaves the context open. Serialize
 both operations with submission; neither invents missing cross-stream edges.
 
+For host resources whose final destructor must run on the controller (for
+example a mesh publication retaining an MPI communicator), register an owner
+with `engine.RetainUntilSynchronize(owner)` **before** submitting work that
+captures it. The engine releases that reference after all accepted work drains,
+on the creating controller, at the next `Synchronize()` or `Close()`. This
+retention does not submit a kernel or record a CUDA event, and is deliberately
+coarser than each operation's numerical lifetime. Rejected submissions can
+therefore leave the resource pinned until the next drain. It does not make
+resource destruction collective or permit shutdown after `MPI_Finalize`.
+
+This is distinct from scheduled Array access: arrays still use tracked operands
+and cross-stream event ordering. Retaining an owner neither grants a read/write
+lease nor proves producer completion. Do not retain the engine itself, and do
+not release the last unrelated communicator owner on a CPU worker. The queued
+CFV polynomial sampler uses this retention for its mesh read guard while its
+Array buffers use normal `SubmitArrays` access and retirement.
+
 Backend adapters register `ExecutionProgress` before initiating external work.
 The registry retains actual resource owners through nonblocking `Poll()` and
 releases its reference on the controller. A callback returns true only after

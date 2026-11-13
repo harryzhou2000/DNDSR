@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "doctest.h"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
+#include "CFV/Plans/PolynomialSamplingPlan.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "DNDS/Runtime/Execution/KernelArguments.hpp"
 #include "DNDS/Runtime/Communication/NCCLTransfer.hpp"
@@ -44,6 +45,86 @@ static void Equal(const C::FVField &a, const C::FVField &b, double tolerance = 5
     for (I iRow = 0; iRow < host.RowCount(); ++iRow)
         for (I iComp = 0; iComp < I(a.Width()); ++iComp)
             CHECK(right.View()(iRow, iComp) == doctest::Approx(left.View()(iRow, iComp)).epsilon(tolerance).scale(1));
+}
+
+TEST_CASE("Queued polynomial sampling covers cached and direct derivatives on owned and ghost rows")
+{
+    struct Profile
+    {
+        int dimension, degree, cacheOrder, components;
+    };
+    for (const auto profile : {Profile{2, 1, -1, 5}, Profile{2, 3, 1, 6}, Profile{3, 3, 3, 7}, Profile{3, 3, -1, 5}})
+    {
+        INFO("dimension=" << profile.dimension << ", degree=" << profile.degree << ", cache=" << profile.cacheOrder);
+        auto mesh = profile.dimension == 2 ? G::OverlapTest::BuildNativeFixture(mpi, false).mesh : CFVTest::CartesianHexes(mpi, 3);
+        auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh);
+        C::ReconstructionSettings settings;
+        settings.maxOrder = profile.degree;
+        settings.cacheDiffBase = profile.cacheOrder >= 0;
+        settings.cacheDiffBaseOrder = std::max(0, profile.cacheOrder);
+        auto reconstruction = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+        const I modes = reconstruction.NRecDOF(), rows = metrics.NumCellProc();
+        R::Array<I> cells(R::RowLayout::Dense(rows, 1));
+        R::Array<double> points(R::RowLayout::Dense(rows, 3));
+        {
+            const auto read = metrics.AcquireRead();
+            const auto geometry = read.HostView();
+            auto ids = cells.Write();
+            auto position = points.Write();
+            for (I iCell = 0; iCell < rows; ++iCell)
+            {
+                ids.View()(iCell, 0) = iCell;
+                const auto center = geometry.GetCellCent(iCell);
+                for (int d = 0; d < 3; ++d)
+                    position.View()(iCell, d) = center[d] + (d < profile.dimension ? .13 * (d + 1) * geometry.cells(iCell, 7) : 0);
+            }
+        }
+        auto mean = metrics.BuildField(profile.components), coefficients = metrics.BuildField(profile.components * modes);
+        // Explicitly populate both spaces: this test probes sampler placement
+        // and indexing, not the separately tested halo transport.
+        for (auto *field : {&mean, &coefficients})
+            for (auto *part : {&field->Owned(), &field->Ghost()})
+            {
+                auto write = part->Write();
+                for (I iRow = 0; iRow < part->RowCount(); ++iRow)
+                    for (I component = 0; component < I(field->Width()); ++component)
+                        write.View()(iRow, component) = .017 * (component + 1) + .003 * (iRow + 1);
+            }
+        C::PolynomialSamplingPlan sampler(reconstruction, cells, points);
+        const auto device = R::Device::CUDA(0);
+        const auto context = R::ExecutionContext::CUDA(0);
+        auto deviceMean = metrics.BuildField(R::RowLayout::Dense(0, profile.components), device);
+        auto deviceCoefficients = metrics.BuildField(R::RowLayout::Dense(0, profile.components * modes), device);
+        deviceMean.Owned().CopyFrom(mean.Owned(), context).Wait();
+        deviceMean.Ghost().CopyFrom(mean.Ghost(), context).Wait();
+        deviceCoefficients.Owned().CopyFrom(coefficients.Owned(), context).Wait();
+        deviceCoefficients.Ghost().CopyFrom(coefficients.Ghost(), context).Wait();
+        R::Array<double> expected(R::RowLayout::Dense(rows, profile.components));
+        R::Array<double> workerResult(R::RowLayout::Dense(rows, profile.components));
+        R::Array<double> deviceResult(R::RowLayout::Dense(rows, profile.components), device);
+        for (int derivative = 0; derivative <= modes; ++derivative)
+        {
+            INFO("derivative=" << derivative);
+            sampler.Evaluate(mean, coefficients, expected, derivative);
+            R::EagerEngine worker(2), gpu;
+            const auto workerStream = worker.CreateCPUStream();
+            const auto gpuStream = gpu.CreateStream(std::make_shared<R::CUDALauncher>(0));
+            std::optional<C::PolynomialSamplingPlan> resident{sampler.Placed(device, context)};
+            sampler.Evaluate(worker, workerStream, mean, coefficients, workerResult, derivative);
+            resident->Evaluate(gpu, gpuStream, deviceMean, deviceCoefficients, deviceResult, derivative);
+            resident.reset(); // Queued views must not depend on the plan handle.
+            worker.Close();
+            gpu.Close();
+            const auto hostResult = deviceResult.To(R::Device::Host());
+            const auto a = expected.Read(), b = workerResult.Read(), c = hostResult.Read();
+            for (I iRow = 0; iRow < rows; ++iRow)
+                for (int component = 0; component < profile.components; ++component)
+                {
+                    CHECK(b.View()(iRow, component) == a.View()(iRow, component));
+                    CHECK(c.View()(iRow, component) == doctest::Approx(a.View()(iRow, component)).epsilon(2e-11).scale(1));
+                }
+        }
+    }
 }
 __global__ void MetricProbe(C::FiniteVolumeHostView metrics, C::ReconstructionBasisHostView basis,
                             G::UnstructuredMeshView mesh, I iPoint, int side, R::ArrayView<double> result)

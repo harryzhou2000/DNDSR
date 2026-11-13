@@ -38,6 +38,37 @@ static void Await(const std::atomic<bool> &flag)
     }
 }
 
+TEST_CASE("Controller resources survive inline or worker work and retire on the controller")
+{
+    for (int workers : {0, 2})
+    {
+        INFO("workers=" << workers);
+        struct Resource
+        {
+            std::thread::id &destroyedOn;
+            explicit Resource(std::thread::id &thread) : destroyedOn(thread) {}
+            ~Resource() { destroyedOn = std::this_thread::get_id(); }
+        };
+        const auto controller = std::this_thread::get_id();
+        std::thread::id destroyedOn;
+        R::EagerEngine engine(workers);
+        const auto stream = engine.CreateCPUStream();
+        auto resource = std::make_shared<Resource>(destroyedOn);
+        std::weak_ptr<Resource> weak = resource;
+        engine.RetainUntilSynchronize(resource);
+        engine.Submit(stream, [resource](R::ExecutionContext)
+                      { (void)resource; });
+        resource.reset();
+        stream.Record().WaitHost();
+        CHECK_FALSE(weak.expired());
+        CHECK(destroyedOn == std::thread::id{});
+        engine.Synchronize();
+        CHECK(weak.expired());
+        CHECK(destroyedOn == controller);
+        engine.Close();
+    }
+}
+
 TEST_CASE("Completion notifications wake CPU lanes without controller polling")
 {
     struct NotifiedGate final : R::StreamEvent::State

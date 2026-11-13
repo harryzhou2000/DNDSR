@@ -78,17 +78,35 @@ namespace DNDS::Cauchy
             fill(view.FaceNodes(iFace), view.GetFaceElement(iFace), faces[iFace]);
         return WallDistanceSamples(std::move(data));
     }
-    WallDistanceRead::WallDistanceRead(std::shared_ptr<const Detail::WallDistanceData> data)
+    WallDistanceRead::WallDistanceRead(std::shared_ptr<const Detail::WallDistanceData> data, R::ExecutionContext context)
         : _data(std::move(data)), _mesh(_data->mesh->AcquireRead(Requirements())),
-          _cells(_data->cells.Read()), _faces(_data->faces.Read()), _mean(_data->mean.Read())
+          _cells(_data->cells.Read(context)), _faces(_data->faces.Read(context)), _mean(_data->mean.Read(context))
     {
         // Pin first, then check the cache stamp: mutation cannot race this check.
         _data->stamp.Validate();
     }
     WallDistanceView WallDistanceRead::HostView() const
     {
+        DNDS_check_throw_info(_data->cells.GetDevice() == R::Device::Host(), "host wall-distance view requires host placement");
+        return View();
+    }
+    WallDistanceView WallDistanceRead::View() const
+    {
         return {_cells.View<R::CSRRows>(), _faces.View<R::CSRRows>(), _mean.View<R::FixedRows<1>>()};
     }
-    WallDistanceRead WallDistanceSamples::AcquireRead() const { return WallDistanceRead(_data); }
+    WallDistanceRead WallDistanceSamples::AcquireRead(R::ExecutionContext context) const { return WallDistanceRead(_data, context); }
+    R::Device WallDistanceSamples::Device() const { return _data->cells.GetDevice(); }
+    WallDistanceSamples WallDistanceSamples::Placed(R::Device device, R::ExecutionContext context) const
+    {
+        const auto guard = _data->mesh->AcquireRead(Requirements());
+        _data->stamp.Validate();
+        if (device == Device())
+            return *this;
+        auto copy = std::make_shared<Detail::WallDistanceData>(*_data);
+        copy->cells = _data->cells.To(device, context);
+        copy->faces = _data->faces.To(device, context);
+        copy->mean = _data->mean.To(device, context);
+        return WallDistanceSamples(std::move(copy));
+    }
     int WallDistanceSamples::IntegrationOrder() const { return _data->intOrder; }
 }

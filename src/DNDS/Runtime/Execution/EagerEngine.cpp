@@ -440,6 +440,7 @@ namespace DNDS::Runtime
         std::shared_ptr<CPUExecutor> host;
         std::vector<std::shared_ptr<StreamLauncher>> streams;
         std::vector<std::shared_ptr<ExecutionProgress>> pending;
+        std::vector<std::shared_ptr<const void>> retainedUntilDrain;
         std::shared_ptr<AccessTrackingContext> tracking;
         std::mutex mutex;
         bool draining = false;
@@ -622,6 +623,15 @@ namespace DNDS::Runtime
                                                         { retire(error); submission.Complete(); }); });
     }
     void EagerEngine::RegisterProgress(std::shared_ptr<ExecutionProgress> operation) { _state->Register(std::move(operation)); }
+    void EagerEngine::RetainUntilSynchronize(std::shared_ptr<const void> owner)
+    {
+        _state->CheckController();
+        DNDS_check_throw_info(owner, "cannot retain an empty controller resource");
+        std::lock_guard<std::mutex> lock(_state->mutex);
+        _state->CheckOpen();
+        DNDS_check_throw_info(!_state->draining, "cannot retain a resource during synchronization");
+        _state->retainedUntilDrain.push_back(std::move(owner));
+    }
     bool EagerEngine::IsClosed() const { return _state->phase.load() == ExecutionRuntime::Phase::Closed; }
     void EagerEngine::Synchronize() { Drain(false); }
     void EagerEngine::Close()
@@ -741,6 +751,10 @@ namespace DNDS::Runtime
             }
         if (closing)
             _state->host->Shutdown();
+        // No registry lock around destruction: a resource may release MPI or
+        // backend allocations. Every stream tail is retired at this point,
+        // including failure paths. Destruction runs only on the controller.
+        _state->retainedUntilDrain.clear();
         {
             std::lock_guard<std::mutex> lock(_state->mutex);
             if (closing)

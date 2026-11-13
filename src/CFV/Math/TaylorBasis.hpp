@@ -4,6 +4,38 @@
 
 namespace DNDS::CFV::Math
 {
+    /// Value-only polynomial ordering for device evaluation. Prepared from the
+    /// canonical Geom tables, rather than duplicating their 2D/3D mode order.
+    /// Coordinates are dimensionless (point-center)/scale; physical derivative
+    /// factors use the same isotropic scale. No factorial normalization of the
+    /// monomials is introduced. The zero-mean correction belongs to the caller.
+    struct TaylorBasisParameters
+    {
+        std::array<std::array<int, 3>, 20> orders{};
+        int dimension = 0, degree = 0, size = 0;
+
+        DNDS_DEVICE_CALLABLE static real Power(real x, int exponent)
+        {
+            return exponent == 0 ? 1 : exponent == 1 ? x
+                                   : exponent == 2   ? x * x
+                                                     : x * x * x;
+        }
+        DNDS_DEVICE_CALLABLE real Derivative(int derivative, int mode, const std::array<real, 3> &x, real scale) const
+        {
+            const auto &alpha = orders[mode], &beta = orders[derivative];
+            int factor = 1;
+            for (int d = 0; d < 3; ++d)
+            {
+                if (beta[d] > alpha[d])
+                    return 0;
+                for (int k = 0; k < beta[d]; ++k)
+                    factor *= alpha[d] - k;
+            }
+            const real numerator = factor * Power(x[0], alpha[0] - beta[0]) *
+                                   Power(x[1], alpha[1] - beta[1]) * Power(x[2], alpha[2] - beta[2]);
+            return numerator / (Power(scale, beta[0]) * Power(scale, beta[1]) * Power(scale, beta[2]));
+        }
+    };
     /// Central definition of polynomial/derivative ordering and Cartesian frame
     /// changes for the scalar-scaled Taylor family. Geometry supplies centers,
     /// lengths and moments; a basis owns none of them. Cartesian-tree backends
@@ -18,6 +50,16 @@ namespace DNDS::CFV::Math
             (void)PolynomialSize(dimension, degree);
         }
         int Size() const { return PolynomialSize(_dimension, _degree); }
+        TaylorBasisParameters KernelParameters() const
+        {
+            TaylorBasisParameters result;
+            result.dimension = _dimension;
+            result.degree = _degree;
+            result.size = Size();
+            for (int mode = 0; mode < result.size; ++mode)
+                result.orders[mode] = MultiIndex(mode);
+            return result;
+        }
         const std::array<int, 3> &MultiIndex(int mode) const
         {
             DNDS_check_throw_info(mode >= 0 && mode < Size(), "Taylor derivative mode outside basis");

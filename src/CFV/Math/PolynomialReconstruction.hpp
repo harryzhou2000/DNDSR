@@ -14,6 +14,19 @@ namespace DNDS::CFV::Math
                               "reconstruction supports dimension 2/3 and polynomial degree 1..3");
         return dim == 2 ? Geom::Base::ndiffSizC2D[degree] : Geom::Base::ndiffSizC[degree];
     }
+    /// Numerical leaf after setup validates dimension, extents (<=20) and
+    /// positive scale. Bounded Eigen storage; no allocation or exception-based
+    /// validation. Public setup callers use PolynomialDerivatives below.
+    inline void PolynomialDerivativesUnchecked(SmallMatrix &out, int dim, int rows, int columns,
+                                               const Geom::tPoint &point, const Geom::tPoint &center, real scale) noexcept
+    {
+        out.resize(rows, columns);
+        const Geom::tPoint x = (point - center) / scale;
+        if (dim == 2)
+            Geom::Base::FPolynomialFill2D(out, x[0], x[1], 0., scale, scale, 1., rows, columns);
+        else
+            Geom::Base::FPolynomialFill3D(out, x[0], x[1], x[2], scale, scale, scale, rows, columns);
+    }
     inline void PolynomialDerivatives(SmallMatrix &out, int dim, int degree,
                                       const Geom::tPoint &point, const Geom::tPoint &center, real scale,
                                       int derivativeOrder = -1)
@@ -21,12 +34,7 @@ namespace DNDS::CFV::Math
         const int n = PolynomialSize(dim, degree);
         const int rows = derivativeOrder < 0 ? n : derivativeOrder == 0 ? 1
                                                                         : PolynomialSize(dim, std::min(derivativeOrder, degree));
-        out.resize(rows, n);
-        const Geom::tPoint x = (point - center) / scale;
-        if (dim == 2)
-            Geom::Base::FPolynomialFill2D(out, x[0], x[1], 0., scale, scale, 1., rows, n);
-        else
-            Geom::Base::FPolynomialFill3D(out, x[0], x[1], x[2], scale, scale, scale, rows, n);
+        PolynomialDerivativesUnchecked(out, dim, rows, n, point, center, scale);
     }
     /// Diagonal weights of the isotropic variational functional, including
     /// symmetric-tensor multiplicities. Inputs are unsquared per-order weights.

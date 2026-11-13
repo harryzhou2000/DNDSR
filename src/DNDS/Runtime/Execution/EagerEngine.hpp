@@ -288,5 +288,13 @@ namespace DNDS::Runtime
         /// under the runtime registry lock. Only the creating thread progresses
         /// and retires these owners. Completion is not a dependency edge.
         void RegisterProgress(std::shared_ptr<ExecutionProgress> operation);
+        /// Pin a host resource through the next Synchronize/Close, then release
+        /// this copy on the creating controller after all accepted work retires.
+        /// Use before submitting work that may otherwise drop the last mesh or
+        /// MPI resource owner on a CPU worker/device retirement path. No event
+        /// is recorded and no work is submitted. This is not an Array access
+        /// lease or a stream dependency; numerical operands still use tracked
+        /// submissions. Do not retain the engine itself (that would form a cycle).
+        void RetainUntilSynchronize(std::shared_ptr<const void> owner);
     };
 }

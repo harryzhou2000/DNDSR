@@ -147,3 +147,42 @@ Still pending in B: spatial CUDA launchers and operator wiring, boundary/PP/
 gradient/LVR/sampling/device-cache completion, optional matrix precision and
 remaining spatial OMP work. No source checkpoint here is numerical acceptance.
 
+### Sampling and auxiliary source additions (unvalidated)
+
+- `CFV/Plans/PolynomialSamplingPlan.hpp` now exposes queued sampling on the
+  caller's engine/stream. CPU worker and CUDA dispatch share that entry. The
+  sampler snapshots only query IDs, required basis cache or direct-evaluation
+  geometry/moments, plus mesh/space identity; it no longer pins the complete VR
+  matrix owner. Cached-only placement has no point/geometry payload to copy.
+- `CFV/CPU/PolynomialSamplingKernels*.cpp` contains independent-row generic and
+  bounded cached CPU arithmetic, using the canonical OMP row helper. The CUDA
+  launcher in `Operators/CUDA/PolynomialSamplingKernels_CUDA.cu` selects cached
+  versus direct Taylor evaluation once and uses bounded point scratch. Device
+  direct derivatives use canonical Geom mode ordering through `TaylorBasis`.
+- `Cauchy/Discretization/WallDistanceSamples.*` has explicit immutable placement
+  and resident read views. It retains mesh-generation validity, not a second
+  wall-distance provider or the source host quadrature buffers.
+- `Cauchy/Discretization/CUDA/FiniteVolumeAuxiliaryKernels.*` provides mean,
+  face and cell-reduction host launchers for combined AoS flow5/SA/2EQ. The
+  parameter projection in `PerfectGasKernelPoint.*` preserves the equation's
+  viscosity enablement. Periodic vector/gradient rotation is conditional, and
+  physical boundaries keep CPU auxiliary mean-state semantics while interface
+  boundaries consume supplied receiver-frame packet values. These launchers
+  are **not yet connected to the production auxiliary operator**.
+- Numerical failures have explicit row-status outputs. Residency/shape and
+  aggregate CUDA argument budget are checked before launch; leaves contain no
+  leases, MPI, host copies or exception-based recovery. Optional face outputs
+  and scratch still follow the existing auxiliary bundle contract.
+- `EagerEngine::RetainUntilSynchronize` pins thread-sensitive host owners to the
+  controller's next drain, independently of scheduled Array access. The queued
+  sampler uses it for its mesh guard; it adds no event per kernel. See the
+  runtime caller contract for destruction and ordering responsibilities.
+
+Added test sources (not executed): P1/P3 sampling in 2D/3D under no/partial/full
+basis caching, owned/ghost queries and CPU-worker/CUDA comparison; controller
+retirement after inline/worker work; CUDA auxiliary means versus the generic CPU
+flow5/SA/Wilcox/SST property path; a rotated-neighbor/physical/interface face
+stencil followed by cell reduction with an independent acoustic oracle.
+Group B still requires source completion, grouped compilation and numerical
+validation. No end-to-end CUDA capability or timing result is claimed.
+

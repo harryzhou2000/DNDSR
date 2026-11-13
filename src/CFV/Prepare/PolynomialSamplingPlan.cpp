@@ -1,113 +1,99 @@
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
 #include "CFV/Detail/ReconstructionData.hpp"
+#include "DNDS/Core/OMP.hpp"
 
 namespace DNDS::CFV
 {
     namespace R = Runtime;
     PolynomialSamplingPlan::PolynomialSamplingPlan(VariationalReconstructionPlan reconstruction,
                                                    const R::Array<index> &cells, const R::Array<real> &points, bool cacheDerivatives)
-        : _reconstruction(std::move(reconstruction)), _cacheDerivatives(cacheDerivatives)
+        : _mesh(reconstruction.Metrics()._data->mesh), _stamp(reconstruction.Metrics()._data->stamp),
+          _cellSpace(reconstruction.Metrics().Cells()), _space(reconstruction.Metrics().Space()),
+          _points(R::RowLayout::Dense(0, 3)), _basis(R::RowLayout::Dense(0, 0)),
+          _moments(R::RowLayout::Dense(0, 0)), _cellGeometry(R::RowLayout::Dense(0, 8)), _empty(R::RowLayout::Dense(0, 0)),
+          _dimension(reconstruction.Metrics().Dimension()), _degree(reconstruction.Settings().maxOrder),
+          _modes(reconstruction.NRecDOF()), _cacheDerivatives(cacheDerivatives)
     {
-        auto geometry = _reconstruction.Metrics().AcquireRead();
+        auto geometry = reconstruction.Metrics().AcquireRead();
         Validate();
         DNDS_check_throw_info(cells.GetDevice() == R::Device::Host() && points.GetDevice() == R::Device::Host() &&
                                   cells.Layout().Kind() == R::RowLayoutKind::Table && cells.Layout().Width() == 1 &&
                                   points.Layout().Kind() == R::RowLayoutKind::Table && points.Layout().Width() == 3 &&
                                   cells.RowCount() == points.RowCount(),
                               "polynomial sampling input shape/placement mismatch");
-        const int n = _reconstruction.NRecDOF();
-        const Math::TaylorBasis polynomial(_reconstruction.Metrics().Dimension(), _reconstruction.Settings().maxOrder);
-        _cachedDerivatives = _reconstruction.Settings().cacheDiffBase
-                                 ? polynomial.DerivativeNumber(_cacheDerivatives ? _reconstruction.Settings().cacheDiffBaseOrder : 0)
-                                 : 0;
+        const Math::TaylorBasis polynomial(_dimension, _degree);
+        const int cacheOrder = _cacheDerivatives ? reconstruction.Settings().cacheDiffBaseOrder : 0;
+        _cachedDerivatives = reconstruction.Settings().cacheDiffBase ? polynomial.DerivativeNumber(cacheOrder) : 0;
+        const bool direct = _cachedDerivatives < (_cacheDerivatives ? _modes + 1 : 1);
         _cells = R::Array<index>(R::RowLayout::Dense(cells.RowCount(), 1));
-        _points = R::Array<real>(R::RowLayout::Dense(cells.RowCount(), 3));
         if (_cachedDerivatives)
-            _basis = R::Array<real>(R::RowLayout::Dense(cells.RowCount(), n * _cachedDerivatives));
-        auto cellRead = cells.Read();
-        auto cellWrite = _cells.Write();
-        auto pointRead = points.Read(), momentRead = _reconstruction._data->moments.Read();
-        auto snapshotWrite = _points.Write();
-        std::optional<R::Array<real>::WriteLease> basisWrite;
-        if (_cachedDerivatives)
-            basisWrite.emplace(_basis.Write());
+            _basis = R::Array<real>(R::RowLayout::Dense(cells.RowCount(), _modes * _cachedDerivatives));
+        if (direct)
+        {
+            _points = R::Array<real>(R::RowLayout::Dense(cells.RowCount(), 3));
+            _moments = reconstruction._data->moments;
+            _cellGeometry = reconstruction.Metrics()._data->cell;
+        }
+        const auto cellRead = cells.Read();
+        const auto pointRead = points.Read();
         const auto ids = cellRead.View<R::FixedRows<1>>();
-        const auto snapshot = cellWrite.View<R::FixedRows<1>>();
-        const auto point = pointRead.View<R::FixedRows<3>>();
-        const auto positions = snapshotWrite.View<R::FixedRows<3>>();
-        const auto moment = momentRead.View<R::TableRows>();
-        const auto geom = geometry.HostView();
-        Math::SmallMatrix full;
+        const auto inputPoints = pointRead.View<R::FixedRows<3>>();
         for (index iPoint = 0; iPoint < ids.RowCount(); ++iPoint)
         {
             const index iCell = ids(iPoint, 0);
-            const Geom::tPoint p{point(iPoint, 0), point(iPoint, 1), point(iPoint, 2)};
-            DNDS_check_throw_info(iCell >= 0 && iCell < _reconstruction.Metrics().NumCellProc() && p.allFinite(), "invalid sampling cell or point");
-            snapshot(iPoint, 0) = iCell;
-            for (int d = 0; d < 3; ++d)
-                positions(iPoint, d) = p[d];
-            _needsGhost |= iCell >= _reconstruction.Metrics().NumCell();
-            if (basisWrite)
-            {
-                polynomial.Reconstruction(full, p, geom.GetCellCent(iCell), geom.cells(iCell, 7), moment[iCell],
-                                          _cacheDerivatives ? _reconstruction.Settings().cacheDiffBaseOrder : 0);
-                Eigen::Map<Eigen::MatrixXd>(basisWrite->View<R::TableRows>()[iPoint].data(), _cachedDerivatives, n) = full;
-            }
+            DNDS_check_throw_info(iCell >= 0 && iCell < _cellSpace.NumLocal() &&
+                                      std::isfinite(inputPoints(iPoint, 0)) && std::isfinite(inputPoints(iPoint, 1)) && std::isfinite(inputPoints(iPoint, 2)),
+                                  "invalid sampling cell or point");
+            _needsGhost |= iCell >= _cellSpace.NumOwned();
         }
-    }
-    void PolynomialSamplingPlan::Evaluate(const FVField &mean, const FVField &coefficients, R::Array<real> &output, int derivative) const
-    {
-        auto geometry = _reconstruction.Metrics().AcquireRead();
-        Validate();
-        const index components = mean.Width(), n = _reconstruction.NRecDOF();
-        _reconstruction.Metrics().ValidateField(mean, components);
-        _reconstruction.Metrics().ValidateField(coefficients, components * n);
-        DNDS_check_throw_info(derivative >= 0 && derivative <= (_cacheDerivatives ? n : 0) && output.GetDevice() == R::Device::Host() &&
-                                  !output.Layout().IsVariable() && output.RowCount() == Size() &&
-                                  output.Layout().Width() == components,
-                              "polynomial sample output shape/placement or derivative mismatch");
-        auto meanRead = mean.Owned().Read(), recRead = coefficients.Owned().Read();
-        std::optional<R::Array<real>::ReadLease> meanGhost, recGhost;
-        if (_needsGhost)
-            meanGhost.emplace(mean.Ghost().Read()), recGhost.emplace(coefficients.Ghost().Read());
-        R::PairReadView<real, R::AccessBoundsChecks, R::UniformTableRows> u{meanRead.View<R::UniformTableRows>(), meanGhost ? meanGhost->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{}};
-        R::PairReadView<real, R::AccessBoundsChecks, R::UniformTableRows> rec{recRead.View<R::UniformTableRows>(), recGhost ? recGhost->View<R::UniformTableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows>{}};
-        auto idsRead = _cells.Read();
-        std::optional<R::Array<real>::ReadLease> basisRead;
-        if (_cachedDerivatives)
-            basisRead.emplace(_basis.Read());
-        const auto cachedBasis = basisRead ? basisRead->View<R::TableRows>() : R::ArrayView<const real, R::AccessBoundsChecks, R::TableRows>{};
-        auto pointRead = _points.Read(), momentRead = _reconstruction._data->moments.Read();
-        const auto points = pointRead.View<R::FixedRows<3>>();
+        auto cellWrite = _cells.Write();
+        auto pointWrite = _points.Write(), basisWrite = _basis.Write();
+        const auto snapshot = cellWrite.View<R::FixedRows<1>>();
+        const auto positions = pointWrite.View<R::FixedRows<3>>();
+        const auto cached = basisWrite.View<R::TableRows>();
+        const auto momentRead = reconstruction._data->moments.Read();
         const auto moments = momentRead.View<R::TableRows>();
         const auto geom = geometry.HostView();
-        const Math::TaylorBasis polynomial(_reconstruction.Metrics().Dimension(), _reconstruction.Settings().maxOrder);
-        Math::SmallMatrix scratch;
-        const auto ids = idsRead.View<R::FixedRows<1>>();
-        auto write = output.Write();
-        const auto result = write.View<R::UniformTableRows>();
-        for (index iPoint = 0; iPoint < ids.RowCount(); ++iPoint)
-        {
+        OMP::ForSetupRows(0, ids.RowCount(), [&](index iPoint)
+                          {
             const index iCell = ids(iPoint, 0);
-            const auto meanRow = u[iCell], coefficientRow = rec[iCell];
-            const auto outputRow = result[iPoint];
-            Math::ReconstructionBasisView values;
-            if (basisRead && derivative < _cachedDerivatives)
-                values = {cachedBasis[iPoint].data(), _cachedDerivatives, int(n), _cachedDerivatives};
-            else
+            snapshot(iPoint, 0) = iCell;
+            const Geom::tPoint point{inputPoints(iPoint, 0), inputPoints(iPoint, 1), inputPoints(iPoint, 2)};
+            if (direct)
+                for (int d = 0; d < 3; ++d)
+                    positions(iPoint, d) = point[d];
+            if (_cachedDerivatives)
             {
-                polynomial.Reconstruction(scratch, {points(iPoint, 0), points(iPoint, 1), points(iPoint, 2)},
-                                          geom.GetCellCent(iCell), geom.cells(iCell, 7), moments[iCell],
-                                          _reconstruction.Settings().maxOrder);
-                values = {scratch.data(), int(scratch.rows()), int(n), int(scratch.rows())};
-            }
-            for (index component = 0; component < components; ++component)
-            {
-                real value = derivative == 0 ? meanRow[component] : 0;
-                for (index mode = 0; mode < n; ++mode)
-                    value += values(derivative, mode) * coefficientRow[component * n + mode];
-                outputRow[component] = value;
-            }
-        }
+                Math::SmallMatrix full;
+                polynomial.Reconstruction(full, point, geom.GetCellCent(iCell), geom.cells(iCell, 7), moments[iCell], cacheOrder);
+                Eigen::Map<Eigen::MatrixXd>(cached[iPoint].data(), _cachedDerivatives, _modes) = full;
+            } });
+    }
+    void PolynomialSamplingPlan::Validate() const
+    {
+        DNDS_check_throw_info(_mesh && _stamp.Valid(), "polynomial sampling geometry or numbering changed");
+        _cellSpace.Validate();
+    }
+    void PolynomialSamplingPlan::ValidateField(const FVField &field, index width) const
+    {
+        Validate();
+        field.Validate();
+        DNDS_check_throw_info(field.Space().Same(_space) && index(field.Width()) == width && field.Device() == Device(),
+                              "sampling field shape, row space or placement mismatch");
+    }
+    PolynomialSamplingPlan PolynomialSamplingPlan::Placed(R::Device device, R::ExecutionContext context) const
+    {
+        Validate();
+        if (device == Device())
+            return *this;
+        auto result = *this;
+        result._cells = _cells.To(device, context);
+        result._points = _points.To(device, context);
+        result._basis = _basis.To(device, context);
+        result._moments = _moments.To(device, context);
+        result._cellGeometry = _cellGeometry.To(device, context);
+        result._empty = _empty.To(device, context);
+        result.Validate();
+        return result;
     }
 }

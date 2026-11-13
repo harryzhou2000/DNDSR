@@ -27,6 +27,10 @@ Prepare/FiniteVolumePlan_Placement.cpp
 Prepare/GradientPlan.cpp
 Prepare/LimitedVRPlan.cpp
 Operators/GradientPlan_Operators.cpp
+Operators/PolynomialSamplingPlan.cpp
+CPU/PolynomialSamplingKernels.cpp
+CPU/PolynomialSamplingKernels_Values.cpp
+CPU/PolynomialSamplingKernels_ValueGradient.cpp
 Operators/PolynomialSamplingPlan_Values.cpp
 Operators/PolynomialSamplingPlan_ValueGradient.cpp
 Operators/LimitedVRPlan_Operators.cpp
@@ -38,7 +42,7 @@ Operators/FiniteVolumePlan_Reconstruction.cpp
 Operators/FiniteVolumePlan_Linear.cpp
 )
 if (DNDS_USE_CUDA)
-list(APPEND CPPS Legacy/VRDefines.cu Operators/CUDA/ReconstructionDevice.cu Operators/CUDA/ReconstructionTensorCore.cu Operators/CUDA/ReconstructionTensorShared.cu)
+list(APPEND CPPS Operators/CUDA/PolynomialSamplingKernels_CUDA.cu Legacy/VRDefines.cu Operators/CUDA/ReconstructionDevice.cu Operators/CUDA/ReconstructionTensorCore.cu Operators/CUDA/ReconstructionTensorShared.cu)
 endif()
 
 file(GLOB EXPLICIT_INST_CPP_FILES CONFIGURE_DEPENDS "Legacy/ExplicitInstantiations/*.cpp")

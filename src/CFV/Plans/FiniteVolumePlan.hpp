@@ -185,6 +185,7 @@ namespace DNDS::CFV
         friend class VariationalReconstructionPlan;
         friend class LimitedVRPlan;
         friend class ReconstructionBasisRead;
+        friend class PolynomialSamplingPlan;
 
     public:
         /// axisymmetric uses radius=y>=0 and measures r*dA/r*ds, without 2*pi.
