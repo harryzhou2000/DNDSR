@@ -238,8 +238,11 @@ namespace DNDS::CFV
     {
         Validate();
         DNDS_check_throw_info(width > 0, "FV field width must be positive");
-        FVField field(_data->dofs, width);
-        Detail::Zero(field);
+        FVField field(_data->dofs, R::RowLayout::Dense(NumCell(), width), Device());
+        // Runtime allocation publishes zero-initialized device buffers. Keep
+        // the existing explicit CPU initialization/version behavior unchanged.
+        if (Device() == R::Device::Host())
+            Detail::Zero(field);
         return field;
     }
     FVField FiniteVolumePlan::BuildField(R::RowLayout prototype, R::Device device) const
@@ -252,8 +255,8 @@ namespace DNDS::CFV
     {
         Validate();
         field.Validate();
-        DNDS_check_throw_info(field.Space().Same(_data->dofs) && index(field.Width()) == width && field.Device() == R::Device::Host(),
-                              "FV field belongs to another plan/order, has wrong width, or is not on CPU");
+        DNDS_check_throw_info(field.Space().Same(_data->dofs) && index(field.Width()) == width && field.Device() == Device(),
+                              "FV field belongs to another plan/order or has the wrong width/placement");
     }
     R::TransferBinding FiniteVolumePlan::BindHalo(FVField &field, R::TransferOptions options) const
     {

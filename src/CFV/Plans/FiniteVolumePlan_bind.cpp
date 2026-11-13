@@ -121,6 +121,8 @@ namespace DNDS::CFV
                             options.faceIntegrationOrder = faceIntOrder;
                             return FiniteVolumePlan::ConstructMetrics(std::move(mesh), options); }, py::arg("mesh"), py::arg("intOrder") = 5, py::arg("axisymmetric") = false, py::kw_only(), py::arg("collective_preflight") = true, py::arg("faceIntOrder") = 0, "Collective CPU preparation. All ranks must call with matching settings.")
             .def("Validate", &FiniteVolumePlan::Validate)
+            .def("Device", &FiniteVolumePlan::Device)
+            .def("Placed", &FiniteVolumePlan::Placed)
             .def("NumCell", &FiniteVolumePlan::NumCell)
             .def("NumCellProc", &FiniteVolumePlan::NumCellProc)
             .def("NumFaceProc", &FiniteVolumePlan::NumFaceProc)
@@ -172,8 +174,12 @@ namespace DNDS::CFV
             .def(py::init<VariationalReconstructionPlan, const Runtime::Array<index> &, const Runtime::Array<real> &>())
             .def("Size", &PolynomialSamplingPlan::Size)
             .def("Validate", &PolynomialSamplingPlan::Validate)
-            .def("Evaluate", &PolynomialSamplingPlan::Evaluate, py::arg("mean"), py::arg("coefficients"),
-                 py::arg("output"), py::arg("derivative") = 0);
+            .def("Device", &PolynomialSamplingPlan::Device)
+            .def("Placed", &PolynomialSamplingPlan::Placed)
+            .def("Evaluate", py::overload_cast<const FVField &, const FVField &, Runtime::Array<real> &, int>(&PolynomialSamplingPlan::Evaluate, py::const_), py::arg("mean"), py::arg("coefficients"),
+                 py::arg("output"), py::arg("derivative") = 0)
+            .def("EvaluateQueued", py::overload_cast<Runtime::EagerEngine &, const Runtime::ExecutionStream &, const FVField &, const FVField &, Runtime::Array<real> &, int>(&PolynomialSamplingPlan::Evaluate, py::const_),
+                 py::arg("engine"), py::arg("stream"), py::arg("mean"), py::arg("coefficients"), py::arg("output"), py::arg("derivative") = 0);
         py::class_<VariationalReconstructionPlan>(m, "VariationalReconstructionPlan")
             .def_static("ConstructRecCoeff", &VariationalReconstructionPlan::ConstructRecCoeff,
                         py::arg("metrics"), py::arg("settings") = ReconstructionSettings{}, py::arg("capabilities") = ReconstructionCapabilities{})
@@ -254,16 +260,49 @@ namespace DNDS::CFV
             .value("GreenGauss", GradientMethod::GreenGauss)
             .value("LeastSquares", GradientMethod::LeastSquares)
             .value("GGMP", GradientMethod::GGMP);
+        py::class_<GradientWorkspace>(m, "GradientWorkspace");
+        py::class_<GradientFaceCharacteristicTransform>(m, "GradientFaceCharacteristicTransform")
+            .def_readonly("first", &GradientFaceCharacteristicTransform::first)
+            .def_readonly("count", &GradientFaceCharacteristicTransform::count)
+            .def_property_readonly("forward", [](GradientFaceCharacteristicTransform &value)
+                                   { return Runtime::PythonArray::Share(value.forward); })
+            .def_property_readonly("inverse", [](GradientFaceCharacteristicTransform &value)
+                                   { return Runtime::PythonArray::Share(value.inverse); });
         py::class_<GradientPlan>(m, "GradientPlan")
             .def_static("Prepare", &GradientPlan::Prepare, py::arg("mesh"), py::arg("metrics"),
                         py::arg("method") = GradientMethod::LeastSquares, py::arg("relativeCutoff") = 1e-13)
             .def("NumBoundaryQuadrature", &GradientPlan::NumBoundaryQuadrature)
             .def("GetBoundaryQuadrature", &GradientPlan::GetBoundaryQuadrature)
+            .def("Device", &GradientPlan::Device)
+            .def("Placed", py::overload_cast<Runtime::Device, Runtime::ExecutionContext>(&GradientPlan::Placed, py::const_))
+            .def("BuildWorkspace", &GradientPlan::BuildWorkspace, py::arg("components"),
+                 py::arg("periodicVectorStarts") = std::vector<index>{}, py::arg("withLimiter") = false)
+            .def("BuildFaceTransform", &GradientPlan::BuildFaceTransform)
+            .def("FinalizeFaceTransform", &GradientPlan::FinalizeFaceTransform)
+            .def("PlaceFaceTransform", &GradientPlan::PlaceFaceTransform)
             .def("BuildBoundaryValues", [](const GradientPlan &plan, index components)
                  { return Runtime::PythonArray::Share(plan.BuildBoundaryValues(components)); })
-            .def("Evaluate", &GradientPlan::Evaluate, py::arg("mean"), py::arg("boundaryValues"), py::arg("gradient"),
+            .def("Evaluate", py::overload_cast<const FVField &, const Runtime::Array<real> &, FVField &, const std::vector<index> &, ReconstructionRegion>(&GradientPlan::Evaluate, py::const_),
+                 py::arg("mean"), py::arg("boundaryValues"), py::arg("gradient"),
                  py::arg("periodicVectorStarts") = std::vector<index>{}, py::arg("region") = ReconstructionRegion::All)
-            .def("ConvertToCoefficients", &GradientPlan::ConvertToCoefficients);
+            .def("EvaluateQueued", py::overload_cast<Runtime::EagerEngine &, const Runtime::ExecutionStream &, const FVField &, const Runtime::Array<real> &, FVField &, const GradientWorkspace &, ReconstructionRegion>(&GradientPlan::Evaluate, py::const_),
+                 py::arg("engine"), py::arg("stream"), py::arg("mean"), py::arg("boundaryValues"), py::arg("gradient"),
+                 py::arg("workspace"), py::arg("region") = ReconstructionRegion::All)
+            .def("ConvertToCoefficients", py::overload_cast<const FVField &, const VariationalReconstructionPlan &, FVField &>(
+                                              &GradientPlan::ConvertToCoefficients, py::const_))
+            .def("ConvertToCoefficientsQueued", py::overload_cast<Runtime::EagerEngine &, const Runtime::ExecutionStream &,
+                                                                  const FVField &, const VariationalReconstructionPlan &, FVField &>(
+                                                    &GradientPlan::ConvertToCoefficients, py::const_))
+            .def("ExtractLinearGradients", py::overload_cast<const FVField &, const VariationalReconstructionPlan &, FVField &, bool>(&GradientPlan::ExtractLinearGradients, py::const_),
+                 py::arg("coefficients"), py::arg("reconstruction"), py::arg("gradient"), py::arg("ghost") = false)
+            .def("ExtractLinearGradientsQueued", py::overload_cast<Runtime::EagerEngine &, const Runtime::ExecutionStream &, const FVField &, const VariationalReconstructionPlan &, FVField &, bool>(&GradientPlan::ExtractLinearGradients, py::const_),
+                 py::arg("engine"), py::arg("stream"), py::arg("coefficients"), py::arg("reconstruction"), py::arg("gradient"), py::arg("ghost") = false)
+            .def("LimitWBAP3", [](const GradientPlan &plan, const FVField &input, FVField &output, const std::vector<index> &vectors, const std::optional<GradientFaceCharacteristicTransform> &transform, ReconstructionRegion region, const std::optional<Runtime::Array<real>> &indicator, real threshold, real centerWeight)
+                 { plan.LimitWBAP3(input, output, vectors, transform ? GradientFaceCharacteristicTransformRef(std::cref(*transform)) : std::nullopt,
+                                   region, indicator ? LimiterIndicatorRef(std::cref(*indicator)) : std::nullopt, threshold, centerWeight); }, py::arg("input"), py::arg("output"), py::arg("periodicVectorStarts") = std::vector<index>{}, py::arg("transform") = std::nullopt, py::arg("region") = ReconstructionRegion::All, py::arg("indicator") = std::nullopt, py::arg("threshold") = 0, py::arg("centerWeight") = 10)
+            .def("LimitWBAP3Queued", [](const GradientPlan &plan, Runtime::EagerEngine &engine, const Runtime::ExecutionStream &stream, const FVField &input, FVField &output, GradientWorkspace &workspace, const std::optional<GradientFaceCharacteristicTransform> &transform, ReconstructionRegion region, const std::optional<Runtime::Array<real>> &indicator, real threshold, real centerWeight)
+                 { plan.LimitWBAP3(engine, stream, input, output, workspace, transform ? GradientFaceCharacteristicTransformRef(std::cref(*transform)) : std::nullopt,
+                                   region, indicator ? LimiterIndicatorRef(std::cref(*indicator)) : std::nullopt, threshold, centerWeight); }, py::arg("engine"), py::arg("stream"), py::arg("input"), py::arg("output"), py::arg("workspace"), py::arg("transform") = std::nullopt, py::arg("region") = ReconstructionRegion::All, py::arg("indicator") = std::nullopt, py::arg("threshold") = 0, py::arg("centerWeight") = 10);
         py::class_<DistributedInterfaceSamplingPlan>(m, "DistributedInterfaceSamplingPlan")
             .def(py::init<VariationalReconstructionPlan, Geom::DistributedInterfacePointMap>())
             .def(py::init<std::optional<VariationalReconstructionPlan>, Geom::DistributedInterfacePointMap>(),

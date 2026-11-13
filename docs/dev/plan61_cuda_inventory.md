@@ -63,7 +63,7 @@ from required iterative work; excluded CPU algorithms are not deleted.
 | [CFV plan](../../src/CFV/Plans/FiniteVolumePlan.hpp) | Capability-selected placement; every invoked sweep/limiter/gradient/sampling phase | Existing partial CUDA support; remaining B work |
 | [CFV CUDA reconstruction](../../src/CFV/Operators/CUDA/ReconstructionDevice.cu) | Jacobi/WBAP/commit; matching BC, periodicity and layouts | Existing implementation; tag/budget wrapper edits unvalidated |
 | [CFV tensor variants](../../src/CFV/Operators/CUDA/ReconstructionTensorCore.cu) | FP64 paths retained; optional post-inversion FP32 matrix experiment separate | Existing FP64; new precision work pending |
-| [CFV direct gradients](../../src/CFV/Operators/GradientPlan_Operators.cpp) | GG/LS/GGMP phases and prescribed reconstruction BC values | Device work pending |
+| [CFV direct gradients](../../src/CFV/Operators/GradientPlan_Queued.cpp) | GG/LS/GGMP, coefficient conversion, direct WBAP and prescribed reconstruction BC values | Shared CPU/CUDA leaves and queued wrappers edited; B validation and production wiring pending |
 | [CFV LVR](../../src/CFV/Operators/LimitedVRPlan_Operators.cpp) | Target/gate/expansion phases; transfers outside kernels | Device work pending |
 | [CFV polynomial sampling](../../src/CFV/Operators/PolynomialSamplingPlan_Values.cpp) | Cached/direct values and gradients, periodic transforms | Device work pending |
 | [PerfectGas](../../src/Cauchy/Physics/PerfectGas.hpp) | Shared pure host/device math; compact immutable descriptor | Existing helpers; transitive audit pending |
@@ -195,4 +195,27 @@ retained independently of host payloads, closing an invalidation gap when
 value-gradient placement against CPU face-basis evaluation and checks the
 retained buffer names and invalidation after host-plan release. This follow-up
 is also unbuilt and belongs to the same group B validation.
+
+### Direct-gradient source additions (unvalidated)
+
+- `GradientPlan_Placement.cpp` places immutable GG/LS/GGMP incidence/rotation
+  tables and shares a caller-supplied placed FV metric plan. CPU boundary
+  coordinates are not retained by the placed plan. Setup uses prefix allocation
+  and independent per-cell OMP fills, preserving incidence and boundary order.
+- `CPU/GradientKernels.cpp` and `Operators/CUDA/GradientKernels_CUDA.cu` supply
+  evaluation, linear coefficient conversion/extraction and one-level physical
+  gradient WBAP. Shared `Math/GradientEvaluation.hpp`, `GradientLimiting.hpp`
+  and `WBAPScalar.hpp` keep point arithmetic free of leases and exceptions.
+- Queued operator wrappers retain geometry and Array leases, validate device
+  tags once, and declare ghosts only outside Core. Reusable workspace holds
+  immutable periodic-component metadata and optional CPU limiter scratch.
+  CUDA selects combined 5/6/7-component paths with bounded thread scratch.
+- Partial characteristic ranges and scalar remainder are preserved; count zero
+  reads no matrix payload. The current transform placement takes finalized CPU
+  matrices. Device-generated transform publication remains production work.
+- Python overload bindings now distinguish synchronous/queued gradient and
+  polynomial sampling calls. Tests added for CPU-worker real halo overlap,
+  AoS/SoA/tiled CPU fields, 2D/3D device gradient conversion, rotated momentum,
+  ghost-only extraction, activation and disabled/flow5 characteristics. They
+  have **not run**; no new build/test group has started.
 

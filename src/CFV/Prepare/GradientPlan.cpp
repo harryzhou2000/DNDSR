@@ -2,6 +2,7 @@
 #include "CFV/Math/PolynomialReconstruction.hpp"
 #include "Geom/Unstructured/UnstructuredMesh.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
+#include "DNDS/Core/OMP.hpp"
 
 namespace DNDS::CFV
 {
@@ -20,8 +21,18 @@ namespace DNDS::CFV
         const auto geometry = metricRead.HostView();
         const int dim = metrics.Dimension();
         auto data = std::make_shared<Data>(metrics);
+        // Prefix each cell's incidence and physical-boundary ranges before
+        // filling. Per-cell SVD setup then writes disjoint preallocated rows;
+        // neither boundary ordering nor incidence summation depends on OMP.
+        data->offsets = R::Array<index>(R::RowLayout::Dense(metrics.NumCell() + 1, 1));
+        R::Array<index> boundaryOffsets(R::RowLayout::Dense(metrics.NumCell() + 1, 1));
+        auto offsetWrite = data->offsets.Write(), boundaryOffsetWrite = boundaryOffsets.Write();
+        const auto offsets = offsetWrite.View<R::FixedRows<1>>(), boundaryStarts = boundaryOffsetWrite.View<R::FixedRows<1>>();
         index entries = 0, boundaryCount = 0;
         for (index iCell = 0; iCell < metrics.NumCell(); ++iCell)
+        {
+            offsets(iCell, 0) = entries;
+            boundaryStarts(iCell, 0) = boundaryCount;
             for (index slot = 0; slot < view.CellFaces(iCell).size(); ++slot)
             {
                 const index face = view.CellFaces(iCell)[slot];
@@ -30,7 +41,9 @@ namespace DNDS::CFV
                 if (view.CellFaceOther(iCell, face, rowsize(slot)) == UnInitIndex)
                     boundaryCount += count;
             }
-        data->offsets = R::Array<index>(R::RowLayout::Dense(metrics.NumCell() + 1, 1));
+        }
+        offsets(metrics.NumCell(), 0) = entries;
+        boundaryStarts(metrics.NumCell(), 0) = boundaryCount;
         data->neighbors = R::Array<index>(R::RowLayout::Dense(entries, 1));
         data->faces = R::Array<index>(R::RowLayout::Dense(entries, 1));
         data->boundaryIds = R::Array<index>(R::RowLayout::Dense(entries, 1));
@@ -38,22 +51,31 @@ namespace DNDS::CFV
         data->weights = R::Array<real>(R::RowLayout::Dense(entries, 3));
         data->rotations = R::Array<real>(R::RowLayout::Dense(entries, 9));
         data->boundary.resize(size_t(boundaryCount));
-        auto offsetWrite = data->offsets.Write(), neighborWrite = data->neighbors.Write(), faceWrite = data->faces.Write(), boundaryWrite = data->boundaryIds.Write();
+        data->boundaryCount = boundaryCount;
+        const auto storeRows = [](const std::vector<index> &rows)
+        {
+            R::Array<index> result(R::RowLayout::Dense(index(rows.size()), 1));
+            auto write = result.Write();
+            const auto view = write.View<R::FixedRows<1>>();
+            for (index iRow = 0; iRow < index(rows.size()); ++iRow)
+                view(iRow, 0) = rows[iRow];
+            return result;
+        };
+        data->core = storeRows(data->partition.Core());
+        data->dependent = storeRows(data->partition.HaloDependent());
+        auto neighborWrite = data->neighbors.Write(), faceWrite = data->faces.Write(), boundaryWrite = data->boundaryIds.Write();
         auto weightWrite = data->weights.Write();
         auto rotationActiveWrite = data->rotationActive.Write();
         auto rotationWrite = data->rotations.Write();
         const auto rotations = rotationWrite.View<R::FixedRows<9>>();
         const auto rotationActive = rotationActiveWrite.View<R::FixedRows<1>>();
-        const auto offsets = offsetWrite.View<R::FixedRows<1>>(), neighbors = neighborWrite.View<R::FixedRows<1>>(), faces = faceWrite.View<R::FixedRows<1>>(), boundaries = boundaryWrite.View<R::FixedRows<1>>();
+        const auto neighbors = neighborWrite.View<R::FixedRows<1>>(), faces = faceWrite.View<R::FixedRows<1>>(), boundaries = boundaryWrite.View<R::FixedRows<1>>();
         const auto weights = weightWrite.View<R::FixedRows<3>>();
-        index next = 0, nextBoundary = 0;
-        for (index iCell = 0; iCell < metrics.NumCell(); ++iCell)
-        {
+        OMP::ForSetupRows(0, metrics.NumCell(), [&](index iCell)
+                          {
+            index next = offsets(iCell, 0), nextBoundary = boundaryStarts(iCell, 0);
             const auto center = geometry.GetCellBary(iCell);
-            offsets(iCell, 0) = next;
-            index count = 0;
-            for (auto face : view.CellFaces(iCell))
-                count += geometry.FaceQuadratureEnd(face) - geometry.FaceQuadratureBegin(face);
+            const index count = offsets(iCell + 1, 0) - next;
             Eigen::MatrixXd design(count, dim), initial(dim, count);
             Eigen::VectorXd lengths(count);
             Eigen::MatrixXd correction = Eigen::MatrixXd::Identity(dim, dim);
@@ -91,7 +113,6 @@ namespace DNDS::CFV
                     faces(next, 0) = face;
                     Eigen::Map<tGPoint>(rotations[next].data()) = rotation;
                     rotationActive(next, 0) = !rotation.isApprox(tGPoint::Identity(), 1e-14);
-                    data->hasRotatedFrames |= bool(rotationActive(next, 0));
                     boundaries(next, 0) = UnInitIndex;
                     if (other == UnInitIndex)
                     {
@@ -125,8 +146,9 @@ namespace DNDS::CFV
             for (index i = 0; i < count; ++i)
                 for (int d = 0; d < 3; ++d)
                     weights(next - count + i, d) = d < dim ? initial(d, i) : 0;
-        }
-        offsets(metrics.NumCell(), 0) = next;
+            DNDS_assert(next == offsets(iCell + 1, 0) && nextBoundary == boundaryStarts(iCell + 1, 0)); });
+        for (index entry = 0; entry < entries; ++entry)
+            data->hasRotatedFrames |= bool(rotationActive(entry, 0));
         // Prove owned-only access once, using the actual prepared entries.
         // The hot core kernel needs neither ghost views nor row-mask checks.
         for (auto iCell : data->partition.Core())

@@ -2,6 +2,7 @@
 #include "doctest.h"
 #include "CFV/Plans/FiniteVolumePlan.hpp"
 #include "CFV/Plans/PolynomialSamplingPlan.hpp"
+#include "CFV/Plans/GradientPlan.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
 #include "DNDS/Runtime/Execution/CUDAExecution.hpp"
 #include "DNDS/Runtime/Execution/KernelArguments.hpp"
@@ -46,6 +47,121 @@ static void Equal(const C::FVField &a, const C::FVField &b, double tolerance = 5
     for (I iRow = 0; iRow < host.RowCount(); ++iRow)
         for (I iComp = 0; iComp < I(a.Width()); ++iComp)
             CHECK(right.View()(iRow, iComp) == doctest::Approx(left.View()(iRow, iComp)).epsilon(tolerance).scale(1));
+}
+
+TEST_CASE("Queued FV gradients and linear-mode projection share CPU and CUDA incidence semantics")
+{
+    struct Profile
+    {
+        int dimension, components;
+        C::GradientMethod method;
+        bool sector;
+    };
+    for (const auto profile : {Profile{2, 5, C::GradientMethod::GreenGauss, false},
+                               Profile{2, 6, C::GradientMethod::LeastSquares, true},
+                               Profile{3, 7, C::GradientMethod::GGMP, false}})
+    {
+        INFO("gradient dimension=" << profile.dimension << ", components=" << profile.components << ", sector=" << profile.sector);
+        auto mesh = profile.sector ? CFVTest::Sector(mpi) : profile.dimension == 3 ? CFVTest::CartesianHexes(mpi, 3)
+                                                                                   : G::OverlapTest::BuildNativeFixture(mpi, mpi.size > 2, 24).mesh;
+        auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh);
+        auto gradientPlan = C::GradientPlan::Prepare(*mesh, metrics, profile.method);
+        C::ReconstructionSettings settings;
+        settings.maxOrder = 3;
+        auto reconstruction = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+        const I components = profile.components, width = components * profile.dimension;
+        auto mean = metrics.BuildField(components), expected = metrics.BuildField(width);
+        // Distinct nonconstant means and boundary targets exercise every row
+        // and periodic momentum component; legacy CPU analytic tests supply
+        // the independent polynomial oracle for these preparation schemes.
+        Fill(mean, 1.1);
+        metrics.BindHalo(mean).Begin().Wait();
+        auto boundary = gradientPlan.BuildBoundaryValues(components);
+        {
+            auto write = boundary.Write();
+            for (I iPoint = 0; iPoint < boundary.RowCount(); ++iPoint)
+                for (I j = 0; j < components; ++j)
+                    write.View()(iPoint, j) = .3 + .017 * iPoint + .09 * j;
+        }
+        gradientPlan.Evaluate(mean, boundary, expected, {1});
+        auto expectedCoefficients = reconstruction.BuildCoefficients(components);
+        gradientPlan.ConvertToCoefficients(expected, reconstruction, expectedCoefficients);
+        const auto device = R::Device::CUDA(0), host = R::Device::Host();
+        const auto context = R::ExecutionContext::CUDA(0);
+        auto deviceMetrics = metrics.Placed(device, context);
+        auto resident = gradientPlan.Placed(deviceMetrics, context);
+        auto deviceMean = deviceMetrics.BuildField(components), result = deviceMetrics.BuildField(width), recovered = deviceMetrics.BuildField(width);
+        auto coefficients = deviceMetrics.BuildField(components * reconstruction.NRecDOF());
+        deviceMean.Owned().CopyFrom(mean.Owned(), context).Wait();
+        deviceMean.Ghost().CopyFrom(mean.Ghost(), context).Wait();
+        auto deviceBoundary = boundary.To(device, context);
+        auto workspace = resident.BuildWorkspace(components, {1}, true);
+        R::EagerEngine engine;
+        const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+        {
+            // No ghost read is acquired even if a caller has an active write.
+            auto ghostWrite = deviceMean.Ghost().Write(context);
+            resident.Evaluate(engine, stream, deviceMean, deviceBoundary, result, workspace, C::ReconstructionRegion::Core);
+        }
+        resident.Evaluate(engine, stream, deviceMean, deviceBoundary, result, workspace, C::ReconstructionRegion::HaloDependent);
+        resident.ConvertToCoefficients(engine, stream, result, reconstruction, coefficients);
+        resident.ExtractLinearGradients(engine, stream, coefficients, reconstruction, recovered);
+        engine.Close();
+        Equal(expected, result, 2e-10);
+        Equal(expectedCoefficients, coefficients, 2e-10);
+        Equal(expected, recovered, 2e-10);
+        // Ghost-only extraction uses the cell-geometry offset, not row zero.
+        metrics.BindHalo(expectedCoefficients).Begin().Wait();
+        coefficients.Ghost().CopyFrom(expectedCoefficients.Ghost(), context).Wait();
+        auto expectedGhost = metrics.BuildField(width);
+        gradientPlan.ExtractLinearGradients(expectedCoefficients, reconstruction, expectedGhost, true);
+        resident.ExtractLinearGradients(coefficients, reconstruction, recovered, true);
+        const auto ghost = recovered.Ghost().To(host);
+        const auto reference = expectedGhost.Ghost().Read(), actual = ghost.Read();
+        for (I iRow = 0; iRow < ghost.RowCount(); ++iRow)
+            for (I j = 0; j < width; ++j)
+                CHECK(actual.View()(iRow, j) == doctest::Approx(reference.View()(iRow, j)).epsilon(2e-10).scale(1));
+        metrics.BindHalo(expected).Begin().Wait();
+        result.Ghost().CopyFrom(expected.Ghost(), context).Wait();
+        auto expectedLimited = metrics.BuildField(width), limited = deviceMetrics.BuildField(width);
+        R::Array<double> activation(R::RowLayout::Dense(metrics.NumCell(), 1));
+        {
+            auto write = activation.Write();
+            for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+                write.View()(iCell, 0) = iCell % 2;
+        }
+        auto deviceActivation = activation.To(device, context);
+        for (const I transformed : {I(0), I(5)})
+        {
+            auto transform = gradientPlan.BuildFaceTransform(0, transformed);
+            if (transformed)
+            {
+                {
+                    auto forward = transform.forward.Write(), inverse = transform.inverse.Write();
+                    for (I iFace = 0; iFace < metrics.NumFaceProc(); ++iFace)
+                    {
+                        forward.View()(iFace, transformed) = .3; // (0,1), column-major
+                        inverse.View()(iFace, transformed) = -.3;
+                    }
+                }
+                gradientPlan.FinalizeFaceTransform(transform);
+            }
+            const auto deviceTransform = resident.PlaceFaceTransform(transform, context);
+            gradientPlan.LimitWBAP3(expected, expectedLimited, {1}, std::cref(transform), C::ReconstructionRegion::All,
+                                    std::cref(activation), .5);
+            R::EagerEngine limiterEngine;
+            const auto limiterStream = limiterEngine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+            {
+                auto ghostWrite = result.Ghost().Write(context);
+                resident.LimitWBAP3(limiterEngine, limiterStream, result, limited, workspace, std::cref(deviceTransform),
+                                    C::ReconstructionRegion::Core, std::cref(deviceActivation), .5);
+            }
+            resident.LimitWBAP3(limiterEngine, limiterStream, result, limited, workspace, std::cref(deviceTransform),
+                                C::ReconstructionRegion::HaloDependent, std::cref(deviceActivation), .5);
+            limiterEngine.Close();
+            Equal(expectedLimited, limited, 2e-9);
+        }
+    }
 }
 
 TEST_CASE("Queued polynomial sampling covers cached and direct derivatives on owned and ghost rows")

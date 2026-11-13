@@ -260,6 +260,27 @@ def test_standalone_fv_gradients_and_vr_conversion():
         coefficients = metrics.BuildField(reconstruction.NRecDOF())
         plan.ConvertToCoefficients(gradient, reconstruction, coefficients)
         np.testing.assert_array_equal(coefficients.owned.numpy()[:, 2:], 0)
+        # Operator-level Python queues the same work as C++; no Python element
+        # callbacks or copied payloads are involved in the worker execution.
+        queued = metrics.BuildField(2)
+        recovered = metrics.BuildField(2)
+        limited = metrics.BuildField(2)
+        work = plan.BuildWorkspace(1, withLimiter=True)
+        engine = R.EagerEngine(host_threads=2)
+        stream = engine.cpu_stream()
+        plan.EvaluateQueued(engine, stream, mean, boundary, queued, work)
+        plan.ConvertToCoefficientsQueued(engine, stream, queued, reconstruction, coefficients)
+        plan.ExtractLinearGradientsQueued(engine, stream, coefficients, reconstruction, recovered)
+        engine.synchronize()
+        metrics.BindHalo(queued).begin().wait()
+        # Disabled characteristics require no transform buffers. Every scalar
+        # gradient is equal in this exact-linear fixture and remains unchanged.
+        disabled = plan.BuildFaceTransform(0, 0)
+        plan.LimitWBAP3Queued(engine, stream, queued, limited, work, disabled)
+        engine.close()
+        np.testing.assert_array_equal(queued.owned.numpy(), gradient.owned.numpy())
+        np.testing.assert_allclose(recovered.owned.numpy(), gradient.owned.numpy(), atol=1e-12)
+        np.testing.assert_allclose(limited.owned.numpy(), gradient.owned.numpy(), atol=1e-12)
 
 @pytest.mark.parametrize("format", ["col", "tiled"])
 @pytest.mark.mpi

@@ -2,6 +2,7 @@
 
 #include "Geom/Math/BaseFunction.hpp"
 #include "DNDS/Core/Errors.hpp"
+#include "CFV/Math/WBAPScalar.hpp"
 
 namespace DNDS::CFV::Math
 {
@@ -49,13 +50,5 @@ namespace DNDS::CFV::Math
             const real multiplicity = factorials[order] / (factorials[a[0]] * factorials[a[1]] * factorials[a[2]]);
             out[i] = sqr(weights[order]) * std::pow(length, 2 * order) * std::pow(multiplicity, multiplicityPower);
         }
-    }
-    /// Scalar version of legacy WBAP L2 biway. Zero neighbors suppress a mode.
-    inline real WBAPBiway(real center, real other)
-    {
-        const real epsilon = std::pow(verySmallReal, 0.25);
-        const real ratio = center / (std::abs(other) + epsilon) * ((other > 0) - (other < 0));
-        const real r2 = ratio * ratio;
-        return other == 0 ? 0 : center * (1 + r2 * ratio) / (1 + r2 * r2);
     }
 }

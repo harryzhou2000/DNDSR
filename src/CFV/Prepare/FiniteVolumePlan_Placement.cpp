@@ -336,6 +336,11 @@ namespace DNDS::CFV
         DNDS_check_throw_info(_identity, "reconstruction plan was moved/released");
         return _device ? _device->device : R::Device::Host();
     }
+    const Algebra::DofSpace &VariationalReconstructionPlan::Space() const
+    {
+        Validate();
+        return _device ? *_device->dofs : Metrics().Space();
+    }
     std::vector<ResidentBufferInfo> VariationalReconstructionPlan::ResidentBuffers() const
     {
         Validate();

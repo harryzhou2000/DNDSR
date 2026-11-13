@@ -487,6 +487,8 @@ namespace DNDS::CFV
                                             ReconstructionResidencyOptions = {}) const;
         Runtime::Device Device() const;
         bool RetainsHostPayloads() const { return bool(_data); }
+        /// Stable field row identity, also available after CPU payload release.
+        const Algebra::DofSpace &Space() const;
         bool SupportsKernel(ReconstructionDeviceKernel) const;
         std::vector<ResidentBufferInfo> ResidentBuffers() const;
         ReconstructionResidentRead AcquireResidentRead() const;

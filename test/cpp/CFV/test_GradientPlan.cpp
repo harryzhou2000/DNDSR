@@ -191,6 +191,25 @@ TEST_CASE("Gradient core phases exclude active MPI ghost writes across table lay
                     }
             }
             CHECK(mean.Owned().Version() == version);
+            // The same split contract holds when arithmetic runs on a CPU
+            // worker. Only the controller progresses MPI; a real pending halo
+            // write must not conflict with the queued owned-only phase.
+            auto queued = metrics.BuildField(shape(8));
+            auto workspace = plan.BuildWorkspace(4, {1});
+            for (const int workers : {0, 2})
+            {
+                R::EagerEngine engine(workers);
+                const auto stream = engine.CreateCPUStream();
+                auto exchange = halo.Begin();
+                plan.Evaluate(engine, stream, mean, boundary, queued, workspace, C::ReconstructionRegion::Core);
+                exchange.Wait();
+                plan.Evaluate(engine, stream, mean, boundary, queued, workspace, C::ReconstructionRegion::HaloDependent);
+                engine.Close();
+                const auto reference = full.Owned().Read(), actual = queued.Owned().Read();
+                for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
+                    for (I j = 0; j < 8; ++j)
+                        CHECK(actual.View<R::UniformTableRows>()(iCell, j) == reference.View<R::UniformTableRows>()(iCell, j));
+            }
             CHECK_THROWS(plan.Evaluate(mean, boundary, split, {1}, static_cast<C::ReconstructionRegion>(100)));
             if (metrics.NumCell() && metrics.Cells().NumGhost())
             {
@@ -301,13 +320,28 @@ TEST_CASE("Physical-gradient WBAP is direct, characteristic-optional, and split-
 
     plan.LimitWBAP3(input, split, {}, std::nullopt, C::ReconstructionRegion::Core);
     plan.LimitWBAP3(input, split, {}, std::nullopt, C::ReconstructionRegion::HaloDependent);
+    auto queued = metrics.BuildField(dim);
+    auto work = plan.BuildWorkspace(1, {}, true);
+    {
+        R::EagerEngine engine(2);
+        const auto stream = engine.CreateCPUStream();
+        auto exchange = metrics.BindHalo(input).Begin();
+        plan.LimitWBAP3(engine, stream, input, queued, work, std::nullopt, C::ReconstructionRegion::Core);
+        exchange.Wait();
+        plan.LimitWBAP3(engine, stream, input, queued, work, std::nullopt, C::ReconstructionRegion::HaloDependent);
+        engine.Close();
+    }
     {
         auto referenceRead = direct.Owned().Read(), splitRead = split.Owned().Read();
+        const auto queuedRead = queued.Owned().Read();
         const auto reference = referenceRead.View<R::UniformTableRows>();
         const auto actual = splitRead.View<R::UniformTableRows>();
         for (I iCell = 0; iCell < metrics.NumCell(); ++iCell)
             for (I d = 0; d < dim; ++d)
+            {
                 CHECK(actual(iCell, d) == reference(iCell, d));
+                CHECK(queuedRead.View()(iCell, d) == reference(iCell, d));
+            }
     }
 }
 

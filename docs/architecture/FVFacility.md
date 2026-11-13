@@ -318,7 +318,42 @@ rather than division by point radius; zero-measure axis faces are valid.
 Taylor modes and zeros the higher modes. Its zero-mean basis preserves the cell
 average. The gradient facility remains useful independently of VR. Normal
 Runtime read/write leases reject aliases; callers refresh halo/BC producers
-before evaluation. Preparation/evaluation currently run on the host.
+before evaluation. Preparation remains on CPU; independent cell setup uses the
+configured DNDS distributed OMP policy after prefix allocation. The same prepared
+incidence order is used with one or multiple workers.
+
+`GradientPlan::Placed(device,context)` copies the immutable tables explicitly;
+the overload accepting placed FV metrics shares those tables with the caller.
+The placed gradient plan retains no CPU boundary-coordinate vector. Obtain
+boundary locations before placement, and supply boundary values on the selected
+backend. The CUDA profile currently permits combined AoS flow5/SA/2EQ fields.
+
+Evaluation, linear coefficient conversion/extraction and direct-gradient WBAP
+have engine/stream overloads. Their prologues validate association, shape,
+residency and aliases once; free CPU/CUDA leaves consume views and numeric
+metadata. Core evaluation/limiting declares no input ghost read. The caller
+orders halo completion before dependent work and serializes writes to an output.
+Queued captures retain Array ownership and geometry guards until completion;
+no numerical leaf performs MPI, acquires leases or waits on the host.
+
+Build a `GradientWorkspace` once for each component/vector layout. Periodic
+component metadata is uploaded once, version-checked on reuse, and shared by
+gradient evaluation and limiting. `withLimiter=true` reserves CPU worker
+scratch; CUDA limiting uses bounded thread-local scratch instead. Scratch
+contains no durable solution state. The synchronous convenience limiter builds
+temporary workspace; repeated solver calls should reuse the queued workspace.
+Optional activation values must be finite. The synchronous CPU entry diagnoses
+them before execution; queued leaves assert the finite-data precondition without
+a host copy or synchronization. Transform count zero never accesses matrices;
+nonzero transforms must be finalized, immutable publications. The current
+placement API copies a finalized CPU transform. Device-produced characteristic
+publication and Cauchy production wiring remain Plan61 phase B work.
+
+The Python bindings expose `EvaluateQueued`, `ConvertToCoefficientsQueued`,
+`ExtractLinearGradientsQueued` and `LimitWBAP3Queued` with the same engine/stream
+and workspace ownership contract. Finish the stream before inspecting results
+through NumPy or other synchronous aliases. Added CUDA/worker tests for these
+paths await the grouped Plan61 B build; source availability is not validation.
 
 Preparation first counts face quadrature rows, cell-face incidences and boundary
 quadrature rows, allocates dense Runtime tables, then fills them. Face-local
@@ -338,8 +373,9 @@ Future flux kernels can use `auto read=metrics.AcquireRead();` followed by
 barycenters and face quadrature ranges, points, normals and weighted measures.
 Keep `read` alive through the loop. It pins the buffers and blocks mesh mutation;
 view access does not reacquire ownership or check generations per element. The
-initial pointers are host pointers even though their simple accessors are
-device-callable; this does not imply a device metric publication exists yet.
+`HostView()` rejects device placement. Explicitly placed metrics expose `View()`
+with device-tagged whole-array descriptors for C++ launcher validation; the
+retained read scope must still outlive asynchronous use.
 
 The synchronous CPU operators retain their leases until return. The same public
 plan/workspace API dispatches prepared CUDA Jacobi and WBAP kernels through the
