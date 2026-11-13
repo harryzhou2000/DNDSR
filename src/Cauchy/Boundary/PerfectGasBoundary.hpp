@@ -4,6 +4,8 @@
 #include "Cauchy/Input/FlowProfileMath.hpp"
 #include "Cauchy/Motion/RigidFrameParameters.hpp"
 #include "Physics/Thermodynamics/TotalCondition.hpp"
+#include "Cauchy/Physics/PerfectGasPoint.hpp"
+#include "Cauchy/Boundary/RANSWallTarget.hpp"
 
 namespace DNDS::Cauchy
 {
@@ -130,5 +132,80 @@ namespace DNDS::Cauchy
         else
             return NumericalStatus{NumericalError::UnsupportedRequest};
         return gas.Conservative(result);
+    }
+
+    /** Combined flow5/SA/two-equation physical boundary state, in local axes.
+     * This is the value-only counterpart of BoundaryPointOperator::TryEvaluate.
+     * The caller supplies point and mean separately: wall omega uses mean
+     * viscosity (wall-temperature viscosity when isothermal), whereas its
+     * exterior reflection uses the reconstructed interior scalar.
+     * @pre Interface packets are handled by the enclosing point producer.
+     * @note Reflected RANS scalars may be negative by construction. Do not
+     * apply a mean-state positivity repair to this exterior boundary state.
+     */
+    template <int Components>
+    DNDS_DEVICE_CALLABLE NumericalStatus TryPerfectGasBoundaryState(
+        const PerfectGasBoundaryParameters &condition, const PerfectGas &gas,
+        Physics::RANS::ModelKind model, std::array<real, Components> &point,
+        const std::array<real, Components> &mean, real meanWallDistance,
+        const Vector3 &normal, const Vector3 &location, real time,
+        const RigidFrameParameters &frame, bool exterior) noexcept
+    {
+        static_assert(Components >= 5 && Components <= 7);
+        const FlowState inside{point[0], point[1], point[2], point[3], point[4]};
+        if (const auto checked = TryPerfectGasPoint(gas, inside, false); !checked)
+            return checked.status;
+        const auto result = TryPerfectGasBoundaryValue(condition, gas, inside, normal, location, time, frame, exterior);
+        if (!result)
+            return result.status;
+        const auto &flow = result.value;
+        if (const auto checked = TryPerfectGasPoint(gas, flow, false); !checked)
+            return checked.status;
+        for (int j = 0; j < 5; ++j)
+            point[j] = flow[j];
+        if constexpr (Components > 5)
+        {
+            const auto kind = ResolveBoundaryKind(condition.kind, location, frame);
+            if (kind == BoundaryKind::TotalConditionInlet)
+                for (int j = 0; j < Components - 5; ++j)
+                    point[5 + j] = flow[0] * condition.totalRANSPrimitive[j];
+            else if (kind == BoundaryKind::NoSlipWall)
+            {
+                std::array<real, 2> target{};
+                if constexpr (Components == 7)
+                {
+                    if (!(std::isfinite(meanWallDistance) && meanWallDistance > 0))
+                        return NumericalStatus{NumericalError::InvalidState, 3};
+                    const FlowState viscosityFlow = condition.isothermal ? flow : FlowState{mean[0], mean[1], mean[2], mean[3], mean[4]};
+                    const auto properties = TryPerfectGasPoint(gas, viscosityFlow, true);
+                    if (!properties)
+                        return properties.status;
+                    Physics::RANS::Point wall;
+                    for (int j = 0; j < Components; ++j)
+                        wall.state[j] = mean[j];
+                    wall.molecularViscosity = properties.value.transport.viscosity;
+                    wall.wallDistance = meanWallDistance;
+                    target = PrepareRANSWallTarget(model, wall, inside[0]);
+                }
+                for (int j = 0; j < Components - 5; ++j)
+                {
+                    real reflected = point[5 + j];
+                    if (condition.isothermal && (Components == 6 || j == 0))
+                        reflected *= flow[0] / inside[0];
+                    point[5 + j] = exterior ? 2 * target[j] - reflected : target[j];
+                }
+            }
+            else if (kind == BoundaryKind::Farfield || kind == BoundaryKind::Analytic)
+            {
+                const auto grid = frame.GridVelocity(location);
+                real speed = 0;
+                for (int d = 0; d < 3; ++d)
+                    speed += (inside[1 + d] / inside[0] - grid[d]) * normal[d];
+                if (kind == BoundaryKind::Analytic || speed <= 0)
+                    for (int j = 0; j < Components - 5; ++j)
+                        point[5 + j] = condition.prescribedRANS[j];
+            }
+        }
+        return {};
     }
 }

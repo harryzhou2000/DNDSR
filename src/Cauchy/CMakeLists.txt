@@ -119,7 +119,7 @@ set(CPPS
 
     Riemann/RiemannFlux.cpp)
 if(DNDS_USE_CUDA)
-    list(APPEND CPPS Discretization/CUDA/FiniteVolumeAuxiliaryKernels.cu)
+    list(APPEND CPPS Discretization/CUDA/FiniteVolumeAuxiliaryKernels.cu Discretization/CUDA/FiniteVolumeBoundaryKernels.cu)
 endif()
 dnds_add_lib(cauchy "${CPPS}" "physics;cfv;geom;dnds;${DNDS_EXTERNAL_LIBS}" "${DNDS_PCH_TARGETS_FAST}" OFF ON ON)
 dnds_add_lib(cauchy_shared "${CPPS}" "physics_shared;cfv_shared;geom_shared;dnds_shared;${DNDS_EXTERNAL_LIBS}" "${DNDS_PCH_TARGETS_FAST}" ON ON ON)

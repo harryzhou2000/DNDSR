@@ -2,6 +2,8 @@
 #include "doctest.h"
 #include "Cauchy/Discretization/CUDA/FiniteVolumeAuxiliaryKernels.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
+#include "Cauchy/Discretization/CUDA/FiniteVolumeBoundaryKernels.hpp"
+#include "Cauchy/Boundary/BoundaryPointOperator.hpp"
 #include "Cauchy/Config/SimulationConfig.hpp"
 #include "Cauchy/Physics/EquationSystem.hpp"
 #include "DNDS/Runtime/Execution/EagerArray.hpp"
@@ -36,6 +38,144 @@ namespace
                     write.View()(iRow, j) = values[iRow][j];
         }
         return host.To(R::Device::CUDA(0), R::ExecutionContext::CUDA(0));
+    }
+}
+
+TEST_CASE("CUDA boundary producers match generic CPU face exterior and interface states")
+{
+    const auto device = R::Device::CUDA(0), host = R::Device::Host();
+    const auto context = R::ExecutionContext::CUDA(0);
+    for (const std::string model : {"none", "SA", "KOmegaWilcox", "KOmegaSST"})
+    {
+        INFO("boundary model=" << model);
+        C::EquationSettings settings;
+        settings.transport = "NewtonianFourier";
+        settings.viscosity = .002;
+        settings.viscosityModel = "sutherland";
+        settings.sutherlandConstant = .3;
+        settings.rans.model = model;
+        settings.rans.viscosityReference = .01;
+        const auto equation = C::EquationSystem::Resolve(settings);
+        const int components = 5 + (equation.HasRANS() ? equation.RANS().ComponentNumber() : 0);
+        const auto frame = C::RigidMotion({}, 2).At(.2);
+        C::ThermalPolicy thermal(equation, 1e-10, 1e-10, 0, 1e-10);
+        K::BoundaryKernelParameters parameters;
+        parameters.gas = equation.Gas();
+        parameters.rans = equation.HasRANS() ? equation.RANS().Kind() : DNDS::Physics::RANS::ModelKind::None;
+        parameters.thermal = thermal.View();
+        parameters.frame = frame.KernelParameters();
+        parameters.time = .2;
+        parameters.allowPointFallback = true;
+        parameters.Validate(components);
+        auto params = DeviceRows<K::BoundaryKernelParameters>({parameters});
+        std::vector<C::BoundaryCondition> conditions(3);
+        conditions[0].kind = C::BoundaryKind::NoSlipWall;
+        conditions[0].isothermal = true;
+        conditions[0].temperature = .8;
+        conditions[1].kind = C::BoundaryKind::TotalConditionInlet;
+        conditions[1].totalCondition = {1.3, 1.1, 1, 0, 0};
+        conditions[1].totalRANSPrimitive = {.03, .4};
+        conditions[2].kind = C::BoundaryKind::Interface;
+        std::vector<C::PerfectGasBoundaryParameters> physical;
+        std::vector<C::BoundaryTraceGeometry> points;
+        for (I i = 0; i < 3; ++i)
+        {
+            physical.push_back(conditions[i].PerfectGasKernelParameters());
+            points.push_back({i, i, i, i, 0, 0, {-1, 0, 0}, {.2 * i, .1, 0}});
+        }
+        auto conditionRows = DeviceRows(physical);
+        auto pointRows = DeviceRows(points);
+        auto sourceRows = DeviceRows<I>({2, 0, 1});
+        auto walls = DeviceRows<real>({.03, .04, .05});
+        R::Array<real> means(R::RowLayout::Dense(3, components)), coefficients(R::RowLayout::Dense(3, 2 * components));
+        R::Array<real> incoming(R::RowLayout::Dense(1, components)), basis(R::RowLayout::Dense(6, 2));
+        {
+            auto u = means.Write(), rec = coefficients.Write(), packet = incoming.Write(), b = basis.Write();
+            for (I i = 0; i < 3; ++i)
+            {
+                const auto flow = equation.Gas().Conservative({1.2 + .02 * i, .2, .05, -.03, 1.1});
+                for (int j = 0; j < components; ++j)
+                {
+                    u.View()(i, j) = j < 5 ? flow[j] : j == 5 ? .02
+                                                              : .3;
+                    rec.View()(i, 2 * j) = .001 * (j + 1);
+                    rec.View()(i, 2 * j + 1) = -.002 * (j + 1);
+                    if (i == 0)
+                        packet.View()(0, j) = u.View()(i, j);
+                }
+                for (int side = 0; side < 2; ++side)
+                {
+                    b.View()(2 * i + side, 0) = .2;
+                    b.View()(2 * i + side, 1) = -.1;
+                }
+            }
+            // One unlimited VR boundary trace fails thermal admissibility and
+            // must use the cell mean before physical BC evaluation.
+            rec.View()(0, 8) = -100;
+        }
+        auto u = means.To(device), rec = coefficients.To(device), packet = incoming.To(device), cache = basis.To(device);
+        R::Array<real> output(R::RowLayout::Dense(3, components), device);
+        R::Array<real> primitiveOutput(R::RowLayout::Dense(3, 5), device);
+        R::Array<DNDS::NumericalStatus> errors(R::RowLayout::Dense(3, 1), device);
+        for (const int operation : {0, 1, 2})
+        {
+            const bool exterior = operation != 0, primitive = operation == 2;
+            auto &target = primitive ? primitiveOutput : output;
+            R::EagerEngine engine;
+            const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+            const auto polynomial = DNDS::CFV::Math::TaylorBasis(2, 1).KernelParameters();
+            R::SubmitArrays(engine, stream, [components, exterior, primitive, polynomial](auto execution, auto p, auto bc, auto geo, auto rows, auto wall, auto mean, auto coefs, auto incoming, auto basis, auto out, auto status)
+                            {
+                K::BoundaryTraceRequest request;
+                request.parameters = p; request.conditions = bc; request.points = geo; request.sourceRows = rows;
+                request.wallMean = wall; request.means = mean; request.coefficients = coefs; request.incoming = incoming;
+                request.basis.cached = basis; request.basis.polynomial = polynomial;
+                request.basis.availableDerivatives = request.basis.cachedDerivatives = 1;
+                request.output = out; request.status = status; request.components = components; request.modes = 2;
+                request.polynomial = request.useSourceRows = request.hasIncoming = true; request.exterior = exterior;
+                if (primitive) K::FillPrimitiveBoundary(execution, request);
+                else K::FillBoundaryTraces(execution, request); }, R::ReadAs<R::FixedRows<1>>(params), R::ReadAs<R::FixedRows<1>>(conditionRows), R::ReadAs<R::FixedRows<1>>(pointRows), R::ReadAs<R::FixedRows<1>>(sourceRows), R::ReadAs<R::FixedRows<1>>(walls), R::ReadAs<R::TableRows>(u), R::ReadAs<R::TableRows>(rec), R::ReadAs<R::TableRows>(packet), R::ReadAs<R::TableRows>(cache), R::WriteAs<R::TableRows>(target), R::WriteAs<R::FixedRows<1>>(errors));
+            engine.Close();
+            const auto downloaded = target.To(host);
+            const auto downloadedErrors = errors.To(host);
+            const auto result = downloaded.Read();
+            const auto status = downloadedErrors.Read();
+            const auto meanRead = means.Read(), coefficientRead = coefficients.Read(), packetRead = incoming.Read();
+            C::BoundaryPointOperator boundary(equation);
+            auto evaluator = equation.MakePointEvaluator();
+            const I order[]{2, 0, 1};
+            for (I iPoint = 0; iPoint < 3; ++iPoint)
+            {
+                const I iCell = order[iPoint];
+                std::vector<real> mean(components), point(components);
+                for (int j = 0; j < components; ++j)
+                {
+                    mean[j] = meanRead.View()(iCell, j);
+                    point[j] = primitive ? mean[j] : mean[j] + .2 * coefficientRead.View()(iCell, 2 * j) - .1 * coefficientRead.View()(iCell, 2 * j + 1);
+                }
+                if (!thermal.View().ClippedReferenceAdmissible(point))
+                    point = mean;
+                const auto checked = boundary.TryEvaluate(point, conditions[iCell], 0, points[iCell].normal, points[iCell].location,
+                                                          evaluator, frame, .2, exterior ? C::BoundaryPointStateKind::ExteriorState : C::BoundaryPointStateKind::FaceTrace,
+                                                          DNDS::OptionalRef<const std::vector<real>>(mean), .03 + .01 * iCell, packetRead.View<R::UniformTableRows>());
+                REQUIRE(checked);
+                if (primitive)
+                {
+                    C::FlowState flow;
+                    for (int j = 0; j < 5; ++j)
+                        flow[j] = iCell == 2 ? point[j] : .5 * (point[j] + mean[j]);
+                    const auto value = equation.Gas().Primitive(flow);
+                    point = {value.density, value.velocity[0], value.velocity[1], value.velocity[2], value.temperature};
+                }
+#ifdef USE_FIX_ZERO_SA_NUT_AT_WALL
+                if (!primitive && model == "SA" && iCell == 0)
+                    point[5] = 0;
+#endif
+                REQUIRE(bool(status.View()(iPoint, 0)));
+                for (int j = 0; j < (primitive ? 5 : components); ++j)
+                    CHECK(result.View()(iPoint, j) == doctest::Approx(point[j]).epsilon(2e-11).scale(1));
+            }
+        }
     }
 }
 

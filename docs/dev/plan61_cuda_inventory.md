@@ -219,3 +219,27 @@ is also unbuilt and belongs to the same group B validation.
   ghost-only extraction, activation and disabled/flow5 characteristics. They
   have **not run**; no new build/test group has started.
 
+### Boundary producer source additions (unvalidated)
+
+`Cauchy/Discretization/CUDA/FiniteVolumeBoundaryKernels.*` adds C++ launchers
+for physical/interface reconstruction targets, mean-based primitive-gradient
+targets and boundary row copies. Whole-array residency, profile/shape and
+aggregate launch arguments are checked before submission. Point failures use
+per-output-row status; no kernel performs communication, allocations or host
+fallback. Parameters/condition registries are explicit resident metadata rows.
+
+`Boundary/PerfectGasBoundary.hpp` now provides combined flow5/SA/two-equation
+state production, including total-inlet RANS primitives and the same wall
+omega/isothermal reflection as the generic CPU operator. Reconstruction
+targets preserve optional mean fallback for temporary unlimited VR traces and
+the SA wall compile-time option. Interface rows bypass physical BC arithmetic
+and copy the supplied complete receiver-frame state. The polynomial basis view
+supports cached/direct evaluation without mesh-owner access inside a kernel.
+
+Added test source compares the actual CUDA launchers against generic CPU
+boundary production for flow5, SA, Wilcox and SST; face/mirrored targets,
+primitive targets, row maps, nonconstant polynomial input, a thermal mean
+fallback, isothermal wall and total-condition inlet, plus interface packets.
+These additions remain unbuilt. Production workspace placement/dispatch and
+the remaining RHS, PP, LVR and characteristic producers are still open in B.
+

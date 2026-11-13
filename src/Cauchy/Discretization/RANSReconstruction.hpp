@@ -18,7 +18,7 @@ namespace DNDS::Cauchy
         /// quadrature value reverts to its cell mean, without flattening flow
         /// or other RANS components. SA follows its existing compile-time flag.
         template <class Mean, class Row>
-        void RepairPoint(const Mean &mean, Row &&values) const
+        DNDS_DEVICE_CALLABLE void RepairPoint(const Mean &mean, Row &&values) const
         {
             for (int j = 0; j < components; ++j)
             {
