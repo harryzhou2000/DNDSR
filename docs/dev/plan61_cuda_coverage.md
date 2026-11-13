@@ -166,6 +166,17 @@ converged residual floor nor a useful whole-solver speedup. Keep these modes
 explicit experiments, retain the failed comparisons, and do not weaken the
 FP64 acceptance gate. The plan repository records the bounds and full metrics.
 
+A subsequent single-device steady assessment kept the same 1e-10 density
+relative target: FP64 converged in 5,325 updates (83.7 solver seconds), whereas
+FP32 and TF32 reached the 20,000-update cap. Their last-1,000-update median
+density residuals were 9.61e-9 and 1.70e-5 respectively, versus an approximately
+1.29e-10 target. FP32 still passes the mean-field comparison but fails the
+coefficient bounds; TF32 fails both. Quantized modes therefore do not qualify
+for this strict steady solve. Their different stopping outcomes make total
+runtime unsuitable as a speedup comparison. The converged one-device FP64
+fields agree near roundoff with the CPU anchor; this does not replace the
+required two-device SG/pMG and AmgX convergence gates.
+
 ## CPU threading and device leaf map
 
 The earlier inventory is a chronological implementation record; its original
