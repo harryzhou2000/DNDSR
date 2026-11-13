@@ -529,6 +529,101 @@ TEST_CASE("CUDA sweep-only publication omits limiter matrices and scratch")
             CHECK(read.View()(iRow, j) == 0);
     CHECK_THROWS(resident.DoLimiterWBAP_3Order(coefficients, work, 1));
 }
+TEST_CASE("Opt-in FP32 sweep maps retain FP64 coefficients and avoid duplicate device matrix storage")
+{
+    const auto device = R::Device::CUDA(0);
+    const auto context = R::ExecutionContext::CUDA(0);
+    for (const bool sector : {true, false})
+    {
+        const auto mesh = sector ? CFVTest::Sector(mpi) : CFVTest::CartesianHexes(mpi, 3);
+        auto metrics = C::FiniteVolumePlan::ConstructMetrics(mesh);
+        C::ReconstructionSettings settings;
+        settings.maxOrder = 3;
+        settings.jacobiRelax = .7;
+        auto cpu = C::VariationalReconstructionPlan::ConstructRecCoeff(metrics, settings);
+        C::ReconstructionResidencyOptions options;
+        options.retainHostPayloads = false;
+        auto full = cpu.Place(device, context, options);
+        options.matrixPrecision = C::ReconstructionMatrixPrecision::FP32;
+        auto reduced = cpu.Place(device, context, options);
+        CHECK(reduced.SupportsKernel(C::ReconstructionDeviceKernel::FP32));
+        CHECK_FALSE(reduced.SupportsKernel(C::ReconstructionDeviceKernel::FP64));
+        const auto fullBuffers = full.ResidentBuffers(), smallBuffers = reduced.ResidentBuffers();
+        for (const std::string name : {"matrixAInvB", "vectorAInvB", "boundaryInjection"})
+        {
+            const auto original = std::find_if(fullBuffers.begin(), fullBuffers.end(), [&](const auto &buffer)
+                                               { return buffer.name == name; });
+            const auto quantized = std::find_if(smallBuffers.begin(), smallBuffers.end(), [&](const auto &buffer)
+                                                { return buffer.name == name + "32"; });
+            REQUIRE(original != fullBuffers.end());
+            REQUIRE(quantized != smallBuffers.end());
+            CHECK(2 * quantized->bytes == original->bytes);
+            CHECK(std::none_of(smallBuffers.begin(), smallBuffers.end(), [&](const auto &buffer)
+                               { return buffer.name == name; }));
+        }
+        const I components = sector ? 5 : 7;
+        auto mean = metrics.BuildField(components);
+        auto input = cpu.BuildCoefficients(components);
+        Fill(mean, 1.1);
+        Fill(input, .01);
+        metrics.BindHalo(mean).Begin().Wait();
+        auto inputHalo = cpu.BindHalo(input);
+        auto work = cpu.BuildWorkspace(components, std::vector<I>{1});
+        auto boundary = cpu.BuildBoundaryValues(components);
+        {
+            auto write = boundary.values.Write();
+            for (I iPoint = 0; iPoint < boundary.values.RowCount(); ++iPoint)
+                for (I j = 0; j < components; ++j)
+                    write.View()(iPoint, j) = 1.1 + .01 * iPoint + .02 * j;
+        }
+        auto deviceMean = metrics.BuildField(R::RowLayout::Dense(0, components), device);
+        auto deviceInput = reduced.BuildCoefficients(components);
+        auto deviceWork = reduced.BuildWorkspace(components, std::vector<I>{1});
+        auto deviceBoundary = reduced.PlaceBoundaryValues(boundary);
+        deviceMean.Owned().CopyFrom(mean.Owned(), context).Wait();
+        deviceMean.Ghost().CopyFrom(mean.Ghost(), context).Wait();
+        R::EagerEngine engine;
+        const auto stream = engine.CreateStream(std::make_shared<R::CUDALauncher>(0));
+        // Compare each sweep with exactly the same input. This isolates local
+        // arithmetic error instead of mixing it with iterative error growth.
+        for (int iteration = 0; iteration < 3; ++iteration)
+        {
+            inputHalo.Begin().Wait();
+            deviceInput.Owned().CopyFrom(input.Owned(), context).Wait();
+            deviceInput.Ghost().CopyFrom(input.Ghost(), context).Wait();
+            cpu.DoReconstructionIter(mean, input, work, boundary);
+            reduced.SubmitReconstructionIterTo(engine, stream, deviceMean, deviceInput, deviceWork, deviceBoundary,
+                                               C::ReconstructionRegion::Core, C::ReconstructionDeviceKernel::FP32);
+            reduced.SubmitReconstructionIterTo(engine, stream, deviceMean, deviceInput, deviceWork, deviceBoundary,
+                                               C::ReconstructionRegion::HaloDependent, C::ReconstructionDeviceKernel::FP32);
+            engine.Synchronize();
+            reduced.CheckStatus(deviceWork);
+            Compare(work.temporary, deviceWork.temporary, 2e-5);
+            cpu.CommitReconstruction(input, work);
+        }
+        auto target = cpu.BuildCoefficients(components), deviceTarget = reduced.BuildCoefficients(components);
+        Fill(target, .005);
+        deviceTarget.Owned().CopyFrom(target.Owned(), context).Wait();
+        R::Array<double> penalty(R::RowLayout::Dense(metrics.NumCell(), 1));
+        {
+            auto write = penalty.Write();
+            for (I iCell = 0; iCell < penalty.RowCount(); ++iCell)
+                write.View()(iCell, 0) = iCell % 3 == 0 ? 0 : iCell % 3 == 1 ? .3
+                                                                             : 1;
+        }
+        auto devicePenalty = penalty.To(device);
+        inputHalo.Begin().Wait();
+        deviceInput.Owned().CopyFrom(input.Owned(), context).Wait();
+        deviceInput.Ghost().CopyFrom(input.Ghost(), context).Wait();
+        cpu.DoReconstructionIterLimitedTo(mean, input, work, boundary, target, penalty);
+        reduced.SubmitReconstructionIterLimitedTo(engine, stream, deviceMean, deviceInput, deviceWork, deviceBoundary,
+                                                  deviceTarget, devicePenalty);
+        engine.Synchronize();
+        reduced.CheckStatus(deviceWork);
+        Compare(work.temporary, deviceWork.temporary, 2e-5);
+    }
+}
+
 TEST_CASE("CUDA Jacobi and WBAP agree with CPU for physical DOF layouts and direct MPI split work")
 {
     auto fixture = G::OverlapTest::BuildNativeFixture(mpi, false);

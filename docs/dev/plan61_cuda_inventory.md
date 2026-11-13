@@ -8,6 +8,48 @@ open; header enumeration alone does not establish complete hot-path coverage.
 Every numerical helper reached by supported flow5/SA/2EQ AoS perfect-gas paths
 must execute on CUDA. CPU OMP=1 remains the mathematical anchor.
 
+### State and analytic-error reduction source additions (unbuilt)
+
+`Discretization/CUDA/FiniteVolumeStateKernels.*` and its `_Profile.cu` definition
+provide owned-mean admissibility, local CFL minima and analytic flow-error
+summaries. They use caller-owned partial/result arrays and CUB block reductions
+with an explicit non-atomic tree, followed by a final reduction launch on the
+same stream. No floating-point atomic sums or host scalar returns are used.
+Required failure status remains present even with diagnostic counters disabled.
+
+The flow-error leaf consumes prepared maximum-order physical quadrature in the
+CPU oracle's order, independently of the residual quadrature choice. It samples
+the shared analytic profiles in world coordinates and rotates momentum back to
+local axes. L1/L2-squared/Linf contributions and volume are rank-local, leaving
+MPI and normalization at the reporting boundary. The production geometry cache
+and solver dispatch remain pending; a standalone numerical launcher is not
+end-to-end device support.
+
+Focused test sources compare against CPU reductions (empty/one/multiple blocks)
+and the actual CPU error oracle on 2D periodic quads and 3D hexes, with moving
+frames and combined flow/scalar rows. Repeated queued reductions check exact
+same-device repeatability without requiring bitwise equality to serial CPU
+summation. These sources have not been compiled or run in the current B batch.
+
+### Quantized sweep reference (source only)
+
+`ReconstructionResidencyOptions::matrixPrecision=FP32` explicitly converts the
+completed FP64 inverse products, mean-injection vectors and boundary-injection
+maps at device placement. The device owns only those FP32 copies; secondary
+WBAP maps and periodic rotations remain FP64. FP64 remains the default.
+`ReconstructionDeviceKernel::FP32` selects SIMT FP32 dense-product accumulation
+with FP64 relaxation/state accumulation. Ordinary and limited Jacobi share the
+same shape-specialized arithmetic, including alpha-one neighbor exclusion.
+Existing FP64 tensor kernels reject quantized maps instead of dereferencing
+missing FP64 storage. Python placement exposes the same explicit choice.
+
+This is the arithmetic/storage baseline for the planned quantized MMA trial,
+not an implementation or performance claim for FP32/TF32 tensor cores. That
+trial remains pending. Test sources compare CPU sweeps on a rotated 2D sector
+and 3D hex mesh, including core/dependent selection and LVR penalties; they also
+check half-sized map allocations with no duplicate FP64 device maps. No B build,
+accuracy acceptance, or speed assessment has run yet.
+
 ### Phase B LVR source checkpoint (unbuilt)
 
 CFV `LimitedVRPlan` now has retained queued CPU-inline/worker and CUDA seed /

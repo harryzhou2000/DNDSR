@@ -155,14 +155,19 @@ namespace DNDS::CFV
             .value("FP64", ReconstructionDeviceKernel::FP64)
             .value("FP64TensorCore", ReconstructionDeviceKernel::FP64TensorCore)
             .value("FP64TensorCoreShared", ReconstructionDeviceKernel::FP64TensorCoreShared)
-            .value("FP64TensorCoreAsync", ReconstructionDeviceKernel::FP64TensorCoreAsync);
+            .value("FP64TensorCoreAsync", ReconstructionDeviceKernel::FP64TensorCoreAsync)
+            .value("FP32", ReconstructionDeviceKernel::FP32);
+        py::enum_<ReconstructionMatrixPrecision>(m, "ReconstructionMatrixPrecision")
+            .value("FP64", ReconstructionMatrixPrecision::FP64)
+            .value("FP32", ReconstructionMatrixPrecision::FP32);
         py::class_<ReconstructionResidencyOptions>(m, "ReconstructionResidencyOptions")
             .def(py::init<>())
             .def_readwrite("mesh", &ReconstructionResidencyOptions::mesh)
             .def_readwrite("metrics", &ReconstructionResidencyOptions::metrics)
             .def_readwrite("basis", &ReconstructionResidencyOptions::basis)
             .def_readwrite("retain_host_payloads", &ReconstructionResidencyOptions::retainHostPayloads)
-            .def_readwrite("basis_derivative_order", &ReconstructionResidencyOptions::basisDerivativeOrder);
+            .def_readwrite("basis_derivative_order", &ReconstructionResidencyOptions::basisDerivativeOrder)
+            .def_readwrite("matrix_precision", &ReconstructionResidencyOptions::matrixPrecision);
         py::class_<ResidentBufferInfo>(m, "ResidentBufferInfo")
             .def_readonly("name", &ResidentBufferInfo::name)
             .def_readonly("bytes", &ResidentBufferInfo::bytes)

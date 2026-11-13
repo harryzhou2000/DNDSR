@@ -292,6 +292,11 @@ namespace DNDS::CFV
     using FaceCharacteristicTransformRef = std::optional<std::reference_wrapper<const FaceCharacteristicTransform>>;
     using LimiterIndicatorRef = std::optional<std::reference_wrapper<const Runtime::Array<real>>>;
 
+    enum class ReconstructionMatrixPrecision
+    {
+        FP64,
+        FP32
+    };
     struct ReconstructionResidencyOptions
     {
         bool mesh = false, metrics = false, basis = false;
@@ -305,6 +310,10 @@ namespace DNDS::CFV
         /// do not. Ignored when basis=false. Full metric publication is an
         /// independent request and must be enabled explicitly with metrics.
         int basisDerivativeOrder = 1;
+        /// Quantize only the already-inverted sweep maps during placement.
+        /// Means, coefficients, relaxation and WBAP maps stay FP64. FP32 is an
+        /// explicit accuracy/performance experiment, never the default.
+        ReconstructionMatrixPrecision matrixPrecision = ReconstructionMatrixPrecision::FP64;
     };
     /// Explicit CUDA numerical kernel selection. CPU placement ignores this
     /// choice; backend resolution occurs once per submitted CFV operation.
@@ -313,7 +322,11 @@ namespace DNDS::CFV
         FP64,
         FP64TensorCore,
         FP64TensorCoreShared,
-        FP64TensorCoreAsync
+        FP64TensorCoreAsync,
+        /// FP32 matrix/coefficient products accumulated in FP32, then added to
+        /// FP64 coefficients. SIMT FMA reference for quantized MMA experiments;
+        /// this selection does not claim to use tensor cores or TF32 arithmetic.
+        FP32
     };
     struct ResidentBufferInfo
     {

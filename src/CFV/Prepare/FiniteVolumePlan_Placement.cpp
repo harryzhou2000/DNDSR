@@ -30,11 +30,13 @@ namespace DNDS::CFV
             std::optional<R::RowTransferPlan> halo;
             std::vector<ResidentBufferInfo> buffers;
             std::vector<R::Array<real>> realArrays;
+            std::vector<R::Array<float>> floatArrays;
             std::vector<R::Array<index>> indexArrays;
             std::vector<R::Array<uint8_t>> byteArrays;
             // Immutable device read leases are retained with the publication;
             // scheduled commands retain the publication through completion.
             std::vector<R::Array<real>::ReadLease> realReads;
+            std::vector<R::Array<float>::ReadLease> floatReads;
             std::vector<R::Array<index>::ReadLease> indexReads;
             std::vector<R::Array<uint8_t>::ReadLease> byteReads;
             R::Array<real> empty;
@@ -66,6 +68,12 @@ namespace DNDS::CFV
                     realReads.push_back(realArrays.back().Read({device, nullptr}));
                     return realReads.back().View();
                 }
+                else if constexpr (std::is_same_v<T, float>)
+                {
+                    floatArrays.push_back(std::move(array));
+                    floatReads.push_back(floatArrays.back().Read({device, nullptr}));
+                    return floatReads.back().View();
+                }
                 else if constexpr (std::is_same_v<T, index>)
                 {
                     indexArrays.push_back(std::move(array));
@@ -79,6 +87,24 @@ namespace DNDS::CFV
                     byteReads.push_back(byteArrays.back().Read({device, nullptr}));
                     return byteReads.back().View();
                 }
+            }
+            R::ArrayView<const float> AddQuantized(const char *name, const R::Array<real> &input, R::ExecutionContext context)
+            {
+                // Setup-only conversion after FP64 assembly/SVD/inversion. A
+                // quantized placement does not keep a second device FP64 copy.
+                R::Array<float> converted(input.Layout());
+                {
+                    const auto read = input.Read();
+                    auto write = converted.Write();
+                    for (index iRow = 0; iRow < input.RowCount(); ++iRow)
+                        for (index j = 0; j < read.View().RowSize(iRow); ++j)
+                        {
+                            const float value = float(read.View()(iRow, j));
+                            DNDS_check_throw_info(std::isfinite(value), "reconstruction matrix cannot be represented in FP32");
+                            write.View()(iRow, j) = value;
+                        }
+                }
+                return Add(name, converted, context);
             }
         };
     }
@@ -216,6 +242,9 @@ namespace DNDS::CFV
         for (const auto &array : _device->realArrays)
             DNDS_check_throw_info(array.IsValid() && array.GetDevice() == _device->device,
                                   "device reconstruction real payload is invalid");
+        for (const auto &array : _device->floatArrays)
+            DNDS_check_throw_info(array.IsValid() && array.GetDevice() == _device->device,
+                                  "device reconstruction quantized payload is invalid");
         for (const auto &array : _device->indexArrays)
             DNDS_check_throw_info(array.IsValid() && array.GetDevice() == _device->device,
                                   "device reconstruction index payload is invalid");
@@ -239,6 +268,9 @@ namespace DNDS::CFV
         DNDS_check_throw_info(!Settings().SORInstead, "CUDA SOR requires a logical parallel sweep design and is unsupported");
         DNDS_check_throw_info(!options.basis || (options.basisDerivativeOrder >= 0 && options.basisDerivativeOrder <= 3),
                               "invalid resident basis derivative order");
+        DNDS_check_throw_info(options.matrixPrecision == ReconstructionMatrixPrecision::FP64 ||
+                                  options.matrixPrecision == ReconstructionMatrixPrecision::FP32,
+                              "unknown reconstruction matrix precision");
         _data->workPartition->Validate();
         auto geometry = Metrics().AcquireRead();
         auto result = std::make_shared<Detail::ReconstructionPlacementData>(_data, device, options);
@@ -250,16 +282,26 @@ namespace DNDS::CFV
         view.relax = Settings().jacobiRelax;
         view.wbapCenterWeight = Settings().WBAP_nStd;
         view.rotated = host.hasRotatedPeriodicity;
+        view.quantized = options.matrixPrecision == ReconstructionMatrixPrecision::FP32;
 #define DNDS_REC_ADD(member) view.member = result->Add(#member, host.member, context)
         DNDS_REC_ADD(offsets);
         DNDS_REC_ADD(neighbors);
         DNDS_REC_ADD(faces);
         DNDS_REC_ADD(boundaryOffsets);
-        view.matrixAInvB = result->Add("matrixAInvB", *host.matrixAInvB, context);
-        view.vectorAInvB = result->Add("vectorAInvB", *host.vectorAInvB, context);
+        if (view.quantized)
+        {
+            view.matrixAInvB32 = result->AddQuantized("matrixAInvB32", *host.matrixAInvB, context);
+            view.vectorAInvB32 = result->AddQuantized("vectorAInvB32", *host.vectorAInvB, context);
+            view.boundaryInjection32 = result->AddQuantized("boundaryInjection32", *host.boundaryInjection, context);
+        }
+        else
+        {
+            view.matrixAInvB = result->Add("matrixAInvB", *host.matrixAInvB, context);
+            view.vectorAInvB = result->Add("vectorAInvB", *host.vectorAInvB, context);
+            view.boundaryInjection = result->Add("boundaryInjection", *host.boundaryInjection, context);
+        }
         if (host.capabilities.wbap)
             view.secondary = result->Add("secondary", *host.secondary, context);
-        view.boundaryInjection = result->Add("boundaryInjection", *host.boundaryInjection, context);
 #undef DNDS_REC_ADD
         view.rotation = result->Add("neighborRotation", host.neighborRotation, context);
         view.rotationActive = result->Add("neighborRotationActive", host.neighborRotationActive, context);
@@ -655,6 +697,8 @@ namespace DNDS::CFV
         DNDS_check_throw_info(_identity, "reconstruction plan is empty");
         if (!_device)
             return kernel == ReconstructionDeviceKernel::FP64;
+        if (_device->view.quantized)
+            return kernel == ReconstructionDeviceKernel::FP32;
         return kernel == ReconstructionDeviceKernel::FP64 ||
                ((kernel == ReconstructionDeviceKernel::FP64TensorCore || kernel == ReconstructionDeviceKernel::FP64TensorCoreShared ||
                  kernel == ReconstructionDeviceKernel::FP64TensorCoreAsync) &&
