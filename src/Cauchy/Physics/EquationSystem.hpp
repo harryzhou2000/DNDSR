@@ -154,5 +154,13 @@ namespace DNDS::Cauchy
         /// Cell-mean characteristic basis for reconstruction limiting; EOS
         /// eigenstructure belongs to the equation provider, never CFV policy.
         FlowCharacteristics PrepareCharacteristics(const FlowState &left, const FlowState &right, const Vector3 &normal) const;
+        /// Physics-generic frozen-composition limiter basis. The caller supplies
+        /// thermodynamics of fresh cell means, including their energy convention.
+        /// No EOS solve is performed here; use the property provider/auxiliary
+        /// phase once per cell. RANS/species remain scalar limiter components.
+        FlowCharacteristics PrepareCharacteristics(const FlowState &left, const FlowState &right,
+                                                   const CharacteristicThermodynamics &leftThermo,
+                                                   const CharacteristicThermodynamics &rightThermo,
+                                                   const Vector3 &normal) const;
     };
 }

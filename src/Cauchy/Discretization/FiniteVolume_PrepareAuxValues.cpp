@@ -27,19 +27,30 @@ namespace DNDS::Cauchy
     }
     AuxiliaryValues FiniteVolume::BuildAuxiliaryValues(AuxiliaryRequest request) const
     {
+        // A caller-provided auxiliary bundle must cover the same mean thermal
+        // inputs as the workspace-owned bundle when mixture WBAP is active.
+        // This adds only the required cache, not unrelated face outputs.
+        if (_data->equation.HasMixture() && _data->settings.numerics.characteristicLimiter &&
+            _data->settings.numerics.limiter == "WBAP")
+            request.meanThermodynamics = true;
         AuxiliaryValues values;
         const index faces = _data->stencil.stencilFaces.RowCount();
         if (request.derived.ComponentNumber())
         {
             values._derivedThermodynamics = request.meanThermodynamics;
             if (request.meanThermodynamics)
+            {
                 for (auto quantity : {DerivedQuantity::Pressure, DerivedQuantity::SoundSpeed, DerivedQuantity::DiffusionBound})
                     request.derived.enabled[int(quantity)] = true;
+                if (_data->equation.HasMixture())
+                    for (auto quantity : {DerivedQuantity::TotalEnthalpy, DerivedQuantity::PressureInternalEnergyDerivative})
+                        request.derived.enabled[int(quantity)] = true;
+            }
             values.derivedOwned.emplace(Metrics().Space(), request.derived);
             values.derivedGhost.emplace(Metrics().Space(), request.derived, true);
         }
         if (request.meanThermodynamics && !values._derivedThermodynamics)
-            values.meanThermodynamics.emplace(R::RowLayout::Dense(Metrics().NumCellProc(), 3));
+            values.meanThermodynamics.emplace(R::RowLayout::Dense(Metrics().NumCellProc(), _data->equation.HasMixture() ? 5 : 3));
         if (request.faceSpectralRadius)
             values.faceSpectralRadius.emplace(R::RowLayout::Dense(faces, 2));
         if (request.faceWaveJump)
@@ -59,6 +70,9 @@ namespace DNDS::Cauchy
     }
     AuxiliaryRequest FiniteVolume::CompleteRHSAuxiliaryRequest(AuxiliaryRequest request) const
     {
+        if (_data->equation.HasMixture() && _data->settings.numerics.characteristicLimiter &&
+            _data->settings.numerics.limiter == "WBAP")
+            request.meanThermodynamics = true;
         if (_data->settings.numerics.riemann.useStencil)
         {
             request.cellWaveJump = request.cellWaveJump || _data->fluxPolicy.transverseSignal;

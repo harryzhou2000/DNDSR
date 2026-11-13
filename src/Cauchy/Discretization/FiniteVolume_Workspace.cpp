@@ -253,8 +253,7 @@ namespace DNDS::Cauchy
                 directPPSamples = R::Array<real>(R::RowLayout::Dense(maximumPoints, componentNumber));
             }
         }
-        if (!meanOnly && (owner->settings.numerics.limiter == "WBAP" || limitedVR) && owner->settings.numerics.characteristicLimiter &&
-            !owner->equation.HasMixture())
+        if (!meanOnly && (owner->settings.numerics.limiter == "WBAP" || limitedVR) && owner->settings.numerics.characteristicLimiter)
         {
             const auto flow = state.LocateBlock("flow");
             DNDS_check_throw_info(flow.componentNumber == 5, "characteristic limiter requires one five-component flow block");

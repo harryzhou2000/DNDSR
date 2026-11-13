@@ -440,6 +440,85 @@ TEST_CASE("Cold mean limiter characteristics retain a reliable inverse without a
     CHECK(basis.componentwiseFallback);
     CHECK(physical.soundSpeed * physical.soundSpeed == doctest::Approx(1.4 * equation.Gas().Pressure(state)).epsilon(1e-12));
 }
+TEST_CASE("Perfect-gas characteristic matrices match independent Euler analytic matrices in rotated frames")
+{
+    const auto equation = C::EquationSystem::Resolve(C::EquationSettings{});
+    const auto left = equation.Gas().Conservative({.7, .4, -.2, .1, 1.3});
+    const auto right = equation.Gas().Conservative({1.6, -.3, .1, .2, .8});
+    const double rl = std::sqrt(left[0]), rr = std::sqrt(right[0]);
+    Eigen::Vector3d velocity;
+    for (int d = 0; d < 3; ++d)
+        velocity[d] = (left[d + 1] / rl + right[d + 1] / rr) / (rl + rr);
+    const double h = ((left[4] + 1.3) / rl + (right[4] + .8) / rr) / (rl + rr);
+    const double a = std::sqrt(.4 * (h - .5 * velocity.squaredNorm()));
+    for (Eigen::Vector3d normal : {Eigen::Vector3d::UnitX().eval(), Eigen::Vector3d::UnitY().eval(), Eigen::Vector3d{1, -2, 3}.normalized().eval()})
+    {
+        Eigen::Matrix3d basis;
+        basis.col(0) = normal;
+        basis.col(1) = normal.unitOrthogonal();
+        basis.col(2) = normal.cross(basis.col(1));
+        const Eigen::Vector3d localVelocity = basis.transpose() * velocity;
+        Eigen::Matrix<double, 5, 5> eulerL, eulerR, rotation = Eigen::Matrix<double, 5, 5>::Identity();
+        DNDS::Euler::Gas::EulerGasLeftEigenVector<3>(localVelocity, velocity.squaredNorm(), h, a, 1.4, eulerL);
+        DNDS::Euler::Gas::EulerGasRightEigenVector<3>(localVelocity, velocity.squaredNorm(), h, a, eulerR);
+        rotation.block<3, 3>(1, 1) = basis;
+        eulerR = (rotation * eulerR).eval();
+        eulerL = (eulerL * rotation.transpose()).eval();
+        const auto actual = equation.PrepareCharacteristics(left, right, {normal[0], normal[1], normal[2]});
+        REQUIRE_FALSE(actual.componentwiseFallback);
+        const Eigen::Map<const Eigen::Matrix<double, 5, 5>> l(actual.forward.data()), r(actual.inverse.data());
+        constexpr int permutation[]{1, 2, 3, 4, 0};
+        for (int iWave = 0; iWave < 5; ++iWave)
+        {
+            CHECK(l.row(iWave).isApprox(eulerL.row(permutation[iWave]), 2e-13));
+            CHECK(r.col(iWave).isApprox(eulerR.col(permutation[iWave]), 2e-13));
+        }
+    }
+}
+TEST_CASE("Cached generic characteristics preserve caloric energy offsets and the frozen EOS Jacobian")
+{
+    const auto equation = C::EquationSystem::Resolve(C::EquationSettings{});
+    // Independent variable-caloric ideal EOS: e(T)=e0+cv0*T+cv1*T*T/2.
+    // Nonzero e0 distinguishes the generic contact wave from kinetic energy.
+    const double gasConstant = .7, cv0 = 1.8, cv1 = .2;
+    const Eigen::Vector3d velocity{.4, -.2, .1}, normal = Eigen::Vector3d{1, -2, 3}.normalized();
+    const double kinetic = .5 * velocity.squaredNorm(), rho = 1.2, temperature = 2.3;
+    for (double energyOffset : {-4., 3.})
+    {
+        const double internal = energyOffset + cv0 * temperature + .5 * cv1 * temperature * temperature;
+        const double pressure = rho * gasConstant * temperature, beta = gasConstant / (cv0 + cv1 * temperature);
+        const double a2 = (1 + beta) * pressure / rho;
+        const C::FlowState state{rho, rho * velocity[0], rho * velocity[1], rho * velocity[2], rho * (internal + kinetic)};
+        const C::CharacteristicThermodynamics thermal{pressure, std::sqrt(a2), internal + kinetic + pressure / rho, beta};
+        const auto actual = equation.PrepareCharacteristics(state, state, thermal, thermal, {normal[0], normal[1], normal[2]});
+        REQUIRE_FALSE(actual.componentwiseFallback);
+        const Eigen::Map<const Eigen::Matrix<double, 5, 5>> l(actual.forward.data()), r(actual.inverse.data());
+        CHECK((l * r).isApprox(Eigen::Matrix<double, 5, 5>::Identity(), 1e-12));
+        CHECK((r * l).isApprox(Eigen::Matrix<double, 5, 5>::Identity(), 1e-12));
+        CHECK(std::abs(r(4, 0) - kinetic) > .1);
+        // Assemble the normal flux derivative directly from dp=rho*R*dT+R*T*drho.
+        Eigen::Matrix<double, 5, 5> jacobian;
+        const double un = velocity.dot(normal);
+        for (int j = 0; j < 5; ++j)
+        {
+            const double drho = j == 0, dEnergy = j == 4;
+            const Eigen::Vector3d dMomentum{double(j == 1), double(j == 2), double(j == 3)};
+            const Eigen::Vector3d dVelocity = (dMomentum - velocity * drho) / rho;
+            const double dInternal = (dEnergy - velocity.dot(dMomentum) + (kinetic - internal) * drho) / rho;
+            const double dp = gasConstant * temperature * drho + rho * beta * dInternal;
+            const double dun = dVelocity.dot(normal);
+            jacobian(0, j) = normal.dot(dMomentum);
+            jacobian.block<3, 1>(1, j) = dMomentum * un + rho * velocity * dun + dp * normal;
+            jacobian(4, j) = (dEnergy + dp) * un + (state[4] + pressure) * dun;
+        }
+        Eigen::Matrix<double, 5, 1> eigenvalues;
+        eigenvalues << un, un, un, un + std::sqrt(a2), un - std::sqrt(a2);
+        CHECK((jacobian * r).isApprox(r * eigenvalues.asDiagonal(), 2e-12));
+        auto invalid = thermal;
+        invalid.pressureInternalEnergyDerivative = 0;
+        CHECK_THROWS(equation.PrepareCharacteristics(state, state, thermal, invalid, {normal[0], normal[1], normal[2]}));
+    }
+}
 TEST_CASE("Cauchy prescribed DMR shock and boundary stage times match canonical conservative data")
 {
     C::FlowProfileSettings profile;

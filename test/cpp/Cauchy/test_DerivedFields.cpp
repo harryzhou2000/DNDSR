@@ -154,7 +154,9 @@ TEST_CASE("Mixture derived refresh consumes compatible stale temperatures across
                 expected[iCell] = {temperature / scales.T0, pressure / scales.Pressure(),
                                    prototype.speedOfSound(temperature, fractions, pressure) / scales.U0, mu, conductivity,
                                    prototype.mixtureCp(temperature, fractions, pressure) / scales.HeatCapacity(), cv,
-                                   Rmix / scales.HeatCapacity(), bound};
+                                   Rmix / scales.HeatCapacity(), bound,
+                                   (flow(iCell, 4) + pressure / scales.Pressure()) / rho,
+                                   Rmix / scales.HeatCapacity() / cv};
             }
         };
         const auto check = [&](const C::DerivedFields &fields)

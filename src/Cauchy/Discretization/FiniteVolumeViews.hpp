@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cauchy/Physics/PerfectGas.hpp"
+#include "Cauchy/Physics/FlowCharacteristics.hpp"
 #include "Cauchy/State/DerivedFields.hpp"
 #include "DNDS/Core/OptionalRef.hpp"
 #include <optional>
@@ -61,28 +62,53 @@ namespace DNDS::Cauchy
         index FaceFallbacks() const { return _faceFallbacks; }
         Vector3 BoundaryForce(const std::vector<int> &zones) const;
     };
-    /// Borrowed [p,a,diffusivity] projection, possibly in a wider derived table.
+    /// Borrowed [p,a,diffusivity] projection, optionally followed by [H,beta]
+    /// for the cached CPU mixture characteristic producer. These are cell-mean
+    /// values; face averages are local temporaries, not another field cache.
     /// Preserve parent layout and retain the producer's read scopes.
     struct MeanThermodynamicView
     {
         RHSFieldView values;
-        std::array<int, 3> columns{0, 1, 2};
+        std::array<int, 5> columns{0, 1, 2, 3, 4};
         index width = 3;
         MeanThermodynamicView() = default;
         MeanThermodynamicView(RHSScalarView combined) : values{combined, {}}, width(combined.Width()) {}
-        MeanThermodynamicView(RHSFieldView paired, std::array<int, 3> selected) : values(paired), columns(selected) {}
+        MeanThermodynamicView(RHSFieldView paired, std::array<int, 5> selected, index count)
+            : values(paired), columns(selected), width(count) {}
         static MeanThermodynamicView Derived(
             const DerivedFields::ReadScope &owned,
             OptionalRef<const DerivedFields::ReadScope> ghost = {})
         {
-            const std::array<int, 3> selected{owned.Column(DerivedQuantity::Pressure), owned.Column(DerivedQuantity::SoundSpeed), owned.Column(DerivedQuantity::DiffusionBound)};
+            std::array<int, 5> selected{owned.Column(DerivedQuantity::Pressure), owned.Column(DerivedQuantity::SoundSpeed), owned.Column(DerivedQuantity::DiffusionBound), -1, -1};
+            const bool characteristics = owned.Has(DerivedQuantity::TotalEnthalpy) && owned.Has(DerivedQuantity::PressureInternalEnergyDerivative);
+            if (characteristics)
+            {
+                selected[3] = owned.Column(DerivedQuantity::TotalEnthalpy);
+                selected[4] = owned.Column(DerivedQuantity::PressureInternalEnergyDerivative);
+            }
             if (ghost)
-                DNDS_check_throw_info((selected == std::array<int, 3>{ghost->Column(DerivedQuantity::Pressure), ghost->Column(DerivedQuantity::SoundSpeed), ghost->Column(DerivedQuantity::DiffusionBound)}), "derived owned/ghost property columns differ");
-            return {{owned.View(), ghost ? ghost->View() : RHSScalarView{}}, selected};
+            {
+                DNDS_check_throw_info(characteristics == (ghost->Has(DerivedQuantity::TotalEnthalpy) && ghost->Has(DerivedQuantity::PressureInternalEnergyDerivative)),
+                                      "derived owned/ghost characteristic selections differ");
+                std::array<int, 5> ghostColumns{ghost->Column(DerivedQuantity::Pressure), ghost->Column(DerivedQuantity::SoundSpeed), ghost->Column(DerivedQuantity::DiffusionBound), -1, -1};
+                if (characteristics)
+                {
+                    ghostColumns[3] = ghost->Column(DerivedQuantity::TotalEnthalpy);
+                    ghostColumns[4] = ghost->Column(DerivedQuantity::PressureInternalEnergyDerivative);
+                }
+                DNDS_check_throw_info(selected == ghostColumns, "derived owned/ghost property columns differ");
+            }
+            return {{owned.View(), ghost ? ghost->View() : RHSScalarView{}}, selected, characteristics ? 5 : 3};
         }
         index RowCount() const { return values.RowCount(); }
         index Width() const { return width; }
         real operator()(index iRow, int column) const { return values(iRow, columns[column]); }
+        bool HasCharacteristics() const { return width >= 5; }
+        /// Shape/capability is checked once by the operator before the loop.
+        CharacteristicThermodynamics Characteristics(index iRow) const
+        {
+            return {(*this)(iRow, 0), (*this)(iRow, 1), (*this)(iRow, 3), (*this)(iRow, 4)};
+        }
     };
     /// Packed read-only auxiliary inputs, independent of their producer. Current
     /// fields are mean [p,a,diffusivity], wave jumps and pressure minima. Extend

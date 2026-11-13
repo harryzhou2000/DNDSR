@@ -124,6 +124,10 @@ namespace DNDS::Cauchy
         DNDS_check_throw_info(column >= 0 && (!_guessOnly || quantity == DerivedQuantity::Temperature), "derived field absent or unavailable as a stale property");
         return column;
     }
+    bool DerivedFields::ReadScope::Has(DerivedQuantity quantity) const
+    {
+        return _data->columns[Ordinal(quantity)] >= 0 && (!_guessOnly || quantity == DerivedQuantity::Temperature);
+    }
     R::ArrayView<const real, R::AccessBoundsChecks, R::UniformTableRows> DerivedFields::ReadScope::View() const
     {
         DNDS_check_throw_info(!_guessOnly, "stale-temperature scope does not expose other property columns");
@@ -168,7 +172,8 @@ namespace DNDS::Cauchy
             return status;
         const auto &thermo = point.thermo;
         return DerivedPointValues{thermo.temperature, thermo.pressure, thermo.soundSpeed, point.transport.viscosity,
-                                  point.transport.conductivity, thermo.cp, thermo.cv, thermo.gasConstant, point.diffusionBound};
+                                  point.transport.conductivity, thermo.cp, thermo.cv, thermo.gasConstant, point.diffusionBound,
+                                  (state[4] + thermo.pressure) / state[0], thermo.gasConstant / thermo.cv};
     }
 
     bool RefreshDerivedFields(const EquationDofs &state, const EquationSystem &equation,

@@ -16,7 +16,7 @@ namespace DNDS::Cauchy::CPU
                 for (int d = 0; d < dim; ++d)
                     point.gradient(first, d) = request.gradients[location.physicalField](iCell, (location.firstComponent + j) * dim + d);
     }
-    NumericalResult<std::array<real, 3>> Properties(const AuxiliaryKernelRequest &request, const EquationSystem &equation, EquationFVDetail::PointScratch &point, PointEvaluator &evaluator,
+    NumericalResult<std::array<real, 5>> Properties(const AuxiliaryKernelRequest &request, const EquationSystem &equation, EquationFVDetail::PointScratch &point, PointEvaluator &evaluator,
                                                     real wallDistance = 1, bool turbulent = true) noexcept
     {
         const auto flow = point.Flow(request.flowFirst);
@@ -34,13 +34,17 @@ namespace DNDS::Cauchy::CPU
             diffusion = std::max({diffusion, real(4. / 3.) * (result.transport.viscosity + transport.value.viscosity) / flow[0],
                                   (result.transport.conductivity + transport.value.conductivity) / (flow[0] * result.thermo.cv)});
         }
-        return std::array<real, 3>{result.thermo.pressure, result.thermo.soundSpeed, diffusion};
+        // Characteristic quantities reuse this cell's completed EOS solve.
+        // H preserves the conservative energy origin, including formation
+        // energy; beta is a thermodynamic derivative, not gamma-equivalent.
+        return std::array<real, 5>{result.thermo.pressure, result.thermo.soundSpeed, diffusion,
+                                   (flow[4] + result.thermo.pressure) / flow[0], result.thermo.gasConstant / result.thermo.cv};
     }
     NumericalStatus PrepareAuxiliaryMeans(const AuxiliaryKernelRequest &request, const EquationSystem &equation, SpanView<AuxiliaryWorkerScratch> workers, index first, index last) noexcept
     {
         if (!request.enabled[0])
             return {};
-        if (workers.empty())
+        if (workers.empty() || (request.values[0].Width() != 3 && request.values[0].Width() != 5))
             return NumericalStatus{NumericalError::InvalidInput};
         OMP::ForRows(0, workers.size(), [&](index iWorker)
                      {
@@ -60,7 +64,7 @@ namespace DNDS::Cauchy::CPU
                 worker.status = result.status.At(iCell);
                 break;
             }
-            for (int j = 0; j < 3; ++j)
+            for (int j = 0; j < request.values[0].Width(); ++j)
                 request.values[0](iCell, j) = result.value[j];
           } });
         for (const auto &worker : workers)
@@ -83,12 +87,12 @@ namespace DNDS::Cauchy::CPU
             auto &left = worker.left;
             auto &right = worker.right;
             auto &face = worker.face;
-            const auto prepared = [&](index iCell, auto &point) -> NumericalResult<std::array<real, 3>>
+            const auto prepared = [&](index iCell, auto &point) -> NumericalResult<std::array<real, 5>>
             {
                 if (derived && request.ransFirst < 0)
-                    return std::array<real, 3>{(*derived)(iCell, 0), (*derived)(iCell, 1), (*derived)(iCell, 2)};
+                    return std::array<real, 5>{(*derived)(iCell, 0), (*derived)(iCell, 1), (*derived)(iCell, 2)};
                 if (request.enabled[0])
-                    return std::array<real, 3>{request.values[0](iCell, 0), request.values[0](iCell, 1), request.values[0](iCell, 2)};
+                    return std::array<real, 5>{request.values[0](iCell, 0), request.values[0](iCell, 1), request.values[0](iCell, 2)};
                 return Properties(request, equation, point, evaluator, request.hasWall ? request.wall.cellMean(iCell, 0) : 1);
             };
             for (index iRow = begin; iRow < end; ++iRow)

@@ -43,7 +43,9 @@ PYBIND11_MODULE(cauchy_pybind11, m)
         .value("HeatCapacityP", C::DerivedQuantity::HeatCapacityP)
         .value("HeatCapacityV", C::DerivedQuantity::HeatCapacityV)
         .value("GasConstant", C::DerivedQuantity::GasConstant)
-        .value("DiffusionBound", C::DerivedQuantity::DiffusionBound);
+        .value("DiffusionBound", C::DerivedQuantity::DiffusionBound)
+        .value("TotalEnthalpy", C::DerivedQuantity::TotalEnthalpy)
+        .value("PressureInternalEnergyDerivative", C::DerivedQuantity::PressureInternalEnergyDerivative);
     py::class_<C::DerivedFields>(
         m, "DerivedFields",
         "Optional point properties; no equation components or automatic exchange. Shared arrays retain storage. Raw debug access does not establish freshness.")

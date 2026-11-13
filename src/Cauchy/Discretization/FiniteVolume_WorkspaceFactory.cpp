@@ -128,8 +128,7 @@ namespace DNDS::Cauchy
                                   "invalid equation reconstruction controls");
             DNDS_check_throw_info(!_data->equation.HasMixture() || _data->fluxPolicy.rusanov,
                 "extended EOS or stencil flux needs an explicit preparation provider");
-            DNDS_check_throw_info(n.limiter == "none" || n.limiter == "Barth" || n.limiter == "LVR" ||
-                                      (n.limiter == "WBAP" && (!n.characteristicLimiter || !_data->equation.HasMixture())),
+            DNDS_check_throw_info(n.limiter == "none" || n.limiter == "Barth" || n.limiter == "LVR" || n.limiter == "WBAP",
                 "requested extended FV flux/PP/limiter profile is not connected yet");
             DNDS_check_throw_info(!n.positivity || n.positivityReconstruction != "Segment" || flow5Profile,
                                   "Segment reconstruction PP is available only for one perfect-gas flow5 field");
@@ -157,7 +156,7 @@ namespace DNDS::Cauchy
         if (flow5Profile && options.rhsKernel != RHSKernelPolicy::Generic)
             result->fixedFlowRHS.emplace(AcquireRHSOperator());
         auto request = CompleteRHSAuxiliaryRequest({});
-        if (request.cellWaveJump || request.cellPressureMinimum)
+        if (request.meanThermodynamics || request.cellWaveJump || request.cellPressureMinimum)
         {
             request.meanThermodynamics = true;
             result->rhsAuxiliary.emplace(BuildAuxiliaryValues(request));

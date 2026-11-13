@@ -362,48 +362,86 @@ namespace DNDS::Cauchy
         return !_data->equation.HasMixture() && !_data->equation.HasRANS() &&
                work.componentNumber == 5 && work.physicalFieldNumber == 1;
     }
-    index FiniteVolume::PrepareFaceCharacteristicMatrices(const CFV::FVField &state, index firstComponent,
+    index FiniteVolume::PrepareFaceCharacteristicMatrices(const EquationDofs &state,
                                                           R::Array<real> &forwardMatrices,
-                                                          R::Array<real> &inverseMatrices) const
+                                                          R::Array<real> &inverseMatrices,
+                                                          OptionalRef<const AuxiliaryValues> auxiliary, real time) const
     {
+        state.RequireSchema(_data->equation.Schema());
+        // Cached mixture properties depend on composition as well as flow.
+        // Retain all source fields while validating and consuming the cache.
+        const auto means = state.ReadWithGhost();
+        const auto flow = state.LocateBlock("flow");
+        DNDS_check_throw_info(flow.componentNumber == 5, "characteristic flow block must contain five components");
+        const auto &field = state.PhysicalField(flow.physicalField);
+        std::optional<PerfectGas> gas;
+        std::optional<MeanThermodynamicView> thermal;
+        std::optional<R::Array<real>::ReadLease> thermalRead;
+        std::optional<DerivedFields::ReadScope> derivedOwned, derivedGhost;
+        if (_data->equation.HasMixture())
+        {
+            DNDS_check_throw_info(auxiliary, "mixture characteristics require prepared cell thermodynamics");
+            ValidateAuxValues(state, *auxiliary, time);
+            if (auxiliary->meanThermodynamics)
+            {
+                thermalRead.emplace(auxiliary->meanThermodynamics->Read());
+                thermal.emplace(thermalRead->View<R::UniformTableRows>());
+            }
+            else
+            {
+                DNDS_check_throw_info(auxiliary->derivedOwned && auxiliary->derivedGhost,
+                                      "mixture characteristic derived properties require both row parts");
+                derivedOwned.emplace(auxiliary->derivedOwned->ReadCurrent(state, _data->equation));
+                derivedGhost.emplace(auxiliary->derivedGhost->ReadCurrent(state, _data->equation));
+                thermal.emplace(MeanThermodynamicView::Derived(*derivedOwned, OptionalRef<const DerivedFields::ReadScope>(*derivedGhost)));
+            }
+            DNDS_check_throw_info(thermal->HasCharacteristics() && thermal->RowCount() == Metrics().NumCellProc(),
+                                  "mixture characteristic p/a/H/beta projection missing or wrong-sized");
+        }
+        else
+            gas.emplace(_data->equation.Gas());
         auto geometry = Metrics().AcquireRead();
         const auto metric = geometry.HostView();
         auto meshRead = _data->mesh->AcquireRead(Geom::MeshReadRequirements::CellFlux());
         const auto mesh = meshRead.HostView();
         index fallbacks = 0;
         {
-            auto owned = state.Owned().Read(), ghost = state.Ghost().Read();
-            const RHSFieldView u{owned.View<R::UniformTableRows>(), ghost.View<R::UniformTableRows>()};
-            DNDS_check_throw_info(firstComponent >= 0 && firstComponent + 5 <= state.Width(),
+            const auto flowViews = means.Block("flow");
+            const RHSFieldView u{flowViews.owned.parent, flowViews.ghost.parent};
+            DNDS_check_throw_info(flow.firstComponent >= 0 && flow.firstComponent + 5 <= field.Width(),
                                   "flow characteristic range differs from its physical field");
             auto forward = forwardMatrices.Write(), inverse = inverseMatrices.Write();
             const auto stencilRead = _data->stencil.Read();
-            fallbacks = CPU::PrepareFaceCharacteristicMatrices(stencilRead.View(), mesh, metric, u, firstComponent,
-                                                               forward.View<R::TableRows>(), inverse.View<R::TableRows>(), _data->equation);
+            R::ValidateViewDevices(R::Device::Host(), u, forward.View<R::TableRows>(), inverse.View<R::TableRows>());
+            if (thermal)
+                thermal->values.ValidateDevice(R::Device::Host());
+            fallbacks = RequireNumericalSuccess(CPU::PrepareFaceCharacteristicMatrices(stencilRead.View(), mesh, metric, u, flow.firstComponent,
+                                                                                       forward.View<R::TableRows>(), inverse.View<R::TableRows>(), gas, thermal),
+                                                "PrepareFaceCharacteristicMatrices");
         }
         return fallbacks;
     }
-    index FiniteVolume::PrepareFaceCharacteristics(const CFV::FVField &state,
+    index FiniteVolume::PrepareFaceCharacteristics(const EquationDofs &state,
                                                    CFV::FaceCharacteristicTransform &transform,
-                                                   index firstComponent) const
+                                                   OptionalRef<const AuxiliaryValues> auxiliary, real time) const
     {
-        DNDS_check_throw_info(transform.first == firstComponent && transform.count == 5,
+        DNDS_check_throw_info(transform.first == state.LocateBlock("flow").firstComponent && transform.count == 5,
                               "flow characteristic range differs from its physical field");
         const auto fallbacks = PrepareFaceCharacteristicMatrices(
-            state, firstComponent, transform.forward, transform.inverse);
+            state, transform.forward, transform.inverse, auxiliary, time);
         DNDS_check_throw_info(_data->reconstruction,
                               "modal characteristic transform requires variational reconstruction");
         _data->reconstruction->FinalizeFaceTransform(transform, _data->settings.numerics.characteristicDiagnostics);
         return fallbacks;
     }
     index FiniteVolume::PrepareFaceCharacteristics(
-        const CFV::FVField &state, CFV::GradientFaceCharacteristicTransform &transform,
-        index firstComponent) const
+        const EquationDofs &state, CFV::GradientFaceCharacteristicTransform &transform,
+        OptionalRef<const AuxiliaryValues> auxiliary, real time) const
     {
-        DNDS_check_throw_info(transform.first == firstComponent && transform.count == 5,
+        DNDS_check_throw_info(transform.first == state.LocateBlock("flow").firstComponent && transform.count == 5,
                               "flow gradient characteristic range differs from its physical field");
         const auto fallbacks = PrepareFaceCharacteristicMatrices(
-            state, firstComponent, transform.forward, transform.inverse);
+            state, transform.forward, transform.inverse, auxiliary, time);
         _data->gradient.FinalizeFaceTransform(transform, _data->settings.numerics.characteristicDiagnostics);
         return fallbacks;
     }

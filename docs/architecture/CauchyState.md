@@ -577,6 +577,29 @@ Both ordinary mean thermodynamics and optional derived bundles are supported.
 A mixture uses one explicit matching chemistry worker at a time; no chemistry
 rates are requested for these face/mean properties. Pressure, acoustics and
 molecular/species diffusion bounds come from the actual EOS/transport provider.
+
+The Plan 61 CPU characteristic correction extends a requested mixture mean
+cache from `[p,a,diffusivity]` to `[p,a,diffusivity,H,beta]`. The additional named
+derived quantities are `TotalEnthalpy` and `PressureInternalEnergyDerivative`:
+`H=(rhoE+p)/rho` retains thermochemical formation energy, and
+`beta=partial p/partial(rho e)|rho,Y=R_mix/cv` for the current ideal mixture.
+They reuse the same cell property evaluation. The dense cache and the optional
+derived projection carry identical meaning and freshness requirements; neither
+gets its own halo transfer. Ghost properties are evaluated only after the mean
+halo is available. Characteristic-enabled mixture WBAP requires this cache even
+when the caller did not request other auxiliary outputs.
+
+The face producer reads the two cell records and forms local square-root-density
+weighted velocity, H, a-squared and beta. It constructs analytic flow-five L/R
+using contact energy `H-a*a/beta`; species and RANS components remain scalar.
+This is an approximate frozen-composition limiter basis, not an exact reacting
+Roe flux. A periodic face rotates the neighbor momentum, not scalar properties;
+a physical boundary uses the interior mean. No per-face temperature solve or
+face-thermodynamics cache is introduced. Perfect-gas CPU/CUDA keeps the existing
+Roe velocity/enthalpy rule and evaluates its cheap thermodynamics inline.
+The source includes this correction; its focused tests belong to the grouped
+Plan 61 B validation, not an already-completed numerical campaign.
+
 The equation boundary profile covers extrapolation, farfield, total-condition
 inlet, constant prescribed values and adiabatic/isothermal walls, using the same
 producer as reconstruction boundary buffers and the equation RHS. Interface
@@ -903,14 +926,16 @@ FV profile above. `PhysicsResources::Resolve` loads configured material/scales a
 returns immutable equation metadata plus explicit mutable worker capacity.
 Domain retains both; its one ordered CPU EOS lane needs one worker even when
 the launcher uses several threads. Perfect-gas-only methods such
-as `Gas()` and the old flow-only Jacobian/characteristic producer reject a
-mixture explicitly. They cannot evaluate missing species through default gamma.
+as `Gas()` and the flow-only Jacobian producer reject a mixture explicitly.
+The no-property `PrepareCharacteristics` overload remains perfect-gas-only;
+the generic overload consumes explicit cell-mean thermal records as described
+above. Neither evaluates missing species through default gamma.
 
 For configuration use `equation.eos="idealGasMixture"`, `equation.mixture` with
 `mechanismFile`, optional `phaseName`, and SI `rho0/U0/L0/T0`. Initial constant
 input uses `initialPrimitive`, optional positive `initialTemperature`, and
 `initialMassFractions`. The current profile selects Rusanov, no face fallback,
-componentwise WBAP when enabled, polynomial viscous gradients and optional
+flow-five characteristic or componentwise WBAP, polynomial viscous gradients and optional
 `source="chemical"`. Missing kernels are rejected explicitly. The current
 configuration/frontend does not infer another numerical profile from defaults.
 

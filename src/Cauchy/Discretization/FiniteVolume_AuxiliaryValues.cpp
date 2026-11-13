@@ -269,7 +269,7 @@ namespace DNDS::Cauchy
         const auto arrays = EquationAuxiliaryArrays(output);
         const index faces = _data->stencil.stencilFaces.RowCount();
         const index rows[9]{Metrics().NumCellProc(), faces, faces, faces, Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCell(), Metrics().NumCellProc() - Metrics().NumCell()};
-        const index widths[7]{3, 2, 1, 1, 1, 1, 1};
+        const index widths[7]{_data->equation.HasMixture() ? 5 : 3, 2, 1, 1, 1, 1, 1};
         for (int k = 0; k < 9; ++k)
             if (arrays[k])
             {
@@ -312,8 +312,13 @@ namespace DNDS::Cauchy
         {
             DNDS_check_throw_info(output.derivedOwned && output.derivedGhost, "derived thermodynamics needs both row parts");
             for (const auto *field : {&*output.derivedOwned, &*output.derivedGhost})
+            {
                 for (auto q : {DerivedQuantity::Pressure, DerivedQuantity::SoundSpeed, DerivedQuantity::DiffusionBound})
                     DNDS_check_throw_info(field->Request().Has(q), "derived thermodynamic column missing");
+                if (_data->equation.HasMixture())
+                    for (auto q : {DerivedQuantity::TotalEnthalpy, DerivedQuantity::PressureInternalEnergyDerivative})
+                        DNDS_check_throw_info(field->Request().Has(q), "mixture characteristic thermodynamic column missing");
+            }
         }
         const bool needScratch = (arrays[4] && !arrays[1]) || (arrays[5] && !arrays[2]) || (arrays[6] && !arrays[3]);
         if (needScratch && (!output._faceScratch || output._faceScratch->RowCount() != faces))

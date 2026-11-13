@@ -22,6 +22,8 @@ namespace DNDS::Cauchy
         HeatCapacityV,
         GasConstant,
         DiffusionBound,
+        TotalEnthalpy,                    ///< (rhoE+p)/rho, retaining the equation's energy origin.
+        PressureInternalEnergyDerivative, ///< dp/d(rho*e) at fixed rho,Y; ideal mixture R_mix/cv.
         Count
     };
     constexpr int DerivedQuantityNumber = int(DerivedQuantity::Count);
@@ -83,6 +85,8 @@ namespace DNDS::Cauchy
             EquationBlockArrayView<const real> Field(DerivedQuantity quantity) const;
             Runtime::ArrayView<const real, Runtime::AccessBoundsChecks, Runtime::UniformTableRows> View() const;
             int Column(DerivedQuantity quantity) const;
+            /// Query the selected projection without demanding an absent column.
+            bool Has(DerivedQuantity quantity) const;
         };
         ReadScope ReadCurrent(const EquationDofs &state, const EquationSystem &equation) const;
         /// Stale solution values are allowed only as temperature guesses.

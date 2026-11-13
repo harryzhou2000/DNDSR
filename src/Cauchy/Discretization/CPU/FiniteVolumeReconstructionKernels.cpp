@@ -1,14 +1,21 @@
 #include "Cauchy/Discretization/CPU/FiniteVolumeReconstructionKernels.hpp"
 #include "Cauchy/Discretization/CPU/FiniteVolumeSampleKernels.hpp"
 #include "CFV/Math/PeriodicFrame.hpp"
+#include "DNDS/Core/OMP.hpp"
 namespace DNDS::Cauchy::CPU
 {
-    index PrepareFaceCharacteristicMatrices(FiniteVolumeStencilView stencil, Geom::UnstructuredMeshView mesh,
-                                            CFV::FiniteVolumeHostView metric, RHSFieldView u, index firstComponent,
-                                            Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::TableRows> l,
-                                            Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::TableRows> r,
-                                            const EquationSystem &equation)
+    NumericalResult<index> PrepareFaceCharacteristicMatrices(FiniteVolumeStencilView stencil, Geom::UnstructuredMeshView mesh,
+                                                             CFV::FiniteVolumeHostView metric, RHSFieldView u, index firstComponent,
+                                                             Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::TableRows> l,
+                                                             Runtime::ArrayView<real, Runtime::AccessBoundsChecks, Runtime::TableRows> r,
+                                                             std::optional<PerfectGas> gas,
+                                                             std::optional<MeanThermodynamicView> thermodynamics) noexcept
     {
+        // The wrapper selects one provider, once. No EOS/worker call occurs
+        // inside the face loop; mixtures consume the cached mean properties.
+        if (bool(gas) == bool(thermodynamics) ||
+            (thermodynamics && (!thermodynamics->HasCharacteristics() || thermodynamics->RowCount() != metric.cells.RowCount())))
+            return NumericalStatus{NumericalError::InvalidInput};
         index fallbacks = 0;
         const auto loadFlow = [&](index iCell)
         {
@@ -17,22 +24,64 @@ namespace DNDS::Cauchy::CPU
                 value[j] = u(iCell, firstComponent + j);
             return value;
         };
-        for (index iAux = 0; iAux < stencil.stencilFaces.RowCount(); ++iAux)
+        const auto compute = [&](index iAux) -> NumericalResult<index>
         {
             const auto iFace = stencil.stencilFaces(iAux, 0);
             const auto cells = mesh.FaceCells(iFace);
             if (cells[0] < 0 || cells[0] >= metric.cells.RowCount())
-                continue;
+                return index(0);
             const auto left = loadFlow(cells[0]);
             auto right = left;
             if (cells[1] >= 0 && cells[1] < metric.cells.RowCount())
                 right = FiniteVolumeDetail::RotateState(loadFlow(cells[1]), CFV::Detail::OtherFrameInCell(mesh, iFace, 0));
             const auto normal = metric.GetFaceNorm(metric.FaceQuadratureBegin(iFace));
-            const auto matrices = equation.PrepareCharacteristics(left, right, {normal[0], normal[1], normal[2]});
-            fallbacks += matrices.componentwiseFallback;
+            const index rightCell = cells[1] >= 0 && cells[1] < metric.cells.RowCount() ? cells[1] : cells[0];
+            const auto result = thermodynamics
+                                    ? TryCachedMeanCharacteristics(left, right, thermodynamics->Characteristics(cells[0]),
+                                                                   thermodynamics->Characteristics(rightCell), {normal[0], normal[1], normal[2]})
+                                    : TryPerfectGasCharacteristics(*gas, left, right, {normal[0], normal[1], normal[2]});
+            if (!result)
+                return result.status.At(cells[0], iFace);
+            const auto &matrices = result.value;
             for (index j = 0; j < 25; ++j)
                 l(iFace, j) = matrices.forward[j], r(iFace, j) = matrices.inverse[j];
+            return index(matrices.componentwiseFallback);
+        };
+        const int threads = OMP::DistributedThreads();
+        if (threads == 1)
+        {
+            for (index iAux = 0; iAux < stencil.stencilFaces.RowCount(); ++iAux)
+            {
+                const auto result = compute(iAux);
+                if (!result)
+                    return result.status;
+                fallbacks += result.value;
+            }
+            return fallbacks;
         }
+        NumericalStatus failure;
+        index firstFailure = stencil.stencilFaces.RowCount();
+#if defined(DNDS_USE_OMP) && defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel for schedule(static) num_threads(threads) reduction(+ : fallbacks)
+#endif
+        for (index iAux = 0; iAux < stencil.stencilFaces.RowCount(); ++iAux)
+        {
+            const auto result = compute(iAux);
+            if (result)
+                fallbacks += result.value;
+            else
+            {
+#if defined(DNDS_USE_OMP) && defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp critical(DNDS_CHARACTERISTIC_FAILURE)
+#endif
+                {
+                    if (iAux < firstFailure)
+                        firstFailure = iAux, failure = result.status;
+                }
+            }
+        }
+        if (!failure)
+            return failure;
         return fallbacks;
     }
 }

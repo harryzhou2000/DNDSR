@@ -86,7 +86,10 @@ namespace DNDS::Cauchy
     /// Cell reductions write owned rows only; their halo exchange is a caller task.
     struct AuxiliaryValues
     {
-        std::optional<Runtime::Array<real>> meanThermodynamics; // local owned+ghost rows: p,a,diffusivity
+        /// Local owned+ghost rows: [p,a,diffusivity], followed by [H,beta] for
+        /// mixtures. Ghost properties are evaluated from the fresh mean halo;
+        /// this rank-local cache has no independent transfer plan.
+        std::optional<Runtime::Array<real>> meanThermodynamics;
         std::optional<Runtime::Array<real>> faceSpectralRadius; // convection, diffusion (speed)
         std::optional<Runtime::Array<real>> faceWaveJump;
         std::optional<Runtime::Array<real>> facePressureMinimum;
@@ -793,14 +796,15 @@ namespace DNDS::Cauchy
                                        const Runtime::Array<real>::WriteLease &diagonal, DiagonalStorage storage,
                                        real scale, PointEvaluator &evaluator,
                                        OptionalRef<const EquationFVDetail::MeanLinearizationOutput> linearization = {}) const;
-        index PrepareFaceCharacteristicMatrices(const CFV::FVField &state, index firstComponent,
+        index PrepareFaceCharacteristicMatrices(const EquationDofs &state,
                                                 Runtime::Array<real> &forward,
-                                                Runtime::Array<real> &inverse) const;
-        index PrepareFaceCharacteristics(const CFV::FVField &state, CFV::FaceCharacteristicTransform &transform,
-                                         index firstComponent = 0) const;
-        index PrepareFaceCharacteristics(const CFV::FVField &state,
+                                                Runtime::Array<real> &inverse,
+                                                OptionalRef<const AuxiliaryValues> auxiliary, real time) const;
+        index PrepareFaceCharacteristics(const EquationDofs &state, CFV::FaceCharacteristicTransform &transform,
+                                         OptionalRef<const AuxiliaryValues> auxiliary, real time) const;
+        index PrepareFaceCharacteristics(const EquationDofs &state,
                                          CFV::GradientFaceCharacteristicTransform &transform,
-                                         index firstComponent = 0) const;
+                                         OptionalRef<const AuxiliaryValues> auxiliary, real time) const;
     };
     /// Immutable publication record for one interface sampling round.
     /// It retains shared equation arrays (not a deep value snapshot) and their

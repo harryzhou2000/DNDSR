@@ -295,8 +295,7 @@ namespace DNDS::Cauchy
                     "extended equation thermodynamic flux preparation/face fallback");
             require(!s.numerics.riemann.useStencil || (!flux.UsesTransverseSignal() && !flux.UsesPressureStencil()),
                     "extended equation wave/pressure stencil auxiliary inputs");
-            require(s.numerics.limiter == "none" || s.numerics.limiter == "Barth" ||
-                        (s.numerics.limiter == "WBAP" && (!s.numerics.characteristicLimiter || !mixture)),
+            require(s.numerics.limiter == "none" || s.numerics.limiter == "Barth" || s.numerics.limiter == "WBAP",
                     "extended equation limiter");
             require(s.equation.transport != "NewtonianFourier" || s.numerics.viscousGradient == "polynomial", "extended equation viscous gradient");
             require(!s.implicit.roeDissipation, "extended equation Roe Jacobian");

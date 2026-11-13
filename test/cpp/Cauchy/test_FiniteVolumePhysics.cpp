@@ -639,6 +639,89 @@ namespace
     };
 }
 
+TEST_CASE("Mixture characteristic WBAP consumes fresh distributed cell caches for modal and direct gradients")
+{
+    MixtureFixture mixture;
+    const auto equation = C::EquationSystem::FromIdealGasMixture(mixture.material, false);
+    const auto mesh = CauchyTest::PeriodicQuads(mpi, 6);
+    for (const std::string reconstructionKind : {"gradient", "variational"})
+    {
+        std::optional<C::EquationDofs> baseline;
+        for (int scenario = 0; scenario < 2; ++scenario)
+        {
+            INFO(reconstructionKind << ", derived/separate/worker=" << scenario);
+            C::DomainSettings settings;
+            settings.numerics.reconstruction = reconstructionKind;
+            settings.numerics.cfv.maxOrder = 2;
+            settings.numerics.reconstructionIterations = 3;
+            settings.numerics.cfv.SORInstead = false;
+            settings.numerics.limiter = "WBAP";
+            settings.numerics.characteristicLimiter = true;
+            settings.numerics.faceFallback = settings.numerics.positivity = false;
+            settings.numerics.riemann.useStencil = false;
+            settings.numerics.viscousGradient = "polynomial";
+            settings.execution.overlap = bool(scenario);
+            C::FiniteVolume fv(mesh, settings, equation);
+            auto state = mixture.State(fv.Metrics().Space(), scenario);
+            mixture.Fill(state, fv.Metrics(), false);
+            auto residual = C::EquationDofOperations::NewVector(state);
+            auto reconstruction = fv.BuildReconstructionState(state);
+            auto work = fv.BuildWorkspace(state, mixture.workers);
+            C::AuxiliaryRequest request;
+            if (scenario)
+                request.derived = {C::DerivedQuantity::Temperature};
+            auto auxiliary = fv.BuildAuxiliaryValues(request);
+            R::EagerEngine engine(scenario ? 2 : 0, std::make_shared<R::AccessTrackingContext>());
+            const auto stream = engine.CreateCPUStream();
+            fv.Evaluate(state, residual, *reconstruction, *work, auxiliary, engine, stream);
+            CHECK(fv.LastCharacteristicFallbacks(*work) == 0);
+            fv.ValidateAuxValues(state, auxiliary);
+            std::optional<R::Array<double>::ReadLease> dense;
+            std::optional<C::DerivedFields::ReadScope> owned, ghost;
+            C::MeanThermodynamicView thermal;
+            if (scenario)
+            {
+                REQUIRE(auxiliary.derivedOwned);
+                REQUIRE(auxiliary.derivedGhost);
+                owned.emplace(auxiliary.derivedOwned->ReadCurrent(state, equation));
+                ghost.emplace(auxiliary.derivedGhost->ReadCurrent(state, equation));
+                thermal = C::MeanThermodynamicView::Derived(*owned, DNDS::OptionalRef<const C::DerivedFields::ReadScope>(*ghost));
+            }
+            else
+            {
+                REQUIRE(auxiliary.meanThermodynamics);
+                dense.emplace(auxiliary.meanThermodynamics->Read());
+                thermal = dense->View<R::UniformTableRows>();
+            }
+            REQUIRE(thermal.HasCharacteristics());
+            REQUIRE(thermal.RowCount() == fv.Metrics().NumCellProc());
+            const auto read = state.ReadWithGhost();
+            const auto flow = read.Block("flow"), species = read.Block("species");
+            auto evaluator = equation.MakePointEvaluator(mixture.workers.Acquire(), {});
+            auto rhoY = evaluator.SpeciesInput();
+            for (I iCell = 0; iCell < thermal.RowCount(); ++iCell)
+            {
+                C::FlowState value;
+                for (int j = 0; j < 5; ++j)
+                    value[j] = flow(iCell, j);
+                for (int j = 0; j < rhoY.nSpecies; ++j)
+                    rhoY[j] = species(iCell, j);
+                const auto properties = evaluator.Evaluate(value, rhoY);
+                const auto cached = thermal.Characteristics(iCell);
+                CHECK(cached.pressure == doctest::Approx(properties.thermo.pressure).epsilon(3e-11));
+                CHECK(cached.soundSpeed == doctest::Approx(properties.thermo.soundSpeed).epsilon(3e-11));
+                CHECK(cached.totalEnthalpy == doctest::Approx((value[4] + properties.thermo.pressure) / value[0]).epsilon(3e-11));
+                CHECK(cached.pressureInternalEnergyDerivative == doctest::Approx(properties.thermo.gasConstant / properties.thermo.cv).epsilon(3e-11));
+            }
+            ConservativeIntegral(residual);
+            if (baseline)
+                Compare(residual, *baseline, 3e-10);
+            else
+                baseline.emplace(residual.Clone());
+        }
+    }
+}
+
 TEST_CASE("Finite-volume admissibility uses one prepared complete mixture policy")
 {
     MixtureFixture mixture;

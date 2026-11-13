@@ -604,10 +604,8 @@ namespace DNDS::Cauchy
         {
             if (work.flowCharacteristic)
                 local([&]
-                      {
-                const auto flow = state.LocateBlock("flow");
-                work.characteristicFallbacks = PrepareFaceCharacteristics(
-                    state.PhysicalField(flow.physicalField), *work.flowCharacteristic, flow.firstComponent); });
+                      { work.characteristicFallbacks = PrepareFaceCharacteristics(
+                            state, *work.flowCharacteristic, OptionalRef<const AuxiliaryValues>(auxiliary), time); });
             DNDS_check_throw_info(reconstruction.limitedVRHistory, "LVR reconstruction state has no history");
             work.limitedVR->Build(*_data, state.CoupledField(), *reconstruction.limitedVRHistory,
                                   work.flowCharacteristic ? CFV::FaceCharacteristicTransformRef(std::cref(*work.flowCharacteristic))
@@ -709,8 +707,8 @@ namespace DNDS::Cauchy
                     DNDS_check_throw_info(flow.physicalField == work.flowCharacteristicField,
                                           "characteristic flow allocation changed after workspace setup");
                     work.characteristicFallbacks = PrepareFaceCharacteristics(
-                        state.PhysicalField(flow.physicalField), *work.gradientFlowCharacteristic,
-                        flow.firstComponent); });
+                        state, *work.gradientFlowCharacteristic,
+                        OptionalRef<const AuxiliaryValues>(auxiliary), time); });
                 auto gradientOperations = schedule.Begin(work.directGradientInputHalo);
                 const auto limit = [&](CFV::ReconstructionRegion region)
                 {
@@ -742,7 +740,7 @@ namespace DNDS::Cauchy
                               DNDS_check_throw_info(flow.physicalField == work.flowCharacteristicField,
                                                     "characteristic flow allocation changed after workspace setup");
                               work.characteristicFallbacks = PrepareFaceCharacteristics(
-                                  state.PhysicalField(flow.physicalField), *work.flowCharacteristic, flow.firstComponent); });
+                                  state, *work.flowCharacteristic, OptionalRef<const AuxiliaryValues>(auxiliary), time); });
                 for (int order = numerics.cfv.maxOrder; order >= 1; --order)
                 {
                     auto limiterOperations = schedule.BeginAfterCompute(reconstruction.FinalizedHalo());
