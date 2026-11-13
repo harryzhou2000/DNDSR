@@ -83,6 +83,46 @@ Final cylinder pilots and comparisons are recorded separately in canonical
 their deliberate 20-update cap and returned frontend status 2. Full conservative
 fields agree within 2e-13 after persistent-ID alignment. Longer CPU SG and pMG
 runs converged at 5325 and 1361 updates/cycles; matched full CUDA convergence
-remains open. The direct RTX3060 `auwd` port times out, but WSL inventory now
-works through `auw`; remote source/runtime staging is still pending. Final
-physical gates, quantized-kernel assessment and full completion remain open.
+remains open. The direct RTX3060 `auwd` port times out, but WSL execution works
+through `auw`; a frozen source tree and the locally built SM80/86 executable
+with verified runtime dependencies are staged in the requested desktop checkout.
+Twenty-update flow5/SA pilots agree near roundoff. SST fails the original
+pointwise bound in a small number of cells. A same-mesh generic CPU/CUDA probe
+shows near-roundoff RHS/Jacobian agreement, but the existing CPU Eigen-SVD
+fallback is less accurate than cuSOLVER for highly nonnormal wall blocks
+(normalized condition numbers near 1e9). An independent 80-digit solve confirms
+this; an offline inverse refinement improves both actions. The decision to
+adopt guarded Cauchy refinement is pending. Neither the comparison bound nor
+the production algorithm has been changed to make this pass.
+The full two-device AmgX SG run reached its 540-second bound
+with decreasing residual; pMG has only capped pilot evidence.
+
+The optional reconstruction precision benchmark passed its FP64/FP32/TF32
+operator error bounds. FP32 did not improve runtime for that tested shape;
+TF32 did, with a larger error. This is not physical-solution accuracy evidence.
+Final physical gates and full completion remain open. Compact application
+records are in the plan repository's `evidence/cauchy-plan61/phase-d/`.
+
+## CPU threading and device leaf map
+
+The earlier inventory is a chronological implementation record; its original
+"pending" entries are not the current source status. These are the implemented
+leaf families behind the shared operator scheduling interfaces:
+
+| Family | Device leaf | CPU threading boundary |
+| --- | --- | --- |
+| Auxiliary means/faces/cell sums | `Discretization/CUDA/FiniteVolumeAuxiliaryKernels.cu` | Independent row work and private point workers |
+| Boundary values/forces | `FiniteVolumeBoundaryKernels.cu`, `BoundaryForceKernels.cu` | Point rows; force reduction uses private contributions |
+| RHS and source/rotation | `FiniteVolumeRHSKernels.cu`, `_Faces.hpp`, `_Reconstruction.hpp`, `FiniteVolumeSourceKernels.cu` | Cell rows with private physics/scratch; no MPI in workers |
+| Gradients/characteristics/LVR/PP | `FiniteVolumeGradientKernels.cu`, `FiniteVolumeReconstructionKernels.cu`, `FiniteVolumeLimitedVRKernels.cu`, `FiniteVolumePositivityKernels.cu` | Row selection plus explicit integer/statistics merging |
+| Implicit blocks/actions/relaxation | `Implicit/CUDA/FiniteVolumeJacobianKernels*`, `FrozenJacobianKernels*`, `LinearBlockKernels.cu`, `LinearDiagonalKernels.cu` | Independent rows; CPU SGS alone respects ordered mesh subpartitions and frozen cross-partition input |
+| State, time, nonlinear and FAS algebra | `State/CUDA/*`, `Core/CUDA/TimeStageKernels.cu`, `Implicit/CUDA/NonlinearKernels*`, `Multigrid/CUDA/PolynomialMultigridKernels.cu` | `OMP::ForRows`, status-aware rows and private sum buffers |
+| Interface sampling/publication | CFV `Operators/CUDA/DistributedInterfaceSamplingKernels.cu`; Cauchy `Interface/CUDA/InterfacePacketKernels.cu` | Query/receiver rows; communication remains outside kernels |
+| Output field conversion | `IO/CUDA/OutputFieldsKernels.cu` | CPU private point workers before snapshot serialization |
+| CFV metrics/reconstruction setup | Host setup by design; placed immutable arrays are kernel inputs | `ForSetupRows` in `CFV/Prepare/FiniteVolumePlan*`, `GradientPlan.cpp`, `PolynomialSamplingPlan.cpp` |
+| CFV iteration/sampling/limiting | `CFV/Operators/CUDA/{ReconstructionDevice,GradientKernels_CUDA,PolynomialSamplingKernels_CUDA,LimitedVRKernels_CUDA,CharacteristicKernels_CUDA}.*` | Jacobi independent rows; CPU SOR uses configured subpartitions |
+
+Helpers operating on one point, one small matrix or one metadata descriptor do
+not spawn their own OpenMP teams. Their caller owns the row partition. This
+avoids nested parallelism and preserves the OMP=1 arithmetic anchor. MPI calls,
+leases and ownership transitions remain in the operator/controller layers.
